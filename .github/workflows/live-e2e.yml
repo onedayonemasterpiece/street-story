@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       acceptance:
-        description: 'smoke accepts the known visual ingress blocker; full_social requires complete visual + safe social cleanup'
+        description: 'smoke requires research + refinement + verified VibePublish image readback; full_social additionally requires safe schedule -> status -> cancel -> cancelled readback'
         required: true
         default: smoke
         type: choice
@@ -31,7 +31,7 @@ jobs:
        github.event.label.name == 'live-e2e-smoke' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,7 +68,7 @@ jobs:
                   raise RuntimeError('live_base_url_not_https')
               if not re.fullmatch(r'[0-9a-f]{40}', expected):
                   raise RuntimeError('expected_backend_sha_invalid')
-              request = urllib.request.Request(base + '/healthz', headers={'Accept': 'application/json', 'User-Agent': 'StreetStory-Live-E2E/1'})
+              request = urllib.request.Request(base + '/healthz', headers={'Accept': 'application/json', 'User-Agent': 'StreetStory-Live-E2E/2'})
               with urllib.request.urlopen(request, timeout=20) as response:
                   body = json.load(response)
               actual = str(body.get('source_sha') or '').strip().lower() or None

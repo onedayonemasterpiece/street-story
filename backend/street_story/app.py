@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
-from .product import ProductStreetStoryService
+from .runtime import RuntimeStreetStoryService
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
 
 
@@ -19,7 +19,7 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
 
 def create_app(settings: Settings | None = None, service: StreetStoryService | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
-    service = service or ProductStreetStoryService(settings)
+    service = service or RuntimeStreetStoryService(settings)
     service.recover_jobs()
     source_sha = checkout_source_sha()
 
