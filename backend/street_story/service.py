@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ from .config import Settings
 from .db import Store
 from .providers import (
     GeminiClient,
+    GroundedResearch,
     OSMClient,
     PermanentProviderError,
     RetryableProviderError,
@@ -88,7 +90,7 @@ class StreetStoryService:
         self.providers = providers or ProviderBundle(
             OSMClient(self.store, settings.osm_user_agent),
             WikipediaClient(self.store),
-            GeminiClient(settings),
+            GeminiClient(settings, self.store),
             VibePublishClient(settings),
         )
 
@@ -140,7 +142,14 @@ class StreetStoryService:
         error = None
         if row["error_code"] or row["error_message"]:
             error = {"code": row["error_code"] or "backend_error", "message": row["error_message"] or "Backend error"}
+        processing = None
+        if row["state"] == "researching":
+            pending = db.execute("SELECT created_at,available_at FROM jobs WHERE story_id=? AND kind IN ('research','refinement') AND state IN ('ready','running','retry') ORDER BY created_at LIMIT 1", (row["id"],)).fetchone()
+            delayed = pending and self.store.now()-pending["created_at"] >= self.settings.processing_delayed_after_seconds
+            processing = {"status": "processing_delayed" if delayed else "researching", "message": "Обработка займёт немного больше времени" if delayed else "Исследуем", "automatic_retry": True}
+            error = None
         return {
+            "processing": processing,
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "place_name": row["place_name"], "summary": row["summary"], "draft_text": row["draft_text"],
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
@@ -405,8 +414,12 @@ class StreetStoryService:
         try:
             bootstrap = await self.providers.vibepublish.bootstrap()
         except (RetryableProviderError, PermanentProviderError):
-            return {"destinations": []}
-        return {"destinations": project_destinations(bootstrap)}
+            bootstrap = {"destinations": []}
+        result = {"destinations": project_destinations(bootstrap)}
+        pool = getattr(self.providers.gemini, "pool", None)
+        if pool is not None:
+            result["gemini"] = {operation: pool.snapshot(operation) for operation in ("transcription", "grounded_research")}
+        return result
 
     def _enqueue_job(self, db, story_id: str, kind: str, semantic_key: str, payload: dict[str, Any]) -> str:
         existing = db.execute("SELECT id FROM jobs WHERE semantic_key=?", (semantic_key,)).fetchone()
@@ -435,7 +448,20 @@ class StreetStoryService:
     async def run_once(self) -> bool:
         job = self._claim()
         if not job:
+            quota = getattr(self.providers.gemini, 'quota', None)
+            if quota is not None:
+                try:
+                    await quota.recover()
+                except RetryableProviderError:
+                    pass  # No provider work; pending accounting remains durable.
             return False
+        async def heartbeat():
+            while True:
+                await asyncio.sleep(15)
+                with self.store.tx() as db:
+                    db.execute("UPDATE jobs SET lease_until=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+90, job['id'], job['attempts']))
+
+        lease_task = asyncio.create_task(heartbeat())
         try:
             if job["kind"] in {"research", "refinement"}:
                 await self._run_research(job)
@@ -449,19 +475,23 @@ class StreetStoryService:
                 db.execute("UPDATE jobs SET state='done',lease_until=0,last_error=NULL,updated_at=? WHERE id=?", (self.store.now(), job["id"]))
         except RetryableProviderError as exc:
             backoff = min(300, 2 ** min(job["attempts"], 8))
+            available_at = max(self.store.now()+1, exc.retry_at) if exc.retry_at is not None else self.store.now()+backoff
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.store.now()+backoff, str(exc), self.store.now(), job["id"]))
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (available_at, self.settings.redact(str(exc)), self.store.now(), job["id"]))
             return True
         except (PermanentProviderError, ConflictError, InvalidStateError) as exc:
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=?", (str(exc), self.store.now(), job["id"]))
+                db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.settings.redact(str(exc)), self.store.now(), job["id"]))
                 if job["kind"] != "visual":
-                    db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?", ("provider_permanent_error", str(exc), self.store.now(), job["story_id"]))
+                    db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?", ("provider_permanent_error", "Не удалось выполнить обработку. Требуется проверка настроек сервиса.", self.store.now(), job["story_id"]))
             return True
         except Exception as exc:
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.store.now()+5, f"worker_failure:{exc}", self.store.now(), job["id"]))
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.store.now()+5, f"worker_failure:{type(exc).__name__}", self.store.now(), job["id"]))
             return True
+        finally:
+            lease_task.cancel()
+            await asyncio.gather(lease_task, return_exceptions=True)
         return True
 
     async def _transcribe_session(self, session_id: str) -> str:
@@ -506,11 +536,22 @@ class StreetStoryService:
         osm = {"reverse": {}, "nearby": []}
         wikipedia: list[dict[str, Any]] = []
         if lat is not None and lon is not None:
-            osm = await self.providers.osm.lookup(float(lat), float(lon))
-            wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
-        grounded = await self.providers.gemini.research(
-            Path(story["photo_path"]), story["photo_mime_type"], transcript, osm, wikipedia, previous_facts
-        )
+            osm = self.store.checkpoint_get(job['id'], 'osm')
+            if osm is None:
+                osm = await self.providers.osm.lookup(float(lat), float(lon))
+                self.store.checkpoint_put(job['id'], 'osm', osm)
+            wikipedia = self.store.checkpoint_get(job['id'], 'wikipedia')
+            if wikipedia is None:
+                wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
+                self.store.checkpoint_put(job['id'], 'wikipedia', wikipedia)
+        saved = self.store.checkpoint_get(job['id'], 'grounded_research')
+        if saved is None:
+            grounded = await self.providers.gemini.research(
+                Path(story["photo_path"]), story["photo_mime_type"], transcript, osm, wikipedia, previous_facts
+            )
+            self.store.checkpoint_put(job['id'], 'grounded_research', {'payload': grounded.payload, 'grounding_sources': grounded.grounding_sources})
+        else:
+            grounded = GroundedResearch(**saved)
         source_objects: dict[str, dict[str, str]] = {}
         for source in OSMClient.sources(osm):
             source_objects[source["url"].rstrip("/")] = source

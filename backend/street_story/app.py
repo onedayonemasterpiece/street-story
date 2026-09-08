@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from .config import Settings
+from .config import Settings, reveal
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
 
 
@@ -39,7 +39,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     app.state.service = service
 
     async def auth(authorization: str | None = Header(default=None)) -> None:
-        expected = settings.device_token
+        expected = reveal(settings.device_token)
         if not expected:
             raise HTTPException(status_code=503, detail="STREET_STORY_DEVICE_TOKEN is not configured")
         supplied = authorization.removeprefix("Bearer ") if authorization and authorization.startswith("Bearer ") else ""

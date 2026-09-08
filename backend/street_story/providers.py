@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,16 +10,12 @@ from urllib.parse import quote
 
 import httpx
 
-from .config import Settings
+from .config import Settings, reveal
 from .db import Store
 
 
-class RetryableProviderError(RuntimeError):
-    pass
-
-
-class PermanentProviderError(RuntimeError):
-    pass
+from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
+from .gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
 
 
 def _stable_cache_key(prefix: str, payload: Any) -> str:
@@ -146,37 +142,64 @@ class GeminiClient:
         "required": ["place_name", "summary", "draft_text", "facts"],
     }
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, store: Store | None = None):
         self.settings = settings
+        self.pool = GeminiKeyPool(store or Store(settings.data_dir / "street-story.sqlite3"), settings.gemini_keys, settings.gemini_model,
+                                  policy=GeminiPolicy(call_timeout=settings.gemini_call_timeout_seconds,
+                                                      attempt_timeout=settings.gemini_attempt_timeout_seconds,
+                                                      transcription_rpm=settings.gemini_transcription_rpm,
+                                                      grounded_research_rpm=settings.gemini_grounded_research_rpm))
+        from .quota import SharedQuotaGate
+        self.quota = SharedQuotaGate(settings, self.pool)
+        self.executor = GeminiExecutor(self.pool)
 
-    def _client_and_types(self):
-        if not self.settings.gemini_api_key:
-            raise PermanentProviderError("GEMINI_API_KEY is not configured")
-        try:
-            from google import genai
-            from google.genai import types
-        except ImportError as exc:
-            raise PermanentProviderError("google-genai is not installed") from exc
-        return genai.Client(api_key=self.settings.gemini_api_key), types
+    async def _generate(self, key: str, timeout: float, contents, config=None):
+        from google.genai import types
+        config = config or types.GenerateContentConfig()
+        config.max_output_tokens = 8192
+        # Same reservation contract as the existing GoogleAI gateway: estimated
+        # input + bounded output + safety margin, reconciled with actual usage.
+        # This is not a provider token-count/remaining-quota guarantee.
+        size = 1000 + 8192
+        for part in contents:
+            if isinstance(part, str):
+                size += len(part.encode('utf-8'))
+            else:
+                inline = getattr(part, 'inline_data', None)
+                data = getattr(inline, 'data', b'') or b''
+                mime = getattr(inline, 'mime_type', '') or ''
+                size += 8192 if mime.startswith('image/') else max(8192, len(data)//4)
+        return await self.quota.run(key, timeout, size,
+            lambda: self._provider_request(key, timeout, contents, config))
+
+    async def _provider_request(self, key: str, timeout: float, contents, config=None):
+        # Async transport is cancellable: no orphan to_thread SDK calls after failover.
+        # Disable the SDK's hidden same-key retries; the pool owns this budget.
+        from google import genai
+        from google.genai import types
+        options = types.HttpOptions(timeout=max(1, int(timeout * 1000)), retry_options=types.HttpRetryOptions(attempts=1))
+        with genai.Client(api_key=key, http_options=options) as root:
+            async with root.aio as client:
+                return await client.models.generate_content(model=self.settings.gemini_model, contents=contents, config=config)
 
     async def transcribe(self, path: Path, mime_type: str) -> str:
-        client, types = self._client_and_types()
+        from google.genai import types
         data = path.read_bytes()
         prompt = (
             "Точно транскрибируй русскую голосовую заметку Street Story. Не выдумывай факты, "
             "не резюмируй, сохрани смысл, имена собственные и вопросы пользователя. Верни только транскрипт."
         )
-        try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=self.settings.gemini_model,
-                contents=[types.Part.from_bytes(data=data, mime_type=mime_type), prompt],
-            )
-            return (response.text or "").strip()
-        except PermanentProviderError:
-            raise
-        except Exception as exc:
-            raise RetryableProviderError(f"Gemini transcription failed: {exc}") from exc
+
+        async def call(key, timeout):
+            response = await self._generate(key, timeout, [types.Part.from_bytes(data=data, mime_type=mime_type), prompt])
+            text = response.text
+            if text is not None and not isinstance(text, str):
+                raise MalformedProviderResponse("gemini:malformed_transcription")
+            if text is None:
+                raise MalformedProviderResponse("gemini:missing_transcription")
+            return text.strip()
+
+        return await self.executor.execute("transcription", call)
 
     async def research(
         self,
@@ -187,7 +210,7 @@ class GeminiClient:
         wikipedia: list[dict[str, Any]],
         previous_facts: list[dict[str, Any]],
     ) -> GroundedResearch:
-        client, types = self._client_and_types()
+        from google.genai import types
         context = {
             "user_voice_intent": transcript,
             "place_context": place_context,
@@ -201,19 +224,26 @@ class GeminiClient:
             "draft_text должен быть короткой публикацией, а не research dump. Structured context:\n"
             + json.dumps(context, ensure_ascii=False)
         )
-        try:
-            config = types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                response_mime_type="application/json",
-                response_json_schema=self.FACT_SCHEMA,
-            )
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=self.settings.gemini_model,
-                contents=[types.Part.from_bytes(data=photo_path.read_bytes(), mime_type=photo_mime), prompt],
-                config=config,
-            )
-            payload = json.loads(response.text or "{}")
+        data = photo_path.read_bytes()
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            response_mime_type="application/json",
+            response_json_schema=self.FACT_SCHEMA,
+        )
+
+        async def call(key, timeout):
+            response = await self._generate(key, timeout, [types.Part.from_bytes(data=data, mime_type=photo_mime), prompt], config)
+            try:
+                payload = json.loads(response.text or "{}")
+                if not isinstance(payload, dict) or any(not isinstance(payload.get(k), str) for k in ("place_name", "summary", "draft_text")) or not isinstance(payload.get("facts"), list):
+                    raise ValueError
+                for fact in payload['facts']:
+                    if not isinstance(fact, dict) or not isinstance(fact.get('text'), str) or not isinstance(fact.get('source_urls'), list):
+                        raise ValueError
+                    if any(not isinstance(url, str) for url in fact['source_urls']) or not math.isfinite(float(fact.get('confidence', 0))):
+                        raise ValueError
+            except (ValueError, TypeError):
+                raise MalformedProviderResponse("gemini:malformed_research") from None
             sources: list[dict[str, str]] = []
             for candidate in getattr(response, "candidates", []) or []:
                 metadata = getattr(candidate, "grounding_metadata", None)
@@ -223,12 +253,8 @@ class GeminiClient:
                     if isinstance(uri, str) and uri.startswith("https://"):
                         sources.append({"type": "web", "title": str(getattr(web, "title", "") or uri), "url": uri})
             return GroundedResearch(payload=payload, grounding_sources=list({s["url"]: s for s in sources}.values()))
-        except PermanentProviderError:
-            raise
-        except (ValueError, TypeError) as exc:
-            raise RetryableProviderError(f"Gemini returned malformed research: {exc}") from exc
-        except Exception as exc:
-            raise RetryableProviderError(f"Gemini grounded research failed: {exc}") from exc
+
+        return await self.executor.execute("grounded_research", call)
 
 
 class VibePublishClient:
@@ -246,7 +272,7 @@ class VibePublishClient:
             raise PermanentProviderError("VibePublish runtime is not configured")
         own = self.http is None
         client = self.http or httpx.AsyncClient(timeout=20)
-        headers = {"Authorization": f"Bearer {self.settings.vibepublish_bearer_token}", "Accept": "application/json"}
+        headers = {"Authorization": f"Bearer {reveal(self.settings.vibepublish_bearer_token)}", "Accept": "application/json"}
         if key:
             headers["Idempotency-Key"] = key
         try:

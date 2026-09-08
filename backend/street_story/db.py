@@ -114,12 +114,41 @@ CREATE TABLE IF NOT EXISTS publish_intents(
 """
 
 
+# Additive schema, applied to existing WAL stores without replacing business rows.
+RELIABILITY_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS gemini_credentials(
+ key_id TEXT PRIMARY KEY, disabled INTEGER NOT NULL DEFAULT 0,
+ disabled_reason TEXT, busy_until REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS gemini_key_health(
+ key_id TEXT NOT NULL REFERENCES gemini_credentials(key_id),
+ model TEXT NOT NULL, operation TEXT NOT NULL,
+ cooldown_until REAL NOT NULL DEFAULT 0, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+ last_success REAL NOT NULL DEFAULT 0, last_selected REAL NOT NULL DEFAULT 0,
+ quota_state TEXT NOT NULL DEFAULT 'available', retry_after REAL, last_failure TEXT,
+ minute_bucket INTEGER NOT NULL DEFAULT 0, minute_used INTEGER NOT NULL DEFAULT 0,
+ advisory_until REAL NOT NULL DEFAULT 0, advisory_load REAL NOT NULL DEFAULT 0, advisory_observed_at REAL NOT NULL DEFAULT 0,
+ PRIMARY KEY(key_id,model,operation)
+);
+CREATE TABLE IF NOT EXISTS gemini_quota_journal(
+ request_uid TEXT PRIMARY KEY, state TEXT NOT NULL, deadline REAL NOT NULL,
+ finalize_json TEXT, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS research_checkpoints(
+ job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+ stage TEXT NOT NULL, value_json TEXT NOT NULL, created_at REAL NOT NULL,
+ PRIMARY KEY(job_id,stage)
+);
+"""
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(SCHEMA)
+            db.executescript(RELIABILITY_SCHEMA)
 
     def connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -164,3 +193,13 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,expires_at=excluded.expires_at,created_at=excluded.created_at",
                 (key, raw, now + ttl_seconds, now),
             )
+
+    def checkpoint_get(self, job_id: str, stage: str) -> Any | None:
+        with self.connection() as db:
+            row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?", (job_id, stage)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def checkpoint_put(self, job_id: str, stage: str, value: Any) -> None:
+        with self.tx() as db:
+            db.execute("INSERT OR IGNORE INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?)",
+                       (job_id, stage, json.dumps(value, ensure_ascii=False), self.now()))

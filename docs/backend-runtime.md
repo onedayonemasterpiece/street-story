@@ -42,3 +42,9 @@ Fresh VibePublish PR #1 head `87be8fcfca1229c419a5e0e47a8d68dacff5ea1f` exposes 
 ## VibePublish resident service
 
 VibePublish must be supervised independently on DevCoveer and reachable through `VIBEPUBLISH_BASE_URL`. Its own deployment/runbook remains authoritative for provider credentials, native workers and Imagegen. Street Story stores none of those provider secrets.
+
+## Gemini reliability and shared limits
+
+See [Gemini P0 reliability](gemini-reliability.md) for multi-key settings and the
+mandatory shared reserve / mark_sent / finalize contract. Local pool health alone
+never authorizes a Gemini call. Configure controller credentials before restarting.
