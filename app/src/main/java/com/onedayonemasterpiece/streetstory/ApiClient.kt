@@ -30,6 +30,16 @@ class StoryWire {
     var error: WireError? = null
     var facts: ArrayList<FactWire> = arrayListOf()
     var destinations: ArrayList<DestinationWire> = arrayListOf()
+    @SerializedName("voice_messages") var voiceMessages: ArrayList<VoiceMessageWire> = arrayListOf()
+}
+
+class VoiceMessageWire {
+    @SerializedName("session_id") var sessionId: String = ""
+    var kind: String = ""
+    @SerializedName("raw_transcript") var rawTranscript: String? = null
+    @SerializedName("display_text") var displayText: String? = null
+    @SerializedName("started_at") var startedAt: String? = null
+    @SerializedName("ended_at") var endedAt: String? = null
 }
 
 class FactWire {
@@ -52,6 +62,8 @@ class DestinationWire {
     var label: String = ""
     var provider: String = ""
     var status: String = ""
+    @SerializedName("capability_status") var capabilityStatus: String? = null
+    @SerializedName("scheduled_for") var scheduledFor: String? = null
     var selected: Boolean = false
 }
 
@@ -177,7 +189,7 @@ class ApiClient(private val baseUrl: String, private val token: String) {
     }
 
     fun mutate(serverStoryId: String, endpoint: String, payloadJson: String, requestKey: String): StoryWire {
-        require(endpoint in setOf("facts", "refinements", "visual", "publish"))
+        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel"))
         return requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey, StoryWire::class.java)
     }
 

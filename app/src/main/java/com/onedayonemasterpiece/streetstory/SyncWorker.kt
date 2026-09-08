@@ -38,35 +38,46 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         if (base.isNullOrBlank() || token.isNullOrBlank()) return@withContext Result.success()
         val api = ApiClient(base, token)
         val store = AppGraph.store(applicationContext)
+        val feed = FeedProjectionStore(applicationContext)
         var pollAgain = false
         val capabilities = runCatching { api.capabilities() }.getOrNull()
-        for (initial in store.stories()) {
-            try {
-                if (syncStory(store, api, initial, capabilities)) pollAgain = true
-            } catch (exc: ApiException) {
-                store.setStage(initial.clientStoryId, if (exc.retryable) initial.stage else StoryStage.NEEDS_REVIEW, exc.message)
-                if (exc.retryable) pollAgain = true
-            } catch (exc: ApiProtocolException) {
-                store.setStage(initial.clientStoryId, StoryStage.NEEDS_REVIEW, exc.message)
-            } catch (exc: IOException) {
-                store.setStage(initial.clientStoryId, initial.stage, "Сеть недоступна · локальные данные сохранены")
-                pollAgain = true
-            } catch (exc: Exception) {
-                store.setStage(initial.clientStoryId, StoryStage.NEEDS_REVIEW, "Нужна проверка: ${exc.message}")
-            } finally {
-                broadcast()
+        try {
+            for (initial in store.stories()) {
+                try {
+                    if (syncStory(store, feed, api, initial, capabilities)) pollAgain = true
+                } catch (exc: ApiException) {
+                    store.setStage(initial.clientStoryId, if (exc.retryable) initial.stage else StoryStage.NEEDS_REVIEW, exc.message)
+                    if (exc.retryable) pollAgain = true
+                } catch (exc: ApiProtocolException) {
+                    store.setStage(initial.clientStoryId, StoryStage.NEEDS_REVIEW, exc.message)
+                } catch (exc: IOException) {
+                    store.setStage(initial.clientStoryId, initial.stage, "Сеть недоступна · локальные данные сохранены")
+                    pollAgain = true
+                } catch (exc: Exception) {
+                    store.setStage(initial.clientStoryId, StoryStage.NEEDS_REVIEW, "Нужна проверка: ${exc.message}")
+                } finally {
+                    broadcast()
+                }
             }
+        } finally {
+            feed.close()
         }
         if (pollAgain) SyncScheduler.enqueue(applicationContext, POLL_SECONDS)
         Result.success()
     }
 
-    private fun syncStory(store: StoryStore, api: ApiClient, initial: StorySnapshot, capabilities: CapabilitiesWire?): Boolean {
+    private fun syncStory(
+        store: StoryStore,
+        feed: FeedProjectionStore,
+        api: ApiClient,
+        initial: StorySnapshot,
+        capabilities: CapabilitiesWire?,
+    ): Boolean {
         var story = store.story(initial.clientStoryId) ?: return false
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
         if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
-        applyRemote(store, story.clientStoryId, remote)
+        applyRemote(store, feed, story.clientStoryId, remote)
         story = requireNotNull(store.story(story.clientStoryId))
         val serverId = requireNotNull(story.serverStoryId)
 
@@ -78,7 +89,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             try {
                 remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
                 validateStoryIdentity(story, remote)
-                applyRemote(store, story.clientStoryId, remote)
+                applyRemote(store, feed, story.clientStoryId, remote)
                 store.markOperationDone(operation.id)
             } catch (exc: ApiException) {
                 if (exc.retryable) {
@@ -94,8 +105,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         remote = api.getStory(serverId)
         validateStoryIdentity(story, remote)
         val previousUrl = store.story(story.clientStoryId)?.processedImageUrl
-        applyRemote(store, story.clientStoryId, remote)
-        if (capabilities != null && capabilities.destinations.isNotEmpty()) {
+        applyRemote(store, feed, story.clientStoryId, remote)
+        if (remote.destinations.isEmpty() && capabilities != null && capabilities.destinations.isNotEmpty()) {
             store.replaceDestinations(story.clientStoryId, capabilities.destinations.map { it.local() })
         }
         val current = requireNotNull(store.story(story.clientStoryId))
@@ -163,12 +174,13 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         if (!local.serverStoryId.isNullOrBlank() && local.serverStoryId != remote.id) throw ApiProtocolException("Backend story ID changed")
     }
 
-    private fun applyRemote(store: StoryStore, storyId: String, wire: StoryWire) {
+    private fun applyRemote(store: StoryStore, feed: FeedProjectionStore, storyId: String, wire: StoryWire) {
         val state = normalizeState(wire.state)
         store.setServerSnapshot(storyId, state, wire.placeName, wire.summary, wire.draftText, wire.processedImageUrl,
             wire.scheduledFor, wire.publishedAt, wire.error?.message, wire.revision)
         store.replaceFacts(storyId, wire.facts.map { FactSnapshot(it.factId, it.text, it.confidence, it.evidenceSupported,
             it.selected && it.evidenceSupported, gson.toJson(it.sources)) })
+        feed.replaceVoiceMessages(storyId, wire.voiceMessages)
         if (wire.destinations.isNotEmpty()) store.replaceDestinations(storyId, wire.destinations.map { it.local() })
     }
 
