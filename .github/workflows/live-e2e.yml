@@ -11,6 +11,11 @@ on:
         options:
           - smoke
           - full_social
+  pull_request:
+    types: [synchronize]
+    paths:
+      - '.github/workflows/live-e2e.yml'
+      - 'backend/tools/live_e2e.py'
 
 permissions:
   contents: read
@@ -21,6 +26,9 @@ concurrency:
 
 jobs:
   live-e2e:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -47,7 +55,7 @@ jobs:
           STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
           SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
-          LIVE_E2E_MODE: ${{ inputs.acceptance }}
+          LIVE_E2E_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.acceptance || 'smoke' }}
           STREET_STORY_LIVE_DIAGNOSTIC: live-e2e-artifacts/diagnostic.json
         run: python tools/live_e2e.py
 
