@@ -12,10 +12,8 @@ on:
           - smoke
           - full_social
   pull_request:
-    types: [synchronize]
-    paths:
-      - '.github/workflows/live-e2e.yml'
-      - 'backend/tools/live_e2e.py'
+    branches: [main]
+    types: [labeled]
 
 permissions:
   contents: read
@@ -28,17 +26,70 @@ jobs:
   live-e2e:
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'live-e2e-smoke' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: backend/requirements.txt
+
+      - name: Verify deployed backend checkout
+        working-directory: backend
+        env:
+          STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
+          STREET_STORY_EXPECTED_BACKEND_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import urllib.request
+
+          base = os.environ.get('STREET_STORY_LIVE_BASE_URL', '').strip().rstrip('/')
+          expected = os.environ.get('STREET_STORY_EXPECTED_BACKEND_SHA', '').strip().lower()
+          out = pathlib.Path('live-e2e-artifacts/deployment.json')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          actual = None
+          status = 'failed'
+          failure = None
+          try:
+              if not base.startswith('https://'):
+                  raise RuntimeError('live_base_url_not_https')
+              if not re.fullmatch(r'[0-9a-f]{40}', expected):
+                  raise RuntimeError('expected_backend_sha_invalid')
+              request = urllib.request.Request(base + '/healthz', headers={'Accept': 'application/json', 'User-Agent': 'StreetStory-Live-E2E/1'})
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  body = json.load(response)
+              actual = str(body.get('source_sha') or '').strip().lower() or None
+              if actual != expected:
+                  failure = 'deployed_backend_sha_mismatch'
+                  raise RuntimeError(failure)
+              status = 'ok'
+          except Exception as exc:
+              failure = failure or str(exc)[:120]
+          payload = {
+              'schema_version': 1,
+              'status': status,
+              'expected_source_sha': expected or None,
+              'deployed_source_sha': actual,
+              'failure_code': failure,
+          }
+          out.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+          if status != 'ok':
+              raise SystemExit(f"Street Story deployment preflight failed: {failure}; expected={expected or '<missing>'}; deployed={actual or '<missing>'}")
+          print(f'Street Story deployed backend SHA verified: {actual}')
+          PY
 
       - name: Install live media tools
         run: |
@@ -64,6 +115,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: street-story-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}
-          path: backend/live-e2e-artifacts/diagnostic.json
+          path: backend/live-e2e-artifacts/
           if-no-files-found: warn
           retention-days: 14

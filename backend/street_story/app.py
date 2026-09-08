@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
 
@@ -19,6 +20,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     settings = settings or Settings.from_env()
     service = service or StreetStoryService(settings)
     service.recover_jobs()
+    source_sha = checkout_source_sha()
 
     async def worker_loop() -> None:
         while True:
@@ -65,7 +67,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True, "worker_recovery": "enabled"}
+        return {"ok": True, "worker_recovery": "enabled", "source_sha": source_sha}
 
     @app.post("/v1/stories", dependencies=[Depends(auth)])
     async def create_story(
