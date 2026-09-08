@@ -16,6 +16,7 @@ import android.media.MediaRecorder
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.IBinder
+import androidx.core.content.ContextCompat
 import java.io.File
 import java.time.Duration
 import java.time.OffsetDateTime
@@ -56,7 +57,7 @@ class RecordingService : Service() {
     @Synchronized private fun beginCapture(){
         if(captureThread?.isAlive==true)return
         val id=sessionId?:store.activeVoiceSession()?.sessionId?:return
-        if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){pauseForMicrophoneFailure(id,"Разрешение на микрофон отозвано");return}
+        if(ContextCompat.checkSelfPermission(this,Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){pauseForMicrophoneFailure(id,"Разрешение на микрофон отозвано");return}
         store.setCaptureState(id,CaptureState.RECORDING,CaptureActivity.AUTO_SILENCE);captureRequested=true;captureThread=Thread({captureLoop(id)},"street-story-capture").also{it.start()}
     }
     private fun captureLoop(id:String){
@@ -65,7 +66,13 @@ class RecordingService : Service() {
         val manualPauseMs=initial.manualPauseMs
         val minBuffer=AudioRecord.getMinBufferSize(AudioProfile.SAMPLE_RATE_HZ,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
         if(minBuffer<=0){pauseForMicrophoneFailure(id,"Устройство не предоставило аудиобуфер");return}
-        val recorder=try{AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION).setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(AudioProfile.SAMPLE_RATE_HZ).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()).setBufferSizeInBytes(maxOf(minBuffer*2,EfficientVad.FRAME_SAMPLES*8)).build()}catch(exc:Exception){pauseForMicrophoneFailure(id,"Не удалось открыть микрофон: ${exc.message}");return}
+        val recorder=try{
+            AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION).setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(AudioProfile.SAMPLE_RATE_HZ).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()).setBufferSizeInBytes(maxOf(minBuffer*2,EfficientVad.FRAME_SAMPLES*8)).build()
+        }catch(exc:SecurityException){
+            pauseForMicrophoneFailure(id,"Разрешение на микрофон недоступно");return
+        }catch(exc:Exception){
+            pauseForMicrophoneFailure(id,"Не удалось открыть микрофон: ${exc.message}");return
+        }
         audioRecord=recorder
         val suppressor=if(NoiseSuppressor.isAvailable())runCatching{NoiseSuppressor.create(recorder.audioSessionId)?.also{it.enabled=true}}.getOrNull() else null
         val detector=EfficientVad(true);val latch=SpeechLatch(3,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=initial.durationMs;var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)

@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.onedayonemasterpiece.streetstory"
         minSdk = 29
-        targetSdk = 36
+        targetSdk = 35
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionName = "0.1.${System.getenv("GITHUB_RUN_NUMBER") ?: "1"}"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
