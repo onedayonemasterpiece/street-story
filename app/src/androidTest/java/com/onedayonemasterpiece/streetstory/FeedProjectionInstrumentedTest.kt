@@ -113,83 +113,91 @@ class FeedProjectionInstrumentedTest {
         val active = store.createVoiceSession(target.clientStoryId, RecordingKind.REFINEMENT, "ui-test")
         var scrollBeforeRecreate = 0
 
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            scenario.onActivity { activity ->
-                var root = activity.findViewById<android.view.View>(android.R.id.content)
-                assertNotNull(findByDescription(root, "fixed-recording-dock"))
-                assertVisible(findByDescription(root, "recording-mic-pulse"))
-                assertVisible(findByDescription(root, "record-pause"))
-                assertVisible(findByDescription(root, "record-finish"))
-                assertVisible(findByDescription(root, "new-story-action"))
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    var root = activity.findViewById<android.view.View>(android.R.id.content)
+                    assertNotNull(findByDescription(root, "fixed-recording-dock"))
+                    assertVisible(findByDescription(root, "recording-mic-pulse"))
+                    assertVisible(findByDescription(root, "record-pause"))
+                    assertVisible(findByDescription(root, "record-finish"))
+                    assertVisible(findByDescription(root, "new-story-action"))
 
-                val threads = collectByPrefix(root, "story-thread-")
-                assertEquals(10, threads.size)
-                assertTrue(store.stories().size >= before + 12)
-                val hidden = FeedModel.latest(store.stories()).let { store.stories().drop(it.size) }
-                assertTrue(hidden.isNotEmpty())
-                assertTrue(
-                    hidden.all { story ->
-                        findByDescription(root, "story-thread-${story.clientStoryId}") == null
-                    },
-                )
+                    val threads = collectByPrefix(root, "story-thread-")
+                    assertEquals(10, threads.size)
+                    assertTrue(store.stories().size >= before + 12)
+                    val hidden = FeedModel.latest(store.stories()).let { store.stories().drop(it.size) }
+                    assertTrue(hidden.isNotEmpty())
+                    assertTrue(
+                        hidden.all { story ->
+                            findByDescription(root, "story-thread-${story.clientStoryId}") == null
+                        },
+                    )
 
-                val targetThread = requireNotNull(findByDescription(root, "story-thread-${target.clientStoryId}"))
-                val processingThread = requireNotNull(findByDescription(root, "story-thread-${processing.clientStoryId}"))
-                val generatedThread = requireNotNull(findByDescription(root, "story-thread-${generated.clientStoryId}"))
-                assertTrue(countType(targetThread, ImageView::class.java) >= 1)
-                assertTrue(countType(generatedThread, ImageView::class.java) >= 2)
-                assertTrue(collectText(processingThread).any { it.contains("Research") })
+                    val targetThread = requireNotNull(findByDescription(root, "story-thread-${target.clientStoryId}"))
+                    val processingThread = requireNotNull(findByDescription(root, "story-thread-${processing.clientStoryId}"))
+                    val generatedThread = requireNotNull(findByDescription(root, "story-thread-${generated.clientStoryId}"))
+                    assertTrue(countType(targetThread, ImageView::class.java) >= 1)
+                    assertTrue(countType(generatedThread, ImageView::class.java) >= 2)
+                    assertTrue(collectText(processingThread).any { it.contains("Research") })
 
-                assertNotNull(findByDescription(root, "facts-expanded-${target.clientStoryId}"))
-                assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
-                assertNotNull(findByDescription(root, "provider-rows-${target.clientStoryId}"))
-                assertEquals(
-                    2,
-                    collectByPrefix(root, "voice-message-").count {
-                        it.contentDescription.toString().contains("voice-feed-clean")
-                    },
-                )
-                val text = collectText(root)
-                assertTrue(text.any { it.contains("Я хочу про Дом Советов") })
-                assertTrue(text.any { it.contains("Ещё про площадь") })
-                assertFalse(text.any { it.contains("э-э") || it.contains("а-а") || it.contains("я я") })
-                assertTrue(text.any { it.contains("Telegram") && it.contains("доступно") })
-                assertTrue(text.any { it.contains("VK") && it.contains("нужна проверка") })
+                    assertNotNull(findByDescription(root, "facts-expanded-${target.clientStoryId}"))
+                    assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
+                    assertNotNull(findByDescription(root, "provider-rows-${target.clientStoryId}"))
+                    assertEquals(
+                        2,
+                        collectByPrefix(root, "voice-message-").count {
+                            it.contentDescription.toString().contains("voice-feed-clean")
+                        },
+                    )
+                    val text = collectText(root)
+                    assertTrue(text.any { it.contains("Я хочу про Дом Советов") })
+                    assertTrue(text.any { it.contains("Ещё про площадь") })
+                    assertFalse(text.any { it.contains("э-э") || it.contains("а-а") || it.contains("я я") })
+                    assertTrue(text.any { it.contains("Telegram") && it.contains("доступно") })
+                    assertTrue(text.any { it.contains("VK") && it.contains("нужна проверка") })
 
-                val supported = requireNotNull(findByDescription(root, "fact-fact-supported")) as CheckBox
-                val unsupported = requireNotNull(findByDescription(root, "fact-fact-unsupported")) as CheckBox
-                assertTrue(supported.isEnabled && supported.isChecked)
-                assertFalse(unsupported.isEnabled)
-                supported.performClick()
-                assertFalse(store.facts(target.clientStoryId).first { it.factId == "fact-supported" }.selected)
+                    val supported = requireNotNull(findByDescription(root, "fact-fact-supported")) as CheckBox
+                    val unsupported = requireNotNull(findByDescription(root, "fact-fact-unsupported")) as CheckBox
+                    assertTrue(supported.isEnabled && supported.isChecked)
+                    assertFalse(unsupported.isEnabled)
+                    supported.performClick()
+                    assertFalse(store.facts(target.clientStoryId).first { it.factId == "fact-supported" }.selected)
 
-                requireNotNull(findText(root, "Развернуть")).performClick()
-                root = activity.findViewById(android.R.id.content)
-                assertNotNull(findByDescription(root, "draft-expanded-${target.clientStoryId}"))
-                requireNotNull(findText(root, "Свернуть")).performClick()
-                root = activity.findViewById(android.R.id.content)
-                assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
-
-                val scroll = requireNotNull(findByDescription(root, "story-feed")) as ScrollView
-                scroll.scrollTo(0, 320)
-                scrollBeforeRecreate = scroll.scrollY
-                assertTrue(scrollBeforeRecreate > 0)
+                    requireNotNull(findText(root, "Развернуть")).performClick()
+                    root = activity.findViewById(android.R.id.content)
+                    assertNotNull(findByDescription(root, "draft-expanded-${target.clientStoryId}"))
+                    requireNotNull(findText(root, "Свернуть")).performClick()
+                    root = activity.findViewById(android.R.id.content)
+                    assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
+                }
+                instrumentation.waitForIdleSync()
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<android.view.View>(android.R.id.content)
+                    val scroll = requireNotNull(findByDescription(root, "story-feed")) as ScrollView
+                    val maxScroll = ((scroll.getChildAt(0)?.height ?: 0) - scroll.height).coerceAtLeast(0)
+                    assertTrue(maxScroll > 0)
+                    scroll.scrollTo(0, minOf(320, maxScroll))
+                    scrollBeforeRecreate = scroll.scrollY
+                    assertTrue(scrollBeforeRecreate > 0)
+                }
+                instrumentation.waitForIdleSync()
+                scenario.recreate()
+                instrumentation.waitForIdleSync()
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<android.view.View>(android.R.id.content)
+                    assertVisible(findByDescription(root, "record-pause"))
+                    assertVisible(findByDescription(root, "record-finish"))
+                    assertEquals(10, collectByPrefix(root, "story-thread-").size)
+                    assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
+                    val scroll = requireNotNull(findByDescription(root, "story-feed")) as ScrollView
+                    assertTrue(scroll.scrollY > 0)
+                    assertTrue(abs(scroll.scrollY - scrollBeforeRecreate) <= 120)
+                }
             }
-            instrumentation.waitForIdleSync()
-            scenario.recreate()
-            instrumentation.waitForIdleSync()
-            scenario.onActivity { activity ->
-                val root = activity.findViewById<android.view.View>(android.R.id.content)
-                assertVisible(findByDescription(root, "record-pause"))
-                assertVisible(findByDescription(root, "record-finish"))
-                assertEquals(10, collectByPrefix(root, "story-thread-").size)
-                assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
-                val scroll = requireNotNull(findByDescription(root, "story-feed")) as ScrollView
-                assertTrue(scroll.scrollY > 0)
-                assertTrue(abs(scroll.scrollY - scrollBeforeRecreate) <= 120)
-            }
+        } finally {
+            store.activeVoiceSession()?.takeIf { it.sessionId == active.sessionId }?.let { store.discardVoiceSession(it.sessionId) }
         }
-        store.discardVoiceSession(active.sessionId)
     }
 
     private fun findByDescription(view: android.view.View, description: String): android.view.View? {
