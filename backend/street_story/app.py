@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
+from .product import ProductStreetStoryService
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
 
 
@@ -18,7 +19,7 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
 
 def create_app(settings: Settings | None = None, service: StreetStoryService | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
-    service = service or StreetStoryService(settings)
+    service = service or ProductStreetStoryService(settings)
     service.recover_jobs()
     source_sha = checkout_source_sha()
 
@@ -37,7 +38,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    app = FastAPI(title="Street Story", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)
     app.state.service = service
 
     async def auth(authorization: str | None = Header(default=None)) -> None:
@@ -130,6 +131,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             return service.mutate_visual(story_id, actual_key, body)
         if kind == "publish":
             return service.mutate_publish(story_id, actual_key, body)
+        if kind == "cancel":
+            cancel = getattr(service, "mutate_cancel", None)
+            if cancel is None:
+                raise InvalidStateError("cancel_not_supported", "This Street Story runtime does not expose publication cancellation")
+            return cancel(story_id, actual_key, body)
         raise AssertionError(kind)
 
     @app.post("/v1/stories/{story_id}/facts", dependencies=[Depends(auth)])
@@ -147,6 +153,10 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post("/v1/stories/{story_id}/publish", dependencies=[Depends(auth)])
     async def publish(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "publish", idempotency_key)
+
+    @app.post("/v1/stories/{story_id}/cancel", dependencies=[Depends(auth)])
+    async def cancel(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
+        return await mutation(story_id, request, "cancel", idempotency_key)
 
     @app.get("/v1/assets/{story_id}/processed", dependencies=[Depends(auth)])
     async def asset(story_id: str):
