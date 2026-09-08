@@ -75,7 +75,7 @@ class RecordingService : Service() {
         }
         audioRecord=recorder
         val suppressor=if(NoiseSuppressor.isAvailable())runCatching{NoiseSuppressor.create(recorder.audioSessionId)?.also{it.enabled=true}}.getOrNull() else null
-        val detector=EfficientVad(true);val latch=SpeechLatch(3,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=initial.durationMs;var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
+        val detector=EfficientVad(true);val latch=SpeechLatch(3,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
         try{
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
             while(captureRequested){
