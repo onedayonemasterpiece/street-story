@@ -1,0 +1,82 @@
+name: Street Story Android MVP
+on:
+  push:
+    branches: [main, work/street-story-mvp-20260908]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: street-story-android-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Unit tests, lint and APKs
+        run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Prepare installable artifact
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/street-story-debug.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk release/street-story-debug-androidTest.apk
+          (cd release && sha256sum street-story-debug.apk > SHA256SUMS)
+          printf 'source_sha=%s\nrun_id=%s\nversion_name=0.1.%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: street-story-reports-${{ github.run_number }}
+          path: app/build/reports/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: street-story-apk-${{ github.run_number }}
+          path: release/
+
+  emulator:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: street-story-apk-${{ github.run_number }}
+          path: apks
+      - name: Enable KVM
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+      - name: Android 15 durable storage, M4A and UI smoke
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
+          disable-animations: true
+          script: |
+            adb install -r apks/street-story-debug.apk
+            adb install -r apks/street-story-debug-androidTest.apk
+            adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.RECORD_AUDIO || true
+            adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.POST_NOTIFICATIONS || true
+            adb shell am instrument -w com.onedayonemasterpiece.streetstory.test/androidx.test.runner.AndroidJUnitRunner | tee instrumentation.txt
+            grep -q 'OK (' instrumentation.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: street-story-emulator-${{ github.run_number }}
+          path: instrumentation.txt

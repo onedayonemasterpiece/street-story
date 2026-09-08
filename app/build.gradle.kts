@@ -17,14 +17,8 @@ android {
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"${System.getenv("STREET_STORY_BACKEND_URL") ?: ""}\"")
     }
 
-    buildTypes {
-        release { isMinifyEnabled = false }
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
+    buildTypes { release { isMinifyEnabled = false } }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { buildConfig = true }
     lint { abortOnError = true; checkReleaseBuilds = true }
     packaging { resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1") }
@@ -37,6 +31,7 @@ dependencies {
     implementation("com.cloudflare.realtimekit.android-vad:webrtc:2.0.10-cf.4")
     implementation("com.google.code.gson:gson:2.13.1")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
