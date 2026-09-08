@@ -613,7 +613,7 @@ class MainActivity : Activity() {
 
     private fun inlineStatus(title: String, detail: String) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; background = rounded(0xffefede7.toInt(), 16); setPadding(dp(12), dp(10), dp(12), dp(10))
-        addView(label(title, 14, INK, display)); addView(label(detail, 12, MUTED, body).apply { setPadding(0, dp(3), 0, 0) })
+        addView(label(title, 14, INK, this@MainActivity.display)); addView(label(detail, 12, MUTED, body).apply { setPadding(0, dp(3), 0, 0) })
     }
 
     private fun messageSurface(text: String) = LinearLayout(this).apply {
