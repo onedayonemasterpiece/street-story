@@ -153,7 +153,7 @@ class FeedProjectionInstrumentedTest {
                 assertTrue(text.any { it.contains("Я хочу про Дом Советов") })
                 assertTrue(text.any { it.contains("Ещё про площадь") })
                 assertFalse(text.any { it.contains("э-э") || it.contains("а-а") || it.contains("я я") })
-                assertTrue(text.any { it.contains("Telegram") && it.contains("Полюбить Калининград") })
+                assertTrue(text.any { it.contains("Telegram") && it.contains("доступно") })
                 assertTrue(text.any { it.contains("VK") && it.contains("нужна проверка") })
 
                 val supported = requireNotNull(findByDescription(root, "fact-fact-supported")) as CheckBox

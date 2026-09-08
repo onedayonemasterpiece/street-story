@@ -37,7 +37,7 @@ class DebugProvisioningInstrumentedTest {
 
         startProvisioning(backendUrl, token)
         assertTrue(waitForConfig(backendUrl, token))
-        assertTrue(device.wait(Until.hasObject(By.desc("story-feed")), 5_000))
+        assertTrue(device.wait(Until.hasObject(By.text("Городские истории")), 5_000))
         device.waitForIdle()
 
         val config = ConfigStore(context)
@@ -54,7 +54,7 @@ class DebugProvisioningInstrumentedTest {
 
         startProvisioning(backendUrl, token)
         assertTrue(waitForConfig(backendUrl, token))
-        assertTrue(device.wait(Until.hasObject(By.desc("story-feed")), 5_000))
+        assertTrue(device.wait(Until.hasObject(By.text("Городские истории")), 5_000))
         val encryptedAfter = context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE)
             .getString("device_token", null)
         assertEquals(encryptedBefore, encryptedAfter)
