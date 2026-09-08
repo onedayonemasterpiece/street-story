@@ -176,6 +176,11 @@ fun newOperationId(): String = "op-${UUID.randomUUID().toString()}"
 fun newRequestKey(prefix: String, stable: String): String = "ss-$prefix-${stable.take(96)}"
 fun currentTimezone(): String = ZoneId.systemDefault().id
 
+fun refinementPayload(sessionId: String, facts: List<FactSnapshot>): Map<String, Any> = mapOf(
+    "voice_session_id" to sessionId,
+    "selected_fact_ids" to facts.filter { it.selected && it.evidenceSupported }.map { it.factId },
+)
+
 fun formatDuration(durationMs: Long): String {
     val seconds = (durationMs.coerceAtLeast(0L) / 1000L).toInt()
     val hours = seconds / 3600

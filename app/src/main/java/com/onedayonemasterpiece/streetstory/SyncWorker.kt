@@ -154,7 +154,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
     private fun queueRefinementIfNeeded(store: StoryStore, session: VoiceSessionSnapshot) {
         if (session.kind != RecordingKind.REFINEMENT) return
         val key = newRequestKey("refinement", session.sessionId)
-        store.enqueueOperation(session.storyId, "refinements", key, gson.toJson(mapOf("voice_session_id" to session.sessionId)))
+        val payload = refinementPayload(session.sessionId, store.facts(session.storyId))
+        store.enqueueOperation(session.storyId, "refinements", key, gson.toJson(payload))
     }
 
     private fun validateStoryIdentity(local: StorySnapshot, remote: StoryWire) {
