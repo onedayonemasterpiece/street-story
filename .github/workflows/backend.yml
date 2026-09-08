@@ -27,6 +27,6 @@ jobs:
       - name: Install backend
         run: python -m pip install -r requirements-dev.txt
       - name: Ruff
-        run: python -m ruff check street_story tests
+        run: python -m ruff check street_story tests tools
       - name: Pytest
         run: python -m pytest -q tests
