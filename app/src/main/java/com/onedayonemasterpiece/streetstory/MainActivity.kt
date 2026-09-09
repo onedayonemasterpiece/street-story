@@ -109,7 +109,7 @@ class MainActivity : Activity() {
         }
         ContextCompat.registerReceiver(this, changedReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
-        handler.post(liveTick)
+        handler.postDelayed(liveTick, 700)
         SyncScheduler.enqueue(this)
     }
 
