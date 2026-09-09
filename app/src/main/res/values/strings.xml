@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Street Story</string>
+    <string name="notification_channel">Запись Street Story</string>
+</resources>

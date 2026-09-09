@@ -1,0 +1,15 @@
+# Street Story image prompt · v1
+
+This server-side template receives structured context containing:
+- selected evidence-backed facts;
+- place context;
+- the user's voice intent;
+- source-photo identity and composition context.
+
+The Android client never stores or expands this template.
+
+--- OWNER FINAL IMAGE PROMPT PLACEHOLDER ---
+{{OWNER_FINAL_IMAGE_PROMPT}}
+--- END OWNER FINAL IMAGE PROMPT PLACEHOLDER ---
+
+Runtime rule: do not manufacture a fallback prompt if the owner placeholder has not been supplied. Keep the story durable and report a machine-readable visual blocker instead.
