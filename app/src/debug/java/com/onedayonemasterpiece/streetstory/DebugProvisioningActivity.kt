@@ -64,10 +64,12 @@ class DebugProvisioningActivity : Activity() {
 
         SyncScheduler.enqueue(this)
         Toast.makeText(this, "Street Story backend настроен через ADB", Toast.LENGTH_SHORT).show()
+        // Stay in the existing app task. Clearing the whole task can destroy the
+        // provisioning launch before MainActivity handoff is observable and also
+        // throws away unrelated UI state. CLEAR_TOP gives us a freshly rendered
+        // MainActivity for the new backend configuration without wiping the task.
         startActivity(
-            Intent(this, MainActivity::class.java).addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK,
-            ),
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
         )
         finish()
     }
