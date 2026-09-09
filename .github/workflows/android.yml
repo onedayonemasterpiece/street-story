@@ -16,6 +16,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -29,12 +31,14 @@ jobs:
       - name: Unit tests, lint and APKs
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Prepare installable artifact
+        env:
+          STREET_STORY_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p release
           cp app/build/outputs/apk/debug/app-debug.apk release/street-story-debug.apk
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk release/street-story-debug-androidTest.apk
           (cd release && sha256sum street-story-debug.apk > SHA256SUMS)
-          printf 'source_sha=%s\nrun_id=%s\nversion_name=0.1.%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
+          printf 'source_sha=%s\nrun_id=%s\nversion_name=0.1.%s\n' "$STREET_STORY_SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -51,6 +55,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: street-story-apk-${{ github.run_number }}
