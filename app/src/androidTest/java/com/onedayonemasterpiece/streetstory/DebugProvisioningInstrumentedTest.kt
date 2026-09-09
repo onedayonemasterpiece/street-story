@@ -1,6 +1,5 @@
 package com.onedayonemasterpiece.streetstory
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.view.View
@@ -8,6 +7,8 @@ import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import org.junit.Assert.assertEquals
@@ -86,17 +87,27 @@ class DebugProvisioningInstrumentedTest {
     }
 
     private fun startProvisioningAndWaitForMain(backendUrl: String, token: String): MainActivity {
-        val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
-        try {
-            startProvisioning(backendUrl, token)
-            assertTrue(waitForConfig(backendUrl, token))
-            val launched: Activity? = instrumentation.waitForMonitorWithTimeout(monitor, 5_000)
-            assertNotNull("ADB provisioning must hand off to MainActivity", launched)
-            instrumentation.waitForIdleSync()
-            return requireNotNull(launched) as MainActivity
-        } finally {
-            instrumentation.removeMonitor(monitor)
+        startProvisioning(backendUrl, token)
+        assertTrue(waitForConfig(backendUrl, token))
+        val launched = waitForResumedMainActivity()
+        assertNotNull("ADB provisioning must hand off to a resumed MainActivity", launched)
+        return requireNotNull(launched)
+    }
+
+    private fun waitForResumedMainActivity(): MainActivity? {
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            var found: MainActivity? = null
+            instrumentation.runOnMainSync {
+                found = ActivityLifecycleMonitorRegistry.getInstance()
+                    .getActivitiesInStage(Stage.RESUMED)
+                    .filterIsInstance<MainActivity>()
+                    .firstOrNull()
+            }
+            if (found != null) return found
+            Thread.sleep(50)
         }
+        return null
     }
 
     private fun assertMainFeedRendered(activity: MainActivity) {
