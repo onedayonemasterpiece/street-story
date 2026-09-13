@@ -29,6 +29,8 @@ jobs:
       - name: Install Android SDK
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: Unit tests, lint and APKs
+        env:
+          STREET_STORY_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Prepare installable artifact
         env:
@@ -38,7 +40,8 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk release/street-story-debug.apk
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk release/street-story-debug-androidTest.apk
           (cd release && sha256sum street-story-debug.apk > SHA256SUMS)
-          printf 'source_sha=%s\nrun_id=%s\nversion_name=0.1.%s\n' "$STREET_STORY_SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
+          printf 'source_sha=%s\nrun_id=%s\napplication_id=com.onedayonemasterpiece.streetstory\nversion_code=%s\nversion_name=0.1.%s\n' \
+            "$STREET_STORY_SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
