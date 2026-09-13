@@ -8,15 +8,15 @@ from tools.live_e2e import (
     Diagnostics,
     LiveE2EError,
     complete_body,
-    validate_primary_destinations,
-    validate_research_story,
+    supported_facts,
+    validate_telegram_destinations,
     validate_voice_messages,
 )
 
 
 def make_fixture_photo() -> bytes:
-    # Tiny transport/component fixture only. The golden visual-identity run uses
-    # a pinned real Commons photograph in tools/live_e2e.py.
+    # Tiny transport/component fixture only. Golden visual identity uses the
+    # pinned real Commons photograph in tools/live_e2e.py.
     return bytes.fromhex(
         "89504e470d0a1a0a"
         "0000000d4948445200000001000000010802000000907753de"
@@ -37,54 +37,61 @@ def test_generated_photo_is_real_png_and_manifest_is_exact():
     assert [(c["index"], c["sha256"]) for c in body["chunks"]] == [(0, "a" * 64), (1, "b" * 64)]
 
 
-def test_research_invariants_require_all_provenance_https_and_reject_selected_unsupported():
+def test_research_invariants_require_sources_claim_support_and_reject_selected_unsupported():
     good = {
-        "research_provenance": {
-            "osm_present": True,
-            "wikipedia_page_count": 1,
-            "grounded_source_count": 2,
-        },
+        "source_count": 1,
+        "sources": [{"title": "Example", "url": "https://example.test/source"}],
         "facts": [
-            {"fact_id": "fact_supported", "text": "Supported", "evidence_supported": True, "selected": True, "sources": [{"url": "https://example.test/source", "supports": [{"kind": "google_grounding", "text": "Supported", "source_url": "https://example.test/source"}]}]},
+            {
+                "fact_id": "fact_supported",
+                "text": "Supported",
+                "evidence_supported": True,
+                "selected": True,
+                "sources": [{
+                    "url": "https://example.test/source",
+                    "supports": [{
+                        "kind": "google_grounding",
+                        "text": "Supported",
+                        "source_url": "https://example.test/source",
+                    }],
+                }],
+            },
             {"fact_id": "fact_unsupported", "text": "Unsupported", "evidence_supported": False, "selected": False, "sources": []},
         ],
     }
-    assert validate_research_story(good) == ["fact_supported"]
+    assert [row["fact_id"] for row in supported_facts(good)] == ["fact_supported"]
     bad = {
-        "research_provenance": good["research_provenance"],
+        "source_count": 1,
+        "sources": good["sources"],
         "facts": [{"fact_id": "bad", "evidence_supported": False, "selected": True, "sources": []}],
     }
     with pytest.raises(LiveE2EError, match="Unsupported fact"):
-        validate_research_story(bad)
+        supported_facts(bad)
 
 
-def test_voice_projection_requires_durable_raw_and_cleaned_display():
+def test_voice_projection_requires_order_raw_and_cleaned_display():
     story = {
         "voice_messages": [
-            {
-                "session_id": "voice-a",
-                "raw_transcript": "э-э, я я хочу рассказать про Дом Советов",
-                "display_text": "Я хочу рассказать про Дом Советов",
-            }
+            {"session_id": "voice-a", "raw_transcript": "э-э, я я хочу", "display_text": "Я хочу рассказать"},
+            {"session_id": "voice-b", "raw_transcript": "второе", "display_text": "Второе сообщение"},
         ]
     }
-    messages = validate_voice_messages(story, {"voice-a"})
-    assert messages["voice-a"]["raw_transcript"].startswith("э-э")
-    with pytest.raises(LiveE2EError, match="filler/repeat"):
+    validate_voice_messages(story, ["voice-a", "voice-b"])
+    with pytest.raises(LiveE2EError, match="filler"):
         validate_voice_messages(
             {"voice_messages": [{"session_id": "voice-a", "raw_transcript": "raw", "display_text": "я я хочу оставить повтор"}]},
-            {"voice-a"},
+            ["voice-a"],
         )
 
 
-def test_primary_destination_projection_is_telegram_only_for_mvp():
+def test_mvp_destination_projection_is_telegram_only():
     capabilities = {
         "destinations": [
             {"alias": "love-tg", "label": "Полюбить Калининград", "provider": "telegram", "status": "supported"},
         ]
     }
-    projected = validate_primary_destinations(capabilities)
-    assert projected["telegram"]["status"] == "supported"
+    rows = validate_telegram_destinations(capabilities)
+    assert [row["alias"] for row in rows] == ["love-tg"]
 
 
 def test_diagnostics_redact_all_configured_secrets(tmp_path):
