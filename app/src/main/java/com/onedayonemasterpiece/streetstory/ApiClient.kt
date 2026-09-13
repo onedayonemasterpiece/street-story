@@ -31,6 +31,11 @@ class StoryWire {
     var facts: ArrayList<FactWire> = arrayListOf()
     var destinations: ArrayList<DestinationWire> = arrayListOf()
     @SerializedName("voice_messages") var voiceMessages: ArrayList<VoiceMessageWire> = arrayListOf()
+    @SerializedName("visual_identity") var visualIdentity: VisualIdentityWire? = null
+    var sources: ArrayList<SourceWire> = arrayListOf()
+    @SerializedName("source_count") var sourceCount: Int = 0
+    @SerializedName("research_revision") var researchRevision: String? = null
+    @SerializedName("research_voice_ids") var researchVoiceIds: ArrayList<String> = arrayListOf()
 }
 
 class VoiceMessageWire {
@@ -55,6 +60,22 @@ class SourceWire {
     var type: String = ""
     var title: String? = null
     var url: String = ""
+}
+
+class PlaceCandidateWire {
+    @SerializedName("candidate_id") var candidateId: String = ""
+    var name: String = ""
+    var type: String = ""
+    var url: String = ""
+}
+
+class VisualIdentityWire {
+    var status: String = ""
+    @SerializedName("candidate_id") var candidateId: String? = null
+    @SerializedName("candidate_name") var candidateName: String? = null
+    var confidence: Double? = null
+    var observations: ArrayList<String> = arrayListOf()
+    var candidates: ArrayList<PlaceCandidateWire> = arrayListOf()
 }
 
 class DestinationWire {
