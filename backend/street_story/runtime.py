@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .config import Settings
-from .mvp import MvpProductStreetStoryService
+from .mvp_research import MvpResearchStreetStoryService
 from .product import VibePublishBoundary
 from .providers import PermanentProviderError
 
@@ -30,7 +30,7 @@ class ReplayCheckingVibePublishBoundary(VibePublishBoundary):
         return first
 
 
-class RuntimeStreetStoryService(MvpProductStreetStoryService):
+class RuntimeStreetStoryService(MvpResearchStreetStoryService):
     """MVP product service plus bounded live/readback evidence; durable core stays unchanged."""
 
     def __init__(self, settings: Settings, providers=None):
