@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .config import Settings
-from .mvp_research import MvpResearchStreetStoryService
+from .mvp_acceptance import MvpAcceptanceStreetStoryService
 from .product import VibePublishBoundary
 from .providers import PermanentProviderError
 
@@ -30,7 +30,7 @@ class ReplayCheckingVibePublishBoundary(VibePublishBoundary):
         return first
 
 
-class RuntimeStreetStoryService(MvpResearchStreetStoryService):
+class RuntimeStreetStoryService(MvpAcceptanceStreetStoryService):
     """MVP product service plus bounded live/readback evidence; durable core stays unchanged."""
 
     def __init__(self, settings: Settings, providers=None):
@@ -53,12 +53,6 @@ class RuntimeStreetStoryService(MvpResearchStreetStoryService):
                 "wikipedia_page_count": len(wikipedia),
                 "grounded_source_count": len(grounding),
             }
-            ordered = research.get("ordered_voice_ids")
-            result["research_voice_ids"] = (
-                [str(value) for value in ordered if str(value)]
-                if isinstance(ordered, list)
-                else []
-            )
 
         processing = result.get("processing")
         if isinstance(processing, dict):
