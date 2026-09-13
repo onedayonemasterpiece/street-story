@@ -1,15 +1,38 @@
-# Street Story image prompt · v1
+Use the uploaded street photo as the main reference image.
 
-This server-side template receives structured context containing:
-- selected evidence-backed facts;
-- place context;
-- the user's voice intent;
-- source-photo identity and composition context.
+Preserve the real location and street identity from the reference: keep the actual street geometry, perspective, road direction, building placement, skyline rhythm, block structure, intersections, sidewalks, windows, facades, rooflines, trees, poles, signs, cars, and the overall urban composition recognizable. Do not replace the scene with a different city or generic architecture. If the reference shows a low-rise or mid-rise area, keep it low-rise or mid-rise; do not turn it into a skyscraper district. If the reference shows several buildings, preserve that multi-building street context.
 
-The Android client never stores or expands this template.
+Transform the scene into a refined hybrid of realistic urban photography and expressive architectural sketching. The result should feel like a high-end editorial city illustration: a real street scene overdrawn with loose, energetic black ink lines, hand-drawn structural strokes, sketch contours, perspective accents, and layered visual notes. The drawing should feel spontaneous, stylish, and intelligent, as if an artist-urbanist analyzed the city directly on top of the photo.
 
---- OWNER FINAL IMAGE PROMPT PLACEHOLDER ---
-{{OWNER_FINAL_IMAGE_PROMPT}}
---- END OWNER FINAL IMAGE PROMPT PLACEHOLDER ---
+Overlay elegant hand-drawn linework around and over the buildings: perspective lines, sketch contours, loose construction marks, directional strokes, callout arrows, compositional guide marks, and handwritten marginalia. The linework should enhance the forms of the buildings and the city space without destroying recognizability.
 
-Runtime rule: do not manufacture a fallback prompt if the owner placeholder has not been supplied. Keep the story durable and report a machine-readable visual blocker instead.
+The annotations must NOT be technical architectural notes about construction details, dimensions, engineering, or facade specifications. Instead, make the handwritten notes about the city itself: its atmosphere, identity, rhythm, history, culture, mood, local character, urban life, memory, contrasts, street energy, walkability, human experience, and what makes this place distinctive. The notes may be poetic, observational, analytical, or essay-like, but they should read as commentary about the city, not as an architect’s blueprint notes.
+
+The handwritten text should feel naturally integrated into the composition: scattered around the sky area, margins, between building masses, and near selected urban elements. Use short and medium-length handwritten phrases, fragments, arrows, labels, and reflective notes. The text does not need to reproduce the provided source wording exactly; it may paraphrase, compress, reinterpret, and visually distribute the ideas in a natural way.
+
+Keep the scene visually striking and cinematic. Use one chosen accent color to unify the image. The accent color may vary depending on the mood: for example amber, orange, rust, red, teal, cobalt, green, burgundy, or another strong but tasteful color. Use this accent selectively on parts of facades, windows, street elements, trees, vehicles, reflections, line accents, or highlighted urban areas, while the rest of the image remains mostly monochrome or muted. The accent color should feel intentional and graphic, not random.
+
+Maintain a premium visual balance between realism and sketch abstraction:
+
+- the underlying street and buildings remain readable and grounded in the uploaded photo;
+- the sketch lines add energy and interpretation;
+- the handwritten notes add meaning and city narrative;
+- the accent color adds visual identity.
+
+The mood should feel sophisticated, urban, thoughtful, and editorial — like a magazine feature, urban manifesto, or design poster about the spirit of a city.
+
+Photorealistic base with expressive overdrawn sketching, not a fully flat illustration. Keep depth, light, and street realism visible underneath the drawn intervention.
+
+Do not:
+
+- replace the real location with a different one;
+- invent a radically different skyline or building typology;
+- turn low-rise streets into towers;
+- make the annotations purely technical or blueprint-like;
+- fill the page with unreadable chaos;
+- use corporate logos, watermarks, or poster branding;
+- make the scene look like a sterile CAD drawing;
+- lose the feeling of a real photographed city street.
+
+Handwritten city-note themes to weave into the annotations, paraphrased and distributed naturally across the image, not necessarily word for word:
+{{CITY_NOTE_THEMES}}
