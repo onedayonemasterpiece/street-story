@@ -8,11 +8,21 @@ from tools.live_e2e import (
     Diagnostics,
     LiveE2EError,
     complete_body,
-    make_fixture_photo,
     validate_primary_destinations,
     validate_research_story,
     validate_voice_messages,
 )
+
+
+def make_fixture_photo() -> bytes:
+    # Tiny transport/component fixture only. The golden visual-identity run uses
+    # a pinned real Commons photograph in tools/live_e2e.py.
+    return bytes.fromhex(
+        "89504e470d0a1a0a"
+        "0000000d4948445200000001000000010802000000907753de"
+        "0000000c49444154789c6360f8cf000000040001f6173855"
+        "0000000049454e44ae426082"
+    )
 
 
 def test_generated_photo_is_real_png_and_manifest_is_exact():
@@ -35,7 +45,7 @@ def test_research_invariants_require_all_provenance_https_and_reject_selected_un
             "grounded_source_count": 2,
         },
         "facts": [
-            {"fact_id": "fact_supported", "text": "Supported", "evidence_supported": True, "selected": True, "sources": [{"url": "https://example.test/source"}]},
+            {"fact_id": "fact_supported", "text": "Supported", "evidence_supported": True, "selected": True, "sources": [{"url": "https://example.test/source", "supports": [{"kind": "google_grounding", "text": "Supported", "source_url": "https://example.test/source"}]}]},
             {"fact_id": "fact_unsupported", "text": "Unsupported", "evidence_supported": False, "selected": False, "sources": []},
         ],
     }
@@ -67,16 +77,14 @@ def test_voice_projection_requires_durable_raw_and_cleaned_display():
         )
 
 
-def test_primary_destination_projection_keeps_needs_review_distinct_from_absence():
+def test_primary_destination_projection_is_telegram_only_for_mvp():
     capabilities = {
         "destinations": [
             {"alias": "love-tg", "label": "Полюбить Калининград", "provider": "telegram", "status": "supported"},
-            {"alias": "love-vk", "label": "Полюбить Калининград", "provider": "vk", "status": "needs_review"},
         ]
     }
     projected = validate_primary_destinations(capabilities)
     assert projected["telegram"]["status"] == "supported"
-    assert projected["vk"]["status"] == "needs_review"
 
 
 def test_diagnostics_redact_all_configured_secrets(tmp_path):
