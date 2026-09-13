@@ -17,6 +17,9 @@ import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+internal fun effectiveSnapshotDraft(state: String, localDraft: String?, remoteDraft: String?): String? =
+    if (state in setOf(StoryStage.SCHEDULED, StoryStage.PUBLISHED) && localDraft != null) localDraft else remoteDraft
+
 object SyncScheduler {
     private const val UNIQUE_WORK = "street-story-sync"
     fun enqueue(context: Context, delaySeconds: Long = 0L) {
@@ -175,10 +178,33 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         wire: StoryWire,
     ) {
         val state = normalizeState(wire.state)
-        store.setServerSnapshot(storyId, state, wire.placeName, wire.summary, wire.draftText, wire.processedImageUrl,
-            wire.scheduledFor, wire.publishedAt, wire.error?.message, wire.revision)
-        store.replaceFacts(storyId, wire.facts.map { FactSnapshot(it.factId, it.text, it.confidence, it.evidenceSupported,
-            it.selected && it.evidenceSupported, gson.toJson(it.sources)) })
+        val localDraft = store.story(storyId)?.draftText
+        val draft = effectiveSnapshotDraft(state, localDraft, wire.draftText)
+        store.setServerSnapshot(
+            storyId,
+            state,
+            wire.placeName,
+            wire.summary,
+            draft,
+            wire.processedImageUrl,
+            wire.scheduledFor,
+            wire.publishedAt,
+            wire.error?.message,
+            wire.revision,
+        )
+        store.replaceFacts(
+            storyId,
+            wire.facts.map {
+                FactSnapshot(
+                    it.factId,
+                    it.text,
+                    it.confidence,
+                    it.evidenceSupported,
+                    it.selected && it.evidenceSupported,
+                    gson.toJson(it.sources),
+                )
+            },
+        )
         feed.replaceVoiceMessages(storyId, wire.voiceMessages)
         research.replace(storyId, wire)
         if (wire.destinations.isNotEmpty()) store.replaceDestinations(storyId, wire.destinations.map { it.local() })
