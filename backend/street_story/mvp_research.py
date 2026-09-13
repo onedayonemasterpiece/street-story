@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from .mvp import MvpProductStreetStoryService
-from .product import normalize_display_text, project_destinations_v2
-from .providers import PermanentProviderError, RetryableProviderError
+from .product import project_destinations_v2
+from .providers import PermanentProviderError
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
 
 
