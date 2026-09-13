@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "fixture_id": "kaliningrad-brandenburg-gate-a-savin-2017",
+  "purpose": "Street Story licensed public golden-run photo; never present as an owner photo",
+  "object_name_ru": "Бранденбургские ворота",
+  "object_name_en": "Brandenburg Gate, Kaliningrad",
+  "commons_page": "https://commons.wikimedia.org/wiki/File:Kaliningrad_05-2017_img01_Brandenburg_Gate.jpg",
+  "download_url": "https://upload.wikimedia.org/wikipedia/commons/b/ba/Kaliningrad_05-2017_img01_Brandenburg_Gate.jpg",
+  "author": "A.Savin",
+  "license": "Free Art License 1.3",
+  "source_sha1": "2325c66ecf50824565fed35703aa34fbc99043d5",
+  "latitude": 54.697111,
+  "longitude": 20.494111,
+  "taken_at": "2017-05-09T09:14:16",
+  "expected_object": "Brandenburg Gate, Kaliningrad"
+}
