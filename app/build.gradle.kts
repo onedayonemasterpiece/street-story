@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val embeddedSourceSha = System.getenv("STREET_STORY_SOURCE_SHA")
+    ?: providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim()
+
 android {
     namespace = "com.onedayonemasterpiece.streetstory"
     compileSdk = 36
@@ -15,8 +18,7 @@ android {
         versionName = "0.1.${System.getenv("GITHUB_RUN_NUMBER") ?: "1"}"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"${System.getenv("STREET_STORY_BACKEND_URL") ?: ""}\"")
-        val sourceSha = System.getenv("STREET_STORY_SOURCE_SHA") ?: "dev"
-        buildConfigField("String", "SOURCE_SHA", "\"$sourceSha\"")
+        buildConfigField("String", "SOURCE_SHA", "\"$embeddedSourceSha\"")
     }
 
     buildTypes { release { isMinifyEnabled = false } }
