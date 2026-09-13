@@ -10,6 +10,7 @@ object StoryStage {
     const val PHOTO_READY = "photo_ready"
     const val RECORDING = "recording"
     const val QUEUED = "queued"
+    const val VOICE_READY = "voice_ready"
     const val RESEARCHING = "researching"
     const val REVIEW = "review"
     const val VISUAL_PROCESSING = "visual_processing"

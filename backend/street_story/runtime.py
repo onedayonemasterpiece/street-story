@@ -53,6 +53,12 @@ class RuntimeStreetStoryService(MvpResearchStreetStoryService):
                 "wikipedia_page_count": len(wikipedia),
                 "grounded_source_count": len(grounding),
             }
+            ordered = research.get("ordered_voice_ids")
+            result["research_voice_ids"] = (
+                [str(value) for value in ordered if str(value)]
+                if isinstance(ordered, list)
+                else []
+            )
 
         processing = result.get("processing")
         if isinstance(processing, dict):

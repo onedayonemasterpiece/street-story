@@ -23,6 +23,8 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.text.method.LinkMovementMethod
+import android.text.util.Linkify
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -50,6 +52,7 @@ class MainActivity : Activity() {
     private val config by lazy { AppGraph.config(this) }
     private val runtime by lazy { RecordingRuntime(this) }
     private val feedProjection by lazy { FeedProjectionStore(this) }
+    private val researchProjection by lazy { ResearchProjectionStore(this) }
     private val uiPrefs by lazy { getSharedPreferences("street_story_ui", MODE_PRIVATE) }
     private val gson = Gson()
     private val handler = Handler(Looper.getMainLooper())
@@ -226,7 +229,7 @@ class MainActivity : Activity() {
     private fun renderVoiceMessages(card: LinearLayout, story: StorySnapshot) {
         val messages = feedProjection.voiceMessages(story.clientStoryId)
         messages.forEach { message ->
-            val text = message.displayText?.trim().takeUnless { it.isNullOrBlank() } ?: "Голос обрабатывается…"
+            val text = message.displayText?.trim().takeUnless { it.isNullOrBlank() } ?: "Голос сохранён · текст появится при поиске фактов"
             val bubble = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 background = rounded(GRAPHITE, 18)
@@ -244,7 +247,7 @@ class MainActivity : Activity() {
                 val live = runtime.snapshotFor(latest.sessionId)
                 "${captureStatus(live?.captureActivity ?: latest.captureActivity)} · ${formatDuration(live?.durationMs ?: latest.durationMs)}"
             } else {
-                "Голос сохранён · ждёт синхронизации/обработки"
+                "Голос сохранён · ждёт синхронизации"
             }
             card.addView(label(value, 14, MUTED, body).apply {
                 setPadding(dp(12), dp(8), dp(12), dp(8)); background = rounded(SAGE, 16)
@@ -253,11 +256,51 @@ class MainActivity : Activity() {
     }
 
     private fun renderResearch(card: LinearLayout, story: StorySnapshot) {
-        if (story.stage in setOf(StoryStage.QUEUED, StoryStage.RESEARCHING)) {
-            card.addView(inlineStatus("Research · OSM + Wikipedia + grounded Gemini", "Обновится здесь автоматически"), margins(0, 2, 0, 8))
+        val projection = researchProjection.get(story.clientStoryId)
+        if (story.stage == StoryStage.RESEARCHING) {
+            card.addView(inlineStatus("Research · OSM + Wikipedia + Gemini Search", "Ищем факты по зафиксированной серии голосовых"), margins(0, 2, 0, 8))
+        }
+        val identity = projection?.identityStatus
+        if (identity in setOf("uncertain", "mismatch")) {
+            val title = if (identity == "mismatch") "Фото не совпало с ближайшим кандидатом" else "Нужно уточнить объект на фото"
+            val wrap = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(0xffffeee8.toInt(), 18)
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                contentDescription = "candidate-review-${story.clientStoryId}"
+            }
+            wrap.addView(label(title, 15, INK, display))
+            projection.observations.take(3).forEach { observation ->
+                wrap.addView(label("· $observation", 13, GRAPHITE_SOFT, body).apply { setPadding(0, dp(5), 0, 0) })
+            }
+            projection.candidates.take(6).forEach { candidate ->
+                wrap.addView(compactAction("Это ${candidate.name}", PAPER, INK) {
+                    queueResearch(story, candidate.candidateId)
+                }, margins(0, 7, 0, 0))
+            }
+            card.addView(wrap, margins(0, 0, 0, 8))
+        } else if (identity in setOf("match", "owner_confirmed")) {
+            val label = projection?.candidateName ?: story.placeName ?: "объект"
+            card.addView(inlineStatus(
+                if (identity == "owner_confirmed") "Объект подтверждён владельцем" else "Фото сопоставлено с объектом",
+                label,
+            ), margins(0, 0, 0, 8))
         }
         story.summary?.takeIf { it.isNotBlank() }?.let {
             card.addView(label(it, 15, GRAPHITE_SOFT, body).apply { setLineSpacing(dp(1).toFloat(), 1.05f) }, margins(2, 2, 2, 8))
+        }
+        if (projection != null && projection.sources.isNotEmpty()) {
+            val sources = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(0xffefede7.toInt(), 18)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                contentDescription = "sources-${story.clientStoryId}"
+            }
+            sources.addView(micro("ИСТОЧНИКИ · ${projection.sourceCount}", MUTED))
+            projection.sources.forEach { source ->
+                sources.addView(linkLabel("${source.title}\n${source.url}"), margins(0, 7, 0, 0))
+            }
+            card.addView(sources, margins(0, 0, 0, 8))
         }
     }
 
@@ -297,9 +340,21 @@ class MainActivity : Activity() {
                     setOnCheckedChangeListener { _, checked -> store.setFactSelected(story.clientStoryId, fact.factId, checked) }
                 }
                 wrap.addView(check)
-                val sourceCount = runCatching { JsonParser.parseString(fact.sourcesJson).asJsonArray.size() }.getOrDefault(0)
-                wrap.addView(label(if (fact.evidenceSupported) "$sourceCount источн. · evidence есть" else "Без evidence · недоступно для выбора", 12,
+                val sourceRows = runCatching {
+                    JsonParser.parseString(fact.sourcesJson).asJsonArray.mapNotNull { element ->
+                        val obj = element.asJsonObject
+                        val title = obj.get("title")?.asString.orEmpty()
+                        val url = obj.get("url")?.asString.orEmpty()
+                        if (url.isBlank()) null else (title.ifBlank { url } to url)
+                    }
+                }.getOrDefault(emptyList())
+                wrap.addView(label(if (fact.evidenceSupported) "${sourceRows.size} источн. · evidence есть" else "Без evidence · недоступно для выбора", 12,
                     if (fact.evidenceSupported) MUTED else ORANGE, body).apply { setPadding(dp(34), 0, 0, dp(4)) })
+                if (fact.evidenceSupported) {
+                    sourceRows.take(3).forEach { (title, url) ->
+                        wrap.addView(linkLabel("$title · $url").apply { setPadding(dp(34), 0, 0, dp(4)) })
+                    }
+                }
             }
         } else {
             facts.take(2).forEach { fact ->
@@ -313,12 +368,12 @@ class MainActivity : Activity() {
 
     private fun renderVisual(card: LinearLayout, story: StorySnapshot) {
         when (story.stage) {
-            StoryStage.VISUAL_PROCESSING -> card.addView(inlineStatus("Изображение · обработка VibePublish", "Source ingress, visual operation и verified readback"), margins(0, 0, 0, 8))
-            StoryStage.VISUAL_BLOCKED -> card.addView(inlineStatus("Изображение · нужна повторная попытка", "Исходное фото и факты сохранены"), margins(0, 0, 0, 8))
+            StoryStage.VISUAL_PROCESSING -> card.addView(inlineStatus("Изображение · обработка VibePublish", "Source ingress, imagegen и verified readback"), margins(0, 0, 0, 8))
+            StoryStage.VISUAL_BLOCKED -> card.addView(inlineStatus("Изображение · нужна повторная попытка", "Исходное фото и выбранные факты сохранены"), margins(0, 0, 0, 8))
         }
         story.processedImagePath?.takeIf { File(it).isFile }?.let {
-            card.addView(micro("ОБРАБОТАННОЕ ИЗОБРАЖЕНИЕ", ORANGE), margins(2, 4, 2, 6))
-            card.addView(imageFrame(it, 190), margins(0, 0, 0, 8))
+            card.addView(micro("ОБРАБОТАННОЕ ИЗОБРАЖЕНИЕ · НАЖМИ ДЛЯ ПРОСМОТРА", ORANGE), margins(2, 4, 2, 6))
+            card.addView(imageFrame(it, 190, openLarge = true), margins(0, 0, 0, 8))
         }
     }
 
@@ -331,7 +386,7 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(11), dp(12), dp(11))
             contentDescription = "draft-${if (expanded) "expanded" else "collapsed"}-${story.clientStoryId}"
         }
-        wrap.addView(micro("PUBLICATION TEXT", MUTED))
+        wrap.addView(micro("PUBLICATION TEXT · ${draft.length}/1024", if (draft.length <= 1024) MUTED else ORANGE))
         if (expanded) {
             val edit = EditText(this).apply {
                 setText(draft)
@@ -369,9 +424,9 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(10), dp(12), dp(10))
             contentDescription = "provider-rows-${story.clientStoryId}"
         }
-        wrap.addView(micro("DESTINATIONS · VIBEPUBLISH", MUTED))
+        wrap.addView(micro("DESTINATION · TELEGRAM VIA VIBEPUBLISH", MUTED))
         destinations.forEach { destination ->
-            val allowed = destination.status !in setOf("unsupported", "unavailable", "needs_auth")
+            val allowed = destination.provider.equals("telegram", ignoreCase = true) && destination.status == "supported"
             if (story.stage == StoryStage.READY_TO_PUBLISH) {
                 wrap.addView(CheckBox(this).apply {
                     text = "${providerTitle(destination.provider)} · ${destination.label} · ${destinationStatus(destination.status)}"
@@ -395,19 +450,39 @@ class MainActivity : Activity() {
     private fun renderInlineActions(card: LinearLayout, story: StorySnapshot) {
         val active = store.activeVoiceSession()
         if (active == null || active.storyId != story.clientStoryId) {
-            card.addView(compactAction("Добавить уточнение", PAPER, INK) {
+            card.addView(compactAction("Добавить голос", PAPER, INK) {
                 setActiveStory(story.clientStoryId)
-                requestRecording(story.clientStoryId, RecordingKind.REFINEMENT)
+                val kind = if (feedProjection.voiceMessages(story.clientStoryId).isEmpty()) RecordingKind.INITIAL else RecordingKind.REFINEMENT
+                requestRecording(story.clientStoryId, kind)
             }, margins(0, 2, 0, 6))
         }
-        when (story.stage) {
-            StoryStage.REVIEW, StoryStage.VISUAL_BLOCKED, StoryStage.NEEDS_REVIEW -> card.addView(
-                compactAction(if (story.stage == StoryStage.REVIEW) "Подготовить изображение" else "Повторить изображение", ORANGE, WHITE) { queueVisual(story) },
-                margins(0, 0, 0, 4),
+        val projection = researchProjection.get(story.clientStoryId)
+        val voiceIds = feedProjection.voiceMessages(story.clientStoryId).map { it.sessionId }.toSet()
+        val researched = projection?.researchVoiceIds?.toSet().orEmpty()
+        val hasUnresearchedVoice = voiceIds.any { it !in researched }
+        when {
+            story.stage == StoryStage.VOICE_READY -> card.addView(
+                compactAction("Найти факты", ORANGE, WHITE) { queueResearch(story) }, margins(0, 0, 0, 4),
             )
-            StoryStage.READY_TO_PUBLISH -> card.addView(compactAction("Запланировать · +1 час", ORANGE, WHITE) { queuePublish(requireNotNull(store.story(story.clientStoryId))) })
-            StoryStage.SCHEDULED -> card.addView(compactAction("Отменить публикацию", PAPER, ORANGE) { queueCancel(story) })
-            StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING -> card.addView(compactAction("Проверить сейчас", PAPER, INK) { SyncScheduler.enqueue(this) })
+            story.stage == StoryStage.REVIEW && hasUnresearchedVoice -> card.addView(
+                compactAction("Обновить факты", ORANGE, WHITE) { queueResearch(story) }, margins(0, 0, 0, 4),
+            )
+            story.stage == StoryStage.REVIEW -> card.addView(
+                compactAction("Подготовить изображение", ORANGE, WHITE) { queueVisual(story) }, margins(0, 0, 0, 4),
+            )
+            story.stage == StoryStage.NEEDS_REVIEW && projection?.identityStatus in setOf("uncertain", "mismatch") -> card.addView(
+                compactAction("Проверить кандидатов снова", PAPER, INK) { queueResearch(story) }, margins(0, 0, 0, 4),
+            )
+            story.stage == StoryStage.VISUAL_BLOCKED -> card.addView(
+                compactAction("Повторить изображение", ORANGE, WHITE) { queueVisual(story) }, margins(0, 0, 0, 4),
+            )
+            story.stage == StoryStage.READY_TO_PUBLISH -> card.addView(
+                compactAction("Запланировать · +1 час", ORANGE, WHITE) { queuePublish(requireNotNull(store.story(story.clientStoryId))) },
+            )
+            story.stage == StoryStage.SCHEDULED -> card.addView(compactAction("Отменить публикацию", PAPER, ORANGE) { queueCancel(story) })
+            story.stage in setOf(StoryStage.RESEARCHING, StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING) -> card.addView(
+                compactAction("Проверить сейчас", PAPER, INK) { SyncScheduler.enqueue(this) },
+            )
         }
     }
 
@@ -451,6 +526,22 @@ class MainActivity : Activity() {
         return dock
     }
 
+    private fun queueResearch(story: StorySnapshot, candidateId: String? = null) {
+        if (!config.configured) { showSettings(); return }
+        val voiceIds = feedProjection.voiceMessages(story.clientStoryId).map { it.sessionId }
+        if (voiceIds.isEmpty()) {
+            Toast.makeText(this, "Сначала запиши хотя бы одно голосовое", Toast.LENGTH_LONG).show()
+            return
+        }
+        val stable = "${story.clientStoryId}-${story.backendRevision}-${voiceIds.joinToString(".")}-${candidateId.orEmpty()}"
+        val payload = linkedMapOf<String, Any>("action" to "research")
+        candidateId?.let { payload["candidate_id"] = it }
+        store.enqueueOperation(story.clientStoryId, "facts", newRequestKey("research", stable), gson.toJson(payload))
+        store.setStage(story.clientStoryId, StoryStage.RESEARCHING)
+        SyncScheduler.enqueue(this)
+        render()
+    }
+
     private fun queueVisual(story: StorySnapshot) {
         if (!config.configured) { showSettings(); return }
         if (store.pendingOperations(story.clientStoryId).any { it.kind == "visual" }) { SyncScheduler.enqueue(this); return }
@@ -466,11 +557,17 @@ class MainActivity : Activity() {
     private fun queuePublish(story: StorySnapshot) {
         if (!config.configured) { showSettings(); return }
         if (store.pendingOperations(story.clientStoryId).any { it.kind == "publish" }) { SyncScheduler.enqueue(this); return }
+        if (story.draftText.orEmpty().length > 1024) {
+            Toast.makeText(this, "Текст длиннее Telegram caption limit: сократи до 1024 символов", Toast.LENGTH_LONG).show()
+            expandedDrafts.add(story.clientStoryId)
+            render()
+            return
+        }
         val aliases = store.destinations(story.clientStoryId).filter {
-            it.selected && it.status !in setOf("unsupported", "unavailable", "needs_auth")
+            it.selected && it.provider.equals("telegram", ignoreCase = true) && it.status == "supported"
         }.map { it.alias }
         if (aliases.isEmpty()) {
-            Toast.makeText(this, "Выбери хотя бы один фактически доступный destination", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Выбери доступный Telegram destination", Toast.LENGTH_LONG).show()
             return
         }
         val stable = "${story.clientStoryId}-${story.backendRevision}-${aliases.joinToString(".")}"
@@ -592,7 +689,7 @@ class MainActivity : Activity() {
         dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
 
-    private fun imageFrame(path: String, heightDp: Int): FrameLayout {
+    private fun imageFrame(path: String, heightDp: Int, openLarge: Boolean = false): FrameLayout {
         val frame = FrameLayout(this).apply { background = rounded(SAGE, 18); clipToOutline = true }
         val image = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -600,7 +697,22 @@ class MainActivity : Activity() {
         }
         frame.addView(image, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         frame.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(heightDp))
+        if (openLarge) {
+            frame.isClickable = true
+            frame.isFocusable = true
+            frame.setOnClickListener { showLargeImage(path) }
+        }
         return frame
+    }
+
+    private fun showLargeImage(path: String) {
+        val image = ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            decodeSampled(path, 1800, 1800)?.let { setImageBitmap(it) }
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        AlertDialog.Builder(this).setView(image).setPositiveButton("Закрыть", null).show()
     }
 
     private fun decodeSampled(path: String, targetWidth: Int, targetHeight: Int): Bitmap? = runCatching {
@@ -621,12 +733,19 @@ class MainActivity : Activity() {
         addView(label(text, 14, INK, body).apply { setLineSpacing(dp(1).toFloat(), 1.05f) })
     }
 
+    private fun linkLabel(value: String) = label(value, 12, MUTED, body).apply {
+        autoLinkMask = Linkify.WEB_URLS
+        movementMethod = LinkMovementMethod.getInstance()
+        setLinkTextColor(GRAPHITE_SOFT)
+    }
+
     private fun statusText(stage: String): String = when (stage) {
         StoryStage.PHOTO_READY -> "Фото сохранено · можно записывать голос"
         StoryStage.RECORDING -> "Запись"
         StoryStage.QUEUED -> "Голос сохранён · отправляем"
-        StoryStage.RESEARCHING -> "Research в фоне"
-        StoryStage.REVIEW -> "Нужно выбрать факты"
+        StoryStage.VOICE_READY -> "Голос сохранён · добавь ещё или найди факты"
+        StoryStage.RESEARCHING -> "Ищем факты"
+        StoryStage.REVIEW -> "Проверь и выбери факты"
         StoryStage.VISUAL_PROCESSING -> "VibePublish готовит изображение"
         StoryStage.VISUAL_BLOCKED -> "Изображение требует повтора"
         StoryStage.READY_TO_PUBLISH -> "Готово к публикации"
@@ -663,7 +782,11 @@ class MainActivity : Activity() {
         .format(Instant.ofEpochMilli(epoch).atZone(ZoneId.systemDefault()))
 
     private fun scheduleText(value: String?): String? = value?.let { raw ->
-        runCatching { DateTimeFormatter.ofPattern("HH:mm", Locale.US).format(OffsetDateTime.parse(raw).atZoneSameInstant(ZoneId.systemDefault())) }.getOrElse { raw }
+        runCatching {
+            val zone = ZoneId.systemDefault()
+            val local = OffsetDateTime.parse(raw).atZoneSameInstant(zone)
+            "${DateTimeFormatter.ofPattern("d MMM yyyy · HH:mm", Locale.forLanguageTag("ru-RU")).format(local)} · ${zone.id}"
+        }.getOrElse { raw }
     }
 
     private fun dp(value: Int) = Math.round(value * resources.displayMetrics.density)

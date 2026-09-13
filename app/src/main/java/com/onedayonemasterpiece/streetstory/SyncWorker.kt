@@ -39,12 +39,13 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         val api = ApiClient(base, token)
         val store = AppGraph.store(applicationContext)
         val feed = FeedProjectionStore(applicationContext)
+        val research = ResearchProjectionStore(applicationContext)
         var pollAgain = false
         val capabilities = runCatching { api.capabilities() }.getOrNull()
         try {
             for (initial in store.stories()) {
                 try {
-                    if (syncStory(store, feed, api, initial, capabilities)) pollAgain = true
+                    if (syncStory(store, feed, research, api, initial, capabilities)) pollAgain = true
                 } catch (exc: ApiException) {
                     store.setStage(initial.clientStoryId, if (exc.retryable) initial.stage else StoryStage.NEEDS_REVIEW, exc.message)
                     if (exc.retryable) pollAgain = true
@@ -69,6 +70,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
     private fun syncStory(
         store: StoryStore,
         feed: FeedProjectionStore,
+        research: ResearchProjectionStore,
         api: ApiClient,
         initial: StorySnapshot,
         capabilities: CapabilitiesWire?,
@@ -77,7 +79,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
         if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
-        applyRemote(store, feed, story.clientStoryId, remote)
+        applyRemote(store, feed, research, story.clientStoryId, remote)
         story = requireNotNull(store.story(story.clientStoryId))
         val serverId = requireNotNull(story.serverStoryId)
 
@@ -89,7 +91,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             try {
                 remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
                 validateStoryIdentity(story, remote)
-                applyRemote(store, feed, story.clientStoryId, remote)
+                applyRemote(store, feed, research, story.clientStoryId, remote)
                 store.markOperationDone(operation.id)
             } catch (exc: ApiException) {
                 if (exc.retryable) {
@@ -105,7 +107,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         remote = api.getStory(serverId)
         validateStoryIdentity(story, remote)
         val previousUrl = store.story(story.clientStoryId)?.processedImageUrl
-        applyRemote(store, feed, story.clientStoryId, remote)
+        applyRemote(store, feed, research, story.clientStoryId, remote)
         if (remote.destinations.isEmpty() && capabilities != null && capabilities.destinations.isNotEmpty()) {
             store.replaceDestinations(story.clientStoryId, capabilities.destinations.map { it.local() })
         }
@@ -127,7 +129,6 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         store.markVoiceServerInitialized(session.sessionId)
         if (receipt.recordingFinished) {
             requireCompleteManifest(session, localChunks, receipt)
-            queueRefinementIfNeeded(store, session)
             store.markVoiceComplete(session.sessionId)
             return
         }
@@ -141,7 +142,6 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         reconcileChunks(store, refreshed, localChunks, receipt)
         if (!receipt.recordingFinished) throw ApiProtocolException("Backend did not durably finish the complete voice manifest")
         requireCompleteManifest(refreshed, localChunks, receipt)
-        queueRefinementIfNeeded(store, refreshed)
         store.markVoiceComplete(refreshed.sessionId)
     }
 
@@ -162,25 +162,25 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         }
     }
 
-    private fun queueRefinementIfNeeded(store: StoryStore, session: VoiceSessionSnapshot) {
-        if (session.kind != RecordingKind.REFINEMENT) return
-        val key = newRequestKey("refinement", session.sessionId)
-        val payload = refinementPayload(session.sessionId, store.facts(session.storyId))
-        store.enqueueOperation(session.storyId, "refinements", key, gson.toJson(payload))
-    }
-
     private fun validateStoryIdentity(local: StorySnapshot, remote: StoryWire) {
         if (remote.id.isBlank() || remote.clientStoryId != local.clientStoryId) throw ApiProtocolException("Story identity mismatch")
         if (!local.serverStoryId.isNullOrBlank() && local.serverStoryId != remote.id) throw ApiProtocolException("Backend story ID changed")
     }
 
-    private fun applyRemote(store: StoryStore, feed: FeedProjectionStore, storyId: String, wire: StoryWire) {
+    private fun applyRemote(
+        store: StoryStore,
+        feed: FeedProjectionStore,
+        research: ResearchProjectionStore,
+        storyId: String,
+        wire: StoryWire,
+    ) {
         val state = normalizeState(wire.state)
         store.setServerSnapshot(storyId, state, wire.placeName, wire.summary, wire.draftText, wire.processedImageUrl,
             wire.scheduledFor, wire.publishedAt, wire.error?.message, wire.revision)
         store.replaceFacts(storyId, wire.facts.map { FactSnapshot(it.factId, it.text, it.confidence, it.evidenceSupported,
             it.selected && it.evidenceSupported, gson.toJson(it.sources)) })
         feed.replaceVoiceMessages(storyId, wire.voiceMessages)
+        research.replace(storyId, wire)
         if (wire.destinations.isNotEmpty()) store.replaceDestinations(storyId, wire.destinations.map { it.local() })
     }
 
@@ -189,6 +189,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
     private fun normalizeState(value: String): String = when (value) {
         StoryStage.PHOTO_READY, "created", "voice_pending" -> StoryStage.PHOTO_READY
         StoryStage.QUEUED, "uploaded" -> StoryStage.QUEUED
+        StoryStage.VOICE_READY -> StoryStage.VOICE_READY
         StoryStage.RESEARCHING, "processing" -> StoryStage.RESEARCHING
         StoryStage.REVIEW, "facts_ready" -> StoryStage.REVIEW
         StoryStage.VISUAL_PROCESSING -> StoryStage.VISUAL_PROCESSING
