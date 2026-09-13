@@ -88,13 +88,33 @@ class MvpResearchMixin:
                 ),
             )
             story = self._story_row(db, story_id)
-            state = "review" if story["research_json"] else "voice_ready"
+            has_research = bool(json.loads(story["research_json"] or "{}"))
+            state = "review" if has_research else "voice_ready"
             db.execute(
                 "UPDATE stories SET state=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? "
                 "WHERE id=?",
                 (state, now, story_id),
             )
             return self._voice_receipt(db, session_id)
+
+    def mutate_refinement(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Accept legacy refinement sync without implicitly starting research."""
+        session_id = str(body.get("voice_session_id") or "")
+        req_digest = digest({"story_id": story_id, **body})
+        with self.store.tx() as db:
+            self._story_row(db, story_id)
+            if self._idem(db, key, "refinement", req_digest, "story", story_id):
+                return self._story_repr(db, self._story_row(db, story_id))
+            session = db.execute(
+                "SELECT * FROM voice_sessions WHERE session_id=? AND story_id=?",
+                (session_id, story_id),
+            ).fetchone()
+            if not session or session["kind"] != "refinement" or not session["recording_finished"]:
+                raise InvalidStateError(
+                    "refinement_voice_not_complete",
+                    "A completed refinement voice session is required",
+                )
+            return self._story_repr(db, self._story_row(db, story_id))
 
     def _research_request(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         candidate_id = str(body.get("candidate_id") or "").strip() or None
