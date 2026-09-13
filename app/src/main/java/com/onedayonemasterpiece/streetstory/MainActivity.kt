@@ -270,10 +270,10 @@ class MainActivity : Activity() {
                 contentDescription = "candidate-review-${story.clientStoryId}"
             }
             wrap.addView(label(title, 15, INK, display))
-            projection.observations.take(3).forEach { observation ->
+            projection?.observations?.take(3)?.forEach { observation ->
                 wrap.addView(label("· $observation", 13, GRAPHITE_SOFT, body).apply { setPadding(0, dp(5), 0, 0) })
             }
-            projection.candidates.take(6).forEach { candidate ->
+            projection?.candidates?.take(6)?.forEach { candidate ->
                 wrap.addView(compactAction("Это ${candidate.name}", PAPER, INK) {
                     queueResearch(story, candidate.candidateId)
                 }, margins(0, 7, 0, 0))
