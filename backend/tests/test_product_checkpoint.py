@@ -247,12 +247,14 @@ async def test_visual_uses_idempotent_ingress_select_and_verified_readback(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_primary_telegram_vk_projection_and_social_cancel_receipt(tmp_path):
+async def test_mvp_projects_only_supported_telegram_and_social_cancel_receipt(tmp_path):
     service, _, vp = product_service(tmp_path)
     capabilities = await service.capabilities()
-    primary = {(d["provider"], d["status"], d["selected"]) for d in capabilities["destinations"] if "Полюбить" in d["label"]}
-    assert ("telegram", "supported", True) in primary
-    assert ("vk", "needs_review", True) in primary
+    assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main"]
+    assert all(
+        d["provider"] == "telegram" and d["status"] == "supported"
+        for d in capabilities["destinations"]
+    )
 
     story = create_story(service)
     with service.store.tx() as db:
