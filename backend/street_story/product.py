@@ -356,7 +356,13 @@ class ProductStreetStoryService(StreetStoryService):
             bootstrap = await self.providers.vibepublish.bootstrap()
         except (RetryableProviderError, PermanentProviderError):
             bootstrap = {"destinations": [], "capabilities": []}
-        result: dict[str, Any] = {"destinations": project_destinations_v2(bootstrap)}
+        projected = project_destinations_v2(bootstrap)
+        result: dict[str, Any] = {
+            "destinations": [
+                item for item in projected
+                if item["provider"] == "telegram" and item["status"] == "supported"
+            ]
+        }
         pool = getattr(self.providers.gemini, "pool", None)
         if pool is not None:
             result["gemini"] = {
@@ -516,7 +522,7 @@ class ProductStreetStoryService(StreetStoryService):
         eligible = {
             alias
             for alias, item in by_alias.items()
-            if item["status"] in {"supported", "needs_review"}
+            if item["provider"] == "telegram" and item["status"] == "supported"
         }
         if not set(requested_aliases).issubset(eligible):
             raise PermanentProviderError("Requested destination is not eligible in current VibePublish bootstrap")
