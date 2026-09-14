@@ -1,0 +1,22 @@
+[Unit]
+Description=Street Story backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=streetstory
+Group=streetstory
+WorkingDirectory=/opt/street-story
+EnvironmentFile=/etc/street-story.env
+ExecStart=/opt/street-story/.venv/bin/uvicorn street_story.app:app --app-dir /opt/street-story/backend --host 127.0.0.1 --port 8080 --workers 1
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/street-story
+
+[Install]
+WantedBy=multi-user.target
