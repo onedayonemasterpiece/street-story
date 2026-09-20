@@ -190,14 +190,36 @@ class FeedProjectionInstrumentedTest {
                     assertVisible(findByDescription(root, "record-finish"))
                     assertEquals(10, collectByPrefix(root, "story-thread-").size)
                     assertNotNull(findByDescription(root, "draft-collapsed-${target.clientStoryId}"))
-                    val scroll = requireNotNull(findByDescription(root, "story-feed")) as ScrollView
-                    assertTrue(scroll.scrollY > 0)
-                    assertTrue(abs(scroll.scrollY - scrollBeforeRecreate) <= 120)
                 }
+                assertTrue(
+                    "feed scroll position was not restored after activity recreation",
+                    waitForRestoredScroll(scenario, scrollBeforeRecreate),
+                )
             }
         } finally {
             store.activeVoiceSession()?.takeIf { it.sessionId == active.sessionId }?.let { store.discardVoiceSession(it.sessionId) }
         }
+    }
+
+    private fun waitForRestoredScroll(
+        scenario: ActivityScenario<MainActivity>,
+        expectedY: Int,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + 2_000
+        while (System.currentTimeMillis() < deadline) {
+            var restored = false
+            scenario.onActivity { activity ->
+                val root = activity.findViewById<android.view.View>(android.R.id.content)
+                val scroll = findByDescription(root, "story-feed") as? ScrollView
+                restored = scroll != null &&
+                    scroll.scrollY > 0 &&
+                    abs(scroll.scrollY - expectedY) <= 120
+            }
+            if (restored) return true
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+            Thread.sleep(50)
+        }
+        return false
     }
 
     private fun findByDescription(view: android.view.View, description: String): android.view.View? {
