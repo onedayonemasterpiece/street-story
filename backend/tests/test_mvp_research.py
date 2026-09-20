@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from street_story.config import Settings
-from street_story.mvp_research import MvpResearchStreetStoryService
+from street_story.mvp_research import MvpResearchMixin, MvpResearchStreetStoryService
 from street_story.service import ConflictError, ProviderBundle
 
 
@@ -239,6 +241,59 @@ def add_voice(svc, story_id: str, session_id: str, kind="initial"):
             ],
         },
     )
+
+
+class _DirectExecutor:
+    async def execute(self, operation, call):
+        assert operation == "grounded_research"
+        return await call("test-key", 5.0)
+
+
+class _DirectGemini:
+    def __init__(self):
+        self.executor = _DirectExecutor()
+        self.calls = []
+
+    async def _generate(self, api_key, timeout, contents, config):
+        self.calls.append((api_key, timeout, contents, config))
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "summary": "Проверено",
+                    "author_note": "",
+                    "facts": [],
+                },
+                ensure_ascii=False,
+            ),
+            candidates=[],
+        )
+
+
+class _ResearchProbe(MvpResearchMixin):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_grounded_research_avoids_search_plus_response_schema_on_flash_lite(tmp_path):
+    gemini = _DirectGemini()
+    probe = _ResearchProbe()
+    probe.providers = SimpleNamespace(gemini=gemini)
+
+    result = await probe._research_claims(
+        {"photo_path": str(tmp_path / "must-not-be-read.jpg"), "photo_mime_type": "image/jpeg"},
+        "Голосовой контекст",
+        {"status": "match", "candidate_id": "wiki:1", "candidate_name": "Бранденбургские ворота"},
+        [],
+    )
+
+    assert result["payload"]["summary"] == "Проверено"
+    assert len(gemini.calls) == 1
+    _api_key, _timeout, contents, config = gemini.calls[0]
+    assert len(contents) == 1 and isinstance(contents[0], str)
+    assert "Верни только один JSON-объект" in contents[0]
+    assert getattr(config, "response_json_schema", None) is None
+    assert getattr(config, "response_mime_type", None) is None
+    assert config.tools and getattr(config.tools[0], "google_search", None) is not None
 
 
 @pytest.mark.asyncio

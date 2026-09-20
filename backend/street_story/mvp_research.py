@@ -380,34 +380,15 @@ class MvpResearchMixin:
             raise PermanentProviderError("Gemini grounded research capability is unavailable")
         from google.genai import types
 
-        schema = {
-            "type": "object",
-            "properties": {
-                "summary": {"type": "string"},
-                "author_note": {"type": "string"},
-                "facts": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "claim_key": {"type": "string"},
-                            "text": {"type": "string"},
-                            "confidence": {"type": "number"},
-                            "source_urls": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["claim_key", "text", "confidence", "source_urls"],
-                    },
-                },
-            },
-            "required": ["summary", "author_note", "facts"],
-        }
         prompt = (
             "Ты исследователь Street Story. Идентичность объекта уже определена отдельным visual step; исследуй ИМЕННО этот объект. "
             "Используй Google Search grounding напрямую. Возвращай только проверяемые исторические/городские claims. "
             "claim_key — короткая стабильная семантическая идентичность утверждения, не зависящая от перефразирования. "
             "source_urls перечисляй только для источников, реально поддерживающих конкретный claim и реально увиденных через grounding. "
             "Не считай собственный ответ источником и не выдумывай цитаты. author_note может содержать только субъективное впечатление "
-            "пользователя из voice context, без добавленных исторических сведений.\n"
+            "пользователя из voice context, без добавленных исторических сведений. "
+            "Верни только один JSON-объект без Markdown и комментариев строго такой формы: "
+            '{"summary":"...","author_note":"...","facts":[{"claim_key":"...","text":"...","confidence":0.0,"source_urls":["https://..."]}]}.\\n'
             + json.dumps(
                 {
                     "confirmed_identity": identity,
@@ -417,22 +398,23 @@ class MvpResearchMixin:
                 ensure_ascii=False,
             )
         )
+        # Google Search + response schema is not supported by Gemini 3.1 Flash-Lite.
+        # Identity is already confirmed by the visual step, so research is text-only
+        # and uses Search grounding with an explicit JSON contract in the prompt.
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
-            response_mime_type="application/json",
-            response_json_schema=schema,
         )
-        photo = Path(story["photo_path"]).read_bytes()
 
         async def call(api_key, timeout):
-            response = await gemini._generate(
-                api_key,
-                timeout,
-                [types.Part.from_bytes(data=photo, mime_type=story["photo_mime_type"]), prompt],
-                config,
-            )
+            response = await gemini._generate(api_key, timeout, [prompt], config)
             try:
-                payload = json.loads(response.text or "{}")
+                raw = str(response.text or "").strip()
+                fence = "`" * 3
+                if raw.startswith(fence) and raw.endswith(fence):
+                    fenced = raw.splitlines()
+                    if len(fenced) >= 3 and fenced[0].strip().lower() in {fence, fence + "json"} and fenced[-1].strip() == fence:
+                        raw = "\n".join(fenced[1:-1]).strip()
+                payload = json.loads(raw or "{}")
                 if not isinstance(payload.get("summary"), str) or not isinstance(payload.get("author_note"), str):
                     raise ValueError
                 if not isinstance(payload.get("facts"), list):
