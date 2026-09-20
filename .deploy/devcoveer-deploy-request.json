@@ -2,5 +2,5 @@
   "schema_version": 1,
   "deploy": true,
   "requested_for": "street-story-devcoveer",
-  "note": "Deploy current branch HEAD to DevCoveer self-hosted runner; no provider effects."
+  "note": "Deploy current branch HEAD to DevCoveer self-hosted runner after Android SDK setup compatibility fix; no provider effects."
 }
