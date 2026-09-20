@@ -7,6 +7,7 @@ import pytest
 from tools.live_e2e import (
     Diagnostics,
     LiveE2EError,
+    WIKIMEDIA_USER_AGENT,
     complete_body,
     supported_facts,
     validate_telegram_destinations,
@@ -23,6 +24,12 @@ def make_fixture_photo() -> bytes:
         "0000000c49444154789c6360f8cf000000040001f6173855"
         "0000000049454e44ae426082"
     )
+
+
+def test_wikimedia_fixture_user_agent_has_contact_identity():
+    assert "bot" in WIKIMEDIA_USER_AGENT.lower()
+    assert "https://github.com/onedayonemasterpiece/street-story" in WIKIMEDIA_USER_AGENT
+    assert "public golden fixture" in WIKIMEDIA_USER_AGENT
 
 
 def test_generated_photo_is_real_png_and_manifest_is_exact():

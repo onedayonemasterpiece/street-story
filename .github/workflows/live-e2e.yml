@@ -172,7 +172,10 @@ jobs:
 
           root = pathlib.Path('live-android-fixtures')
           meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
-          request = urllib.request.Request(meta['download_url'], headers={'User-Agent': 'StreetStory-Live-E2E/4'})
+          request = urllib.request.Request(
+              meta['download_url'],
+              headers={'User-Agent': 'StreetStoryLiveE2EBot/5.0 (https://github.com/onedayonemasterpiece/street-story; public golden fixture)'},
+          )
           with urllib.request.urlopen(request, timeout=60) as response:
               photo = response.read()
           actual_sha1 = hashlib.sha1(photo).hexdigest()

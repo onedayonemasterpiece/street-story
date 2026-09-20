@@ -23,6 +23,9 @@ VISUAL_TIMEOUT_SECONDS = 12 * 60
 SOCIAL_TIMEOUT_SECONDS = 6 * 60
 OWNER_PROMPT_SHA256 = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
 FIXTURE_META_PATH = Path(__file__).with_name("golden_fixture.json")
+WIKIMEDIA_USER_AGENT = (
+    "StreetStoryLiveE2EBot/5.0 (https://github.com/onedayonemasterpiece/street-story; public golden fixture)"
+)
 INITIAL_VOICE_TEXTS = (
     "Я сфотографировал Бранденбургские ворота в Калининграде.",
     "Хочу понять историю этих ворот и когда появился их нынешний облик.",
@@ -189,7 +192,7 @@ def fixture_meta() -> dict[str, Any]:
 def download_fixture_photo(meta: dict[str, Any]) -> bytes:
     response = httpx.get(
         str(meta["download_url"]),
-        headers={"User-Agent": "StreetStory-Live-E2E/3 (+public test fixture)"},
+        headers={"User-Agent": WIKIMEDIA_USER_AGENT},
         timeout=HTTP_TIMEOUT,
         follow_redirects=True,
     )
