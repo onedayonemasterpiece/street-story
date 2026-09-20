@@ -3,9 +3,11 @@ package com.onedayonemasterpiece.streetstory
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.net.HttpURLConnection
@@ -17,6 +19,11 @@ class PhysicalDeviceLiveSmokeTest {
 
     @Test
     fun provisionedPhoneReachesExactLiveBackend() {
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue(
+            "Physical-device live smoke runs only through scripts/phone_live_acceptance.sh",
+            args.getString("street_story_physical_device_live") == "true",
+        )
         val config = ConfigStore(context)
         assertTrue("Phone must be provisioned before live smoke", config.configured)
         val backend = requireNotNull(config.backendUrl) { "Configured backend URL is missing" }.trimEnd('/')
