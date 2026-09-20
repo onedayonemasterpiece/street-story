@@ -1,0 +1,78 @@
+name: Street Story sealed DevCoveer config
+
+on:
+  push:
+    branches:
+      - work/street-story-mvp-20260908
+    paths:
+      - .deploy/devcoveer-seal-request.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
+      STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
+      SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+    steps:
+      - name: Seal live configuration to DevCoveer one-time key
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          cat > public.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA3UWGORzzvKU7Cq+6XppD
+          TkFDgKRiDnA2oDOOEciwSRS6g0oKmvqQDqpW9r42V96OrPwmQCATdjUNyKwcZPSi
+          f1WEUGHx7093fNgOKe2WAy4f2XPwiJ2ku1timI/ciaxuVkqT86EScSXxuf7GbTdZ
+          TUUhCy4zwrU0Ab5NDUYyx4GMsM6U5+xjEeH8LO/Q8ggAFla6EIl7A61Wrx9YdouT
+          X068OYGf4zZfNMqdFJol257JUac/ekPVwMy6+8B/qRwe9Suxmn8Oa1ceSzQ65p9C
+          9e3zcSupaUJue4LoX42IbZwAHRSyxLP2q/l+RVKHdNl3zKH92vtmu44WH24vTMOE
+          xd4b4KGpy32S36x3K2P58VSIinHIvlmO6oU/7MfjFeKjf2ep22DErrrg5nQ6dSIt
+          NlcJ/lv9RGLds7JOn6gTGFB3Yi6SIFlK3xsSDa5nmWG1FkzKC5jzrr+6XdtHyvD8
+          V5MEVca9el41s0MweMwmKVTRaNrmPNFn0LlRKlf59oBW6AQdZCKIFZnAwpJIJI3t
+          OEIKlAz4PYW/479xiJu+VIGO92AB5t4GdKIFSFYxFbD/3gJSm16jubCqBbazPCXf
+          s2sxb4JxxIEF4mfTRIH84Gv0SmPD2W/EZpPY/KRCJtZBGWnPmaver+UtJ+7wZzif
+          t6VYvebR1ymkheaWQ+k1AwMCAwEAAQ==
+          -----END PUBLIC KEY-----
+          PEM
+
+          seal() {
+            local value="$1"
+            printf '%s' "$value" |
+              openssl pkeyutl -encrypt -pubin -inkey public.pem                 -pkeyopt rsa_padding_mode:oaep                 -pkeyopt rsa_oaep_md:sha256 |
+              base64 -w0
+          }
+
+          if [ -n "${STREET_STORY_LIVE_TOKEN:-}" ]; then
+            echo "PRESENCE_STREET_STORY_LIVE_TOKEN=SET"
+          else
+            echo "PRESENCE_STREET_STORY_LIVE_TOKEN=MISSING"
+            exit 2
+          fi
+          if [ -n "${STREET_STORY_LIVE_BASE_URL:-}" ]; then
+            echo "PRESENCE_STREET_STORY_LIVE_BASE_URL=SET"
+          else
+            echo "PRESENCE_STREET_STORY_LIVE_BASE_URL=MISSING"
+            exit 3
+          fi
+          if [ -n "${SAFE_TEST_DESTINATION_ALIAS:-}" ]; then
+            echo "PRESENCE_SAFE_TEST_DESTINATION_ALIAS=SET"
+          else
+            echo "PRESENCE_SAFE_TEST_DESTINATION_ALIAS=MISSING"
+          fi
+
+          printf 'SEALED_STREET_STORY_LIVE_TOKEN='
+          seal "$STREET_STORY_LIVE_TOKEN"
+          printf '\n'
+          printf 'SEALED_STREET_STORY_LIVE_BASE_URL='
+          seal "$STREET_STORY_LIVE_BASE_URL"
+          printf '\n'
+          printf 'SEALED_SAFE_TEST_DESTINATION_ALIAS='
+          seal "${SAFE_TEST_DESTINATION_ALIAS:-}"
+          printf '\n'
