@@ -236,6 +236,30 @@ def materialize_release(sha: str, tree_sha: str) -> Path:
     return release
 
 
+def _pip_driver() -> str:
+    candidates = [
+        Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python"),
+        Path("/home/dev/.local/opt/vibepublish/bin/python"),
+    ]
+    system_python = shutil.which("python3")
+    if system_python:
+        candidates.append(Path(system_python))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        result = subprocess.run(
+            [str(candidate), "-m", "pip", "--version"],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            return str(candidate)
+    raise DeployError("no installed pip driver is available for the Python 3.12 runtime")
+
+
 def ensure_venv(release: Path) -> Path:
     source = release / "source"
     requirements = source / "backend/requirements.txt"
@@ -245,21 +269,41 @@ def ensure_venv(release: Path) -> Path:
     python = shutil.which("python3.12")
     if not python:
         raise DeployError("python3.12 is unavailable")
-    if not (venv / "bin/python").is_file():
-        run([python, "-m", "venv", str(venv)], timeout=180)
-        run(
-            [
-                str(venv / "bin/pip"),
-                "install",
-                "--disable-pip-version-check",
-                "-r",
-                str(requirements),
-            ],
-            timeout=900,
-        )
+
+    target_python = venv / "bin/python"
+    if not target_python.is_file():
+        if venv.exists():
+            shutil.rmtree(venv)
+        run([python, "-m", "venv", "--without-pip", str(venv)], timeout=180)
+    if not target_python.is_file():
+        raise DeployError("Python 3.12 venv was not created")
+
+    driver = _pip_driver()
     run(
         [
-            str(venv / "bin/python"),
+            driver,
+            "-m",
+            "pip",
+            "--python",
+            str(target_python),
+            "install",
+            "--disable-pip-version-check",
+            "-r",
+            str(requirements),
+        ],
+        timeout=900,
+    )
+    run(
+        [
+            str(target_python),
+            "-c",
+            "import fastapi,httpx,pydantic,uvicorn",
+        ],
+        timeout=30,
+    )
+    run(
+        [
+            str(target_python),
             "-m",
             "compileall",
             "-q",
