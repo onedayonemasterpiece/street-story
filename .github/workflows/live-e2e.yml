@@ -127,7 +127,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         if: >-
           (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
