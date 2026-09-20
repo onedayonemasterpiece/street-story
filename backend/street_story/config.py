@@ -93,14 +93,39 @@ class Settings:
                 if not value:
                     raise ValueError('A configured GEMINI_API_KEY_REFS entry is unset or empty')
                 keys.append(value)
+        else:
+            discovered: list[tuple[int, str, str]] = []
+            for name, raw in os.environ.items():
+                match = re.fullmatch(r'GOOGLE_API_KEY(?:(\d+))?', name)
+                value = raw.strip()
+                if not match or not value:
+                    continue
+                ordinal = int(match.group(1) or '1')
+                if 1 <= ordinal <= 32:
+                    discovered.append((ordinal, name, value))
+            discovered.sort(key=lambda item: (item[0], item[1]))
+            refs = [name for _ordinal, name, _value in discovered]
+            keys = [value for _ordinal, _name, value in discovered]
+        quota_url = (
+            os.getenv('GEMINI_QUOTA_SUPABASE_URL')
+            or os.getenv('GOOGLE_AI_LIMITER_SUPABASE_URL')
+            or os.getenv('SUPABASE_URL')
+            or ''
+        ).rstrip('/') or None
+        quota_key = (
+            os.getenv('GEMINI_QUOTA_SUPABASE_KEY')
+            or os.getenv('GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY')
+            or os.getenv('SUPABASE_SERVICE_KEY')
+            or os.getenv('SUPABASE_KEY')
+        )
         return cls(
             data_dir=Path(os.getenv('DATA_DIR', './data')).expanduser().resolve(),
             device_token=os.getenv('STREET_STORY_DEVICE_TOKEN', '').strip(),
             gemini_api_key=os.getenv('GEMINI_API_KEY', '').strip(),
             gemini_api_keys=tuple(SecretStr(k) for k in dict.fromkeys(keys)),
             gemini_key_refs=tuple(refs),
-            gemini_quota_supabase_url=os.getenv('GEMINI_QUOTA_SUPABASE_URL', '').rstrip('/') or None,
-            gemini_quota_supabase_key=os.getenv('GEMINI_QUOTA_SUPABASE_KEY'),
+            gemini_quota_supabase_url=quota_url,
+            gemini_quota_supabase_key=quota_key,
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
             vibepublish_bearer_token=os.getenv('VIBEPUBLISH_BEARER_TOKEN'),
