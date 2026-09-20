@@ -1,6 +1,0 @@
-{
-  "schema_version": 1,
-  "requested_for": "street-story-devcoveer",
-  "seal_public_key_fingerprint_context": "src_b06b1176f11c86325b614177",
-  "note": "Print public Street Story hostname only from the configured HTTPS base URL; no secret values."
-}
