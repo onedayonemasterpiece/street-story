@@ -16,6 +16,7 @@ from .db import Store
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
+WIKIPEDIA_USER_AGENT = "StreetStoryWikipediaBot/0.1 (https://github.com/onedayonemasterpiece/street-story; nearby research)"
 
 
 def _stable_cache_key(prefix: str, payload: Any) -> str:
@@ -89,12 +90,12 @@ class WikipediaClient:
         if cached is not None:
             return cached
         own = self.http is None
-        client = self.http or httpx.AsyncClient(timeout=20, headers={"User-Agent": "StreetStory/0.1"})
+        client = self.http or httpx.AsyncClient(timeout=20, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
         try:
             geo = await client.get(self.endpoint, params={
                 "action": "query", "list": "geosearch", "gscoord": f"{lat}|{lon}", "gsradius": 750,
                 "gslimit": 6, "format": "json", "formatversion": 2,
-            })
+            }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
             geo.raise_for_status()
             hits = geo.json().get("query", {}).get("geosearch", [])[:6]
             if not hits:
@@ -104,7 +105,7 @@ class WikipediaClient:
             extracts = await client.get(self.endpoint, params={
                 "action": "query", "pageids": ids, "prop": "extracts|info", "exintro": 1,
                 "explaintext": 1, "inprop": "url", "format": "json", "formatversion": 2,
-            })
+            }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
             extracts.raise_for_status()
             pages = extracts.json().get("query", {}).get("pages", [])
             result = [{
