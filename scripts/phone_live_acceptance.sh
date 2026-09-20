@@ -61,7 +61,7 @@ if "${ADB[@]}" shell "run-as $PKG test -e files/adb-device-token"; then
   exit 5
 fi
 
-OUT="$("${ADB[@]}" shell am instrument -w   -e class "$PKG.PhysicalDeviceLiveSmokeTest"   "$RUNNER")"
+OUT="$("${ADB[@]}" shell am instrument -w   -e street_story_physical_device_live true   -e class "$PKG.PhysicalDeviceLiveSmokeTest"   "$RUNNER")"
 printf '%s\n' "$OUT"
 grep -q 'OK (1 test)' <<<"$OUT"
 
