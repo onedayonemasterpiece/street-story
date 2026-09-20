@@ -29,7 +29,7 @@ from typing import Any, Mapping
 REPOSITORY = "onedayonemasterpiece/street-story"
 BRANCH = "work/street-story-mvp-20260908"
 SERVICE = "street-story.service"
-PORT = 8127
+PORT = 8188
 VIBE_ALIAS = "lovekenig_tg"
 VIBE_BASE_URL = "http://127.0.0.1:18765"
 
