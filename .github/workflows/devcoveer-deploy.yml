@@ -1,0 +1,371 @@
+name: Street Story DevCoveer deploy
+
+on:
+  push:
+    branches:
+      - work/street-story-mvp-20260908
+    paths:
+      - .deploy/devcoveer-deploy-request.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: street-story-devcoveer-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, my-data-hub-devstand]
+    timeout-minutes: 35
+    env:
+      SERVICE_NAME: street-story.service
+      APP_PORT: "8080"
+      STATE_ROOT: /home/dev/.local/state/street-story
+      RELEASES_ROOT: /home/dev/.local/share/street-story/releases
+      CURRENT_LINK: /home/dev/.local/share/street-story/current
+      VIBE_DB: /home/dev/.local/state/vibepublish/vibepublish.sqlite3
+      VIBE_OWNER_TOKEN_FILE: /home/dev/.local/state/vibepublish/owner-token.txt
+      VIBE_PY: /home/dev/.local/opt/vibepublish/bin/python
+      VIBE_SOURCE: /home/dev/projects/vibepublish
+      VIBE_BASE_URL: http://127.0.0.1:18765
+      STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
+      STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
+      SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify deployment request and exact source
+        run: |
+          set -euo pipefail
+          test -s .deploy/devcoveer-deploy-request.json
+          test -n "$STREET_STORY_LIVE_TOKEN"
+          test -n "$STREET_STORY_LIVE_BASE_URL"
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          request = json.loads(pathlib.Path('.deploy/devcoveer-deploy-request.json').read_text())
+          if request.get('deploy') is not True:
+              raise SystemExit('deployment request is not enabled')
+          head = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()
+          if head != os.environ['GITHUB_SHA']:
+              raise SystemExit('checkout SHA mismatch')
+          if not re.fullmatch(r'[0-9a-f]{40}', head):
+              raise SystemExit('invalid source SHA')
+          if not os.environ['STREET_STORY_LIVE_BASE_URL'].strip().startswith('https://'):
+              raise SystemExit('STREET_STORY_LIVE_BASE_URL must be HTTPS')
+          alias = os.environ.get('SAFE_TEST_DESTINATION_ALIAS','').strip()
+          if alias and not re.fullmatch(r'[a-z][a-z0-9_-]{0,79}', alias):
+              raise SystemExit('SAFE_TEST_DESTINATION_ALIAS is invalid')
+          PY
+          echo "SOURCE_SHA=$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "RELEASE_ROOT=$RELEASES_ROOT/$GITHUB_SHA" >> "$GITHUB_ENV"
+
+      - name: Materialize exact release and Python runtime
+        run: |
+          set -euo pipefail
+          umask 077
+          py="$(command -v python3.12 || command -v python3)"
+          "$py" - <<'PY'
+          import sys
+          if sys.version_info[:2] != (3, 12):
+              raise SystemExit(f'Python 3.12 required, got {sys.version}')
+          PY
+          mkdir -p "$STATE_ROOT" "$RELEASES_ROOT" "$(dirname "$CURRENT_LINK")"
+          chmod 700 "$STATE_ROOT" "$RELEASES_ROOT" "$(dirname "$CURRENT_LINK")"
+          rm -rf "$RELEASE_ROOT"
+          mkdir -p "$RELEASE_ROOT/source"
+          chmod 700 "$RELEASE_ROOT" "$RELEASE_ROOT/source"
+          git archive "$SOURCE_SHA" | tar -x -C "$RELEASE_ROOT/source"
+          "$py" -m venv "$RELEASE_ROOT/venv"
+          "$RELEASE_ROOT/venv/bin/pip" install --disable-pip-version-check -r "$RELEASE_ROOT/source/backend/requirements.txt"
+          "$RELEASE_ROOT/venv/bin/python" -m compileall -q "$RELEASE_ROOT/source/backend/street_story"
+          PYTHONPATH="$RELEASE_ROOT/source/backend" "$RELEASE_ROOT/venv/bin/python" - <<'PY'
+          import street_story.buildinfo, street_story.config, street_story.providers
+          print('Street Story deployment imports: OK')
+          PY
+          ln -sfn "$RELEASE_ROOT" "$CURRENT_LINK.new"
+          mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+
+      - name: Build minimal private Gemini configuration
+        run: |
+          set -euo pipefail
+          umask 077
+          test -r /home/dev/.env
+          python3 - <<'PY'
+          import json, os, pathlib, shlex
+          values = {}
+          for raw in pathlib.Path('/home/dev/.env').read_text(encoding='utf-8', errors='replace').splitlines():
+              line = raw.strip()
+              if not line or line.startswith('#') or '=' not in line:
+                  continue
+              key, value = line.split('=', 1)
+              key, value = key.strip(), value.strip()
+              if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                  value = value[1:-1]
+              values[key] = value
+          refs = [n for n in ('GOOGLE_API_KEY','GOOGLE_API_KEY2','GOOGLE_API_KEY3','GOOGLE_API_KEY4','GOOGLE_API_KEY5') if values.get(n)]
+          if not refs:
+              raise SystemExit('No registered Google API key refs found')
+          quota_url = values.get('GOOGLE_AI_LIMITER_SUPABASE_URL') or values.get('SUPABASE_URL')
+          quota_key = values.get('GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY') or values.get('SUPABASE_SERVICE_KEY') or values.get('SUPABASE_KEY')
+          if not quota_url or not quota_key:
+              raise SystemExit('Shared Google AI quota controller credentials are absent')
+          selected = {n: values[n] for n in refs}
+          selected.update({
+              'GEMINI_API_KEY_REFS': json.dumps(refs, separators=(',',':')),
+              'GEMINI_MODEL': 'gemini-3.1-flash-lite',
+              'GEMINI_QUOTA_SUPABASE_URL': quota_url,
+              'GEMINI_QUOTA_SUPABASE_KEY': quota_key,
+          })
+          path = pathlib.Path(os.environ['STATE_ROOT']) / 'providers.env'
+          with path.open('w', encoding='utf-8') as f:
+              for key, value in selected.items():
+                  f.write(f'{key}={shlex.quote(str(value))}\n')
+          path.chmod(0o600)
+          PY
+
+      - name: Create or reuse dedicated Street Story Vibe principal
+        run: |
+          set -euo pipefail
+          umask 077
+          test -x "$VIBE_PY"
+          test -d "$VIBE_SOURCE"
+          test -r "$VIBE_DB"
+          test -r "$VIBE_OWNER_TOKEN_FILE"
+          token_file="$STATE_ROOT/vibepublish-token"
+          principal_file="$STATE_ROOT/vibepublish-principal"
+          if [ ! -s "$token_file" ]; then
+            principal="street-story-runtime"
+            exists="$("$VIBE_PY" - <<'PY'
+          import sqlite3
+          db=sqlite3.connect('file:/home/dev/.local/state/vibepublish/vibepublish.sqlite3?mode=ro', uri=True)
+          print('1' if db.execute("select 1 from principals where id='street-story-runtime' and active=1").fetchone() else '0')
+          PY
+            )"
+            if [ "$exists" = "1" ]; then
+              principal="street-story-runtime-${GITHUB_SHA:0:12}"
+            fi
+            export VIBEPUBLISH_SERVICE_TOKEN="$(cat "$VIBE_OWNER_TOKEN_FILE")"
+            cd "$VIBE_SOURCE"
+            principal_json="$("$VIBE_PY" -m social_operations.cli --db "$VIBE_DB" principal --tenant devcoveer2 --principal "$principal")"
+            PRINCIPAL_JSON="$principal_json" TOKEN_FILE="$token_file" "$VIBE_PY" - <<'PY'
+          import json, os, pathlib
+          token=json.loads(os.environ['PRINCIPAL_JSON']).get('service_token','')
+          if len(token) < 20:
+              raise SystemExit('Vibe principal token creation failed')
+          p=pathlib.Path(os.environ['TOKEN_FILE'])
+          p.write_text(token+'\n')
+          p.chmod(0o600)
+          PY
+            printf '%s\n' "$principal" > "$principal_file"
+            chmod 600 "$principal_file"
+            unset principal_json VIBEPUBLISH_SERVICE_TOKEN
+          fi
+          test -s "$principal_file"
+          principal="$(cat "$principal_file")"
+          export VIBEPUBLISH_SERVICE_TOKEN="$(cat "$VIBE_OWNER_TOKEN_FILE")"
+          metadata="$("$VIBE_PY" - <<'PY'
+          import sqlite3
+          db=sqlite3.connect('file:/home/dev/.local/state/vibepublish/vibepublish.sqlite3?mode=ro', uri=True)
+          row=db.execute("""
+              select d.native_id, c.id
+              from bindings b
+              join destinations d on d.id=b.destination_id
+              join connections c on c.id=d.connection_id
+              where b.principal_id='owner' and b.alias='lovekenig_tg'
+                and b.active=1 and c.active=1 and c.provider='telegram'
+              limit 1
+          """).fetchone()
+          if not row:
+              raise SystemExit('Current production lovekenig_tg binding not found')
+          print(row[0], row[1])
+          PY
+          )"
+          native_id="$(awk '{print $1}' <<<"$metadata")"
+          connection_id="$(awk '{print $2}' <<<"$metadata")"
+
+          bind_if_missing() {
+            alias="$1"
+            binding_label="$2"
+            found="$("$VIBE_PY" - "$principal" "$alias" <<'PY'
+          import sqlite3, sys
+          principal, alias = sys.argv[1], sys.argv[2]
+          db=sqlite3.connect('file:/home/dev/.local/state/vibepublish/vibepublish.sqlite3?mode=ro', uri=True)
+          print('1' if db.execute('select 1 from bindings where principal_id=? and alias=? and active=1',(principal,alias)).fetchone() else '0')
+          PY
+            )"
+            if [ "$found" != "1" ]; then
+              cd "$VIBE_SOURCE"
+              "$VIBE_PY" -m social_operations.cli --db "$VIBE_DB" bind                 --principal "$principal" --alias "$alias" --connection "$connection_id"                 --native-id "$native_id" --label "$binding_label" >/dev/null
+            fi
+          }
+
+          bind_if_missing "lovekenig_tg" "Полюбить Калининград Telegram"
+          if [ -n "$SAFE_TEST_DESTINATION_ALIAS" ] && [ "$SAFE_TEST_DESTINATION_ALIAS" != "lovekenig_tg" ]; then
+            bind_if_missing "$SAFE_TEST_DESTINATION_ALIAS" "Street Story E2E Telegram"
+          fi
+          unset VIBEPUBLISH_SERVICE_TOKEN
+
+          VIBE_TOKEN_FILE="$token_file" "$VIBE_PY" - <<'PY'
+          import json, os, pathlib, urllib.request
+          token=pathlib.Path(os.environ['VIBE_TOKEN_FILE']).read_text().strip()
+          req=urllib.request.Request('http://127.0.0.1:18765/v1/bootstrap', headers={'Authorization':'Bearer '+token,'Accept':'application/json'})
+          with urllib.request.urlopen(req, timeout=10) as response:
+              data=json.load(response)
+          aliases={d.get('alias') for d in data.get('destinations',[]) if isinstance(d,dict)}
+          if 'lovekenig_tg' not in aliases:
+              raise SystemExit('Street Story Vibe principal cannot see lovekenig_tg')
+          safe=os.environ.get('SAFE_TEST_DESTINATION_ALIAS','').strip()
+          if safe and safe not in aliases:
+              raise SystemExit('SAFE_TEST_DESTINATION_ALIAS is not visible to Street Story principal')
+          print('Street Story Vibe bootstrap: OK')
+          PY
+
+      - name: Create private Street Story service environment
+        run: |
+          set -euo pipefail
+          umask 077
+          token_file="$STATE_ROOT/vibepublish-token"
+          test -s "$token_file"
+          SERVICE_ENV="$STATE_ROOT/service.env" VIBE_TOKEN_FILE="$token_file" "$RELEASE_ROOT/venv/bin/python" - <<'PY'
+          import os, pathlib, shlex
+          live=os.environ['STREET_STORY_LIVE_TOKEN'].strip()
+          if len(live) < 20:
+              raise SystemExit('STREET_STORY_LIVE_TOKEN is missing or invalid')
+          vibe=pathlib.Path(os.environ['VIBE_TOKEN_FILE']).read_text().strip()
+          values={
+              'DATA_DIR': os.environ['STATE_ROOT'] + '/data',
+              'STREET_STORY_DEVICE_TOKEN': live,
+              'VIBEPUBLISH_BASE_URL': os.environ['VIBE_BASE_URL'],
+              'VIBEPUBLISH_BEARER_TOKEN': vibe,
+              'STREET_STORY_DEPLOY_SHA': os.environ['SOURCE_SHA'],
+              'STREET_STORY_OSM_USER_AGENT': 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)',
+              'WORKER_POLL_SECONDS': '1',
+              'PROCESSING_DELAYED_AFTER_SECONDS': '1800',
+          }
+          p=pathlib.Path(os.environ['SERVICE_ENV'])
+          with p.open('w',encoding='utf-8') as f:
+              for k,v in values.items():
+                  f.write(f'{k}={shlex.quote(str(v))}\n')
+          p.chmod(0o600)
+          pathlib.Path(values['DATA_DIR']).mkdir(parents=True, exist_ok=True, mode=0o700)
+          PY
+
+      - name: Install and start user service
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/systemd/user"
+          cat > "$HOME/.config/systemd/user/$SERVICE_NAME" <<EOF
+          [Unit]
+          Description=Street Story backend
+          After=network-online.target vibepublish.service
+          Wants=network-online.target
+          Requires=vibepublish.service
+
+          [Service]
+          Type=simple
+          WorkingDirectory=$RELEASE_ROOT/source
+          EnvironmentFile=$STATE_ROOT/providers.env
+          EnvironmentFile=$STATE_ROOT/service.env
+          ExecStart=$RELEASE_ROOT/venv/bin/uvicorn street_story.app:app --app-dir $RELEASE_ROOT/source/backend --host 127.0.0.1 --port $APP_PORT --workers 1
+          Restart=on-failure
+          RestartSec=3
+          TimeoutStopSec=30
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=read-only
+          ReadWritePaths=$STATE_ROOT
+          UMask=0077
+
+          [Install]
+          WantedBy=default.target
+          EOF
+          systemctl --user daemon-reload
+          systemctl --user enable --now "$SERVICE_NAME"
+
+      - name: Verify local exact-SHA health and capabilities
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "http://127.0.0.1:$APP_PORT/healthz" > "$RUNNER_TEMP/street-health.json"; then break; fi
+            sleep 2
+          done
+          test -s "$RUNNER_TEMP/street-health.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          data=json.loads(pathlib.Path(os.environ['RUNNER_TEMP'],'street-health.json').read_text())
+          if data.get('ok') is not True or data.get('source_sha') != os.environ['SOURCE_SHA']:
+              raise SystemExit('local health SHA mismatch')
+          PY
+          curl --fail --silent --show-error             -H "Authorization: Bearer $STREET_STORY_LIVE_TOKEN"             "http://127.0.0.1:$APP_PORT/v1/capabilities" > "$RUNNER_TEMP/street-capabilities.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          data=json.loads(pathlib.Path(os.environ['RUNNER_TEMP'],'street-capabilities.json').read_text())
+          rows=data.get('destinations') or []
+          if not any(isinstance(r,dict) and r.get('alias')=='lovekenig_tg' and r.get('provider')=='telegram' for r in rows):
+              raise SystemExit('current Vibe projection lacks lovekenig_tg')
+          safe=os.environ.get('SAFE_TEST_DESTINATION_ALIAS','').strip()
+          if safe and not any(isinstance(r,dict) and r.get('alias')==safe and r.get('provider')=='telegram' for r in rows):
+              raise SystemExit('current Vibe projection lacks SAFE_TEST_DESTINATION_ALIAS')
+          PY
+
+      - name: Verify public HTTPS exact-SHA health
+        run: |
+          set -euo pipefail
+          base="${STREET_STORY_LIVE_BASE_URL%/}"
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error "$base/healthz" > "$RUNNER_TEMP/street-public-health.json"; then break; fi
+            sleep 3
+          done
+          test -s "$RUNNER_TEMP/street-public-health.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          data=json.loads(pathlib.Path(os.environ['RUNNER_TEMP'],'street-public-health.json').read_text())
+          if data.get('ok') is not True or data.get('source_sha') != os.environ['SOURCE_SHA']:
+              raise SystemExit('public health SHA mismatch')
+          PY
+
+      - name: Write secret-free evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          def load(name):
+              p=pathlib.Path(os.environ['RUNNER_TEMP'],name)
+              if not p.is_file(): return None
+              try: return json.loads(p.read_text())
+              except Exception: return None
+          active=subprocess.run(['systemctl','--user','is-active',os.environ['SERVICE_NAME']],text=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL).stdout.strip()
+          caps=load('street-capabilities.json') or {}
+          destinations=[{k:r.get(k) for k in ('alias','label','provider','status')} for r in (caps.get('destinations') or []) if isinstance(r,dict)]
+          evidence={
+              'schema_version':1,
+              'source_sha':os.environ.get('SOURCE_SHA'),
+              'release_root':os.environ.get('RELEASE_ROOT'),
+              'state_root':os.environ.get('STATE_ROOT'),
+              'service':os.environ.get('SERVICE_NAME'),
+              'service_active':active=='active',
+              'loopback_port':int(os.environ['APP_PORT']),
+              'local_health':load('street-health.json'),
+              'public_health':load('street-public-health.json'),
+              'vibe_principal_file_present':pathlib.Path(os.environ['STATE_ROOT'],'vibepublish-principal').is_file(),
+              'vibe_token_disclosed':False,
+              'device_token_disclosed':False,
+              'safe_alias_configured':bool(os.environ.get('SAFE_TEST_DESTINATION_ALIAS','').strip()),
+              'destinations':destinations,
+          }
+          pathlib.Path(os.environ['RUNNER_TEMP'],'street-story-devcoveer-deployment.json').write_text(json.dumps(evidence,indent=2,ensure_ascii=False)+'\n')
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: street-story-devcoveer-deployment-${{ github.run_id }}
+          path: ${{ runner.temp }}/street-story-devcoveer-deployment.json
+          if-no-files-found: warn
+          retention-days: 14
