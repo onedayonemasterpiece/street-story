@@ -46,7 +46,7 @@ jobs:
       - name: Verify deployed backend checkout
         working-directory: backend
         env:
-          STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
+          STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_EXPECTED_BACKEND_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           python - <<'PY'
@@ -112,7 +112,7 @@ jobs:
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-smoke')
         working-directory: backend
         env:
-          STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
+          STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
           SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
           LIVE_E2E_MODE: smoke
@@ -152,7 +152,7 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
-          STREET_STORY_LIVE_BASE_URL: ${{ secrets.STREET_STORY_LIVE_BASE_URL }}
+          STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
           SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
         run: |
