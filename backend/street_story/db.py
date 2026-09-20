@@ -130,6 +130,11 @@ CREATE TABLE IF NOT EXISTS gemini_key_health(
  advisory_until REAL NOT NULL DEFAULT 0, advisory_load REAL NOT NULL DEFAULT 0, advisory_observed_at REAL NOT NULL DEFAULT 0,
  PRIMARY KEY(key_id,model,operation)
 );
+CREATE TABLE IF NOT EXISTS gemini_model_blocks(
+ key_id TEXT NOT NULL REFERENCES gemini_credentials(key_id),
+ model TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL,
+ PRIMARY KEY(key_id,model)
+);
 CREATE TABLE IF NOT EXISTS gemini_quota_journal(
  request_uid TEXT PRIMARY KEY, state TEXT NOT NULL, deadline REAL NOT NULL,
  finalize_json TEXT, created_at REAL NOT NULL

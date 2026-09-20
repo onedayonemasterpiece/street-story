@@ -178,7 +178,57 @@ def test_google_retry_info_and_permanent_schema_classification():
     e.details = {'error': {'details': [{'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '123.5s'}]}}
     assert classify_error(e, now=1000).retry_after == 123.5
     assert classify_error(ProviderError(400, status='INVALID_ARGUMENT'), now=1000).category == 'invalid_request'
-    assert classify_error(ProviderError(404), now=1000).category == 'unsupported_model'
+    unsupported = classify_error(ProviderError(404), now=1000)
+    assert unsupported.category == 'unsupported_model'
+    assert unsupported.permanent is True and unsupported.block_model is True
+
+
+@pytest.mark.asyncio
+async def test_unsupported_model_rotates_and_persists_per_key_model(tmp_path):
+    p, executor, clock = pool(tmp_path, keys=KEYS[:2])
+    calls = []
+
+    async def call(key, timeout):
+        calls.append(key)
+        if key == KEYS[0]:
+            raise ProviderError(404)
+        return 'ok'
+
+    assert await executor.execute('grounded_research', call) == 'ok'
+    assert calls == list(KEYS[:2])
+    assert p.snapshot()['model_blocked_keys'] == 1
+
+    restarted = GeminiKeyPool(p.store, p.keys, p.model, clock=clock)
+    calls.clear()
+    assert await GeminiExecutor(restarted).execute('transcription', call) == 'ok'
+    assert calls == [KEYS[1]]
+    assert restarted.snapshot('transcription')['model_blocked_keys'] == 1
+
+
+@pytest.mark.asyncio
+async def test_all_unsupported_model_keys_fail_only_after_rotation_and_stay_blocked(tmp_path):
+    p, executor, clock = pool(tmp_path, keys=KEYS[:2])
+    calls = []
+
+    async def unsupported(key, timeout):
+        calls.append(key)
+        raise ProviderError(404)
+
+    with pytest.raises(PermanentProviderError):
+        await executor.execute('grounded_research', unsupported)
+    assert calls == list(KEYS[:2])
+    assert p.snapshot()['model_blocked_keys'] == 2
+
+    restarted = GeminiKeyPool(p.store, p.keys, p.model, clock=clock)
+    calls.clear()
+
+    async def should_not_run(key, timeout):
+        calls.append(key)
+        return 'unexpected'
+
+    with pytest.raises(PermanentProviderError):
+        await GeminiExecutor(restarted).execute('grounded_research', should_not_run)
+    assert calls == []
 
 
 @pytest.mark.asyncio

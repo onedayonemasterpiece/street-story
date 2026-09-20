@@ -47,6 +47,7 @@ class Failure:
     retry_after: float | None = None
     permanent: bool = False
     disable_key: bool = False
+    block_model: bool = False
 
 
 class GeminiUnavailable(RetryableProviderError):
@@ -115,7 +116,9 @@ def classify_error(error: Exception, *, now: float) -> Failure:
     if isinstance(error, MalformedProviderResponse):
         return Failure('malformed_response', code, retry)
     if code == 404 or status == 'NOT_FOUND':
-        return Failure('unsupported_model', code, permanent=True)
+        # Model availability can differ by API key/project. Quarantine this
+        # key+model durably, but let the executor try another configured key.
+        return Failure('unsupported_model', code, permanent=True, block_model=True)
     if code is not None and 400 <= code <= 499 or status in ('INVALID_ARGUMENT', 'FAILED_PRECONDITION') or isinstance(error, (ValidationError, ValueError, TypeError)):
         return Failure('invalid_request', code, permanent=True)
     if isinstance(error, PermanentProviderError):
@@ -140,7 +143,12 @@ class GeminiKeyPool:
                     db.execute('INSERT OR IGNORE INTO gemini_key_health(key_id,model,operation) VALUES(?,?,?)', (key_id, model, operation))
 
     def _rows(self, db, operation):
-        rows = db.execute('SELECT h.*,c.disabled,c.busy_until FROM gemini_key_health h JOIN gemini_credentials c USING(key_id) WHERE h.model=? AND h.operation=?', (self.model, operation))
+        rows = db.execute(
+            'SELECT h.*,c.disabled,c.busy_until,'
+            'EXISTS(SELECT 1 FROM gemini_model_blocks b WHERE b.key_id=h.key_id AND b.model=h.model) AS model_blocked '
+            'FROM gemini_key_health h JOIN gemini_credentials c USING(key_id) WHERE h.model=? AND h.operation=?',
+            (self.model, operation),
+        )
         return [dict(row) for row in rows if row['key_id'] in self._in_flight]
 
     def _eligible_at(self, row, operation, now):
@@ -153,7 +161,7 @@ class GeminiKeyPool:
             raise ValueError('Unknown Gemini operation class')
         now = self.clock()
         with self._lock, self.store.tx() as db:
-            rows = [r for r in self._rows(db, operation) if not r['disabled'] and r['key_id'] not in excluded and not self._in_flight[r['key_id']] and self._eligible_at(r, operation, now) <= now]
+            rows = [r for r in self._rows(db, operation) if not r['disabled'] and not r['model_blocked'] and r['key_id'] not in excluded and not self._in_flight[r['key_id']] and self._eligible_at(r, operation, now) <= now]
             if not rows:
                 return None
             bucket = int(now//60)*60
@@ -173,6 +181,12 @@ class GeminiKeyPool:
                 db.execute("UPDATE gemini_key_health SET cooldown_until=0,consecutive_failures=0,last_success=?,quota_state='available',retry_after=NULL,last_failure=NULL WHERE key_id=? AND model=? AND operation=?", (now, key_id, self.model, operation))
             elif failure.disable_key:
                 db.execute("UPDATE gemini_credentials SET disabled=1,disabled_reason='auth_invalid' WHERE key_id=?", (key_id,))
+            elif failure.block_model:
+                db.execute(
+                    "INSERT INTO gemini_model_blocks(key_id,model,reason,created_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(key_id,model) DO UPDATE SET reason=excluded.reason,created_at=excluded.created_at",
+                    (key_id, self.model, failure.category, now),
+                )
             elif not failure.permanent:
                 count = row['consecutive_failures'] + 1
                 rate = failure.code == 429
@@ -184,12 +198,18 @@ class GeminiKeyPool:
             db.execute('UPDATE gemini_credentials SET busy_until=0 WHERE key_id=?', (key_id,))
             self._in_flight[key_id] = max(0, self._in_flight[key_id]-1)
 
+    def all_enabled_keys_blocked_for_model(self, operation: str) -> bool:
+        with self._lock, self.store.connection() as db:
+            rows = [r for r in self._rows(db, operation) if not r['disabled']]
+        return bool(rows) and all(bool(r['model_blocked']) for r in rows)
+
     def unavailable(self, operation: str) -> GeminiUnavailable:
         now = self.clock()
         with self._lock, self.store.connection() as db:
             rows = [r for r in self._rows(db, operation) if not r['disabled']]
-            when = min((self._eligible_at(r, operation, now) for r in rows), default=now+300)
-        reason = 'no_configured_keys' if not self.keys else 'all_keys_disabled' if not rows else 'all_keys_unavailable'
+            usable = [r for r in rows if not r['model_blocked']]
+            when = min((self._eligible_at(r, operation, now) for r in usable), default=now+300)
+        reason = 'no_configured_keys' if not self.keys else 'all_keys_disabled' if not rows else 'all_keys_unsupported_model' if not usable else 'all_keys_unavailable'
         self.event('all_keys_unavailable', operation, reason=reason)
         return GeminiUnavailable(max(now+1, when), reason)
 
@@ -197,8 +217,9 @@ class GeminiKeyPool:
         now = self.clock()
         with self._lock, self.store.connection() as db:
             rows = self._rows(db, operation)
-            return {'configured_keys': len(self.keys), 'healthy_keys': sum(not r['disabled'] and self._eligible_at(r, operation, now) <= now for r in rows),
-                    'cooling_down_keys': sum(not r['disabled'] and max(r['cooldown_until'], r['advisory_until']) > now for r in rows),
+            return {'configured_keys': len(self.keys), 'healthy_keys': sum(not r['disabled'] and not r['model_blocked'] and self._eligible_at(r, operation, now) <= now for r in rows),
+                    'cooling_down_keys': sum(not r['disabled'] and not r['model_blocked'] and max(r['cooldown_until'], r['advisory_until']) > now for r in rows),
+                    'model_blocked_keys': sum(not r['disabled'] and bool(r['model_blocked']) for r in rows),
                     'disabled_keys': sum(bool(r['disabled']) for r in rows), 'in_flight': sum(self._in_flight.values())}
 
     def apply_advisory(self, observations: dict[str, tuple[float, float]]):
@@ -249,10 +270,12 @@ class GeminiExecutor:
                 self.pool.event('failure', operation, key_id, category=failure.category, code=failure.code, retry_after=failure.retry_after,
                                 cooldown=not (failure.permanent or failure.disable_key), disabled=failure.disable_key,
                                 latency_ms=round((time.monotonic()-call_started)*1000), failover_count=len(attempted)-1)
-                if failure.permanent:
+                if failure.permanent and not failure.block_model:
                     raise PermanentProviderError('gemini:'+failure.category) from None
                 continue
             self.pool.finish(key_id, operation, None)
             self.pool.event('success', operation, key_id, latency_ms=round((time.monotonic()-call_started)*1000), failover_count=len(attempted)-1)
             return result
+        if self.pool.all_enabled_keys_blocked_for_model(operation):
+            raise PermanentProviderError('gemini:unsupported_model') from None
         raise self.pool.unavailable(operation) from None
