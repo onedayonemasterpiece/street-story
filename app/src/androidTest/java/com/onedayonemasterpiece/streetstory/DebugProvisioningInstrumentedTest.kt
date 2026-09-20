@@ -62,6 +62,28 @@ class DebugProvisioningInstrumentedTest {
     }
 
     @Test
+    fun stagedAdbTokenIsConsumedEncryptedAndDeleted() {
+        val backendUrl = "https://street-story-staged.example.test"
+        val token = "t".repeat(48)
+        context.openFileOutput(DebugProvisioningPolicy.STAGED_DEVICE_TOKEN_FILE, Context.MODE_PRIVATE).use {
+            it.write((token + "\n").toByteArray())
+        }
+        val staged = context.getFileStreamPath(DebugProvisioningPolicy.STAGED_DEVICE_TOKEN_FILE)
+        assertTrue(staged.isFile)
+
+        startStagedProvisioning(backendUrl)
+        assertTrue(waitForConfig(backendUrl, token))
+        assertFalse(staged.exists())
+
+        val encrypted = context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE)
+            .getString("device_token", null)
+        assertNotNull(encrypted)
+        assertNotEquals(token, encrypted)
+        assertFalse(requireNotNull(encrypted).contains(token))
+        assertNull(device.findObject(By.text(token)))
+    }
+
+    @Test
     fun invalidProvisioningDoesNotEraseWorkingSecret() {
         val originalUrl = "https://street-story-existing.example.test"
         val originalToken = "s".repeat(40)
@@ -135,6 +157,15 @@ class DebugProvisioningInstrumentedTest {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL, backendUrl)
                 .putExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN, token),
+        )
+    }
+
+    private fun startStagedProvisioning(backendUrl: String) {
+        context.startActivity(
+            Intent().setClassName(context.packageName, DebugProvisioningActivity::class.java.name)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL, backendUrl)
+                .putExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED, true),
         )
     }
 
