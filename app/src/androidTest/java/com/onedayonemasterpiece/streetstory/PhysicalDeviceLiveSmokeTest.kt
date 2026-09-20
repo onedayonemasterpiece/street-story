@@ -19,7 +19,7 @@ class PhysicalDeviceLiveSmokeTest {
     fun provisionedPhoneReachesExactLiveBackend() {
         val config = ConfigStore(context)
         assertTrue("Phone must be provisioned before live smoke", config.configured)
-        val backend = config.backendUrl.trimEnd('/')
+        val backend = requireNotNull(config.backendUrl) { "Configured backend URL is missing" }.trimEnd('/')
         assertTrue("Physical acceptance requires HTTPS backend", backend.startsWith("https://"))
 
         val health = requestJson("$backend/healthz")
