@@ -463,6 +463,8 @@ class MvpResearchMixin:
                                     }
                                 )
             unique_chunks = {item["url"]: item for item in chunks if item["url"]}
+            if not unique_chunks or not supports:
+                raise MalformedProviderResponse("gemini:missing_search_grounding")
             return {
                 "payload": payload,
                 "grounding_sources": list(unique_chunks.values()),
