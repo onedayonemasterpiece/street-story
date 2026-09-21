@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from street_story.config import Settings
 from street_story.db import Store
+from street_story.errors import MalformedProviderResponse
 from street_story.gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy, GeminiUnavailable, classify_error
 from street_story.providers import PermanentProviderError
 
@@ -56,6 +57,22 @@ async def test_immediate_failover(tmp_path, failures):
     assert seen == list(KEYS[:len(failures)+1])
     assert clock() == 1000  # No scheduler sleep/cooldown wait between healthy keys.
     assert p.snapshot()['in_flight'] == 0
+
+
+@pytest.mark.asyncio
+async def test_malformed_provider_response_fails_over_to_next_key(tmp_path):
+    p, executor, _ = pool(tmp_path, keys=KEYS[:2])
+    seen = []
+
+    async def call(key, timeout):
+        seen.append(key)
+        if key == KEYS[0]:
+            raise MalformedProviderResponse("provider response did not satisfy JSON contract")
+        return "success"
+
+    assert await executor.execute("grounded_research", call) == "success"
+    assert seen == list(KEYS[:2])
+    assert p.snapshot("grounded_research")["cooling_down_keys"] == 1
 
 
 @pytest.mark.asyncio
