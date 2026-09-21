@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.config import Settings
+from street_story.errors import MalformedProviderResponse
 from street_story.mvp_research import MvpResearchMixin, MvpResearchStreetStoryService
 from street_story.service import ConflictError, ProviderBundle
 
@@ -396,3 +397,47 @@ def test_publish_caption_limit_fails_before_silent_truncation(tmp_path):
             {"destinations": ["tg-safe"], "delay_minutes": 60, "text_override": "x" * 1025},
         )
     assert exc.value.code == "publish_text_too_long"
+
+
+@pytest.mark.asyncio
+async def test_grounded_research_rejects_json_without_search_grounding(tmp_path):
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"photo")
+
+    class DirectExecutor:
+        async def execute(self, operation, call):
+            assert operation == "grounded_research"
+            return await call("test-key", 5.0)
+
+    class UngroundedGemini:
+        executor = DirectExecutor()
+
+        async def _generate(self, api_key, timeout, contents, config):
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "summary": "summary",
+                        "author_note": "",
+                        "facts": [
+                            {
+                                "claim_key": "claim",
+                                "text": "claim text",
+                                "confidence": 0.9,
+                                "source_urls": ["https://example.test/source"],
+                            }
+                        ],
+                    }
+                ),
+                candidates=[],
+            )
+
+    svc = object.__new__(MvpResearchMixin)
+    svc.providers = SimpleNamespace(gemini=UngroundedGemini())
+
+    with pytest.raises(MalformedProviderResponse, match="missing_search_grounding"):
+        await svc._research_claims(
+            {"photo_path": str(photo), "photo_mime_type": "image/jpeg"},
+            "voice context",
+            {"status": "match", "candidate_id": "wiki:1", "candidate_name": "Test"},
+            [],
+        )
