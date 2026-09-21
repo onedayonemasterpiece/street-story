@@ -266,7 +266,26 @@ class _DirectGemini:
                 },
                 ensure_ascii=False,
             ),
-            candidates=[],
+            candidates=[
+                SimpleNamespace(
+                    grounding_metadata=SimpleNamespace(
+                        grounding_chunks=[
+                            SimpleNamespace(
+                                web=SimpleNamespace(
+                                    uri="https://example.test/source",
+                                    title="Source",
+                                )
+                            )
+                        ],
+                        grounding_supports=[
+                            SimpleNamespace(
+                                segment=SimpleNamespace(text="Supported grounded segment."),
+                                grounding_chunk_indices=[0],
+                            )
+                        ],
+                    )
+                )
+            ],
         )
 
 
