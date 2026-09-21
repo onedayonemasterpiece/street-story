@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .errors import MalformedProviderResponse
 from .mvp import MvpProductStreetStoryService
 from .product import project_destinations_v2
 from .providers import PermanentProviderError
@@ -360,7 +361,7 @@ class MvpResearchMixin:
                 if not isinstance(payload.get("observations"), list):
                     raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
-                raise PermanentProviderError("Gemini returned malformed visual identity JSON") from None
+                raise MalformedProviderResponse("gemini:malformed_visual_identity") from None
             return payload
 
         return await gemini.executor.execute("grounded_research", call)
@@ -429,7 +430,7 @@ class MvpResearchMixin:
                     ):
                         raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
-                raise PermanentProviderError("Gemini returned malformed grounded research JSON") from None
+                raise MalformedProviderResponse("gemini:malformed_grounded_research") from None
 
             chunks: list[dict[str, str]] = []
             supports: list[dict[str, str]] = []
