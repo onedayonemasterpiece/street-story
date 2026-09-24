@@ -145,16 +145,26 @@ class GeminiClient:
 
     def __init__(self, settings: Settings, store: Store | None = None):
         self.settings = settings
-        self.pool = GeminiKeyPool(store or Store(settings.data_dir / "street-story.sqlite3"), settings.gemini_keys, settings.gemini_model,
-                                  policy=GeminiPolicy(call_timeout=settings.gemini_call_timeout_seconds,
-                                                      attempt_timeout=settings.gemini_attempt_timeout_seconds,
-                                                      transcription_rpm=settings.gemini_transcription_rpm,
-                                                      grounded_research_rpm=settings.gemini_grounded_research_rpm))
+        shared_store = store or Store(settings.data_dir / "street-story.sqlite3")
+        policy = GeminiPolicy(
+            call_timeout=settings.gemini_call_timeout_seconds,
+            attempt_timeout=settings.gemini_attempt_timeout_seconds,
+            transcription_rpm=settings.gemini_transcription_rpm,
+            grounded_research_rpm=settings.gemini_grounded_research_rpm,
+        )
+        self.transcription_pool = GeminiKeyPool(
+            shared_store, settings.gemini_keys, settings.gemini_transcription_model, policy=policy
+        )
+        self.pool = GeminiKeyPool(
+            shared_store, settings.gemini_keys, settings.gemini_model, policy=policy
+        )
         from .quota import SharedQuotaGate
+        self.transcription_quota = SharedQuotaGate(settings, self.transcription_pool)
         self.quota = SharedQuotaGate(settings, self.pool)
+        self.transcription_executor = GeminiExecutor(self.transcription_pool)
         self.executor = GeminiExecutor(self.pool)
 
-    async def _generate(self, key: str, timeout: float, contents, config=None):
+    async def _generate(self, key: str, timeout: float, contents, config=None, *, operation: str = "grounded_research"):
         from google.genai import types
         config = config or types.GenerateContentConfig()
         config.max_output_tokens = 8192
@@ -170,10 +180,20 @@ class GeminiClient:
                 data = getattr(inline, 'data', b'') or b''
                 mime = getattr(inline, 'mime_type', '') or ''
                 size += 8192 if mime.startswith('image/') else max(8192, len(data)//4)
-        return await self.quota.run(key, timeout, size,
-            lambda: self._provider_request(key, timeout, contents, config))
+        if operation == "transcription":
+            quota = self.transcription_quota
+            model = self.settings.gemini_transcription_model
+        else:
+            quota = self.quota
+            model = self.settings.gemini_model
+        return await quota.run(
+            key,
+            timeout,
+            size,
+            lambda: self._provider_request(key, timeout, contents, config, model=model),
+        )
 
-    async def _provider_request(self, key: str, timeout: float, contents, config=None):
+    async def _provider_request(self, key: str, timeout: float, contents, config=None, *, model: str | None = None):
         # Async transport is cancellable: no orphan to_thread SDK calls after failover.
         # Disable the SDK's hidden same-key retries; the pool owns this budget.
         from google import genai
@@ -181,7 +201,7 @@ class GeminiClient:
         options = types.HttpOptions(timeout=max(1, int(timeout * 1000)), retry_options=types.HttpRetryOptions(attempts=1))
         with genai.Client(api_key=key, http_options=options) as root:
             async with root.aio as client:
-                return await client.models.generate_content(model=self.settings.gemini_model, contents=contents, config=config)
+                return await client.models.generate_content(model=model or self.settings.gemini_model, contents=contents, config=config)
 
     async def transcribe(self, path: Path, mime_type: str) -> str:
         from google.genai import types
@@ -192,7 +212,12 @@ class GeminiClient:
         )
 
         async def call(key, timeout):
-            response = await self._generate(key, timeout, [types.Part.from_bytes(data=data, mime_type=mime_type), prompt])
+            response = await self._generate(
+                key,
+                timeout,
+                [types.Part.from_bytes(data=data, mime_type=mime_type), prompt],
+                operation="transcription",
+            )
             text = response.text
             if text is not None and not isinstance(text, str):
                 raise MalformedProviderResponse("gemini:malformed_transcription")
@@ -200,7 +225,7 @@ class GeminiClient:
                 raise MalformedProviderResponse("gemini:missing_transcription")
             return text.strip()
 
-        return await self.executor.execute("transcription", call)
+        return await self.transcription_executor.execute("transcription", call)
 
     async def research(
         self,

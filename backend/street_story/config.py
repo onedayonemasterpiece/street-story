@@ -47,6 +47,7 @@ class Settings:
     vibepublish_base_url: str | None
     vibepublish_bearer_token: SecretStr | str | None = field(repr=False)
     osm_user_agent: str
+    gemini_transcription_model: str = 'gemini-3.1-flash-lite'
     worker_poll_seconds: float = 1.0
     gemini_api_keys: tuple[SecretStr, ...] = field(default=(), repr=False)
     gemini_key_refs: tuple[str, ...] = ()
@@ -127,6 +128,7 @@ class Settings:
             gemini_quota_supabase_url=quota_url,
             gemini_quota_supabase_key=quota_key,
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
+            gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.1-flash-lite'),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
             vibepublish_bearer_token=os.getenv('VIBEPUBLISH_BEARER_TOKEN'),
             osm_user_agent=os.getenv('STREET_STORY_OSM_USER_AGENT', 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)'),

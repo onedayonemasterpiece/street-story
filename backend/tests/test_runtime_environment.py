@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from street_story.config import Settings, reveal
+from street_story.providers import GeminiClient
 
 
 def _clear_runtime_env(monkeypatch) -> None:
@@ -44,6 +45,10 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
         "key-three",
     ]
     assert settings.gemini_model == "gemini-3.5-flash-lite"
+    assert settings.gemini_transcription_model == "gemini-3.1-flash-lite"
+    client = GeminiClient(settings)
+    assert client.pool.model == "gemini-3.5-flash-lite"
+    assert client.transcription_pool.model == "gemini-3.1-flash-lite"
     assert settings.gemini_quota_supabase_url == "https://quota.example"
     assert reveal(settings.gemini_quota_supabase_key) == "quota-key"
 
