@@ -43,6 +43,7 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
         "key-two",
         "key-three",
     ]
+    assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.gemini_quota_supabase_url == "https://quota.example"
     assert reveal(settings.gemini_quota_supabase_key) == "quota-key"
 
