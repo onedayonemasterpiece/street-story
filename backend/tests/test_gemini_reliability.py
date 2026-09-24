@@ -381,8 +381,7 @@ class PipelineGemini:
         client.calls = []
         client.failures = dict(failures)
 
-        async def generate(key, timeout, contents, config=None):
-            operation = 'transcription' if config is None else 'grounded_research'
+        async def generate(key, timeout, contents, config=None, *, operation='grounded_research'):
             client.calls.append((operation, key))
             if operation == 'transcription':
                 return SimpleNamespace(text='test transcript')
@@ -504,13 +503,13 @@ async def test_two_concurrent_research_jobs_use_distinct_slots(tmp_path):
     original = gemini._generate
     slots = []
 
-    async def generate(key, timeout, contents, config=None):
-        if config is not None:
+    async def generate(key, timeout, contents, config=None, *, operation='grounded_research'):
+        if operation == 'grounded_research':
             slots.append(key)
             if len(slots) == 2:
                 entered.set()
             await release.wait()
-        return await original(key, timeout, contents, config)
+        return await original(key, timeout, contents, config, operation=operation)
 
     gemini._generate = generate
     tasks = [asyncio.create_task(svc.run_once()) for _ in range(2)]
