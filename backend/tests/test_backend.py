@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from street_story.app import create_app
 from street_story.config import Settings
 from street_story.providers import GroundedResearch, OSMClient, RetryableProviderError, WikipediaClient, project_destinations
-from street_story.service import ConflictError, ProviderBundle, StreetStoryService, stable_fact_id
+from street_story.service import MAX_JOB_ATTEMPTS, ConflictError, ProviderBundle, StreetStoryService, stable_fact_id
 
 PHOTO = b"street-story-photo"
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
@@ -254,6 +254,29 @@ async def test_worker_restart_during_research_resumes(tmp_path):
         db.execute("UPDATE jobs SET available_at=0")
     await restarted.run_once()
     assert restarted.story(story["id"])["state"] == "review"
+
+
+@pytest.mark.asyncio
+async def test_retry_budget_terminalizes_without_more_provider_work(tmp_path):
+    svc, _, vp = service(tmp_path)
+    story = create(svc)
+    open_voice(svc, story["id"])
+    _, sha = add_chunk(svc, story["id"], "voice-1", 0, "stale")
+    finish(svc, story["id"], "voice-1", [sha])
+    with svc.store.tx() as db:
+        db.execute(
+            "UPDATE jobs SET state='retry',attempts=?,available_at=0,lease_until=0 WHERE kind='research'",
+            (MAX_JOB_ATTEMPTS,),
+        )
+    gemini = FakeGemini()
+    restarted = StreetStoryService(config(tmp_path), ProviderBundle(FakeOSM(), FakeWikipedia(), gemini, vp))
+    assert restarted.recover_jobs() == 1
+    assert await restarted.run_once() is False
+    with restarted.store.connection() as db:
+        job = db.execute("SELECT state,last_error FROM jobs WHERE kind='research'").fetchone()
+    assert (job["state"], job["last_error"]) == ("failed", "retry_budget_exhausted")
+    assert restarted.story(story["id"])["error_code"] == "provider_retry_exhausted"
+    assert gemini.transcribe_calls == 0
 
 
 @pytest.mark.asyncio

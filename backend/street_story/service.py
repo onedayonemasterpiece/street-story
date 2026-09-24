@@ -26,6 +26,11 @@ from .providers import (
 )
 
 
+MAX_JOB_ATTEMPTS = 8
+RETRY_EXHAUSTED_ERROR = "provider_retry_exhausted"
+RETRY_EXHAUSTED_MESSAGE = "Automatic processing stopped after repeated provider failures. Review and retry manually."
+
+
 class ConflictError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -97,10 +102,17 @@ class StreetStoryService:
     def recover_jobs(self) -> int:
         now = self.store.now()
         with self.store.tx() as db:
-            changed = db.execute(
+            exhausted = [dict(row) for row in db.execute(
+                "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
+                (MAX_JOB_ATTEMPTS,),
+            )]
+            for job in exhausted:
+                self._fail_retry_exhausted(db, job, "retry_budget_exhausted")
+            changed = len(exhausted)
+            changed += db.execute(
                 "UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=COALESCE(last_error,'worker_restart_recovery'),updated_at=? "
-                "WHERE state='running' AND lease_until<=?",
-                (now, now, now),
+                "WHERE state='running' AND lease_until<=? AND attempts<?",
+                (now, now, now, MAX_JOB_ATTEMPTS),
             ).rowcount
         return changed
 
@@ -421,6 +433,18 @@ class StreetStoryService:
             result["gemini"] = {operation: pool.snapshot(operation) for operation in ("transcription", "grounded_research")}
         return result
 
+    def _fail_retry_exhausted(self, db, job: dict[str, Any], last_error: str) -> None:
+        now = self.store.now()
+        db.execute(
+            "UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=?",
+            (last_error, now, job["id"]),
+        )
+        db.execute(
+            "UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? "
+            "WHERE id=? AND (state!='needs_review' OR COALESCE(error_code,'')!=?)",
+            (RETRY_EXHAUSTED_ERROR, RETRY_EXHAUSTED_MESSAGE, now, job["story_id"], RETRY_EXHAUSTED_ERROR),
+        )
+
     def _enqueue_job(self, db, story_id: str, kind: str, semantic_key: str, payload: dict[str, Any]) -> str:
         existing = db.execute("SELECT id FROM jobs WHERE semantic_key=?", (semantic_key,)).fetchone()
         if existing:
@@ -474,10 +498,14 @@ class StreetStoryService:
             with self.store.tx() as db:
                 db.execute("UPDATE jobs SET state='done',lease_until=0,last_error=NULL,updated_at=? WHERE id=?", (self.store.now(), job["id"]))
         except RetryableProviderError as exc:
-            backoff = min(300, 2 ** min(job["attempts"], 8))
-            available_at = max(self.store.now()+1, exc.retry_at) if exc.retry_at is not None else self.store.now()+backoff
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (available_at, self.settings.redact(str(exc)), self.store.now(), job["id"]))
+                error = self.settings.redact(str(exc))
+                if job["attempts"] >= MAX_JOB_ATTEMPTS:
+                    self._fail_retry_exhausted(db, job, error)
+                else:
+                    backoff = min(300, 2 ** min(job["attempts"], 8))
+                    available_at = max(self.store.now()+1, exc.retry_at) if exc.retry_at is not None else self.store.now()+backoff
+                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (available_at, error, self.store.now(), job["id"]))
             return True
         except (PermanentProviderError, ConflictError, InvalidStateError) as exc:
             with self.store.tx() as db:
@@ -487,7 +515,11 @@ class StreetStoryService:
             return True
         except Exception as exc:
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.store.now()+5, f"worker_failure:{type(exc).__name__}", self.store.now(), job["id"]))
+                error = f"worker_failure:{type(exc).__name__}"
+                if job["attempts"] >= MAX_JOB_ATTEMPTS:
+                    self._fail_retry_exhausted(db, job, error)
+                else:
+                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.store.now()+5, error, self.store.now(), job["id"]))
             return True
         finally:
             lease_task.cancel()
