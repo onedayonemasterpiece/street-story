@@ -126,7 +126,7 @@ class Settings:
             gemini_key_refs=tuple(refs),
             gemini_quota_supabase_url=quota_url,
             gemini_quota_supabase_key=quota_key,
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
+            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
             vibepublish_bearer_token=os.getenv('VIBEPUBLISH_BEARER_TOKEN'),
             osm_user_agent=os.getenv('STREET_STORY_OSM_USER_AGENT', 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)'),
