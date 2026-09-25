@@ -15,7 +15,7 @@ from .db import Store
 
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
-from .gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
+from .gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy, GeminiUnavailable
 WIKIPEDIA_USER_AGENT = "StreetStoryWikipediaBot/0.1 (https://github.com/onedayonemasterpiece/street-story; nearby research)"
 
 
@@ -152,19 +152,36 @@ class GeminiClient:
             transcription_rpm=settings.gemini_transcription_rpm,
             grounded_research_rpm=settings.gemini_grounded_research_rpm,
         )
-        self.transcription_pool = GeminiKeyPool(
-            shared_store, settings.gemini_keys, settings.gemini_transcription_model, policy=policy
-        )
+        from .quota import SharedQuotaGate
+        transcription_models = tuple(dict.fromkeys((
+            settings.gemini_transcription_model,
+            settings.gemini_transcription_fallback_model,
+        )))
+        self.transcription_routes = []
+        for model in transcription_models:
+            model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
+            model_quota = SharedQuotaGate(settings, model_pool)
+            self.transcription_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
+        self.transcription_pool = self.transcription_routes[0][1]
+        self.transcription_quota = self.transcription_routes[0][2]
+        self.transcription_executor = self.transcription_routes[0][3]
         self.pool = GeminiKeyPool(
             shared_store, settings.gemini_keys, settings.gemini_model, policy=policy
         )
-        from .quota import SharedQuotaGate
-        self.transcription_quota = SharedQuotaGate(settings, self.transcription_pool)
         self.quota = SharedQuotaGate(settings, self.pool)
-        self.transcription_executor = GeminiExecutor(self.transcription_pool)
         self.executor = GeminiExecutor(self.pool)
 
-    async def _generate(self, key: str, timeout: float, contents, config=None, *, operation: str = "grounded_research"):
+    async def _generate(
+        self,
+        key: str,
+        timeout: float,
+        contents,
+        config=None,
+        *,
+        operation: str = "grounded_research",
+        model: str | None = None,
+        quota=None,
+    ):
         from google.genai import types
         config = config or types.GenerateContentConfig()
         config.max_output_tokens = 8192
@@ -181,11 +198,11 @@ class GeminiClient:
                 mime = getattr(inline, 'mime_type', '') or ''
                 size += 8192 if mime.startswith('image/') else max(8192, len(data)//4)
         if operation == "transcription":
-            quota = self.transcription_quota
-            model = self.settings.gemini_transcription_model
+            quota = quota or self.transcription_quota
+            model = model or self.settings.gemini_transcription_model
         else:
-            quota = self.quota
-            model = self.settings.gemini_model
+            quota = quota or self.quota
+            model = model or self.settings.gemini_model
         return await quota.run(
             key,
             timeout,
@@ -211,21 +228,38 @@ class GeminiClient:
             "не резюмируй, сохрани смысл, имена собственные и вопросы пользователя. Верни только транскрипт."
         )
 
-        async def call(key, timeout):
-            response = await self._generate(
-                key,
-                timeout,
-                [types.Part.from_bytes(data=data, mime_type=mime_type), prompt],
-                operation="transcription",
-            )
-            text = response.text
-            if text is not None and not isinstance(text, str):
-                raise MalformedProviderResponse("gemini:malformed_transcription")
-            if text is None:
-                raise MalformedProviderResponse("gemini:missing_transcription")
-            return text.strip()
+        contents = [types.Part.from_bytes(data=data, mime_type=mime_type), prompt]
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.transcription_routes:
+            async def call(key, timeout, *, _model=model, _quota=quota):
+                response = await self._generate(
+                    key,
+                    timeout,
+                    contents,
+                    operation="transcription",
+                    model=_model,
+                    quota=_quota,
+                )
+                text = response.text
+                if text is not None and not isinstance(text, str):
+                    raise MalformedProviderResponse("gemini:malformed_transcription")
+                if text is None:
+                    raise MalformedProviderResponse("gemini:missing_transcription")
+                return text.strip()
 
-        return await self.transcription_executor.execute("transcription", call)
+            try:
+                return await executor.execute("transcription", call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_transcription_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
 
     async def research(
         self,
