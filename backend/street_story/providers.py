@@ -165,11 +165,18 @@ class GeminiClient:
         self.transcription_pool = self.transcription_routes[0][1]
         self.transcription_quota = self.transcription_routes[0][2]
         self.transcription_executor = self.transcription_routes[0][3]
-        self.pool = GeminiKeyPool(
-            shared_store, settings.gemini_keys, settings.gemini_model, policy=policy
-        )
-        self.quota = SharedQuotaGate(settings, self.pool)
-        self.executor = GeminiExecutor(self.pool)
+        research_models = tuple(dict.fromkeys((
+            settings.gemini_model,
+            settings.gemini_fallback_model,
+        )))
+        self.research_routes = []
+        for model in research_models:
+            model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
+            model_quota = SharedQuotaGate(settings, model_pool)
+            self.research_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
+        self.pool = self.research_routes[0][1]
+        self.quota = self.research_routes[0][2]
+        self.executor = self.research_routes[0][3]
 
     async def _generate(
         self,
@@ -291,8 +298,16 @@ class GeminiClient:
             response_json_schema=self.FACT_SCHEMA,
         )
 
-        async def call(key, timeout):
-            response = await self._generate(key, timeout, [types.Part.from_bytes(data=data, mime_type=photo_mime), prompt], config)
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(
+                key,
+                timeout,
+                [types.Part.from_bytes(data=data, mime_type=photo_mime), prompt],
+                config,
+                operation="grounded_research",
+                model=model,
+                quota=quota,
+            )
             try:
                 payload = json.loads(response.text or "{}")
                 if not isinstance(payload, dict) or any(not isinstance(payload.get(k), str) for k in ("place_name", "summary", "draft_text")) or not isinstance(payload.get("facts"), list):
@@ -314,7 +329,24 @@ class GeminiClient:
                         sources.append({"type": "web", "title": str(getattr(web, "title", "") or uri), "url": uri})
             return GroundedResearch(payload=payload, grounding_sources=list({s["url"]: s for s in sources}.values()))
 
-        return await self.executor.execute("grounded_research", call)
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_research_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
 
 
 class VibePublishClient:
