@@ -9,6 +9,7 @@ def _clear_runtime_env(monkeypatch) -> None:
         "GEMINI_API_KEYS",
         "GEMINI_API_KEY_REFS",
         "GEMINI_API_KEY",
+        "GEMINI_FALLBACK_MODEL",
         "GEMINI_TRANSCRIPTION_MODEL",
         "GEMINI_TRANSCRIPTION_FALLBACK_MODEL",
         "GEMINI_QUOTA_SUPABASE_URL",
@@ -47,12 +48,17 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
         "key-three",
     ]
     assert settings.gemini_model == "gemini-3.5-flash-lite"
+    assert settings.gemini_fallback_model == "gemini-3.1-flash-lite"
     assert settings.gemini_transcription_model == "gemini-3.5-flash-lite"
     assert settings.gemini_transcription_fallback_model == "gemini-3.1-flash-lite"
     client = GeminiClient(settings)
     assert client.pool.model == "gemini-3.5-flash-lite"
     assert client.transcription_pool.model == "gemini-3.5-flash-lite"
     assert [route[0] for route in client.transcription_routes] == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+    assert [route[0] for route in client.research_routes] == [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
     ]
