@@ -416,7 +416,8 @@ def pipeline(tmp_path, failures):
     svc = StreetStoryService(cfg, ProviderBundle(osm, wiki, gemini, FakeVibePublish()))
     clock = Clock()
     svc.store.now = clock
-    gemini.pool.clock = clock
+    for _model, model_pool, _quota, _executor in (*gemini.transcription_routes, *gemini.research_routes):
+        model_pool.clock = clock
     return svc, gemini, osm, wiki, clock
 
 
@@ -473,7 +474,8 @@ async def test_pipeline_checkpoints_survive_process_restart_and_expired_provider
     sid = admit(svc)
     await svc.run_once()
     fresh_gemini = PipelineGemini.build(svc.settings, svc.store, {})
-    fresh_gemini.pool.clock = clock
+    for _model, model_pool, _quota, _executor in (*fresh_gemini.transcription_routes, *fresh_gemini.research_routes):
+        model_pool.clock = clock
     fresh = StreetStoryService(svc.settings, ProviderBundle(osm, wiki, fresh_gemini, svc.providers.vibepublish))
     fresh.store.now = clock
     clock.value += 8*86400
@@ -509,7 +511,7 @@ async def test_two_concurrent_research_jobs_use_distinct_slots(tmp_path):
             if len(slots) == 2:
                 entered.set()
             await release.wait()
-        return await original(key, timeout, contents, config, operation=operation)
+        return await original(key, timeout, contents, config, operation=operation, model=model, quota=quota)
 
     gemini._generate = generate
     tasks = [asyncio.create_task(svc.run_once()) for _ in range(2)]
