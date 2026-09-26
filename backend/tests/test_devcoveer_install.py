@@ -95,7 +95,7 @@ def test_stale_vibe_token_is_replaced_only_after_auth_failure(monkeypatch, tmp_p
 
     def denied(*args, **kwargs):
         del args, kwargs
-        raise module.DeployError("VibePublish HTTP 403 for /v1/bootstrap")
+        raise module.VibeHttpError(401, "/v1/bootstrap", "unauthorized")
 
     def create(sha: str):
         created.append(sha)
@@ -118,7 +118,7 @@ def test_non_auth_vibe_failure_does_not_rotate_principal(monkeypatch, tmp_path) 
         module,
         "vibe_request",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            module.DeployError("VibePublish HTTP 500 for /v1/bootstrap")
+            module.VibeHttpError(403, "/v1/bootstrap", "invalid_host")
         ),
     )
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ def test_non_auth_vibe_failure_does_not_rotate_principal(monkeypatch, tmp_path) 
         lambda sha: pytest.fail(f"unexpected principal rotation for {sha}"),
     )
 
-    with pytest.raises(module.DeployError, match="HTTP 500"):
+    with pytest.raises(module.VibeHttpError, match="invalid_host"):
         module.ensure_vibe_principal("b" * 40)
 
 
@@ -197,3 +197,108 @@ def test_owner_binding_still_fails_closed_for_distinct_targets(monkeypatch, tmp_
 
     with pytest.raises(module.DeployError, match="not uniquely available"):
         module.owner_binding()
+
+
+def test_provider_env_requires_dedicated_limiter_aliases(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    monkeypatch.setattr(
+        module,
+        "parse_dotenv",
+        lambda _path: {
+            "GOOGLE_API_KEY": "fixture-key",
+            "SUPABASE_URL": "https://product.example",
+            "SUPABASE_KEY": "product-key",
+        },
+    )
+    monkeypatch.setattr(module, "PROVIDERS_ENV", tmp_path / "providers.env")
+
+    with pytest.raises(module.DeployError, match="dedicated GOOGLE_AI_LIMITER"):
+        module.configure_provider_env()
+
+
+def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        module,
+        "parse_dotenv",
+        lambda _path: {
+            "GOOGLE_API_KEY": "fixture-key-one",
+            "GOOGLE_API_KEY2": "fixture-key-two",
+            "GOOGLE_AI_LIMITER_SUPABASE_URL": "https://limiter.example/",
+            "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": "limiter-key",
+            "AI_RESOURCE_LEDGER_ID": "ledger-fixture",
+        },
+    )
+    monkeypatch.setattr(module, "PROVIDERS_ENV", tmp_path / "providers.env")
+    monkeypatch.setattr(
+        module,
+        "private_write",
+        lambda path, content: captured.update(path=str(path), content=content),
+    )
+
+    module.configure_provider_env()
+
+    content = captured["content"]
+    assert "GOOGLE_AI_LIMITER_SUPABASE_URL=https://limiter.example" in content
+    assert "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=limiter-key" in content
+    assert "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY,GOOGLE_API_KEY2" in content
+    assert "AI_RESOURCE_LEDGER_ID=ledger-fixture" in content
+    assert "GEMINI_QUOTA_SUPABASE_URL=https://limiter.example" in content
+    assert not any(line.startswith("SUPABASE_URL=") for line in content.splitlines())
+
+
+def test_private_resource_release_is_pinned() -> None:
+    module = _load_installer()
+    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.2"
+    assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
+
+
+def test_vibe_request_uses_exact_public_host(monkeypatch) -> None:
+    module = _load_installer()
+    seen: dict[str, str] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self):
+            return b'{}'
+
+    def urlopen(request, timeout):
+        del timeout
+        seen["host"] = request.get_header("Host")
+        return Response()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(module.json, "load", lambda response: {})
+
+    assert module.vibe_request("t" * 40, "GET", "/v1/bootstrap") == {}
+    assert seen["host"] == "mcp-vibepublish.kenigevents.ru"
+
+
+def test_vibe_http_error_preserves_only_safe_machine_code(monkeypatch) -> None:
+    module = _load_installer()
+    import io
+    payload = b'{"error":{"code":"invalid_host","message":"private details are ignored"}}'
+    error = module.urllib.error.HTTPError(
+        module.VIBE_BASE_URL + "/v1/bootstrap",
+        403,
+        "Forbidden",
+        {},
+        io.BytesIO(payload),
+    )
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(module.VibeHttpError) as caught:
+        module.vibe_request("t" * 40, "GET", "/v1/bootstrap")
+
+    assert caught.value.status == 403
+    assert caught.value.code == "invalid_host"
+    assert "private details" not in str(caught.value)
+    assert module._vibe_auth_failed(caught.value) is False

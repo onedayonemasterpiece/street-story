@@ -18,12 +18,25 @@ Create a Python 3.12 environment, install `backend/requirements.txt`, place the 
 
 Required values:
 - `STREET_STORY_DEVICE_TOKEN`
-- `GEMINI_API_KEY` / configured shared Gemini pool credentials
+- configured Google key pool credentials
+- `GOOGLE_AI_LIMITER_SUPABASE_URL`
+- `GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY`
+- `AI_RESOURCE_KEY_ENVS` (the server-side names of the eligible Google keys)
+- optional `AI_RESOURCE_LEDGER_ID` after the shared Live migration has been verified
 - `VIBEPUBLISH_BASE_URL`
 - `VIBEPUBLISH_BEARER_TOKEN`
+- `VIBEPUBLISH_HTTP_HOST=mcp-vibepublish.kenigevents.ru` when the local loopback VibePublish service runs behind its OAuth public-host boundary
 - `DATA_DIR=/var/lib/street-story`
 
-`GEMINI_MODEL` defaults to `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
+Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
+`ai-resource-control v0.1.2` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
+controller wheel from its exact version tag and never vendors that private source into this public repository.
+
+Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
+If the shared Live RPC/migrations or dedicated aliases are absent, Live starts fail closed; Street Story must not fall
+back to a direct API key or to the legacy async voice path.
+
+`GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`. Keep an identifying OSM User-Agent.
 
 ## Exact source SHA gate
 
@@ -64,21 +77,41 @@ VibePublish is supervised independently on DevCoveer and reachable through `VIBE
 
 ## Gemini reliability and shared limits
 
-See [Gemini P0 reliability](gemini-reliability.md). Shared reserve / mark_sent / finalize remains authoritative; local pool health alone does not authorize a call. A real quota/rate error remains a durable retry/backoff condition and is exposed to Live E2E as evidence. It must never be converted into fake facts or a false green run.
+See [Gemini P0 reliability](gemini-reliability.md). Ordinary request work keeps the existing
+`reserve → mark_sent → provider → finalize` authority.
+
+Live capacity is a separate lease shape in the **same dedicated limiter**, not a second quota database or gateway.
+Street Story calls `ai_resource_control.run_guarded(consumer="street-story", ...)` with the whole eligible key pool
+and an opaque per-session binding. The authority atomically chooses a quota scope. A classified credential/quota/capacity
+fault may select another scope only before provider `ready`; after `ready` the conversation remains pinned to one
+key/scope through resumption. Expired/fenced resource state is terminal and cannot trigger a hidden direct-key retry.
+
+Provider Live RPM/RPD being reported as Unlimited does not imply unlimited concurrency. The common controller keeps
+finite local admission and records unexposed provider concurrency honestly. Production Live remains disabled until the
+additive shared-resource migrations and dedicated aliases have been applied and read back from the verified limiter.
 
 ## Live E2E acceptance
 
-The smoke mode is reversible up to provider publication and must prove:
+The current acceptance path is **Live-only**. The old voice-session/M4A HTTP protocol is not exercised as a fallback.
 
-1. exact deployed source SHA;
-2. unique story with real photo fixture + GPS;
-3. durable AAC/M4A initial voice manifest and replay reconciliation;
-4. raw + cleaned display transcript;
-5. OSM, Wikipedia and grounded Gemini provenance;
-6. evidence-backed fact selection;
-7. a second refinement for the same story preserving selected stable fact toggles;
-8. VibePublish source asset ingress and same-key replay identity;
-9. real visual operation, candidate selection, verified processed asset SHA readback;
-10. final draft and real Telegram/VK destination projection.
+The Android golden run uses prepared PCM only after the capture/VAD boundary (so CI does not pretend to have a physical
+microphone) and then follows the production realtime path:
 
-`full_social` is accepted only when `SAFE_TEST_DESTINATION_ALIAS` identifies an explicitly test/safe/e2e destination returned as `supported`. It then proves provider-native schedule → provider/status readback → cancel → confirmed cancelled/readback. If the safe destination or cleanup capability is absent, full social fails closed and must not be reported as accepted.
+1. exact deployed source SHA and authenticated topic;
+2. one Gemini Live session under the shared resource lease;
+3. multiple Russian realtime turns through the bounded Android PCM queue;
+4. explicit research with real source readback;
+5. fact selection and iterative text editing;
+6. literal/verbatim dictation with protected-span preservation;
+7. a subsequent edit plus Undo;
+8. visual-only change proving the text revision is unchanged;
+9. verified VibePublish visual asset and readback;
+10. exact publication confirmation card;
+11. provider-native Telegram schedule/readback/cancel on an explicitly safe test destination.
+
+The evidence must say `physical_mic=false`, `prepared_pcm_after_capture_boundary=true` and
+`legacy_voice_endpoint_used=false`. A legacy cancellation call is allowed only as best-effort emergency cleanup after
+a failed test; it can never make acceptance green.
+
+The long-lived async voice endpoints remain available for compatibility and possible future development, but a Live
+failure is surfaced as a Live/resource error. There is no automatic route switch to those endpoints.

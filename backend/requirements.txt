@@ -3,4 +3,4 @@ uvicorn[standard]>=0.30,<1
 httpx>=0.27,<1
 python-multipart>=0.0.9,<1
 google-genai>=1.55,<2
-live-interaction @ git+https://github.com/onedayonemasterpiece/live-interaction.git@cc38a1173bedc73892b5711572f28cb1f1972db3
+live-interaction @ https://github.com/onedayonemasterpiece/live-interaction/archive/refs/tags/v0.1.4.tar.gz

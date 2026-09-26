@@ -11,6 +11,25 @@ Status: the Android client and backend source are implemented on `work/street-st
 - HTTPS endpoint for Android; one revocable Street Story device bearer token is sufficient for the owner MVP.
 - Gemini/VibePublish/social credentials are server-only and never enter the APK.
 
+## Current product path · Live-first topic editor
+
+The current owner flow is a list of topics → one Topic Detail → iterative conversation over the same visible result
+(image + text) → publication. A topic can stay open for many Live turns; there is no infinite feed interaction model.
+
+The Android app sends bounded PCM16/16 kHz speech to the authenticated Live session endpoints:
+
+- `POST /v1/stories/{story_id}/live-sessions`
+- `POST /v1/stories/{story_id}/live-sessions/{session_id}/input`
+- `GET /v1/stories/{story_id}/live-sessions/{session_id}/events?after=N`
+- `POST /v1/stories/{story_id}/live-sessions/{session_id}/stop`
+
+The backend uses `live-interaction` for provider transport/session lifecycle and `ai-resource-control` for the common
+Google Live lease. Street Story owns only topic context and domain tools (research, fact selection, text/literal editing,
+Undo, visual generation, publication preparation/confirmation/cancel).
+
+A Live failure is not an instruction to switch transport. The former async voice/session pipeline is preserved only as a
+compatibility boundary so it can be developed again deliberately if needed.
+
 ## Durable story create
 
 `POST /v1/stories`, multipart, authenticated with the Street Story device bearer token and `Idempotency-Key`.
@@ -19,9 +38,12 @@ Parts: `photo`, `client_story_id`, `photo_sha256`, `voice_protocol=voice-chunks-
 
 The server binds idempotency key + client story ID to the exact photo digest and metadata. Same key/same payload returns the same story. Same key or client ID with different content is a conflict.
 
-## Long voice protocol
+## Long voice protocol · compatibility contract
 
-The capture pipeline remains the proven profile: AAC-LC mono M4A, 16 kHz, 32 kbps, WebRTC VAD 2.0.10-cf.4, 30 ms frames, adaptive energy gate, pre-roll/hangover and durable chunks.
+This API is retained for compatibility and future deliberate development. It is **not** the current Live product path,
+not the current golden acceptance path, and not an automatic fallback after a Live/resource failure.
+
+The preserved capture profile is AAC-LC mono M4A, 16 kHz, 32 kbps, WebRTC VAD 2.0.10-cf.4, 30 ms frames, adaptive energy gate, pre-roll/hangover and durable chunks.
 
 1. `POST /v1/stories/{story_id}/voice-sessions`
 2. `PUT /v1/stories/{story_id}/voice-sessions/{session_id}/chunks/{index}`

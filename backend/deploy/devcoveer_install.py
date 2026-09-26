@@ -31,6 +31,7 @@ SERVICE = "street-story.service"
 PORT = 8188
 VIBE_ALIAS = "lovekenig_tg"
 VIBE_BASE_URL = "http://127.0.0.1:18765"
+VIBE_HTTP_HOST = "mcp-vibepublish.kenigevents.ru"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASES_ROOT = Path("/home/dev/.local/share/street-story/releases")
@@ -48,6 +49,8 @@ HOST_ENV = Path("/home/dev/.env")
 VIBE_SOURCE = Path("/home/dev/projects/vibepublish")
 VIBE_PY = Path("/home/dev/.local/opt/vibepublish/bin/python")
 BRIDGE_PYTHON = Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python")
+AI_RESOURCE_CONTROL_VERSION = "0.1.2"
+AI_RESOURCE_CONTROL_REPO = Path("/home/dev/projects/ai-resource-control")
 VIBE_DB = Path("/home/dev/.local/state/vibepublish/vibepublish.sqlite3")
 VIBE_OWNER_TOKEN_FILE = Path("/home/dev/.local/state/vibepublish/owner-token.txt")
 
@@ -57,6 +60,15 @@ ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 
 class DeployError(RuntimeError):
     pass
+
+
+class VibeHttpError(DeployError):
+    def __init__(self, status: int, path: str, code: str | None = None):
+        self.status = status
+        self.path = path
+        self.code = code
+        suffix = f" ({code})" if code else ""
+        super().__init__(f"VibePublish HTTP {status}{suffix} for {path}")
 
 
 def _safe_output(value: str) -> str:
@@ -284,6 +296,70 @@ def _python_312_runtime() -> str:
     raise DeployError("no healthy Python 3.12 runtime is available")
 
 
+
+def install_ai_resource_control(target_python: Path, driver: str) -> None:
+    repo = AI_RESOURCE_CONTROL_REPO
+    if not (repo / ".git").is_dir():
+        raise DeployError("private ai-resource-control checkout is unavailable")
+    run(["git", "-C", str(repo), "fetch", "origin", "--tags"], timeout=180)
+    tag = f"v{AI_RESOURCE_CONTROL_VERSION}"
+    tag_sha = run(["git", "-C", str(repo), "rev-list", "-n1", tag], timeout=30).strip()
+    main_sha = run(["git", "-C", str(repo), "rev-parse", "origin/main"], timeout=30).strip()
+    if not tag_sha or tag_sha != main_sha:
+        raise DeployError(
+            f"ai-resource-control {tag} is not exact current origin/main"
+        )
+
+    stage = Path(tempfile.mkdtemp(prefix=".street-story-ai-resource-"))
+    try:
+        source = stage / "source"
+        source.mkdir(mode=0o700)
+        archive = stage / "source.tar"
+        wheels = stage / "wheels"
+        wheels.mkdir(mode=0o700)
+        run(
+            ["git", "-C", str(repo), "archive", "--format=tar", "-o", str(archive), tag],
+            timeout=120,
+        )
+        run(["tar", "-xf", str(archive), "-C", str(source)], timeout=120)
+        archive.unlink(missing_ok=True)
+        run(
+            [
+                driver,
+                "-m",
+                "pip",
+                "wheel",
+                "--no-deps",
+                "--wheel-dir",
+                str(wheels),
+                str(source),
+            ],
+            timeout=300,
+        )
+        expected = list(
+            wheels.glob(
+                f"ai_resource_control-{AI_RESOURCE_CONTROL_VERSION}-py3-none-any.whl"
+            )
+        )
+        if len(expected) != 1:
+            raise DeployError("private ai-resource-control wheel was not produced")
+        run(
+            [
+                driver,
+                "-m",
+                "pip",
+                "--python",
+                str(target_python),
+                "install",
+                "--disable-pip-version-check",
+                "--no-deps",
+                str(expected[0]),
+            ],
+            timeout=300,
+        )
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
 def ensure_venv(release: Path) -> Path:
     source = release / "source"
     requirements = source / "backend/requirements.txt"
@@ -315,11 +391,12 @@ def ensure_venv(release: Path) -> Path:
         ],
         timeout=900,
     )
+    install_ai_resource_control(target_python, driver)
     run(
         [
             str(target_python),
             "-c",
-            "import fastapi,httpx,pydantic,uvicorn",
+            "import ai_resource_control,fastapi,httpx,live_interaction,pydantic,uvicorn",
         ],
         timeout=30,
     )
@@ -345,19 +422,12 @@ def configure_provider_env() -> None:
             refs.append(name)
     if not refs:
         raise DeployError("registered Google API key pool is unavailable")
-    quota_url = (
-        host.get("GOOGLE_AI_LIMITER_SUPABASE_URL")
-        or host.get("SUPABASE_URL")
-        or ""
-    ).strip()
-    quota_key = (
-        host.get("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY")
-        or host.get("SUPABASE_SERVICE_KEY")
-        or host.get("SUPABASE_KEY")
-        or ""
-    ).strip()
+    quota_url = host.get("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip()
+    quota_key = host.get("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip()
     if not quota_url or not quota_key:
-        raise DeployError("shared Google AI limiter credentials are unavailable")
+        raise DeployError(
+            "dedicated GOOGLE_AI_LIMITER_SUPABASE_URL/SERVICE_KEY are unavailable"
+        )
     values = {name: host[name] for name in refs}
     values.update(
         {
@@ -368,8 +438,14 @@ def configure_provider_env() -> None:
             "GEMINI_TRANSCRIPTION_FALLBACK_MODEL": "gemini-3.1-flash-lite",
             "GEMINI_QUOTA_SUPABASE_URL": quota_url.rstrip("/"),
             "GEMINI_QUOTA_SUPABASE_KEY": quota_key,
+            "GOOGLE_AI_LIMITER_SUPABASE_URL": quota_url.rstrip("/"),
+            "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": quota_key,
+            "AI_RESOURCE_KEY_ENVS": ",".join(refs),
         }
     )
+    ledger_id = host.get("AI_RESOURCE_LEDGER_ID", "").strip()
+    if ledger_id:
+        values["AI_RESOURCE_LEDGER_ID"] = ledger_id
     private_write(PROVIDERS_ENV, render_env(values))
 
 
@@ -408,7 +484,7 @@ def vibe_request(
     timeout: float = 20,
 ) -> dict[str, Any]:
     payload = None if body is None else json.dumps(body, separators=(",", ":")).encode()
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Host": VIBE_HTTP_HOST}
     if payload is not None:
         headers["Content-Type"] = "application/json"
     if request_key:
@@ -418,7 +494,17 @@ def vibe_request(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             value = json.load(response)
     except urllib.error.HTTPError as exc:
-        raise DeployError(f"VibePublish HTTP {exc.code} for {path}") from None
+        code = None
+        try:
+            raw = exc.read(16_384)
+            error_payload = json.loads(raw)
+            error_value = error_payload.get("error") if isinstance(error_payload, dict) else None
+            candidate = error_value.get("code") if isinstance(error_value, dict) else error_value
+            if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_:-]{1,80}", candidate):
+                code = candidate
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        raise VibeHttpError(exc.code, path, code) from None
     except (OSError, urllib.error.URLError, ValueError, TypeError) as exc:
         raise DeployError(f"VibePublish request failed for {path}: {type(exc).__name__}") from None
     if not isinstance(value, dict):
@@ -530,10 +616,12 @@ def _create_vibe_principal(sha: str) -> tuple[str, str]:
 
 
 def _vibe_auth_failed(exc: DeployError) -> bool:
-    return str(exc) in {
-        "VibePublish HTTP 401 for /v1/bootstrap",
-        "VibePublish HTTP 403 for /v1/bootstrap",
-    }
+    return (
+        isinstance(exc, VibeHttpError)
+        and exc.status == 401
+        and exc.path == "/v1/bootstrap"
+        and exc.code == "unauthorized"
+    )
 
 
 def ensure_vibe_principal(sha: str) -> tuple[str, str]:
@@ -660,6 +748,7 @@ def write_service_env(device: str, vibe: str, sha: str) -> None:
                 "DATA_DIR": str(DATA_ROOT),
                 "STREET_STORY_DEVICE_TOKEN": device,
                 "VIBEPUBLISH_BASE_URL": VIBE_BASE_URL,
+                "VIBEPUBLISH_HTTP_HOST": VIBE_HTTP_HOST,
                 "VIBEPUBLISH_BEARER_TOKEN": vibe,
                 "STREET_STORY_DEPLOY_SHA": sha,
                 "STREET_STORY_OSM_USER_AGENT": (
