@@ -270,6 +270,7 @@ def test_live_resource_preflight_is_read_only_and_bounded(monkeypatch, tmp_path)
             ]
         )
     )
+    providers.chmod(0o600)
     monkeypatch.setattr(module, "PROVIDERS_ENV", providers)
     seen: dict[str, object] = {}
 
@@ -316,6 +317,7 @@ def test_live_resource_preflight_fails_closed(monkeypatch, tmp_path, payload) ->
             ]
         )
     )
+    providers.chmod(0o600)
     monkeypatch.setattr(module, "PROVIDERS_ENV", providers)
     monkeypatch.setattr(module, "run", lambda argv, **kwargs: payload)
 
