@@ -11,7 +11,7 @@ from typing import Any
 
 from live_interaction import LiveSessionHost
 
-from .config import Settings, reveal
+from .config import Settings
 from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest
 
 
@@ -901,22 +901,57 @@ class StreetStoryLiveAdapter:
         return result
 
 
+def _live_resource_environment(settings: Settings) -> dict[str, str]:
+    raw_refs = os.getenv("AI_RESOURCE_KEY_ENVS", "").strip()
+    refs = [item.strip() for item in raw_refs.split(",") if item.strip()] if raw_refs else list(settings.gemini_key_refs)
+    environment: dict[str, str] = {
+        "GOOGLE_AI_LIMITER_SUPABASE_URL": os.getenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip(),
+        "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": os.getenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip(),
+        "AI_RESOURCE_KEY_ENVS": ",".join(refs),
+    }
+    ledger_id = os.getenv("AI_RESOURCE_LEDGER_ID", "").strip()
+    if ledger_id:
+        environment["AI_RESOURCE_LEDGER_ID"] = ledger_id
+    for name in refs:
+        value = os.getenv(name, "").strip()
+        if value:
+            environment[name] = value
+    return environment
+
+
 def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSessionHost:
     ensure_live_schema(service)
-
-    def key_resolver(_resource_id: str, _actor: Any) -> str | None:
-        explicit = os.getenv("LIVE_API_KEY", "").strip()
-        if explicit:
-            return explicit
-        keys = settings.gemini_keys
-        return reveal(keys[0]) if keys else None
 
     def adapter_factory(**kwargs):
         return StreetStoryLiveAdapter(service, kwargs["emit"])
 
+    async def managed_runner(*, session, reader, on_event):
+        environment = _live_resource_environment(settings)
+        try:
+            try:
+                from ai_resource_control import run_guarded
+            except ImportError:
+                on_event(
+                    {
+                        "type": "error",
+                        "code": "RESOURCE_PACKAGE_MISSING",
+                        "message": "RESOURCE_PACKAGE_MISSING",
+                    }
+                )
+                return
+            await run_guarded(
+                consumer="street-story",
+                environment=environment,
+                reader=reader,
+                on_event=on_event,
+                binding=f"street-story:{session.id}",
+            )
+        finally:
+            environment.clear()
+
     return LiveSessionHost(
         adapter_factory=adapter_factory,
-        key_resolver=key_resolver,
+        managed_runner=managed_runner,
         models=("gemini-3.8-live",),
         ready_timeout_ms=30_000,
         max_sessions=3,

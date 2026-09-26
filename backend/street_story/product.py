@@ -121,6 +121,8 @@ class VibePublishBoundary:
             "Authorization": f"Bearer {reveal(self.settings.vibepublish_bearer_token)}",
             "Accept": "application/json",
         }
+        if self.settings.vibepublish_http_host:
+            headers["Host"] = self.settings.vibepublish_http_host
         if key:
             headers["Idempotency-Key"] = key
         if content_type:

@@ -38,6 +38,15 @@ def _number(name: str, default: float, minimum: float, maximum: float) -> float:
         raise ValueError(f'{name} must be a finite number between {minimum} and {maximum}') from None
 
 
+def _dns_host(name: str) -> str | None:
+    value = os.getenv(name, '').strip().lower()
+    if not value:
+        return None
+    if not re.fullmatch(r'(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}', value):
+        raise ValueError(f'{name} must be one lowercase DNS hostname')
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -47,6 +56,7 @@ class Settings:
     vibepublish_base_url: str | None
     vibepublish_bearer_token: SecretStr | str | None = field(repr=False)
     osm_user_agent: str
+    vibepublish_http_host: str | None = None
     gemini_fallback_model: str = 'gemini-3.1-flash-lite'
     gemini_transcription_model: str = 'gemini-3.5-flash-lite'
     gemini_transcription_fallback_model: str = 'gemini-3.1-flash-lite'
@@ -134,6 +144,7 @@ class Settings:
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
+            vibepublish_http_host=_dns_host('VIBEPUBLISH_HTTP_HOST'),
             vibepublish_bearer_token=os.getenv('VIBEPUBLISH_BEARER_TOKEN'),
             osm_user_agent=os.getenv('STREET_STORY_OSM_USER_AGENT', 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)'),
             worker_poll_seconds=_number('WORKER_POLL_SECONDS', 1, .01, 60),
