@@ -36,6 +36,11 @@ Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedica
 If the shared Live RPC/migrations or dedicated aliases are absent, Live starts fail closed; Street Story must not fall
 back to a direct API key or to the legacy async voice path.
 
+Before any service restart, the DevCoveer installer performs a read-only shared-resource preflight through the pinned
+private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1` capability surface, a nonempty
+ledger id, and at least one eligible registered key. The preflight does not acquire a Live lease and does not call
+Gemini; failure leaves the currently running Street Story release untouched.
+
 `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`. Keep an identifying OSM User-Agent.
 
 ## Exact source SHA gate
