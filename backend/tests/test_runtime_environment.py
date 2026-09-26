@@ -66,6 +66,20 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
     assert reveal(settings.gemini_quota_supabase_key) == "quota-key"
 
 
+def test_generic_product_supabase_is_never_used_for_gemini_quota(monkeypatch, tmp_path) -> None:
+    _clear_runtime_env(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("GOOGLE_API_KEY", "shared-key")
+    monkeypatch.setenv("SUPABASE_URL", "https://different-project.example")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "different-service-key")
+    monkeypatch.setenv("SUPABASE_KEY", "different-public-key")
+
+    settings = Settings.from_env()
+
+    assert settings.gemini_quota_supabase_url is None
+    assert reveal(settings.gemini_quota_supabase_key) == ""
+
+
 def test_explicit_gemini_refs_override_shared_discovery(monkeypatch, tmp_path) -> None:
     _clear_runtime_env(monkeypatch)
     monkeypatch.setenv("DATA_DIR", str(tmp_path))

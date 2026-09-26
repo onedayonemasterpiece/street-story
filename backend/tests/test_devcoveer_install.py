@@ -241,7 +241,7 @@ def test_owner_binding_still_fails_closed_for_distinct_targets(monkeypatch, tmp_
         module.owner_binding()
 
 
-def test_provider_env_requires_dedicated_limiter_aliases(monkeypatch, tmp_path) -> None:
+def test_provider_env_rejects_unverified_generic_limiter_credential(monkeypatch, tmp_path) -> None:
     module = _load_installer()
     monkeypatch.setattr(
         module,
@@ -253,9 +253,44 @@ def test_provider_env_requires_dedicated_limiter_aliases(monkeypatch, tmp_path) 
         },
     )
     monkeypatch.setattr(module, "PROVIDERS_ENV", tmp_path / "providers.env")
+    monkeypatch.setattr(module, "verify_limiter_credential", lambda *_args: False)
 
-    with pytest.raises(module.DeployError, match="dedicated GOOGLE_AI_LIMITER"):
+    with pytest.raises(module.DeployError, match="verified canonical Google AI limiter"):
         module.configure_provider_env()
+
+
+def test_provider_env_promotes_only_verified_server_service_key(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    captured: dict[str, str] = {}
+    attempts: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        module,
+        "parse_dotenv",
+        lambda _path: {
+            "GOOGLE_API_KEY": "fixture-key",
+            "SUPABASE_URL": "https://wrong-project.example",
+            "PERSONALIZATION_SUPABASE_SECRET_KEY": "canonical-service-key",
+        },
+    )
+    monkeypatch.setattr(module, "PROVIDERS_ENV", tmp_path / "providers.env")
+    monkeypatch.setattr(
+        module,
+        "verify_limiter_credential",
+        lambda url, key: attempts.append((url, key)) is None and key == "canonical-service-key",
+    )
+    monkeypatch.setattr(
+        module,
+        "private_write",
+        lambda path, content: captured.update(path=str(path), content=content),
+    )
+
+    module.configure_provider_env()
+
+    assert attempts == [(module.CANONICAL_GOOGLE_AI_LIMITER_URL, "canonical-service-key")]
+    content = captured["content"]
+    assert f"GOOGLE_AI_LIMITER_SUPABASE_URL={module.CANONICAL_GOOGLE_AI_LIMITER_URL}" in content
+    assert "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=canonical-service-key" in content
+    assert "wrong-project.example" not in content
 
 
 def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None:
@@ -267,11 +302,12 @@ def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None
         lambda _path: {
             "GOOGLE_API_KEY": "fixture-key-one",
             "GOOGLE_API_KEY2": "fixture-key-two",
-            "GOOGLE_AI_LIMITER_SUPABASE_URL": "https://limiter.example/",
+            "GOOGLE_AI_LIMITER_SUPABASE_URL": module.CANONICAL_GOOGLE_AI_LIMITER_URL,
             "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": "limiter-key",
             "AI_RESOURCE_LEDGER_ID": "ledger-fixture",
         },
     )
+    monkeypatch.setattr(module, "verify_limiter_credential", lambda *_args: True)
     monkeypatch.setattr(module, "PROVIDERS_ENV", tmp_path / "providers.env")
     monkeypatch.setattr(
         module,
@@ -282,11 +318,14 @@ def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None
     module.configure_provider_env()
 
     content = captured["content"]
-    assert "GOOGLE_AI_LIMITER_SUPABASE_URL=https://limiter.example" in content
+    assert (
+        f"GOOGLE_AI_LIMITER_SUPABASE_URL={module.CANONICAL_GOOGLE_AI_LIMITER_URL}"
+        in content
+    )
     assert "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=limiter-key" in content
     assert "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY,GOOGLE_API_KEY2" in content
     assert "AI_RESOURCE_LEDGER_ID=ledger-fixture" in content
-    assert "GEMINI_QUOTA_SUPABASE_URL=https://limiter.example" in content
+    assert f"GEMINI_QUOTA_SUPABASE_URL={module.CANONICAL_GOOGLE_AI_LIMITER_URL}" in content
     assert not any(line.startswith("SUPABASE_URL=") for line in content.splitlines())
 
 

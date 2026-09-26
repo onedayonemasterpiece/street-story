@@ -32,6 +32,9 @@ PORT = 8188
 VIBE_ALIAS = "lovekenig_tg"
 VIBE_BASE_URL = "http://127.0.0.1:18765"
 VIBE_HTTP_HOST = "mcp-vibepublish.kenigevents.ru"
+CANONICAL_GOOGLE_AI_LIMITER_URL = "https://epyznmylqmchteykjsqj.supabase.co"
+CANONICAL_GOOGLE_AI_LIMITER_CONTRACT = "google_ai_project_model_atomic_v1"
+CANONICAL_GOOGLE_AI_QUOTA_SCOPE_DIMENSION = "google_cloud_project"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELEASES_ROOT = Path("/home/dev/.local/share/street-story/releases")
@@ -427,6 +430,69 @@ def ensure_venv(release: Path) -> Path:
     return venv
 
 
+def verify_limiter_credential(url: str, service_key: str) -> bool:
+    """Prove a credential belongs to the canonical limiter without mutating it."""
+    endpoint = f"{url.rstrip('/')}/rest/v1/rpc/google_ai_limiter_capabilities"
+    request = urllib.request.Request(
+        endpoint,
+        data=b"{}",
+        method="POST",
+        headers={
+            "apikey": service_key,
+            "Authorization": f"Bearer {service_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ):
+        return False
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("limiter_contract") == CANONICAL_GOOGLE_AI_LIMITER_CONTRACT
+        and payload.get("quota_scope_dimension")
+        == CANONICAL_GOOGLE_AI_QUOTA_SCOPE_DIMENSION
+    )
+
+
+def resolve_limiter_authority(host: Mapping[str, str]) -> tuple[str, str]:
+    """Resolve only the verified canonical limiter; never trust generic Supabase URL."""
+    dedicated_url = host.get("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip().rstrip("/")
+    dedicated_key = host.get("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip()
+    if bool(dedicated_url) != bool(dedicated_key):
+        raise DeployError("dedicated Google AI limiter configuration is incomplete")
+    if dedicated_url:
+        if dedicated_url != CANONICAL_GOOGLE_AI_LIMITER_URL:
+            raise DeployError("dedicated Google AI limiter URL is not canonical")
+        if not verify_limiter_credential(dedicated_url, dedicated_key):
+            raise DeployError(
+                "dedicated Google AI limiter credential failed canonical verification"
+            )
+        return dedicated_url, dedicated_key
+
+    candidates: list[str] = []
+    for name in (
+        "PERSONALIZATION_SUPABASE_SECRET_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_SERVICE_KEY",
+        "SUPABASE_KEY",
+    ):
+        candidate = host.get(name, "").strip()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    for candidate in candidates:
+        if verify_limiter_credential(CANONICAL_GOOGLE_AI_LIMITER_URL, candidate):
+            return CANONICAL_GOOGLE_AI_LIMITER_URL, candidate
+    raise DeployError("verified canonical Google AI limiter credential is unavailable")
+
+
 def configure_provider_env() -> None:
     host = parse_dotenv(HOST_ENV)
     refs: list[str] = []
@@ -436,12 +502,7 @@ def configure_provider_env() -> None:
             refs.append(name)
     if not refs:
         raise DeployError("registered Google API key pool is unavailable")
-    quota_url = host.get("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip()
-    quota_key = host.get("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip()
-    if not quota_url or not quota_key:
-        raise DeployError(
-            "dedicated GOOGLE_AI_LIMITER_SUPABASE_URL/SERVICE_KEY are unavailable"
-        )
+    quota_url, quota_key = resolve_limiter_authority(host)
     values = {name: host[name] for name in refs}
     values.update(
         {
