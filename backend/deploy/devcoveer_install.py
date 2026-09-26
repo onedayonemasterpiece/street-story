@@ -433,7 +433,7 @@ def owner_binding() -> tuple[str, str, str, str]:
     try:
         rows = db.execute(
             """
-            SELECT p.tenant_id, c.id, d.native_id, d.label
+            SELECT DISTINCT p.tenant_id, c.id, d.native_id, d.label
             FROM bindings b
             JOIN principals p ON p.id=b.principal_id
             JOIN destinations d ON d.id=b.destination_id

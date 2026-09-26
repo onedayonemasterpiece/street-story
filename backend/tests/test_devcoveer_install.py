@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -145,3 +146,54 @@ def test_incomplete_vibe_state_fails_closed(monkeypatch, tmp_path) -> None:
 
     with pytest.raises(module.DeployError, match="incomplete"):
         module.ensure_vibe_principal("c" * 40)
+
+
+def _owner_binding_db(path: Path, *, distinct_targets: int) -> None:
+    db = sqlite3.connect(path)
+    try:
+        db.executescript(
+            """
+            CREATE TABLE principals(id TEXT PRIMARY KEY, tenant_id TEXT, owner INTEGER, active INTEGER);
+            CREATE TABLE connections(id TEXT PRIMARY KEY, tenant_id TEXT, provider TEXT, active INTEGER);
+            CREATE TABLE destinations(id TEXT PRIMARY KEY, connection_id TEXT, native_id TEXT, label TEXT);
+            CREATE TABLE bindings(id TEXT PRIMARY KEY, principal_id TEXT, alias TEXT, destination_id TEXT, active INTEGER);
+            INSERT INTO principals VALUES('owner-a','tenant',1,1);
+            INSERT INTO principals VALUES('owner-b','tenant',1,1);
+            INSERT INTO connections VALUES('conn-a','tenant','telegram',1);
+            INSERT INTO destinations VALUES('dest-a','conn-a','native-a','Telegram');
+            INSERT INTO bindings VALUES('bind-a','owner-a','lovekenig_tg','dest-a',1);
+            INSERT INTO bindings VALUES('bind-b','owner-b','lovekenig_tg','dest-a',1);
+            """
+        )
+        if distinct_targets > 1:
+            db.executescript(
+                """
+                INSERT INTO connections VALUES('conn-b','tenant','telegram',1);
+                INSERT INTO destinations VALUES('dest-b','conn-b','native-b','Other Telegram');
+                INSERT INTO bindings VALUES('bind-c','owner-b','lovekenig_tg','dest-b',1);
+                """
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_owner_binding_deduplicates_same_target(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    db_path = tmp_path / "vibe.sqlite3"
+    _owner_binding_db(db_path, distinct_targets=1)
+    monkeypatch.setattr(module, "VIBE_DB", db_path)
+    monkeypatch.setattr(module, "VIBE_ALIAS", "lovekenig_tg")
+
+    assert module.owner_binding() == ("tenant", "conn-a", "native-a", "Telegram")
+
+
+def test_owner_binding_still_fails_closed_for_distinct_targets(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    db_path = tmp_path / "vibe.sqlite3"
+    _owner_binding_db(db_path, distinct_targets=2)
+    monkeypatch.setattr(module, "VIBE_DB", db_path)
+    monkeypatch.setattr(module, "VIBE_ALIAS", "lovekenig_tg")
+
+    with pytest.raises(module.DeployError, match="not uniquely available"):
+        module.owner_binding()
