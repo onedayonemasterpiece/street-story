@@ -95,7 +95,7 @@ def test_stale_vibe_token_is_replaced_only_after_auth_failure(monkeypatch, tmp_p
 
     def denied(*args, **kwargs):
         del args, kwargs
-        raise module.DeployError("VibePublish HTTP 403 for /v1/bootstrap")
+        raise module.VibeHttpError(401, "/v1/bootstrap", "unauthorized")
 
     def create(sha: str):
         created.append(sha)
@@ -118,7 +118,7 @@ def test_non_auth_vibe_failure_does_not_rotate_principal(monkeypatch, tmp_path) 
         module,
         "vibe_request",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            module.DeployError("VibePublish HTTP 500 for /v1/bootstrap")
+            module.VibeHttpError(403, "/v1/bootstrap", "invalid_host")
         ),
     )
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ def test_non_auth_vibe_failure_does_not_rotate_principal(monkeypatch, tmp_path) 
         lambda sha: pytest.fail(f"unexpected principal rotation for {sha}"),
     )
 
-    with pytest.raises(module.DeployError, match="HTTP 500"):
+    with pytest.raises(module.VibeHttpError, match="invalid_host"):
         module.ensure_vibe_principal("b" * 40)
 
 
@@ -276,3 +276,29 @@ def test_vibe_request_uses_exact_public_host(monkeypatch) -> None:
 
     assert module.vibe_request("t" * 40, "GET", "/v1/bootstrap") == {}
     assert seen["host"] == "mcp-vibepublish.kenigevents.ru"
+
+
+def test_vibe_http_error_preserves_only_safe_machine_code(monkeypatch) -> None:
+    module = _load_installer()
+    import io
+    payload = b'{"error":{"code":"invalid_host","message":"private details are ignored"}}'
+    error = module.urllib.error.HTTPError(
+        module.VIBE_BASE_URL + "/v1/bootstrap",
+        403,
+        "Forbidden",
+        {},
+        io.BytesIO(payload),
+    )
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda request, timeout: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(module.VibeHttpError) as caught:
+        module.vibe_request("t" * 40, "GET", "/v1/bootstrap")
+
+    assert caught.value.status == 403
+    assert caught.value.code == "invalid_host"
+    assert "private details" not in str(caught.value)
+    assert module._vibe_auth_failed(caught.value) is False

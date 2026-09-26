@@ -62,6 +62,15 @@ class DeployError(RuntimeError):
     pass
 
 
+class VibeHttpError(DeployError):
+    def __init__(self, status: int, path: str, code: str | None = None):
+        self.status = status
+        self.path = path
+        self.code = code
+        suffix = f" ({code})" if code else ""
+        super().__init__(f"VibePublish HTTP {status}{suffix} for {path}")
+
+
 def _safe_output(value: str) -> str:
     value = re.sub(r"(?i)Bearer\s+[^\s]+", "Bearer [redacted]", value)
     value = re.sub(
@@ -485,7 +494,17 @@ def vibe_request(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             value = json.load(response)
     except urllib.error.HTTPError as exc:
-        raise DeployError(f"VibePublish HTTP {exc.code} for {path}") from None
+        code = None
+        try:
+            raw = exc.read(16_384)
+            error_payload = json.loads(raw)
+            error_value = error_payload.get("error") if isinstance(error_payload, dict) else None
+            candidate = error_value.get("code") if isinstance(error_value, dict) else error_value
+            if isinstance(candidate, str) and re.fullmatch(r"[a-z0-9_:-]{1,80}", candidate):
+                code = candidate
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        raise VibeHttpError(exc.code, path, code) from None
     except (OSError, urllib.error.URLError, ValueError, TypeError) as exc:
         raise DeployError(f"VibePublish request failed for {path}: {type(exc).__name__}") from None
     if not isinstance(value, dict):
@@ -597,10 +616,12 @@ def _create_vibe_principal(sha: str) -> tuple[str, str]:
 
 
 def _vibe_auth_failed(exc: DeployError) -> bool:
-    return str(exc) in {
-        "VibePublish HTTP 401 for /v1/bootstrap",
-        "VibePublish HTTP 403 for /v1/bootstrap",
-    }
+    return (
+        isinstance(exc, VibeHttpError)
+        and exc.status == 401
+        and exc.path == "/v1/bootstrap"
+        and exc.code == "unauthorized"
+    )
 
 
 def ensure_vibe_principal(sha: str) -> tuple[str, str]:
