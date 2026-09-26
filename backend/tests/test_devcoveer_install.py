@@ -254,6 +254,77 @@ def test_private_resource_release_is_pinned() -> None:
     assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
 
 
+def test_live_resource_preflight_is_read_only_and_bounded(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    providers = tmp_path / "providers.env"
+    providers.write_text(
+        "\n".join(
+            [
+                "GOOGLE_AI_LIMITER_SUPABASE_URL=https://limiter.example",
+                "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=fixture-key",
+                "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY,GOOGLE_API_KEY2",
+                "GOOGLE_API_KEY=fixture-one",
+                "GOOGLE_API_KEY2=fixture-two",
+                "AI_RESOURCE_LEDGER_ID=ledger-fixture",
+                "",
+            ]
+        )
+    )
+    providers.chmod(0o600)
+    monkeypatch.setattr(module, "PROVIDERS_ENV", providers)
+    seen: dict[str, object] = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["env"] = kwargs["env"]
+        return '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":2}'
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    result = module.verify_live_resource_control(tmp_path / "venv")
+
+    assert result == {
+        "contract": "ai_resource_leases_v1",
+        "ledger_id": "ledger-fixture",
+        "candidate_count": 2,
+    }
+    assert seen["argv"][:2] == [str(tmp_path / "venv/bin/python"), "-c"]
+    assert "acquire(" not in seen["argv"][2]
+    assert seen["env"]["AI_RESOURCE_KEY_ENVS"] == "GOOGLE_API_KEY,GOOGLE_API_KEY2"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"contract":"wrong","ledger_id":"ledger-fixture","candidate_count":2}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"","candidate_count":2}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":0}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"other-ledger","candidate_count":2}',
+    ],
+)
+def test_live_resource_preflight_fails_closed(monkeypatch, tmp_path, payload) -> None:
+    module = _load_installer()
+    providers = tmp_path / "providers.env"
+    providers.write_text(
+        "\n".join(
+            [
+                "GOOGLE_AI_LIMITER_SUPABASE_URL=https://limiter.example",
+                "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=fixture-key",
+                "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY",
+                "GOOGLE_API_KEY=fixture-one",
+                "AI_RESOURCE_LEDGER_ID=ledger-fixture",
+                "",
+            ]
+        )
+    )
+    providers.chmod(0o600)
+    monkeypatch.setattr(module, "PROVIDERS_ENV", providers)
+    monkeypatch.setattr(module, "run", lambda argv, **kwargs: payload)
+
+    with pytest.raises(module.DeployError, match="shared Live resource"):
+        module.verify_live_resource_control(tmp_path / "venv")
+
+
 def test_vibe_request_uses_exact_public_host(monkeypatch) -> None:
     module = _load_installer()
     seen: dict[str, str] = {}

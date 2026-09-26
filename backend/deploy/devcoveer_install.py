@@ -449,6 +449,59 @@ def configure_provider_env() -> None:
     private_write(PROVIDERS_ENV, render_env(values))
 
 
+def verify_live_resource_control(venv: Path) -> dict[str, Any]:
+    provider_env = parse_dotenv(PROVIDERS_ENV)
+    env = {
+        "HOME": str(Path.home()),
+        "PATH": os.environ.get("PATH", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PYTHONUNBUFFERED": "1",
+        **provider_env,
+    }
+    program = """
+import asyncio
+import json
+from ai_resource_control import Config, Control
+
+async def main():
+    control = Control(Config.from_env("street-story"))
+    try:
+        capabilities, _ = await control.rpc("capabilities", {})
+        candidates = await control.candidates()
+        print(json.dumps({
+            "contract": capabilities.get("contract"),
+            "ledger_id": capabilities.get("ledger_id"),
+            "candidate_count": len(candidates),
+        }, separators=(",", ":")))
+    finally:
+        await control.close()
+
+asyncio.run(main())
+"""
+    raw = run([str(venv / "bin/python"), "-c", program], env=env, timeout=30)
+    try:
+        result = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise DeployError("shared Live resource preflight returned invalid JSON") from exc
+    if (
+        not isinstance(result, dict)
+        or result.get("contract") != "ai_resource_leases_v1"
+        or not isinstance(result.get("ledger_id"), str)
+        or not result["ledger_id"]
+        or not isinstance(result.get("candidate_count"), int)
+        or result["candidate_count"] < 1
+    ):
+        raise DeployError("shared Live resource preflight failed")
+    expected_ledger = provider_env.get("AI_RESOURCE_LEDGER_ID", "").strip()
+    if expected_ledger and result["ledger_id"] != expected_ledger:
+        raise DeployError("shared Live resource ledger mismatch")
+    return {
+        "contract": result["contract"],
+        "ledger_id": result["ledger_id"],
+        "candidate_count": result["candidate_count"],
+    }
+
+
 def device_token() -> tuple[str, bool]:
     STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(STATE_ROOT, 0o700)
@@ -906,6 +959,7 @@ def main() -> int:
     STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(STATE_ROOT, 0o700)
     configure_provider_env()
+    resource_preflight = verify_live_resource_control(venv)
     device, token_created = device_token()
     principal, vibe_token = ensure_vibe_principal(sha)
     preflight = preview_preflight(vibe_token, sha)
@@ -932,6 +986,7 @@ def main() -> int:
             "source_sha": health.get("source_sha"),
         },
         "capabilities": capabilities,
+        "live_resource_control": resource_preflight,
         "vibepublish": {
             "principal": principal,
             "preflight": preflight,
