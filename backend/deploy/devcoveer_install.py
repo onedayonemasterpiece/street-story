@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import json
 import os
 import re
@@ -48,6 +47,7 @@ UNIT_FILE = UNIT_ROOT / SERVICE
 HOST_ENV = Path("/home/dev/.env")
 VIBE_SOURCE = Path("/home/dev/projects/vibepublish")
 VIBE_PY = Path("/home/dev/.local/opt/vibepublish/bin/python")
+BRIDGE_PYTHON = Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python")
 VIBE_DB = Path("/home/dev/.local/state/vibepublish/vibepublish.sqlite3")
 VIBE_OWNER_TOKEN_FILE = Path("/home/dev/.local/state/vibepublish/owner-token.txt")
 
@@ -260,15 +260,37 @@ def _pip_driver() -> str:
     raise DeployError("no installed pip driver is available for the Python 3.12 runtime")
 
 
+def _python_312_runtime() -> str:
+    candidates = [BRIDGE_PYTHON]
+    system_python = shutil.which("python3.12")
+    if system_python:
+        candidates.append(Path(system_python))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        result = subprocess.run(
+            [
+                str(candidate),
+                "-c",
+                "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            return str(candidate)
+    raise DeployError("no healthy Python 3.12 runtime is available")
+
+
 def ensure_venv(release: Path) -> Path:
     source = release / "source"
     requirements = source / "backend/requirements.txt"
     if not requirements.is_file():
         raise DeployError("backend requirements are missing from exact release")
     venv = release / "venv"
-    python = shutil.which("python3.12")
-    if not python:
-        raise DeployError("python3.12 is unavailable")
+    python = _python_312_runtime()
 
     target_python = venv / "bin/python"
     if not target_python.is_file():
