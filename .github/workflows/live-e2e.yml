@@ -1,0 +1,295 @@
+name: Street Story Live E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      acceptance:
+        description: 'smoke = backend/providers through verified image; full_social = Android client through native Telegram schedule/readback/cancel'
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - full_social
+  pull_request:
+    branches: [main]
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: street-story-live-e2e
+  cancel-in-progress: false
+
+jobs:
+  live-e2e:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       (github.event.label.name == 'live-e2e-smoke' || github.event.label.name == 'live-e2e-full-social') &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Verify deployed backend checkout
+        working-directory: backend
+        env:
+          STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
+          STREET_STORY_EXPECTED_BACKEND_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import urllib.request
+
+          base = os.environ.get('STREET_STORY_LIVE_BASE_URL', '').strip().rstrip('/')
+          expected = os.environ.get('STREET_STORY_EXPECTED_BACKEND_SHA', '').strip().lower()
+          out = pathlib.Path('live-e2e-artifacts/deployment.json')
+          out.parent.mkdir(parents=True, exist_ok=True)
+          actual = None
+          status = 'failed'
+          failure = None
+          try:
+              if not base.startswith('https://'):
+                  raise RuntimeError('live_base_url_not_https')
+              if not re.fullmatch(r'[0-9a-f]{40}', expected):
+                  raise RuntimeError('expected_backend_sha_invalid')
+              request = urllib.request.Request(
+                  base + '/healthz',
+                  headers={'Accept': 'application/json', 'User-Agent': 'StreetStory-Live-E2E/4'},
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  body = json.load(response)
+              actual = str(body.get('source_sha') or '').strip().lower() or None
+              if actual != expected:
+                  failure = 'deployed_backend_sha_mismatch'
+                  raise RuntimeError(failure)
+              status = 'ok'
+          except Exception as exc:
+              failure = failure or str(exc)[:120]
+          payload = {
+              'schema_version': 1,
+              'status': status,
+              'expected_source_sha': expected or None,
+              'deployed_source_sha': actual,
+              'failure_code': failure,
+          }
+          out.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+          if status != 'ok':
+              raise SystemExit(
+                  f"Street Story deployment preflight failed: {failure}; "
+                  f"expected={expected or '<missing>'}; deployed={actual or '<missing>'}"
+              )
+          print(f'Street Story deployed backend SHA verified: {actual}')
+          PY
+
+      - name: Install live media tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends espeak ffmpeg libimage-exiftool-perl
+
+      - name: Install live client dependency
+        working-directory: backend
+        run: python -m pip install 'httpx>=0.27,<1'
+
+      - name: Run backend/provider smoke through HTTPS
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'smoke') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-smoke')
+        working-directory: backend
+        env:
+          STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
+          STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
+          SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+          LIVE_E2E_MODE: smoke
+          STREET_STORY_LIVE_DIAGNOSTIC: live-e2e-artifacts/diagnostic.json
+        run: python tools/live_e2e.py
+
+      - uses: actions/setup-java@v4
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v4
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        with:
+          gradle-version: '8.13'
+
+      - name: Build exact-HEAD Android test APKs
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+          gradle --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
+
+      - name: Prepare licensed photo and prepared-audio fixtures
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        env:
+          STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
+          STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
+          SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$STREET_STORY_LIVE_BASE_URL"
+          test -n "$STREET_STORY_LIVE_TOKEN"
+          test -n "$SAFE_TEST_DESTINATION_ALIAS"
+          rm -rf live-android-fixtures
+          mkdir -p live-android-fixtures backend/live-e2e-artifacts
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import urllib.request
+
+          root = pathlib.Path('live-android-fixtures')
+          meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
+          request = urllib.request.Request(
+              meta['download_url'],
+              headers={'User-Agent': 'StreetStoryLiveE2EBot/5.0 (https://github.com/onedayonemasterpiece/street-story; public golden fixture)'},
+          )
+          with urllib.request.urlopen(request, timeout=60) as response:
+              photo = response.read()
+          actual_sha1 = hashlib.sha1(photo).hexdigest()
+          if actual_sha1 != meta['source_sha1']:
+              raise SystemExit(f"Commons fixture SHA-1 mismatch: {actual_sha1}")
+          (root / 'photo-source.jpg').write_bytes(photo)
+          (root / 'photo.jpg').write_bytes(photo)
+          (root / 'config.json').write_text(
+              json.dumps({
+                  'backend_url': os.environ['STREET_STORY_LIVE_BASE_URL'].rstrip('/'),
+                  'safe_alias': os.environ['SAFE_TEST_DESTINATION_ALIAS'],
+              }),
+              encoding='utf-8',
+          )
+          (root / 'token.txt').write_text(os.environ['STREET_STORY_LIVE_TOKEN'], encoding='utf-8')
+          texts = [
+              'Это Бранденбургские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
+              'Найди проверяемые факты об этих воротах и реальные источники. Не используй неподтвержденные легенды.',
+              'Если объект нужно подтвердить, это именно Бранденбургские ворота. Подтверждаю подходящего кандидата и продолжай исследование.',
+              'Оставь два самых надежных подтвержденных факта, остальные не используй в текущем посте.',
+              'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
+              'Начало я сейчас продиктую дословно.',
+              'Я люблю этот город за моменты, когда знакомая улица вдруг становится незнакомой.',
+              'Завершить диктовку.',
+              'Сократи остальное, мое дословное начало не трогай.',
+              'Сделай картинку чуть теплее, а текст оставь без изменений.',
+          ]
+          for ordinal, speech in enumerate(texts, 1):
+              wav = root / f'voice-{ordinal}.wav'
+              pcm = root / f'voice-{ordinal}.pcm'
+              subprocess.run(['espeak', '-v', 'ru', '-s', '165', '-w', str(wav), speech], check=True)
+              subprocess.run([
+                  'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(wav),
+                  '-ar', '16000', '-ac', '1', '-f', 's16le', '-acodec', 'pcm_s16le', str(pcm),
+              ], check=True)
+              wav.unlink()
+          PY
+          LAT=$(python -c "import json; print(json.load(open('backend/tools/golden_fixture.json'))['latitude'])")
+          LON=$(python -c "import json; print(json.load(open('backend/tools/golden_fixture.json'))['longitude'])")
+          exiftool -overwrite_original -n \
+            -GPSLatitude="$LAT" -GPSLatitudeRef=N \
+            -GPSLongitude="$LON" -GPSLongitudeRef=E \
+            live-android-fixtures/photo.jpg >/dev/null
+          python - <<'PY'
+          import hashlib, json, pathlib
+          meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
+          derived = pathlib.Path('live-android-fixtures/photo.jpg').read_bytes()
+          public = {
+              'schema_version': 1,
+              'fixture_id': meta['fixture_id'],
+              'commons_page': meta['commons_page'],
+              'author': meta['author'],
+              'license': meta['license'],
+              'source_sha1': meta['source_sha1'],
+              'derived_photo_sha256': hashlib.sha256(derived).hexdigest(),
+              'latitude': meta['latitude'],
+              'longitude': meta['longitude'],
+              'prepared_audio': True,
+              'physical_mic': False,
+          }
+          pathlib.Path('backend/live-e2e-artifacts/android-fixture-provenance.json').write_text(
+              json.dumps(public, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Android client -> live backend -> native Telegram golden run
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            PKG=com.onedayonemasterpiece.streetstory
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
+            adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
+            adb shell "run-as $PKG mkdir -p files/live-golden"
+            for name in config.json token.txt photo.jpg voice-{1..10}.pcm; do
+              adb shell "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "live-android-fixtures/$name"
+            done
+            mkdir -p backend/live-e2e-artifacts
+            adb shell am instrument -w \
+              -e class com.onedayonemasterpiece.streetstory.LiveGoldenInstrumentedTest \
+              "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
+              | tee backend/live-e2e-artifacts/android-instrumentation.txt
+            grep -q 'OK (1 test)' backend/live-e2e-artifacts/android-instrumentation.txt
+            adb shell "run-as $PKG cat files/live-golden/evidence.json" > backend/live-e2e-artifacts/android-golden-evidence.json
+            adb exec-out "run-as $PKG cat files/live-golden/preview.png" > backend/live-e2e-artifacts/android-preview.png
+            test -s backend/live-e2e-artifacts/android-golden-evidence.json
+            test -s backend/live-e2e-artifacts/android-preview.png
+            python - <<'PY'
+            import json, pathlib
+            evidence = json.loads(pathlib.Path('backend/live-e2e-artifacts/android-golden-evidence.json').read_text())
+            if evidence.get('cancel_confirmed') is not True:
+                raise SystemExit('Android golden run did not confirm native cancellation cleanup')
+            if evidence.get('physical_mic') is not False or evidence.get('prepared_pcm_after_capture_boundary') is not True:
+                raise SystemExit('Android golden evidence misrepresents prepared PCM acceptance')
+            if evidence.get('legacy_voice_endpoint_used') is not False:
+                raise SystemExit('Android golden run unexpectedly used the legacy voice endpoint')
+            PY
+
+      - name: Upload redacted live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: street-story-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/live-e2e-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
