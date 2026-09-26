@@ -58,7 +58,7 @@ class LiveSessionController(context: Context) {
         val local = store.story(storyId)
         val server = local?.serverStoryId
         val base = config.backendUrl
-        val token = <redacted>
+        val token = config.deviceToken
         if (local == null || server.isNullOrBlank() || base.isNullOrBlank() || token.isNullOrBlank()) {
             SyncScheduler.enqueue(app)
             update(LiveUiState(storyId = storyId, status = "Синхронизирую тему", error = "Live пока нельзя запустить"))
@@ -147,7 +147,7 @@ class LiveSessionController(context: Context) {
         update(LiveUiState(storyId = oldStory, status = "Микрофон выключен"))
         if (sendRemote && !oldServer.isNullOrBlank() && !oldSession.isNullOrBlank()) {
             val base = config.backendUrl
-            val token = <redacted>
+            val token = config.deviceToken
             if (!base.isNullOrBlank() && !token.isNullOrBlank()) {
                 network.execute { runCatching { LiveApiClient(base, token).stop(oldServer, oldSession) } }
             }
@@ -310,7 +310,7 @@ class LiveSessionController(context: Context) {
         update(LiveUiState(storyId = story, status = "Live недоступен", error = message))
         if (!server.isNullOrBlank() && !session.isNullOrBlank()) {
             val base = config.backendUrl
-            val token = <redacted>
+            val token = config.deviceToken
             if (!base.isNullOrBlank() && !token.isNullOrBlank()) {
                 network.execute { runCatching { LiveApiClient(base, token).stop(server, session) } }
             }

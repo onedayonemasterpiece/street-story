@@ -49,7 +49,7 @@ class LiveAckWire {
     @SerializedName("session_id") var sessionId: String = ""
 }
 
-internal class LiveApiClient(private val baseUrl: String, private val token: <redacted> {
+internal class LiveApiClient(private val baseUrl: String, private val token: String) {
     private val gson = Gson()
 
     fun start(serverStoryId: String): LiveStartWire =
