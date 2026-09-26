@@ -33,8 +33,15 @@ Ordinary transcription/research keeps the existing request limiter semantics. Ma
 controller wheel from its exact version tag and never vendors that private source into this public repository.
 
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
-If the shared Live RPC/migrations or dedicated aliases are absent, Live starts fail closed; Street Story must not fall
-back to a direct API key or to the legacy async voice path.
+Application runtime configuration never falls back to generic Supabase aliases. The DevCoveer installer pins the canonical
+limiter origin to `https://epyznmylqmchteykjsqj.supabase.co`. If dedicated limiter aliases are not present yet, it may
+consider an existing generic **service-role key alias only** as a candidate, never a generic URL: the candidate is promoted
+only after a read-only call to `google_ai_limiter_capabilities()` on that canonical origin authenticates it and returns the
+exact `google_ai_project_model_atomic_v1` / `google_cloud_project` contract. A key for any other Supabase project therefore
+cannot silently become the quota authority.
+
+If the shared Live RPC/migrations or a verified canonical credential are absent, Live starts fail closed; Street Story must
+not fall back to a direct API key or to the legacy async voice path.
 
 Before any service restart, the DevCoveer installer performs a read-only shared-resource preflight through the pinned
 private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1` capability surface, a nonempty

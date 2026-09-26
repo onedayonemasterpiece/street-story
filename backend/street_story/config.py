@@ -122,14 +122,11 @@ class Settings:
         quota_url = (
             os.getenv('GEMINI_QUOTA_SUPABASE_URL')
             or os.getenv('GOOGLE_AI_LIMITER_SUPABASE_URL')
-            or os.getenv('SUPABASE_URL')
             or ''
         ).rstrip('/') or None
         quota_key = (
             os.getenv('GEMINI_QUOTA_SUPABASE_KEY')
             or os.getenv('GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY')
-            or os.getenv('SUPABASE_SERVICE_KEY')
-            or os.getenv('SUPABASE_KEY')
         )
         return cls(
             data_dir=Path(os.getenv('DATA_DIR', './data')).expanduser().resolve(),
