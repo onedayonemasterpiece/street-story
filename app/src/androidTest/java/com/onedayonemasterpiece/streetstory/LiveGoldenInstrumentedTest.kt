@@ -22,9 +22,15 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class LiveGoldenInstrumentedTest {
@@ -45,8 +51,12 @@ class LiveGoldenInstrumentedTest {
         require(isExplicitTestAlias(safeAlias))
 
         val photoFile = File(root, "photo.jpg")
-        val audioFiles = (1..4).map { File(root, "voice-$it.m4a") }
-        require(photoFile.isFile && audioFiles.all(File::isFile))
+        val pcmFiles = (1..10).map { File(root, "voice-$it.pcm") }
+        require(photoFile.isFile && pcmFiles.all(File::isFile))
+
+        val appConfig = AppGraph.config(context)
+        appConfig.backendUrl = baseUrl
+        appConfig.deviceToken = token
 
         val photoSha = sha256(photoFile.readBytes())
         val imported = PhotoImporter.import(context, insertIntoMediaStore(photoFile))
@@ -56,88 +66,108 @@ class LiveGoldenInstrumentedTest {
         assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - FIXTURE_LAT) < 0.0025)
         assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - FIXTURE_LON) < 0.0025)
 
-        val store = StoryStore(context)
+        val store = AppGraph.store(context)
         val local = store.createStory(imported)
         val api = ApiClient(baseUrl, token)
         val created = api.createStory(local)
         require(created.id.isNotBlank())
         store.setServerIdentity(local.clientStoryId, created.id)
         val storyId = created.id
-        val initialIds = mutableListOf<String>()
+        val live = AppGraph.live(context)
         val evidence = linkedMapOf<String, Any?>()
-        var publicationId: String? = null
+        var publicationScheduled = false
         var cancelConfirmed = false
 
         try {
-            repeat(3) { index ->
-                val session = preparedVoice(store, local.clientStoryId, RecordingKind.INITIAL, audioFiles[index])
-                initialIds += session.sessionId
-                syncVoice(api, storyId, session, store.chunks(session.sessionId))
+            val ready = CountDownLatch(1)
+            var liveError: String? = null
+            live.start(local.clientStoryId) { ok, error ->
+                if (!ok) liveError = error ?: "Live start failed"
+                ready.countDown()
             }
-            assertEquals(StoryStage.VOICE_READY, api.getStory(storyId).state)
+            assertTrue("Live start timed out", ready.await(45, TimeUnit.SECONDS))
+            check(liveError == null) { liveError.orEmpty() }
+            assertTrue(live.isActiveFor(local.clientStoryId))
 
-            var story = startResearch(api, storyId, local.clientStoryId, "initial")
-            var identity = story.visualIdentity
-            if (identity?.status !in setOf("match", "owner_confirmed")) {
-                val candidate = identity?.candidates?.firstOrNull {
-                    val name = it.name.lowercase(Locale.ROOT)
-                    "brandenburg" in name || "бранденбург" in name
-                } ?: error("Expected Brandenburg Gate candidate is absent")
-                story = startResearch(api, storyId, local.clientStoryId, "confirmed", candidate.candidateId)
-                identity = story.visualIdentity
+            speak(live, pcmFiles[0])
+            awaitAnswer(live, "initial context")
+
+            speak(live, pcmFiles[1])
+            awaitAnswer(live, "research request")
+            var story = pollStory(api, storyId, RESEARCH_TIMEOUT_MS) {
+                it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW)
             }
-            assertTrue(identity?.status in setOf("match", "owner_confirmed"))
-            assertEquals(initialIds, story.researchVoiceIds)
+
+            if (story.visualIdentity?.status !in setOf("match", "owner_confirmed")) {
+                speak(live, pcmFiles[2])
+                awaitAnswer(live, "identity confirmation")
+                story = pollStory(api, storyId, RESEARCH_TIMEOUT_MS) {
+                    it.state == StoryStage.REVIEW &&
+                        it.visualIdentity?.status in setOf("match", "owner_confirmed") &&
+                        it.sourceCount > 0
+                }
+            }
+            assertTrue(story.visualIdentity?.status in setOf("match", "owner_confirmed"))
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
+            require(story.facts.count { it.evidenceSupported } >= 2)
 
-            val supported = story.facts.filter { it.evidenceSupported }
-            require(supported.size >= 2) { "Golden run requires at least two supported claims" }
-            val removed = supported.first()
-            val keptIds = supported.drop(1).take(2).map { it.factId }
-            story = api.mutate(
-                storyId,
-                "facts",
-                gson.toJson(mapOf("selected_fact_ids" to keptIds)),
-                newRequestKey("live-facts", local.clientStoryId),
-            )
-            assertFalse(story.draftText.orEmpty().contains(removed.text))
-            assertFalse(rawStory(baseUrl, token, storyId).get("image_notes")?.asString.orEmpty().contains(removed.text))
+            speak(live, pcmFiles[3])
+            awaitAnswer(live, "fact selection")
+            story = pollStory(api, storyId) {
+                it.facts.count { fact -> fact.selected && fact.evidenceSupported } >= 1 &&
+                    !it.draftText.isNullOrBlank()
+            }
+            val selectedFactIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
 
-            val refinement = preparedVoice(store, local.clientStoryId, RecordingKind.REFINEMENT, audioFiles[3])
-            syncVoice(api, storyId, refinement, store.chunks(refinement.sessionId))
-            val beforeUpdate = api.getStory(storyId)
-            assertEquals(StoryStage.REVIEW, beforeUpdate.state)
-            assertFalse(refinement.sessionId in beforeUpdate.researchVoiceIds)
+            val beforeEdit = requireNotNull(story.draftText)
+            speak(live, pcmFiles[4])
+            awaitAnswer(live, "text edit")
+            story = pollStory(api, storyId) { !it.draftText.isNullOrBlank() && it.draftText != beforeEdit }
+            val editedText = requireNotNull(story.draftText)
 
-            story = startResearch(api, storyId, local.clientStoryId, "refined")
-            val allVoiceIds = initialIds + refinement.sessionId
-            assertEquals(allVoiceIds, story.researchVoiceIds)
-            story.facts.firstOrNull { it.factId == removed.factId }?.let { assertFalse(it.selected) }
-            assertFalse(story.draftText.orEmpty().contains(removed.text))
-            val rawRefined = rawStory(baseUrl, token, storyId)
-            assertFalse(rawRefined.get("image_notes")?.asString.orEmpty().contains(removed.text))
+            speak(live, pcmFiles[5])
+            waitUntil(60_000, "literal mode did not start") { live.snapshot().literalMode }
+            speak(live, pcmFiles[6])
+            speak(live, pcmFiles[7])
+            waitUntil(90_000, "literal mode did not finish") { !live.snapshot().literalMode }
+            awaitAnswer(live, "literal finish")
+            story = api.getStory(storyId)
+            val literalText = LITERAL_TEXT
+            assertTrue("Literal text is absent", story.draftText.orEmpty().contains(literalText, ignoreCase = true))
 
-            val selectedIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
-            require(selectedIds.isNotEmpty())
-            api.mutate(
-                storyId,
-                "visual",
-                gson.toJson(mapOf("selected_fact_ids" to selectedIds)),
-                newRequestKey("live-visual", local.clientStoryId),
-            )
-            story = pollStory(api, storyId, VISUAL_TIMEOUT_MS) { it.state == StoryStage.READY_TO_PUBLISH }
+            val afterLiteral = requireNotNull(story.draftText)
+            speak(live, pcmFiles[8])
+            awaitAnswer(live, "post-literal edit")
+            story = pollStory(api, storyId) {
+                !it.draftText.isNullOrBlank() &&
+                    it.draftText != afterLiteral &&
+                    it.draftText!!.contains(literalText, ignoreCase = true)
+            }
+            val afterProtectedEdit = requireNotNull(story.draftText)
+
+            live.sendText("Верни предыдущую правку.")
+            awaitAnswer(live, "undo")
+            story = pollStory(api, storyId) { it.draftText == afterLiteral }
+            assertTrue(story.draftText.orEmpty().contains(literalText, ignoreCase = true))
+
+            val textBeforeVisual = requireNotNull(story.draftText)
+            speak(live, pcmFiles[9])
+            awaitAnswer(live, "visual-only edit")
+            story = pollStory(api, storyId, VISUAL_TIMEOUT_MS) {
+                it.state == StoryStage.READY_TO_PUBLISH && !it.processedImageUrl.isNullOrBlank()
+            }
+            assertEquals("Visual-only change rewrote text", textBeforeVisual, story.draftText)
             val rawReady = rawStory(baseUrl, token, storyId)
             val visual = rawReady.requireObject("visual")
             assertEquals(OWNER_PROMPT_SHA256, visual.requireString("prompt_sha256"))
             val imageOperation = visual.requireString("operation_id")
             val imageAsset = visual.requireString("selected_asset_ref")
             val imageSha = visual.requireString("selected_sha256")
+
             val processed = File(root, "processed.img")
             api.downloadAsset(requireNotNull(story.processedImageUrl), processed)
             assertEquals(imageSha, sha256(processed.readBytes()))
-
-            val manualCaption = (story.draftText.orEmpty() + "\n\nРучная правка live E2E.").take(1024)
             store.setServerSnapshot(
                 local.clientStoryId,
                 story.state,
@@ -153,131 +183,139 @@ class LiveGoldenInstrumentedTest {
             store.replaceFacts(local.clientStoryId, story.facts.map { it.local() })
             ResearchProjectionStore(context).replace(local.clientStoryId, story)
             store.setProcessedImagePath(local.clientStoryId, processed.absolutePath)
-            store.setDraftText(local.clientStoryId, manualCaption)
+            context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+                .edit().putString("active_story_id", local.clientStoryId).apply()
+            launchAndScreenshot()
 
             val safe = api.capabilities().destinations.singleOrNull {
                 it.alias == safeAlias && it.provider.equals("telegram", true) && it.status == "supported"
             } ?: error("Safe Telegram alias is not uniquely supported")
             require(isExplicitTestAlias("${safe.alias} ${safe.label}"))
-            store.replaceDestinations(local.clientStoryId, listOf(safe.local(true)))
 
-            api.mutate(
-                storyId,
-                "publish",
-                gson.toJson(mapOf(
-                    "destinations" to listOf(safeAlias),
-                    "delay_minutes" to 1440,
-                    "text_override" to manualCaption,
-                )),
-                newRequestKey("live-publish", local.clientStoryId),
+            val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
+                .plusHours(24)
+                .withSecond(0)
+                .withNano(0)
+            live.sendText(
+                "Подготовь публикацию именно текущих текста и картинки в канал alias $safeAlias " +
+                    "на ${scheduledAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}, " +
+                    "timezone Europe/Kaliningrad. Ничего пока не публикуй."
             )
+            waitUntil(90_000, "publication confirmation was not prepared") {
+                live.snapshot().confirmation != null
+            }
+            val confirmation = requireNotNull(live.snapshot().confirmation)
+            assertEquals(story.draftText, confirmation.text)
+            assertEquals(listOf(safeAlias), confirmation.destinations)
+
+            live.sendText("Подтверждаю именно показанную карточку публикации.")
+            awaitAnswer(live, "publication confirmation")
             val scheduled = pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
-                rawStory(baseUrl, token, storyId).getAsJsonObject("publication")?.get("state")?.asString in setOf("scheduled", "verified")
+                rawStory(baseUrl, token, storyId)
+                    .getAsJsonObject("publication")?.get("state")?.asString in setOf("scheduled", "verified")
             }
             val rawScheduled = rawStory(baseUrl, token, storyId)
             val publication = rawScheduled.requireObject("publication")
-            publicationId = publication.requireString("publication_id")
-            val providerRows = scheduled.destinations.filter { it.alias == safeAlias }
-            require(providerRows.size == 1 && providerRows.single().status in setOf("scheduled", "verified"))
+            val publicationId = publication.requireString("publication_id")
+            publicationScheduled = true
 
-            // Mirror the real SyncWorker policy: manual caption wins over the stale research draft
-            // once the provider-native post has been scheduled.
-            val effectiveDraft = effectiveSnapshotDraft(StoryStage.SCHEDULED, manualCaption, scheduled.draftText)
-            store.setServerSnapshot(
-                local.clientStoryId,
-                StoryStage.SCHEDULED,
-                scheduled.placeName,
-                scheduled.summary,
-                effectiveDraft,
-                scheduled.processedImageUrl,
-                scheduled.scheduledFor,
-                scheduled.publishedAt,
-                scheduled.error?.message,
-                scheduled.revision,
-            )
-            store.replaceDestinations(local.clientStoryId, scheduled.destinations.map { it.local() })
-            assertEquals(manualCaption, requireNotNull(store.story(local.clientStoryId)).draftText)
-            launchAndScreenshot()
-
-            evidence.putAll(mapOf(
-                "schema_version" to 2,
-                "client_story_id" to local.clientStoryId,
-                "server_story_id" to storyId,
-                "fixture_photo_sha256" to photoSha,
-                "voice_session_ids" to allVoiceIds,
-                "research_revision" to story.researchRevision,
-                "visual_identity_status" to identity?.status,
-                "visual_candidate_id" to identity?.candidateId,
-                "source_count" to story.sourceCount,
-                "sources" to story.sources.map { mapOf("title" to (it.title ?: it.url), "url" to it.url) },
-                "selected_fact_ids" to selectedIds,
-                "removed_fact_id" to removed.factId,
-                "prompt_sha256" to OWNER_PROMPT_SHA256,
-                "image_operation_id" to imageOperation,
-                "image_asset_ref" to imageAsset,
-                "image_sha256" to imageSha,
-                "publication_id" to publicationId,
-                "publication_operation_id" to publication.get("operation_id")?.asString,
-                "scheduled_for" to scheduled.scheduledFor,
-                "destination_alias" to safeAlias,
-                "manual_caption_sha256" to sha256(manualCaption.toByteArray()),
-                "physical_mic" to false,
-                "prepared_audio" to true,
-                "photo_via_media_store_importer" to true,
-            ))
-
-            api.mutate(storyId, "cancel", "{}", newRequestKey("live-cancel", local.clientStoryId))
+            live.sendText("Отмени текущую запланированную публикацию.")
+            awaitAnswer(live, "publication cancel")
             pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
-                rawStory(baseUrl, token, storyId).getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                rawStory(baseUrl, token, storyId)
+                    .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
             }
             val cancelled = rawStory(baseUrl, token, storyId).requireObject("publication")
             assertEquals("cancelled", cancelled.requireString("state"))
             cancelConfirmed = true
-            evidence["cancel_confirmed"] = true
-            evidence["cancel_operation_id"] = cancelled.get("cancel_operation_id")?.asString
+
+            evidence.putAll(
+                mapOf(
+                    "schema_version" to 3,
+                    "client_story_id" to local.clientStoryId,
+                    "server_story_id" to storyId,
+                    "fixture_photo_sha256" to photoSha,
+                    "live_provider" to "gemini-3.8-live",
+                    "prepared_pcm_after_capture_boundary" to true,
+                    "physical_mic" to false,
+                    "legacy_voice_endpoint_used" to false,
+                    "research_revision" to scheduled.researchRevision,
+                    "visual_identity_status" to scheduled.visualIdentity?.status,
+                    "source_count" to scheduled.sourceCount,
+                    "selected_fact_ids" to selectedFactIds,
+                    "literal_text_preserved" to true,
+                    "visual_only_text_preserved" to true,
+                    "prompt_sha256" to OWNER_PROMPT_SHA256,
+                    "image_operation_id" to imageOperation,
+                    "image_asset_ref" to imageAsset,
+                    "image_sha256" to imageSha,
+                    "publication_id" to publicationId,
+                    "scheduled_for" to scheduled.scheduledFor,
+                    "destination_alias" to safeAlias,
+                    "cancel_confirmed" to true,
+                    "cancel_operation_id" to cancelled.get("cancel_operation_id")?.asString,
+                )
+            )
         } finally {
-            if (publicationId != null && !cancelConfirmed) {
+            if (publicationScheduled && !cancelConfirmed) {
                 runCatching {
-                    api.mutate(storyId, "cancel", "{}", newRequestKey("live-cleanup", local.clientStoryId))
-                    pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
-                        rawStory(baseUrl, token, storyId).getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                    if (live.isActiveFor(local.clientStoryId)) {
+                        live.sendText("Аварийная очистка теста: отмени текущую запланированную публикацию.")
+                        waitUntil(90_000, "Live cleanup cancel failed") {
+                            rawStory(baseUrl, token, storyId)
+                                .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                        }
+                        evidence["best_effort_live_cancel_confirmed"] = true
+                    } else {
+                        api.mutate(storyId, "cancel", "{}", newRequestKey("emergency-cleanup", local.clientStoryId))
+                        pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
+                            rawStory(baseUrl, token, storyId)
+                                .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                        }
+                        evidence["best_effort_legacy_cleanup_only"] = true
                     }
-                    evidence["best_effort_cancel_confirmed"] = true
                 }
             }
+            live.stopLocal(sendRemote = true)
             File(root, "evidence.json").writeText(gson.toJson(evidence))
             store.close()
         }
         assertTrue(cancelConfirmed)
     }
 
-    private fun startResearch(
-        api: ApiClient,
-        storyId: String,
-        clientId: String,
-        ordinal: String,
-        candidateId: String? = null,
-    ): StoryWire {
-        val payload = linkedMapOf<String, Any>("action" to "research")
-        candidateId?.let { payload["candidate_id"] = it }
-        api.mutate(storyId, "facts", gson.toJson(payload), newRequestKey("live-research", "$clientId-$ordinal"))
-        return pollStory(api, storyId) { it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW) }
+    private fun speak(live: LiveSessionController, pcm: File) {
+        val bytes = pcm.readBytes()
+        require(bytes.size % 2 == 0)
+        val shorts = ShortArray(bytes.size / 2)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+        var offset = 0
+        while (offset < shorts.size) {
+            val end = minOf(offset + PCM_CHUNK_SAMPLES, shorts.size)
+            live.submitPcm(shorts.copyOfRange(offset, end))
+            offset = end
+            Thread.sleep(PCM_CHUNK_SLEEP_MS)
+        }
+        live.endSpeech()
     }
 
-    private fun preparedVoice(store: StoryStore, storyId: String, kind: String, audio: File): VoiceSessionSnapshot {
-        val session = store.createVoiceSession(storyId, kind, "github-actions-prepared-audio")
-        val sha = sha256(audio.readBytes())
-        store.addChunk(session.sessionId, 0, 0, 6000, 0, 6100, audio.absolutePath, sha, AudioProfile.MIME_M4A)
-        store.finishVoiceSession(session.sessionId, OffsetDateTime.now().toString(), 6100, 100)
-        return requireNotNull(store.voiceSession(session.sessionId))
+    private fun awaitAnswer(live: LiveSessionController, label: String) {
+        val before = live.snapshot().assistantText
+        waitUntil(120_000, "Live answer timed out: $label") {
+            val state = live.snapshot()
+            state.error?.let { error("Live failed during $label: $it") }
+            state.active && state.status == "Слушаю" &&
+                !state.assistantText.isNullOrBlank() &&
+                state.assistantText != before
+        }
     }
 
-    private fun syncVoice(api: ApiClient, storyId: String, session: VoiceSessionSnapshot, chunks: List<ChunkRecord>) {
-        api.openVoiceSession(storyId, session)
-        chunks.forEach { api.uploadChunk(storyId, session, it) }
-        val receipt = api.completeVoice(storyId, session, chunks)
-        assertTrue(receipt.recordingFinished)
-        assertEquals(chunks.map { it.sha256.lowercase() }, receipt.received.sortedBy { it.index }.map { it.sha256.lowercase() })
+    private fun waitUntil(timeoutMs: Long, message: String, predicate: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (predicate()) return
+            Thread.sleep(250)
+        }
+        error(message)
     }
 
     private fun pollStory(
@@ -292,10 +330,10 @@ class LiveGoldenInstrumentedTest {
             last = api.getStory(storyId)
             if (predicate(last)) return last
             val code = last.error?.code.orEmpty()
-            if (last.state == StoryStage.NEEDS_REVIEW && code != "visual_identity_uncertain") {
+            if (last.state == StoryStage.NEEDS_REVIEW && code !in setOf("", "visual_identity_uncertain")) {
                 error("Story needs review: $code ${last.error?.message.orEmpty()}")
             }
-            Thread.sleep(5_000)
+            Thread.sleep(2_000)
         }
         error("Timed out waiting for story; last=${last?.state}")
     }
@@ -328,7 +366,7 @@ class LiveGoldenInstrumentedTest {
 
     private fun launchAndScreenshot() {
         context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        Thread.sleep(2500)
+        Thread.sleep(2_500)
         val bitmap: Bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
         FileOutputStream(File(root, "preview.png")).use { out ->
             assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out))
@@ -344,10 +382,8 @@ class LiveGoldenInstrumentedTest {
     private fun JsonObject.requireObject(name: String): JsonObject =
         get(name)?.takeIf { it.isJsonObject }?.asJsonObject ?: error("Missing object $name")
 
-    private fun FactWire.local() = FactSnapshot(factId, text, confidence, evidenceSupported, selected && evidenceSupported, gson.toJson(sources))
-
-    private fun DestinationWire.local(selected: Boolean = this.selected) =
-        DestinationSnapshot(alias, label, provider, status, selected)
+    private fun FactWire.local() =
+        FactSnapshot(factId, text, confidence, evidenceSupported, selected && evidenceSupported, gson.toJson(sources))
 
     private fun isExplicitTestAlias(value: String): Boolean {
         val lowered = value.lowercase(Locale.ROOT)
@@ -358,6 +394,9 @@ class LiveGoldenInstrumentedTest {
         private const val FIXTURE_LAT = 54.697111
         private const val FIXTURE_LON = 20.494111
         private const val OWNER_PROMPT_SHA256 = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
+        private const val LITERAL_TEXT = "Я люблю этот город за моменты, когда знакомая улица вдруг становится незнакомой"
+        private const val PCM_CHUNK_SAMPLES = 4096
+        private const val PCM_CHUNK_SLEEP_MS = 260L
         private const val RESEARCH_TIMEOUT_MS = 12L * 60 * 1000
         private const val VISUAL_TIMEOUT_MS = 12L * 60 * 1000
         private const val SOCIAL_TIMEOUT_MS = 6L * 60 * 1000

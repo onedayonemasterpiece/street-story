@@ -192,18 +192,24 @@ jobs:
           )
           (root / 'token.txt').write_text(os.environ['STREET_STORY_LIVE_TOKEN'], encoding='utf-8')
           texts = [
-              'Я сфотографировал Бранденбургские ворота в Калининграде.',
-              'Хочу понять историю этих ворот и когда появился их нынешний облик.',
-              'Найди проверяемые городские факты и покажи реальные источники, без легенд без подтверждения.',
-              'Добавь только подтвержденные сведения и сохрани мой выбор фактов. Мне интересна роль ворот в городской среде.',
+              'Это Бранденбургские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
+              'Найди проверяемые факты об этих воротах и реальные источники. Не используй неподтвержденные легенды.',
+              'Если объект нужно подтвердить, это именно Бранденбургские ворота. Подтверждаю подходящего кандидата и продолжай исследование.',
+              'Оставь два самых надежных подтвержденных факта, остальные не используй в текущем посте.',
+              'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
+              'Начало я сейчас продиктую дословно.',
+              'Я люблю этот город за моменты, когда знакомая улица вдруг становится незнакомой.',
+              'Завершить диктовку.',
+              'Сократи остальное, мое дословное начало не трогай.',
+              'Сделай картинку чуть теплее, а текст оставь без изменений.',
           ]
-          for ordinal, text in enumerate(texts, 1):
+          for ordinal, speech in enumerate(texts, 1):
               wav = root / f'voice-{ordinal}.wav'
-              m4a = root / f'voice-{ordinal}.m4a'
-              subprocess.run(['espeak', '-v', 'ru', '-s', '170', '-w', str(wav), text], check=True)
+              pcm = root / f'voice-{ordinal}.pcm'
+              subprocess.run(['espeak', '-v', 'ru', '-s', '165', '-w', str(wav), speech], check=True)
               subprocess.run([
                   'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(wav),
-                  '-ar', '16000', '-ac', '1', '-c:a', 'aac', '-b:a', '32k', '-movflags', '+faststart', str(m4a),
+                  '-ar', '16000', '-ac', '1', '-f', 's16le', '-acodec', 'pcm_s16le', str(pcm),
               ], check=True)
               wav.unlink()
           PY
@@ -255,7 +261,7 @@ jobs:
             adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
             adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
             adb shell "run-as $PKG mkdir -p files/live-golden"
-            for name in config.json token.txt photo.jpg voice-1.m4a voice-2.m4a voice-3.m4a voice-4.m4a; do
+            for name in config.json token.txt photo.jpg voice-{1..10}.pcm; do
               adb shell "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "live-android-fixtures/$name"
             done
             mkdir -p backend/live-e2e-artifacts
@@ -273,8 +279,10 @@ jobs:
             evidence = json.loads(pathlib.Path('backend/live-e2e-artifacts/android-golden-evidence.json').read_text())
             if evidence.get('cancel_confirmed') is not True:
                 raise SystemExit('Android golden run did not confirm native cancellation cleanup')
-            if evidence.get('physical_mic') is not False or evidence.get('prepared_audio') is not True:
-                raise SystemExit('Android golden evidence misrepresents prepared-audio acceptance')
+            if evidence.get('physical_mic') is not False or evidence.get('prepared_pcm_after_capture_boundary') is not True:
+                raise SystemExit('Android golden evidence misrepresents prepared PCM acceptance')
+            if evidence.get('legacy_voice_endpoint_used') is not False:
+                raise SystemExit('Android golden run unexpectedly used the legacy voice endpoint')
             PY
 
       - name: Upload redacted live evidence

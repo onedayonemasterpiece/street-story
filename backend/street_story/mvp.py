@@ -47,6 +47,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         intent = str(context.get("user_voice_intent") or "").strip()
         if intent:
             notes.append("Авторское наблюдение: " + intent[:600])
+        visual_instruction = str(context.get("visual_instruction") or "").strip()
+        if visual_instruction:
+            notes.append("Текущая визуальная правка автора: " + visual_instruction[:600])
         facts = [
             str(item.get("text") or "").strip()
             for item in selected
@@ -124,6 +127,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     {"fact_id": item["fact_id"], "text": item["text"]}
                     for item in selected_facts
                 ],
+                "visual_instruction": str(body.get("visual_instruction") or "").strip()[:600],
                 "prompt_version": self.PROMPT_VERSION,
                 "prompt_sha256": template_sha,
             }

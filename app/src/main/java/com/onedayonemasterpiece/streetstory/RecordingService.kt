@@ -41,13 +41,15 @@ class RecordingService : Service() {
         if(store.activeVoiceSession()!=null)return
         val storyId=intent.getStringExtra(EXTRA_STORY_ID)?:return
         val kind=intent.getStringExtra(EXTRA_KIND)?:RecordingKind.INITIAL
+        if(kind==RecordingKind.LIVE_ARCHIVE&&!AppGraph.live(this).isActiveFor(storyId)){broadcast("Live-сессия ещё не готова");return}
         val session=store.createVoiceSession(storyId,kind,"${Build.MANUFACTURER} ${Build.MODEL}".trim())
-        sessionId=session.sessionId;enterForeground("Слушаю · тишина не записывается",false);beginCapture();broadcast()
+        sessionId=session.sessionId;enterForeground(if(kind==RecordingKind.LIVE_ARCHIVE)"Live · слушаю" else "Слушаю · тишина не записывается",false);beginCapture();broadcast()
     }
     private fun pauseSession(){val active=store.activeVoiceSession()?:return;sessionId=active.sessionId;if(active.captureState==CaptureState.RECORDING)stopCapture();store.beginManualPause(active.sessionId);val refreshed=store.voiceSession(active.sessionId)?:active;runtime.update(active.sessionId,refreshed.durationMs,elapsedFromStart(refreshed.startedAt),refreshed.autoSilenceSkippedMs,CaptureActivity.MANUAL_PAUSE);enterForeground("Пауза · микрофон остановлен",true);SyncScheduler.enqueue(this);broadcast()}
     private fun resumeSession(){val active=store.activeVoiceSession()?:return;sessionId=active.sessionId;store.endManualPause(active.sessionId);enterForeground("Слушаю · тишина не записывается",false);beginCapture();broadcast()}
     private fun finishSession(){
         val active=store.activeVoiceSession()?:return;sessionId=active.sessionId
+        if(active.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this).stopLocal()
         if(active.captureState==CaptureState.RECORDING)stopCapture() else store.endManualPause(active.sessionId)
         val refreshed=store.voiceSession(active.sessionId)?:return
         if(refreshed.durationMs<MIN_SESSION_MS||refreshed.chunkCount==0){store.discardVoiceSession(active.sessionId);runtime.clear(active.sessionId);stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();broadcast("Слишком короткая запись удалена");return}
@@ -62,6 +64,7 @@ class RecordingService : Service() {
     }
     private fun captureLoop(id:String){
         val initial=store.voiceSession(id)?:return
+        val live=if(initial.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this) else null
         val sessionStart=runCatching{OffsetDateTime.parse(initial.startedAt).toInstant().toEpochMilli()}.getOrElse{System.currentTimeMillis()}
         val manualPauseMs=initial.manualPauseMs
         val minBuffer=AudioRecord.getMinBufferSize(AudioProfile.SAMPLE_RATE_HZ,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
@@ -81,8 +84,18 @@ class RecordingService : Service() {
             while(captureRequested){
                 if(!readFrame(recorder,frame))continue
                 val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0);val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0);val wasActive=latch.active;val active=latch.onFrame(detector.isSpeech(frame))
-                if(active){silenceStart=null;writer=writer?:newWriter(id,persisted);if(!wasActive){pushPreRoll(preRoll,frame,wallStart,wallEnd);while(preRoll.isNotEmpty()){val buffered=preRoll.removeFirst();writer?.writeFrame(buffered.samples,buffered.wallStartMs,buffered.wallEndMs)}}else writer?.writeFrame(frame,wallStart,wallEnd);activity=if(detector.isFailOpen)CaptureActivity.FALLBACK_CONTINUOUS else CaptureActivity.VOICE;if((writer?.durationMs?:0)>=M4aChunkWriter.TARGET_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}}
-                else{pushPreRoll(preRoll,frame,wallStart,wallEnd);if(silenceStart==null)silenceStart=wallStart;activity=CaptureActivity.AUTO_SILENCE;val silenceMs=wallEnd-(silenceStart?:wallEnd);if(silenceMs>=LONG_SILENCE_CLOSE_MS&&(writer?.durationMs?:0)>=MIN_DURABLE_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}}
+                if(active){
+                    silenceStart=null;writer=writer?:newWriter(id,persisted)
+                    if(!wasActive){
+                        pushPreRoll(preRoll,frame,wallStart,wallEnd)
+                        while(preRoll.isNotEmpty()){val buffered=preRoll.removeFirst();writer?.writeFrame(buffered.samples,buffered.wallStartMs,buffered.wallEndMs);live?.submitPcm(buffered.samples)}
+                    }else{writer?.writeFrame(frame,wallStart,wallEnd);live?.submitPcm(frame)}
+                    activity=if(detector.isFailOpen)CaptureActivity.FALLBACK_CONTINUOUS else CaptureActivity.VOICE
+                    if((writer?.durationMs?:0)>=M4aChunkWriter.TARGET_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
+                }else{
+                    if(wasActive)live?.endSpeech()
+                    pushPreRoll(preRoll,frame,wallStart,wallEnd);if(silenceStart==null)silenceStart=wallStart;activity=CaptureActivity.AUTO_SILENCE;val silenceMs=wallEnd-(silenceStart?:wallEnd);if(silenceMs>=LONG_SILENCE_CLOSE_MS&&(writer?.durationMs?:0)>=MIN_DURABLE_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
+                }
                 val recorded=persisted+(writer?.durationMs?:0);val skipped=(wallEnd-manualPauseMs-recorded).coerceAtLeast(0);val changed=activity!=lastActivity
                 if(lastRuntime<0||wallEnd-lastRuntime>=RUNTIME_UPDATE_INTERVAL_MS||changed){runtime.update(id,recorded,wallEnd,skipped,activity);lastRuntime=wallEnd}
                 if(lastStore<0||wallEnd-lastStore>=STORE_UPDATE_INTERVAL_MS||changed){store.updateCaptureProgress(id,recorded,wallEnd,manualPauseMs,skipped,activity);lastStore=wallEnd}
@@ -106,7 +119,7 @@ class RecordingService : Service() {
     private fun broadcast(message:String?=null){sendBroadcast(Intent(ACTION_STATE_CHANGED).setPackage(packageName).putExtra(EXTRA_MESSAGE,message))}
     private fun elapsedFromStart(started:String)=runCatching{(System.currentTimeMillis()-OffsetDateTime.parse(started).toInstant().toEpochMilli()).coerceAtLeast(0)}.getOrDefault(0)
     private fun elapsedBetween(started:String,ended:OffsetDateTime)=runCatching{Duration.between(OffsetDateTime.parse(started),ended).toMillis().coerceAtLeast(0)}.getOrDefault(0)
-    override fun onDestroy(){if(captureRequested){stopCapture();sessionId?.let{store.beginManualPause(it)}};super.onDestroy()}
+    override fun onDestroy(){if(captureRequested){val current=sessionId?.let{store.voiceSession(it)};if(current?.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this).stopLocal();stopCapture();sessionId?.let{store.beginManualPause(it)}};super.onDestroy()}
     private data class FramePacket(val samples:ShortArray,val wallStartMs:Long,val wallEndMs:Long)
     companion object{
         const val ACTION_START="com.onedayonemasterpiece.streetstory.START";const val ACTION_PAUSE="com.onedayonemasterpiece.streetstory.PAUSE";const val ACTION_RESUME="com.onedayonemasterpiece.streetstory.RESUME";const val ACTION_FINISH="com.onedayonemasterpiece.streetstory.FINISH";const val ACTION_STATE_CHANGED="com.onedayonemasterpiece.streetstory.STATE_CHANGED";const val EXTRA_MESSAGE="message";const val EXTRA_STORY_ID="story_id";const val EXTRA_KIND="kind"

@@ -135,7 +135,7 @@ class DebugProvisioningInstrumentedTest {
     private fun assertMainFeedRendered(activity: MainActivity) {
         var rendered = false
         instrumentation.runOnMainSync {
-            rendered = containsText(activity.findViewById(android.R.id.content), "Городские истории")
+            rendered = containsText(activity.findViewById(android.R.id.content), "Темы")
         }
         assertTrue("MainActivity must render the unified feed after provisioning", rendered)
     }
