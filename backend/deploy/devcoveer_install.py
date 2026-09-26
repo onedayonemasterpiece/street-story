@@ -478,7 +478,12 @@ def resolve_limiter_authority(host: Mapping[str, str]) -> tuple[str, str]:
         return dedicated_url, dedicated_key
 
     candidates: list[str] = []
-    for name in ("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY", "SUPABASE_KEY"):
+    for name in (
+        "PERSONALIZATION_SUPABASE_SECRET_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_SERVICE_KEY",
+        "SUPABASE_KEY",
+    ):
         candidate = host.get(name, "").strip()
         if candidate and candidate not in candidates:
             candidates.append(candidate)

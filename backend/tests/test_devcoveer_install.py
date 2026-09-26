@@ -259,7 +259,7 @@ def test_provider_env_rejects_unverified_generic_limiter_credential(monkeypatch,
         module.configure_provider_env()
 
 
-def test_provider_env_promotes_only_verified_generic_service_key(monkeypatch, tmp_path) -> None:
+def test_provider_env_promotes_only_verified_server_service_key(monkeypatch, tmp_path) -> None:
     module = _load_installer()
     captured: dict[str, str] = {}
     attempts: list[tuple[str, str]] = []
@@ -269,7 +269,7 @@ def test_provider_env_promotes_only_verified_generic_service_key(monkeypatch, tm
         lambda _path: {
             "GOOGLE_API_KEY": "fixture-key",
             "SUPABASE_URL": "https://wrong-project.example",
-            "SUPABASE_SERVICE_ROLE_KEY": "canonical-service-key",
+            "PERSONALIZATION_SUPABASE_SECRET_KEY": "canonical-service-key",
         },
     )
     monkeypatch.setattr(module, "PROVIDERS_ENV", tmp_path / "providers.env")

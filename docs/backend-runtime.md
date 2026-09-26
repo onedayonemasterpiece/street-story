@@ -35,8 +35,9 @@ controller wheel from its exact version tag and never vendors that private sourc
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
 Application runtime configuration never falls back to generic Supabase aliases. The DevCoveer installer pins the canonical
 limiter origin to `https://epyznmylqmchteykjsqj.supabase.co`. If dedicated limiter aliases are not present yet, it may
-consider an existing generic **service-role key alias only** as a candidate, never a generic URL: the candidate is promoted
-only after a read-only call to `google_ai_limiter_capabilities()` on that canonical origin authenticates it and returns the
+consider an existing server-side **service-role key alias only** as a candidate (including the established KenigEvents
+`PERSONALIZATION_SUPABASE_SECRET_KEY` alias), never a generic URL: the candidate is promoted only after a read-only call
+to `google_ai_limiter_capabilities()` on that canonical origin authenticates it and returns the
 exact `google_ai_project_model_atomic_v1` / `google_cloud_project` contract. A key for any other Supabase project therefore
 cannot silently become the quota authority.
 
