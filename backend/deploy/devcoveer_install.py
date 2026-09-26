@@ -170,10 +170,24 @@ def render_env(values: Mapping[str, str]) -> str:
     return "".join(f"{key}={shlex.quote(str(value))}\n" for key, value in values.items())
 
 
+def _tracked_status() -> str:
+    return run(
+        [
+            "git",
+            "-C",
+            str(REPO_ROOT),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+        ],
+        timeout=30,
+    )
+
+
 def exact_source(expected_sha: str) -> tuple[str, str]:
     if SHA_RE.fullmatch(expected_sha) is None:
         raise DeployError("expected SHA must be 40 lowercase hex characters")
-    status = run(["git", "-C", str(REPO_ROOT), "status", "--porcelain=v1"], timeout=30)
+    status = _tracked_status()
     if status.strip():
         raise DeployError("canonical Street Story checkout is not clean")
     remote_ref = f"refs/remotes/origin/{BRANCH}"
@@ -968,7 +982,7 @@ def main() -> int:
     status = service_status()
     health, capabilities = verify_runtime(sha, device)
 
-    final_status = run(["git", "-C", str(REPO_ROOT), "status", "--porcelain=v1"], timeout=30)
+    final_status = _tracked_status()
     if final_status.strip():
         raise DeployError("deployment changed the canonical repository checkout")
 

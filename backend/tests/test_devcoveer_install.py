@@ -17,6 +17,48 @@ def _load_installer():
     return module
 
 
+def test_tracked_status_ignores_untracked_files(monkeypatch) -> None:
+    module = _load_installer()
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        del kwargs
+        seen.append(argv)
+        return ""
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    assert module._tracked_status() == ""
+    assert seen == [[
+        "git",
+        "-C",
+        str(module.REPO_ROOT),
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
+    ]]
+
+
+def test_exact_source_still_rejects_tracked_changes(monkeypatch) -> None:
+    module = _load_installer()
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        del kwargs
+        calls.append(argv)
+        if "status" in argv:
+            return " M backend/street_story/app.py\n"
+        pytest.fail(f"unexpected command after tracked dirty gate: {argv}")
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    with pytest.raises(module.DeployError, match="not clean"):
+        module.exact_source("a" * 40)
+
+    assert len(calls) == 1
+    assert "--untracked-files=no" in calls[0]
+
+
 def test_python_312_runtime_prefers_healthy_bridge(monkeypatch, tmp_path) -> None:
     module = _load_installer()
     bridge = tmp_path / "bridge-python"
