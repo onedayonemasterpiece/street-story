@@ -491,53 +491,76 @@ def choose_principal(base: str) -> str:
     raise DeployError("no free Street Story VibePublish principal name")
 
 
+def _create_vibe_principal(sha: str) -> tuple[str, str]:
+    require_mode(VIBE_OWNER_TOKEN_FILE, 0o600)
+    owner_token = VIBE_OWNER_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    if len(owner_token) < 20:
+        raise DeployError("VibePublish owner token is invalid")
+    tenant, _connection, _native_id, _label = owner_binding()
+    principal = choose_principal(f"street-story-runtime-{sha[:12]}")
+    env = os.environ.copy()
+    env["VIBEPUBLISH_SERVICE_TOKEN"] = owner_token
+    raw = run(
+        [
+            str(VIBE_PY),
+            "-m",
+            "social_operations.cli",
+            "--db",
+            str(VIBE_DB),
+            "principal",
+            "--tenant",
+            tenant,
+            "--principal",
+            principal,
+        ],
+        cwd=VIBE_SOURCE,
+        env=env,
+        timeout=60,
+        sensitive=True,
+    )
+    try:
+        token = str(json.loads(raw)["service_token"]).strip()
+    except (ValueError, TypeError, KeyError) as exc:
+        raise DeployError("VibePublish principal creation readback is invalid") from exc
+    if len(token) < 20:
+        raise DeployError("VibePublish principal creation returned an invalid token")
+    private_write(VIBE_TOKEN_FILE, token)
+    private_write(VIBE_PRINCIPAL_FILE, principal)
+    return principal, token
+
+
+def _vibe_auth_failed(exc: DeployError) -> bool:
+    return str(exc) in {
+        "VibePublish HTTP 401 for /v1/bootstrap",
+        "VibePublish HTTP 403 for /v1/bootstrap",
+    }
+
+
 def ensure_vibe_principal(sha: str) -> tuple[str, str]:
     for required in (VIBE_PY, VIBE_DB, VIBE_OWNER_TOKEN_FILE):
         if not required.is_file():
             raise DeployError(f"current VibePublish management runtime is unavailable: {required}")
-    if VIBE_TOKEN_FILE.exists() or VIBE_PRINCIPAL_FILE.exists():
+
+    token_exists = VIBE_TOKEN_FILE.exists()
+    principal_exists = VIBE_PRINCIPAL_FILE.exists()
+    if token_exists != principal_exists:
+        raise DeployError("stored VibePublish principal state is incomplete")
+
+    if token_exists:
         require_mode(VIBE_TOKEN_FILE, 0o600)
         require_mode(VIBE_PRINCIPAL_FILE, 0o600)
         token = VIBE_TOKEN_FILE.read_text(encoding="utf-8").strip()
         principal = VIBE_PRINCIPAL_FILE.read_text(encoding="utf-8").strip()
         if len(token) < 20 or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,79}", principal):
             raise DeployError("stored VibePublish principal state is invalid")
-        vibe_request(token, "GET", "/v1/bootstrap")
-    else:
-        require_mode(VIBE_OWNER_TOKEN_FILE, 0o600)
-        owner_token = VIBE_OWNER_TOKEN_FILE.read_text(encoding="utf-8").strip()
-        if len(owner_token) < 20:
-            raise DeployError("VibePublish owner token is invalid")
-        tenant, _connection, _native_id, _label = owner_binding()
-        principal = choose_principal(f"street-story-runtime-{sha[:12]}")
-        env = os.environ.copy()
-        env["VIBEPUBLISH_SERVICE_TOKEN"] = owner_token
-        raw = run(
-            [
-                str(VIBE_PY),
-                "-m",
-                "social_operations.cli",
-                "--db",
-                str(VIBE_DB),
-                "principal",
-                "--tenant",
-                tenant,
-                "--principal",
-                principal,
-            ],
-            cwd=VIBE_SOURCE,
-            env=env,
-            timeout=60,
-            sensitive=True,
-        )
         try:
-            token = str(json.loads(raw)["service_token"])
-        except (ValueError, TypeError, KeyError) as exc:
-            raise DeployError("VibePublish principal creation readback is invalid") from exc
-        if len(token) < 20:
-            raise DeployError("VibePublish principal creation returned an invalid token")
-        private_write(VIBE_TOKEN_FILE, token)
-        private_write(VIBE_PRINCIPAL_FILE, principal)
+            vibe_request(token, "GET", "/v1/bootstrap")
+        except DeployError as exc:
+            if not _vibe_auth_failed(exc):
+                raise
+            principal, token = _create_vibe_principal(sha)
+    else:
+        principal, token = _create_vibe_principal(sha)
 
     if not principal_binding_exists(principal):
         require_mode(VIBE_OWNER_TOKEN_FILE, 0o600)
@@ -571,7 +594,6 @@ def ensure_vibe_principal(sha: str) -> tuple[str, str]:
             sensitive=True,
         )
     return principal, token
-
 
 def preview_preflight(token: str, sha: str) -> dict[str, str]:
     request_key = f"street-story-deploy-preview-{sha[:24]}"

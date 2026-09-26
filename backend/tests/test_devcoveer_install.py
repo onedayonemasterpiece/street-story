@@ -68,3 +68,80 @@ def test_python_312_runtime_fails_closed_without_healthy_runtime(monkeypatch, tm
 
     with pytest.raises(module.DeployError, match="healthy Python 3.12"):
         module._python_312_runtime()
+
+
+def _configure_vibe_state(module, monkeypatch, tmp_path) -> None:
+    for name in ("VIBE_PY", "VIBE_DB", "VIBE_OWNER_TOKEN_FILE"):
+        path = tmp_path / name.lower()
+        path.write_text("placeholder")
+        path.chmod(0o600)
+        monkeypatch.setattr(module, name, path)
+    token_file = tmp_path / "vibe-token"
+    principal_file = tmp_path / "vibe-principal"
+    token_file.write_text("t" * 40)
+    principal_file.write_text("street-story-runtime-old")
+    token_file.chmod(0o600)
+    principal_file.chmod(0o600)
+    monkeypatch.setattr(module, "VIBE_TOKEN_FILE", token_file)
+    monkeypatch.setattr(module, "VIBE_PRINCIPAL_FILE", principal_file)
+    monkeypatch.setattr(module, "principal_binding_exists", lambda principal: True)
+
+
+def test_stale_vibe_token_is_replaced_only_after_auth_failure(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    _configure_vibe_state(module, monkeypatch, tmp_path)
+    created: list[str] = []
+
+    def denied(*args, **kwargs):
+        del args, kwargs
+        raise module.DeployError("VibePublish HTTP 403 for /v1/bootstrap")
+
+    def create(sha: str):
+        created.append(sha)
+        return "street-story-runtime-new", "n" * 40
+
+    monkeypatch.setattr(module, "vibe_request", denied)
+    monkeypatch.setattr(module, "_create_vibe_principal", create)
+
+    principal, token = module.ensure_vibe_principal("a" * 40)
+
+    assert principal == "street-story-runtime-new"
+    assert token == "n" * 40
+    assert created == ["a" * 40]
+
+
+def test_non_auth_vibe_failure_does_not_rotate_principal(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    _configure_vibe_state(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "vibe_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            module.DeployError("VibePublish HTTP 500 for /v1/bootstrap")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_create_vibe_principal",
+        lambda sha: pytest.fail(f"unexpected principal rotation for {sha}"),
+    )
+
+    with pytest.raises(module.DeployError, match="HTTP 500"):
+        module.ensure_vibe_principal("b" * 40)
+
+
+def test_incomplete_vibe_state_fails_closed(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    for name in ("VIBE_PY", "VIBE_DB", "VIBE_OWNER_TOKEN_FILE"):
+        path = tmp_path / name.lower()
+        path.write_text("placeholder")
+        path.chmod(0o600)
+        monkeypatch.setattr(module, name, path)
+    token_file = tmp_path / "vibe-token"
+    token_file.write_text("t" * 40)
+    token_file.chmod(0o600)
+    monkeypatch.setattr(module, "VIBE_TOKEN_FILE", token_file)
+    monkeypatch.setattr(module, "VIBE_PRINCIPAL_FILE", tmp_path / "missing-principal")
+
+    with pytest.raises(module.DeployError, match="incomplete"):
+        module.ensure_vibe_principal("c" * 40)
