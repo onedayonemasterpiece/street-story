@@ -903,20 +903,17 @@ class StreetStoryLiveAdapter:
 
 def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSessionHost:
     ensure_live_schema(service)
-
-    def key_resolver(_resource_id: str, _actor: Any) -> str | None:
-        explicit = os.getenv("LIVE_API_KEY", "").strip()
-        if explicit:
-            return explicit
-        keys = settings.gemini_keys
-        return reveal(keys[0]) if keys else None
+    from .live_resources import managed_provider
 
     def adapter_factory(**kwargs):
         return StreetStoryLiveAdapter(service, kwargs["emit"])
 
     return LiveSessionHost(
         adapter_factory=adapter_factory,
-        key_resolver=key_resolver,
+        # Compatibility marker only, NEVER a provider credential. The managed
+        # runner ignores load_key and the shared controller selects the key.
+        key_resolver=lambda _resource, _actor: "resource-control-managed",
+        provider_run=managed_provider(settings),
         models=("gemini-3.8-live",),
         ready_timeout_ms=30_000,
         max_sessions=3,
