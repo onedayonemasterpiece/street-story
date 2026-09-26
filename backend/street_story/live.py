@@ -9,7 +9,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
-from live_interaction import LiveError, LiveSessionHost
+from live_interaction import LiveSessionHost
 
 from .config import Settings, reveal
 from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest
@@ -454,7 +454,6 @@ class StreetStoryLiveAdapter:
                 "SELECT result_json,tool_name,request_digest FROM live_commands WHERE story_id=? AND command_id=?",
                 (story_id, command_id),
             ).fetchone()
-            request_args = {"owner_context": owner_context, "candidate_id": candidate_id}
             if existing:
                 if existing["tool_name"] != "start_research" or existing["request_digest"] != digest({"tool": "start_research", "args": args}):
                     raise ConflictError("live_command_conflict", "Provider call id is bound to different arguments")
