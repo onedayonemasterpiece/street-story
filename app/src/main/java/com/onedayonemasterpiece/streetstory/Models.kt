@@ -25,6 +25,7 @@ object StoryStage {
 object RecordingKind {
     const val INITIAL = "initial"
     const val REFINEMENT = "refinement"
+    const val LIVE_ARCHIVE = "live_archive"
 }
 
 object CaptureState {

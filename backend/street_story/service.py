@@ -386,9 +386,24 @@ class StreetStoryService:
 
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
-        delay = int(body.get("delay_minutes", 60))
-        if delay < 1 or delay > 24 * 60:
-            raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
+        scheduled_raw = str(body.get("scheduled_for") or "").strip()
+        if scheduled_raw:
+            try:
+                scheduled_dt = datetime.fromisoformat(scheduled_raw.replace("Z", "+00:00"))
+            except ValueError:
+                raise ConflictError("publish_time_invalid", "scheduled_for must be ISO-8601") from None
+            if scheduled_dt.tzinfo is None:
+                raise ConflictError("publish_time_invalid", "scheduled_for must include an offset")
+            now_dt = datetime.now(timezone.utc)
+            scheduled_utc = scheduled_dt.astimezone(timezone.utc)
+            if scheduled_utc <= now_dt or scheduled_utc > now_dt + timedelta(days=90):
+                raise ConflictError("publish_time_invalid", "scheduled_for must be within the next 90 days")
+            scheduled_iso = scheduled_dt.isoformat()
+        else:
+            delay = int(body.get("delay_minutes", 60))
+            if delay < 1 or delay > 24 * 60:
+                raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
+            scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).isoformat().replace("+00:00", "Z")
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
             existing = db.execute("SELECT * FROM publish_intents WHERE request_key=?", (key,)).fetchone()
@@ -402,8 +417,6 @@ class StreetStoryService:
             destinations = [str(x) for x in body.get("destinations", [])]
             if not destinations:
                 raise ConflictError("publish_destinations_required", "At least one destination is required")
-            scheduled = datetime.now(timezone.utc) + timedelta(minutes=delay)
-            scheduled_iso = scheduled.isoformat().replace("+00:00", "Z")
             intent_id = "pubintent_" + uuid.uuid4().hex[:24]
             vp_key = "ss-vp-publish-" + hashlib.sha256(f"{story_id}:{key}".encode()).hexdigest()[:48]
             request = {

@@ -71,7 +71,7 @@ async def test_controller_outage_never_calls_provider(rig,operation,failure,capl
     g,c = rig
     c.fail = failure
     seen = []
-    async def provider(*args):
+    async def provider(*args, **kwargs):
         seen.append(True)
         return response()
     g._provider_request = provider
@@ -86,7 +86,7 @@ async def test_shared_denial_rotates_before_any_provider_call(rig):
     g,c = rig
     c.denied.add(c.ids[0])
     seen = []
-    async def provider(key,*args):
+    async def provider(key,*args, **kwargs):
         seen.append(key)
         return response()
     g._provider_request = provider
@@ -103,7 +103,7 @@ async def test_shared_denial_rotates_before_any_provider_call(rig):
 async def test_provider_failover_accounts_each_attempt(rig):
     g,c = rig
     seen = []
-    async def provider(key,*args):
+    async def provider(key,*args, **kwargs):
         seen.append(key)
         assert sum(bool(r['sent_at']) for r in c.rows.values()) == len(seen)
         if len(seen) == 1:
@@ -124,7 +124,7 @@ async def test_provider_failover_accounts_each_attempt(rig):
 async def test_finalization_outage_preserves_response_blocks_next_call_and_recovers_after_restart(rig):
     g,c = rig
     calls = []
-    async def provider(*args):
+    async def provider(*args, **kwargs):
         calls.append(True)
         return response()
     g._provider_request = provider
@@ -152,7 +152,7 @@ async def test_missing_configuration_is_not_local_bypass(tmp_path):
 async def test_unregistered_keys_never_reach_provider(rig):
     g,c = rig
     g.quota.env_keys = {}
-    async def provider(*args):
+    async def provider(*args, **kwargs):
         pytest.fail('unregistered provider call')
     g._provider_request = provider
     with pytest.raises(GeminiUnavailable):
@@ -183,7 +183,7 @@ async def test_cancelled_provider_leaves_durable_accounting(rig):
     import asyncio
     g,c = rig
     entered = asyncio.Event()
-    async def provider(*args):
+    async def provider(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
     g._provider_request = provider
@@ -222,10 +222,19 @@ async def test_full_durable_pipeline_uses_shared_gate_without_repeating_stages(t
     cfg = replace(g.settings,gemini_quota_supabase_url='https://quota.test',gemini_quota_supabase_key='quota-secret')
     c = Controller()
     async with httpx.AsyncClient(transport=httpx.MockTransport(c.handle)) as http:
-        g.quota = SharedQuotaGate(cfg,g.pool,http=http)
+        g.transcription_routes = [
+            (model, pool, SharedQuotaGate(cfg, pool, http=http), executor)
+            for model, pool, _quota, executor in g.transcription_routes
+        ]
+        g.research_routes = [
+            (model, pool, SharedQuotaGate(cfg, pool, http=http), executor)
+            for model, pool, _quota, executor in g.research_routes
+        ]
+        g.transcription_quota = g.transcription_routes[0][2]
+        g.quota = g.research_routes[0][2]
         mock_provider = g._generate
-        async def provider(key,t,contents,config):
-            return await mock_provider(key,t,contents,config if config.tools else None)
+        async def provider(key,t,contents,config, **kwargs):
+            return await mock_provider(key,t,contents,config if config.tools else None, model=kwargs.get('model'))
         g._provider_request = provider
         g._generate = GeminiClient._generate.__get__(g)
         sid = admit(svc)

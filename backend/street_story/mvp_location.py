@@ -113,13 +113,17 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
     async def _run_research(self, job: dict[str, Any]) -> None:
         payload = json.loads(job["payload_json"] or "{}")
         session_ids = [str(value) for value in payload.get("voice_session_ids", [])]
+        live_transcript = str(payload.get("live_transcript") or "").strip()
         provenance: dict[str, Any] | None = None
         with self.store.connection() as db:
             story = dict(self._story_row(db, job["story_id"]))
 
         if story["latitude"] is None or story["longitude"] is None:
-            transcripts = [await self._transcribe_session(session_id) for session_id in session_ids]
-            transcript = "\n\n".join(value.strip() for value in transcripts if value.strip())
+            if live_transcript:
+                transcript = live_transcript[:12000]
+            else:
+                transcripts = [await self._transcribe_session(session_id) for session_id in session_ids]
+                transcript = "\n\n".join(value.strip() for value in transcripts if value.strip())
             query = self.store.checkpoint_get(job["id"], "owner_place_query")
             if query is None:
                 query = await self._extract_place_query(transcript)

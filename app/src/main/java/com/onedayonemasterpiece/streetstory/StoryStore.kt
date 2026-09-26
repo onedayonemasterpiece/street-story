@@ -64,7 +64,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     @Synchronized
     fun createVoiceSession(storyId: String, kind: String, deviceLabel: String): VoiceSessionSnapshot {
         require(story(storyId) != null)
-        require(kind == RecordingKind.INITIAL || kind == RecordingKind.REFINEMENT)
+        require(kind == RecordingKind.INITIAL || kind == RecordingKind.REFINEMENT || kind == RecordingKind.LIVE_ARCHIVE)
         check(activeVoiceSession() == null) { "another voice session is active" }
         val id = newVoiceSessionId()
         val now = System.currentTimeMillis()
@@ -105,8 +105,8 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     @Synchronized
     fun finishedVoiceSessions(): List<VoiceSessionSnapshot> = readableDatabase.query(
-        "voice_sessions", VOICE_COLUMNS, "capture_state=? AND remote_state!=?",
-        arrayOf(CaptureState.FINISHED, VoiceRemoteState.COMPLETE), null, null, "created_at",
+        "voice_sessions", VOICE_COLUMNS, "capture_state=? AND remote_state!=? AND kind!=?",
+        arrayOf(CaptureState.FINISHED, VoiceRemoteState.COMPLETE, RecordingKind.LIVE_ARCHIVE), null, null, "created_at",
     ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.voice()) } }
 
     @Synchronized

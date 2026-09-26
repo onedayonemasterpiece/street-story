@@ -246,9 +246,13 @@ class MvpResearchMixin:
                 for row in db.execute("SELECT fact_id,selected FROM facts WHERE story_id=?", (story_id,))
             }
             research["claim_decisions"] = decisions
-            draft, image_notes = self._selected_outputs(
+            generated_draft, image_notes = self._selected_outputs(
                 db, story_id, story["place_name"], str(research.get("author_note") or "")
             )
+            # Live/manual selection can update evidence without erasing an already
+            # authored publication draft. Legacy callers keep the historical rebuild.
+            preserve_draft = bool(body.get("preserve_draft", False))
+            draft = str(story["draft_text"] or "") if preserve_draft else generated_draft
             research["image_notes"] = image_notes
             db.execute(
                 "UPDATE stories SET draft_text=?,research_json=?,updated_at=? WHERE id=?",
@@ -477,8 +481,9 @@ class MvpResearchMixin:
         story_id = job["story_id"]
         payload = json.loads(job["payload_json"] or "{}")
         session_ids = [str(value) for value in payload.get("voice_session_ids", [])]
+        live_transcript = str(payload.get("live_transcript") or "").strip()
         input_revision = str(payload.get("input_revision") or "")
-        if not session_ids or not input_revision:
+        if (not session_ids and not live_transcript) or not input_revision:
             raise PermanentProviderError("Explicit research snapshot is incomplete")
 
         with self.store.connection() as db:
@@ -494,10 +499,13 @@ class MvpResearchMixin:
                 for row in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,))
             ]
 
-        transcripts: list[str] = []
-        for session_id in session_ids:
-            transcripts.append(await self._transcribe_session(session_id))
-        transcript = "\n\n".join(text.strip() for text in transcripts if text.strip())
+        if live_transcript:
+            transcript = live_transcript[:12000]
+        else:
+            transcripts: list[str] = []
+            for session_id in session_ids:
+                transcripts.append(await self._transcribe_session(session_id))
+            transcript = "\n\n".join(text.strip() for text in transcripts if text.strip())
 
         lat, lon = story["latitude"], story["longitude"]
         osm: dict[str, Any] = {"reverse": {}, "nearby": []}

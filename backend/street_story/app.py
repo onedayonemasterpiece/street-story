@@ -9,7 +9,9 @@ from fastapi.responses import JSONResponse, Response
 
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
+from .live import create_live_host
 from .runtime import RuntimeStreetStoryService
+from live_interaction import LiveError
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
 
 
@@ -21,6 +23,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     settings = settings or Settings.from_env()
     service = service or RuntimeStreetStoryService(settings)
     service.recover_jobs()
+    live_host = create_live_host(service, settings)
     source_sha = checkout_source_sha()
 
     async def worker_loop() -> None:
@@ -35,11 +38,13 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         try:
             yield
         finally:
+            await live_host.stop_all()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
     app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)
     app.state.service = service
+    app.state.live_host = live_host
 
     async def auth(authorization: str | None = Header(default=None)) -> None:
         expected = reveal(settings.device_token)
@@ -65,6 +70,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.exception_handler(NotFoundError)
     async def not_found_handler(_request: Request, exc: NotFoundError):
         return error_response(404, "not_found", str(exc))
+
+    @app.exception_handler(LiveError)
+    async def live_error_handler(_request: Request, exc: LiveError):
+        status = 503 if exc.code in {"LIVE_UNAVAILABLE", "LIVE_PROVIDER_ERROR", "LIVE_PROVIDER_CLOSED", "LIVE_TIMEOUT"} else 409
+        return error_response(status, exc.code.lower(), str(exc))
 
     @app.get("/healthz")
     async def healthz():
@@ -97,6 +107,41 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.get("/v1/stories/{story_id}", dependencies=[Depends(auth)])
     async def get_story(story_id: str):
         return service.story(story_id)
+
+    @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
+    async def start_live(story_id: str):
+        return await live_host.start(
+            resource_id=story_id,
+            actor={"subject": "street-story-device", "tenant_id": "street-story"},
+        )
+
+    @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/input", dependencies=[Depends(auth)])
+    async def live_input(story_id: str, session_id: str, request: Request):
+        return await live_host.input(
+            resource_id=story_id,
+            session_id=session_id,
+            actor={"subject": "street-story-device", "tenant_id": "street-story"},
+            message=await request.json(),
+        )
+
+    @app.get("/v1/stories/{story_id}/live-sessions/{session_id}/events", dependencies=[Depends(auth)])
+    async def live_events(story_id: str, session_id: str, after: int = 0):
+        if after < 0:
+            raise HTTPException(status_code=400, detail="after must be nonnegative")
+        return live_host.events(
+            resource_id=story_id,
+            session_id=session_id,
+            actor={"subject": "street-story-device", "tenant_id": "street-story"},
+            after=after,
+        )
+
+    @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/stop", dependencies=[Depends(auth)])
+    async def stop_live(story_id: str, session_id: str):
+        return await live_host.stop(
+            resource_id=story_id,
+            session_id=session_id,
+            actor={"subject": "street-story-device", "tenant_id": "street-story"},
+        )
 
     @app.post("/v1/stories/{story_id}/voice-sessions", dependencies=[Depends(auth)])
     async def open_voice(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
