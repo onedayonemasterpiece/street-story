@@ -396,6 +396,38 @@ async def test_rejected_claim_stays_rejected_after_rephrased_refinement(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_mvp_capabilities_hide_internal_e2e_destination(tmp_path):
+    class InternalE2EVP(NoopVP):
+        async def bootstrap(self):
+            payload = await super().bootstrap()
+            payload["destinations"].append(
+                {
+                    "alias": "street_story_e2e_tg",
+                    "kind": "destination",
+                    "label": "Street Story E2E safe Telegram",
+                    "provider": "telegram",
+                }
+            )
+            payload["capabilities"].append(
+                {
+                    "destination": "street_story_e2e_tg",
+                    "operation": "publish",
+                    "surface": "post",
+                    "provider": "telegram",
+                    "status": "needs_review",
+                }
+            )
+            return payload
+
+    svc, _, _ = service(tmp_path)
+    svc.providers.vibepublish = InternalE2EVP()
+    capabilities = await svc.capabilities()
+
+    assert [item["alias"] for item in capabilities["destinations"]] == ["tg-safe"]
+    assert capabilities["destinations"][0]["status"] == "supported"
+
+
+@pytest.mark.asyncio
 async def test_mvp_capabilities_keep_reviewable_telegram_visible(tmp_path):
     class ReviewableTelegramVP(NoopVP):
         async def bootstrap(self):
