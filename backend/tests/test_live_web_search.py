@@ -44,12 +44,15 @@ async def test_web_search_stays_on_lite_models_and_uses_grounding(tmp_path):
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
     primary = FailingSearchExecutor()
-    fallback = PassingSearchExecutor()
-    first = client.research_routes[0]
-    second = client.research_routes[1]
-    client.research_routes = [
+    fallback = FailingSearchExecutor()
+    tertiary = PassingSearchExecutor()
+    first = client.web_search_routes[0]
+    second = client.web_search_routes[1]
+    third = client.web_search_routes[2]
+    client.web_search_routes = [
         (first[0], first[1], first[2], primary),
         (second[0], second[1], second[2], fallback),
+        (third[0], third[1], third[2], tertiary),
     ]
     models = []
 
@@ -75,7 +78,8 @@ async def test_web_search_stays_on_lite_models_and_uses_grounding(tmp_path):
 
     assert primary.calls == 1
     assert fallback.calls == 1
-    assert models == ["gemini-3.5-flash-lite"]
+    assert tertiary.calls == 1
+    assert models == ["gemini-3.8-flash"]
     assert result.payload["summary"] == "Search summary"
     assert result.grounding_sources == [{
         "type": "web",

@@ -188,6 +188,16 @@ class GeminiClient:
             model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
             model_quota = SharedQuotaGate(settings, model_pool)
             self.research_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
+        web_search_models = tuple(dict.fromkeys((
+            settings.gemini_model,
+            settings.gemini_fallback_model,
+            settings.gemini_web_search_tertiary_model,
+        )))
+        self.web_search_routes = []
+        for model in web_search_models:
+            model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
+            model_quota = SharedQuotaGate(settings, model_pool)
+            self.web_search_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
         self.pool = self.research_routes[0][1]
         self.quota = self.research_routes[0][2]
         self.executor = self.research_routes[0][3]
@@ -356,7 +366,7 @@ class GeminiClient:
             )
 
         retry_at: list[float] = []
-        for model, _pool, quota, executor in self.research_routes:
+        for model, _pool, quota, executor in self.web_search_routes:
             async def routed_call(key, timeout, *, _model=model, _quota=quota):
                 return await call(key, timeout, model=_model, quota=_quota)
 
