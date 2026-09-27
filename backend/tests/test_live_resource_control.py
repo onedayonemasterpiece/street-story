@@ -16,7 +16,9 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     monkeypatch.setenv("AI_RESOURCE_LEDGER_ID", "ledger-fixture")
     monkeypatch.setenv("AI_RESOURCE_KEY_ENVS", "GOOGLE_API_KEY,GOOGLE_API_KEY2")
     monkeypatch.setenv("GOOGLE_API_KEY", "fixture-one")
+    monkeypatch.setenv("GOOGLE_API_KEY3", "fixture-street-fallback")
     monkeypatch.setenv("GOOGLE_API_KEY2", "fixture-two")
+    monkeypatch.setenv("GOOGLE_API_KEY3", "fixture-street-fallback")
     monkeypatch.setenv("LIVE_API_KEY", "must-not-be-used")
 
     service, _adapter, _session, _events = make_service(tmp_path)
@@ -41,8 +43,12 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
         "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
         "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
         "AI_RESOURCE_LEDGER_ID": "ledger-fixture",
+        "GOOGLE_API_KEY3": "fixture-street-fallback",
     }
-    assert not any(name.startswith("GOOGLE_API_KEY") for name in call["environment"])
+    assert not any(
+        name.startswith("GOOGLE_API_KEY") and name != "GOOGLE_API_KEY3"
+        for name in call["environment"]
+    )
     assert "LIVE_API_KEY" not in call["environment"]
     assert host.managed_runner is not None
 
@@ -83,6 +89,7 @@ def test_live_resource_environment_is_central_and_bounded(monkeypatch, tmp_path)
     assert environment == {
         "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
         "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
+        "GOOGLE_API_KEY3": "fixture-street-fallback",
     }
 
 
@@ -91,8 +98,10 @@ def test_live_resource_environment_accepts_compatibility_aliases(monkeypatch, tm
     monkeypatch.delenv("AI_RESOURCE_CONTROL_SERVICE_KEY", raising=False)
     monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "https://limiter.example")
     monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "fixture-service-key")
+    monkeypatch.setenv("GOOGLE_API_KEY3", "fixture-street-fallback")
 
     assert _live_resource_environment(settings(tmp_path)) == {
         "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
         "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
+        "GOOGLE_API_KEY3": "fixture-street-fallback",
     }
