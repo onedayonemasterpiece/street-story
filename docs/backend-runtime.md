@@ -18,10 +18,9 @@ Create a Python 3.12 environment, install `backend/requirements.txt`, place the 
 
 Required values:
 - `STREET_STORY_DEVICE_TOKEN`
-- configured Google key pool credentials
-- `GOOGLE_AI_LIMITER_SUPABASE_URL`
-- `GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY`
-- `AI_RESOURCE_KEY_ENVS` (the server-side names of the eligible Google keys)
+- configured Google key pool credentials for ordinary transcription/research
+- `AI_RESOURCE_CONTROL_URL`
+- `AI_RESOURCE_CONTROL_SERVICE_KEY`
 - optional `AI_RESOURCE_LEDGER_ID` after the shared Live migration has been verified
 - `VIBEPUBLISH_BASE_URL`
 - `VIBEPUBLISH_BEARER_TOKEN`
@@ -29,8 +28,8 @@ Required values:
 - `DATA_DIR=/var/lib/street-story`
 
 Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
-`ai-resource-control v0.1.3` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
-controller wheel from its exact version tag and never vendors that private source into this public repository.
+`ai-resource-control v0.1.4` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
+controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
 
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
 Application runtime configuration never falls back to generic Supabase aliases. The DevCoveer installer pins the canonical
@@ -94,14 +93,13 @@ See [Gemini P0 reliability](gemini-reliability.md). Ordinary request work keeps 
 `reserve → mark_sent → provider → finalize` authority.
 
 Live capacity is a separate lease shape in the **same dedicated limiter**, not a second quota database or gateway.
-Street Story calls `ai_resource_control.run_guarded(consumer="street-story", ...)` with the whole eligible key pool
-and an opaque per-session binding. The authority atomically chooses a quota scope. A classified credential/quota/capacity
+Street Story calls `ai_resource_control.run_guarded(consumer="street-story", ...)` with only the central authority URL/service credential
+and an opaque per-session binding. The authority atomically chooses a quota scope and returns the selected provider key only as a lease-bound encrypted envelope. A classified credential/quota/capacity
 fault may select another scope only before provider `ready`; after `ready` the conversation remains pinned to one
 key/scope through resumption. Expired/fenced resource state is terminal and cannot trigger a hidden direct-key retry.
 
 Provider Live RPM/RPD being reported as Unlimited does not imply unlimited concurrency. The common controller keeps
-finite local admission and records unexposed provider concurrency honestly. Production Live remains disabled until the
-additive shared-resource migrations and dedicated aliases have been applied and read back from the verified limiter.
+finite local admission and records unexposed provider concurrency honestly. Production authority migrations 001–007 and Vault bootstrap are complete; each consumer still remains fail-closed until its central capability preflight succeeds.
 
 ## Live E2E acceptance
 
