@@ -109,3 +109,28 @@ def test_poll_events_requires_publication_confirmation() -> None:
 def test_event_error_fails_closed(event, code) -> None:
     module = load_module()
     assert module.event_error(event) == code
+
+
+def test_cached_fixture_reads_only_matching_story_path(tmp_path) -> None:
+    module = load_module()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    photo = b"x" * 12000
+    source = data_root / "stories" / "story_fixture" / "source.jpg"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(photo)
+    import hashlib
+    meta = {
+        "source_sha1": hashlib.sha1(photo).hexdigest(),
+        "source_sha256": hashlib.sha256(photo).hexdigest(),
+    }
+    import sqlite3
+    with sqlite3.connect(data_root / "street-story.sqlite3") as db:
+        db.execute(
+            "CREATE TABLE stories(photo_sha256 TEXT, photo_path TEXT, created_at REAL)"
+        )
+        db.execute(
+            "INSERT INTO stories VALUES(?,?,?)",
+            (meta["source_sha256"], str(source), 1.0),
+        )
+    assert module.cached_fixture(meta, data_root) == photo
