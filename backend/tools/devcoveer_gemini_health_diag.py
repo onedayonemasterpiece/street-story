@@ -87,7 +87,7 @@ def main() -> int:
         if args.story_id:
             for row in db.execute(
                 """
-                SELECT id,kind,state,attempts,available_at,error_code,created_at,updated_at
+                SELECT id,kind,state,attempts,available_at,last_error,created_at,updated_at
                 FROM jobs WHERE story_id=? ORDER BY created_at DESC LIMIT 12
                 """,
                 (args.story_id,),
@@ -98,7 +98,7 @@ def main() -> int:
                     "state": row["state"],
                     "attempts": row["attempts"],
                     "available_in": round(float(row["available_at"] or 0)-now, 3),
-                    "error_code": row["error_code"],
+                    "last_error_present": bool(row["last_error"]),
                     "age": round(now-float(row["created_at"]), 3),
                     "updated_age": round(now-float(row["updated_at"]), 3),
                 })
