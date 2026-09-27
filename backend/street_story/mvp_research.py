@@ -321,7 +321,11 @@ class MvpResearchMixin:
         if callable(custom):
             return await custom(Path(story["photo_path"]), story["photo_mime_type"], transcript, candidates)
         gemini = self.providers.gemini
-        if not hasattr(gemini, "_generate") or not hasattr(gemini, "executor"):
+        if (
+            not hasattr(gemini, "_generate")
+            or not hasattr(gemini, "execute_model_routes")
+            or not hasattr(gemini, "research_routes")
+        ):
             raise PermanentProviderError("Gemini visual identity capability is unavailable")
         from google.genai import types
 
@@ -349,12 +353,14 @@ class MvpResearchMixin:
         )
         photo = Path(story["photo_path"]).read_bytes()
 
-        async def call(api_key, timeout):
+        async def call(api_key, timeout, model, quota):
             response = await gemini._generate(
                 api_key,
                 timeout,
                 [types.Part.from_bytes(data=photo, mime_type=story["photo_mime_type"]), prompt],
                 config,
+                model=model,
+                quota=quota,
             )
             try:
                 payload = json.loads(response.text or "{}")
@@ -368,7 +374,12 @@ class MvpResearchMixin:
                 raise MalformedProviderResponse("gemini:malformed_visual_identity") from None
             return payload
 
-        return await gemini.executor.execute("grounded_research", call)
+        return await gemini.execute_model_routes(
+            gemini.research_routes,
+            "grounded_research",
+            call,
+            unavailable_reason="all_identity_models_unavailable",
+        )
 
     async def _research_claims(
         self,
@@ -381,7 +392,11 @@ class MvpResearchMixin:
         if callable(custom):
             return await custom(Path(story["photo_path"]), story["photo_mime_type"], transcript, identity, previous)
         gemini = self.providers.gemini
-        if not hasattr(gemini, "_generate") or not hasattr(gemini, "executor"):
+        if (
+            not hasattr(gemini, "_generate")
+            or not hasattr(gemini, "execute_model_routes")
+            or not hasattr(gemini, "search_routes")
+        ):
             raise PermanentProviderError("Gemini grounded research capability is unavailable")
         from google.genai import types
 
@@ -403,15 +418,22 @@ class MvpResearchMixin:
                 ensure_ascii=False,
             )
         )
-        # Google Search + response schema is not supported by Gemini 3.1 Flash-Lite.
-        # Identity is already confirmed by the visual step, so research is text-only
-        # and uses Search grounding with an explicit JSON contract in the prompt.
+        # Gemini 3.1 Flash-Lite is intentionally not in search_routes: this
+        # Google Search path falls back from 3.5 Flash-Lite to the limiter-backed
+        # Gemini 3.8 Flash route instead.
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
         )
 
-        async def call(api_key, timeout):
-            response = await gemini._generate(api_key, timeout, [prompt], config)
+        async def call(api_key, timeout, model, quota):
+            response = await gemini._generate(
+                api_key,
+                timeout,
+                [prompt],
+                config,
+                model=model,
+                quota=quota,
+            )
             try:
                 raw = str(response.text or "").strip()
                 fence = "`" * 3
@@ -475,7 +497,12 @@ class MvpResearchMixin:
                 "grounding_supports": supports,
             }
 
-        return await gemini.executor.execute("grounded_research", call)
+        return await gemini.execute_model_routes(
+            gemini.search_routes,
+            "grounded_research",
+            call,
+            unavailable_reason="all_search_models_unavailable",
+        )
 
     async def _run_research(self, job: dict[str, Any]) -> None:
         story_id = job["story_id"]
