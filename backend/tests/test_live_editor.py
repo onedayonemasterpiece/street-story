@@ -10,6 +10,7 @@ import pytest
 from street_story.config import Settings
 from street_story.live import StreetStoryLiveAdapter, ensure_live_schema
 from street_story.mvp_location import MvpLocationStreetStoryService
+from street_story.providers import GroundedResearch
 from street_story.service import ConflictError, ProviderBundle
 
 
@@ -28,7 +29,35 @@ class FakeWiki:
 
 
 class FakeGemini:
-    pass
+    def __init__(self):
+        self.searches = []
+
+    async def search_web(self, query, topic_context):
+        self.searches.append((query, topic_context))
+        return GroundedResearch(
+            payload={
+                "summary": "Найдено два проверяемых факта.",
+                "facts": [
+                    {
+                        "text": "Бранденбургские ворота находятся в Калининграде.",
+                        "confidence": 0.98,
+                        "source_urls": ["https://example.com/brandenburg"],
+                    },
+                    {
+                        "text": "Неподтверждённый факт не должен стать доказанным.",
+                        "confidence": 0.4,
+                        "source_urls": ["https://not-grounded.example/"],
+                    },
+                ],
+            },
+            grounding_sources=[
+                {
+                    "type": "web",
+                    "title": "Brandenburg source",
+                    "url": "https://example.com/brandenburg",
+                }
+            ],
+        )
 
 
 class FakeVP:
@@ -87,18 +116,46 @@ def make_service(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_live_research_accepts_live_transcript_without_legacy_voice_session(tmp_path):
-    svc, adapter, session, _events = make_service(tmp_path)
-    adapter.on_event(session, {"type": "input_transcript", "text": "Я снимаю Бранденбургские ворота в Калининграде"})
+async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_path):
+    svc, adapter, session, events = make_service(tmp_path)
+    story_id = session.resource_id
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET draft_text='Авторский текст' WHERE id=?", (story_id,))
+
+    adapter.on_event(
+        session,
+        {"type": "input_transcript", "text": "Я снимаю Бранденбургские ворота в Калининграде"},
+    )
     result = await adapter.execute_tool(
         session,
-        {"name": "start_research", "id": "research-1", "args": {"owner_context": "Найди проверенные факты"}},
+        {
+            "name": "search_web",
+            "id": "search-1",
+            "args": {"query": "Бранденбургские ворота Калининград история"},
+        },
     )
-    assert result["accepted"] is True
+
+    assert result["summary"] == "Найдено два проверяемых факта."
+    assert len(result["sources"]) == 1
+    assert result["facts"][0]["evidence_supported"] is True
+    assert result["facts"][1]["evidence_supported"] is False
+    assert svc.providers.gemini.searches[0][0] == "Бранденбургские ворота Калининград история"
+    assert "Я снимаю Бранденбургские ворота" in svc.providers.gemini.searches[0][1]["recent_author_context"]
+
     with svc.store.connection() as db:
-        job = db.execute("SELECT payload_json FROM jobs WHERE id=?", (result["operation_id"],)).fetchone()
-    assert "live_transcript" in job["payload_json"]
-    assert not svc.store.connection().execute("SELECT 1 FROM voice_sessions").fetchone()
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='research'", (story_id,)).fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM voice_sessions").fetchone()[0] == 0
+        rows = list(db.execute("SELECT text,evidence_supported,sources_json FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
+        story = db.execute("SELECT state,draft_text,research_json FROM stories WHERE id=?", (story_id,)).fetchone()
+    assert len(rows) == 2
+    assert rows[0]["evidence_supported"] == 1
+    assert "example.com/brandenburg" in rows[0]["sources_json"]
+    assert rows[1]["evidence_supported"] == 0
+    assert story["draft_text"] == "Авторский текст"
+    assert story["state"] != "researching"
+    research = __import__("json").loads(story["research_json"])
+    assert research["live_web_searches"][-1]["query"] == "Бранденбургские ворота Калининград история"
+    assert any(event.get("type") == "product_state" for event in events)
 
 
 @pytest.mark.asyncio
