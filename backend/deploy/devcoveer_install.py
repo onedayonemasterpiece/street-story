@@ -862,23 +862,30 @@ def ensure_vibe_principal(sha: str) -> tuple[str, str]:
         )
     return principal, token
 
-def preview_request_key(sha: str, now: float | None = None) -> str:
-    # VibePublish treats preview evidence as fresh for one hour. Reuse within a
-    # 30-minute bucket for idempotency, but never replay one preview forever.
+def preview_window(sha: str, now: float | None = None) -> tuple[str, str]:
+    # VibePublish implicitly replays an identical publish intent for 24 hours.
+    # Rotate both the explicit request key and the preview-only content marker
+    # every 30 minutes so capability evidence can actually become fresh.
     observed = time.time() if now is None else now
     bucket = int(observed // 1800)
-    return f"street-story-deploy-preview-{sha[:20]}-{bucket}"
+    request_key = f"street-story-deploy-preview-{sha[:20]}-{bucket}"
+    marker = f"Street Story deployment preflight {bucket}. Preview only; do not dispatch."
+    return request_key, marker
+
+
+def preview_request_key(sha: str, now: float | None = None) -> str:
+    return preview_window(sha, now)[0]
 
 
 def preview_preflight(token: str, sha: str) -> dict[str, str]:
-    request_key = preview_request_key(sha)
+    request_key, preview_text = preview_window(sha)
     receipt = vibe_request(
         token,
         "POST",
         "/v1/publications",
         body={
             "to": [VIBE_ALIAS],
-            "content": {"text": "Street Story deployment preflight. Preview only; do not dispatch."},
+            "content": {"text": preview_text},
             "mode": "preview",
         },
         request_key=request_key,
