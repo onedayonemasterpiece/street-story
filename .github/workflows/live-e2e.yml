@@ -254,7 +254,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             PKG=com.onedayonemasterpiece.streetstory
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
