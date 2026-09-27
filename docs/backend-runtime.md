@@ -110,6 +110,12 @@ The shared SDK may use the mapped `AI_RESOURCE_CONTROL_FALLBACK_KEY` only when t
 
 The app must never borrow Wonderful Lections' `GOOGLE_API_KEY`, KenigEvents' `GOOGLE_API_KEY2`, Projects Hub's `GOOGLE_API_KEY4`, or shared reserve keys 5–6 for this fallback. Android never receives any provider key.
 
+## DevCoveer fallback smoke runner
+
+If GitHub Actions accepts `live-e2e.yml` but never allocates a job, DevCoveer may run the same repository-owned smoke through `backend/tools/devcoveer_live_smoke.py --expected-sha <deployed-sha>`. The runner does not install host packages: it uses a disposable official Python/Debian Docker container, installs `espeak`, `ffmpeg`, ExifTool and `httpx` only inside that container, mounts repository source read-only and writes only the sanitized Live E2E diagnostic.
+
+The runner refuses to mint a device token: the existing 0600 token file must already exist before it calls the deploy module's `device_token()` helper. The helper's existing idempotent GitHub secret synchronization remains the only allowed credential-side effect. The token is passed to Docker by environment-name inheritance rather than argv, child stdout/stderr is not emitted, and the named container is force-removed in `finally` if the smoke times out. This is a production acceptance rail and therefore creates the same smoke-mode Street Story/research/provider side effects as `live_e2e.py`; it does not schedule Telegram publication.
+
 ## Live E2E acceptance
 
 The current acceptance path is **Live-only**. The old voice-session/M4A HTTP protocol is not exercised as a fallback.
