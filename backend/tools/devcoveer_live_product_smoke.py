@@ -77,26 +77,59 @@ def fixture_meta() -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProductSmokeError("fixture_metadata_invalid") from exc
-    required = ("download_url", "source_sha1", "latitude", "longitude", "expected_object")
+    required = ("download_url", "source_sha1", "source_sha256", "latitude", "longitude", "expected_object")
     if not isinstance(payload, dict) or any(not payload.get(name) for name in required):
         raise ProductSmokeError("fixture_metadata_incomplete")
     return payload
 
 
-def download_fixture(meta: dict[str, Any]) -> bytes:
-    response = httpx.get(
-        str(meta["download_url"]),
-        headers={"User-Agent": "StreetStory-Product-Canary/1"},
-        timeout=40,
-        follow_redirects=True,
-    )
-    response.raise_for_status()
-    data = response.content
+def validate_fixture_bytes(meta: dict[str, Any], data: bytes) -> bytes:
     if hashlib.sha1(data).hexdigest().lower() != str(meta["source_sha1"]).lower():
         raise ProductSmokeError("fixture_sha1_mismatch")
+    if hashlib.sha256(data).hexdigest().lower() != str(meta["source_sha256"]).lower():
+        raise ProductSmokeError("fixture_sha256_mismatch")
     if len(data) < 10_000:
         raise ProductSmokeError("fixture_too_small")
     return data
+
+
+def cached_fixture(meta: dict[str, Any], data_root: Path) -> bytes | None:
+    database = data_root / "street-story.sqlite3"
+    if not database.is_file():
+        return None
+    try:
+        with sqlite3.connect(database) as db:
+            row = db.execute(
+                "SELECT photo_path FROM stories WHERE photo_sha256=? ORDER BY created_at DESC LIMIT 1",
+                (str(meta["source_sha256"]).lower(),),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise ProductSmokeError("fixture_cache_lookup_failed") from exc
+    if not row:
+        return None
+    path = Path(str(row[0]))
+    if not path.is_file():
+        raise ProductSmokeError("fixture_cache_path_missing")
+    return validate_fixture_bytes(meta, path.read_bytes())
+
+
+def load_fixture(meta: dict[str, Any], data_root: Path) -> tuple[bytes, str]:
+    cached = cached_fixture(meta, data_root)
+    if cached is not None:
+        return cached, "production_cache"
+    try:
+        response = httpx.get(
+            str(meta["download_url"]),
+            headers={"User-Agent": "StreetStory-Product-Canary/1"},
+            timeout=40,
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ProductSmokeError("fixture_download_unavailable") from exc
+    return validate_fixture_bytes(meta, response.content), "wikimedia"
+
+
 
 
 def event_error(event: dict[str, Any]) -> str | None:
@@ -332,7 +365,7 @@ def run(expected_sha: str) -> dict[str, Any]:
         "User-Agent": "StreetStory-Live-Product-Canary/1",
     }
     meta = fixture_meta()
-    photo = download_fixture(meta)
+    photo, fixture_source = load_fixture(meta, installer.DATA_ROOT)
     photo_sha = hashlib.sha256(photo).hexdigest()
     session_id = ""
     stopped = False
@@ -485,6 +518,7 @@ def run(expected_sha: str) -> dict[str, Any]:
                     "object": meta["expected_object"],
                     "photo_sha256": photo_sha,
                     "license": meta.get("license"),
+                    "source": fixture_source,
                 },
                 "search": {
                     "tool_ok": search_turn["tool_ok"],
