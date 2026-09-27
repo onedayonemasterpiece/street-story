@@ -57,6 +57,46 @@ def test_telegram_destination_keeps_reviewable_configured_alias() -> None:
     assert module.telegram_destination(client) == "lovekenig_tg"
 
 
+def test_execute_publication_rejects_main_channel_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([
+        {
+            "alias": "lovekenig_tg",
+            "label": "lovekenig Telegram",
+            "provider": "telegram",
+            "status": "supported",
+        }
+    ])
+    with pytest.raises(module.ProductSmokeError, match="publication_destination_not_test_safe"):
+        module.telegram_destination(
+            client,
+            requested="lovekenig_tg",
+            require_test=True,
+        )
+
+
+def test_execute_publication_requires_explicit_test_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([
+        {
+            "alias": "street_story_test_tg",
+            "label": "Street Story Test Group",
+            "provider": "telegram",
+            "status": "needs_review",
+        }
+    ])
+    with pytest.raises(module.ProductSmokeError, match="publication_destination_required"):
+        module.telegram_destination(client, require_test=True)
+    assert (
+        module.telegram_destination(
+            client,
+            requested="street_story_test_tg",
+            require_test=True,
+        )
+        == "street_story_test_tg"
+    )
+
+
 def test_supported_fact_ids_require_https_evidence() -> None:
     module = load_module()
     ids = module.supported_fact_ids({
