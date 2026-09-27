@@ -49,7 +49,7 @@ private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1
 ledger id, and at least one eligible registered key. The preflight does not acquire a Live lease and does not call
 Gemini; failure leaves the currently running Street Story release untouched.
 
-Ordinary grounded internet research uses Google Search grounding on `gemini-3.1-flash-lite` first and falls back to `gemini-3.5-flash-lite`; both use the canonical shared-limiter policy 15 RPM / 250k TPM / 500 RPD per registered Google project. Transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
+The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search is a synchronous `search_web` function called from that same Live session; the function uses Google Search grounding on `gemini-3.1-flash-lite` first and falls back to `gemini-3.5-flash-lite`. Lite models return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
 
 ## Exact source SHA gate
 
@@ -126,7 +126,7 @@ microphone) and then follows the production realtime path:
 1. exact deployed source SHA and authenticated topic;
 2. one Gemini Live session under the shared resource lease;
 3. multiple Russian realtime turns through the bounded Android PCM queue;
-4. explicit research with real source readback;
+4. explicit `search_web` call inside the same Gemini 3.8 Live session with grounded source readback;
 5. fact selection and iterative text editing;
 6. literal/verbatim dictation with protected-span preservation;
 7. a subsequent edit plus Undo;

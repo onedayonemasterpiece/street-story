@@ -24,7 +24,7 @@ from .db import Store
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 
 logger = logging.getLogger('uvicorn.error.street_story.gemini')
-OPERATIONS = ('transcription', 'grounded_research')
+OPERATIONS = ('transcription', 'grounded_research', 'web_search')
 T = TypeVar('T')
 
 
@@ -38,6 +38,7 @@ class GeminiPolicy:
     transient_cooldown: float = 5
     transcription_rpm: int = 0
     grounded_research_rpm: int = 0
+    web_search_rpm: int = 0
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,7 @@ from typing import Any
 from live_interaction import LiveSessionHost
 
 from .config import Settings
-from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest
+from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest, stable_fact_id
 
 
 LIVE_SCHEMA = r"""
@@ -87,18 +87,16 @@ FUNCTIONS = [
         "Read the current authoritative Street Story topic, facts, visual and publication state. No mutation.",
     ),
     _tool_schema(
-        "start_research",
-        "Start grounded research for the current topic only when the author explicitly asks to find/check/update facts.",
+        "search_web",
+        "Search the internet for evidence when the author asks to find, check or update facts. "
+        "The search result returns to this same Gemini Live conversation and never rewrites publication text by itself.",
         {
-            "owner_context": {
+            "query": {
                 "type": "string",
-                "description": "Short faithful context from the author's current story; do not invent facts.",
-            },
-            "candidate_id": {
-                "type": "string",
-                "description": "Optional candidate id only when the author explicitly selected it.",
+                "description": "Concise internet-search question derived from the author's current request.",
             },
         },
+        ["query"],
     ),
     _tool_schema(
         "select_facts",
@@ -185,7 +183,7 @@ SYSTEM_INSTRUCTION = """
 
 Правила:
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
-- факты не выдумывать. Research запускать только по явному намерению пользователя;
+- факты не выдумывать. Интернет-поиск делать только через search_web и только когда пользователю действительно нужны внешние сведения;\n- search_web — это инструмент этой же Live-сессии: после его результата продолжай тот же разговор, не отправляй пользователя ждать отдельную обработку;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
 - не повторяй mutation после неизвестного результата; сначала прочитай состояние;
@@ -279,8 +277,8 @@ class StreetStoryLiveAdapter:
             if replay is not None:
                 return replay
 
-        if name == "start_research":
-            result = self._start_research(session, command_id, args)
+        if name == "search_web":
+            result = await self._search_web(session, command_id, args)
         elif name == "select_facts":
             result = self._select_facts(story_id, command_id, args)
         elif name == "edit_text":
@@ -441,53 +439,132 @@ class StreetStoryLiveAdapter:
             parts.append(owner_context)
         return "\n\n".join(parts).strip()[:12000]
 
-    def _start_research(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        owner_context = _bounded_text(args.get("owner_context"), 4000)
-        transcript = self._recent_transcript(session, owner_context)
-        if not transcript:
-            raise InvalidStateError("live_research_context_required", "Tell Street Story what to research first")
-        candidate_id = _bounded_text(args.get("candidate_id"), 240) or None
+    async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        query = _bounded_text(args.get("query"), 1000, required=True)
         story_id = session.resource_id
-        with self.service.store.tx() as db:
-            story = self.service._story_row(db, story_id)
-            existing = db.execute(
-                "SELECT result_json,tool_name,request_digest FROM live_commands WHERE story_id=? AND command_id=?",
-                (story_id, command_id),
-            ).fetchone()
-            if existing:
-                if existing["tool_name"] != "start_research" or existing["request_digest"] != digest({"tool": "start_research", "args": args}):
-                    raise ConflictError("live_command_conflict", "Provider call id is bound to different arguments")
-                return json.loads(existing["result_json"])
-            input_revision = digest(
+
+        with self.service.store.connection() as db:
+            story = dict(self.service._story_row(db, story_id))
+            known_facts = [
                 {
-                    "source_photo_sha256": story["photo_sha256"],
-                    "live_transcript": transcript,
-                    "candidate_id": candidate_id,
+                    "fact_id": row["fact_id"],
+                    "text": str(row["text"])[:400],
+                    "selected": bool(row["selected"]),
+                }
+                for row in db.execute(
+                    "SELECT fact_id,text,selected FROM facts WHERE story_id=? ORDER BY rowid LIMIT 24",
+                    (story_id,),
+                )
+            ]
+
+        topic_context = {
+            "place_name": story.get("place_name"),
+            "latitude": story.get("latitude"),
+            "longitude": story.get("longitude"),
+            "current_draft": str(story.get("draft_text") or "")[:2500],
+            "recent_author_context": self._recent_transcript(session, "")[:6000],
+            "known_facts": known_facts,
+        }
+        grounded = await self.service.providers.gemini.search_web(query, topic_context)
+
+        source_objects = {
+            str(source["url"]).rstrip("/"): source
+            for source in grounded.grounding_sources
+            if isinstance(source, dict) and str(source.get("url") or "").startswith("https://")
+        }
+        normalized: list[dict[str, Any]] = []
+        for item in (grounded.payload.get("facts") or [])[:12]:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            sources: list[dict[str, str]] = []
+            for raw_url in item.get("source_urls", []) or []:
+                candidate = source_objects.get(str(raw_url).rstrip("/"))
+                if candidate and candidate not in sources:
+                    sources.append(candidate)
+            try:
+                confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            normalized.append(
+                {
+                    "fact_id": stable_fact_id(text),
+                    "text": text,
+                    "confidence": confidence,
+                    "evidence_supported": bool(sources),
+                    "sources": sources,
                 }
             )
-            job_id = self.service._enqueue_job(
-                db,
-                story_id,
-                "research",
-                f"research-live:{input_revision}",
+
+        with self.service.store.tx() as db:
+            story_row = self.service._story_row(db, story_id)
+            selected_before = {
+                row["fact_id"]: bool(row["selected"])
+                for row in db.execute(
+                    "SELECT fact_id,selected FROM facts WHERE story_id=?",
+                    (story_id,),
+                )
+            }
+            for fact in normalized:
+                selected = fact["evidence_supported"] and selected_before.get(fact["fact_id"], True)
+                db.execute(
+                    """
+                    INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(story_id,fact_id) DO UPDATE SET
+                      text=excluded.text,
+                      confidence=excluded.confidence,
+                      evidence_supported=excluded.evidence_supported,
+                      selected=excluded.selected,
+                      sources_json=excluded.sources_json
+                    """,
+                    (
+                        story_id,
+                        fact["fact_id"],
+                        fact["text"],
+                        fact["confidence"],
+                        int(fact["evidence_supported"]),
+                        int(selected),
+                        canonical(fact["sources"]),
+                    ),
+                )
+
+            research = json.loads(story_row["research_json"] or "{}")
+            prior_sources = research.get("grounding_sources")
+            all_sources: dict[str, dict[str, str]] = {}
+            if isinstance(prior_sources, list):
+                for source in prior_sources:
+                    if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
+                        all_sources[str(source["url"]).rstrip("/")] = source
+            for source in grounded.grounding_sources:
+                if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
+                    all_sources[str(source["url"]).rstrip("/")] = source
+
+            history = research.get("live_web_searches")
+            history = list(history) if isinstance(history, list) else []
+            history.append(
                 {
-                    "voice_session_ids": [],
-                    "live_transcript": transcript,
-                    "input_revision": input_revision,
-                    "confirmed_candidate_id": candidate_id,
-                },
+                    "query": query,
+                    "summary": str(grounded.payload.get("summary") or "")[:2000],
+                    "source_urls": [source["url"] for source in grounded.grounding_sources[:20]],
+                }
             )
+            research["grounding_sources"] = list(all_sources.values())[:80]
+            research["live_web_searches"] = history[-12:]
             db.execute(
-                "UPDATE stories SET state='researching',revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? WHERE id=?",
-                (self.service.store.now(), story_id),
+                "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
+                (canonical(research), self.service.store.now(), story_id),
             )
             result = {
-                "accepted": True,
-                "operation_id": job_id,
-                "input_revision": input_revision,
+                "query": query,
+                "summary": str(grounded.payload.get("summary") or "")[:2000],
+                "facts": normalized,
+                "sources": grounded.grounding_sources[:20],
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
-            self._store_command(db, story_id, command_id, "start_research", args, result)
+            self._store_command(db, story_id, command_id, "search_web", args, result)
             return result
 
     def _select_facts(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
