@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from pydantic import SecretStr
 
@@ -86,3 +87,60 @@ async def test_web_search_stays_on_lite_models_and_uses_grounding(tmp_path):
         "title": "Source",
         "url": "https://example.com/source",
     }]
+
+
+class FakeSearchHTTP:
+    def __init__(self, html: str):
+        self.html = html
+        self.calls = []
+
+    async def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, text=self.html, request=request)
+
+
+@pytest.mark.asyncio
+async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+        gemini_model="gemini-3.1-flash-lite",
+        gemini_fallback_model="gemini-3.5-flash-lite",
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    failures = [FailingSearchExecutor(), FailingSearchExecutor(), FailingSearchExecutor()]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    client.search_http = FakeSearchHTTP(
+        """
+        <div class="result">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fofficial&amp;rut=x">
+            Official source
+          </a>
+          <a class="result__snippet">The gate was rebuilt in 1843.</a>
+        </div>
+        <div class="result">
+          <a class="result__a" href="https://example.org/archive">Archive</a>
+          <a class="result__snippet">Historical archive entry.</a>
+        </div>
+        """
+    )
+
+    result = await client.search_web("Brandenburg Gate Kaliningrad", {"place_name": "Kaliningrad"})
+
+    assert [executor.calls for executor in failures] == [1, 1, 1]
+    assert result.payload["search_provider"] == "duckduckgo_html_fallback"
+    assert result.payload["facts"][0] == {
+        "text": "The gate was rebuilt in 1843.",
+        "confidence": 0.4,
+        "source_urls": ["https://example.com/official"],
+    }
+    assert result.grounding_sources == [
+        {"type": "web_search", "title": "Official source", "url": "https://example.com/official"},
+        {"type": "web_search", "title": "Archive", "url": "https://example.org/archive"},
+    ]
+    assert len(client.search_http.calls) == 1
