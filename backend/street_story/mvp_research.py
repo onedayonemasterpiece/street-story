@@ -15,6 +15,7 @@ from .service import ConflictError, InvalidStateError, NotFoundError, canonical,
 
 
 _WORD = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{4,}")
+_INTERNAL_ACCEPTANCE_DESTINATIONS = {"street_story_e2e_tg"}
 
 
 def _norm_url(value: Any) -> str:
@@ -772,6 +773,7 @@ class MvpResearchMixin:
             for item in result.get("destinations", [])
             if item.get("provider") == "telegram"
             and item.get("status") in {"supported", "needs_review"}
+            and item.get("alias") not in _INTERNAL_ACCEPTANCE_DESTINATIONS
         ]
         for item in telegram:
             item["selected"] = True
