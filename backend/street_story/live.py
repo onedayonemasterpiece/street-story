@@ -918,6 +918,9 @@ def _live_resource_environment(settings: Settings) -> dict[str, str]:
     ledger_id = os.getenv("AI_RESOURCE_LEDGER_ID", "").strip()
     if ledger_id:
         environment["AI_RESOURCE_LEDGER_ID"] = ledger_id
+    fallback_key = os.getenv("GOOGLE_API_KEY3", "").strip()
+    if fallback_key:
+        environment["GOOGLE_API_KEY3"] = fallback_key
     return environment
 
 
