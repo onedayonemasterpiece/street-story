@@ -283,7 +283,7 @@ def run(expected_sha: str) -> dict[str, Any]:
                 "live_model": "gemini-3.8-live",
                 "central_authority": True,
                 "search_tool": "search_web",
-                "search_models": ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"],
+                "search_models": ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash"],
                 "same_live_session_continued": True,
                 "summary": summary,
                 "story_evidence": story_evidence,
