@@ -174,9 +174,52 @@ class GeminiClient:
             model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
             model_quota = SharedQuotaGate(settings, model_pool)
             self.research_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
+
+        route_by_model = {route[0]: route for route in self.research_routes}
+        search_models = tuple(dict.fromkeys((
+            settings.gemini_model,
+            settings.gemini_search_fallback_model,
+        )))
+        self.search_routes = []
+        for model in search_models:
+            route = route_by_model.get(model)
+            if route is None:
+                model_pool = GeminiKeyPool(shared_store, settings.gemini_keys, model, policy=policy)
+                model_quota = SharedQuotaGate(settings, model_pool)
+                route = (model, model_pool, model_quota, GeminiExecutor(model_pool))
+                route_by_model[model] = route
+            self.search_routes.append(route)
+
         self.pool = self.research_routes[0][1]
         self.quota = self.research_routes[0][2]
         self.executor = self.research_routes[0][3]
+
+    async def execute_model_routes(
+        self,
+        routes,
+        operation: str,
+        call,
+        *,
+        unavailable_reason: str,
+    ):
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, _model, _quota)
+
+            try:
+                return await executor.execute(operation, routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), unavailable_reason)
+        raise PermanentProviderError("gemini:unsupported_model")
 
     async def _generate(
         self,
@@ -329,24 +372,15 @@ class GeminiClient:
                         sources.append({"type": "web", "title": str(getattr(web, "title", "") or uri), "url": uri})
             return GroundedResearch(payload=payload, grounding_sources=list({s["url"]: s for s in sources}.values()))
 
-        retry_at: list[float] = []
-        for model, _pool, quota, executor in self.research_routes:
-            async def routed_call(key, timeout, *, _model=model, _quota=quota):
-                return await call(key, timeout, model=_model, quota=_quota)
+        async def routed_call(key, timeout, model, quota):
+            return await call(key, timeout, model=model, quota=quota)
 
-            try:
-                return await executor.execute("grounded_research", routed_call)
-            except GeminiUnavailable as exc:
-                if exc.retry_at is not None:
-                    retry_at.append(exc.retry_at)
-                continue
-            except PermanentProviderError as exc:
-                if str(exc) == "gemini:unsupported_model":
-                    continue
-                raise
-        if retry_at:
-            raise GeminiUnavailable(min(retry_at), "all_research_models_unavailable")
-        raise PermanentProviderError("gemini:unsupported_model")
+        return await self.execute_model_routes(
+            self.research_routes,
+            "grounded_research",
+            routed_call,
+            unavailable_reason="all_research_models_unavailable",
+        )
 
 
 class VibePublishClient:
