@@ -22,7 +22,8 @@ def sanitize(value):
             "operation_id","resource_id","state","message","operation_complete","progress",
             "visual_job_id","visual_revision","selected_asset_ref","selected_sha256",
             "executor","next_action","retry_safe","receipt_ref","poll_after_seconds",
-            "error","candidates","worker_seen_at","revision","action"
+            "error","candidates","worker_seen_at","revision","action",
+            "receipts","items","events","next_cursor","has_more"
         }
         return {k:sanitize(v) for k,v in value.items() if k in allowed}
     if isinstance(value,list):
