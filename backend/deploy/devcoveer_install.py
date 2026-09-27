@@ -327,7 +327,7 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
             str(repo),
             "cat-file",
             "-e",
-            f"{AI_RESOURCE_CONTROL_RELEASE_SHA}^{commit}",
+            AI_RESOURCE_CONTROL_RELEASE_SHA + "^{commit}",
         ],
         timeout=30,
     )
