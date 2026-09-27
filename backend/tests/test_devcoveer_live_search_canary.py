@@ -17,6 +17,33 @@ def load_module():
     return module
 
 
+def test_summary_accepts_native_grounding_fallback_and_continued_live_turn() -> None:
+    module = load_module()
+    events = [
+        {"type": "ready"},
+        {"type": "tool_result", "name": "search_web", "status": "error", "code": "quota"},
+        {
+            "type": "grounding",
+            "metadata": {
+                "groundingChunks": [
+                    {"web": {"uri": "https://example.com/source", "title": "Source"}}
+                ]
+            },
+        },
+        {"type": "output_transcript", "text": "Нашёл подтверждение через встроенный поиск."},
+        {"type": "turn_complete"},
+    ]
+    summary = module.summarize(events)
+    module.validate_summary(summary)
+    assert summary["app_search_ok"] is False
+    assert summary["native_search_ok"] is True
+    assert summary["native_grounding_url_count"] == 1
+    assert module.validate_story(
+        {"state": "draft", "draft_text": None, "facts": [], "source_count": 0},
+        native_search_ok=True,
+    )["native_search_used"] is True
+
+
 def test_summary_requires_search_tool_and_continued_live_turn() -> None:
     module = load_module()
     events = [
