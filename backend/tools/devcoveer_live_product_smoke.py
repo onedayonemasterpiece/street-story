@@ -155,8 +155,10 @@ def poll_events(
     deadline = time.monotonic() + timeout_seconds
     tool_ok = False
     tool_error: str | None = None
+    recoverable_tool_errors: list[str] = []
     post_tool_output = False
     post_tool_turn_complete = False
+    turn_complete_seen = False
     confirmation: dict[str, Any] | None = None
     event_types: set[str] = set()
     capability_unavailable: set[str] = set()
@@ -187,7 +189,11 @@ def poll_events(
                 if event.get("status") == "ok":
                     tool_ok = True
                 else:
-                    tool_error = str(event.get("code") or "tool_error")
+                    code = str(event.get("code") or "tool_error")
+                    if expected_tool == "edit_text" and code == "live_text_revision_conflict":
+                        recoverable_tool_errors.append(code)
+                    else:
+                        tool_error = code
             if kind == "publication_confirmation" and isinstance(event.get("confirmation_id"), str):
                 confirmation = {
                     key: event.get(key)
@@ -205,12 +211,16 @@ def poll_events(
                 }
             if tool_ok and kind == "output_transcript" and str(event.get("text") or "").strip():
                 post_tool_output = True
-            if tool_ok and kind == "turn_complete":
-                post_tool_turn_complete = True
+            if kind == "turn_complete":
+                turn_complete_seen = True
+                if tool_ok:
+                    post_tool_turn_complete = True
         cursor = int(payload.get("cursor") or cursor)
 
         if tool_error:
             raise ProductSmokeError(f"{expected_tool}_failed_{tool_error}")
+        if turn_complete_seen and recoverable_tool_errors and not tool_ok:
+            raise ProductSmokeError(f"{expected_tool}_recoverable_conflict_unresolved")
         if tool_ok and post_tool_turn_complete and (confirmation is not None or not require_confirmation):
             return cursor, {
                 "tool": expected_tool,
@@ -220,6 +230,7 @@ def poll_events(
                 "confirmation": confirmation,
                 "event_types": sorted(event_types),
                 "capability_unavailable": sorted(capability_unavailable),
+                "recoverable_tool_errors": recoverable_tool_errors,
             }
         time.sleep(POLL_SECONDS)
 
@@ -531,6 +542,7 @@ def run(expected_sha: str) -> dict[str, Any]:
                 "text": {
                     "tool_ok": edit_turn["tool_ok"],
                     "draft_chars": len(draft),
+                    "recoverable_tool_errors": edit_turn["recoverable_tool_errors"],
                 },
                 "visual": {
                     "tool_ok": visual_turn["tool_ok"],

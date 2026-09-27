@@ -29,6 +29,8 @@ Undo, visual generation, publication preparation/confirmation/cancel).
 
 Live agent structure follows the shared `live-interaction` operating standard (`docs/live-agent-architecture.md` in that repository). The Live model remains the conversational controller; the backend validates capability transitions and exposes only the small tool bundle needed for the current task. Research, visual work and publication are distinct capabilities rather than one eager tool surface. Capability changes must preserve conversation continuity and use the shared provider/session-resumption primitives once released and adopted. Any Street Story-specific prompt remains here; transport/prompt-layering/tool-loading rules remain centralized in `live-interaction`.
 
+Text edits keep optimistic `text_revision` protection. A Live `edit_text` revision conflict must not silently overwrite newer state: the same conversational turn reads the current topic, takes the fresh revision and may retry the intended edit once.
+
 A Live failure is not an instruction to switch transport. The former async voice/session pipeline is preserved only as a
 compatibility boundary so it can be developed again deliberately if needed.
 

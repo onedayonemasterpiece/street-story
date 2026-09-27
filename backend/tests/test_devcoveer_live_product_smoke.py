@@ -75,6 +75,53 @@ def test_poll_events_accepts_tool_result_and_same_turn_continuation() -> None:
     assert result["turn_complete"] is True
 
 
+def test_poll_events_recovers_revision_conflict_inside_same_turn() -> None:
+    module = load_module()
+    cursor, result = module.poll_events(
+        EventClient([
+            {
+                "type": "tool_result",
+                "name": "edit_text",
+                "status": "error",
+                "code": "live_text_revision_conflict",
+            },
+            {"type": "tool_result", "name": "read_topic", "status": "ok"},
+            {"type": "tool_result", "name": "edit_text", "status": "ok"},
+            {"type": "output_transcript", "text": "Исправил по актуальной версии."},
+            {"type": "turn_complete"},
+        ]),
+        "story",
+        "session",
+        0,
+        expected_tool="edit_text",
+        timeout_seconds=1,
+    )
+    assert cursor == 5
+    assert result["tool_ok"] is True
+    assert result["recoverable_tool_errors"] == ["live_text_revision_conflict"]
+
+
+def test_poll_events_fails_when_revision_conflict_is_not_recovered() -> None:
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match="edit_text_recoverable_conflict_unresolved"):
+        module.poll_events(
+            EventClient([
+                {
+                    "type": "tool_result",
+                    "name": "edit_text",
+                    "status": "error",
+                    "code": "live_text_revision_conflict",
+                },
+                {"type": "turn_complete"},
+            ]),
+            "story",
+            "session",
+            0,
+            expected_tool="edit_text",
+            timeout_seconds=1,
+        )
+
+
 def test_poll_events_requires_publication_confirmation() -> None:
     module = load_module()
     cursor, result = module.poll_events(
