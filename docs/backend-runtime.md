@@ -29,7 +29,7 @@ Required values:
 - `DATA_DIR=/var/lib/street-story`
 
 Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
-`ai-resource-control v0.1.5` lease SDK plus public `live-interaction v0.1.9` pinned to commit `cbab976e97a5453087a8182d0f2d4198a26656ab`. The installer builds the private
+`ai-resource-control v0.1.7` lease SDK pinned to commit `51e9c043ce40dfefea8b2cb4f4956019819bd9d4` plus public `live-interaction v0.1.9` pinned to commit `cbab976e97a5453087a8182d0f2d4198a26656ab`. Version 0.1.7 keeps bulk token grants for high-frequency PCM audio but admits discrete setup/text/tool payloads at their conservative estimated cost, avoiding false rolling-TPM exhaustion in short multi-turn Live conversations. The installer builds the private
 controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
 
 ### Shared Live interaction architecture
