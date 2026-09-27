@@ -29,6 +29,7 @@ VISUAL_TIMEOUT_SECONDS = 12 * 60
 SOCIAL_TIMEOUT_SECONDS = 6 * 60
 OWNER_PROMPT_SHA256 = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
 DIAGNOSTIC_NAME = "diagnostic-devcoveer-live-product.json"
+TEST_DESTINATION_MARKERS = ("test", "safe", "e2e")
 
 
 class ProductSmokeError(RuntimeError):
@@ -327,22 +328,48 @@ def wait_publication(
     raise ProductSmokeError(f"publication_timeout_{last_state or 'unknown'}")
 
 
-def telegram_destination(client: httpx.Client) -> str:
+def _is_explicit_test_destination(alias: str, label: str) -> bool:
+    normalized = f"{alias} {label}".lower()
+    return any(marker in normalized for marker in TEST_DESTINATION_MARKERS)
+
+
+def telegram_destination(
+    client: httpx.Client,
+    *,
+    requested: str | None = None,
+    require_test: bool = False,
+) -> str:
     payload = _json(client.get("/v1/capabilities"), "capabilities")
     rows = payload.get("destinations") if isinstance(payload.get("destinations"), list) else []
     candidates = [
-        (
-            str(row.get("alias") or ""),
-            str(row.get("status") or ""),
-        )
+        {
+            "alias": str(row.get("alias") or ""),
+            "label": str(row.get("label") or ""),
+            "status": str(row.get("status") or ""),
+        }
         for row in rows
         if isinstance(row, dict)
         and str(row.get("provider") or "").lower() == "telegram"
         and str(row.get("status") or "") in {"supported", "needs_review"}
         and str(row.get("alias") or "")
     ]
-    supported = [alias for alias, status in candidates if status == "supported"]
-    reviewable = [alias for alias, status in candidates if status == "needs_review"]
+
+    if require_test and not requested:
+        raise ProductSmokeError("publication_destination_required")
+
+    if requested:
+        matches = [row for row in candidates if row["alias"] == requested]
+        if len(matches) != 1:
+            raise ProductSmokeError("publication_destination_unavailable")
+        selected = matches[0]
+        if require_test and not _is_explicit_test_destination(
+            selected["alias"], selected["label"]
+        ):
+            raise ProductSmokeError("publication_destination_not_test_safe")
+        return selected["alias"]
+
+    supported = [row["alias"] for row in candidates if row["status"] == "supported"]
+    reviewable = [row["alias"] for row in candidates if row["status"] == "needs_review"]
     if "lovekenig_tg" in supported:
         return "lovekenig_tg"
     if supported:
@@ -398,7 +425,12 @@ def write_receipt(receipt: dict[str, Any]) -> None:
     path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def run(expected_sha: str, *, execute_publication: bool = False) -> dict[str, Any]:
+def run(
+    expected_sha: str,
+    *,
+    execute_publication: bool = False,
+    publication_destination: str | None = None,
+) -> dict[str, Any]:
     if len(expected_sha) != 40 or any(ch not in "0123456789abcdef" for ch in expected_sha):
         raise ProductSmokeError("expected_sha_invalid")
 
@@ -519,7 +551,11 @@ def run(expected_sha: str, *, execute_publication: bool = False) -> dict[str, An
             ready = wait_visual(client, story_id)
             visual_receipt = validate_visual(client, ready, draft)
 
-            destination = telegram_destination(client)
+            destination = telegram_destination(
+                client,
+                requested=publication_destination,
+                require_test=execute_publication,
+            )
             scheduled_for = (
                 datetime.now(timezone.utc) + timedelta(hours=24)
             ).replace(microsecond=0).isoformat()
@@ -704,9 +740,17 @@ def main() -> int:
         action="store_true",
         help="Actually schedule and cancel the canary through the same Live session.",
     )
+    parser.add_argument(
+        "--publication-destination",
+        help="Explicit Telegram test/safe/e2e alias. Required with --execute-publication.",
+    )
     args = parser.parse_args()
     try:
-        receipt = run(args.expected_sha, execute_publication=args.execute_publication)
+        receipt = run(
+            args.expected_sha,
+            execute_publication=args.execute_publication,
+            publication_destination=args.publication_destination,
+        )
     except ProductSmokeError as exc:
         receipt = {"status": "FAIL", "error": str(exc), "secrets_disclosed": False}
         write_receipt(receipt)
