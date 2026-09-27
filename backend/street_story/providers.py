@@ -129,6 +129,19 @@ class GroundedResearch:
 
 
 class GeminiClient:
+    WEB_SEARCH_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "facts": {"type": "array", "items": {"type": "object", "properties": {
+                "text": {"type": "string"},
+                "confidence": {"type": "number"},
+                "source_urls": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["text", "confidence", "source_urls"]}},
+        },
+        "required": ["summary", "facts"],
+    }
+
     FACT_SCHEMA = {
         "type": "object",
         "properties": {
@@ -151,6 +164,7 @@ class GeminiClient:
             attempt_timeout=settings.gemini_attempt_timeout_seconds,
             transcription_rpm=settings.gemini_transcription_rpm,
             grounded_research_rpm=settings.gemini_grounded_research_rpm,
+            web_search_rpm=settings.gemini_grounded_research_rpm,
         )
         from .quota import SharedQuotaGate
         transcription_models = tuple(dict.fromkeys((
@@ -267,6 +281,99 @@ class GeminiClient:
         if retry_at:
             raise GeminiUnavailable(min(retry_at), "all_transcription_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
+
+    async def search_web(
+        self,
+        query: str,
+        topic_context: dict[str, Any],
+    ) -> GroundedResearch:
+        """One bounded Google Search grounding call used as a Gemini Live tool.
+
+        This helper never owns the conversation and never drafts publication text.
+        It returns evidence to the already-running Gemini 3.8 Live session.
+        """
+        from google.genai import types
+
+        query = str(query or "").strip()
+        if not query:
+            raise ValueError("web search query is required")
+        prompt = (
+            "Ты внутренний поисковый инструмент Street Story, а не собеседник. "
+            "Используй Google Search grounding только для запроса пользователя. "
+            "Верни краткий summary и до 12 проверяемых фактов. Для каждого факта "
+            "укажи только source_urls, которые реально видел в grounding. "
+            "Не пиши публикацию и не предлагай редактуру.\n\n"
+            "Search query: " + query[:1000] + "\n"
+            "Current topic context: " + json.dumps(topic_context, ensure_ascii=False)[:12000]
+        )
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            response_mime_type="application/json",
+            response_json_schema=self.WEB_SEARCH_SCHEMA,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(
+                key,
+                timeout,
+                [prompt],
+                config,
+                operation="web_search",
+                model=model,
+                quota=quota,
+            )
+            try:
+                payload = json.loads(response.text or "{}")
+                if not isinstance(payload, dict) or not isinstance(payload.get("summary"), str) or not isinstance(payload.get("facts"), list):
+                    raise ValueError
+                for fact in payload["facts"]:
+                    if (
+                        not isinstance(fact, dict)
+                        or not isinstance(fact.get("text"), str)
+                        or not isinstance(fact.get("source_urls"), list)
+                        or any(not isinstance(url, str) for url in fact["source_urls"])
+                        or not math.isfinite(float(fact.get("confidence", 0)))
+                    ):
+                        raise ValueError
+            except (ValueError, TypeError):
+                raise MalformedProviderResponse("gemini:malformed_web_search") from None
+
+            sources: list[dict[str, str]] = []
+            for candidate in getattr(response, "candidates", []) or []:
+                metadata = getattr(candidate, "grounding_metadata", None)
+                for chunk in getattr(metadata, "grounding_chunks", []) or []:
+                    web = getattr(chunk, "web", None)
+                    uri = getattr(web, "uri", None)
+                    if isinstance(uri, str) and uri.startswith("https://"):
+                        sources.append({
+                            "type": "web",
+                            "title": str(getattr(web, "title", "") or uri),
+                            "url": uri,
+                        })
+            return GroundedResearch(
+                payload=payload,
+                grounding_sources=list({source["url"]: source for source in sources}.values()),
+            )
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+
+            try:
+                return await executor.execute("web_search", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_web_search_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
+
 
     async def research(
         self,
