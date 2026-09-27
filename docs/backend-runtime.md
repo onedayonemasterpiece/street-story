@@ -49,7 +49,7 @@ private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1
 ledger id, and at least one eligible registered key. The preflight does not acquire a Live lease and does not call
 Gemini; failure leaves the currently running Street Story release untouched.
 
-Ordinary grounded research uses `gemini-3.8-flash` first (canonical shared-limiter policy 5 RPM / 250k TPM / 20 RPD per registered Google project) and falls back to `gemini-3.5-flash-lite`. Transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
+Ordinary grounded internet research uses Google Search grounding on `gemini-3.1-flash-lite` first and falls back to `gemini-3.5-flash-lite`; both use the canonical shared-limiter policy 15 RPM / 250k TPM / 500 RPD per registered Google project. Transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
 
 ## Exact source SHA gate
 
