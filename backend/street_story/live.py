@@ -221,6 +221,7 @@ class StreetStoryLiveAdapter:
                 "functions": FUNCTIONS,
                 "voice": "Aoede",
                 "search_enabled": False,
+                "application_search_function": "search_web",
             },
             "response": {
                 "story_id": resource_id,

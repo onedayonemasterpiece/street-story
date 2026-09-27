@@ -29,7 +29,7 @@ Required values:
 - `DATA_DIR=/var/lib/street-story`
 
 Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
-`ai-resource-control v0.1.5` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
+`ai-resource-control v0.1.5` lease SDK plus public `live-interaction v0.1.9` pinned to commit `cbab976e97a5453087a8182d0f2d4198a26656ab`. The installer builds the private
 controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
 
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
@@ -49,7 +49,7 @@ private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1
 ledger id, and at least one eligible registered key. The preflight does not acquire a Live lease and does not call
 Gemini; failure leaves the currently running Street Story release untouched.
 
-The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search is a synchronous `search_web` function called from that same Live session; the function uses Google Search grounding on `gemini-3.1-flash-lite` first and falls back to `gemini-3.5-flash-lite`. Lite models return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
+The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search is a synchronous `search_web` function called from that same Live session; Street Story explicitly declares it as the application search function, so provider-native Google Search being disabled/quota-limited cannot suppress this tool; the function uses Google Search grounding on `gemini-3.1-flash-lite` first and falls back to `gemini-3.5-flash-lite`. Lite models return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
 
 ## Exact source SHA gate
 
