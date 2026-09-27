@@ -21,6 +21,7 @@ Required values:
 - configured Google key pool credentials for ordinary transcription/research
 - `AI_RESOURCE_CONTROL_URL`
 - `AI_RESOURCE_CONTROL_SERVICE_KEY`
+- `GOOGLE_API_KEY3` as Street Story's dedicated emergency Live fallback only
 - optional `AI_RESOURCE_LEDGER_ID` after the shared Live migration has been verified
 - `VIBEPUBLISH_BASE_URL`
 - `VIBEPUBLISH_BEARER_TOKEN`
@@ -28,7 +29,7 @@ Required values:
 - `DATA_DIR=/var/lib/street-story`
 
 Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
-`ai-resource-control v0.1.4` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
+`ai-resource-control v0.1.5` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
 controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
 
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
@@ -99,7 +100,15 @@ fault may select another scope only before provider `ready`; after `ready` the c
 key/scope through resumption. Expired/fenced resource state is terminal and cannot trigger a hidden direct-key retry.
 
 Provider Live RPM/RPD being reported as Unlimited does not imply unlimited concurrency. The common controller keeps
-finite local admission and records unexposed provider concurrency honestly. Production authority migrations 001–007 and Vault bootstrap are complete; each consumer still remains fail-closed until its central capability preflight succeeds.
+finite local admission and records unexposed provider concurrency honestly. Production authority migrations 001–008 and Vault bootstrap are complete; each consumer still remains fail-closed until its central capability preflight succeeds.
+
+## Authority-outage fallback
+
+Street Story owns exactly one emergency Live alias: `GOOGLE_API_KEY3`. Normal Live sessions use the central Vault-backed authority and do not receive the ordinary local provider-key pool. The assigned fallback alias is forwarded only to `ai-resource-control`.
+
+The shared SDK may use `GOOGLE_API_KEY3` only when the initial read-only authority capability probe returns `RESOURCE_CONTROL_UNAVAILABLE`, before any mutating acquire. It must not activate for admission/quota/429/capacity/credential decisions, after a successful authority probe, after a lost acquire response, or after provider ready. Emergency mode still uses the shared `resource_guard`, permits one local Street Story fallback session per process and expires after two hours.
+
+The app must never borrow Wonderful Lections' `GOOGLE_API_KEY`, KenigEvents' `GOOGLE_API_KEY2`, Projects Hub's `GOOGLE_API_KEY4`, or shared reserve keys 5–6 for this fallback. Android never receives any provider key.
 
 ## Live E2E acceptance
 
