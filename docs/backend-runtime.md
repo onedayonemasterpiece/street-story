@@ -32,6 +32,14 @@ Ordinary transcription/research keeps the existing request limiter semantics. Ma
 `ai-resource-control v0.1.5` lease SDK plus public `live-interaction v0.1.9` pinned to commit `cbab976e97a5453087a8182d0f2d4198a26656ab`. The installer builds the private
 controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
 
+### Shared Live interaction architecture
+
+Street Story is a consumer of the canonical cross-product Live architecture in `onedayonemasterpiece/live-interaction/docs/live-agent-architecture.md`. That document is the single source of truth for prompt layering, progressive capability disclosure, session continuity, Gemini session-resumption reconfiguration, visual-context policy, sanitized observability and real-provider acceptance. Do not copy the shared standard into this repository.
+
+Street Story owns only its domain modes, capability bundles and authorization. New Live work must not grow one flat prompt/tool catalog containing research, visual, publication and cancellation functions at once. Keep a small core/router and activate bounded task-specific bundles (normally fewer than 10 functions, preferably 3–6). Preserve one user conversation across capability switches and provider reconnects. Tool availability and instructions must always match. Show/read-only-like modes must never gain write capabilities through a shared transport shortcut.
+
+Production diagnostics must correlate session, mode, active capability, configuration digest, tool lifecycle, provider lifecycle and resource-budget events without raw transcript, audio/image payloads, tool arguments, resumption handles or secrets. Modality-aware resource accounting is inherited from the shared `ai-resource-control` contract; base64 image bytes are transport encoding, not text-token usage.
+
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
 Application runtime configuration never falls back to generic Supabase aliases. The DevCoveer installer pins the canonical
 limiter origin to `https://epyznmylqmchteykjsqj.supabase.co`. If dedicated limiter aliases are not present yet, it may
