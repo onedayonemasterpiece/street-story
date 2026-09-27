@@ -188,8 +188,10 @@ class LiveGoldenInstrumentedTest {
             launchAndScreenshot()
 
             val safe = api.capabilities().destinations.singleOrNull {
-                it.alias == safeAlias && it.provider.equals("telegram", true) && it.status == "supported"
-            } ?: error("Safe Telegram alias is not uniquely supported")
+                it.alias == safeAlias &&
+                    it.provider.equals("telegram", true) &&
+                    it.status in setOf("supported", "needs_review")
+            } ?: error("Safe Telegram alias is not uniquely configured")
             require(isExplicitTestAlias("${safe.alias} ${safe.label}"))
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))

@@ -362,7 +362,8 @@ class ProductStreetStoryService(StreetStoryService):
         result: dict[str, Any] = {
             "destinations": [
                 item for item in projected
-                if item["provider"] == "telegram" and item["status"] == "supported"
+                if item["provider"] == "telegram"
+                and item["status"] in {"supported", "needs_review"}
             ]
         }
         pool = getattr(self.providers.gemini, "pool", None)
@@ -371,6 +372,92 @@ class ProductStreetStoryService(StreetStoryService):
                 operation: pool.snapshot(operation) for operation in ("transcription", "grounded_research")
             }
         return result
+
+    async def _publication_bootstrap(self, aliases: list[str]) -> dict[str, Any]:
+        """Refresh only expired Telegram publish proof, never provider-dispatch in preflight."""
+        bootstrap = await self.providers.vibepublish.bootstrap()
+        projected = project_destinations_v2(bootstrap)
+        by_alias = {item["alias"]: item for item in projected}
+        reviewable: list[str] = []
+        for alias in aliases:
+            item = by_alias.get(alias)
+            if not item or item["provider"] != "telegram":
+                raise PermanentProviderError("Requested destination is not a configured Telegram destination")
+            status = str(item.get("status") or "")
+            if status == "supported":
+                continue
+            if status != "needs_review":
+                raise PermanentProviderError(
+                    f"Requested Telegram destination capability is {status or 'unavailable'}"
+                )
+            reviewable.append(alias)
+
+        for alias in reviewable:
+            bucket = int(self.store.now() // 1800)
+            request_key = "ss-vp-preview-" + hashlib.sha256(
+                f"{alias}:{bucket}".encode()
+            ).hexdigest()[:48]
+            marker = (
+                f"Street Story capability preflight {bucket}. "
+                "Preview only; do not dispatch."
+            )
+            receipt = await self.providers.vibepublish.publish(
+                {
+                    "to": [alias],
+                    "content": {"text": marker},
+                    "mode": "preview",
+                },
+                request_key,
+            )
+            operation_id = str(receipt.get("operation_id") or "")
+            if not operation_id:
+                raise RetryableProviderError("VibePublish preview returned no recoverable operation_id")
+
+            current = _receipt(receipt, operation_id)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 120
+            while current.get("operation_complete") is not True:
+                if loop.time() >= deadline:
+                    raise RetryableProviderError("VibePublish Telegram preview preflight timed out")
+                await asyncio.sleep(0.5)
+                current = _receipt(
+                    await self.providers.vibepublish.status(operation_id),
+                    operation_id,
+                )
+
+            state = str(current.get("state") or "")
+            deliveries = _deliveries(current)
+            matches = [
+                row
+                for row in deliveries
+                if str(row.get("destination") or "") == alias
+                and str(row.get("provider") or "").lower() == "telegram"
+            ]
+            if (
+                state not in {"needs_approval", "verified"}
+                or current.get("dry_run") is not True
+                or not str(current.get("worker_seen_at") or "").strip()
+                or len(matches) != 1
+                or str(matches[0].get("state") or "") not in {"needs_approval", "verified"}
+                or str(matches[0].get("observed") or "") != "not_attempted"
+            ):
+                raise PermanentProviderError(
+                    "VibePublish Telegram preview did not prove no-dispatch capability"
+                )
+
+        if reviewable:
+            bootstrap = await self.providers.vibepublish.bootstrap()
+            refreshed = {item["alias"]: item for item in project_destinations_v2(bootstrap)}
+            if any(
+                alias not in refreshed
+                or refreshed[alias]["provider"] != "telegram"
+                or refreshed[alias]["status"] != "supported"
+                for alias in aliases
+            ):
+                raise PermanentProviderError(
+                    "VibePublish Telegram capability did not become supported after preview"
+                )
+        return bootstrap
 
     @staticmethod
     def _visual_brief(story: dict[str, Any], context: dict[str, Any]) -> str:
@@ -517,10 +604,10 @@ class ProductStreetStoryService(StreetStoryService):
         with self.store.connection() as db:
             intent = dict(db.execute("SELECT * FROM publish_intents WHERE id=?", (intent_id,)).fetchone())
         request = json.loads(intent["request_json"])
-        bootstrap = await self.providers.vibepublish.bootstrap()
+        requested_aliases = [str(value) for value in request["destinations"]]
+        bootstrap = await self._publication_bootstrap(requested_aliases)
         projected = project_destinations_v2(bootstrap)
         by_alias = {item["alias"]: item for item in projected}
-        requested_aliases = [str(value) for value in request["destinations"]]
         eligible = {
             alias
             for alias, item in by_alias.items()

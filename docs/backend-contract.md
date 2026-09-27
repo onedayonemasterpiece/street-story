@@ -143,9 +143,9 @@ Street Story does not write VibePublish SQLite, does not implement a second Imag
 
 ## Destinations
 
-`GET /v1/capabilities` fresh-reads VibePublish bootstrap. Street Story projects only real publish/post destinations and prefers explicit provider data returned by VibePublish; alias/label inference is only a compatibility fallback.
+`GET /v1/capabilities` fresh-reads VibePublish bootstrap. Street Story projects only real publish/post destinations and prefers explicit provider data returned by VibePublish; alias/label inference is only a compatibility fallback. A Telegram destination whose fresh proof has aged from `supported` to `needs_review` remains visible rather than disappearing from the product.
 
-The MVP primary targets are **Полюбить Калининград / Telegram** and **Полюбить Калининград / VK** when actually returned. `supported` and `needs_review` are distinct capability statuses; `needs_review` is not treated as “channel absent”. `Ух ты, Калининград` is shown only when returned by VibePublish. Native provider/channel IDs are never hardcoded.
+The MVP primary targets are **Полюбить Калининград / Telegram** and **Полюбить Калининград / VK** when actually returned. `supported` and `needs_review` are distinct capability statuses; `needs_review` is not treated as “channel absent”. Immediately before an actual Telegram publish, Street Story refreshes only a requested `needs_review` destination through VibePublish `mode=preview`, requires a completed dry run with worker/target validation and `observed=not_attempted`, re-reads bootstrap, and proceeds only after the destination becomes `supported`. This refresh never substitutes a provider dispatch and fails closed for `needs_auth`/unsupported targets. `Ух ты, Калининград` is shown only when returned by VibePublish. Native provider/channel IDs are never hardcoded.
 
 ## Publication and cancellation
 

@@ -306,18 +306,27 @@ def wait_visual(client: httpx.Client, story_id: str) -> dict[str, Any]:
 def telegram_destination(client: httpx.Client) -> str:
     payload = _json(client.get("/v1/capabilities"), "capabilities")
     rows = payload.get("destinations") if isinstance(payload.get("destinations"), list) else []
-    supported = [
-        str(row.get("alias") or "")
+    candidates = [
+        (
+            str(row.get("alias") or ""),
+            str(row.get("status") or ""),
+        )
         for row in rows
         if isinstance(row, dict)
         and str(row.get("provider") or "").lower() == "telegram"
-        and str(row.get("status") or "") == "supported"
+        and str(row.get("status") or "") in {"supported", "needs_review"}
         and str(row.get("alias") or "")
     ]
+    supported = [alias for alias, status in candidates if status == "supported"]
+    reviewable = [alias for alias, status in candidates if status == "needs_review"]
     if "lovekenig_tg" in supported:
         return "lovekenig_tg"
     if supported:
         return supported[0]
+    if "lovekenig_tg" in reviewable:
+        return "lovekenig_tg"
+    if reviewable:
+        return reviewable[0]
     raise ProductSmokeError("telegram_destination_missing")
 
 

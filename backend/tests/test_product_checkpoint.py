@@ -50,10 +50,12 @@ class DirtyGemini:
 
 
 class ProductFakeVibePublish:
-    def __init__(self, lose_first_ingress: bool = False):
+    def __init__(self, lose_first_ingress: bool = False, capability_status: str = "supported"):
         self.lose_first_ingress = lose_first_ingress
+        self.capability_status = capability_status
         self.ingress_effects: dict[str, dict] = {}
         self.visual_effects: dict[str, dict] = {}
+        self.preview_effects: dict[str, dict] = {}
         self.publish_effects: dict[str, dict] = {}
         self.cancel_effects: dict[str, dict] = {}
 
@@ -66,7 +68,7 @@ class ProductFakeVibePublish:
                 {"alias": "uhty-max", "kind": "destination", "label": "Ух ты, Калининград", "provider": "max"},
             ],
             "capabilities": [
-                {"destination": "love-kld-main", "operation": "publish", "surface": "post", "provider": "telegram", "status": "supported"},
+                {"destination": "love-kld-main", "operation": "publish", "surface": "post", "provider": "telegram", "status": self.capability_status},
                 {"destination": "love-kld-vk", "operation": "publish", "surface": "post", "provider": "vk", "status": "needs_review"},
                 {"destination": "uhty-max", "operation": "publish", "surface": "post", "provider": "max", "status": "needs_auth"},
             ],
@@ -110,6 +112,16 @@ class ProductFakeVibePublish:
         raise AssertionError(kind)
 
     async def status(self, operation_id: str):
+        if operation_id.startswith("vp_preview_op_"):
+            return {
+                "receipts": [
+                    next(
+                        value
+                        for value in self.preview_effects.values()
+                        if value.get("operation_id") == operation_id
+                    )
+                ]
+            }
         if operation_id == "vp_visual_op_1":
             ready = next(value for value in self.visual_effects.values() if value.get("state") == "needs_selection")
             return {"receipts": [ready]}
@@ -125,6 +137,26 @@ class ProductFakeVibePublish:
 
     async def publish(self, payload: dict, request_key: str):
         alias = payload["to"][0]
+        if payload.get("mode") == "preview":
+            operation_id = "vp_preview_op_" + hashlib.sha256(alias.encode()).hexdigest()[:8]
+            receipt = {
+                "operation_id": operation_id,
+                "state": "needs_approval",
+                "operation_complete": True,
+                "dry_run": True,
+                "worker_seen_at": "2026-09-27T18:00:00Z",
+                "deliveries": [
+                    {
+                        "destination": alias,
+                        "provider": "telegram",
+                        "state": "needs_approval",
+                        "observed": "not_attempted",
+                    }
+                ],
+            }
+            self.preview_effects.setdefault(request_key, receipt)
+            self.capability_status = "supported"
+            return receipt
         receipt = {
             "operation_id": "vp_publish_op_1",
             "resource_id": "publication_1",
@@ -244,6 +276,38 @@ async def test_visual_uses_idempotent_ingress_select_and_verified_readback(tmp_p
     assert ready["visual"]["selected_sha256"] == PROCESSED_SHA
     assert len(vp.ingress_effects) == 1
     assert service.asset(story["id"])[0] == PROCESSED
+
+
+@pytest.mark.asyncio
+async def test_needs_review_telegram_stays_visible_and_refreshes_before_publish(tmp_path):
+    vp = ProductFakeVibePublish(capability_status="needs_review")
+    service, _, _ = product_service(tmp_path, vp=vp)
+
+    capabilities = await service.capabilities()
+    assert [d["alias"] for d in capabilities["destinations"]] == ["love-kld-main"]
+    assert capabilities["destinations"][0]["status"] == "needs_review"
+
+    story = create_story(service, client_id="stale-capability")
+    with service.store.tx() as db:
+        db.execute(
+            "UPDATE stories SET state='ready_to_publish',vibepublish_asset_ref='asset_processed_1',draft_text='draft' WHERE id=?",
+            (story["id"],),
+        )
+    service.mutate_publish(
+        story["id"],
+        "publish-after-refresh",
+        {"destinations": ["love-kld-main"], "delay_minutes": 60, "text_override": "copy"},
+    )
+    await service.run_once()
+
+    scheduled = service.story(story["id"])
+    assert scheduled["state"] == "scheduled"
+    assert scheduled["publication"]["publication_id"] == "publication_1"
+    assert len(vp.preview_effects) == 1
+    preview = next(iter(vp.preview_effects.values()))
+    assert preview["dry_run"] is True
+    assert preview["deliveries"][0]["observed"] == "not_attempted"
+    assert len(vp.publish_effects) == 1
 
 
 @pytest.mark.asyncio
