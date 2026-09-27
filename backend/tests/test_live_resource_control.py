@@ -10,11 +10,11 @@ from test_live_editor import make_service, settings
 
 
 @pytest.mark.asyncio
-async def test_live_host_uses_shared_resource_controller(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "https://limiter.example")
-    monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "fixture-service-key")
-    monkeypatch.setenv("AI_RESOURCE_KEY_ENVS", "GOOGLE_API_KEY,GOOGLE_API_KEY2")
+async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AI_RESOURCE_CONTROL_URL", "https://limiter.example")
+    monkeypatch.setenv("AI_RESOURCE_CONTROL_SERVICE_KEY", "fixture-service-key")
     monkeypatch.setenv("AI_RESOURCE_LEDGER_ID", "ledger-fixture")
+    monkeypatch.setenv("AI_RESOURCE_KEY_ENVS", "GOOGLE_API_KEY,GOOGLE_API_KEY2")
     monkeypatch.setenv("GOOGLE_API_KEY", "fixture-one")
     monkeypatch.setenv("GOOGLE_API_KEY2", "fixture-two")
     monkeypatch.setenv("LIVE_API_KEY", "must-not-be-used")
@@ -37,10 +37,12 @@ async def test_live_host_uses_shared_resource_controller(monkeypatch, tmp_path) 
     call = calls[0]
     assert call["consumer"] == "street-story"
     assert call["binding"] == "street-story:live_fixture_session"
-    assert call["environment"]["AI_RESOURCE_KEY_ENVS"] == "GOOGLE_API_KEY,GOOGLE_API_KEY2"
-    assert call["environment"]["GOOGLE_API_KEY"] == "fixture-one"
-    assert call["environment"]["GOOGLE_API_KEY2"] == "fixture-two"
-    assert call["environment"]["AI_RESOURCE_LEDGER_ID"] == "ledger-fixture"
+    assert call["environment"] == {
+        "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
+        "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
+        "AI_RESOURCE_LEDGER_ID": "ledger-fixture",
+    }
+    assert not any(name.startswith("GOOGLE_API_KEY") for name in call["environment"])
     assert "LIVE_API_KEY" not in call["environment"]
     assert host.managed_runner is not None
 
@@ -68,9 +70,9 @@ async def test_missing_resource_package_never_falls_back_to_direct_key(monkeypat
     ]
 
 
-def test_live_resource_environment_is_bounded(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "https://limiter.example")
-    monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "fixture-service-key")
+def test_live_resource_environment_is_central_and_bounded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AI_RESOURCE_CONTROL_URL", "https://limiter.example")
+    monkeypatch.setenv("AI_RESOURCE_CONTROL_SERVICE_KEY", "fixture-service-key")
     monkeypatch.setenv("AI_RESOURCE_KEY_ENVS", "GOOGLE_API_KEY")
     monkeypatch.setenv("GOOGLE_API_KEY", "fixture-one")
     monkeypatch.setenv("VIBEPUBLISH_BEARER_TOKEN", "must-not-be-forwarded")
@@ -79,8 +81,18 @@ def test_live_resource_environment_is_bounded(monkeypatch, tmp_path) -> None:
     environment = _live_resource_environment(settings(tmp_path))
 
     assert environment == {
-        "GOOGLE_AI_LIMITER_SUPABASE_URL": "https://limiter.example",
-        "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": "fixture-service-key",
-        "AI_RESOURCE_KEY_ENVS": "GOOGLE_API_KEY",
-        "GOOGLE_API_KEY": "fixture-one",
+        "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
+        "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
+    }
+
+
+def test_live_resource_environment_accepts_compatibility_aliases(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("AI_RESOURCE_CONTROL_URL", raising=False)
+    monkeypatch.delenv("AI_RESOURCE_CONTROL_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "https://limiter.example")
+    monkeypatch.setenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "fixture-service-key")
+
+    assert _live_resource_environment(settings(tmp_path)) == {
+        "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
+        "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
     }
