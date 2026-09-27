@@ -103,8 +103,25 @@ def main() -> int:
                     "updated_age": round(now-float(row["updated_at"]), 3),
                 })
 
+        provider_models = {}
+        provider_env = Path("/home/dev/.local/state/street-story/providers.env")
+        if provider_env.is_file():
+            for raw in provider_env.read_text(encoding="utf-8").splitlines():
+                if "=" not in raw or raw.lstrip().startswith("#"):
+                    continue
+                key, value = raw.split("=", 1)
+                key = key.strip()
+                if key in {
+                    "GEMINI_MODEL",
+                    "GEMINI_FALLBACK_MODEL",
+                    "GEMINI_TRANSCRIPTION_MODEL",
+                    "GEMINI_TRANSCRIPTION_FALLBACK_MODEL",
+                }:
+                    provider_models[key] = value.strip().strip("'\"")
+
         print(json.dumps({
             "status":"ok",
+            "provider_models": provider_models,
             "models": sorted({row["model"] for row in health}),
             "credential_count": len(credentials),
             "health": health,
