@@ -48,7 +48,7 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
         "key-three",
     ]
     assert settings.gemini_model == "gemini-3.5-flash-lite"
-    assert settings.gemini_fallback_model == "gemini-3.1-flash-lite"
+    assert settings.gemini_fallback_model == "gemini-3.8-flash"
     assert settings.gemini_transcription_model == "gemini-3.5-flash-lite"
     assert settings.gemini_transcription_fallback_model == "gemini-3.1-flash-lite"
     client = GeminiClient(settings)
@@ -60,7 +60,7 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
     ]
     assert [route[0] for route in client.research_routes] == [
         "gemini-3.5-flash-lite",
-        "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
     ]
     assert settings.gemini_quota_supabase_url == "https://quota.example"
     assert reveal(settings.gemini_quota_supabase_key) == "quota-key"

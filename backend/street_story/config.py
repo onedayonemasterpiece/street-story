@@ -57,7 +57,7 @@ class Settings:
     vibepublish_bearer_token: SecretStr | str | None = field(repr=False)
     osm_user_agent: str
     vibepublish_http_host: str | None = None
-    gemini_fallback_model: str = 'gemini-3.1-flash-lite'
+    gemini_fallback_model: str = 'gemini-3.8-flash'
     gemini_transcription_model: str = 'gemini-3.5-flash-lite'
     gemini_transcription_fallback_model: str = 'gemini-3.1-flash-lite'
     worker_poll_seconds: float = 1.0
@@ -137,7 +137,7 @@ class Settings:
             gemini_quota_supabase_url=quota_url,
             gemini_quota_supabase_key=quota_key,
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.5-flash-lite'),
-            gemini_fallback_model=os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
+            gemini_fallback_model=os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-3.8-flash'),
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
