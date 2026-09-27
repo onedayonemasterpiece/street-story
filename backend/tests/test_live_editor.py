@@ -14,6 +14,15 @@ from street_story.providers import GroundedResearch
 from street_story.service import ConflictError, ProviderBundle
 
 
+def test_live_initialization_declares_application_search_function(tmp_path) -> None:
+    svc, adapter, session, _events = make_service(tmp_path)
+    initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
+    configuration = initialized["configuration"]
+    assert configuration["search_enabled"] is False
+    assert configuration["application_search_function"] == "search_web"
+    assert any(item["name"] == "search_web" for item in configuration["functions"])
+
+
 def test_live_functions_expose_search_tool_not_async_research_job() -> None:
     names = [item["name"] for item in FUNCTIONS]
     assert "search_web" in names
