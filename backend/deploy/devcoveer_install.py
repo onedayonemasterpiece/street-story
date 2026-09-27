@@ -53,6 +53,7 @@ VIBE_SOURCE = Path("/home/dev/projects/vibepublish")
 VIBE_PY = Path("/home/dev/.local/opt/vibepublish/bin/python")
 BRIDGE_PYTHON = Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python")
 AI_RESOURCE_CONTROL_VERSION = "0.1.3"
+AI_RESOURCE_CONTROL_RELEASE_SHA = "114e8effba549a219585b1821c179921b1ee6671"
 AI_RESOURCE_CONTROL_REPO = Path("/home/dev/projects/ai-resource-control")
 VIBE_DB = Path("/home/dev/.local/state/vibepublish/vibepublish.sqlite3")
 VIBE_OWNER_TOKEN_FILE = Path("/home/dev/.local/state/vibepublish/owner-token.txt")
@@ -321,10 +322,9 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
     run(["git", "-C", str(repo), "fetch", "origin", "--tags"], timeout=180)
     tag = f"v{AI_RESOURCE_CONTROL_VERSION}"
     tag_sha = run(["git", "-C", str(repo), "rev-list", "-n1", tag], timeout=30).strip()
-    main_sha = run(["git", "-C", str(repo), "rev-parse", "origin/main"], timeout=30).strip()
-    if not tag_sha or tag_sha != main_sha:
+    if not tag_sha or tag_sha != AI_RESOURCE_CONTROL_RELEASE_SHA:
         raise DeployError(
-            f"ai-resource-control {tag} is not exact current origin/main"
+            f"ai-resource-control {tag} does not match pinned release SHA"
         )
 
     stage = Path(tempfile.mkdtemp(prefix=".street-story-ai-resource-"))
