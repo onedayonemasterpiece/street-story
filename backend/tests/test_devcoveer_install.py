@@ -338,6 +338,32 @@ def test_private_resource_release_is_pinned() -> None:
     assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
 
 
+def test_private_resource_commit_peel_is_literal(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    repo = tmp_path / "ai-resource-control"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setattr(module, "AI_RESOURCE_CONTROL_REPO", repo)
+    calls: list[list[str]] = []
+
+    class StopAfterPeel(RuntimeError):
+        pass
+
+    def fake_run(argv, **kwargs):
+        del kwargs
+        calls.append(argv)
+        if "cat-file" in argv:
+            raise StopAfterPeel
+        return ""
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    with pytest.raises(StopAfterPeel):
+        module.install_ai_resource_control(tmp_path / "target-python", "driver-python")
+
+    peel = next(argv for argv in calls if "cat-file" in argv)
+    assert peel[-1] == module.AI_RESOURCE_CONTROL_RELEASE_SHA + "^{commit}"
+
+
 def test_live_resource_preflight_is_read_only_and_central(monkeypatch, tmp_path) -> None:
     module = _load_installer()
     providers = tmp_path / "providers.env"
