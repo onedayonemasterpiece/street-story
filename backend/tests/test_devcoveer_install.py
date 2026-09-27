@@ -468,6 +468,117 @@ def test_live_resource_preflight_fails_closed(monkeypatch, tmp_path, payload) ->
         module.verify_live_resource_control(tmp_path / "venv")
 
 
+def test_preview_preflight_accepts_claimed_dry_run_without_bootstrap_supported(monkeypatch) -> None:
+    module = _load_installer()
+    calls: list[tuple[str, str]] = []
+
+    def request(token, method, path, **kwargs):
+        del token, kwargs
+        calls.append((method, path))
+        if method == "POST" and path == "/v1/publications":
+            return {"operation_id": "op_fixture"}
+        if method == "GET" and path == "/v1/operations/op_fixture":
+            return {
+                "receipts": [
+                    {
+                        "operation_id": "op_fixture",
+                        "operation_complete": True,
+                        "state": "needs_approval",
+                        "dry_run": True,
+                        "worker_seen_at": "2026-09-27T10:12:21Z",
+                        "deliveries": [
+                            {
+                                "destination": module.VIBE_ALIAS,
+                                "provider": "telegram",
+                                "state": "needs_approval",
+                                "observed": "not_attempted",
+                            }
+                        ],
+                    }
+                ]
+            }
+        pytest.fail(f"unexpected Vibe request {method} {path}")
+
+    monkeypatch.setattr(module, "vibe_request", request)
+
+    assert module.preview_preflight("t" * 40, "a" * 40) == {
+        "alias": module.VIBE_ALIAS,
+        "status": "supported",
+        "reason": "Preview completed with worker/target validation and no provider dispatch",
+    }
+    assert calls == [
+        ("POST", "/v1/publications"),
+        ("GET", "/v1/operations/op_fixture"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"dry_run": False}, "dry-run semantics"),
+        ({"worker_seen_at": None}, "claimed by a worker"),
+        ({"deliveries": []}, "resolve the Telegram target"),
+        (
+            {
+                "deliveries": [
+                    {
+                        "destination": "wrong_alias",
+                        "provider": "telegram",
+                        "state": "needs_approval",
+                        "observed": "not_attempted",
+                    }
+                ]
+            },
+            "resolve the Telegram target",
+        ),
+        (
+            {
+                "deliveries": [
+                    {
+                        "destination": "lovekenig_tg",
+                        "provider": "telegram",
+                        "state": "needs_approval",
+                        "observed": "provider_scheduled",
+                    }
+                ]
+            },
+            "unexpectedly reached provider dispatch",
+        ),
+    ],
+)
+def test_preview_preflight_fails_closed_on_unproved_preview(monkeypatch, mutation, message) -> None:
+    module = _load_installer()
+    current = {
+        "operation_id": "op_fixture",
+        "operation_complete": True,
+        "state": "needs_approval",
+        "dry_run": True,
+        "worker_seen_at": "2026-09-27T10:12:21Z",
+        "deliveries": [
+            {
+                "destination": module.VIBE_ALIAS,
+                "provider": "telegram",
+                "state": "needs_approval",
+                "observed": "not_attempted",
+            }
+        ],
+    }
+    current.update(mutation)
+
+    monkeypatch.setattr(
+        module,
+        "vibe_request",
+        lambda token, method, path, **kwargs: (
+            {"operation_id": "op_fixture"}
+            if method == "POST"
+            else {"receipts": [current]}
+        ),
+    )
+
+    with pytest.raises(module.DeployError, match=message):
+        module.preview_preflight("t" * 40, "b" * 40)
+
+
 def test_vibe_request_uses_exact_public_host(monkeypatch) -> None:
     module = _load_installer()
     seen: dict[str, str] = {}

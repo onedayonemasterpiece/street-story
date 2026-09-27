@@ -879,10 +879,10 @@ def preview_preflight(token: str, sha: str) -> dict[str, str]:
     if not operation_id:
         raise DeployError("VibePublish preview returned no operation_id")
     deadline = time.monotonic() + 120
+    current: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         status = vibe_request(token, "GET", f"/v1/operations/{operation_id}")
         receipts = status.get("receipts")
-        current = None
         if isinstance(receipts, list):
             current = next(
                 (
@@ -901,21 +901,29 @@ def preview_preflight(token: str, sha: str) -> dict[str, str]:
     else:
         raise DeployError("VibePublish preview preflight timed out")
 
-    bootstrap = vibe_request(token, "GET", "/v1/bootstrap")
-    caps = [
+    if not current or current.get("dry_run") is not True:
+        raise DeployError("VibePublish preview did not prove dry-run semantics")
+    if not str(current.get("worker_seen_at") or "").strip():
+        raise DeployError("VibePublish preview was not claimed by a worker")
+    deliveries = current.get("deliveries")
+    matches = [
         row
-        for row in bootstrap.get("capabilities", [])
+        for row in deliveries
         if isinstance(row, dict)
         and row.get("destination") == VIBE_ALIAS
-        and row.get("operation") == "publish"
-        and row.get("surface") == "post"
-    ]
-    if len(caps) != 1 or caps[0].get("status") != "supported":
-        raise DeployError("VibePublish Telegram preview did not establish supported capability")
+        and row.get("provider") == "telegram"
+    ] if isinstance(deliveries, list) else []
+    if len(matches) != 1:
+        raise DeployError("VibePublish preview did not resolve the Telegram target")
+    delivery = matches[0]
+    if str(delivery.get("state") or "") not in {"needs_approval", "verified"}:
+        raise DeployError("VibePublish Telegram preview delivery is not ready")
+    if str(delivery.get("observed") or "") != "not_attempted":
+        raise DeployError("VibePublish preview unexpectedly reached provider dispatch")
     return {
         "alias": VIBE_ALIAS,
         "status": "supported",
-        "reason": str(caps[0].get("reason") or "")[:300],
+        "reason": "Preview completed with worker/target validation and no provider dispatch",
     }
 
 
