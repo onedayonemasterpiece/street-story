@@ -591,8 +591,8 @@ def run(
                 require_test=execute_publication,
             )
             scheduled_for = (
-                datetime.now(timezone.utc) + timedelta(hours=24)
-            ).replace(microsecond=0).isoformat()
+                datetime.now(timezone.utc) + timedelta(hours=25)
+            ).replace(second=0, microsecond=0).isoformat()
             cursor, publish_turn = send_tool_turn(
                 client,
                 story_id,
