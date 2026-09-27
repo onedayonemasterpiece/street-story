@@ -335,6 +335,7 @@ def test_private_resource_release_is_pinned() -> None:
     module = _load_installer()
     assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.5"
     assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "f2ca21d2b239fde1c8055dc8ad776efdcc94449a"
+    assert module.AI_RESOURCE_CONTROL_COMMIT_SPEC == "f2ca21d2b239fde1c8055dc8ad776efdcc94449a^{commit}"
     assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
 
 
