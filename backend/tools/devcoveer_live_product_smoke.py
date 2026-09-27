@@ -381,6 +381,12 @@ def run(expected_sha: str) -> dict[str, Any]:
                 client.get(f"/v1/stories/{story_id}/live-sessions/{session_id}/events", params={"after": 0}),
                 "initial_events",
             )
+            initial_events = initial.get("events") if isinstance(initial.get("events"), list) else []
+            for event in initial_events:
+                if isinstance(event, dict):
+                    fatal = event_error(event)
+                    if fatal:
+                        raise ProductSmokeError(fatal)
             cursor = int(initial.get("cursor") or 0)
 
             cursor, search_turn = send_tool_turn(
