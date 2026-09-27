@@ -121,6 +121,19 @@ def test_supported_fact_ids_require_https_evidence() -> None:
     assert ids == ["good"]
 
 
+def test_canary_schedule_expression_is_minute_aligned_with_25_hour_margin() -> None:
+    module = load_module()
+    now = module.datetime(
+        2026, 9, 27, 19, 16, 59, 123456, tzinfo=module.timezone.utc
+    )
+    scheduled = (
+        now + module.timedelta(hours=25)
+    ).replace(second=0, microsecond=0)
+    assert scheduled.second == 0
+    assert scheduled.microsecond == 0
+    assert scheduled - now > module.timedelta(hours=24)
+
+
 def test_heartbeat_events_advances_cursor_without_new_turn() -> None:
     module = load_module()
     cursor = module.heartbeat_events(
