@@ -52,7 +52,7 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
     assert settings.gemini_transcription_model == "gemini-3.5-flash-lite"
     assert settings.gemini_transcription_fallback_model == "gemini-3.1-flash-lite"
     client = GeminiClient(settings)
-    assert client.pool.model == "gemini-3.5-flash-lite"
+    assert client.pool.model == "gemini-3.8-flash"
     assert client.transcription_pool.model == "gemini-3.5-flash-lite"
     assert [route[0] for route in client.transcription_routes] == [
         "gemini-3.5-flash-lite",
