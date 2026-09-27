@@ -862,8 +862,16 @@ def ensure_vibe_principal(sha: str) -> tuple[str, str]:
         )
     return principal, token
 
+def preview_request_key(sha: str, now: float | None = None) -> str:
+    # VibePublish treats preview evidence as fresh for one hour. Reuse within a
+    # 30-minute bucket for idempotency, but never replay one preview forever.
+    observed = time.time() if now is None else now
+    bucket = int(observed // 1800)
+    return f"street-story-deploy-preview-{sha[:20]}-{bucket}"
+
+
 def preview_preflight(token: str, sha: str) -> dict[str, str]:
-    request_key = f"street-story-deploy-preview-{sha[:24]}"
+    request_key = preview_request_key(sha)
     receipt = vibe_request(
         token,
         "POST",

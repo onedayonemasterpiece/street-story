@@ -468,6 +468,20 @@ def test_live_resource_preflight_fails_closed(monkeypatch, tmp_path, payload) ->
         module.verify_live_resource_control(tmp_path / "venv")
 
 
+def test_preview_request_key_is_idempotent_within_half_hour_and_refreshes_after() -> None:
+    module = _load_installer()
+    sha = "a" * 40
+
+    first = module.preview_request_key(sha, now=3_600.0)
+    same_bucket = module.preview_request_key(sha, now=3_600.0 + 1_799)
+    next_bucket = module.preview_request_key(sha, now=3_600.0 + 1_800)
+
+    assert first == same_bucket
+    assert next_bucket != first
+    assert first.startswith("street-story-deploy-preview-" + "a" * 20 + "-")
+    assert len(first) <= 128
+
+
 def test_preview_preflight_accepts_claimed_dry_run_without_bootstrap_supported(monkeypatch) -> None:
     module = _load_installer()
     calls: list[tuple[str, str]] = []
