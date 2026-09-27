@@ -54,6 +54,7 @@ VIBE_PY = Path("/home/dev/.local/opt/vibepublish/bin/python")
 BRIDGE_PYTHON = Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python")
 AI_RESOURCE_CONTROL_VERSION = "0.1.5"
 AI_RESOURCE_CONTROL_RELEASE_SHA = "f2ca21d2b239fde1c8055dc8ad776efdcc94449a"
+AI_RESOURCE_CONTROL_COMMIT_SPEC = AI_RESOURCE_CONTROL_RELEASE_SHA + "^{commit}"
 AI_RESOURCE_CONTROL_REPO = Path("/home/dev/projects/ai-resource-control")
 VIBE_DB = Path("/home/dev/.local/state/vibepublish/vibepublish.sqlite3")
 VIBE_OWNER_TOKEN_FILE = Path("/home/dev/.local/state/vibepublish/owner-token.txt")
@@ -327,7 +328,7 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
             str(repo),
             "cat-file",
             "-e",
-            f"{AI_RESOURCE_CONTROL_RELEASE_SHA}^{commit}",
+            AI_RESOURCE_CONTROL_COMMIT_SPEC,
         ],
         timeout=30,
     )
