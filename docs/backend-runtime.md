@@ -21,7 +21,7 @@ Required values:
 - configured Google key pool credentials for ordinary transcription/research
 - `AI_RESOURCE_CONTROL_URL`
 - `AI_RESOURCE_CONTROL_SERVICE_KEY`
-- `GOOGLE_API_KEY3` as Street Story's dedicated emergency Live fallback only
+- `GOOGLE_API_KEY3` as Street Story's dedicated emergency Live fallback source; trusted backend maps it to `AI_RESOURCE_CONTROL_FALLBACK_KEY`
 - optional `AI_RESOURCE_LEDGER_ID` after the shared Live migration has been verified
 - `VIBEPUBLISH_BASE_URL`
 - `VIBEPUBLISH_BEARER_TOKEN`
@@ -104,9 +104,9 @@ finite local admission and records unexposed provider concurrency honestly. Prod
 
 ## Authority-outage fallback
 
-Street Story owns exactly one emergency Live alias: `GOOGLE_API_KEY3`. Normal Live sessions use the central Vault-backed authority and do not receive the ordinary local provider-key pool. The assigned fallback alias is forwarded only to `ai-resource-control`.
+Street Story owns exactly one emergency Live alias: `GOOGLE_API_KEY3`. Normal Live sessions use the central Vault-backed authority and do not receive the ordinary local provider-key pool. The trusted backend maps the assigned alias value into the single generic `AI_RESOURCE_CONTROL_FALLBACK_KEY`; the original alias and the rest of the Google pool are not forwarded to `ai-resource-control`.
 
-The shared SDK may use `GOOGLE_API_KEY3` only when the initial read-only authority capability probe returns `RESOURCE_CONTROL_UNAVAILABLE`, before any mutating acquire. It must not activate for admission/quota/429/capacity/credential decisions, after a successful authority probe, after a lost acquire response, or after provider ready. Emergency mode still uses the shared `resource_guard`, permits one local Street Story fallback session per process and expires after two hours.
+The shared SDK may use the mapped `AI_RESOURCE_CONTROL_FALLBACK_KEY` only when the initial read-only authority capability probe returns `RESOURCE_CONTROL_UNAVAILABLE`, before any mutating acquire. It must not activate for admission/quota/429/capacity/credential decisions, after a successful authority probe, after a lost acquire response, or after provider ready. Emergency mode still uses the shared `resource_guard`, permits one local Street Story fallback session per host and expires after two hours.
 
 The app must never borrow Wonderful Lections' `GOOGLE_API_KEY`, KenigEvents' `GOOGLE_API_KEY2`, Projects Hub's `GOOGLE_API_KEY4`, or shared reserve keys 5–6 for this fallback. Android never receives any provider key.
 
