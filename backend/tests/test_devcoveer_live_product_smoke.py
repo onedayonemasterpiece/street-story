@@ -121,6 +121,31 @@ def test_supported_fact_ids_require_https_evidence() -> None:
     assert ids == ["good"]
 
 
+def test_heartbeat_events_advances_cursor_without_new_turn() -> None:
+    module = load_module()
+    cursor = module.heartbeat_events(
+        EventClient([
+            {"type": "output_transcript", "text": "Готово."},
+            {"type": "turn_complete"},
+        ]),
+        "story",
+        "session",
+        0,
+    )
+    assert cursor == 2
+
+
+def test_heartbeat_events_fails_if_provider_session_closed() -> None:
+    module = load_module()
+    with pytest.raises(module.ProductSmokeError, match="live_session_closed"):
+        module.heartbeat_events(
+            EventClient([{"type": "closed"}]),
+            "story",
+            "session",
+            0,
+        )
+
+
 def test_poll_events_accepts_tool_result_and_same_turn_continuation() -> None:
     module = load_module()
     cursor, result = module.poll_events(

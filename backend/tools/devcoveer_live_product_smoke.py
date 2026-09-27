@@ -145,6 +145,31 @@ def event_error(event: dict[str, Any]) -> str | None:
     return None
 
 
+def heartbeat_events(
+    client: httpx.Client,
+    story_id: str,
+    session_id: str,
+    cursor: int,
+) -> int:
+    payload = _json(
+        client.get(
+            f"/v1/stories/{story_id}/live-sessions/{session_id}/events",
+            params={"after": cursor},
+        ),
+        "live_heartbeat",
+    )
+    batch = payload.get("events") if isinstance(payload.get("events"), list) else []
+    for event in batch:
+        if not isinstance(event, dict):
+            continue
+        fatal = event_error(event)
+        if fatal:
+            raise ProductSmokeError(fatal)
+        if event.get("type") == "closed":
+            raise ProductSmokeError("live_session_closed")
+    return int(payload.get("cursor") or cursor)
+
+
 def poll_events(
     client: httpx.Client,
     story_id: str,
@@ -290,7 +315,12 @@ def supported_fact_ids(current: dict[str, Any]) -> list[str]:
     return output
 
 
-def wait_visual(client: httpx.Client, story_id: str) -> dict[str, Any]:
+def wait_visual(
+    client: httpx.Client,
+    story_id: str,
+    session_id: str,
+    cursor: int,
+) -> tuple[dict[str, Any], int]:
     deadline = time.monotonic() + VISUAL_TIMEOUT_SECONDS
     last_state = ""
     while time.monotonic() < deadline:
@@ -298,10 +328,11 @@ def wait_visual(client: httpx.Client, story_id: str) -> dict[str, Any]:
         state = str(current.get("state") or "")
         last_state = state
         if state == "ready_to_publish":
-            return current
+            return current, cursor
         if state in {"needs_review", "visual_blocked"}:
             error = current.get("error") if isinstance(current.get("error"), dict) else {}
             raise ProductSmokeError(f"visual_{state}_{error.get('code') or 'unknown'}")
+        cursor = heartbeat_events(client, story_id, session_id, cursor)
         time.sleep(2.0)
     raise ProductSmokeError(f"visual_timeout_{last_state or 'unknown'}")
 
@@ -309,10 +340,12 @@ def wait_visual(client: httpx.Client, story_id: str) -> dict[str, Any]:
 def wait_publication(
     client: httpx.Client,
     story_id: str,
+    session_id: str,
+    cursor: int,
     expected_states: set[str],
     *,
     timeout_seconds: float = SOCIAL_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], int]:
     deadline = time.monotonic() + timeout_seconds
     last_state = ""
     while time.monotonic() < deadline:
@@ -320,10 +353,11 @@ def wait_publication(
         publication = current.get("publication") if isinstance(current.get("publication"), dict) else {}
         last_state = str(publication.get("state") or "")
         if last_state in expected_states:
-            return current
+            return current, cursor
         error = current.get("error") if isinstance(current.get("error"), dict) else {}
         if str(current.get("state") or "") == "needs_review" and error.get("code"):
             raise ProductSmokeError(f"publication_needs_review_{error.get('code')}")
+        cursor = heartbeat_events(client, story_id, session_id, cursor)
         time.sleep(2.0)
     raise ProductSmokeError(f"publication_timeout_{last_state or 'unknown'}")
 
@@ -548,7 +582,7 @@ def run(
                     "используя сохранённые подтверждённые факты. Не редактируй текст."
                 ),
             )
-            ready = wait_visual(client, story_id)
+            ready, cursor = wait_visual(client, story_id, session_id, cursor)
             visual_receipt = validate_visual(client, ready, draft)
 
             destination = telegram_destination(
@@ -598,9 +632,11 @@ def run(
                         "Не меняй текст, картинку, канал или время."
                     ),
                 )
-                scheduled_story = wait_publication(
+                scheduled_story, cursor = wait_publication(
                     client,
                     story_id,
+                    session_id,
+                    cursor,
                     {"scheduled", "verified"},
                 )
                 scheduled_publication = (
@@ -625,7 +661,13 @@ def run(
                         "Не создавай новую публикацию и ничего больше не меняй."
                     ),
                 )
-                cancelled_story = wait_publication(client, story_id, {"cancelled"})
+                cancelled_story, cursor = wait_publication(
+                    client,
+                    story_id,
+                    session_id,
+                    cursor,
+                    {"cancelled"},
+                )
                 cancelled_publication = (
                     cancelled_story.get("publication")
                     if isinstance(cancelled_story.get("publication"), dict)
