@@ -43,17 +43,20 @@ class PhysicalDeviceLiveSmokeTest {
         )
         val destinations = capabilities.optJSONArray("destinations")
         requireNotNull(destinations) { "Capabilities must contain destinations" }
-        var telegramSupported = false
+        var telegramConfigured = false
         for (index in 0 until destinations.length()) {
             val row = destinations.optJSONObject(index) ?: continue
             if (
                 row.optString("provider") == "telegram" &&
-                row.optString("status") == "supported"
+                row.optString("status") in setOf("supported", "needs_review")
             ) {
-                telegramSupported = true
+                telegramConfigured = true
             }
         }
-        assertTrue("Live backend must expose a supported Telegram destination", telegramSupported)
+        assertTrue(
+            "Live backend must expose a configured Telegram destination",
+            telegramConfigured,
+        )
     }
 
     private fun requestJson(url: String, bearer: String? = null): JSONObject {

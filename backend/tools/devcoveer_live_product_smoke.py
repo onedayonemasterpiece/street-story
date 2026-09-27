@@ -3,7 +3,8 @@
 
 The canary creates one real-photo topic and keeps one Gemini 3.8 Live session
 through search, text editing, visual generation and publication confirmation.
-It never confirms or dispatches a publication.
+By default it stops before dispatch. The explicit --execute-publication mode
+continues through native Telegram scheduling and cancellation in the same session.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ MODEL = "gemini-3.8-live"
 POLL_SECONDS = 0.5
 TURN_TIMEOUT_SECONDS = 120
 VISUAL_TIMEOUT_SECONDS = 12 * 60
+SOCIAL_TIMEOUT_SECONDS = 6 * 60
 OWNER_PROMPT_SHA256 = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
 DIAGNOSTIC_NAME = "diagnostic-devcoveer-live-product.json"
 
@@ -303,21 +305,52 @@ def wait_visual(client: httpx.Client, story_id: str) -> dict[str, Any]:
     raise ProductSmokeError(f"visual_timeout_{last_state or 'unknown'}")
 
 
+def wait_publication(
+    client: httpx.Client,
+    story_id: str,
+    expected_states: set[str],
+    *,
+    timeout_seconds: float = SOCIAL_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_state = ""
+    while time.monotonic() < deadline:
+        current = story(client, story_id)
+        publication = current.get("publication") if isinstance(current.get("publication"), dict) else {}
+        last_state = str(publication.get("state") or "")
+        if last_state in expected_states:
+            return current
+        error = current.get("error") if isinstance(current.get("error"), dict) else {}
+        if str(current.get("state") or "") == "needs_review" and error.get("code"):
+            raise ProductSmokeError(f"publication_needs_review_{error.get('code')}")
+        time.sleep(2.0)
+    raise ProductSmokeError(f"publication_timeout_{last_state or 'unknown'}")
+
+
 def telegram_destination(client: httpx.Client) -> str:
     payload = _json(client.get("/v1/capabilities"), "capabilities")
     rows = payload.get("destinations") if isinstance(payload.get("destinations"), list) else []
-    supported = [
-        str(row.get("alias") or "")
+    candidates = [
+        (
+            str(row.get("alias") or ""),
+            str(row.get("status") or ""),
+        )
         for row in rows
         if isinstance(row, dict)
         and str(row.get("provider") or "").lower() == "telegram"
-        and str(row.get("status") or "") == "supported"
+        and str(row.get("status") or "") in {"supported", "needs_review"}
         and str(row.get("alias") or "")
     ]
+    supported = [alias for alias, status in candidates if status == "supported"]
+    reviewable = [alias for alias, status in candidates if status == "needs_review"]
     if "lovekenig_tg" in supported:
         return "lovekenig_tg"
     if supported:
         return supported[0]
+    if "lovekenig_tg" in reviewable:
+        return "lovekenig_tg"
+    if reviewable:
+        return reviewable[0]
     raise ProductSmokeError("telegram_destination_missing")
 
 
@@ -365,7 +398,7 @@ def write_receipt(receipt: dict[str, Any]) -> None:
     path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def run(expected_sha: str) -> dict[str, Any]:
+def run(expected_sha: str, *, execute_publication: bool = False) -> dict[str, Any]:
     if len(expected_sha) != 40 or any(ch not in "0123456789abcdef" for ch in expected_sha):
         raise ProductSmokeError("expected_sha_invalid")
 
@@ -381,6 +414,8 @@ def run(expected_sha: str) -> dict[str, Any]:
     photo_sha = hashlib.sha256(photo).hexdigest()
     session_id = ""
     stopped = False
+    publication_scheduled = False
+    cancel_confirmed = False
 
     with httpx.Client(
         base_url=BASE_URL,
@@ -512,6 +547,68 @@ def run(expected_sha: str) -> dict[str, Any]:
             if publication.get("state") in {"scheduled", "verified", "published"}:
                 raise ProductSmokeError("publication_dispatched_unexpectedly")
 
+            publication_execution: dict[str, Any] | None = None
+            if execute_publication:
+                confirmation_id = str(confirmation.get("confirmation_id") or "")
+                cursor, confirm_turn = send_tool_turn(
+                    client,
+                    story_id,
+                    session_id,
+                    cursor,
+                    expected_tool="confirm_publication",
+                    text=(
+                        "Я явно подтверждаю именно показанную карточку публикации. "
+                        f"Вызови confirm_publication с confirmation_id {confirmation_id}. "
+                        "Не меняй текст, картинку, канал или время."
+                    ),
+                )
+                scheduled_story = wait_publication(
+                    client,
+                    story_id,
+                    {"scheduled", "verified"},
+                )
+                scheduled_publication = (
+                    scheduled_story.get("publication")
+                    if isinstance(scheduled_story.get("publication"), dict)
+                    else {}
+                )
+                publication_id = str(scheduled_publication.get("publication_id") or "")
+                publish_operation_id = str(scheduled_publication.get("operation_id") or "")
+                if not publication_id or not publish_operation_id:
+                    raise ProductSmokeError("scheduled_publication_receipt_incomplete")
+                publication_scheduled = True
+
+                cursor, cancel_turn = send_tool_turn(
+                    client,
+                    story_id,
+                    session_id,
+                    cursor,
+                    expected_tool="cancel_publication",
+                    text=(
+                        "Отмени текущую запланированную публикацию через cancel_publication. "
+                        "Не создавай новую публикацию и ничего больше не меняй."
+                    ),
+                )
+                cancelled_story = wait_publication(client, story_id, {"cancelled"})
+                cancelled_publication = (
+                    cancelled_story.get("publication")
+                    if isinstance(cancelled_story.get("publication"), dict)
+                    else {}
+                )
+                cancel_operation_id = str(cancelled_publication.get("cancel_operation_id") or "")
+                if not cancel_operation_id:
+                    raise ProductSmokeError("cancel_operation_id_missing")
+                cancel_confirmed = True
+                publication_execution = {
+                    "confirm_tool_ok": confirm_turn["tool_ok"],
+                    "cancel_tool_ok": cancel_turn["tool_ok"],
+                    "publication_id": publication_id,
+                    "publish_operation_id": publish_operation_id,
+                    "cancel_operation_id": cancel_operation_id,
+                    "scheduled_for": scheduled_story.get("scheduled_for"),
+                    "final_state": "cancelled",
+                }
+
             stop = _json(
                 client.post(f"/v1/stories/{story_id}/live-sessions/{session_id}/stop"),
                 "live_stop",
@@ -554,14 +651,41 @@ def run(expected_sha: str) -> dict[str, Any]:
                     "destination": destination,
                     "scheduled_for": confirmation.get("scheduled_for"),
                     "state": confirmation.get("state"),
-                    "publication_dispatched": False,
+                    "publication_dispatched": execute_publication,
                 },
+                "publication_execution": publication_execution,
                 "session_stopped": True,
                 "secrets_disclosed": False,
             }
             write_receipt(receipt)
             return receipt
         finally:
+            if execute_publication and publication_scheduled and not cancel_confirmed:
+                try:
+                    _json(
+                        client.post(
+                            f"/v1/stories/{story_id}/cancel",
+                            json={},
+                            headers={
+                                **headers,
+                                "Idempotency-Key": f"live-product-cleanup-{tag}",
+                            },
+                        ),
+                        "cleanup_cancel",
+                    )
+                    cleanup_deadline = time.monotonic() + SOCIAL_TIMEOUT_SECONDS
+                    while time.monotonic() < cleanup_deadline:
+                        cleanup_story = story(client, story_id)
+                        cleanup_publication = (
+                            cleanup_story.get("publication")
+                            if isinstance(cleanup_story.get("publication"), dict)
+                            else {}
+                        )
+                        if cleanup_publication.get("state") == "cancelled":
+                            break
+                        time.sleep(2.0)
+                except Exception:
+                    pass
             if session_id and not stopped:
                 try:
                     client.post(
@@ -575,9 +699,14 @@ def run(expected_sha: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument(
+        "--execute-publication",
+        action="store_true",
+        help="Actually schedule and cancel the canary through the same Live session.",
+    )
     args = parser.parse_args()
     try:
-        receipt = run(args.expected_sha)
+        receipt = run(args.expected_sha, execute_publication=args.execute_publication)
     except ProductSmokeError as exc:
         receipt = {"status": "FAIL", "error": str(exc), "secrets_disclosed": False}
         write_receipt(receipt)
