@@ -8,10 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.config import Settings
-from street_story.live import StreetStoryLiveAdapter, ensure_live_schema
+from street_story.live import FUNCTIONS, StreetStoryLiveAdapter, ensure_live_schema
 from street_story.mvp_location import MvpLocationStreetStoryService
 from street_story.providers import GroundedResearch
 from street_story.service import ConflictError, ProviderBundle
+
+
+def test_live_functions_expose_search_tool_not_async_research_job() -> None:
+    names = [item["name"] for item in FUNCTIONS]
+    assert "search_web" in names
+    assert "start_research" not in names
 
 
 PHOTO = b"live-photo"
