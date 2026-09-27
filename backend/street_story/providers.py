@@ -4,9 +4,10 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
@@ -128,6 +129,73 @@ class GroundedResearch:
     grounding_sources: list[dict[str, str]]
 
 
+class _DuckDuckGoResultParser(HTMLParser):
+    """Bounded parser for DuckDuckGo's simple HTML result surface."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict[str, str]] = []
+        self.current: dict[str, str] | None = None
+        self.capture: str | None = None
+        self.buffer: list[str] = []
+
+    @staticmethod
+    def _target_url(raw: str) -> str | None:
+        href = str(raw or "").strip()
+        if href.startswith("//"):
+            href = "https:" + href
+        parsed = urlparse(href)
+        if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+            target = parse_qs(parsed.query).get("uddg", [None])[0]
+            href = str(target or "").strip()
+            parsed = urlparse(href)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return None
+        return href
+
+    def _flush(self) -> None:
+        if not self.current:
+            return
+        url = self._target_url(self.current.get("href", ""))
+        title = " ".join(self.current.get("title", "").split())
+        snippet = " ".join(self.current.get("snippet", "").split())
+        if url and title and len(self.results) < 8:
+            self.results.append({"url": url, "title": title[:300], "snippet": snippet[:700]})
+        self.current = None
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag != "a":
+            return
+        values = dict(attrs)
+        classes = set(str(values.get("class") or "").split())
+        if "result__a" in classes:
+            self._flush()
+            self.current = {"href": str(values.get("href") or ""), "title": "", "snippet": ""}
+            self.capture = "title"
+            self.buffer = []
+        elif "result__snippet" in classes and self.current is not None:
+            self.capture = "snippet"
+            self.buffer = []
+
+    def handle_data(self, data: str) -> None:
+        if self.capture is not None:
+            self.buffer.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "a" or self.capture is None or self.current is None:
+            return
+        self.current[self.capture] = " ".join("".join(self.buffer).split())
+        finished = self.capture == "snippet"
+        self.capture = None
+        self.buffer = []
+        if finished:
+            self._flush()
+
+    def finish(self) -> list[dict[str, str]]:
+        self._flush()
+        return list(self.results)
+
+
 class GeminiClient:
     WEB_SEARCH_SCHEMA = {
         "type": "object",
@@ -158,6 +226,7 @@ class GeminiClient:
 
     def __init__(self, settings: Settings, store: Store | None = None):
         self.settings = settings
+        self.search_http: httpx.AsyncClient | None = None
         shared_store = store or Store(settings.data_dir / "street-story.sqlite3")
         policy = GeminiPolicy(
             call_timeout=settings.gemini_call_timeout_seconds,
@@ -292,6 +361,73 @@ class GeminiClient:
             raise GeminiUnavailable(min(retry_at), "all_transcription_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
+    async def _public_web_search(self, query: str) -> GroundedResearch:
+        """Emergency independent web discovery after Google-grounding exhaustion.
+
+        The result snippets are discovery evidence, not model-generated facts. They
+        are deliberately low-confidence and keep their original source URLs.
+        """
+        own = self.search_http is None
+        client = self.search_http or httpx.AsyncClient(
+            timeout=8,
+            follow_redirects=False,
+            headers={"User-Agent": "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"},
+        )
+        try:
+            response = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query[:1000]},
+                headers={"Accept": "text/html,application/xhtml+xml"},
+            )
+            response.raise_for_status()
+            text = response.text
+            if len(text.encode("utf-8")) > 1_500_000:
+                raise RetryableProviderError("public_web_search_response_too_large")
+            parser = _DuckDuckGoResultParser()
+            parser.feed(text)
+            results = parser.finish()
+            if not results:
+                raise RetryableProviderError("public_web_search_empty")
+
+            facts = [
+                {
+                    "text": item["snippet"],
+                    "confidence": 0.4,
+                    "source_urls": [item["url"]],
+                }
+                for item in results
+                if item["snippet"]
+            ]
+            sources = [
+                {"type": "web_search", "title": item["title"], "url": item["url"]}
+                for item in results
+            ]
+            summary_lines = [
+                f"{index}. {item['title']}: {item['snippet']}"
+                for index, item in enumerate(results[:6], start=1)
+                if item["snippet"]
+            ]
+            return GroundedResearch(
+                payload={
+                    "summary": (
+                        "Google Search grounding сейчас недоступен. Ниже поисковые сниппеты "
+                        "из независимой веб-выдачи; используй их как источник для проверки, "
+                        "а не как автоматически доказанные утверждения.\n"
+                        + "\n".join(summary_lines)
+                    )[:6000],
+                    "facts": facts,
+                    "search_provider": "duckduckgo_html_fallback",
+                },
+                grounding_sources=sources,
+            )
+        except RetryableProviderError:
+            raise
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
+            raise RetryableProviderError(f"public_web_search_unavailable:{type(exc).__name__}") from exc
+        finally:
+            if own:
+                await client.aclose()
+
     async def search_web(
         self,
         query: str,
@@ -380,9 +516,12 @@ class GeminiClient:
                 if str(exc) == "gemini:unsupported_model":
                     continue
                 raise
-        if retry_at:
-            raise GeminiUnavailable(min(retry_at), "all_web_search_models_unavailable")
-        raise PermanentProviderError("gemini:unsupported_model")
+        try:
+            return await self._public_web_search(query)
+        except RetryableProviderError:
+            if retry_at:
+                raise GeminiUnavailable(min(retry_at), "all_web_search_models_and_public_search_unavailable")
+            raise
 
 
     async def research(
