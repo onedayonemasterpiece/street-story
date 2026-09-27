@@ -493,6 +493,14 @@ def run(
         if health.get("ok") is not True or str(health.get("source_sha") or "") != expected_sha:
             raise ProductSmokeError("public_source_sha_mismatch")
 
+        publication_test_destination: str | None = None
+        if execute_publication:
+            publication_test_destination = telegram_destination(
+                client,
+                requested=publication_destination,
+                require_test=True,
+            )
+
         tag = uuid.uuid4().hex[:12]
         created = _json(
             client.post(
@@ -585,11 +593,7 @@ def run(
             ready, cursor = wait_visual(client, story_id, session_id, cursor)
             visual_receipt = validate_visual(client, ready, draft)
 
-            destination = telegram_destination(
-                client,
-                requested=publication_destination,
-                require_test=execute_publication,
-            )
+            destination = publication_test_destination or telegram_destination(client)
             scheduled_for = (
                 datetime.now(timezone.utc) + timedelta(hours=25)
             ).replace(second=0, microsecond=0).isoformat()
