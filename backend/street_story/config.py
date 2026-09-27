@@ -136,7 +136,7 @@ class Settings:
             gemini_key_refs=tuple(refs),
             gemini_quota_supabase_url=quota_url,
             gemini_quota_supabase_key=quota_key,
-            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.8-flash'),
+            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
             gemini_fallback_model=os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
