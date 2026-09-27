@@ -18,7 +18,7 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     svc, adapter, session, _events = make_service(tmp_path)
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
     configuration = initialized["configuration"]
-    assert configuration["search_enabled"] is False
+    assert configuration["search_enabled"] is True
     assert configuration["application_search_function"] == "search_web"
     assert any(item["name"] == "search_web" for item in configuration["functions"])
 

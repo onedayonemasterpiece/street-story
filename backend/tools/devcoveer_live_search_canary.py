@@ -80,11 +80,28 @@ def _json(response: httpx.Response, *, code: str) -> dict[str, Any]:
     return payload
 
 
+def _https_urls(value: Any) -> list[str]:
+    found: list[str] = []
+    def visit(item: Any) -> None:
+        if isinstance(item, str):
+            if item.startswith("https://") and item not in found:
+                found.append(item)
+        elif isinstance(item, dict):
+            for nested in item.values():
+                visit(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                visit(nested)
+    visit(value)
+    return found[:40]
+
+
 def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
     ready = False
     fallback = False
     errors: list[str] = []
     search_results: list[dict[str, Any]] = []
+    native_grounding_urls: list[str] = []
     post_search_output = False
     post_search_turn_complete = False
     search_seen = False
@@ -100,22 +117,34 @@ def summarize(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif kind == "error":
             errors.append(str(event.get("code") or "provider_error"))
         elif kind == "tool_result" and event.get("name") == "search_web":
-            search_seen = True
             search_results.append({
                 "status": event.get("status"),
                 "code": event.get("code"),
             })
+            if event.get("status") == "ok":
+                search_seen = True
+        elif kind == "grounding":
+            urls = _https_urls(event.get("metadata"))
+            if urls:
+                native_grounding_urls.extend(url for url in urls if url not in native_grounding_urls)
+                search_seen = True
         elif search_seen and kind == "output_transcript" and str(event.get("text") or "").strip():
             post_search_output = True
         elif search_seen and kind == "turn_complete":
             post_search_turn_complete = True
 
+    app_search_ok = any(item.get("status") == "ok" for item in search_results)
+    native_search_ok = bool(native_grounding_urls)
     return {
         "ready": ready,
         "resource_fallback": fallback,
         "errors": errors[:4],
         "search_results": search_results[-4:],
-        "search_ok": any(item.get("status") == "ok" for item in search_results),
+        "app_search_ok": app_search_ok,
+        "native_search_ok": native_search_ok,
+        "native_grounding_url_count": len(native_grounding_urls),
+        "native_grounding_urls": native_grounding_urls[:12],
+        "search_ok": app_search_ok or native_search_ok,
         "post_search_output": post_search_output,
         "post_search_turn_complete": post_search_turn_complete,
         "event_types": sorted({
@@ -141,7 +170,7 @@ def validate_summary(summary: dict[str, Any]) -> None:
         raise CanaryError("live_turn_incomplete_after_search")
 
 
-def validate_story(story: dict[str, Any]) -> dict[str, Any]:
+def validate_story(story: dict[str, Any], *, native_search_ok: bool = False) -> dict[str, Any]:
     facts = story.get("facts") if isinstance(story.get("facts"), list) else []
     supported = [
         fact for fact in facts
@@ -153,7 +182,7 @@ def validate_story(story: dict[str, Any]) -> dict[str, Any]:
             for source in fact["sources"]
         )
     ]
-    if not supported:
+    if not supported and not native_search_ok:
         raise CanaryError("grounded_fact_missing")
     if str(story.get("state") or "") == "researching":
         raise CanaryError("legacy_research_job_used")
@@ -164,6 +193,7 @@ def validate_story(story: dict[str, Any]) -> dict[str, Any]:
         "supported_fact_count": len(supported),
         "source_count": int(story.get("source_count") or 0),
         "state": story.get("state"),
+        "native_search_used": native_search_ok,
     }
 
 
@@ -239,7 +269,8 @@ def run(expected_sha: str) -> dict[str, Any]:
                     json={
                         "text": (
                             "Найди в интернете один-два проверяемых факта о Бранденбургских воротах "
-                            "в Калининграде. Обязательно используй доступный инструмент search_web. "
+                            "в Калининграде. Сначала используй search_web; если он вернёт ошибку квоты/недоступности, "
+                            "обязательно продолжи встроенным Google Search этой же Live-сессии. "
                             "После результата кратко скажи, что удалось подтвердить. "
                             "Не редактируй текст публикации и не запускай визуал."
                         )
@@ -270,7 +301,7 @@ def run(expected_sha: str) -> dict[str, Any]:
             summary = summarize(events)
             validate_summary(summary)
             story = _json(client.get(f"/v1/stories/{story_id}"), code="story_readback")
-            story_evidence = validate_story(story)
+            story_evidence = validate_story(story, native_search_ok=bool(summary["native_search_ok"]))
 
             stop = _json(client.post(f"/v1/stories/{story_id}/live-sessions/{session_id}/stop"), code="live_stop")
             stopped = stop.get("ok") is True

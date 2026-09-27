@@ -183,7 +183,7 @@ SYSTEM_INSTRUCTION = """
 
 Правила:
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
-- факты не выдумывать. Интернет-поиск делать только через search_web и только когда пользователю действительно нужны внешние сведения;\n- search_web — это инструмент этой же Live-сессии: после его результата продолжай тот же разговор, не отправляй пользователя ждать отдельную обработку;
+- факты не выдумывать. Когда нужны внешние сведения, сначала используй search_web; если он вернул ошибку недоступности/квоты, используй provider-native Google Search этой же Live-сессии;\n- после любого поискового результата продолжай тот же разговор, не отправляй пользователя ждать отдельную обработку;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
 - не повторяй mutation после неизвестного результата; сначала прочитай состояние;
@@ -220,7 +220,7 @@ class StreetStoryLiveAdapter:
                 "context_instruction": "Authoritative current topic snapshot; product functions supersede this snapshot when state changes: ",
                 "functions": FUNCTIONS,
                 "voice": "Aoede",
-                "search_enabled": False,
+                "search_enabled": True,
                 "application_search_function": "search_web",
             },
             "response": {
