@@ -396,10 +396,41 @@ async def test_rejected_claim_stays_rejected_after_rephrased_refinement(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_mvp_capabilities_expose_only_supported_telegram(tmp_path):
+async def test_mvp_capabilities_keep_reviewable_telegram_visible(tmp_path):
+    class ReviewableTelegramVP(NoopVP):
+        async def bootstrap(self):
+            payload = await super().bootstrap()
+            payload["destinations"].append(
+                {
+                    "alias": "tg-review",
+                    "kind": "destination",
+                    "label": "Street Story E2E safe Telegram",
+                    "provider": "telegram",
+                }
+            )
+            payload["capabilities"].append(
+                {
+                    "destination": "tg-review",
+                    "operation": "publish",
+                    "surface": "post",
+                    "provider": "telegram",
+                    "status": "needs_review",
+                }
+            )
+            return payload
+
     svc, _, _ = service(tmp_path)
+    svc.providers.vibepublish = ReviewableTelegramVP()
     capabilities = await svc.capabilities()
-    assert [item["alias"] for item in capabilities["destinations"]] == ["tg-safe"]
+    assert [item["alias"] for item in capabilities["destinations"]] == [
+        "tg-safe",
+        "tg-review",
+    ]
+    assert [item["status"] for item in capabilities["destinations"]] == [
+        "supported",
+        "needs_review",
+    ]
+    assert all(item["selected"] is True for item in capabilities["destinations"])
     assert capabilities["mvp_providers"] == {
         "telegram": "active",
         "vk": "deferred",

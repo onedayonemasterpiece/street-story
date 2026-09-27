@@ -770,7 +770,8 @@ class MvpResearchMixin:
         telegram = [
             item
             for item in result.get("destinations", [])
-            if item.get("provider") == "telegram" and item.get("status") == "supported"
+            if item.get("provider") == "telegram"
+            and item.get("status") in {"supported", "needs_review"}
         ]
         for item in telegram:
             item["selected"] = True
