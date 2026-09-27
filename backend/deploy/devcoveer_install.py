@@ -52,8 +52,8 @@ HOST_ENV = Path("/home/dev/.env")
 VIBE_SOURCE = Path("/home/dev/projects/vibepublish")
 VIBE_PY = Path("/home/dev/.local/opt/vibepublish/bin/python")
 BRIDGE_PYTHON = Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python")
-AI_RESOURCE_CONTROL_VERSION = "0.1.3"
-AI_RESOURCE_CONTROL_RELEASE_SHA = "114e8effba549a219585b1821c179921b1ee6671"
+AI_RESOURCE_CONTROL_VERSION = "0.1.4"
+AI_RESOURCE_CONTROL_RELEASE_SHA = "9e69edb1685e46893f98108b7bd6d5ef44ccf315"
 AI_RESOURCE_CONTROL_REPO = Path("/home/dev/projects/ai-resource-control")
 VIBE_DB = Path("/home/dev/.local/state/vibepublish/vibepublish.sqlite3")
 VIBE_OWNER_TOKEN_FILE = Path("/home/dev/.local/state/vibepublish/owner-token.txt")
@@ -319,13 +319,18 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
     repo = AI_RESOURCE_CONTROL_REPO
     if not (repo / ".git").is_dir():
         raise DeployError("private ai-resource-control checkout is unavailable")
-    run(["git", "-C", str(repo), "fetch", "origin", "--tags"], timeout=180)
-    tag = f"v{AI_RESOURCE_CONTROL_VERSION}"
-    tag_sha = run(["git", "-C", str(repo), "rev-list", "-n1", tag], timeout=30).strip()
-    if not tag_sha or tag_sha != AI_RESOURCE_CONTROL_RELEASE_SHA:
-        raise DeployError(
-            f"ai-resource-control {tag} does not match pinned release SHA"
-        )
+    run(["git", "-C", str(repo), "fetch", "--no-tags", "origin", "main"], timeout=180)
+    run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "cat-file",
+            "-e",
+            f"{AI_RESOURCE_CONTROL_RELEASE_SHA}^{commit}",
+        ],
+        timeout=30,
+    )
 
     stage = Path(tempfile.mkdtemp(prefix=".street-story-ai-resource-"))
     try:
@@ -335,7 +340,7 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
         wheels = stage / "wheels"
         wheels.mkdir(mode=0o700)
         run(
-            ["git", "-C", str(repo), "archive", "--format=tar", "-o", str(archive), tag],
+            ["git", "-C", str(repo), "archive", "--format=tar", "-o", str(archive), AI_RESOURCE_CONTROL_RELEASE_SHA],
             timeout=120,
         )
         run(["tar", "-xf", str(archive), "-C", str(source)], timeout=120)
@@ -515,6 +520,8 @@ def configure_provider_env() -> None:
             "GEMINI_QUOTA_SUPABASE_KEY": quota_key,
             "GOOGLE_AI_LIMITER_SUPABASE_URL": quota_url.rstrip("/"),
             "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": quota_key,
+            "AI_RESOURCE_CONTROL_URL": quota_url.rstrip("/"),
+            "AI_RESOURCE_CONTROL_SERVICE_KEY": quota_key,
             "AI_RESOURCE_KEY_ENVS": ",".join(refs),
         }
     )
@@ -526,27 +533,62 @@ def configure_provider_env() -> None:
 
 def verify_live_resource_control(venv: Path) -> dict[str, Any]:
     provider_env = parse_dotenv(PROVIDERS_ENV)
+    control_url = (
+        provider_env.get("AI_RESOURCE_CONTROL_URL", "").strip()
+        or provider_env.get("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip()
+    )
+    control_key = (
+        provider_env.get("AI_RESOURCE_CONTROL_SERVICE_KEY", "").strip()
+        or provider_env.get("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip()
+    )
+    resource_env = {
+        "AI_RESOURCE_CONTROL_URL": control_url,
+        "AI_RESOURCE_CONTROL_SERVICE_KEY": control_key,
+    }
+    expected_ledger = provider_env.get("AI_RESOURCE_LEDGER_ID", "").strip()
+    if expected_ledger:
+        resource_env["AI_RESOURCE_LEDGER_ID"] = expected_ledger
     env = {
         "HOME": str(Path.home()),
         "PATH": os.environ.get("PATH", ""),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "PYTHONUNBUFFERED": "1",
-        **provider_env,
+        **resource_env,
     }
     program = """
 import asyncio
 import json
+import os
 from ai_resource_control import Config, Control
 
 async def main():
     control = Control(Config.from_env("street-story"))
     try:
-        capabilities, _ = await control.rpc("capabilities", {})
-        candidates = await control.candidates()
+        capabilities = await control.capabilities()
+        rows = await control.request(
+            "GET",
+            "google_ai_api_keys",
+            params={
+                "select": "id,quota_scope,is_active",
+                "provider": "eq.google",
+                "is_active": "eq.true",
+                "limit": "1001",
+            },
+        )
+        if not isinstance(rows, list) or len(rows) >= 1001:
+            raise RuntimeError("invalid server registry")
         print(json.dumps({
             "contract": capabilities.get("contract"),
             "ledger_id": capabilities.get("ledger_id"),
-            "candidate_count": len(candidates),
+            "candidate_count": len(rows),
+            "acquire": capabilities.get("acquire"),
+            "key_material": capabilities.get("key_material"),
+            "key_delivery": capabilities.get("key_delivery"),
+            "retention": capabilities.get("retention"),
+            "local_provider_aliases": len([
+                name for name in os.environ
+                if name == "GOOGLE_API_KEY" or name.startswith("GOOGLE_API_KEY")
+            ]),
         }, separators=(",", ":")))
     finally:
         await control.close()
@@ -565,15 +607,24 @@ asyncio.run(main())
         or not result["ledger_id"]
         or not isinstance(result.get("candidate_count"), int)
         or result["candidate_count"] < 1
+        or result.get("acquire") != "server_registry_v2"
+        or result.get("key_material") != "supabase_vault_canonical_v1"
+        or result.get("key_delivery") != "lease_wrapped_aes256_etm_v1"
+        or result.get("retention") != "live_only_27h_lazy_compaction_v1"
+        or result.get("local_provider_aliases") != 0
     ):
         raise DeployError("shared Live resource preflight failed")
-    expected_ledger = provider_env.get("AI_RESOURCE_LEDGER_ID", "").strip()
     if expected_ledger and result["ledger_id"] != expected_ledger:
         raise DeployError("shared Live resource ledger mismatch")
     return {
         "contract": result["contract"],
         "ledger_id": result["ledger_id"],
         "candidate_count": result["candidate_count"],
+        "acquire": result["acquire"],
+        "key_material": result["key_material"],
+        "key_delivery": result["key_delivery"],
+        "retention": result["retention"],
+        "local_provider_aliases": 0,
     }
 
 
