@@ -416,7 +416,6 @@ def run(expected_sha: str, *, execute_publication: bool = False) -> dict[str, An
     stopped = False
     publication_scheduled = False
     cancel_confirmed = False
-    cleanup_confirmed = False
 
     with httpx.Client(
         base_url=BASE_URL,
@@ -683,7 +682,6 @@ def run(expected_sha: str, *, execute_publication: bool = False) -> dict[str, An
                             else {}
                         )
                         if cleanup_publication.get("state") == "cancelled":
-                            cleanup_confirmed = True
                             break
                         time.sleep(2.0)
                 except Exception:
