@@ -12,5 +12,6 @@
   "latitude": 54.697111,
   "longitude": 20.494111,
   "taken_at": "2017-05-09T09:14:16",
-  "expected_object": "Brandenburg Gate, Kaliningrad"
+  "expected_object": "Brandenburg Gate, Kaliningrad",
+  "source_sha256": "41fcd3265af05975fe50fee6788a504000df15cad8b7819ffcc0973adb01503a"
 }

@@ -131,7 +131,7 @@ Street Story uses the actual supported HTTP boundary:
 1. reads the private source photo and submits `POST /v1/assets` using a stable key derived from story/photo identity;
 2. verifies returned `source_sha256` against Street Story's source hash;
 3. replays the same ingress key on recovery; the runtime acceptance boundary verifies same-key replay returns the same immutable asset identity;
-4. submits a real `tune` visual command referencing only the VibePublish asset ID;
+4. submits a real `tune` visual command referencing only the VibePublish asset ID; the versioned owner prompt remains exact, while dynamic city-note context is bounded so the `brief` never exceeds VibePublish's 5000-character input contract;
 5. reconciles the operation until a candidate is available;
 6. uses VibePublish's official `select` command (`job_id`, `candidate_id`, `expected_revision`, selection token) with a stable key;
 7. requires `verified`, `selected_asset_ref`, `selected_sha256`;

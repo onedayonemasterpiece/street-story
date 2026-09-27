@@ -21,6 +21,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
     PROMPT_VERSION = "street-story-image-v1"
     PROMPT_TOKEN = "{{CITY_NOTE_THEMES}}"
+    VIBEPUBLISH_BRIEF_LIMIT = 5000
 
     def _prompt_template(self) -> tuple[str, str]:
         path = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v1.txt"
@@ -44,9 +45,6 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         place = str(story.get("place_name") or context.get("place_name") or "").strip()
         if place:
             notes.append(f"Место: {place}.")
-        intent = str(context.get("user_voice_intent") or "").strip()
-        if intent:
-            notes.append("Авторское наблюдение: " + intent[:600])
         visual_instruction = str(context.get("visual_instruction") or "").strip()
         if visual_instruction:
             notes.append("Текущая визуальная правка автора: " + visual_instruction[:600])
@@ -59,16 +57,37 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             notes.append(
                 "Проверенные факты: " + " ".join(f"• {fact[:240]}" for fact in facts[:6])
             )
+        intent = str(context.get("user_voice_intent") or "").strip()
+        if intent:
+            notes.append("Авторское наблюдение: " + intent[:600])
         if not notes:
             notes.append(
                 "Передай атмосферу и узнаваемую городскую среду без выдуманных исторических утверждений."
             )
+
         themes = "\n".join(notes)
-        brief = template.replace(self.PROMPT_TOKEN, themes)
+        language_rule = ""
         if re.search(r"[А-Яа-яЁё]", themes):
-            brief += (
+            language_rule = (
                 "\n\nLanguage rule: all visible handwritten city notes and annotations in the "
                 "generated image must be in Russian. Keep them concise and legible."
+            )
+
+        base = template.replace(self.PROMPT_TOKEN, "")
+        dynamic_budget = self.VIBEPUBLISH_BRIEF_LIMIT - len(base) - len(language_rule)
+        if dynamic_budget <= 0:
+            raise InvalidStateError(
+                "visual_prompt_too_long",
+                "Street Story owner image prompt exceeds the VibePublish brief contract",
+            )
+        if len(themes) > dynamic_budget:
+            themes = themes[:dynamic_budget].rstrip()
+
+        brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule
+        if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
+            raise InvalidStateError(
+                "visual_prompt_too_long",
+                "Street Story visual prompt exceeds the VibePublish brief contract",
             )
         return brief
 

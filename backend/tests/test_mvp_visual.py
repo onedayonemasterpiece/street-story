@@ -45,6 +45,7 @@ class RecoverableVisualVibePublish:
 
     async def visual(self, payload: dict, request_key: str):
         assert payload["command"]["kind"] == "tune"
+        assert len(payload["command"]["brief"]) <= 5000
         self.tune_calls += 1
         return {"operation_id": "visual-op", "state": "accepted", "visual_job_id": "job-1"}
 
@@ -121,6 +122,31 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     assert "Проверенный факт" in brief
     assert "all visible handwritten city notes and annotations" in brief
     assert "without adding text" not in brief
+    assert len(brief) <= 5000
+
+
+def test_visual_brief_bounds_dynamic_context_and_keeps_current_edit(tmp_path):
+    svc = service(tmp_path)
+    brief = svc._visual_brief(
+        {"place_name": "Калининград"},
+        {
+            "visual_instruction": "Сделай акцент на фасаде и вечернем свете. " * 30,
+            "selected_facts": [
+                {
+                    "fact_id": f"f{index}",
+                    "text": "Проверенный исторический факт с источником. " * 20,
+                    "sources": [],
+                }
+                for index in range(6)
+            ],
+            "user_voice_intent": "Длинное авторское наблюдение о месте. " * 100,
+        },
+    )
+
+    assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+    assert "Текущая визуальная правка автора:" in brief
+    assert "Калининград" in brief
+    assert "{{CITY_NOTE_THEMES}}" not in brief
 
 
 def test_visual_request_freezes_content_snapshot(tmp_path):
