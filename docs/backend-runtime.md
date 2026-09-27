@@ -29,7 +29,7 @@ Required values:
 - `DATA_DIR=/var/lib/street-story`
 
 Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
-`ai-resource-control v0.1.2` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
+`ai-resource-control v0.1.3` lease SDK plus public `live-interaction v0.1.4`. The installer builds the private
 controller wheel from its exact version tag and never vendors that private source into this public repository.
 
 Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
