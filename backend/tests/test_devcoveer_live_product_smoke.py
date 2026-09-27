@@ -31,6 +31,32 @@ class EventClient:
         )
 
 
+class CapabilitiesClient:
+    def __init__(self, destinations):
+        self.destinations = destinations
+
+    def get(self, path, params=None):
+        assert path == "/v1/capabilities"
+        request = httpx.Request("GET", "https://street-story.example" + path)
+        return httpx.Response(
+            200,
+            json={"destinations": self.destinations},
+            request=request,
+        )
+
+
+def test_telegram_destination_keeps_reviewable_configured_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([
+        {
+            "alias": "lovekenig_tg",
+            "provider": "telegram",
+            "status": "needs_review",
+        }
+    ])
+    assert module.telegram_destination(client) == "lovekenig_tg"
+
+
 def test_supported_fact_ids_require_https_evidence() -> None:
     module = load_module()
     ids = module.supported_fact_ids({
