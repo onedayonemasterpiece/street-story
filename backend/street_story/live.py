@@ -902,20 +902,25 @@ class StreetStoryLiveAdapter:
 
 
 def _live_resource_environment(settings: Settings) -> dict[str, str]:
-    raw_refs = os.getenv("AI_RESOURCE_KEY_ENVS", "").strip()
-    refs = [item.strip() for item in raw_refs.split(",") if item.strip()] if raw_refs else list(settings.gemini_key_refs)
+    del settings
+    url = (
+        os.getenv("AI_RESOURCE_CONTROL_URL", "").strip()
+        or os.getenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip()
+    )
+    service_key = (
+        os.getenv("AI_RESOURCE_CONTROL_SERVICE_KEY", "").strip()
+        or os.getenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip()
+    )
     environment: dict[str, str] = {
-        "GOOGLE_AI_LIMITER_SUPABASE_URL": os.getenv("GOOGLE_AI_LIMITER_SUPABASE_URL", "").strip(),
-        "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY": os.getenv("GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY", "").strip(),
-        "AI_RESOURCE_KEY_ENVS": ",".join(refs),
+        "AI_RESOURCE_CONTROL_URL": url,
+        "AI_RESOURCE_CONTROL_SERVICE_KEY": service_key,
     }
     ledger_id = os.getenv("AI_RESOURCE_LEDGER_ID", "").strip()
     if ledger_id:
         environment["AI_RESOURCE_LEDGER_ID"] = ledger_id
-    for name in refs:
-        value = os.getenv(name, "").strip()
-        if value:
-            environment[name] = value
+    fallback_key = os.getenv("GOOGLE_API_KEY3", "").strip()
+    if fallback_key:
+        environment["AI_RESOURCE_CONTROL_FALLBACK_KEY"] = fallback_key
     return environment
 
 

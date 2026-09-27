@@ -323,6 +323,8 @@ def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None
         in content
     )
     assert "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=limiter-key" in content
+    assert f"AI_RESOURCE_CONTROL_URL={module.CANONICAL_GOOGLE_AI_LIMITER_URL}" in content
+    assert "AI_RESOURCE_CONTROL_SERVICE_KEY=limiter-key" in content
     assert "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY,GOOGLE_API_KEY2" in content
     assert "AI_RESOURCE_LEDGER_ID=ledger-fixture" in content
     assert f"GEMINI_QUOTA_SUPABASE_URL={module.CANONICAL_GOOGLE_AI_LIMITER_URL}" in content
@@ -331,19 +333,19 @@ def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None
 
 def test_private_resource_release_is_pinned() -> None:
     module = _load_installer()
-    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.3"
-    assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "114e8effba549a219585b1821c179921b1ee6671"
+    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.5"
+    assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "f2ca21d2b239fde1c8055dc8ad776efdcc94449a"
     assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
 
 
-def test_live_resource_preflight_is_read_only_and_bounded(monkeypatch, tmp_path) -> None:
+def test_live_resource_preflight_is_read_only_and_central(monkeypatch, tmp_path) -> None:
     module = _load_installer()
     providers = tmp_path / "providers.env"
     providers.write_text(
         "\n".join(
             [
-                "GOOGLE_AI_LIMITER_SUPABASE_URL=https://limiter.example",
-                "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=fixture-key",
+                "AI_RESOURCE_CONTROL_URL=https://limiter.example",
+                "AI_RESOURCE_CONTROL_SERVICE_KEY=fixture-key",
                 "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY,GOOGLE_API_KEY2",
                 "GOOGLE_API_KEY=fixture-one",
                 "GOOGLE_API_KEY2=fixture-two",
@@ -359,7 +361,14 @@ def test_live_resource_preflight_is_read_only_and_bounded(monkeypatch, tmp_path)
     def fake_run(argv, **kwargs):
         seen["argv"] = argv
         seen["env"] = kwargs["env"]
-        return '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":2}'
+        return (
+            '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture",'
+            '"candidate_count":6,"acquire":"server_registry_v2",'
+            '"key_material":"supabase_vault_canonical_v1",'
+            '"key_delivery":"lease_wrapped_aes256_etm_v1",'
+            '"retention":"live_only_27h_lazy_compaction_v1",'
+            '"local_provider_aliases":0}'
+        )
 
     monkeypatch.setattr(module, "run", fake_run)
 
@@ -368,20 +377,48 @@ def test_live_resource_preflight_is_read_only_and_bounded(monkeypatch, tmp_path)
     assert result == {
         "contract": "ai_resource_leases_v1",
         "ledger_id": "ledger-fixture",
-        "candidate_count": 2,
+        "candidate_count": 6,
+        "acquire": "server_registry_v2",
+        "key_material": "supabase_vault_canonical_v1",
+        "key_delivery": "lease_wrapped_aes256_etm_v1",
+        "retention": "live_only_27h_lazy_compaction_v1",
+        "local_provider_aliases": 0,
     }
     assert seen["argv"][:2] == [str(tmp_path / "venv/bin/python"), "-c"]
     assert "acquire(" not in seen["argv"][2]
-    assert seen["env"]["AI_RESOURCE_KEY_ENVS"] == "GOOGLE_API_KEY,GOOGLE_API_KEY2"
+    assert seen["env"]["AI_RESOURCE_CONTROL_URL"] == "https://limiter.example"
+    assert seen["env"]["AI_RESOURCE_CONTROL_SERVICE_KEY"] == "fixture-key"
+    assert seen["env"]["AI_RESOURCE_LEDGER_ID"] == "ledger-fixture"
+    assert not any(name.startswith("GOOGLE_API_KEY") for name in seen["env"])
 
 
 @pytest.mark.parametrize(
     "payload",
     [
-        '{"contract":"wrong","ledger_id":"ledger-fixture","candidate_count":2}',
-        '{"contract":"ai_resource_leases_v1","ledger_id":"","candidate_count":2}',
-        '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":0}',
-        '{"contract":"ai_resource_leases_v1","ledger_id":"other-ledger","candidate_count":2}',
+        '{"contract":"wrong","ledger_id":"ledger-fixture","candidate_count":6,'
+        '"acquire":"server_registry_v2","key_material":"supabase_vault_canonical_v1",'
+        '"key_delivery":"lease_wrapped_aes256_etm_v1","retention":"live_only_27h_lazy_compaction_v1",'
+        '"local_provider_aliases":0}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"","candidate_count":6,'
+        '"acquire":"server_registry_v2","key_material":"supabase_vault_canonical_v1",'
+        '"key_delivery":"lease_wrapped_aes256_etm_v1","retention":"live_only_27h_lazy_compaction_v1",'
+        '"local_provider_aliases":0}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":0,'
+        '"acquire":"server_registry_v2","key_material":"supabase_vault_canonical_v1",'
+        '"key_delivery":"lease_wrapped_aes256_etm_v1","retention":"live_only_27h_lazy_compaction_v1",'
+        '"local_provider_aliases":0}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":6,'
+        '"acquire":"legacy","key_material":"supabase_vault_canonical_v1",'
+        '"key_delivery":"lease_wrapped_aes256_etm_v1","retention":"live_only_27h_lazy_compaction_v1",'
+        '"local_provider_aliases":0}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"ledger-fixture","candidate_count":6,'
+        '"acquire":"server_registry_v2","key_material":"supabase_vault_canonical_v1",'
+        '"key_delivery":"lease_wrapped_aes256_etm_v1","retention":"live_only_27h_lazy_compaction_v1",'
+        '"local_provider_aliases":1}',
+        '{"contract":"ai_resource_leases_v1","ledger_id":"other-ledger","candidate_count":6,'
+        '"acquire":"server_registry_v2","key_material":"supabase_vault_canonical_v1",'
+        '"key_delivery":"lease_wrapped_aes256_etm_v1","retention":"live_only_27h_lazy_compaction_v1",'
+        '"local_provider_aliases":0}',
     ],
 )
 def test_live_resource_preflight_fails_closed(monkeypatch, tmp_path, payload) -> None:
@@ -390,10 +427,8 @@ def test_live_resource_preflight_fails_closed(monkeypatch, tmp_path, payload) ->
     providers.write_text(
         "\n".join(
             [
-                "GOOGLE_AI_LIMITER_SUPABASE_URL=https://limiter.example",
-                "GOOGLE_AI_LIMITER_SUPABASE_SERVICE_KEY=fixture-key",
-                "AI_RESOURCE_KEY_ENVS=GOOGLE_API_KEY",
-                "GOOGLE_API_KEY=fixture-one",
+                "AI_RESOURCE_CONTROL_URL=https://limiter.example",
+                "AI_RESOURCE_CONTROL_SERVICE_KEY=fixture-key",
                 "AI_RESOURCE_LEDGER_ID=ledger-fixture",
                 "",
             ]

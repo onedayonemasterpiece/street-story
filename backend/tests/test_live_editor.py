@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -177,6 +178,9 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
             "INSERT OR IGNORE INTO live_editor_state(story_id,text_revision,literal_json,history_json,updated_at) VALUES(?,3,'[]','[]',?)",
             (story_id, svc.store.now()),
         )
+    scheduled_for = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds")
     prepared = await adapter.execute_tool(
         session,
         {
@@ -184,7 +188,7 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
             "id": "prepare-1",
             "args": {
                 "destinations": ["tg-safe"],
-                "scheduled_for": "2026-09-27T10:00:00+02:00",
+                "scheduled_for": scheduled_for,
                 "timezone": "Europe/Kaliningrad",
             },
         },
