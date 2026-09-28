@@ -241,6 +241,14 @@ jobs:
           )
           PY
 
+      - name: Enable KVM for Android live E2E
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+
       - name: Android client -> live backend -> native Telegram golden run
         if: >-
           (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
