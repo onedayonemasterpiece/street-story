@@ -901,7 +901,7 @@ def run() -> int:
             cancel_key = f"live-cancel-{run_tag}"[:128]
             publish_body = {
                 "destinations": [safe_alias],
-                "delay_minutes": 1440,
+                "delay_minutes": 1500,
                 "text_override": str(story.get("draft_text") or "")[:1024],
             }
             live.request(
@@ -938,7 +938,7 @@ def run() -> int:
                 destination_alias=safe_alias,
                 scheduled_for=scheduled.get("scheduled_for"),
                 provider_status=safe_rows[0].get("status"),
-                delay_minutes=1440,
+                delay_minutes=1500,
             )
 
             live.request(
