@@ -333,8 +333,8 @@ def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None
 
 def test_private_resource_release_is_pinned() -> None:
     module = _load_installer()
-    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.7"
-    assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "51e9c043ce40dfefea8b2cb4f4956019819bd9d4"
+    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.11"
+    assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "8f5a0dc9aed257515d2ed5dd71ba1dc866d8b1fe"
     assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
 
 
