@@ -14,6 +14,16 @@ from street_story.providers import GroundedResearch
 from street_story.service import ConflictError, ProviderBundle
 
 
+def test_live_interaction_is_pinned_to_manual_activity_release() -> None:
+    requirements = Path(__file__).resolve().parents[1] / "requirements.txt"
+    text = requirements.read_text(encoding="utf-8")
+    assert (
+        "live-interaction @ "
+        "https://github.com/onedayonemasterpiece/live-interaction/archive/"
+        "2758d52fa77e04b21978f5bef18ccb5d776049da.tar.gz"
+    ) in text
+
+
 def test_live_initialization_declares_application_search_function(tmp_path) -> None:
     svc, adapter, session, _events = make_service(tmp_path)
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
