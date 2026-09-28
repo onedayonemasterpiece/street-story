@@ -41,9 +41,10 @@ class LiveSessionController(context: Context) {
     private val network = Executors.newCachedThreadPool()
     private val sender = Executors.newSingleThreadExecutor()
     private val playback = Executors.newSingleThreadExecutor()
-    private val outbound = ArrayBlockingQueue<Outbound>(6)
+    private val outbound = ArrayBlockingQueue<Outbound>(8)
     private val batchLock = Any()
     private var batch = ByteArrayOutputStream(TARGET_PCM_BYTES + 1024)
+    private val speechBoundary = LiveSpeechBoundary()
     @Volatile private var state = LiveUiState()
     @Volatile private var serverStoryId: String? = null
     @Volatile private var sessionId: String? = null
@@ -79,7 +80,10 @@ class LiveSessionController(context: Context) {
                 serverStoryId = server
                 sessionId = started.sessionId
                 outbound.clear()
-                synchronized(batchLock) { batch.reset() }
+                synchronized(batchLock) {
+                    batch.reset()
+                    speechBoundary.reset()
+                }
                 update(LiveUiState(storyId = storyId, active = true, status = "Слушаю"))
                 startSender(gen, api, server, started.sessionId)
                 startPoller(gen, api, server, started.sessionId)
@@ -98,6 +102,13 @@ class LiveSessionController(context: Context) {
         val gen = generation.get()
         synchronized(batchLock) {
             if (generation.get() != gen || !state.active) return
+            if (speechBoundary.beforeAudio()) {
+                if (!outbound.offer(Outbound(OutboundKind.ACTIVITY_START, null, System.currentTimeMillis(), gen))) {
+                    speechBoundary.reset()
+                    fail(gen, "Live audio queue переполнена")
+                    return
+                }
+            }
             for (sample in samples) {
                 val v = sample.toInt()
                 batch.write(v and 0xff)
@@ -110,9 +121,13 @@ class LiveSessionController(context: Context) {
     fun endSpeech() {
         if (!state.active) return
         val gen = generation.get()
-        synchronized(batchLock) { flushBatchLocked(gen) }
-        if (!outbound.offer(Outbound(null, true, System.currentTimeMillis(), gen))) {
-            fail(gen, "Live audio queue переполнена")
+        synchronized(batchLock) {
+            flushBatchLocked(gen)
+            if (speechBoundary.end()) {
+                if (!outbound.offer(Outbound(OutboundKind.ACTIVITY_END, null, System.currentTimeMillis(), gen))) {
+                    fail(gen, "Live audio queue переполнена")
+                }
+            }
         }
     }
 
@@ -141,7 +156,10 @@ class LiveSessionController(context: Context) {
         serverStoryId = null
         sessionId = null
         outbound.clear()
-        synchronized(batchLock) { batch.reset() }
+        synchronized(batchLock) {
+            batch.reset()
+            speechBoundary.reset()
+        }
         stopPlayback()
         val oldStory = state.storyId
         update(LiveUiState(storyId = oldStory, status = "Микрофон выключен"))
@@ -158,7 +176,7 @@ class LiveSessionController(context: Context) {
         if (batch.size() == 0) return
         val bytes = batch.toByteArray()
         batch.reset()
-        if (!outbound.offer(Outbound(bytes, false, System.currentTimeMillis(), gen))) {
+        if (!outbound.offer(Outbound(OutboundKind.AUDIO, bytes, System.currentTimeMillis(), gen))) {
             fail(gen, "Live audio queue переполнена")
         }
     }
@@ -173,8 +191,15 @@ class LiveSessionController(context: Context) {
                     return@execute
                 }
                 try {
-                    if (item.end) api.endAudio(server, session)
-                    else api.inputAudio(server, session, Base64.encodeToString(requireNotNull(item.pcm), Base64.NO_WRAP))
+                    when (item.kind) {
+                        OutboundKind.ACTIVITY_START -> api.activityStart(server, session)
+                        OutboundKind.AUDIO -> api.inputAudio(
+                            server,
+                            session,
+                            Base64.encodeToString(requireNotNull(item.pcm), Base64.NO_WRAP),
+                        )
+                        OutboundKind.ACTIVITY_END -> api.activityEnd(server, session)
+                    }
                 } catch (exc: Exception) {
                     fail(gen, "Ошибка передачи Live: ${safeMessage(exc)}")
                     return@execute
@@ -305,7 +330,10 @@ class LiveSessionController(context: Context) {
         serverStoryId = null
         sessionId = null
         outbound.clear()
-        synchronized(batchLock) { batch.reset() }
+        synchronized(batchLock) {
+            batch.reset()
+            speechBoundary.reset()
+        }
         stopPlayback()
         update(LiveUiState(storyId = story, status = "Live недоступен", error = message))
         if (!server.isNullOrBlank() && !session.isNullOrBlank()) {
@@ -326,11 +354,38 @@ class LiveSessionController(context: Context) {
     private fun safeMessage(exc: Exception): String =
         (exc.message ?: exc::class.java.simpleName).replace(Regex("AIza[A-Za-z0-9_-]{20,}"), "[redacted]").take(240)
 
-    private data class Outbound(val pcm: ByteArray?, val end: Boolean, val queuedAtMs: Long, val generation: Int)
+    private enum class OutboundKind { ACTIVITY_START, AUDIO, ACTIVITY_END }
+
+    private data class Outbound(
+        val kind: OutboundKind,
+        val pcm: ByteArray?,
+        val queuedAtMs: Long,
+        val generation: Int,
+    )
 
     companion object {
         private const val TARGET_PCM_BYTES = 8_192
         private const val MAX_AUDIO_AGE_MS = 2_500L
         private const val POLL_MS = 160L
+    }
+}
+
+internal class LiveSpeechBoundary {
+    private var open = false
+
+    fun beforeAudio(): Boolean {
+        if (open) return false
+        open = true
+        return true
+    }
+
+    fun end(): Boolean {
+        if (!open) return false
+        open = false
+        return true
+    }
+
+    fun reset() {
+        open = false
     }
 }
