@@ -97,6 +97,19 @@ def test_execute_publication_requires_explicit_test_alias() -> None:
     )
 
 
+def test_execute_publication_accepts_hidden_internal_e2e_alias() -> None:
+    module = load_module()
+    client = CapabilitiesClient([])
+    assert (
+        module.telegram_destination(
+            client,
+            requested="street_story_e2e_20260928_tg",
+            require_test=True,
+        )
+        == "street_story_e2e_20260928_tg"
+    )
+
+
 def test_supported_fact_ids_require_https_evidence() -> None:
     module = load_module()
     ids = module.supported_fact_ids({

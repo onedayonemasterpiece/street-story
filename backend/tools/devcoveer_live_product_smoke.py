@@ -433,6 +433,14 @@ def telegram_destination(
     if require_test and not requested:
         raise ProductSmokeError("publication_destination_required")
 
+    # Internal acceptance aliases are intentionally hidden from the product
+    # capabilities projection. An explicitly supplied E2E alias is therefore
+    # validated by the normal prepare/confirm publication path, not by the UI list.
+    if requested and require_test and (
+        requested == "street_story_e2e_tg" or requested.startswith("street_story_e2e_")
+    ):
+        return requested
+
     if requested:
         matches = [row for row in candidates if row["alias"] == requested]
         if len(matches) != 1:
