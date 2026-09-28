@@ -73,11 +73,20 @@ internal class LiveApiClient(private val baseUrl: String, private val token: Str
             7_000,
         )
 
-    fun endAudio(serverStoryId: String, sessionId: String): LiveAckWire =
+    fun activityStart(serverStoryId: String, sessionId: String): LiveAckWire =
         request(
             "POST",
             "/v1/stories/${segment(serverStoryId)}/live-sessions/${segment(sessionId)}/input",
-            """{"audio_stream_end":true}""",
+            """{"activity_start":true}""",
+            LiveAckWire::class.java,
+            7_000,
+        )
+
+    fun activityEnd(serverStoryId: String, sessionId: String): LiveAckWire =
+        request(
+            "POST",
+            "/v1/stories/${segment(serverStoryId)}/live-sessions/${segment(sessionId)}/input",
+            """{"activity_end":true}""",
             LiveAckWire::class.java,
             7_000,
         )

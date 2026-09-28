@@ -222,6 +222,7 @@ class StreetStoryLiveAdapter:
                 "context_instruction": "Authoritative current topic snapshot; product functions supersede this snapshot when state changes: ",
                 "functions": FUNCTIONS,
                 "voice": "Aoede",
+                "manual_activity_detection": True,
                 "search_enabled": True,
                 "application_search_function": "search_web",
             },
