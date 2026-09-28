@@ -194,7 +194,7 @@ class LiveGoldenInstrumentedTest {
             )
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
-                .plusHours(24)
+                .plusHours(25)
                 .withSecond(0)
                 .withNano(0)
             live.sendText(
