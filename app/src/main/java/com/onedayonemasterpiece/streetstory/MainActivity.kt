@@ -54,6 +54,10 @@ class MainActivity : Activity() {
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
     private var receiverRegistered = false
+    private var pendingUpdate: UpdateInfo? = null
+    private var waitingForInstallPermission = false
+    private var updateCheckInFlight = false
+    private var updateDownloadInFlight = false
 
     private var topicTitleView: TextView? = null
     private var topicStatusView: TextView? = null
@@ -104,6 +108,8 @@ class MainActivity : Activity() {
         receiverRegistered = true
         live.addListener(liveListener)
         SyncScheduler.enqueue(this)
+        resumeUpdateAfterPermission()
+        maybeCheckForUpdate()
     }
 
     override fun onStop() {
@@ -272,7 +278,7 @@ class MainActivity : Activity() {
         column.addView(topicStatusView)
 
         previewImage = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
+            scaleType = ImageView.ScaleType.FIT_CENTER
             background = rounded(SAGE_DARK, 22)
             clipToOutline = true
             contentDescription = "publication-image"
@@ -665,11 +671,128 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun maybeCheckForUpdate() {
+        val now = System.currentTimeMillis()
+        val last = prefs.getLong("update_checked_at", 0L)
+        if (now - last < UPDATE_INTERVAL_MS) return
+        checkForUpdate(showUpToDate = false)
+    }
+
+    private fun checkForUpdate(showUpToDate: Boolean) {
+        if (updateCheckInFlight) return
+        updateCheckInFlight = true
+        prefs.edit().putLong("update_checked_at", System.currentTimeMillis()).apply()
+        AppUpdater.checkLatest(BuildConfig.VERSION_CODE) { result ->
+            runOnUiThread {
+                updateCheckInFlight = false
+                result.onSuccess { info ->
+                    if (info == null) {
+                        if (showUpToDate) {
+                            Toast.makeText(
+                                this,
+                                "Установлена актуальная версия ${BuildConfig.VERSION_NAME}",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("Есть новая версия")
+                            .setMessage(
+                                "Street Story ${info.versionName} готова. " +
+                                    "Обновление скачивается из официального GitHub Release проекта."
+                            )
+                            .setPositiveButton("Обновить") { _, _ -> beginUpdate(info) }
+                            .setNegativeButton("Позже", null)
+                            .show()
+                    }
+                }.onFailure { exc ->
+                    if (showUpToDate) {
+                        Toast.makeText(
+                            this,
+                            "Не удалось проверить обновление: ${exc.message ?: "ошибка сети"}",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun beginUpdate(info: UpdateInfo) {
+        pendingUpdate = info
+        if (!AppUpdater.canInstallPackages(this)) {
+            waitingForInstallPermission = true
+            Toast.makeText(
+                this,
+                "Разрешите Street Story устанавливать обновления из GitHub",
+                Toast.LENGTH_LONG,
+            ).show()
+            startActivity(AppUpdater.installPermissionIntent(this))
+            return
+        }
+        downloadAndInstall(info)
+    }
+
+    private fun resumeUpdateAfterPermission() {
+        if (!waitingForInstallPermission) return
+        waitingForInstallPermission = false
+        val info = pendingUpdate ?: return
+        if (AppUpdater.canInstallPackages(this)) {
+            downloadAndInstall(info)
+        } else {
+            Toast.makeText(
+                this,
+                "Разрешение не выдано. Обновление можно повторить в Настройках.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+
+    private fun downloadAndInstall(info: UpdateInfo) {
+        if (updateDownloadInFlight) return
+        updateDownloadInFlight = true
+        Toast.makeText(this, "Скачиваю Street Story ${info.versionName}…", Toast.LENGTH_SHORT).show()
+        AppUpdater.download(this, info) { result ->
+            runOnUiThread {
+                updateDownloadInFlight = false
+                result.onSuccess { apk ->
+                    pendingUpdate = null
+                    runCatching { AppUpdater.install(this, apk) }
+                        .onFailure { exc ->
+                            Toast.makeText(
+                                this,
+                                "Не удалось открыть установщик: ${exc.message ?: "ошибка"}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                }.onFailure { exc ->
+                    Toast.makeText(
+                        this,
+                        "Не удалось скачать обновление: ${exc.message ?: "ошибка сети"}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
     private fun showSettings() {
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), 0, dp(20), 0)
         }
+        wrap.addView(
+            label(
+                "Версия ${BuildConfig.VERSION_NAME} · ${BuildConfig.SOURCE_SHA.take(12)}",
+                13,
+                MUTED,
+                Typeface.DEFAULT,
+            ).apply { setPadding(0, 0, 0, dp(8)) }
+        )
+        wrap.addView(
+            secondaryButton("Проверить обновление") { checkForUpdate(showUpToDate = true) },
+            LinearLayout.LayoutParams(-1, dp(46)).apply { bottomMargin = dp(10) },
+        )
         val url = EditText(this).apply {
             hint = "https://street-story…"
             setText(config.backendUrl.orEmpty())
@@ -830,6 +953,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_PHOTO = 710
         private const val REQUEST_MIC = 711
+        private const val UPDATE_INTERVAL_MS = 6L * 60L * 60L * 1000L
         private const val SAGE = 0xffe8ece4.toInt()
         private const val SAGE_DARK = 0xffd7ddd1.toInt()
         private const val PAPER = 0xfffffdf8.toInt()

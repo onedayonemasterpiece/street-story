@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -13,6 +14,9 @@ from live_interaction import LiveSessionHost
 
 from .config import Settings
 from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest, stable_fact_id
+
+
+logger = logging.getLogger("street_story.live")
 
 
 LIVE_SCHEMA = r"""
@@ -85,6 +89,24 @@ FUNCTIONS = [
     _tool_schema(
         "read_topic",
         "Read the current authoritative Street Story topic, facts, visual and publication state. No mutation.",
+    ),
+    _tool_schema(
+        "resolve_place",
+        "Resolve the photographed place before factual research. Uses the source photo plus GPS when available, OSM and nearby Wikipedia candidates, and visual identity. This does not publish or rewrite the post.",
+        {
+            "owner_hint": {
+                "type": "string",
+                "description": "Optional concise place/object name explicitly stated by the author, for example 'Бранденбургские ворота, Калининград'.",
+            },
+        },
+    ),
+    _tool_schema(
+        "confirm_place",
+        "Confirm the photographed place after the author explicitly identifies or confirms it. Prefer candidate_id returned by resolve_place; candidate_name is allowed when it uniquely matches a returned candidate.",
+        {
+            "candidate_id": {"type": "string"},
+            "candidate_name": {"type": "string"},
+        },
     ),
     _tool_schema(
         "search_web",
@@ -183,7 +205,10 @@ SYSTEM_INSTRUCTION = """
 
 Правила:
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
-- факты не выдумывать. Когда нужны внешние сведения, сначала используй provider-native Google Search этой же Live-сессии; если он недоступен, используй search_web;\n- search_web — запасной поисковый инструмент приложения, а не отдельный исследовательский процесс; после любого поискового результата продолжай тот же разговор;
+- факты не выдумывать. Для новой темы сначала вызови resolve_place: он сопоставляет фото и координаты с OSM/Wikipedia и возвращает кандидатов;
+- если resolve_place не дал уверенного match, коротко уточни объект. После явного подтверждения автора вызови confirm_place с candidate_id или однозначным candidate_name;
+- когда нужны внешние сведения и проверяемые источники, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
+- после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
 - если edit_text вернул live_text_revision_conflict, не завершай turn: вызови read_topic,
@@ -281,7 +306,11 @@ class StreetStoryLiveAdapter:
             if replay is not None:
                 return replay
 
-        if name == "search_web":
+        if name == "resolve_place":
+            result = await self._resolve_place(session, command_id, args)
+        elif name == "confirm_place":
+            result = await self._confirm_place(session, command_id, args)
+        elif name == "search_web":
             result = await self._search_web(session, command_id, args)
         elif name == "select_facts":
             result = self._select_facts(story_id, command_id, args)
@@ -371,6 +400,17 @@ class StreetStoryLiveAdapter:
             for item in story.get("facts", [])[:20]
         ]
         visual = story.get("visual") if isinstance(story.get("visual"), dict) else {}
+        identity = story.get("visual_identity") if isinstance(story.get("visual_identity"), dict) else {}
+        identity_candidates = [
+            {
+                "candidate_id": item.get("candidate_id"),
+                "name": item.get("name"),
+                "type": item.get("type"),
+                "url": item.get("url"),
+            }
+            for item in identity.get("candidates", [])[:12]
+            if isinstance(item, dict)
+        ]
         return {
             "story_id": story.get("id"),
             "state": story.get("state"),
@@ -380,6 +420,14 @@ class StreetStoryLiveAdapter:
             "text_revision": state["editor"].get("text_revision"),
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
+            "visual_identity": {
+                "status": identity.get("status"),
+                "candidate_id": identity.get("candidate_id"),
+                "candidate_name": identity.get("candidate_name"),
+                "confidence": identity.get("confidence"),
+                "observations": identity.get("observations", [])[:6],
+                "candidates": identity_candidates,
+            } if identity else None,
             "facts": facts,
             "source_count": story.get("source_count", 0),
             "visual": {
@@ -443,6 +491,229 @@ class StreetStoryLiveAdapter:
             parts.append(owner_context)
         return "\n\n".join(parts).strip()[:12000]
 
+    @staticmethod
+    def _normalized_place_name(value: Any) -> str:
+        return re.sub(r"\\s+", " ", str(value or "").strip()).casefold()
+
+    async def _resolve_place_state(self, session, owner_hint: str) -> dict[str, Any]:
+        story_id = session.resource_id
+        transcript = self._recent_transcript(session, owner_hint)
+        with self.service.store.connection() as db:
+            story = dict(self.service._story_row(db, story_id))
+            research = json.loads(story["research_json"] or "{}")
+
+        lat = story.get("latitude")
+        lon = story.get("longitude")
+        if lat is None or lon is None:
+            query = owner_hint.strip()
+            if not query:
+                extractor = getattr(self.service, "_extract_place_query", None)
+                if callable(extractor):
+                    query = str(await extractor(transcript) or "").strip()[:300]
+            resolver = getattr(self.service, "_resolve_place_query", None)
+            if query and callable(resolver):
+                resolved = await resolver(query)
+                if isinstance(resolved, dict):
+                    lat = float(resolved["lat"])
+                    lon = float(resolved["lon"])
+                    story["latitude"] = lat
+                    story["longitude"] = lon
+                    research["location_provenance"] = {
+                        "kind": "owner_live_place_query",
+                        "query": query,
+                        "resolved_lat": lat,
+                        "resolved_lon": lon,
+                        "display_name": str(resolved.get("display_name") or query)[:500],
+                        "not_device_current_location": True,
+                    }
+
+        osm: dict[str, Any] = {"reverse": {}, "nearby": []}
+        wikipedia: list[dict[str, Any]] = []
+        if lat is not None and lon is not None:
+            osm = await self.service.providers.osm.lookup(float(lat), float(lon))
+            wikipedia = await self.service.providers.wikipedia.nearby(float(lat), float(lon))
+
+        catalog_builder = getattr(self.service, "_candidate_catalog", None)
+        candidates = catalog_builder(osm, wikipedia) if callable(catalog_builder) else []
+        catalog = {str(item.get("candidate_id") or ""): item for item in candidates}
+        if not candidates:
+            identity: dict[str, Any] = {
+                "status": "uncertain",
+                "candidate_id": None,
+                "candidate_name": None,
+                "confidence": 0.0,
+                "observations": ["Не найдено достаточно OSM/Wikipedia-кандидатов; уточните название или адрес."],
+                "candidates": [],
+            }
+        else:
+            identifier = getattr(self.service, "_identify_photo", None)
+            if not callable(identifier):
+                raise InvalidStateError("visual_identity_unavailable", "Photo identity resolver is unavailable")
+            raw = await identifier(story, transcript, candidates)
+            candidate_id = str(raw.get("candidate_id") or "")
+            status = str(raw.get("status") or "uncertain")
+            if status not in {"match", "uncertain", "mismatch"} or candidate_id not in catalog:
+                status = "uncertain"
+                candidate_id = ""
+            chosen = catalog.get(candidate_id)
+            try:
+                confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            identity = {
+                "status": status,
+                "candidate_id": candidate_id or None,
+                "candidate_name": chosen.get("name") if chosen else None,
+                "confidence": confidence,
+                "observations": [str(value)[:300] for value in raw.get("observations", [])[:6]],
+                "alternative_candidate_ids": [
+                    str(value)
+                    for value in raw.get("alternative_candidate_ids", [])[:6]
+                    if str(value) in catalog
+                ],
+                "candidates": candidates,
+            }
+
+        research["osm"] = osm
+        research["wikipedia"] = wikipedia
+        research["visual_identity"] = identity
+        if transcript:
+            research["transcript"] = transcript
+        chosen_name = identity.get("candidate_name") if identity.get("status") == "match" else None
+        with self.service.store.tx() as db:
+            self.service._story_row(db, story_id)
+            db.execute(
+                "UPDATE stories SET latitude=COALESCE(?,latitude),longitude=COALESCE(?,longitude),"
+                "place_name=COALESCE(?,place_name),research_json=?,"
+                "error_code=CASE WHEN ? THEN NULL ELSE error_code END,"
+                "error_message=CASE WHEN ? THEN NULL ELSE error_message END,"
+                "revision=revision+1,updated_at=? WHERE id=?",
+                (
+                    lat,
+                    lon,
+                    chosen_name,
+                    canonical(research),
+                    int(identity.get("status") == "match"),
+                    int(identity.get("status") == "match"),
+                    self.service.store.now(),
+                    story_id,
+                ),
+            )
+            story_result = self.service._story_repr(db, self.service._story_row(db, story_id))
+        logger.info(
+            "street_story_live_place_resolved story_id=%s status=%s candidates=%s",
+            story_id,
+            identity.get("status"),
+            len(candidates),
+        )
+        return {
+            "visual_identity": identity,
+            "wikipedia": [
+                {"title": str(item.get("title") or ""), "url": str(item.get("url") or "")}
+                for item in wikipedia[:12]
+                if isinstance(item, dict)
+            ],
+            "story": story_result,
+        }
+
+    async def _resolve_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        owner_hint = _bounded_text(args.get("owner_hint"), 500)
+        result = await self._resolve_place_state(session, owner_hint)
+        with self.service.store.tx() as db:
+            self._store_command(db, session.resource_id, command_id, "resolve_place", args, result)
+        return result
+
+    async def _confirm_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        story_id = session.resource_id
+        candidate_id = _bounded_text(args.get("candidate_id"), 300)
+        candidate_name = _bounded_text(args.get("candidate_name"), 300)
+        if not candidate_id and not candidate_name:
+            raise ConflictError("live_place_confirmation_required", "candidate_id or candidate_name is required")
+
+        with self.service.store.connection() as db:
+            row = self.service._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+        identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+        candidates = identity.get("candidates") if isinstance(identity.get("candidates"), list) else []
+        if not candidates:
+            await self._resolve_place_state(session, candidate_name)
+            with self.service.store.connection() as db:
+                row = self.service._story_row(db, story_id)
+                research = json.loads(row["research_json"] or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            candidates = identity.get("candidates") if isinstance(identity.get("candidates"), list) else []
+
+        chosen = None
+        if candidate_id:
+            chosen = next(
+                (item for item in candidates if isinstance(item, dict) and str(item.get("candidate_id") or "") == candidate_id),
+                None,
+            )
+        if chosen is None and candidate_name:
+            wanted = self._normalized_place_name(candidate_name)
+            exact = [
+                item for item in candidates
+                if isinstance(item, dict) and self._normalized_place_name(item.get("name")) == wanted
+            ]
+            if len(exact) == 1:
+                chosen = exact[0]
+            else:
+                partial = [
+                    item for item in candidates
+                    if isinstance(item, dict)
+                    and wanted
+                    and (
+                        wanted in self._normalized_place_name(item.get("name"))
+                        or self._normalized_place_name(item.get("name")) in wanted
+                    )
+                ]
+                if len(partial) == 1:
+                    chosen = partial[0]
+        if chosen is None:
+            raise ConflictError(
+                "live_place_candidate_unknown",
+                "The confirmed place does not uniquely match the current OSM/Wikipedia candidates",
+            )
+
+        confirmed = {
+            **identity,
+            "status": "owner_confirmed",
+            "candidate_id": str(chosen.get("candidate_id") or ""),
+            "candidate_name": str(chosen.get("name") or ""),
+            "confidence": None,
+            "observations": ["Объект явно подтверждён автором в текущем Live-разговоре."],
+            "candidates": candidates,
+        }
+        research["visual_identity"] = confirmed
+        transcript = self._recent_transcript(session, candidate_name)
+        if transcript:
+            research["transcript"] = transcript
+        with self.service.store.tx() as db:
+            self.service._story_row(db, story_id)
+            db.execute(
+                "UPDATE stories SET place_name=?,research_json=?,"
+                "error_code=CASE WHEN error_code='visual_identity_uncertain' THEN NULL ELSE error_code END,"
+                "error_message=CASE WHEN error_code='visual_identity_uncertain' THEN NULL ELSE error_message END,"
+                "revision=revision+1,updated_at=? WHERE id=?",
+                (
+                    confirmed["candidate_name"],
+                    canonical(research),
+                    self.service.store.now(),
+                    story_id,
+                ),
+            )
+            result = {
+                "visual_identity": confirmed,
+                "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
+            }
+            self._store_command(db, story_id, command_id, "confirm_place", args, result)
+        logger.info(
+            "street_story_live_place_confirmed story_id=%s candidate_id=%s",
+            story_id,
+            confirmed["candidate_id"],
+        )
+        return result
+
     async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         query = _bounded_text(args.get("query"), 1000, required=True)
         story_id = session.resource_id
@@ -468,6 +739,11 @@ class StreetStoryLiveAdapter:
             "current_draft": str(story.get("draft_text") or "")[:2500],
             "recent_author_context": self._recent_transcript(session, "")[:6000],
             "known_facts": known_facts,
+            "visual_identity": (
+                json.loads(story.get("research_json") or "{}").get("visual_identity")
+                if story.get("research_json")
+                else None
+            ),
         }
         grounded = await self.service.providers.gemini.search_web(query, topic_context)
 
@@ -569,6 +845,12 @@ class StreetStoryLiveAdapter:
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "search_web", args, result)
+            logger.info(
+                "street_story_live_web_search story_id=%s facts=%s sources=%s",
+                story_id,
+                len(normalized),
+                len(grounded.grounding_sources),
+            )
             return result
 
     def _select_facts(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:

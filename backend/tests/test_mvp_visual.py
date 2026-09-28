@@ -15,7 +15,7 @@ PHOTO = b"mvp-photo"
 PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 PROCESSED = b"mvp-processed"
 PROCESSED_SHA = hashlib.sha256(PROCESSED).hexdigest()
-PROMPT_SHA = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
+PROMPT_SHA = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
 
 
 class NoopOSM:
@@ -105,9 +105,9 @@ def create_story(svc: MvpProductStreetStoryService):
 
 
 def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
-    prompt = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v1.txt"
+    prompt = Path(__file__).resolve().parents[1] / "prompts" / "street-story-image-v2.txt"
     data = prompt.read_bytes()
-    assert len(data) == 4217
+    assert len(data) == 3369
     assert hashlib.sha256(data).hexdigest() == PROMPT_SHA
 
     svc = service(tmp_path)
@@ -122,6 +122,8 @@ def test_owner_prompt_is_exact_and_expands_russian_notes(tmp_path):
     assert "Проверенный факт" in brief
     assert "all visible handwritten city notes and annotations" in brief
     assert "without adding text" not in brief
+    assert "safe area about 8%" in brief
+    assert "Nothing important may touch, cross or be clipped" in brief
     assert len(brief) <= 5000
 
 
@@ -155,7 +157,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET state='review' WHERE id=?", (story["id"],))
     result = svc.mutate_visual(story["id"], "visual-key", {"selected_fact_ids": []})
-    assert result["visual"]["prompt_version"] == "street-story-image-v1"
+    assert result["visual"]["prompt_version"] == "street-story-image-v2"
     assert result["visual"]["prompt_sha256"] == PROMPT_SHA
     assert len(result["visual"]["content_revision"]) == 64
     with svc.store.connection() as db:
@@ -163,7 +165,7 @@ def test_visual_request_freezes_content_snapshot(tmp_path):
     context = json.loads(row["visual_context_json"])
     assert context["source_photo_sha256"] == PHOTO_SHA
     assert context["ordered_voice_ids"] == []
-    assert context["brief"].startswith("Use the uploaded street photo as the main reference image.")
+    assert context["brief"].startswith("Use the uploaded street photo as the main visual reference")
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ POLL_SECONDS = 5.0
 RESEARCH_TIMEOUT_SECONDS = 12 * 60
 VISUAL_TIMEOUT_SECONDS = 12 * 60
 SOCIAL_TIMEOUT_SECONDS = 6 * 60
-OWNER_PROMPT_SHA256 = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
+OWNER_PROMPT_SHA256 = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
 FIXTURE_META_PATH = Path(__file__).with_name("golden_fixture.json")
 WIKIMEDIA_USER_AGENT = (
     "StreetStoryLiveE2EBot/5.0 (https://github.com/onedayonemasterpiece/street-story; public golden fixture)"
