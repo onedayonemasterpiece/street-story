@@ -121,17 +121,27 @@ def test_supported_fact_ids_require_https_evidence() -> None:
     assert ids == ["good"]
 
 
-def test_canary_schedule_expression_is_minute_aligned_with_25_hour_margin() -> None:
+def test_canary_schedule_is_minute_aligned_and_keep_mode_is_bounded() -> None:
     module = load_module()
     now = module.datetime(
         2026, 9, 27, 19, 16, 59, 123456, tzinfo=module.timezone.utc
     )
-    scheduled = (
-        now + module.timedelta(hours=25)
-    ).replace(second=0, microsecond=0)
+    scheduled = module.publication_schedule(
+        keep_publication=False,
+        delay_minutes=5,
+        now=now,
+    )
     assert scheduled.second == 0
     assert scheduled.microsecond == 0
     assert scheduled - now > module.timedelta(hours=24)
+    visible = module.publication_schedule(
+        keep_publication=True,
+        delay_minutes=5,
+        now=now,
+    )
+    assert module.timedelta(minutes=4) <= visible - now <= module.timedelta(minutes=5)
+    with pytest.raises(module.ProductSmokeError, match="publication_delay_invalid"):
+        module.publication_schedule(keep_publication=True, delay_minutes=1, now=now)
 
 
 def test_heartbeat_events_advances_cursor_without_new_turn() -> None:
@@ -285,3 +295,29 @@ def test_cached_fixture_reads_only_matching_story_path(tmp_path) -> None:
             (meta["source_sha256"], str(source), 1.0),
         )
     assert module.cached_fixture(meta, data_root) == photo
+
+
+def test_repository_fixture_is_loaded_from_exact_committed_file(tmp_path) -> None:
+    module = load_module()
+    import hashlib
+    photo = b"owner-fixture" * 1200
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    (fixture_dir / "source.jpg").write_bytes(photo)
+    meta = {
+        "source_file": "source.jpg",
+        "source_sha1": hashlib.sha1(photo).hexdigest(),
+        "source_sha256": hashlib.sha256(photo).hexdigest(),
+        "latitude": 54.709614,
+        "longitude": 20.538257,
+        "expected_object": "Закхаймские ворота",
+    }
+    metadata_path = fixture_dir / "fixture.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+    loaded, provenance = module.load_fixture(
+        meta,
+        tmp_path / "unused-data",
+        metadata_path=metadata_path,
+    )
+    assert loaded == photo
+    assert provenance == "repository_fixture"

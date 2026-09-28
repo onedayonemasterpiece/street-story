@@ -4,7 +4,9 @@
 The canary creates one real-photo topic and keeps one Gemini 3.8 Live session
 through search, text editing, visual generation and publication confirmation.
 By default it stops before dispatch. The explicit --execute-publication mode
-continues through native Telegram scheduling and cancellation in the same session.
+continues through native Telegram scheduling and, by default, cancellation in the
+same session. --keep-publication is an explicit owner acceptance mode that leaves
+the scheduled test post in place for provider readback.
 """
 from __future__ import annotations
 
@@ -75,16 +77,32 @@ def _json(response: httpx.Response, code: str) -> dict[str, Any]:
     return payload
 
 
-def fixture_meta() -> dict[str, Any]:
-    path = Path(__file__).with_name("golden_fixture.json")
+def fixture_meta(path: Path | None = None) -> tuple[dict[str, Any], Path]:
+    path = (path or Path(__file__).with_name("golden_fixture.json")).resolve()
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProductSmokeError("fixture_metadata_invalid") from exc
-    required = ("download_url", "source_sha1", "source_sha256", "latitude", "longitude", "expected_object")
+    required = ("source_sha1", "source_sha256", "latitude", "longitude", "expected_object")
     if not isinstance(payload, dict) or any(not payload.get(name) for name in required):
         raise ProductSmokeError("fixture_metadata_incomplete")
-    return payload
+    if not payload.get("source_file") and not payload.get("download_url"):
+        raise ProductSmokeError("fixture_source_missing")
+    return payload, path
+
+
+def fixture_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    root = repo_root().resolve()
+    candidate = (root / value).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ProductSmokeError("fixture_path_outside_repository") from exc
+    if not candidate.is_file():
+        raise ProductSmokeError("fixture_metadata_missing")
+    return candidate
 
 
 def validate_fixture_bytes(meta: dict[str, Any], data: bytes) -> bytes:
@@ -117,7 +135,18 @@ def cached_fixture(meta: dict[str, Any], data_root: Path) -> bytes | None:
     return validate_fixture_bytes(meta, path.read_bytes())
 
 
-def load_fixture(meta: dict[str, Any], data_root: Path) -> tuple[bytes, str]:
+def load_fixture(
+    meta: dict[str, Any],
+    data_root: Path,
+    *,
+    metadata_path: Path,
+) -> tuple[bytes, str]:
+    source_file = str(meta.get("source_file") or "").strip()
+    if source_file:
+        candidate = (metadata_path.parent / source_file).resolve()
+        if candidate.parent != metadata_path.parent.resolve() or not candidate.is_file():
+            raise ProductSmokeError("fixture_local_source_invalid")
+        return validate_fixture_bytes(meta, candidate.read_bytes()), "repository_fixture"
     cached = cached_fixture(meta, data_root)
     if cached is not None:
         return cached, "production_cache"
@@ -133,6 +162,19 @@ def load_fixture(meta: dict[str, Any], data_root: Path) -> tuple[bytes, str]:
         raise ProductSmokeError("fixture_download_unavailable") from exc
     return validate_fixture_bytes(meta, response.content), "wikimedia"
 
+
+def publication_schedule(
+    *,
+    keep_publication: bool,
+    delay_minutes: int,
+    now: datetime | None = None,
+) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if keep_publication:
+        if not 2 <= delay_minutes <= 60:
+            raise ProductSmokeError("publication_delay_invalid")
+        return (current + timedelta(minutes=delay_minutes)).replace(second=0, microsecond=0)
+    return (current + timedelta(hours=25)).replace(second=0, microsecond=0)
 
 
 
@@ -464,9 +506,14 @@ def run(
     *,
     execute_publication: bool = False,
     publication_destination: str | None = None,
+    keep_publication: bool = False,
+    publication_delay_minutes: int = 5,
+    fixture_json: Path | None = None,
 ) -> dict[str, Any]:
     if len(expected_sha) != 40 or any(ch not in "0123456789abcdef" for ch in expected_sha):
         raise ProductSmokeError("expected_sha_invalid")
+    if keep_publication and not execute_publication:
+        raise ProductSmokeError("keep_publication_requires_execution")
 
     installer = load_installer(repo_root())
     token = existing_device_token(installer)
@@ -475,8 +522,8 @@ def run(
         "Accept": "application/json",
         "User-Agent": "StreetStory-Live-Product-Canary/1",
     }
-    meta = fixture_meta()
-    photo, fixture_source = load_fixture(meta, installer.DATA_ROOT)
+    meta, metadata_path = fixture_meta(fixture_json)
+    photo, fixture_source = load_fixture(meta, installer.DATA_ROOT, metadata_path=metadata_path)
     photo_sha = hashlib.sha256(photo).hexdigest()
     session_id = ""
     stopped = False
@@ -505,7 +552,13 @@ def run(
         created = _json(
             client.post(
                 "/v1/stories",
-                files={"photo": ("brandenburg-gate.jpg", photo, "image/jpeg")},
+                files={
+                    "photo": (
+                        str(meta.get("filename") or "street-story-fixture.jpg"),
+                        photo,
+                        str(meta.get("mime_type") or "image/jpeg"),
+                    )
+                },
                 data={
                     "client_story_id": f"live-product-{tag}",
                     "photo_sha256": photo_sha,
@@ -550,9 +603,10 @@ def run(
                 cursor,
                 expected_tool="search_web",
                 text=(
-                    "Это Бранденбургские ворота в Калининграде. Найди несколько проверяемых исторических "
-                    "фактов и реальные источники. Используй функцию search_web, чтобы факты и URL были "
-                    "сохранены в текущей теме. Не редактируй текст и не запускай визуал."
+                    str(meta.get("search_context_ru") or f"Это {meta['expected_object']} в Калининграде.") + " "
+                    "Найди несколько проверяемых исторических фактов и реальные источники в интернете. "
+                    "Используй функцию search_web, чтобы факты и URL были сохранены в текущей теме. "
+                    "Не редактируй текст и не запускай визуал."
                 ),
             )
             after_search = story(client, story_id)
@@ -594,9 +648,10 @@ def run(
             visual_receipt = validate_visual(client, ready, draft)
 
             destination = publication_test_destination or telegram_destination(client)
-            scheduled_for = (
-                datetime.now(timezone.utc) + timedelta(hours=25)
-            ).replace(second=0, microsecond=0).isoformat()
+            scheduled_for = publication_schedule(
+                keep_publication=keep_publication,
+                delay_minutes=publication_delay_minutes,
+            ).isoformat()
             cursor, publish_turn = send_tool_turn(
                 client,
                 story_id,
@@ -654,42 +709,55 @@ def run(
                     raise ProductSmokeError("scheduled_publication_receipt_incomplete")
                 publication_scheduled = True
 
-                cursor, cancel_turn = send_tool_turn(
-                    client,
-                    story_id,
-                    session_id,
-                    cursor,
-                    expected_tool="cancel_publication",
-                    text=(
-                        "Отмени текущую запланированную публикацию через cancel_publication. "
-                        "Не создавай новую публикацию и ничего больше не меняй."
-                    ),
-                )
-                cancelled_story, cursor = wait_publication(
-                    client,
-                    story_id,
-                    session_id,
-                    cursor,
-                    {"cancelled"},
-                )
-                cancelled_publication = (
-                    cancelled_story.get("publication")
-                    if isinstance(cancelled_story.get("publication"), dict)
-                    else {}
-                )
-                cancel_operation_id = str(cancelled_publication.get("cancel_operation_id") or "")
-                if not cancel_operation_id:
-                    raise ProductSmokeError("cancel_operation_id_missing")
-                cancel_confirmed = True
-                publication_execution = {
-                    "confirm_tool_ok": confirm_turn["tool_ok"],
-                    "cancel_tool_ok": cancel_turn["tool_ok"],
-                    "publication_id": publication_id,
-                    "publish_operation_id": publish_operation_id,
-                    "cancel_operation_id": cancel_operation_id,
-                    "scheduled_for": scheduled_story.get("scheduled_for"),
-                    "final_state": "cancelled",
-                }
+                if keep_publication:
+                    publication_execution = {
+                        "confirm_tool_ok": confirm_turn["tool_ok"],
+                        "cancel_tool_ok": None,
+                        "publication_id": publication_id,
+                        "publish_operation_id": publish_operation_id,
+                        "cancel_operation_id": None,
+                        "scheduled_for": scheduled_story.get("scheduled_for"),
+                        "final_state": str(scheduled_publication.get("state") or "scheduled"),
+                        "kept_for_owner_readback": True,
+                    }
+                else:
+                    cursor, cancel_turn = send_tool_turn(
+                        client,
+                        story_id,
+                        session_id,
+                        cursor,
+                        expected_tool="cancel_publication",
+                        text=(
+                            "Отмени текущую запланированную публикацию через cancel_publication. "
+                            "Не создавай новую публикацию и ничего больше не меняй."
+                        ),
+                    )
+                    cancelled_story, cursor = wait_publication(
+                        client,
+                        story_id,
+                        session_id,
+                        cursor,
+                        {"cancelled"},
+                    )
+                    cancelled_publication = (
+                        cancelled_story.get("publication")
+                        if isinstance(cancelled_story.get("publication"), dict)
+                        else {}
+                    )
+                    cancel_operation_id = str(cancelled_publication.get("cancel_operation_id") or "")
+                    if not cancel_operation_id:
+                        raise ProductSmokeError("cancel_operation_id_missing")
+                    cancel_confirmed = True
+                    publication_execution = {
+                        "confirm_tool_ok": confirm_turn["tool_ok"],
+                        "cancel_tool_ok": cancel_turn["tool_ok"],
+                        "publication_id": publication_id,
+                        "publish_operation_id": publish_operation_id,
+                        "cancel_operation_id": cancel_operation_id,
+                        "scheduled_for": scheduled_story.get("scheduled_for"),
+                        "final_state": "cancelled",
+                        "kept_for_owner_readback": False,
+                    }
 
             stop = _json(
                 client.post(f"/v1/stories/{story_id}/live-sessions/{session_id}/stop"),
@@ -708,6 +776,8 @@ def run(
                 "fixture": {
                     "object": meta["expected_object"],
                     "photo_sha256": photo_sha,
+                    "reference_sha256": meta.get("reference_sha256"),
+                    "fixture_id": meta.get("fixture_id"),
                     "license": meta.get("license"),
                     "source": fixture_source,
                 },
@@ -721,6 +791,7 @@ def run(
                 "text": {
                     "tool_ok": edit_turn["tool_ok"],
                     "draft_chars": len(draft),
+                    "draft_sha256": hashlib.sha256(draft.encode("utf-8")).hexdigest(),
                     "recoverable_tool_errors": edit_turn["recoverable_tool_errors"],
                 },
                 "visual": {
@@ -734,6 +805,7 @@ def run(
                     "scheduled_for": confirmation.get("scheduled_for"),
                     "state": confirmation.get("state"),
                     "publication_dispatched": execute_publication,
+                    "keep_publication": keep_publication,
                 },
                 "publication_execution": publication_execution,
                 "session_stopped": True,
@@ -742,7 +814,7 @@ def run(
             write_receipt(receipt)
             return receipt
         finally:
-            if execute_publication and publication_scheduled and not cancel_confirmed:
+            if execute_publication and publication_scheduled and not cancel_confirmed and not keep_publication:
                 try:
                     _json(
                         client.post(
@@ -790,12 +862,31 @@ def main() -> int:
         "--publication-destination",
         help="Explicit Telegram test/safe/e2e alias. Required with --execute-publication.",
     )
+    parser.add_argument(
+        "--keep-publication",
+        action="store_true",
+        help="Owner acceptance only: keep the scheduled test publication for provider readback.",
+    )
+    parser.add_argument(
+        "--publication-delay-minutes",
+        type=int,
+        default=5,
+        help="Delay for --keep-publication, 2..60 minutes.",
+    )
+    parser.add_argument(
+        "--fixture-json",
+        help="Repository-relative fixture metadata JSON. Defaults to golden_fixture.json.",
+    )
     args = parser.parse_args()
     try:
+        selected_fixture = fixture_path(args.fixture_json)
         receipt = run(
             args.expected_sha,
             execute_publication=args.execute_publication,
             publication_destination=args.publication_destination,
+            keep_publication=args.keep_publication,
+            publication_delay_minutes=args.publication_delay_minutes,
+            fixture_json=selected_fixture,
         )
     except ProductSmokeError as exc:
         receipt = {"status": "FAIL", "error": str(exc), "secrets_disclosed": False}

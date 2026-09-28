@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "fixture_id": "kaliningrad-zachheim-gate-owner-20260928",
+  "purpose": "Owner-supplied Street Story DoD fixture for real Live search -> text -> visual -> Telegram publication acceptance",
+  "source_file": "source.jpg",
+  "reference_file": "reference-generated.jpg",
+  "filename": "zachheim-gate-owner-20260928.jpg",
+  "mime_type": "image/jpeg",
+  "object_name_ru": "Закхаймские ворота",
+  "expected_object": "Закхаймские ворота",
+  "address": "Калининград, ул. Литовский вал, 61",
+  "latitude": 54.709614,
+  "longitude": 20.538257,
+  "license": "owner-supplied test fixture",
+  "source_sha1": "5466ea596ad6dff538559e52030bc9a6e27cf9d9",
+  "source_sha256": "cf1f4c2316f89afc7e456f154ad2efc7209bdf604ab779dd7e997eb4450126df",
+  "source_upload_sha256": "e9c3e9a20b13edca236aa27cfaf0786367499c8bf9a0f78059a062db54d674c9",
+  "reference_sha256": "feaa1a0fa46813d6b7af02d4f76ea02aba527b31c906dc22c79b83b925987468",
+  "reference_upload_sha256": "8cc5cd7786b49cb8996ae57bacbcc2343c3e7d4ff493268756aca84141c76eec",
+  "search_context_ru": "На исходной фотографии Закхаймские ворота в Калининграде, ул. Литовский вал, 61. Проверь объект по интернет-источникам и не считай текст на референсной генерации фактическим источником."
+}

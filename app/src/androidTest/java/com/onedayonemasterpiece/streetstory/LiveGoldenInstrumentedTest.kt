@@ -96,7 +96,7 @@ class LiveGoldenInstrumentedTest {
                 RESEARCH_TIMEOUT_MS,
                 allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
             ) {
-                it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW) &&
+                it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW, StoryStage.READY_TO_PUBLISH) &&
                     it.sourceCount > 0
             }
 
@@ -109,7 +109,7 @@ class LiveGoldenInstrumentedTest {
                     RESEARCH_TIMEOUT_MS,
                     allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
                 ) {
-                    it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW) &&
+                    it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW, StoryStage.READY_TO_PUBLISH) &&
                         it.visualIdentity?.status in setOf("match", "owner_confirmed") &&
                         it.sourceCount > 0
                 }

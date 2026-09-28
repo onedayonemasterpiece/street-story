@@ -408,6 +408,14 @@ async def test_mvp_capabilities_hide_internal_e2e_destination(tmp_path):
                     "provider": "telegram",
                 }
             )
+            payload["destinations"].append(
+                {
+                    "alias": "street_story_e2e_20260928_tg",
+                    "kind": "destination",
+                    "label": "Street Story owner-visible E2E Telegram",
+                    "provider": "telegram",
+                }
+            )
             payload["capabilities"].append(
                 {
                     "destination": "street_story_e2e_tg",
@@ -415,6 +423,15 @@ async def test_mvp_capabilities_hide_internal_e2e_destination(tmp_path):
                     "surface": "post",
                     "provider": "telegram",
                     "status": "needs_review",
+                }
+            )
+            payload["capabilities"].append(
+                {
+                    "destination": "street_story_e2e_20260928_tg",
+                    "operation": "publish",
+                    "surface": "post",
+                    "provider": "telegram",
+                    "status": "supported",
                 }
             )
             return payload

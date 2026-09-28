@@ -15,7 +15,11 @@ from .service import ConflictError, InvalidStateError, NotFoundError, canonical,
 
 
 _WORD = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{4,}")
-_INTERNAL_ACCEPTANCE_DESTINATIONS = {"street_story_e2e_tg"}
+
+
+def _is_internal_acceptance_destination(alias: Any) -> bool:
+    value = str(alias or "").strip().lower()
+    return value == "street_story_e2e_tg" or value.startswith("street_story_e2e_")
 
 
 def _norm_url(value: Any) -> str:
@@ -773,7 +777,7 @@ class MvpResearchMixin:
             for item in result.get("destinations", [])
             if item.get("provider") == "telegram"
             and item.get("status") in {"supported", "needs_review"}
-            and item.get("alias") not in _INTERNAL_ACCEPTANCE_DESTINATIONS
+            and not _is_internal_acceptance_destination(item.get("alias"))
         ]
         for item in telegram:
             item["selected"] = True
