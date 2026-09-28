@@ -585,6 +585,28 @@ def is_explicit_test_destination(row: dict[str, Any]) -> bool:
     return any(marker in text for marker in ("test", "тест", "safe", "e2e"))
 
 
+def validate_internal_safe_alias(
+    safe_alias: str,
+    public_destinations: list[dict[str, Any]],
+) -> str:
+    if not safe_alias:
+        raise LiveE2EError(
+            "safe_test_destination_missing",
+            "full_social requires SAFE_TEST_DESTINATION_ALIAS",
+        )
+    if not is_explicit_test_destination({"alias": safe_alias, "label": ""}):
+        raise LiveE2EError(
+            "safe_test_destination_not_explicitly_test",
+            "Safe alias has no test/safe/e2e marker",
+        )
+    if any(str(row.get("alias") or "") == safe_alias for row in public_destinations):
+        raise LiveE2EError(
+            "safe_test_destination_exposed",
+            "Internal SAFE_TEST_DESTINATION_ALIAS leaked into product capabilities",
+        )
+    return safe_alias
+
+
 def run() -> int:
     base_url = os.environ.get("STREET_STORY_LIVE_BASE_URL", "").strip()
     token = os.environ.get("STREET_STORY_LIVE_TOKEN", "").strip()
@@ -874,28 +896,12 @@ def run() -> int:
             if mode == "smoke":
                 return 0
 
-            if not safe_alias:
-                raise LiveE2EError(
-                    "safe_test_destination_missing",
-                    "full_social requires SAFE_TEST_DESTINATION_ALIAS",
-                )
-            matches = [row for row in telegram_rows if str(row.get("alias") or "") == safe_alias]
-            if len(matches) != 1:
-                raise LiveE2EError(
-                    "safe_test_destination_not_projected",
-                    "SAFE_TEST_DESTINATION_ALIAS was not uniquely projected",
-                )
-            safe_destination = matches[0]
-            if not is_explicit_test_destination(safe_destination):
-                raise LiveE2EError(
-                    "safe_test_destination_not_explicitly_test",
-                    "Safe alias/label has no test/safe/e2e marker",
-                )
+            safe_alias = validate_internal_safe_alias(safe_alias, telegram_rows)
             publish_key = f"live-publish-{run_tag}"[:128]
             cancel_key = f"live-cancel-{run_tag}"[:128]
             publish_body = {
                 "destinations": [safe_alias],
-                "delay_minutes": 1440,
+                "delay_minutes": 1500,
                 "text_override": str(story.get("draft_text") or "")[:1024],
             }
             live.request(
@@ -932,7 +938,7 @@ def run() -> int:
                 destination_alias=safe_alias,
                 scheduled_for=scheduled.get("scheduled_for"),
                 provider_status=safe_rows[0].get("status"),
-                delay_minutes=1440,
+                delay_minutes=1500,
             )
 
             live.request(

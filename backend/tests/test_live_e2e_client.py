@@ -10,6 +10,7 @@ from tools.live_e2e import (
     WIKIMEDIA_USER_AGENT,
     complete_body,
     supported_facts,
+    validate_internal_safe_alias,
     validate_telegram_destinations,
     validate_voice_messages,
 )
@@ -99,6 +100,20 @@ def test_mvp_destination_projection_is_telegram_only():
     }
     rows = validate_telegram_destinations(capabilities)
     assert [row["alias"] for row in rows] == ["love-tg"]
+
+
+def test_internal_safe_alias_must_be_explicit_and_hidden_from_product_projection():
+    public_rows = [
+        {"alias": "love-tg", "label": "Полюбить Калининград", "provider": "telegram", "status": "supported"},
+    ]
+    assert validate_internal_safe_alias("street_story_e2e_tg", public_rows) == "street_story_e2e_tg"
+    with pytest.raises(LiveE2EError, match="test/safe/e2e marker"):
+        validate_internal_safe_alias("love-tg", public_rows)
+    with pytest.raises(LiveE2EError, match="leaked into product capabilities"):
+        validate_internal_safe_alias(
+            "street_story_e2e_tg",
+            public_rows + [{"alias": "street_story_e2e_tg", "label": "Street Story E2E safe Telegram"}],
+        )
 
 
 def test_diagnostics_redact_all_configured_secrets(tmp_path):
