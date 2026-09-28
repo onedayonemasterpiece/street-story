@@ -16,6 +16,8 @@ Status: the Android client and backend source are implemented on `work/street-st
 The current owner flow is a list of topics → one Topic Detail → iterative conversation over the same visible result
 (image + text) → publication. A topic can stay open for many Live turns; there is no infinite feed interaction model.
 
+Street Story uses application-owned VAD as the speech-activity authority. Live sessions therefore enable the shared framework's `manual_activity_detection`: each VAD speech segment is sent as `activity_start` → ordered bounded PCM16/16 kHz → `activity_end`. Provider auto-VAD is disabled for these sessions, so the same contract works for physical microphone capture and already-durable prepared PCM without inventing a second transport or using `audio_stream_end`.
+
 The Android app sends bounded PCM16/16 kHz speech to the authenticated Live session endpoints:
 
 - `POST /v1/stories/{story_id}/live-sessions`
