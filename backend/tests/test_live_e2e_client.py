@@ -109,7 +109,7 @@ def test_internal_safe_alias_must_be_explicit_and_hidden_from_product_projection
     assert validate_internal_safe_alias("street_story_e2e_tg", public_rows) == "street_story_e2e_tg"
     with pytest.raises(LiveE2EError, match="test/safe/e2e marker"):
         validate_internal_safe_alias("love-tg", public_rows)
-    with pytest.raises(LiveE2EError, match="exposed"):
+    with pytest.raises(LiveE2EError, match="leaked into product capabilities"):
         validate_internal_safe_alias(
             "street_story_e2e_tg",
             public_rows + [{"alias": "street_story_e2e_tg", "label": "Street Story E2E safe Telegram"}],
