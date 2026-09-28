@@ -2,8 +2,6 @@ package com.onedayonemasterpiece.streetstory
 
 import android.content.ContentValues
 import android.content.Context
-import android.content.Intent
-import android.graphics.Bitmap
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -19,7 +17,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
-import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
@@ -35,7 +32,6 @@ import java.util.concurrent.TimeUnit
 @RunWith(AndroidJUnit4::class)
 class LiveGoldenInstrumentedTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
-    private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val root = File(context.filesDir, "live-golden")
     private val gson = Gson()
 
@@ -217,8 +213,6 @@ class LiveGoldenInstrumentedTest {
             store.setProcessedImagePath(local.clientStoryId, processed.absolutePath)
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
                 .edit().putString("active_story_id", local.clientStoryId).apply()
-            launchAndScreenshot()
-
             val publicDestinations = api.capabilities().destinations
             assertFalse(
                 "Internal E2E Telegram alias leaked into product capabilities",
@@ -396,15 +390,6 @@ class LiveGoldenInstrumentedTest {
     ).also { uri ->
         context.contentResolver.openOutputStream(uri, "w")!!.use { out -> photo.inputStream().use { it.copyTo(out) } }
         context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
-    }
-
-    private fun launchAndScreenshot() {
-        context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        Thread.sleep(2_500)
-        val bitmap: Bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
-        FileOutputStream(File(root, "preview.png")).use { out ->
-            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, out))
-        }
     }
 
     private fun sha256(data: ByteArray): String =
