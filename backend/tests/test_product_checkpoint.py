@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from street_story.config import Settings
+from street_story.mvp_research import MvpResearchStreetStoryService
 from street_story.product import ProductStreetStoryService, normalize_display_text
 from street_story.providers import GroundedResearch, RetryableProviderError
 from street_story.service import ProviderBundle
@@ -307,6 +308,34 @@ async def test_needs_review_telegram_stays_visible_and_refreshes_before_publish(
     preview = next(iter(vp.preview_effects.values()))
     assert preview["dry_run"] is True
     assert preview["deliveries"][0]["observed"] == "not_attempted"
+    assert len(vp.publish_effects) == 1
+
+
+@pytest.mark.asyncio
+async def test_mvp_research_refreshes_needs_review_before_publish(tmp_path):
+    vp = ProductFakeVibePublish(capability_status="needs_review")
+    service = MvpResearchStreetStoryService(
+        settings(tmp_path),
+        ProviderBundle(FakeOSM(), FakeWikipedia(), DirtyGemini(), vp),
+    )
+    story = create_story(service, client_id="mvp-review-refresh")
+    with service.store.tx() as db:
+        db.execute(
+            "UPDATE stories SET state='ready_to_publish',vibepublish_asset_ref='asset_processed_1',draft_text='draft' WHERE id=?",
+            (story["id"],),
+        )
+    service.mutate_publish(
+        story["id"],
+        "mvp-publish-after-refresh",
+        {"destinations": ["love-kld-main"], "delay_minutes": 60, "text_override": "copy"},
+    )
+
+    assert await service.run_once() is True
+
+    scheduled = service.story(story["id"])
+    assert scheduled["state"] == "scheduled"
+    assert scheduled["publication"]["publication_id"] == "publication_1"
+    assert len(vp.preview_effects) == 1
     assert len(vp.publish_effects) == 1
 
 

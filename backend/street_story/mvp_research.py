@@ -840,21 +840,9 @@ class MvpResearchMixin:
         return result
 
     async def _run_publish(self, job: dict[str, Any]) -> None:
-        intent_id = json.loads(job["payload_json"])["intent_id"]
-        with self.store.connection() as db:
-            intent = dict(
-                db.execute("SELECT * FROM publish_intents WHERE id=?", (intent_id,)).fetchone()
-            )
-        request = json.loads(intent["request_json"] or "{}")
-        bootstrap = await self.providers.vibepublish.bootstrap()
-        projected = project_destinations_v2(bootstrap)
-        by_alias = {item["alias"]: item for item in projected}
-        for alias in request.get("destinations", []):
-            detail = by_alias.get(str(alias))
-            if not detail or detail.get("provider") != "telegram" or detail.get("status") != "supported":
-                raise PermanentProviderError(
-                    "Street Story MVP only schedules currently-supported Telegram destinations"
-                )
+        # Base publication logic refreshes a needs_review Telegram destination
+        # through a no-dispatch preview before the authoritative supported check.
+        # Do not reject that refreshable state in the MVP wrapper.
         return await super()._run_publish(job)
 
 
