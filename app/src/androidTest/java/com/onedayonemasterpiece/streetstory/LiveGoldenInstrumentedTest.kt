@@ -187,12 +187,11 @@ class LiveGoldenInstrumentedTest {
                 .edit().putString("active_story_id", local.clientStoryId).apply()
             launchAndScreenshot()
 
-            val safe = api.capabilities().destinations.singleOrNull {
-                it.alias == safeAlias &&
-                    it.provider.equals("telegram", true) &&
-                    it.status in setOf("supported", "needs_review")
-            } ?: error("Safe Telegram alias is not uniquely configured")
-            require(isExplicitTestAlias("${safe.alias} ${safe.label}"))
+            val publicDestinations = api.capabilities().destinations
+            assertFalse(
+                "Internal E2E Telegram alias leaked into product capabilities",
+                publicDestinations.any { it.alias == safeAlias },
+            )
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
                 .plusHours(24)
