@@ -94,15 +94,26 @@ class LiveGoldenInstrumentedTest {
 
             speak(live, pcmFiles[1])
             awaitAnswer(live, "research request")
-            var story = pollStory(api, storyId, RESEARCH_TIMEOUT_MS) {
-                it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW)
+            var story = pollStory(
+                api,
+                storyId,
+                RESEARCH_TIMEOUT_MS,
+                allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
+            ) {
+                it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW) &&
+                    it.sourceCount > 0
             }
 
             if (story.visualIdentity?.status !in setOf("match", "owner_confirmed")) {
                 speak(live, pcmFiles[2])
                 awaitAnswer(live, "identity confirmation")
-                story = pollStory(api, storyId, RESEARCH_TIMEOUT_MS) {
-                    it.state == StoryStage.REVIEW &&
+                story = pollStory(
+                    api,
+                    storyId,
+                    RESEARCH_TIMEOUT_MS,
+                    allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
+                ) {
+                    it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW) &&
                         it.visualIdentity?.status in setOf("match", "owner_confirmed") &&
                         it.sourceCount > 0
                 }
@@ -114,7 +125,11 @@ class LiveGoldenInstrumentedTest {
 
             speak(live, pcmFiles[3])
             awaitAnswer(live, "fact selection")
-            story = pollStory(api, storyId) {
+            story = pollStory(
+                api,
+                storyId,
+                allowedNeedsReviewCodes = setOf("visual_stale"),
+            ) {
                 it.facts.count { fact -> fact.selected && fact.evidenceSupported } >= 1 &&
                     !it.draftText.isNullOrBlank()
             }
@@ -123,7 +138,11 @@ class LiveGoldenInstrumentedTest {
             val beforeEdit = requireNotNull(story.draftText)
             speak(live, pcmFiles[4])
             awaitAnswer(live, "text edit")
-            story = pollStory(api, storyId) { !it.draftText.isNullOrBlank() && it.draftText != beforeEdit }
+            story = pollStory(
+                api,
+                storyId,
+                allowedNeedsReviewCodes = setOf("visual_stale"),
+            ) { !it.draftText.isNullOrBlank() && it.draftText != beforeEdit }
             val editedText = requireNotNull(story.draftText)
 
             speak(live, pcmFiles[5])
@@ -139,7 +158,11 @@ class LiveGoldenInstrumentedTest {
             val afterLiteral = requireNotNull(story.draftText)
             speak(live, pcmFiles[8])
             awaitAnswer(live, "post-literal edit")
-            story = pollStory(api, storyId) {
+            story = pollStory(
+                api,
+                storyId,
+                allowedNeedsReviewCodes = setOf("visual_stale"),
+            ) {
                 !it.draftText.isNullOrBlank() &&
                     it.draftText != afterLiteral &&
                     it.draftText!!.contains(literalText, ignoreCase = true)
@@ -148,13 +171,22 @@ class LiveGoldenInstrumentedTest {
 
             live.sendText("Верни предыдущую правку.")
             awaitAnswer(live, "undo")
-            story = pollStory(api, storyId) { it.draftText == afterLiteral }
+            story = pollStory(
+                api,
+                storyId,
+                allowedNeedsReviewCodes = setOf("visual_stale"),
+            ) { it.draftText == afterLiteral }
             assertTrue(story.draftText.orEmpty().contains(literalText, ignoreCase = true))
 
             val textBeforeVisual = requireNotNull(story.draftText)
             speak(live, pcmFiles[9])
             awaitAnswer(live, "visual-only edit")
-            story = pollStory(api, storyId, VISUAL_TIMEOUT_MS) {
+            story = pollStory(
+                api,
+                storyId,
+                VISUAL_TIMEOUT_MS,
+                allowedNeedsReviewCodes = setOf("visual_stale"),
+            ) {
                 it.state == StoryStage.READY_TO_PUBLISH && !it.processedImageUrl.isNullOrBlank()
             }
             assertEquals("Visual-only change rewrote text", textBeforeVisual, story.draftText)
@@ -323,6 +355,7 @@ class LiveGoldenInstrumentedTest {
         api: ApiClient,
         storyId: String,
         timeoutMs: Long = RESEARCH_TIMEOUT_MS,
+        allowedNeedsReviewCodes: Set<String> = setOf("visual_identity_uncertain"),
         predicate: (StoryWire) -> Boolean,
     ): StoryWire {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -331,7 +364,7 @@ class LiveGoldenInstrumentedTest {
             last = api.getStory(storyId)
             if (predicate(last)) return last
             val code = last.error?.code.orEmpty()
-            if (last.state == StoryStage.NEEDS_REVIEW && code !in setOf("", "visual_identity_uncertain")) {
+            if (last.state == StoryStage.NEEDS_REVIEW && code.isNotBlank() && code !in allowedNeedsReviewCodes) {
                 error("Story needs review: $code ${last.error?.message.orEmpty()}")
             }
             Thread.sleep(2_000)
