@@ -1,11 +1,11 @@
 # Street Story owner DoD fixture — Закхаймские ворота
 
-This fixture is the owner-visible acceptance pair supplied on 2026-09-28.
+This directory is the runnable owner-visible acceptance fixture for 2026-09-28.
 
-- `source.jpg` is a repository-sized JPEG derivative of the supplied source photo.
-- `reference-generated.jpg` is a repository-sized derivative of the earlier generated result and is **visual reference only**.
-- The two images may be from a slightly different capture of the same viewpoint. Acceptance must not require pixel registration.
-- Text rendered inside the reference image is not factual evidence. Street Story must obtain publishable facts through its Live internet-search path and store real source URLs.
-- `fixture.json` records both committed-derivative hashes and original-upload hashes so provenance remains auditable.
+- `source.jpg` is an openly licensed photograph of the same object used for deterministic repository/CI execution: Vitaly Volkov, Wikimedia Commons, CC BY 1.0.
+- The owner also supplied a recent source photo and an earlier generated visual. Their upload SHA-256 values are retained in `fixture.json` as acceptance provenance/reference; they are not treated as factual evidence.
+- The owner explicitly allowed a similar photo from the same object/viewpoint, so acceptance must not require pixel registration against the earlier generation.
+- Any text visible in a reference/generated image is non-authoritative. Publishable facts must come through the live internet-search path and retain real source URLs.
+- A fresh visual must be generated from the runnable source using the product visual path; the historical reference is style/quality context only.
 
-Definition-of-done use: run the production Live canary with this fixture, generate a fresh visual from the source photo, prepare/confirm a test Telegram publication through Street Story -> VibePublish, then verify the resulting message from Telegram provider readback.
+Definition of done: the exact deployed Street Story SHA accepts this photo through Android/Live, obtains source-linked internet facts through the Live search capability, produces a short Russian draft, creates a fresh generated visual through VibePublish, and publishes/schedules that exact text+visual to the isolated owner E2E Telegram target with provider readback. The owner-visible acceptance publication is intentionally left in place.
