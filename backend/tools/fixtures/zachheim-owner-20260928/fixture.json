@@ -12,10 +12,10 @@
   "latitude": 54.709614,
   "longitude": 20.538257,
   "license": "owner-supplied test fixture",
-  "source_sha1": "5466ea596ad6dff538559e52030bc9a6e27cf9d9",
-  "source_sha256": "cf1f4c2316f89afc7e456f154ad2efc7209bdf604ab779dd7e997eb4450126df",
+  "source_sha1": "3107310210cdcaf647e6fa36d256bf70cfd78a55",
+  "source_sha256": "689327e0d8dec3339ca38ed10ae80af10f867edb04000263b4c3cdb4075b6747",
   "source_upload_sha256": "e9c3e9a20b13edca236aa27cfaf0786367499c8bf9a0f78059a062db54d674c9",
-  "reference_sha256": "feaa1a0fa46813d6b7af02d4f76ea02aba527b31c906dc22c79b83b925987468",
+  "reference_sha256": "06b5661b2f5f1acd18469b02953faefb01f6dbbef272feac67a382c327fdf61a",
   "reference_upload_sha256": "8cc5cd7786b49cb8996ae57bacbcc2343c3e7d4ff493268756aca84141c76eec",
   "search_context_ru": "На исходной фотографии Закхаймские ворота в Калининграде, ул. Литовский вал, 61. Проверь объект по интернет-источникам и не считай текст на референсной генерации фактическим источником."
 }
