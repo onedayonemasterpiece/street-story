@@ -34,8 +34,10 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     assert any(item["name"] == "search_web" for item in configuration["functions"])
 
 
-def test_live_functions_expose_search_tool_not_async_research_job() -> None:
+def test_live_functions_expose_place_and_search_tools_not_async_research_job() -> None:
     names = [item["name"] for item in FUNCTIONS]
+    assert "resolve_place" in names
+    assert "confirm_place" in names
     assert "search_web" in names
     assert "start_research" not in names
 
@@ -46,17 +48,34 @@ PHOTO_SHA = hashlib.sha256(PHOTO).hexdigest()
 
 class FakeOSM:
     async def lookup(self, lat, lon):
-        return {"reverse": {}, "nearby": []}
+        return {"reverse": {"display_name": "Калининград"}, "nearby": []}
 
 
 class FakeWiki:
     async def nearby(self, lat, lon):
-        return []
+        return [
+            {
+                "pageid": 77,
+                "title": "Бранденбургские ворота",
+                "url": "https://ru.wikipedia.org/wiki/Бранденбургские_ворота_(Калининград)",
+                "extract": "Бранденбургские ворота — исторические городские ворота Калининграда.",
+            }
+        ]
 
 
 class FakeGemini:
     def __init__(self):
         self.searches = []
+
+    async def identify_photo(self, photo_path, photo_mime, transcript, candidates):
+        assert any(item.get("candidate_id") == "wiki:77" for item in candidates)
+        return {
+            "status": "uncertain",
+            "candidate_id": "wiki:77",
+            "confidence": 0.71,
+            "observations": ["Арка и фасад похожи, но требуется подтверждение автора."],
+            "alternative_candidate_ids": [],
+        }
 
     async def search_web(self, query, topic_context):
         self.searches.append((query, topic_context))
@@ -139,6 +158,46 @@ def make_service(tmp_path: Path):
         state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None},
     )
     return svc, adapter, session, events
+
+
+@pytest.mark.asyncio
+async def test_live_place_resolution_and_owner_confirmation_use_osm_wikipedia_context(tmp_path):
+    svc, adapter, session, events = make_service(tmp_path)
+    adapter.on_event(
+        session,
+        {"type": "input_transcript", "text": "Это Бранденбургские ворота в Калининграде."},
+    )
+
+    resolved = await adapter.execute_tool(
+        session,
+        {
+            "name": "resolve_place",
+            "id": "place-1",
+            "args": {"owner_hint": "Бранденбургские ворота, Калининград"},
+        },
+    )
+    identity = resolved["visual_identity"]
+    assert identity["status"] == "uncertain"
+    assert identity["candidate_id"] == "wiki:77"
+    assert identity["candidate_name"] == "Бранденбургские ворота"
+    assert resolved["wikipedia"][0]["url"].startswith("https://ru.wikipedia.org/")
+
+    confirmed = await adapter.execute_tool(
+        session,
+        {
+            "name": "confirm_place",
+            "id": "place-2",
+            "args": {"candidate_name": "Бранденбургские ворота"},
+        },
+    )
+    assert confirmed["visual_identity"]["status"] == "owner_confirmed"
+    assert confirmed["visual_identity"]["candidate_id"] == "wiki:77"
+    story = svc.story(session.resource_id)
+    assert story["place_name"] == "Бранденбургские ворота"
+    assert story["visual_identity"]["status"] == "owner_confirmed"
+    compact = adapter._compact_context(adapter._topic_state(session.resource_id))
+    assert compact["visual_identity"]["candidates"][0]["candidate_id"] == "wiki:77"
+    assert any(event.get("type") == "product_state" for event in events)
 
 
 @pytest.mark.asyncio

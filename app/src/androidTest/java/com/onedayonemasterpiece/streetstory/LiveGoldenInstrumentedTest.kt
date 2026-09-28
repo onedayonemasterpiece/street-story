@@ -412,7 +412,7 @@ class LiveGoldenInstrumentedTest {
     companion object {
         private const val FIXTURE_LAT = 54.697111
         private const val FIXTURE_LON = 20.494111
-        private const val OWNER_PROMPT_SHA256 = "4eab6d0cfcafc84881cad86380baa9920785b7e18e9a934923966995802380a3"
+        private const val OWNER_PROMPT_SHA256 = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
         private const val LITERAL_TEXT = "Я люблю этот город за моменты, когда знакомая улица вдруг становится незнакомой"
         private const val PCM_CHUNK_SAMPLES = 4096
         private const val PCM_CHUNK_SLEEP_MS = 260L

@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: street-story-android-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -22,6 +22,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Restore stable owner debug signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: street-story-owner-debug-keystore-v1
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -37,9 +42,10 @@ jobs:
           STREET_STORY_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/street-story.apk
           cp app/build/outputs/apk/debug/app-debug.apk release/street-story-debug.apk
           cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk release/street-story-debug-androidTest.apk
-          (cd release && sha256sum street-story-debug.apk > SHA256SUMS)
+          (cd release && sha256sum street-story.apk > SHA256SUMS)
           printf 'source_sha=%s\nrun_id=%s\napplication_id=com.onedayonemasterpiece.streetstory\nversion_code=%s\nversion_name=0.1.%s\n' \
             "$STREET_STORY_SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
       - uses: actions/upload-artifact@v4
@@ -78,7 +84,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
           disable-animations: true
           script: |
-            adb install -r apks/street-story-debug.apk
+            adb install -r apks/street-story.apk
             adb install -r apks/street-story-debug-androidTest.apk
             adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.RECORD_AUDIO || true
             adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.POST_NOTIFICATIONS || true
@@ -89,3 +95,31 @@ jobs:
         with:
           name: street-story-emulator-${{ github.run_number }}
           path: instrumentation.txt
+
+
+  release:
+    needs: [checks, emulator]
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/work/street-story-mvp-20260908')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: street-story-apk-${{ github.run_number }}
+          path: apks
+      - name: Publish owner-installable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="android-v${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Street Story Android 0.1.${GITHUB_RUN_NUMBER}" \
+            --notes "Owner MVP build from ${GITHUB_SHA}. Install street-story.apk; future versions can be installed from inside Street Story." \
+            apks/street-story.apk \
+            apks/BUILD.txt \
+            apks/SHA256SUMS
