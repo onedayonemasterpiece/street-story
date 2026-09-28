@@ -26,8 +26,11 @@ adb shell am instrument -w \
 
 grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
 adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json"
-adb exec-out "run-as $PKG cat files/live-golden/preview.png" > "$ARTIFACT_DIR/android-preview.png"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
+
+adb shell am start -W -n "$PKG/.MainActivity" >/dev/null
+sleep 3
+adb exec-out screencap -p > "$ARTIFACT_DIR/android-preview.png"
 test -s "$ARTIFACT_DIR/android-preview.png"
 
 python - <<'PY'
