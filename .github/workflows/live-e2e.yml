@@ -261,37 +261,7 @@ jobs:
           profile: pixel_7
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
           disable-animations: true
-          script: |
-            set -eu
-            PKG=com.onedayonemasterpiece.streetstory
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
-            adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
-            adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
-            adb shell "run-as $PKG mkdir -p files/live-golden"
-            for name in config.json token.txt photo.jpg voice-{1..10}.pcm; do
-              adb shell "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "live-android-fixtures/$name"
-            done
-            mkdir -p backend/live-e2e-artifacts
-            adb shell am instrument -w \
-              -e class com.onedayonemasterpiece.streetstory.LiveGoldenInstrumentedTest \
-              "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
-              | tee backend/live-e2e-artifacts/android-instrumentation.txt
-            grep -q 'OK (1 test)' backend/live-e2e-artifacts/android-instrumentation.txt
-            adb shell "run-as $PKG cat files/live-golden/evidence.json" > backend/live-e2e-artifacts/android-golden-evidence.json
-            adb exec-out "run-as $PKG cat files/live-golden/preview.png" > backend/live-e2e-artifacts/android-preview.png
-            test -s backend/live-e2e-artifacts/android-golden-evidence.json
-            test -s backend/live-e2e-artifacts/android-preview.png
-            python - <<'PY'
-            import json, pathlib
-            evidence = json.loads(pathlib.Path('backend/live-e2e-artifacts/android-golden-evidence.json').read_text())
-            if evidence.get('cancel_confirmed') is not True:
-                raise SystemExit('Android golden run did not confirm native cancellation cleanup')
-            if evidence.get('physical_mic') is not False or evidence.get('prepared_pcm_after_capture_boundary') is not True:
-                raise SystemExit('Android golden evidence misrepresents prepared PCM acceptance')
-            if evidence.get('legacy_voice_endpoint_used') is not False:
-                raise SystemExit('Android golden run unexpectedly used the legacy voice endpoint')
-            PY
+          script: bash .github/scripts/live-e2e-android.sh
 
       - name: Upload redacted live evidence
         if: always()
