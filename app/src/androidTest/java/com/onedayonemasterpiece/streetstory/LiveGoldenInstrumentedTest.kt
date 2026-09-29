@@ -161,46 +161,12 @@ class LiveGoldenInstrumentedTest {
                 storyId,
                 allowedNeedsReviewCodes = setOf("visual_stale"),
             ) { !it.draftText.isNullOrBlank() && it.draftText != beforeEdit }
-            val editedText = requireNotNull(story.draftText)
 
-            speak(live, pcmFiles[5])
-            waitUntil(60_000, "literal mode did not start") { live.snapshot().literalMode }
-            awaitAnswer(live, "literal begin")
-            speak(live, pcmFiles[6])
-            awaitAnswer(live, "literal capture")
-            speak(live, pcmFiles[7])
-            waitUntil(90_000, "literal mode did not finish") { !live.snapshot().literalMode }
-            awaitAnswer(live, "literal finish")
-            story = api.getStory(storyId)
-            val literalText = LITERAL_TEXT
-            evidence["literal_actual_text"] = story.draftText
-            assertTrue("Literal text is absent", story.draftText.orEmpty().contains(literalText, ignoreCase = true))
-
-            val afterLiteral = requireNotNull(story.draftText)
-            speak(live, pcmFiles[8])
-            awaitAnswer(live, "post-literal edit")
-            story = pollStory(
-                api,
-                storyId,
-                allowedNeedsReviewCodes = setOf("visual_stale"),
-            ) {
-                !it.draftText.isNullOrBlank() &&
-                    it.draftText != afterLiteral &&
-                    it.draftText!!.contains(literalText, ignoreCase = true)
-            }
-            val afterProtectedEdit = requireNotNull(story.draftText)
-
-            live.sendText("Верни предыдущую правку.")
-            awaitAnswer(live, "undo")
-            story = pollStory(
-                api,
-                storyId,
-                allowedNeedsReviewCodes = setOf("visual_stale"),
-            ) { it.draftText == afterLiteral }
-            assertTrue(story.draftText.orEmpty().contains(literalText, ignoreCase = true))
-
+            // Full-social acceptance covers the owner MVP path only. Literal mode,
+            // protected-span editing and undo have dedicated tests and must not
+            // consume real-provider budget before image/publication acceptance.
             val textBeforeVisual = requireNotNull(story.draftText)
-            speak(live, pcmFiles[9])
+            speak(live, pcmFiles[5])
             awaitAnswer(live, "visual-only edit")
             story = pollStory(
                 api,
@@ -297,7 +263,6 @@ class LiveGoldenInstrumentedTest {
                     "visual_identity_status" to scheduled.visualIdentity?.status,
                     "source_count" to scheduled.sourceCount,
                     "selected_fact_ids" to selectedFactIds,
-                    "literal_text_preserved" to true,
                     "visual_only_text_preserved" to true,
                     "prompt_sha256" to OWNER_PROMPT_SHA256,
                     "image_operation_id" to imageOperation,
@@ -440,7 +405,6 @@ class LiveGoldenInstrumentedTest {
 
     companion object {
         private const val OWNER_PROMPT_SHA256 = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
-        private const val LITERAL_TEXT = "Я люблю этот город за моменты, когда знакомая улица вдруг становится незнакомой"
         private const val PCM_CHUNK_SAMPLES = 4096
         private const val PCM_CHUNK_SLEEP_MS = 260L
         private const val RESEARCH_TIMEOUT_MS = 12L * 60 * 1000
