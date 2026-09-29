@@ -287,8 +287,9 @@ class StreetStoryLiveAdapter:
 
         if name == "read_topic":
             result = self._topic_state(story_id)
-            self.emit(session, {"type": "product_state", "state": self._compact_context(result)})
-            return result
+            compact = self._compact_context(result)
+            self.emit(session, {"type": "product_state", "state": compact})
+            return compact
         if name == "literal_begin":
             return self._literal_begin(session, args)
         if name == "literal_cancel":
@@ -304,7 +305,7 @@ class StreetStoryLiveAdapter:
         if name != "literal_finish":
             replay = self._command_replay(story_id, command_id, name, args)
             if replay is not None:
-                return replay
+                return self._model_result(name, replay)
 
         if name == "resolve_place":
             result = await self._resolve_place(session, command_id, args)
@@ -334,7 +335,51 @@ class StreetStoryLiveAdapter:
 
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
-        return result
+        return self._model_result(name, result)
+
+    @staticmethod
+    def _compact_identity(identity: Any) -> dict[str, Any] | None:
+        if not isinstance(identity, dict) or not identity:
+            return None
+        candidates = [item for item in identity.get("candidates", []) if isinstance(item, dict)]
+        chosen = str(identity.get("candidate_id") or "")
+        # The selected object must survive compaction even when it was last in OSM/Wikipedia.
+        candidates.sort(key=lambda item: str(item.get("candidate_id") or "") != chosen)
+        return {
+            key: identity.get(key)
+            for key in ("status", "candidate_id", "candidate_name", "confidence")
+        } | {
+            "observations": [str(value)[:300] for value in identity.get("observations", [])[:3]],
+            "candidate_count": len(candidates),
+            "candidates": [
+                {key: item.get(key) for key in ("candidate_id", "name", "type", "url")}
+                for item in candidates[:8]
+            ],
+        }
+
+    @classmethod
+    def _model_result(cls, name: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Project only the model reply; keep durable results and the Android API complete.
+
+        Sending the full story after every tool duplicates research, candidates, facts,
+        sources and visual prompts. Those bytes are charged again to the shared Live
+        budget. Publication confirmation, revisions and literal spans remain exact.
+        Replay passes through the same projection without repeating an external effect.
+        """
+        projected = dict(result)
+        story = result.get("story")
+        if isinstance(story, dict):
+            keys = ("id", "state", "revision", "place_name", "source_count", "error")
+            projected["story"] = {key: story[key] for key in keys if key in story}
+            if "draft_text" not in result:
+                projected["story"]["draft_text"] = str(story.get("draft_text") or "")[:5000]
+        if "visual_identity" in result:
+            projected["visual_identity"] = cls._compact_identity(result["visual_identity"])
+        logging.getLogger("uvicorn.error").info(
+            "street_story_live_tool_reply name=%s full_chars=%d model_chars=%d",
+            name, len(canonical(result)), len(canonical(projected)),
+        )
+        return projected
 
     def _editor_row(self, db, story_id: str):
         story = self.service._story_row(db, story_id)
@@ -401,16 +446,7 @@ class StreetStoryLiveAdapter:
         ]
         visual = story.get("visual") if isinstance(story.get("visual"), dict) else {}
         identity = story.get("visual_identity") if isinstance(story.get("visual_identity"), dict) else {}
-        identity_candidates = [
-            {
-                "candidate_id": item.get("candidate_id"),
-                "name": item.get("name"),
-                "type": item.get("type"),
-                "url": item.get("url"),
-            }
-            for item in identity.get("candidates", [])[:12]
-            if isinstance(item, dict)
-        ]
+        compact_identity = StreetStoryLiveAdapter._compact_identity(identity)
         return {
             "story_id": story.get("id"),
             "state": story.get("state"),
@@ -420,14 +456,7 @@ class StreetStoryLiveAdapter:
             "text_revision": state["editor"].get("text_revision"),
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
-            "visual_identity": {
-                "status": identity.get("status"),
-                "candidate_id": identity.get("candidate_id"),
-                "candidate_name": identity.get("candidate_name"),
-                "confidence": identity.get("confidence"),
-                "observations": identity.get("observations", [])[:6],
-                "candidates": identity_candidates,
-            } if identity else None,
+            "visual_identity": compact_identity,
             "facts": facts,
             "source_count": story.get("source_count", 0),
             "visual": {

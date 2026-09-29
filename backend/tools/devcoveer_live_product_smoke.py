@@ -603,6 +603,46 @@ def run(
                     if fatal:
                         raise ProductSmokeError(fatal)
             cursor = int(initial.get("cursor") or 0)
+            print(json.dumps({"stage": "live_ready", "story_id": story_id,
+                              "session_id": session_id}, sort_keys=True), flush=True)
+            cursor, resolve_turn = send_tool_turn(
+                client, story_id, session_id, cursor,
+                expected_tool="resolve_place",
+                text=(
+                    f"На фотографии {meta['expected_object']} в Калининграде. "
+                    "Сначала вызови resolve_place: сопоставь фото с OSM и Wikipedia. "
+                    "Пока не ищи факты, не редактируй текст и не создавай визуал."
+                ),
+            )
+            resolved = story(client, story_id)
+            identity = resolved.get("visual_identity") or {}
+            candidates = identity.get("candidates") or []
+            expected_name = str(meta["expected_object"]).casefold().strip()
+            matching = [
+                item for item in candidates
+                if isinstance(item, dict)
+                and str(item.get("name") or "").casefold().strip() == expected_name
+                and item.get("candidate_id")
+            ]
+            if not matching:
+                raise ProductSmokeError("fixture_place_candidate_missing")
+            candidate_id = str(matching[0]["candidate_id"])
+            cursor, confirm_place_turn = send_tool_turn(
+                client, story_id, session_id, cursor,
+                expected_tool="confirm_place",
+                text=(
+                    f"Я явно подтверждаю: это {meta['expected_object']}. "
+                    f"Вызови confirm_place с candidate_id {candidate_id}. "
+                    "Пока только сохрани подтверждение, без поиска и редакторских действий."
+                ),
+            )
+            confirmed = story(client, story_id)
+            if (confirmed.get("visual_identity") or {}).get("status") != "owner_confirmed":
+                raise ProductSmokeError("live_place_not_owner_confirmed")
+            if (confirmed.get("visual_identity") or {}).get("candidate_id") != candidate_id:
+                raise ProductSmokeError("live_place_confirmation_mismatch")
+            print(json.dumps({"stage": "place_confirmed", "story_id": story_id,
+                              "candidate_id": candidate_id}, sort_keys=True), flush=True)
 
             cursor, search_turn = send_tool_turn(
                 client,
@@ -778,6 +818,15 @@ def run(
             receipt = {
                 "status": "PASS",
                 "source_sha": expected_sha,
+                "story_id": story_id,
+                "session_id": session_id,
+                "place_resolution": {
+                    "resolve_tool_ok": resolve_turn["tool_ok"],
+                    "confirm_tool_ok": confirm_place_turn["tool_ok"],
+                    "status": "owner_confirmed",
+                    "candidate_id": candidate_id,
+                    "place_name": confirmed.get("place_name"),
+                },
                 "live_model": MODEL,
                 "same_live_session": True,
                 "central_authority_fallback": False,
