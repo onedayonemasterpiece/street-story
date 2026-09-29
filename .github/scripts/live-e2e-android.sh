@@ -13,7 +13,7 @@ adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
 adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
 adb shell "run-as $PKG mkdir -p files/live-golden"
 
-for name in config.json token.txt photo.jpg voice-{1..10}.pcm; do
+for name in config.json token.txt photo.jpg voice-{1..6}.pcm; do
   test -s "$FIXTURE_DIR/$name"
   adb exec-in "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "$FIXTURE_DIR/$name"
 done
