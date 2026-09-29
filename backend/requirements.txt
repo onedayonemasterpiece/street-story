@@ -4,4 +4,4 @@ httpx>=0.27,<1
 cryptography>=42,<51
 python-multipart>=0.0.9,<1
 google-genai>=1.55,<2
-live-interaction @ https://github.com/onedayonemasterpiece/live-interaction/archive/2758d52fa77e04b21978f5bef18ccb5d776049da.tar.gz
+live-interaction @ https://github.com/onedayonemasterpiece/live-interaction/archive/c32a0f5b5da6902b9f508b9a7467cd9ff4f4e866.tar.gz

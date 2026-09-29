@@ -20,7 +20,7 @@ def test_live_interaction_is_pinned_to_manual_activity_release() -> None:
     assert (
         "live-interaction @ "
         "https://github.com/onedayonemasterpiece/live-interaction/archive/"
-        "2758d52fa77e04b21978f5bef18ccb5d776049da.tar.gz"
+        "c32a0f5b5da6902b9f508b9a7467cd9ff4f4e866.tar.gz"
     ) in text
 
 

@@ -24,8 +24,10 @@ adb shell am instrument -w \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 
+# Preserve the sanitized fixture evidence even when an assertion fails.
+# Never export token.txt or the application's credential store.
+adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json" || true
 grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
-adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
 
 adb shell am start -W -n "$PKG/.MainActivity" >/dev/null

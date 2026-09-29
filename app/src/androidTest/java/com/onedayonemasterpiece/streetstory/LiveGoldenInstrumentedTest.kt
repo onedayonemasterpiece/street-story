@@ -34,6 +34,7 @@ class LiveGoldenInstrumentedTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val root = File(context.filesDir, "live-golden")
     private val gson = Gson()
+    private var awaitingTurnAfter = 0
 
     @Test
     fun androidClientToNativeTelegramGoldenPath() {
@@ -156,12 +157,15 @@ class LiveGoldenInstrumentedTest {
 
             speak(live, pcmFiles[5])
             waitUntil(60_000, "literal mode did not start") { live.snapshot().literalMode }
+            awaitAnswer(live, "literal begin")
             speak(live, pcmFiles[6])
+            awaitAnswer(live, "literal capture")
             speak(live, pcmFiles[7])
             waitUntil(90_000, "literal mode did not finish") { !live.snapshot().literalMode }
             awaitAnswer(live, "literal finish")
             story = api.getStory(storyId)
             val literalText = LITERAL_TEXT
+            evidence["literal_actual_text"] = story.draftText
             assertTrue("Literal text is absent", story.draftText.orEmpty().contains(literalText, ignoreCase = true))
 
             val afterLiteral = requireNotNull(story.draftText)
@@ -316,8 +320,9 @@ class LiveGoldenInstrumentedTest {
                     }
                 }
             }
-            live.stopLocal(sendRemote = true)
             evidence["last_live_error"] = live.snapshot().error
+            evidence["completed_live_turns"] = live.snapshot().completedTurns
+            live.stopLocal(sendRemote = true)
             File(root, "evidence.json").writeText(gson.toJson(evidence))
             store.close()
         }
@@ -325,6 +330,7 @@ class LiveGoldenInstrumentedTest {
     }
 
     private fun speak(live: LiveSessionController, pcm: File) {
+        awaitingTurnAfter = live.snapshot().completedTurns
         val bytes = pcm.readBytes()
         require(bytes.size % 2 == 0)
         val shorts = ShortArray(bytes.size / 2)
@@ -340,14 +346,13 @@ class LiveGoldenInstrumentedTest {
     }
 
     private fun awaitAnswer(live: LiveSessionController, label: String) {
-        val before = live.snapshot().assistantText
+        // Wait for provider turn completion, not its first transcript fragment.
         waitUntil(120_000, "Live answer timed out: $label") {
             val state = live.snapshot()
             state.error?.let { error("Live failed during $label: $it") }
-            state.active && state.status == "Слушаю" &&
-                !state.assistantText.isNullOrBlank() &&
-                state.assistantText != before
+            state.active && state.completedTurns > awaitingTurnAfter
         }
+        awaitingTurnAfter = live.snapshot().completedTurns
     }
 
     private fun waitUntil(timeoutMs: Long, message: String, predicate: () -> Boolean) {

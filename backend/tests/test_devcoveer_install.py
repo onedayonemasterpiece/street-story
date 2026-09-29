@@ -17,6 +17,25 @@ def _load_installer():
     return module
 
 
+@pytest.mark.parametrize("test_target", [True, False])
+def test_deployed_capability_gate_requires_test_group(monkeypatch, test_target):
+    module = _load_installer()
+    sha = "a" * 40
+    alias = module.TEST_VIBE_ALIAS if test_target else module.VIBE_ALIAS
+    rows = [{"alias": alias, "provider": "telegram", "status": "supported"}]
+
+    def fake_http(url, **kwargs):
+        return {"ok": True, "source_sha": sha} if url.endswith("healthz") else {"destinations": rows}
+
+    monkeypatch.setattr(module, "http_json", fake_http)
+    if test_target:
+        _, capabilities = module.verify_runtime(sha, "test-token")
+        assert capabilities["destinations"] == rows
+    else:
+        with pytest.raises(module.DeployError, match="unexpected Street Story destination"):
+            module.verify_runtime(sha, "test-token")
+
+
 def test_tracked_status_ignores_untracked_files(monkeypatch) -> None:
     module = _load_installer()
     seen: list[list[str]] = []

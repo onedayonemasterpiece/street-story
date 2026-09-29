@@ -30,6 +30,7 @@ data class LiveUiState(
     val lastChange: String? = null,
     val confirmation: LiveConfirmation? = null,
     val error: String? = null,
+    val completedTurns: Int = 0,
 )
 
 class LiveSessionController(context: Context) {
@@ -241,7 +242,9 @@ class LiveSessionController(context: Context) {
             "audio" -> event.data?.let { playAudio(gen, it, event.mimeType) }
             "output_transcript" -> {
                 val text = event.text?.trim().orEmpty()
-                if (text.isNotEmpty()) update(state.copy(status = "Слушаю", assistantText = text, error = null))            }
+                if (text.isNotEmpty()) update(state.copy(status = "Отвечаю", assistantText = text, error = null))
+            }
+            "turn_complete" -> update(state.copy(status = "Слушаю", completedTurns = state.completedTurns + 1, error = null))
             "input_transcript" -> update(state.copy(status = "Жду ответа", error = null))
             "interaction_status" -> {
                 val label = when (event.status?.uppercase()) {
