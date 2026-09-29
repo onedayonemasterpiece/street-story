@@ -182,7 +182,7 @@ jobs:
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
-          SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+          SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
           LIVE_E2E_MODE: smoke
           STREET_STORY_LIVE_DIAGNOSTIC: live-e2e-artifacts/diagnostic.json
         run: python tools/live_e2e.py
@@ -222,7 +222,7 @@ jobs:
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
-          SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+          SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
         run: |
           set -euo pipefail
           test -n "$STREET_STORY_LIVE_BASE_URL"
@@ -239,30 +239,29 @@ jobs:
           import urllib.request
 
           root = pathlib.Path('live-android-fixtures')
-          meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
-          request = urllib.request.Request(
-              meta['download_url'],
-              headers={'User-Agent': 'StreetStoryLiveE2EBot/5.0 (https://github.com/onedayonemasterpiece/street-story; public golden fixture)'},
-          )
-          with urllib.request.urlopen(request, timeout=60) as response:
-              photo = response.read()
+          fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
+          meta = json.loads((fixture / 'fixture.json').read_text(encoding='utf-8'))
+          photo = (fixture / meta['source_file']).read_bytes()
           actual_sha1 = hashlib.sha1(photo).hexdigest()
           if actual_sha1 != meta['source_sha1']:
-              raise SystemExit(f"Commons fixture SHA-1 mismatch: {actual_sha1}")
-          (root / 'photo-source.jpg').write_bytes(photo)
-          (root / 'photo.jpg').write_bytes(photo)
+              raise SystemExit(f"Owner fixture SHA-1 mismatch: {actual_sha1}")
+          (root / 'photo-source.png').write_bytes(photo)
+          subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                          '-i', str(root / 'photo-source.png'), '-frames:v', '1',
+                          '-q:v', '2', str(root / 'photo.jpg')], check=True)
           (root / 'config.json').write_text(
               json.dumps({
                   'backend_url': os.environ['STREET_STORY_LIVE_BASE_URL'].rstrip('/'),
                   'safe_alias': os.environ['SAFE_TEST_DESTINATION_ALIAS'],
+                  'latitude': meta['latitude'], 'longitude': meta['longitude'],
               }),
               encoding='utf-8',
           )
           (root / 'token.txt').write_text(os.environ['STREET_STORY_LIVE_TOKEN'], encoding='utf-8')
           texts = [
-              'Это Бранденбургские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
-              'Найди проверяемые факты об этих воротах и реальные источники. Не используй неподтвержденные легенды.',
-              'Если объект нужно подтвердить, это именно Бранденбургские ворота. Подтверждаю подходящего кандидата и продолжай исследование.',
+              'Это Закхаймские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
+              'Сначала определи объект на фото через resolve_place, OSM и Википедию. Пока не ищи факты.',
+              'Подтверждаю: это Закхаймские ворота. Сохрани подходящего кандидата через confirm_place.',
               'Оставь два самых надежных подтвержденных факта, остальные не используй в текущем посте.',
               'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
               'Начало я сейчас продиктую дословно.',
@@ -281,21 +280,21 @@ jobs:
               ], check=True)
               wav.unlink()
           PY
-          LAT=$(python -c "import json; print(json.load(open('backend/tools/golden_fixture.json'))['latitude'])")
-          LON=$(python -c "import json; print(json.load(open('backend/tools/golden_fixture.json'))['longitude'])")
+          LAT=$(python -c "import json; print(json.load(open('live-android-fixtures/config.json'))['latitude'])")
+          LON=$(python -c "import json; print(json.load(open('live-android-fixtures/config.json'))['longitude'])")
           exiftool -overwrite_original -n \
             -GPSLatitude="$LAT" -GPSLatitudeRef=N \
             -GPSLongitude="$LON" -GPSLongitudeRef=E \
             live-android-fixtures/photo.jpg >/dev/null
           python - <<'PY'
           import hashlib, json, pathlib
-          meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
+          meta = json.loads(pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928/fixture.json').read_text(encoding='utf-8'))
           derived = pathlib.Path('live-android-fixtures/photo.jpg').read_bytes()
           public = {
               'schema_version': 1,
               'fixture_id': meta['fixture_id'],
-              'commons_page': meta['commons_page'],
-              'author': meta['author'],
+              'source': 'owner-supplied repository fixture',
+              'object': meta['expected_object'],
               'license': meta['license'],
               'source_sha1': meta['source_sha1'],
               'derived_photo_sha256': hashlib.sha256(derived).hexdigest(),
