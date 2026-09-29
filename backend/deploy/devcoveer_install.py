@@ -30,6 +30,7 @@ BRANCH = "work/street-story-mvp-20260908"
 SERVICE = "street-story.service"
 PORT = 8188
 VIBE_ALIAS = "lovekenig_tg"
+TEST_VIBE_ALIAS = "street_story_e2e_20260928_tg"
 VIBE_BASE_URL = "http://127.0.0.1:18765"
 VIBE_HTTP_HOST = "mcp-vibepublish.kenigevents.ru"
 CANONICAL_GOOGLE_AI_LIMITER_URL = "https://epyznmylqmchteykjsqj.supabase.co"
@@ -954,7 +955,7 @@ def write_service_env(device: str, vibe: str, sha: str) -> None:
                 "VIBEPUBLISH_HTTP_HOST": VIBE_HTTP_HOST,
                 "VIBEPUBLISH_BEARER_TOKEN": vibe,
                 "STREET_STORY_DEPLOY_SHA": sha,
-                "STREET_STORY_TEST_DESTINATION_ALIAS": "street_story_e2e_20260928_tg",
+                "STREET_STORY_TEST_DESTINATION_ALIAS": TEST_VIBE_ALIAS,
                 "STREET_STORY_OSM_USER_AGENT": (
                     "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"
                 ),
@@ -1093,7 +1094,7 @@ def verify_runtime(expected_sha: str, device: str) -> tuple[dict[str, Any], dict
         for row in rows
         if isinstance(row, dict)
     ]
-    if safe_rows != [{"alias": VIBE_ALIAS, "provider": "telegram", "status": "supported"}]:
+    if safe_rows != [{"alias": TEST_VIBE_ALIAS, "provider": "telegram", "status": "supported"}]:
         raise DeployError(f"unexpected Street Story destination projection: {safe_rows}")
     return health, {"destinations": safe_rows}
 
