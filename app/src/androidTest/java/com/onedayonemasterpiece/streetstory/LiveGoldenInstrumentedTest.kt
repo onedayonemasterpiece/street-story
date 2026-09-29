@@ -10,7 +10,6 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -231,10 +230,12 @@ class LiveGoldenInstrumentedTest {
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
                 .edit().putString("active_story_id", local.clientStoryId).apply()
             val publicDestinations = api.capabilities().destinations
-            assertFalse(
-                "Internal E2E Telegram alias leaked into product capabilities",
-                publicDestinations.any { it.alias == safeAlias },
+            assertEquals(
+                "Owner MVP must expose exactly the configured test Telegram group",
+                listOf(safeAlias),
+                publicDestinations.map { it.alias },
             )
+            assertTrue(publicDestinations.single().status in setOf("supported", "needs_review"))
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
                 .plusHours(25)
