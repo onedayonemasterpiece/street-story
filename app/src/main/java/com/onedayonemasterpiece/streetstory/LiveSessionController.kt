@@ -21,6 +21,15 @@ data class LiveConfirmation(
     val timezone: String?,
 )
 
+internal object LiveAudioTransportPolicy {
+    // One HTTPS POST per ~768 ms of 16 kHz mono PCM. The previous 256 ms
+    // batches generated requests faster than mobile/network RTT and overflowed
+    // the bounded queue during ordinary continuous speech.
+    const val TARGET_PCM_BYTES = 24_576
+    const val OUTBOUND_CAPACITY = 8
+    const val MAX_AUDIO_AGE_MS = 2_500L
+}
+
 data class LiveUiState(
     val storyId: String? = null,
     val active: Boolean = false,
@@ -42,9 +51,9 @@ class LiveSessionController(context: Context) {
     private val network = Executors.newCachedThreadPool()
     private val sender = Executors.newSingleThreadExecutor()
     private val playback = Executors.newSingleThreadExecutor()
-    private val outbound = ArrayBlockingQueue<Outbound>(8)
+    private val outbound = ArrayBlockingQueue<Outbound>(LiveAudioTransportPolicy.OUTBOUND_CAPACITY)
     private val batchLock = Any()
-    private var batch = ByteArrayOutputStream(TARGET_PCM_BYTES + 1024)
+    private var batch = ByteArrayOutputStream(LiveAudioTransportPolicy.TARGET_PCM_BYTES + 1024)
     private val speechBoundary = LiveSpeechBoundary()
     @Volatile private var state = LiveUiState()
     @Volatile private var serverStoryId: String? = null
@@ -115,7 +124,7 @@ class LiveSessionController(context: Context) {
                 batch.write(v and 0xff)
                 batch.write((v ushr 8) and 0xff)
             }
-            if (batch.size() >= TARGET_PCM_BYTES) flushBatchLocked(gen)
+            if (batch.size() >= LiveAudioTransportPolicy.TARGET_PCM_BYTES) flushBatchLocked(gen)
         }
     }
 
@@ -187,7 +196,7 @@ class LiveSessionController(context: Context) {
             while (generation.get() == gen && state.active) {
                 val item = outbound.poll(250, TimeUnit.MILLISECONDS) ?: continue
                 if (item.generation != gen || generation.get() != gen) continue
-                if (System.currentTimeMillis() - item.queuedAtMs > MAX_AUDIO_AGE_MS) {
+                if (System.currentTimeMillis() - item.queuedAtMs > LiveAudioTransportPolicy.MAX_AUDIO_AGE_MS) {
                     fail(gen, "Live не успевает принимать звук")
                     return@execute
                 }
@@ -367,8 +376,6 @@ class LiveSessionController(context: Context) {
     )
 
     companion object {
-        private const val TARGET_PCM_BYTES = 8_192
-        private const val MAX_AUDIO_AGE_MS = 2_500L
         private const val POLL_MS = 160L
     }
 }

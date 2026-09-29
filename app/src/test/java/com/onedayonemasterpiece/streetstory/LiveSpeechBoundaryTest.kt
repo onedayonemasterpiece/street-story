@@ -17,6 +17,14 @@ class LiveSpeechBoundaryTest {
     }
 
     @Test
+    fun audioBatchingLeavesNetworkHeadroomWithoutStaleSpeech() {
+        val batchMs = LiveAudioTransportPolicy.TARGET_PCM_BYTES / 2 * 1000 / 16_000
+        assertTrue(batchMs in 700..900)
+        assertTrue(LiveAudioTransportPolicy.OUTBOUND_CAPACITY >= 8)
+        assertTrue(LiveAudioTransportPolicy.MAX_AUDIO_AGE_MS > batchMs * 2)
+    }
+
+    @Test
     fun resetRequiresANewActivityStart() {
         val boundary = LiveSpeechBoundary()
         assertTrue(boundary.beforeAudio())
