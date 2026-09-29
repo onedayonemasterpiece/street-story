@@ -96,8 +96,7 @@ class LiveGoldenInstrumentedTest {
                 RESEARCH_TIMEOUT_MS,
                 allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
             ) {
-                it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW, StoryStage.READY_TO_PUBLISH) &&
-                    it.sourceCount > 0
+                it.visualIdentity?.status in setOf("match", "uncertain", "owner_confirmed")
             }
 
             if (story.visualIdentity?.status !in setOf("match", "owner_confirmed")) {
@@ -109,12 +108,20 @@ class LiveGoldenInstrumentedTest {
                     RESEARCH_TIMEOUT_MS,
                     allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
                 ) {
-                    it.state in setOf(StoryStage.REVIEW, StoryStage.NEEDS_REVIEW, StoryStage.READY_TO_PUBLISH) &&
-                        it.visualIdentity?.status in setOf("match", "owner_confirmed") &&
-                        it.sourceCount > 0
+                    it.visualIdentity?.status in setOf("match", "owner_confirmed")
                 }
             }
             assertTrue(story.visualIdentity?.status in setOf("match", "owner_confirmed"))
+            // Identity confirmation precedes research. Do not wait for facts before
+            // allowing the author to confirm an uncertain photo match.
+            if (story.sourceCount == 0) {
+                live.sendText("Объект подтверждён. Найди проверяемые исторические факты через search_web и сохрани источники.")
+                awaitAnswer(live, "research after identity confirmation")
+            }
+            story = pollStory(
+                api, storyId, RESEARCH_TIMEOUT_MS,
+                allowedNeedsReviewCodes = setOf("visual_stale"),
+            ) { it.sourceCount > 0 }
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
             require(story.facts.count { it.evidenceSupported } >= 2)
