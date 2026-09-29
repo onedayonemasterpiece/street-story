@@ -71,8 +71,11 @@ class Settings:
     gemini_transcription_rpm: int = 0
     gemini_grounded_research_rpm: int = 0
     processing_delayed_after_seconds: float = 1800.0
+    publication_test_alias: str | None = None
 
     def __post_init__(self):
+        if self.publication_test_alias and not re.fullmatch(r"street_story_e2e_[a-zA-Z0-9_]{1,80}", self.publication_test_alias):
+            raise ValueError("Test destination must be an explicit Street Story E2E alias")
         for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key'):
             object.__setattr__(self, name, secret(getattr(self, name)))
         object.__setattr__(self, 'gemini_api_keys', tuple(secret(k) for k in self.gemini_api_keys))
@@ -147,6 +150,7 @@ class Settings:
             vibepublish_bearer_token=os.getenv('VIBEPUBLISH_BEARER_TOKEN'),
             osm_user_agent=os.getenv('STREET_STORY_OSM_USER_AGENT', 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)'),
             worker_poll_seconds=_number('WORKER_POLL_SECONDS', 1, .01, 60),
+            publication_test_alias=os.getenv('STREET_STORY_TEST_DESTINATION_ALIAS', '').strip() or None,
             gemini_call_timeout_seconds=_number('GEMINI_CALL_TIMEOUT_SECONDS', 20, .1, 120),
             gemini_attempt_timeout_seconds=_number('GEMINI_ATTEMPT_TIMEOUT_SECONDS', 60, .1, 300),
             gemini_transcription_rpm=int(_number('GEMINI_TRANSCRIPTION_RPM', 0, 0, 10000)),

@@ -11,6 +11,11 @@ on:
         options:
           - smoke
           - full_social
+          - readback
+      story_id:
+        description: 'Existing test story to export; readback performs no model calls or publication writes'
+        required: false
+        type: string
   pull_request:
     branches: [main]
     types: [labeled]
@@ -19,13 +24,76 @@ permissions:
   contents: read
 
 concurrency:
-  group: street-story-live-e2e
+  group: street-story-live-e2e-${{ inputs.acceptance == 'readback' && 'readback' || 'live' }}
   cancel-in-progress: false
 
 jobs:
+  readback:
+    if: github.event_name == 'workflow_dispatch' && inputs.acceptance == 'readback'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export one existing test result without publication writes
+        env:
+          READBACK_STORY_ID: ${{ inputs.story_id }}
+          STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
+        run: |
+          python - <<'PYCODE'
+          import hashlib, json, os, pathlib, re, shutil, urllib.request
+          story_id = os.environ['READBACK_STORY_ID']
+          if not re.fullmatch(r'story_[a-zA-Z0-9]{8,64}', story_id):
+              raise SystemExit('invalid test story id')
+          base = 'https://street-story.kenigevents.ru'
+          token = os.environ['STREET_STORY_LIVE_TOKEN']
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          def fetch(path, limit):
+              req = urllib.request.Request(base + path, headers={'Authorization': 'Bearer ' + token})
+              with opener.open(req, timeout=30) as response:
+                  data = response.read(limit + 1)
+                  if len(data) > limit:
+                      raise RuntimeError('result exceeds export bound')
+                  return data
+          story = json.loads(fetch('/v1/stories/' + story_id, 2_000_000))
+          publication = story.get('publication') or {}
+          # Only an existing explicitly confirmed test destination may be exported.
+          aliases = [str(item.get('alias') or '') for item in story.get('destinations', [])]
+          if not aliases or not all(alias.startswith('street_story_e2e_') for alias in aliases):
+              raise SystemExit('test publication binding missing')
+          image = fetch('/v1/assets/' + story_id + '/processed', 30_000_000)
+          actual = hashlib.sha256(image).hexdigest()
+          visual = story.get('visual') or {}
+          expected = visual.get('selected_sha256')
+          if expected and actual != expected:
+              raise SystemExit('selected image checksum mismatch')
+          out = pathlib.Path('backend/live-e2e-artifacts')
+          out.mkdir(parents=True, exist_ok=True)
+          suffix = '.png' if image.startswith(b'\x89PNG') else '.jpg'
+          (out / ('generated' + suffix)).write_bytes(image)
+          keys = ('id', 'state', 'place_name', 'draft_text', 'source_count', 'sources', 'facts', 'publication')
+          receipt = {key: story.get(key) for key in keys}
+          receipt['image_sha256'] = actual
+          receipt['image_bytes'] = len(image)
+          receipt['visual'] = {key: visual.get(key) for key in ('prompt_version', 'content_revision', 'selected_sha256')}
+          receipt['read_only'] = True
+          receipt['secrets_disclosed'] = False
+          (out / 'owner-readback.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')
+          fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
+          shutil.copyfile(fixture / 'source.png', out / 'owner-source.png')
+          shutil.copyfile(fixture / 'reference-generated.png', out / 'owner-reference.png')
+          print(json.dumps({'story_id': story_id, 'state': story.get('state'), 'image_bytes': len(image), 'image_sha256': actual}))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: street-story-owner-readback-${{ github.run_id }}
+          path: backend/live-e2e-artifacts/
+          retention-days: 14
   live-e2e:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.acceptance != 'readback') ||
       (github.event_name == 'pull_request' &&
        github.event.action == 'labeled' &&
        (github.event.label.name == 'live-e2e-smoke' || github.event.label.name == 'live-e2e-full-social') &&
@@ -114,7 +182,7 @@ jobs:
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
-          SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+          SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
           LIVE_E2E_MODE: smoke
           STREET_STORY_LIVE_DIAGNOSTIC: live-e2e-artifacts/diagnostic.json
         run: python tools/live_e2e.py
@@ -154,7 +222,7 @@ jobs:
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
-          SAFE_TEST_DESTINATION_ALIAS: ${{ secrets.SAFE_TEST_DESTINATION_ALIAS }}
+          SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
         run: |
           set -euo pipefail
           test -n "$STREET_STORY_LIVE_BASE_URL"
@@ -171,30 +239,29 @@ jobs:
           import urllib.request
 
           root = pathlib.Path('live-android-fixtures')
-          meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
-          request = urllib.request.Request(
-              meta['download_url'],
-              headers={'User-Agent': 'StreetStoryLiveE2EBot/5.0 (https://github.com/onedayonemasterpiece/street-story; public golden fixture)'},
-          )
-          with urllib.request.urlopen(request, timeout=60) as response:
-              photo = response.read()
+          fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
+          meta = json.loads((fixture / 'fixture.json').read_text(encoding='utf-8'))
+          photo = (fixture / meta['source_file']).read_bytes()
           actual_sha1 = hashlib.sha1(photo).hexdigest()
           if actual_sha1 != meta['source_sha1']:
-              raise SystemExit(f"Commons fixture SHA-1 mismatch: {actual_sha1}")
-          (root / 'photo-source.jpg').write_bytes(photo)
-          (root / 'photo.jpg').write_bytes(photo)
+              raise SystemExit(f"Owner fixture SHA-1 mismatch: {actual_sha1}")
+          (root / 'photo-source.png').write_bytes(photo)
+          subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                          '-i', str(root / 'photo-source.png'), '-frames:v', '1',
+                          '-q:v', '2', str(root / 'photo.jpg')], check=True)
           (root / 'config.json').write_text(
               json.dumps({
                   'backend_url': os.environ['STREET_STORY_LIVE_BASE_URL'].rstrip('/'),
                   'safe_alias': os.environ['SAFE_TEST_DESTINATION_ALIAS'],
+                  'latitude': meta['latitude'], 'longitude': meta['longitude'],
               }),
               encoding='utf-8',
           )
           (root / 'token.txt').write_text(os.environ['STREET_STORY_LIVE_TOKEN'], encoding='utf-8')
           texts = [
-              'Это Бранденбургские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
-              'Найди проверяемые факты об этих воротах и реальные источники. Не используй неподтвержденные легенды.',
-              'Если объект нужно подтвердить, это именно Бранденбургские ворота. Подтверждаю подходящего кандидата и продолжай исследование.',
+              'Это Закхаймские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
+              'Сначала определи объект на фото через resolve_place, OSM и Википедию. Пока не ищи факты.',
+              'Подтверждаю: это Закхаймские ворота. Сохрани подходящего кандидата через confirm_place.',
               'Оставь два самых надежных подтвержденных факта, остальные не используй в текущем посте.',
               'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
               'Начало я сейчас продиктую дословно.',
@@ -213,21 +280,21 @@ jobs:
               ], check=True)
               wav.unlink()
           PY
-          LAT=$(python -c "import json; print(json.load(open('backend/tools/golden_fixture.json'))['latitude'])")
-          LON=$(python -c "import json; print(json.load(open('backend/tools/golden_fixture.json'))['longitude'])")
+          LAT=$(python -c "import json; print(json.load(open('live-android-fixtures/config.json'))['latitude'])")
+          LON=$(python -c "import json; print(json.load(open('live-android-fixtures/config.json'))['longitude'])")
           exiftool -overwrite_original -n \
             -GPSLatitude="$LAT" -GPSLatitudeRef=N \
             -GPSLongitude="$LON" -GPSLongitudeRef=E \
             live-android-fixtures/photo.jpg >/dev/null
           python - <<'PY'
           import hashlib, json, pathlib
-          meta = json.loads(pathlib.Path('backend/tools/golden_fixture.json').read_text(encoding='utf-8'))
+          meta = json.loads(pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928/fixture.json').read_text(encoding='utf-8'))
           derived = pathlib.Path('live-android-fixtures/photo.jpg').read_bytes()
           public = {
               'schema_version': 1,
               'fixture_id': meta['fixture_id'],
-              'commons_page': meta['commons_page'],
-              'author': meta['author'],
+              'source': 'owner-supplied repository fixture',
+              'object': meta['expected_object'],
               'license': meta['license'],
               'source_sha1': meta['source_sha1'],
               'derived_photo_sha256': hashlib.sha256(derived).hexdigest(),

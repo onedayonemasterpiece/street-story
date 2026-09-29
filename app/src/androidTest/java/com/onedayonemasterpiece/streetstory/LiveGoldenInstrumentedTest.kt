@@ -59,8 +59,8 @@ class LiveGoldenInstrumentedTest {
         assertEquals(photoSha, imported.sha256)
         assertNotNull(imported.latitude)
         assertNotNull(imported.longitude)
-        assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - FIXTURE_LAT) < 0.0025)
-        assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - FIXTURE_LON) < 0.0025)
+        assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - config.get("latitude").asDouble) < 0.0025)
+        assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - config.get("longitude").asDouble) < 0.0025)
 
         val store = AppGraph.store(context)
         val local = store.createStory(imported)
@@ -70,7 +70,13 @@ class LiveGoldenInstrumentedTest {
         store.setServerIdentity(local.clientStoryId, created.id)
         val storyId = created.id
         val live = AppGraph.live(context)
-        val evidence = linkedMapOf<String, Any?>()
+        val evidence = linkedMapOf<String, Any?>(
+            "server_story_id" to storyId,
+            "client_story_id" to local.clientStoryId,
+            "fixture_photo_sha256" to photoSha,
+            "destination_alias" to safeAlias,
+            "physical_mic" to false,
+        )
         var publicationScheduled = false
         var cancelConfirmed = false
 
@@ -311,6 +317,7 @@ class LiveGoldenInstrumentedTest {
                 }
             }
             live.stopLocal(sendRemote = true)
+            evidence["last_live_error"] = live.snapshot().error
             File(root, "evidence.json").writeText(gson.toJson(evidence))
             store.close()
         }
@@ -417,8 +424,6 @@ class LiveGoldenInstrumentedTest {
     }
 
     companion object {
-        private const val FIXTURE_LAT = 54.697111
-        private const val FIXTURE_LON = 20.494111
         private const val OWNER_PROMPT_SHA256 = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
         private const val LITERAL_TEXT = "Я люблю этот город за моменты, когда знакомая улица вдруг становится незнакомой"
         private const val PCM_CHUNK_SAMPLES = 4096
