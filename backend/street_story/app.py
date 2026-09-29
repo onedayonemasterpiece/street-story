@@ -19,6 +19,29 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
 
 
+LIVE_PROVIDER_AUDIO_CHARS = 16_000
+LIVE_HTTP_AUDIO_CHARS = 48_000
+
+
+def live_input_messages(message):
+    """Split one mobile HTTP audio batch into ordered shared-host chunks."""
+    if not isinstance(message, dict):
+        return [message]
+    audio = message.get("audio_base64")
+    if not isinstance(audio, str) or len(audio) <= LIVE_PROVIDER_AUDIO_CHARS:
+        return [message]
+    if (
+        set(message) != {"audio_base64"}
+        or len(audio) > LIVE_HTTP_AUDIO_CHARS
+        or len(audio) % 4
+    ):
+        raise LiveError("INVALID_ARGUMENT", "Audio batch is invalid")
+    return [
+        {"audio_base64": audio[offset : offset + LIVE_PROVIDER_AUDIO_CHARS]}
+        for offset in range(0, len(audio), LIVE_PROVIDER_AUDIO_CHARS)
+    ]
+
+
 def create_app(settings: Settings | None = None, service: StreetStoryService | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     service = service or RuntimeStreetStoryService(settings)
@@ -117,12 +140,15 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/input", dependencies=[Depends(auth)])
     async def live_input(story_id: str, session_id: str, request: Request):
-        return await live_host.input(
-            resource_id=story_id,
-            session_id=session_id,
-            actor={"subject": "street-story-device", "tenant_id": "street-story"},
-            message=await request.json(),
-        )
+        result = None
+        for message in live_input_messages(await request.json()):
+            result = await live_host.input(
+                resource_id=story_id,
+                session_id=session_id,
+                actor={"subject": "street-story-device", "tenant_id": "street-story"},
+                message=message,
+            )
+        return result
 
     @app.get("/v1/stories/{story_id}/live-sessions/{session_id}/events", dependencies=[Depends(auth)])
     async def live_events(story_id: str, session_id: str, after: int = 0):
