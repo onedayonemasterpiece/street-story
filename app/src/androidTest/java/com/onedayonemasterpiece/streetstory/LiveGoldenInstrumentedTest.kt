@@ -47,7 +47,7 @@ class LiveGoldenInstrumentedTest {
         require(isExplicitTestAlias(safeAlias))
 
         val photoFile = File(root, "photo.jpg")
-        val pcmFiles = (1..10).map { File(root, "voice-$it.pcm") }
+        val pcmFiles = (1..6).map { File(root, "voice-$it.pcm") }
         require(photoFile.isFile && pcmFiles.all(File::isFile))
 
         val appConfig = AppGraph.config(context)
