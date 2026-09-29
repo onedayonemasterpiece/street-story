@@ -954,6 +954,7 @@ def write_service_env(device: str, vibe: str, sha: str) -> None:
                 "VIBEPUBLISH_HTTP_HOST": VIBE_HTTP_HOST,
                 "VIBEPUBLISH_BEARER_TOKEN": vibe,
                 "STREET_STORY_DEPLOY_SHA": sha,
+                "STREET_STORY_TEST_DESTINATION_ALIAS": "street_story_e2e_20260928_tg",
                 "STREET_STORY_OSM_USER_AGENT": (
                     "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"
                 ),

@@ -771,12 +771,16 @@ class MvpResearchMixin:
 
     async def capabilities(self) -> dict[str, Any]:
         result = await super().capabilities()
+        test_alias = self.settings.publication_test_alias
         telegram = [
             item
             for item in result.get("destinations", [])
             if item.get("provider") == "telegram"
             and item.get("status") in {"supported", "needs_review"}
-            and not _is_internal_acceptance_destination(item.get("alias"))
+            and (
+                item.get("alias") == test_alias if test_alias
+                else not _is_internal_acceptance_destination(item.get("alias"))
+            )
         ]
         for item in telegram:
             item["selected"] = True
@@ -785,6 +789,9 @@ class MvpResearchMixin:
         return result
 
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        test_alias = self.settings.publication_test_alias
+        if test_alias and body.get("destinations") != [test_alias]:
+            raise ConflictError("test_destination_only", "This Street Story deployment only publishes to its configured test group")
         text = body.get("text_override")
         if text is not None and len(str(text)) > 1024:
             raise ConflictError(
