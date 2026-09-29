@@ -139,11 +139,20 @@ class LiveGoldenInstrumentedTest {
                 storyId,
                 allowedNeedsReviewCodes = setOf("visual_stale"),
             ) {
-                it.facts.count { fact -> fact.selected && fact.evidenceSupported } >= 1 &&
-                    !it.draftText.isNullOrBlank()
+                it.facts.count { fact -> fact.selected && fact.evidenceSupported } >= 1
             }
             val selectedFactIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
 
+            if (story.draftText.isNullOrBlank()) {
+                live.sendText(
+                    "По уже выбранным подтверждённым фактам собери первый короткий городской пост. " +
+                        "Вызови edit_text; не ищи новые факты и не меняй выбранные источники.",
+                )
+                awaitAnswer(live, "initial draft")
+                story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {
+                    !it.draftText.isNullOrBlank()
+                }
+            }
             val beforeEdit = requireNotNull(story.draftText)
             speak(live, pcmFiles[4])
             awaitAnswer(live, "text edit")
