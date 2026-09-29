@@ -11,6 +11,11 @@ on:
         options:
           - smoke
           - full_social
+          - readback
+      story_id:
+        description: 'Existing test story to export; readback performs no model calls or publication writes'
+        required: false
+        type: string
   pull_request:
     branches: [main]
     types: [labeled]
@@ -19,13 +24,76 @@ permissions:
   contents: read
 
 concurrency:
-  group: street-story-live-e2e
+  group: street-story-live-e2e-${{ inputs.acceptance == 'readback' && 'readback' || 'live' }}
   cancel-in-progress: false
 
 jobs:
+  readback:
+    if: github.event_name == 'workflow_dispatch' && inputs.acceptance == 'readback'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export one existing test result without publication writes
+        env:
+          READBACK_STORY_ID: ${{ inputs.story_id }}
+          STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
+        run: |
+          python - <<'PYCODE'
+          import hashlib, json, os, pathlib, re, shutil, urllib.request
+          story_id = os.environ['READBACK_STORY_ID']
+          if not re.fullmatch(r'story_[a-zA-Z0-9]{8,64}', story_id):
+              raise SystemExit('invalid test story id')
+          base = 'https://street-story.kenigevents.ru'
+          token = os.environ['STREET_STORY_LIVE_TOKEN']
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          def fetch(path, limit):
+              req = urllib.request.Request(base + path, headers={'Authorization': 'Bearer ' + token})
+              with opener.open(req, timeout=30) as response:
+                  data = response.read(limit + 1)
+                  if len(data) > limit:
+                      raise RuntimeError('result exceeds export bound')
+                  return data
+          story = json.loads(fetch('/v1/stories/' + story_id, 2_000_000))
+          publication = story.get('publication') or {}
+          # Only an existing explicitly confirmed test destination may be exported.
+          encoded = json.dumps(publication, ensure_ascii=False)
+          if 'street_story_e2e_' not in encoded:
+              raise SystemExit('test publication binding missing')
+          image = fetch('/v1/assets/' + story_id + '/processed', 30_000_000)
+          actual = hashlib.sha256(image).hexdigest()
+          visual = story.get('visual') or {}
+          expected = visual.get('selected_sha256')
+          if expected and actual != expected:
+              raise SystemExit('selected image checksum mismatch')
+          out = pathlib.Path('backend/live-e2e-artifacts')
+          out.mkdir(parents=True, exist_ok=True)
+          suffix = '.png' if image.startswith(b'\x89PNG') else '.jpg'
+          (out / ('generated' + suffix)).write_bytes(image)
+          keys = ('id', 'state', 'place_name', 'draft_text', 'source_count', 'sources', 'facts', 'publication')
+          receipt = {key: story.get(key) for key in keys}
+          receipt['image_sha256'] = actual
+          receipt['image_bytes'] = len(image)
+          receipt['visual'] = {key: visual.get(key) for key in ('prompt_version', 'content_revision', 'selected_sha256')}
+          receipt['read_only'] = True
+          receipt['secrets_disclosed'] = False
+          (out / 'owner-readback.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')
+          fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
+          shutil.copyfile(fixture / 'source.png', out / 'owner-source.png')
+          shutil.copyfile(fixture / 'reference-generated.png', out / 'owner-reference.png')
+          print(json.dumps({'story_id': story_id, 'state': story.get('state'), 'image_bytes': len(image), 'image_sha256': actual}))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: street-story-owner-readback-${{ github.run_id }}
+          path: backend/live-e2e-artifacts/
+          retention-days: 14
   live-e2e:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.acceptance != 'readback') ||
       (github.event_name == 'pull_request' &&
        github.event.action == 'labeled' &&
        (github.event.label.name == 'live-e2e-smoke' || github.event.label.name == 'live-e2e-full-social') &&
