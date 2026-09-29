@@ -384,6 +384,24 @@ class StreetStoryService:
             self._enqueue_job(db, story_id, "visual", f"visual:{key}", {"selected_fact_ids": selected})
             return self._story_repr(db, self._story_row(db, story_id))
 
+    def _rejected_publication_can_be_reconfirmed(self, db, story) -> bool:
+        """Only definite pre-dispatch rejection permits a new intent after review.
+
+        A lost response, accepted operation or generic provider failure is NOT
+        evidence that publication did not happen. Never replay those here.
+        """
+        if story["state"] != "needs_review" or story["error_code"] != "provider_permanent_error":
+            return False
+        job = db.execute(
+            "SELECT * FROM jobs WHERE story_id=? AND kind='publish' ORDER BY created_at DESC LIMIT 1",
+            (story["id"],),
+        ).fetchone()
+        if not job or job["state"] != "failed" or job["last_error"] != "VibePublish request failed: HTTP 422":
+            return False
+        intent_id = json.loads(job["payload_json"] or "{}").get("intent_id")
+        intent = db.execute("SELECT * FROM publish_intents WHERE id=? AND story_id=?", (intent_id, story["id"])).fetchone()
+        return bool(intent and not intent["vibepublish_operation_id"])
+
     def mutate_publish(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
         scheduled_raw = str(body.get("scheduled_for") or "").strip()
@@ -404,6 +422,8 @@ class StreetStoryService:
             if delay < 1 or delay > 24 * 60:
                 raise ConflictError("publish_delay_invalid", "delay_minutes must be between 1 and 1440")
             scheduled_iso = (datetime.now(timezone.utc) + timedelta(minutes=delay)).isoformat().replace("+00:00", "Z")
+        if datetime.fromisoformat(scheduled_iso.replace("Z", "+00:00")).astimezone(timezone.utc) < datetime.now(timezone.utc) + timedelta(seconds=90):
+            raise ConflictError("publish_time_too_soon", "Choose a publication time at least two minutes from now; native scheduling needs delivery lead time")
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
             existing = db.execute("SELECT * FROM publish_intents WHERE request_key=?", (key,)).fetchone()
@@ -412,7 +432,10 @@ class StreetStoryService:
                 return self._story_repr(db, story)
             if replay:
                 raise ConflictError("publish_intent_missing", "Idempotency record points to a missing publish intent")
-            if story["state"] not in {"ready_to_publish", "scheduling", "scheduled"} or not story["vibepublish_asset_ref"]:
+            publish_ready = story["state"] in {"ready_to_publish", "scheduling", "scheduled"}
+            if not publish_ready:
+                publish_ready = self._rejected_publication_can_be_reconfirmed(db, story)
+            if not publish_ready or not story["vibepublish_asset_ref"]:
                 raise InvalidStateError("visual_not_ready", "A successful verified visual is required before photo publication")
             destinations = [str(x) for x in body.get("destinations", [])]
             if not destinations:
