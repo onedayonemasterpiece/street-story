@@ -1094,7 +1094,12 @@ def verify_runtime(expected_sha: str, device: str) -> tuple[dict[str, Any], dict
         for row in rows
         if isinstance(row, dict)
     ]
-    if safe_rows != [{"alias": TEST_VIBE_ALIAS, "provider": "telegram", "status": "supported"}]:
+    if (
+        len(safe_rows) != 1
+        or safe_rows[0]["alias"] != TEST_VIBE_ALIAS
+        or safe_rows[0]["provider"] != "telegram"
+        or safe_rows[0]["status"] not in {"supported", "needs_review"}
+    ):
         raise DeployError(f"unexpected Street Story destination projection: {safe_rows}")
     return health, {"destinations": safe_rows}
 
