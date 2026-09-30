@@ -217,8 +217,9 @@ class LiveGoldenInstrumentedTest {
                 .withSecond(0)
                 .withNano(0)
             live.sendText(
-                "Подготовь публикацию именно текущих текста и картинки в канал alias $safeAlias " +
-                    "на ${scheduledAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}, " +
+                "Подготовь публикацию именно текущих текста и картинки. " +
+                    "В prepare_publication передай destinations строго как [\"$safeAlias\"], " +
+                    "scheduled_for ${scheduledAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}, " +
                     "timezone Europe/Kaliningrad. Ничего пока не публикуй."
             )
             waitUntil(90_000, "publication confirmation was not prepared") {
