@@ -44,6 +44,19 @@ class WssCanaryClient:
 
     def __exit__(self, *args):
         self._close_socket()
+        fields = {'seq', 'type', 'status', 'code', 'stage', 'name', 'duration_ms'}
+        with self.lock:
+            trace = [{key: value for key, value in event.items() if key in fields}
+                     for event in self.events_buffer if event.get('type') != 'audio']
+            calls = [{'seq': event.get('seq'),
+                      'tools': [item.get('name') for item in event.get('calls', []) if isinstance(item, dict)]}
+                     for event in self.events_buffer if event.get('type') == 'tool_call']
+            metrics = dict(self.metrics)
+        print(json.dumps({'stage': 'wss_canary_final', 'session_id': self.session_id,
+                          'transport': metrics, 'events': trace[-80:], 'tool_calls': calls,
+                          'failure': self.failure, 'closed': self.closed,
+                          'transcripts_disclosed': False, 'secrets_disclosed': False},
+                         ensure_ascii=False, sort_keys=True), flush=True)
         return self.http.__exit__(*args)
 
     def _close_socket(self):
