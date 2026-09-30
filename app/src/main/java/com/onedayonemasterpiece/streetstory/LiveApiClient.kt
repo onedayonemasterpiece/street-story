@@ -9,6 +9,10 @@ import java.nio.charset.StandardCharsets
 
 class LiveStartWire {
     @SerializedName("session_id") var sessionId: String = ""
+    @SerializedName("socket_ticket") var socketTicket: String = ""
+    @SerializedName("socket_url") var socketUrl: String = ""
+    @SerializedName("transport_protocol") var transportProtocol: String = ""
+    @SerializedName("attempt_id") var attemptId: String = ""
     var model: String = ""
     @SerializedName("story_id") var storyId: String = ""
     @SerializedName("text_revision") var textRevision: Int = 0
@@ -54,8 +58,9 @@ class LiveAckWire {
 internal class LiveApiClient(private val baseUrl: String, private val token: String) {
     private val gson = Gson()
 
-    fun start(serverStoryId: String): LiveStartWire =
-        request("POST", "/v1/stories/${segment(serverStoryId)}/live-sessions", "{}", LiveStartWire::class.java, 35_000)
+    fun start(serverStoryId: String, attemptId: String = "attempt_" + java.util.UUID.randomUUID().toString().replace("-", "")): LiveStartWire =
+        request("POST", "/v1/stories/${segment(serverStoryId)}/live-sessions",
+            gson.toJson(mapOf("attempt_id" to attemptId, "transport" to "wss")), LiveStartWire::class.java, 35_000)
 
     fun inputAudio(serverStoryId: String, sessionId: String, base64Pcm: String): LiveAckWire =
         request(

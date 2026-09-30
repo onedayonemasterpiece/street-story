@@ -517,9 +517,13 @@ def run(
     keep_publication: bool = False,
     publication_delay_minutes: int = 5,
     fixture_json: Path | None = None,
+    transport: str = "http",
+    research_only: bool = False,
 ) -> dict[str, Any]:
     if len(expected_sha) != 40 or any(ch not in "0123456789abcdef" for ch in expected_sha):
         raise ProductSmokeError("expected_sha_invalid")
+    if research_only and execute_publication:
+        raise ProductSmokeError("research_only_cannot_publish")
     if keep_publication and not execute_publication:
         raise ProductSmokeError("keep_publication_requires_execution")
 
@@ -538,7 +542,14 @@ def run(
     publication_scheduled = False
     cancel_confirmed = False
 
-    with httpx.Client(
+    if transport == "wss":
+        from live_wss_transport import WssCanaryClient
+        client_factory = WssCanaryClient
+    elif transport == "http":
+        client_factory = httpx.Client
+    else:
+        raise ProductSmokeError("invalid_transport")
+    with client_factory(
         base_url=BASE_URL,
         headers=headers,
         timeout=httpx.Timeout(connect=10, read=50, write=50, pool=10),
@@ -664,6 +675,28 @@ def run(
             if str(after_search.get("state") or "") == "researching":
                 raise ProductSmokeError("legacy_research_path_used")
 
+            if research_only:
+                stop = _json(client.post(f"/v1/stories/{story_id}/live-sessions/{session_id}/stop"), "live_stop")
+                stopped = stop.get("ok") is True
+                if not stopped:
+                    raise ProductSmokeError("live_stop_unconfirmed")
+                receipt = {
+                    "status": "PASS", "scope": "research_only", "source_sha": expected_sha,
+                    "story_id": story_id, "session_id": session_id,
+                    "transport": dict(getattr(client, "metrics", {"transport": "http"})),
+                    "place_resolution": {"resolve_tool_ok": resolve_turn["tool_ok"],
+                                         "confirm_tool_ok": confirm_place_turn["tool_ok"],
+                                         "status": "owner_confirmed", "place_name": confirmed.get("place_name")},
+                    "search": {"tool_ok": search_turn["tool_ok"], "supported_fact_count": len(fact_ids),
+                               "source_count": int(after_search.get("source_count") or 0),
+                               "sources": after_search.get("sources"), "facts": after_search.get("facts")},
+                    "live_model": MODEL, "same_live_session": True,
+                    "central_authority_fallback": False, "session_stopped": True,
+                    "publication_dispatched": False, "image_generated": False,
+                    "prepared_audio": False, "physical_mic": False, "secrets_disclosed": False,
+                }
+                write_receipt(receipt)
+                return receipt
             cursor, edit_turn = send_tool_turn(
                 client,
                 story_id,
@@ -817,6 +850,7 @@ def run(
 
             receipt = {
                 "status": "PASS",
+                "transport": dict(getattr(client, "metrics", {"transport": "http"})),
                 "source_sha": expected_sha,
                 "story_id": story_id,
                 "session_id": session_id,
@@ -910,6 +944,8 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--transport", choices=("http", "wss"), default="http")
+    parser.add_argument("--research-only", action="store_true", help="Verify place/search over the selected transport without image or publication writes")
     parser.add_argument(
         "--execute-publication",
         action="store_true",
@@ -944,6 +980,8 @@ def main() -> int:
             keep_publication=args.keep_publication,
             publication_delay_minutes=args.publication_delay_minutes,
             fixture_json=selected_fixture,
+            transport=args.transport,
+            research_only=args.research_only,
         )
     except ProductSmokeError as exc:
         receipt = {"status": "FAIL", "error": str(exc), "secrets_disclosed": False}

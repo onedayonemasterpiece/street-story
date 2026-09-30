@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
-from live_interaction import LiveSessionHost
+from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
 from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest, stable_fact_id
