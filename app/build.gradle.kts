@@ -9,7 +9,7 @@ val prepareSharedLive by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir)
     commandLine("python3", "scripts/prepare_live_framework.py")
     inputs.file(rootProject.file("live-framework.lock.json"))
-    inputs.file(rootProject.file("vendor/live-interaction-0.3.6-rc.1.tar.gz"))
+    inputs.file(rootProject.file("vendor/live-interaction-0.3.7-rc.1.tar.gz"))
     inputs.file(rootProject.file("scripts/prepare_live_framework.py"))
     outputs.dir(rootProject.file(".live-framework"))
 }

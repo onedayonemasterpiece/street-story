@@ -32,7 +32,9 @@ Required values:
 - `DATA_DIR=/var/lib/street-story`
 
 Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
-`ai-resource-control v0.1.11` lease SDK pinned to commit `8f5a0dc9aed257515d2ed5dd71ba1dc866d8b1fe` plus public `live-interaction v0.2.17` pinned to commit `c32a0f5b5da6902b9f508b9a7467cd9ff4f4e866` from the pushed `fix/live-budget-continuity-20260928` branch. Resource control 0.1.11 lowers the short PCM grant quantum to 1024 units, reserves only the admission shortfall, and on a definitive bulk `RESOURCE_TOKEN_BUDGET` denial right-sizes the same grant sequence to 512 and then the exact fragment cost. A genuine exact-cost budget denial remains terminal, so central authority is never bypassed. Live interaction 0.2.17 keeps manual activity detection while adding bounded conversation restoration, capability-transition reconnect recovery and rolling token-budget waits; this replaces the older 0.2.5 transport pin that could close a long Street Story Live session during later tool turns. The installer builds the private
+`ai-resource-control v0.1.11` lease SDK pinned to commit `8f5a0dc9aed257515d2ed5dd71ba1dc866d8b1fe` plus the public
+`live-interaction` version and archive checksum in `live-framework.lock.json` (currently `0.3.7-rc.1`, candidate).
+This retains the existing central admission semantics, manual activity, provider continuity and bounded resource waits; adds shared WSS and native transport; and includes the accepted media-resolution wire fix. A genuine resource denial is never bypassed. The installer builds the private
 controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
 
 ### Shared Live interaction architecture

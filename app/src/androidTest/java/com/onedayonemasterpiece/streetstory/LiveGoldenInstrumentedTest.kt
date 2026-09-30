@@ -44,6 +44,8 @@ class LiveGoldenInstrumentedTest {
         val safeAlias = config.requireString("safe_alias")
         val token = File(root, "token.txt").readText().trim()
         require(baseUrl.startsWith("https://") && token.isNotBlank())
+        val keepPublication = InstrumentationRegistry.getArguments().getString("keepPublication") == "true"
+        require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
 
         val photoFile = File(root, "photo.jpg")
@@ -215,7 +217,7 @@ class LiveGoldenInstrumentedTest {
             assertTrue(publicDestinations.single().status in setOf("supported", "needs_review"))
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
-                .plusHours(25)
+                .plusMinutes(if (keepPublication) 3L else 1500L)
                 .withSecond(0)
                 .withNano(0)
             live.sendText(
@@ -242,15 +244,18 @@ class LiveGoldenInstrumentedTest {
             val publicationId = publication.requireString("publication_id")
             publicationScheduled = true
 
-            live.sendText("Отмени текущую запланированную публикацию.")
-            awaitAnswer(live, "publication cancel")
-            pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
-                rawStory(baseUrl, token, storyId)
-                    .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+            val cancelled = if (keepPublication) null else {
+                live.sendText("Отмени текущую запланированную публикацию.")
+                awaitAnswer(live, "publication cancel")
+                pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
+                    rawStory(baseUrl, token, storyId)
+                        .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                }
+                val result = rawStory(baseUrl, token, storyId).requireObject("publication")
+                assertEquals("cancelled", result.requireString("state"))
+                cancelConfirmed = true
+                result
             }
-            val cancelled = rawStory(baseUrl, token, storyId).requireObject("publication")
-            assertEquals("cancelled", cancelled.requireString("state"))
-            cancelConfirmed = true
 
             evidence.putAll(
                 mapOf(
@@ -274,12 +279,13 @@ class LiveGoldenInstrumentedTest {
                     "publication_id" to publicationId,
                     "scheduled_for" to scheduled.scheduledFor,
                     "destination_alias" to safeAlias,
-                    "cancel_confirmed" to true,
-                    "cancel_operation_id" to cancelled.get("cancel_operation_id")?.asString,
+                    "publication_kept" to keepPublication,
+                    "cancel_confirmed" to cancelConfirmed,
+                    "cancel_operation_id" to cancelled?.get("cancel_operation_id")?.asString,
                 )
             )
         } finally {
-            if (publicationScheduled && !cancelConfirmed) {
+            if (publicationScheduled && !cancelConfirmed && !keepPublication) {
                 runCatching {
                     if (live.isActiveFor(local.clientStoryId)) {
                         live.sendText("Аварийная очистка теста: отмени текущую запланированную публикацию.")
@@ -305,7 +311,7 @@ class LiveGoldenInstrumentedTest {
             File(root, "evidence.json").writeText(gson.toJson(evidence))
             store.close()
         }
-        assertTrue(cancelConfirmed)
+        assertTrue(if (keepPublication) publicationScheduled else cancelConfirmed)
     }
 
     private fun speak(live: LiveSessionController, pcm: File) {

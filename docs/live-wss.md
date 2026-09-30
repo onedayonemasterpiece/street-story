@@ -78,8 +78,16 @@ is not proof. Exercise real prepared PCM, grounded internet search and provider
 readback before claiming product readiness. Prepared PCM is not a physical-mic
 test. Keep native scheduling/cancellation separate from visible-publication proof.
 
-The existing VibePublish cancellation-policy failure must not be relabelled as
-a WSS or model success. Never weaken production destination/consent checks merely
+The existing VibePublish cancellation-policy failure is distinct from WSS.
+`full_social` defaults to schedule/readback/cancel as before. For the requested
+visible owner demonstration, dispatch the same workflow with `keep_publication=true`:
+the same Android path schedules the sole test group three minutes ahead, retains
+the post, and records `publication_kept=true` and `cancel_confirmed=false`.
+Separate actual Telegram message/media readback is required. This mode does not
+claim that the cancellation policy is fixed.
+The existing product canary also supports `--transport wss --research-only` to
+verify real place resolution and grounded search without image/publication calls.
+Never weaken production destination/consent checks merely
 to make the acceptance test green. Candidate rollout is test-only until receipts
 show the end-to-end result. Rollback changes the immutable release, not SQLite,
 device token or publication records. Future updates use semantic versions and

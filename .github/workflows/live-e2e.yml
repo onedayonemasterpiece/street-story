@@ -12,6 +12,11 @@ on:
           - smoke
           - full_social
           - readback
+      keep_publication:
+        description: 'Owner-visible test: retain one test-group post instead of testing cancellation (full_social only)'
+        required: false
+        default: false
+        type: boolean
       story_id:
         description: 'Existing test story to export; readback performs no model calls or publication writes'
         required: false
@@ -319,6 +324,8 @@ jobs:
           sudo chmod 0666 /dev/kvm
 
       - name: Android client -> live backend -> native Telegram golden run
+        env:
+          LIVE_E2E_KEEP_PUBLICATION: ${{ inputs.keep_publication && 'true' || 'false' }}
         if: >-
           (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')

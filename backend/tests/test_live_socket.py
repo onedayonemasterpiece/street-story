@@ -103,6 +103,12 @@ def test_wss_push_binary_pcm_and_original_auth_boundary(client):
         rejected = c.post(f"/v1/stories/{story}/live-sessions/{value['session_id']}/input", json={'text': 'never fallback'})
         assert rejected.status_code == 409
         assert rejected.json()['error']['code'] == 'live_transport_mismatch'
+        ws.send_json({'type': 'stop'})
+        for _ in range(20):
+            if ws.receive()['type'] == 'websocket.close':
+                break
+        else:
+            pytest.fail('WSS Stop did not close the socket')
     c.post(f"/v1/stories/{story}/live-sessions/{value['session_id']}/stop")
     assert host.size() == 0
     assert [v['type'] for v in provider.inputs][:5] == ['start', 'activity_start', 'audio', 'activity_end', 'text']
