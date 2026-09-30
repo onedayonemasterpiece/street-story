@@ -174,7 +174,13 @@ FUNCTIONS = [
         "prepare_publication",
         "Prepare an exact publication confirmation card. This does not publish.",
         {
-            "destinations": {"type": "array", "items": {"type": "string"}},
+            "destinations": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "description": "Exact destination alias from the current Street Story capabilities; do not prefix it with words such as alias or channel.",
+                },
+            },
             "scheduled_for": {
                 "type": "string",
                 "description": "Absolute ISO-8601 time with offset, not a relative phrase.",
@@ -324,7 +330,7 @@ class StreetStoryLiveAdapter:
         elif name == "generate_visual":
             result = self._generate_visual(story_id, command_id, args)
         elif name == "prepare_publication":
-            result = self._prepare_publication(story_id, command_id, args)
+            result = await self._prepare_publication(story_id, command_id, args)
             self.emit(session, {"type": "publication_confirmation", **result["confirmation"]})
         elif name == "confirm_publication":
             result = self._confirm_publication(story_id, command_id, args)
@@ -1156,10 +1162,31 @@ class StreetStoryLiveAdapter:
             self._store_command(db, story_id, command_id, "generate_visual", args, result)
         return result
 
-    def _prepare_publication(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _prepare_publication(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         destinations = [str(v).strip() for v in args.get("destinations", []) if str(v).strip()]
         if not destinations or len(destinations) > 8:
             raise ConflictError("publish_destinations_required", "At least one bounded destination is required")
+        if len(set(destinations)) != len(destinations):
+            raise ConflictError("publish_destination_duplicate", "Publication destinations must be unique")
+
+        capabilities = await self.service.capabilities()
+        available = {
+            str(item.get("alias") or "").strip()
+            for item in capabilities.get("destinations", [])
+            if isinstance(item, dict) and str(item.get("alias") or "").strip()
+        }
+        if not available:
+            raise ConflictError(
+                "publish_destinations_unavailable",
+                "No publication destination is currently available",
+            )
+        invalid = [alias for alias in destinations if alias not in available]
+        if invalid:
+            raise ConflictError(
+                "publish_destination_invalid",
+                "Publication destination must exactly match an available destination alias",
+            )
+
         scheduled_for = _bounded_text(args.get("scheduled_for"), 80, required=True)
         tz_name = _bounded_text(args.get("timezone"), 80, required=True)
         try:

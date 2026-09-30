@@ -110,11 +110,11 @@ class FakeVP:
         return {
             "routing_revision": 1,
             "destinations": [
-                {"alias": "tg-safe", "kind": "destination", "label": "Test Telegram", "provider": "telegram"}
+                {"alias": "street_story_e2e_test", "kind": "destination", "label": "Test Telegram", "provider": "telegram"}
             ],
             "capabilities": [
                 {
-                    "destination": "tg-safe",
+                    "destination": "street_story_e2e_test",
                     "operation": "publish",
                     "surface": "post",
                     "provider": "telegram",
@@ -132,6 +132,7 @@ def settings(tmp_path: Path) -> Settings:
         gemini_model="gemini-3.5-flash-lite",
         vibepublish_base_url="https://vp.test",
         vibepublish_bearer_token="vp",
+        publication_test_alias="street_story_e2e_test",
         osm_user_agent="Street Story Live tests",
     )
 
@@ -329,7 +330,7 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
             "name": "prepare_publication",
             "id": "prepare-1",
             "args": {
-                "destinations": ["tg-safe"],
+                "destinations": ["street_story_e2e_test"],
                 "scheduled_for": scheduled_for,
                 "timezone": "Europe/Kaliningrad",
             },
@@ -338,6 +339,22 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
     card = prepared["confirmation"]
     assert card["text"] == "Готовый текст"
     assert card["visual_revision"] == "visual-r1"
+    assert card["destinations"] == ["street_story_e2e_test"]
+
+    with pytest.raises(ConflictError) as invalid_destination:
+        await adapter.execute_tool(
+            session,
+            {
+                "name": "prepare_publication",
+                "id": "prepare-invalid-destination",
+                "args": {
+                    "destinations": ["alias street_story_e2e_test"],
+                    "scheduled_for": scheduled_for,
+                    "timezone": "Europe/Kaliningrad",
+                },
+            },
+        )
+    assert invalid_destination.value.code == "publish_destination_invalid"
 
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET draft_text='Невидимая новая версия' WHERE id=?", (story_id,))
