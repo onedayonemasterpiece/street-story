@@ -34,7 +34,7 @@ class RecordingService : Service() {
     override fun onCreate(){super.onCreate();createNotificationChannel()}
     override fun onBind(intent:Intent?):IBinder?=null
     override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int{
-        when(intent?.action){ACTION_START->startNewSession(intent);ACTION_PAUSE->pauseSession();ACTION_RESUME->resumeSession();ACTION_FINISH->finishSession()}
+        when(intent?.action){ACTION_START->startNewSession(intent);ACTION_PAUSE->pauseSession();ACTION_RESUME->resumeSession();ACTION_FINISH->finishSession();ACTION_TRANSPORT_FINISH->finishSession(false)}
         return START_NOT_STICKY
     }
     private fun startNewSession(intent:Intent){
@@ -47,9 +47,9 @@ class RecordingService : Service() {
     }
     private fun pauseSession(){val active=store.activeVoiceSession()?:return;sessionId=active.sessionId;if(active.captureState==CaptureState.RECORDING)stopCapture();store.beginManualPause(active.sessionId);val refreshed=store.voiceSession(active.sessionId)?:active;runtime.update(active.sessionId,refreshed.durationMs,elapsedFromStart(refreshed.startedAt),refreshed.autoSilenceSkippedMs,CaptureActivity.MANUAL_PAUSE);enterForeground("Пауза · микрофон остановлен",true);SyncScheduler.enqueue(this);broadcast()}
     private fun resumeSession(){val active=store.activeVoiceSession()?:return;sessionId=active.sessionId;store.endManualPause(active.sessionId);enterForeground("Слушаю · тишина не записывается",false);beginCapture();broadcast()}
-    private fun finishSession(){
+    private fun finishSession(stopLive:Boolean=true){
         val active=store.activeVoiceSession()?:return;sessionId=active.sessionId
-        if(active.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this).stopLocal()
+        if(stopLive&&active.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this).stopLocal()
         if(active.captureState==CaptureState.RECORDING)stopCapture() else store.endManualPause(active.sessionId)
         val refreshed=store.voiceSession(active.sessionId)?:return
         if(refreshed.durationMs<MIN_SESSION_MS||refreshed.chunkCount==0){store.discardVoiceSession(active.sessionId);runtime.clear(active.sessionId);stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();broadcast("Слишком короткая запись удалена");return}
@@ -122,6 +122,7 @@ class RecordingService : Service() {
     override fun onDestroy(){if(captureRequested){val current=sessionId?.let{store.voiceSession(it)};if(current?.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this).stopLocal();stopCapture();sessionId?.let{store.beginManualPause(it)}};super.onDestroy()}
     private data class FramePacket(val samples:ShortArray,val wallStartMs:Long,val wallEndMs:Long)
     companion object{
+        const val ACTION_TRANSPORT_FINISH="com.onedayonemasterpiece.streetstory.TRANSPORT_FINISH"
         const val ACTION_START="com.onedayonemasterpiece.streetstory.START";const val ACTION_PAUSE="com.onedayonemasterpiece.streetstory.PAUSE";const val ACTION_RESUME="com.onedayonemasterpiece.streetstory.RESUME";const val ACTION_FINISH="com.onedayonemasterpiece.streetstory.FINISH";const val ACTION_STATE_CHANGED="com.onedayonemasterpiece.streetstory.STATE_CHANGED";const val EXTRA_MESSAGE="message";const val EXTRA_STORY_ID="story_id";const val EXTRA_KIND="kind"
         private const val CHANNEL_ID="street-story-recording";private const val NOTIFICATION_ID=7101;private const val MIN_SESSION_MS=5_000L;private const val PRE_ROLL_FRAMES=20;private const val HANGOVER_FRAMES=40;private const val RUNTIME_UPDATE_INTERVAL_MS=500L;private const val STORE_UPDATE_INTERVAL_MS=2_000L;private const val LONG_SILENCE_CLOSE_MS=15_000L;private const val MIN_DURABLE_SEGMENT_MS=10_000L
         fun start(context:Context,storyId:String,kind:String){context.startForegroundService(Intent(context,RecordingService::class.java).setAction(ACTION_START).putExtra(EXTRA_STORY_ID,storyId).putExtra(EXTRA_KIND,kind))}

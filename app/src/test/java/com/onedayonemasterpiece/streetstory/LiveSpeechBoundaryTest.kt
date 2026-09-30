@@ -1,12 +1,13 @@
 package com.onedayonemasterpiece.streetstory
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.onedayonemasterpiece.live.LiveSocketTransport
 
 class LiveSpeechBoundaryTest {
-    @Test
-    fun opensOncePerSpeechAndClosesOnce() {
+    @Test fun opensOncePerSpeechAndClosesOnce() {
         val boundary = LiveSpeechBoundary()
         assertTrue(boundary.beforeAudio())
         assertFalse(boundary.beforeAudio())
@@ -15,17 +16,15 @@ class LiveSpeechBoundaryTest {
         assertTrue(boundary.beforeAudio())
         assertTrue(boundary.end())
     }
-
-    @Test
-    fun audioBatchingLeavesNetworkHeadroomWithoutStaleSpeech() {
+    @Test fun wssUsesSmallFramesAndBoundedOutstandingAudio() {
         val batchMs = LiveAudioTransportPolicy.TARGET_PCM_BYTES / 2 * 1000 / 16_000
-        assertTrue(batchMs in 700..900)
-        assertTrue(LiveAudioTransportPolicy.OUTBOUND_CAPACITY >= 8)
-        assertTrue(LiveAudioTransportPolicy.MAX_AUDIO_AGE_MS > batchMs * 2)
+        assertTrue(batchMs in 20..100)
+        assertTrue(LiveAudioTransportPolicy.OUTBOUND_CAPACITY in 1..4)
+        assertEquals(2500L, LiveAudioTransportPolicy.MAX_AUDIO_AGE_MS)
+        assertEquals(48000, LiveSocketTransport.MAX_PENDING_PCM_BYTES)
+        assertEquals("wl-live-v1", LiveSocketTransport.PROTOCOL)
     }
-
-    @Test
-    fun resetRequiresANewActivityStart() {
+    @Test fun resetRequiresANewActivityStart() {
         val boundary = LiveSpeechBoundary()
         assertTrue(boundary.beforeAudio())
         boundary.reset()

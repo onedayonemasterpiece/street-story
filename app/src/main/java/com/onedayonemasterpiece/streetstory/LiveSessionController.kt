@@ -4,13 +4,20 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.SystemClock
 import android.util.Base64
-import java.io.ByteArrayOutputStream
-import java.util.concurrent.ArrayBlockingQueue
+import android.util.Log
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import okhttp3.OkHttpClient
+import org.onedayonemasterpiece.live.LiveSocketTransport
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 data class LiveConfirmation(
     val confirmationId: String,
@@ -22,12 +29,9 @@ data class LiveConfirmation(
 )
 
 internal object LiveAudioTransportPolicy {
-    // One HTTPS POST per ~768 ms of 16 kHz mono PCM. The previous 256 ms
-    // batches generated requests faster than mobile/network RTT and overflowed
-    // the bounded queue during ordinary continuous speech.
-    const val TARGET_PCM_BYTES = 24_576
-    const val OUTBOUND_CAPACITY = 8
-    const val MAX_AUDIO_AGE_MS = 2_500L
+    const val TARGET_PCM_BYTES = LiveSocketTransport.BATCH_BYTES
+    const val OUTBOUND_CAPACITY = LiveSocketTransport.ACK_WINDOW
+    const val MAX_AUDIO_AGE_MS = LiveSocketTransport.MAX_AGE_MS
 }
 
 data class LiveUiState(
@@ -40,37 +44,69 @@ data class LiveUiState(
     val confirmation: LiveConfirmation? = null,
     val error: String? = null,
     val completedTurns: Int = 0,
+    val transport: String? = null,
 )
 
+/** Product UI/state only. Ordered PCM, WSS framing and ACKs belong to the shared SDK. */
 class LiveSessionController(context: Context) {
     private val app = context.applicationContext
     private val config = AppGraph.config(app)
     private val store = AppGraph.store(app)
+    private val gson = Gson()
     private val generation = AtomicInteger(0)
+    private val playbackGeneration = AtomicInteger(0)
+    private val pendingPlayback = AtomicInteger(0)
+    private val receivedPcm = AtomicLong(0)
     private val listeners = CopyOnWriteArrayList<(LiveUiState) -> Unit>()
     private val network = Executors.newCachedThreadPool()
-    private val sender = Executors.newSingleThreadExecutor()
     private val playback = Executors.newSingleThreadExecutor()
-    private val outbound = ArrayBlockingQueue<Outbound>(LiveAudioTransportPolicy.OUTBOUND_CAPACITY)
-    private val batchLock = Any()
-    private var batch = ByteArrayOutputStream(LiveAudioTransportPolicy.TARGET_PCM_BYTES + 1024)
-    private val speechBoundary = LiveSpeechBoundary()
+    private val clocks = Executors.newSingleThreadScheduledExecutor()
+    private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(0, TimeUnit.MILLISECONDS).build()
     @Volatile private var state = LiveUiState()
     @Volatile private var serverStoryId: String? = null
     @Volatile private var sessionId: String? = null
+    @Volatile private var socket: LiveSocketTransport? = null
     @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var waitStarted = 0L
+    @Volatile private var waitStage = "provider"
+    @Volatile private var inputOpen = false
+
+    init {
+        clocks.scheduleAtFixedRate({
+            val start = waitStarted
+            if (state.active && start > 0) {
+                val elapsed = (SystemClock.elapsedRealtime() - start) / 1000
+                if (elapsed >= 15) {
+                    val label = when (waitStage) {
+                        "tool" -> "Выполняю действие"
+                        "transport" -> "Передаю голос"
+                        "resource" -> "Ожидаю доступный лимит"
+                        else -> "Жду ответа модели"
+                    }
+                    update(state.copy(status = "$label · ${elapsed / 60}:${(elapsed % 60).toString().padStart(2, '0')}"))
+                }
+            }
+        }, 1, 1, TimeUnit.SECONDS)
+    }
 
     fun snapshot(): LiveUiState = state
     fun addListener(listener: (LiveUiState) -> Unit) { listeners.add(listener); listener(state) }
     fun removeListener(listener: (LiveUiState) -> Unit) { listeners.remove(listener) }
     fun isActiveFor(storyId: String): Boolean = state.active && state.storyId == storyId && !sessionId.isNullOrBlank()
+    fun transportEvidence(): Map<String, Any> = mapOf(
+        "transport" to (state.transport ?: "off"),
+        "shared_native_version" to LiveSocketTransport.VERSION,
+        "received_pcm_bytes" to receivedPcm.get(),
+        "event_cursor" to (socket?.cursor() ?: 0),
+        "http_audio_fallback" to false,
+        "event_polling" to false,
+    )
 
     fun start(storyId: String, onReady: (Boolean, String?) -> Unit = { _, _ -> }) {
-        val local = store.story(storyId)
-        val server = local?.serverStoryId
+        val server = store.story(storyId)?.serverStoryId
         val base = config.backendUrl
         val token = config.deviceToken
-        if (local == null || server.isNullOrBlank() || base.isNullOrBlank() || token.isNullOrBlank()) {
+        if (server.isNullOrBlank() || base.isNullOrBlank() || token.isNullOrBlank()) {
             SyncScheduler.enqueue(app)
             update(LiveUiState(storyId = storyId, status = "Синхронизирую тему", error = "Live пока нельзя запустить"))
             onReady(false, "Тема ещё не синхронизирована с backend")
@@ -78,233 +114,157 @@ class LiveSessionController(context: Context) {
         }
         stopLocal(sendRemote = true)
         val gen = generation.incrementAndGet()
+        val notified = AtomicBoolean(false)
+        fun ready(ok: Boolean, error: String?) { if (notified.compareAndSet(false, true)) onReady(ok, error) }
         update(LiveUiState(storyId = storyId, status = "Подключаю Live…"))
         network.execute {
+            val api = LiveApiClient(base, token)
             try {
-                val api = LiveApiClient(base, token)
-                val started = api.start(server)
+                val attempt = "attempt_" + UUID.randomUUID().toString().replace("-", "")
+                val started = api.start(server, attempt)
                 if (generation.get() != gen) {
                     runCatching { api.stop(server, started.sessionId) }
+                    ready(false, "Подключение отменено")
                     return@execute
                 }
                 serverStoryId = server
                 sessionId = started.sessionId
-                outbound.clear()
-                synchronized(batchLock) {
-                    batch.reset()
-                    speechBoundary.reset()
+                if (started.transportProtocol != LiveSocketTransport.PROTOCOL || started.socketTicket.isBlank() || started.socketUrl.isBlank()) {
+                    throw ApiProtocolException("Backend не поддерживает согласованный WSS-протокол")
                 }
-                update(LiveUiState(storyId = storyId, active = true, status = "Слушаю"))
-                startSender(gen, api, server, started.sessionId)
-                startPoller(gen, api, server, started.sessionId)
-                onReady(true, null)
+                receivedPcm.set(0)
+                val transport = LiveSocketTransport(http, object : LiveSocketTransport.Listener {
+                    override fun onEvent(event: JsonObject) {
+                        if (generation.get() == gen) handleEvent(gen, gson.fromJson(event, LiveEventWire::class.java))
+                    }
+                    override fun onAudio(sequence: Long, pcm: ByteArray, sampleRate: Int) {
+                        if (generation.get() == gen) playPcm(gen, pcm, sampleRate)
+                    }
+                    override fun onFailure(code: String) {
+                        fail(gen, "Соединение Live прервано: $code")
+                        ready(false, code)
+                    }
+                    override fun onDiagnostic(fields: Map<String, Any>) {
+                        if (generation.get() == gen) Log.i("StreetStoryLive", gson.toJson(fields + mapOf("session_id" to started.sessionId, "attempt_id" to attempt)))
+                    }
+                })
+                socket = transport
+                transport.connect(base, started.socketUrl, started.socketTicket, started.attemptId, 1, 0).get(12, TimeUnit.SECONDS)
+                if (generation.get() != gen) { transport.close(true); return@execute }
+                update(state.copy(storyId = storyId, active = true, status = "Слушаю", transport = "wss", error = null))
+                ready(true, null)
             } catch (exc: Exception) {
-                if (generation.get() == gen) {
-                    fail(gen, "Live недоступен: ${safeMessage(exc)}")
-                    onReady(false, safeMessage(exc))
-                }
+                if (generation.get() == gen) fail(gen, "Live недоступен: ${safeMessage(exc)}")
+                ready(false, safeMessage(exc))
             }
         }
     }
 
     fun submitPcm(samples: ShortArray) {
         if (!state.active) return
-        val gen = generation.get()
-        synchronized(batchLock) {
-            if (generation.get() != gen || !state.active) return
-            if (speechBoundary.beforeAudio()) {
-                if (!outbound.offer(Outbound(OutboundKind.ACTIVITY_START, null, System.currentTimeMillis(), gen))) {
-                    speechBoundary.reset()
-                    fail(gen, "Live audio queue переполнена")
-                    return
-                }
-            }
-            for (sample in samples) {
-                val v = sample.toInt()
-                batch.write(v and 0xff)
-                batch.write((v ushr 8) and 0xff)
-            }
-            if (batch.size() >= LiveAudioTransportPolicy.TARGET_PCM_BYTES) flushBatchLocked(gen)
-        }
+        if (!inputOpen) { inputOpen = true; waitStarted = 0; update(state.copy(status = "Слышу вас", error = null)) }
+        socket?.submitPcm(samples)
     }
 
     fun endSpeech() {
-        if (!state.active) return
-        val gen = generation.get()
-        synchronized(batchLock) {
-            flushBatchLocked(gen)
-            if (speechBoundary.end()) {
-                if (!outbound.offer(Outbound(OutboundKind.ACTIVITY_END, null, System.currentTimeMillis(), gen))) {
-                    fail(gen, "Live audio queue переполнена")
-                }
-            }
-        }
+        if (!state.active || !inputOpen) return
+        inputOpen = false
+        socket?.endSpeech()
+        waitStage = "transport"
+        waitStarted = SystemClock.elapsedRealtime()
+        update(state.copy(status = "Передаю реплику", error = null))
     }
 
     fun sendText(text: String) {
-        val server = serverStoryId
-        val session = sessionId
-        val base = config.backendUrl
-        val token = config.deviceToken
-        val gen = generation.get()
         val value = text.trim()
-        if (!state.active || server.isNullOrBlank() || session.isNullOrBlank() || base.isNullOrBlank() || token.isNullOrBlank() || value.isBlank()) return
-        update(state.copy(status = "Жду ответа", error = null))
-        network.execute {
-            try {
-                LiveApiClient(base, token).inputText(server, session, value.take(4000))
-            } catch (exc: Exception) {
-                if (generation.get() == gen) fail(gen, "Live command: ${safeMessage(exc)}")
-            }
-        }
+        if (!state.active || value.isEmpty()) return
+        inputOpen = false
+        waitStage = "provider"
+        waitStarted = SystemClock.elapsedRealtime()
+        update(state.copy(status = "Думаю", error = null))
+        socket?.sendText(value.take(4000))
     }
 
     fun stopLocal(sendRemote: Boolean = true) {
-        val oldServer = serverStoryId
-        val oldSession = sessionId
+        val server = serverStoryId
+        val session = sessionId
         generation.incrementAndGet()
-        serverStoryId = null
-        sessionId = null
-        outbound.clear()
-        synchronized(batchLock) {
-            batch.reset()
-            speechBoundary.reset()
-        }
+        serverStoryId = null; sessionId = null; inputOpen = false; waitStarted = 0
+        val old = socket; socket = null; old?.close(sendRemote)
+        playbackGeneration.incrementAndGet()
         stopPlayback()
-        val oldStory = state.storyId
-        update(LiveUiState(storyId = oldStory, status = "Микрофон выключен"))
-        if (sendRemote && !oldServer.isNullOrBlank() && !oldSession.isNullOrBlank()) {
-            val base = config.backendUrl
-            val token = config.deviceToken
-            if (!base.isNullOrBlank() && !token.isNullOrBlank()) {
-                network.execute { runCatching { LiveApiClient(base, token).stop(oldServer, oldSession) } }
-            }
-        }
-    }
-
-    private fun flushBatchLocked(gen: Int) {
-        if (batch.size() == 0) return
-        val bytes = batch.toByteArray()
-        batch.reset()
-        if (!outbound.offer(Outbound(OutboundKind.AUDIO, bytes, System.currentTimeMillis(), gen))) {
-            fail(gen, "Live audio queue переполнена")
-        }
-    }
-
-    private fun startSender(gen: Int, api: LiveApiClient, server: String, session: String) {
-        sender.execute {
-            while (generation.get() == gen && state.active) {
-                val item = outbound.poll(250, TimeUnit.MILLISECONDS) ?: continue
-                if (item.generation != gen || generation.get() != gen) continue
-                if (System.currentTimeMillis() - item.queuedAtMs > LiveAudioTransportPolicy.MAX_AUDIO_AGE_MS) {
-                    fail(gen, "Live не успевает принимать звук")
-                    return@execute
-                }
-                try {
-                    when (item.kind) {
-                        OutboundKind.ACTIVITY_START -> api.activityStart(server, session)
-                        OutboundKind.AUDIO -> api.inputAudio(
-                            server,
-                            session,
-                            Base64.encodeToString(requireNotNull(item.pcm), Base64.NO_WRAP),
-                        )
-                        OutboundKind.ACTIVITY_END -> api.activityEnd(server, session)
-                    }
-                } catch (exc: Exception) {
-                    fail(gen, "Ошибка передачи Live: ${safeMessage(exc)}")
-                    return@execute
-                }
-            }
-        }
-    }
-
-    private fun startPoller(gen: Int, api: LiveApiClient, server: String, session: String) {
-        network.execute {
-            var cursor = 0
-            try {
-                while (generation.get() == gen && state.active) {
-                    val page = api.events(server, session, cursor)
-                    if (generation.get() != gen) return@execute
-                    if (page.gap) {
-                        fail(gen, "Live потерял часть событий")
-                        return@execute
-                    }
-                    page.events.forEach { handleEvent(gen, it) }
-                    cursor = page.cursor
-                    if (page.closed) {
-                        fail(gen, "Live-сессия завершилась")
-                        return@execute
-                    }
-                    if (!page.hasMore) Thread.sleep(POLL_MS)
-                }
-            } catch (exc: InterruptedException) {
-                Thread.currentThread().interrupt()
-            } catch (exc: Exception) {
-                if (generation.get() == gen) fail(gen, "Live connection: ${safeMessage(exc)}")
-            }
-        }
+        update(state.copy(active = false, status = "Микрофон выключен", error = null))
+        if (sendRemote) remoteStop(server, session)
     }
 
     private fun handleEvent(gen: Int, event: LiveEventWire) {
         if (generation.get() != gen) return
         when (event.type) {
-            "audio" -> event.data?.let { playAudio(gen, it, event.mimeType) }
+            "audio" -> event.data?.let {
+                val bytes = runCatching { Base64.decode(it, Base64.DEFAULT) }.getOrNull()
+                if (bytes != null) playPcm(gen, bytes, Regex("rate=(\\d+)").find(event.mimeType.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 24000)
+            }
             "output_transcript" -> {
+                waitStarted = 0
                 val text = event.text?.trim().orEmpty()
                 if (text.isNotEmpty()) update(state.copy(status = "Отвечаю", assistantText = text, error = null))
             }
-            "turn_complete" -> update(state.copy(status = "Слушаю", completedTurns = state.completedTurns + 1, error = null))
-            "input_transcript" -> update(state.copy(status = "Жду ответа", error = null))
-            "interaction_status" -> {
-                val label = when (event.status?.uppercase()) {
-                    "IDLE" -> "Слушаю"
-                    else -> "Жду ответа"
-                }
-                update(state.copy(status = label, error = null))
-            }
-            "reconnecting" -> update(state.copy(status = "Восстанавливаю Live…", error = null))
+            "turn_complete" -> { waitStarted = 0; update(state.copy(status = "Слушаю", completedTurns = state.completedTurns + 1, error = null)) }
+            "input_transcript", "input_timing" -> { waitStage = "provider"; if (waitStarted > 0) update(state.copy(status = "Думаю")) }
+            "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); update(state.copy(status = "Выполняю действие…")) }
+            "budget_wait" -> { waitStage = "resource"; waitStarted = SystemClock.elapsedRealtime(); update(state.copy(status = "Ожидаю доступный лимит")) }
+            "reconnecting" -> update(state.copy(status = "Восстанавливаю соединение с моделью…"))
             "literal_mode" -> update(state.copy(literalMode = event.active == true, status = if (event.active == true) "Дословная диктовка" else "Слушаю"))
             "product_state" -> {
                 SyncScheduler.enqueue(app)
-                val productState = event.state?.takeIf { it.isJsonObject }?.asJsonObject
-                val last = productState?.get("last_change")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
-                update(state.copy(status = "Обновляю результат…", lastChange = last ?: state.lastChange, error = null))
+                val product = event.state?.takeIf { it.isJsonObject }?.asJsonObject
+                val last = product?.get("last_change")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+                update(state.copy(lastChange = last ?: state.lastChange, error = null))
             }
             "tool_result" -> {
                 SyncScheduler.enqueue(app)
-                update(state.copy(status = "Обновляю результат…", error = null))
+                waitStage = "provider"
+                update(state.copy(status = if (event.status == "error") "Действие не выполнено" else "Обновляю результат…",
+                    lastChange = if (event.status == "error") event.code ?: "Ошибка действия" else state.lastChange))
             }
             "publication_confirmation" -> {
                 val id = event.confirmationId.orEmpty()
-                if (id.isNotBlank()) {
-                    update(
-                        state.copy(
-                            confirmation = LiveConfirmation(
-                                id,
-                                event.text,
-                                event.imageUrl,
-                                event.destinations.toList(),
-                                event.scheduledFor,
-                                event.timezone,
-                            ),
-                            status = "Проверь публикацию",
-                            error = null,
-                        )
-                    )
-                }
+                if (id.isNotBlank()) update(state.copy(
+                    confirmation = LiveConfirmation(id, event.text, event.imageUrl, event.destinations.toList(), event.scheduledFor, event.timezone),
+                    status = "Проверь публикацию", error = null,
+                ))
             }
-            "error" -> fail(gen, event.message ?: event.code ?: "Live provider error")
-            "closed" -> fail(gen, "Live-сессия завершилась")
+            "interrupted" -> { playbackGeneration.incrementAndGet(); stopPlayback() }
+            "error" -> fail(gen, event.code ?: "LIVE_PROVIDER_ERROR")
+            "closed" -> fail(gen, "Live-сессия завершилась. Результат сохранён; можно продолжить новой сессией.")
         }
     }
 
-    private fun playAudio(gen: Int, encoded: String, mime: String?) {
-        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return
-        val rate = Regex("rate=(\\d+)").find(mime.orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 24_000
+    private fun playPcm(gen: Int, bytes: ByteArray, rate: Int) {
+        if (generation.get() != gen || bytes.isEmpty()) return
+        val playbackEpoch = playbackGeneration.get()
+        if (pendingPlayback.addAndGet(bytes.size) > MAX_PLAYBACK_BYTES) {
+            pendingPlayback.addAndGet(-bytes.size)
+            fail(gen, "LIVE_PLAYBACK_BACKPRESSURE")
+            return
+        }
+        receivedPcm.addAndGet(bytes.size.toLong())
         playback.execute {
-            if (generation.get() != gen) return@execute
-            val track = ensureAudioTrack(rate) ?: return@execute
-            runCatching { track.write(bytes, 0, bytes.size, AudioTrack.WRITE_BLOCKING) }
+            try {
+                if (playbackGeneration.get() != playbackEpoch) return@execute
+                val track = ensureAudioTrack(rate) ?: throw IllegalStateException("LIVE_PLAYBACK_UNAVAILABLE")
+                var offset = 0
+                while (offset < bytes.size && playbackGeneration.get() == playbackEpoch) {
+                    val count = track.write(bytes, offset, bytes.size - offset, AudioTrack.WRITE_BLOCKING)
+                    if (count <= 0) throw IllegalStateException("LIVE_PLAYBACK_WRITE")
+                    offset += count
+                }
+            } catch (_: Exception) {
+                if (playbackGeneration.get() == playbackEpoch) {
+                    Log.w("StreetStoryLive", "LIVE_PLAYBACK_WRITE")
+                    if (generation.get() == gen) fail(gen, "Не удалось воспроизвести ответ")
+                }
+            } finally { pendingPlayback.addAndGet(-bytes.size) }
         }
     }
 
@@ -318,9 +278,7 @@ class LiveSessionController(context: Context) {
             AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(maxOf(min * 2, rate))
-                .build()
+                .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(maxOf(min * 2, rate)).build()
                 .also { it.play(); audioTrack = it }
         }.getOrNull()
     }
@@ -328,75 +286,39 @@ class LiveSessionController(context: Context) {
     @Synchronized private fun stopPlayback() {
         val track = audioTrack ?: return
         audioTrack = null
-        runCatching { track.pause() }
-        runCatching { track.flush() }
-        runCatching { track.stop() }
-        runCatching { track.release() }
+        runCatching { track.pause() }; runCatching { track.flush() }; runCatching { track.stop() }; runCatching { track.release() }
     }
 
     private fun fail(gen: Int, message: String) {
-        if (generation.get() != gen) return
-        val story = state.storyId
-        val server = serverStoryId
-        val session = sessionId
-        generation.incrementAndGet()
-        serverStoryId = null
-        sessionId = null
-        outbound.clear()
-        synchronized(batchLock) {
-            batch.reset()
-            speechBoundary.reset()
+        if (!generation.compareAndSet(gen, gen + 1)) return
+        val server = serverStoryId; val session = sessionId
+        serverStoryId = null; sessionId = null; waitStarted = 0; inputOpen = false
+        val old = socket; socket = null; old?.close(false)
+        // Do not increment playbackGeneration here: a provider/socket closure
+        // must not truncate PCM already received. Explicit Stop still flushes.
+        update(state.copy(active = false, status = "Live остановлен", error = message))
+        remoteStop(server, session)
+        RecordingService.command(app, RecordingService.ACTION_TRANSPORT_FINISH)
+    }
+
+    private fun remoteStop(server: String?, session: String?) {
+        val base = config.backendUrl; val token = config.deviceToken
+        if (!server.isNullOrBlank() && !session.isNullOrBlank() && !base.isNullOrBlank() && !token.isNullOrBlank()) {
+            network.execute { runCatching { LiveApiClient(base, token).stop(server, session) } }
         }
-        stopPlayback()
-        update(LiveUiState(storyId = story, status = "Live недоступен", error = message))
-        if (!server.isNullOrBlank() && !session.isNullOrBlank()) {
-            val base = config.backendUrl
-            val token = config.deviceToken
-            if (!base.isNullOrBlank() && !token.isNullOrBlank()) {
-                network.execute { runCatching { LiveApiClient(base, token).stop(server, session) } }
-            }
-        }
-        RecordingService.command(app, RecordingService.ACTION_FINISH)
     }
-
-    private fun update(next: LiveUiState) {
-        state = next
-        listeners.forEach { listener -> runCatching { listener(next) } }
+    private fun update(next: LiveUiState) { state = next; listeners.forEach { runCatching { it(next) } } }
+    private fun safeMessage(exc: Exception): String = when (exc) {
+        is ApiException -> exc.code
+        is ApiProtocolException -> "LIVE_PROTOCOL_MISMATCH"
+        else -> "LIVE_CONNECTION_FAILED"
     }
-
-    private fun safeMessage(exc: Exception): String =
-        (exc.message ?: exc::class.java.simpleName).replace(Regex("AIza[A-Za-z0-9_-]{20,}"), "[redacted]").take(240)
-
-    private enum class OutboundKind { ACTIVITY_START, AUDIO, ACTIVITY_END }
-
-    private data class Outbound(
-        val kind: OutboundKind,
-        val pcm: ByteArray?,
-        val queuedAtMs: Long,
-        val generation: Int,
-    )
-
-    companion object {
-        private const val POLL_MS = 160L
-    }
+    companion object { private const val MAX_PLAYBACK_BYTES = 4 * 1024 * 1024 }
 }
 
 internal class LiveSpeechBoundary {
     private var open = false
-
-    fun beforeAudio(): Boolean {
-        if (open) return false
-        open = true
-        return true
-    }
-
-    fun end(): Boolean {
-        if (!open) return false
-        open = false
-        return true
-    }
-
-    fun reset() {
-        open = false
-    }
+    fun beforeAudio(): Boolean { if (open) return false; open = true; return true }
+    fun end(): Boolean { if (!open) return false; open = false; return true }
+    fun reset() { open = false }
 }

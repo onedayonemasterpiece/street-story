@@ -90,6 +90,8 @@ class LiveGoldenInstrumentedTest {
             assertTrue("Live start timed out", ready.await(45, TimeUnit.SECONDS))
             check(liveError == null) { liveError.orEmpty() }
             assertTrue(live.isActiveFor(local.clientStoryId))
+            assertEquals("wss", live.snapshot().transport)
+            evidence["transport"] = live.transportEvidence()
 
             speak(live, pcmFiles[0])
             awaitAnswer(live, "initial context")
@@ -298,6 +300,7 @@ class LiveGoldenInstrumentedTest {
             }
             evidence["last_live_error"] = live.snapshot().error
             evidence["completed_live_turns"] = live.snapshot().completedTurns
+            evidence["transport_final"] = live.transportEvidence()
             live.stopLocal(sendRemote = true)
             File(root, "evidence.json").writeText(gson.toJson(evidence))
             store.close()

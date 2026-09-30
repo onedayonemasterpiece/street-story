@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
 from .live import create_live_host
+from .live_socket import install_live_socket_routes, start_live_socket
 from .runtime import RuntimeStreetStoryService
 from live_interaction import LiveError
 from .service import ConflictError, InvalidStateError, NotFoundError, StreetStoryService
@@ -132,11 +133,10 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         return service.story(story_id)
 
     @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
-    async def start_live(story_id: str):
-        return await live_host.start(
-            resource_id=story_id,
-            actor={"subject": "street-story-device", "tenant_id": "street-story"},
-        )
+    async def start_live(story_id: str, request: Request):
+        return await start_live_socket(live_host, story_id, request)
+
+    install_live_socket_routes(app, live_host, auth)
 
     @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/input", dependencies=[Depends(auth)])
     async def live_input(story_id: str, session_id: str, request: Request):

@@ -1,5 +1,8 @@
 # Street Story backend · DevCoveer runtime
 
+Current Android WSS integration, dependency integrity and the cross-project
+Python/Node decision: [Live WSS](live-wss.md). HTTP audio below is compatibility-only.
+
 This is the deployment boundary for the backend source in `backend/`. It intentionally contains no Fly.io plan and no provider credentials.
 
 ## Runtime shape
