@@ -1,7 +1,7 @@
 package com.onedayonemasterpiece.streetstory
 
 import com.google.gson.Gson
-import com.google.gson.JsonObject
+import com.google.gson.JsonElement
 import com.google.gson.annotations.SerializedName
 import java.net.HttpURLConnection
 import java.net.URL
@@ -26,7 +26,9 @@ class LiveEventWire {
     var status: String? = null
     var stage: String? = null
     var active: Boolean? = null
-    var state: JsonObject? = null
+    // `state` is polymorphic in the Live event stream: product_state carries an
+    // object while lifecycle/confirmation events may carry a scalar string.
+    var state: JsonElement? = null
     @SerializedName("confirmation_id") var confirmationId: String? = null
     @SerializedName("image_url") var imageUrl: String? = null
     @SerializedName("visual_revision") var visualRevision: String? = null

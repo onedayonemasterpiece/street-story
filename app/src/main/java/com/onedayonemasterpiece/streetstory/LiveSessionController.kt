@@ -266,7 +266,8 @@ class LiveSessionController(context: Context) {
             "literal_mode" -> update(state.copy(literalMode = event.active == true, status = if (event.active == true) "Дословная диктовка" else "Слушаю"))
             "product_state" -> {
                 SyncScheduler.enqueue(app)
-                val last = event.state?.get("last_change")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
+                val productState = event.state?.takeIf { it.isJsonObject }?.asJsonObject
+                val last = productState?.get("last_change")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }
                 update(state.copy(status = "Обновляю результат…", lastChange = last ?: state.lastChange, error = null))
             }
             "tool_result" -> {
