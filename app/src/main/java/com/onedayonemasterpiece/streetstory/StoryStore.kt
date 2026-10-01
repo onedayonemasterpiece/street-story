@@ -10,6 +10,7 @@ import java.time.OffsetDateTime
 
 class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     private val draftOverrides = context.getSharedPreferences("street_story_draft_overrides", Context.MODE_PRIVATE)
+    private val filesRoot = context.applicationContext.filesDir.canonicalFile
 
     init { setWriteAheadLoggingEnabled(true) }
 
@@ -49,6 +50,39 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
             put("updated_at", now)
         })
         return requireNotNull(story(photo.clientStoryId))
+    }
+
+    @Synchronized
+    fun deleteStory(id: String) {
+        val story = story(id) ?: return
+        val chunkPaths = readableDatabase.rawQuery(
+            "SELECT c.path FROM chunks c JOIN voice_sessions v ON v.session_id=c.session_id WHERE v.story_id=?",
+            arrayOf(id),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(cursor.getString(0))
+            }
+        }
+        writableDatabase.delete("stories", "client_story_id=?", arrayOf(id))
+        draftOverrides.edit().remove(id).commit()
+
+        val ownedFiles = buildList {
+            add(story.photoPath)
+            story.processedImagePath?.let(::add)
+            addAll(chunkPaths)
+        }
+        ownedFiles.forEach { raw ->
+            runCatching {
+                val file = File(raw).canonicalFile
+                if (file.path.startsWith(filesRoot.path + File.separator) && file.isFile) file.delete()
+            }
+        }
+        runCatching {
+            val storyDir = File(filesRoot, "stories/$id").canonicalFile
+            if (storyDir.path.startsWith(filesRoot.path + File.separator) && storyDir.isDirectory) {
+                storyDir.deleteRecursively()
+            }
+        }
     }
 
     @Synchronized

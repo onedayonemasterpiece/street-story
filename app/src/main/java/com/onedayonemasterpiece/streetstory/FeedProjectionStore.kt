@@ -89,6 +89,11 @@ class FeedProjectionStore(context: Context) : SQLiteOpenHelper(context.applicati
     }
 
     @Synchronized
+    fun clear(storyId: String) {
+        writableDatabase.delete("voice_messages", "story_id=?", arrayOf(storyId))
+    }
+
+    @Synchronized
     fun voiceMessages(storyId: String): List<VoiceMessageSnapshot> = readableDatabase.query(
         "voice_messages",
         arrayOf("story_id", "session_id", "kind", "raw_transcript", "display_text", "started_at", "ended_at"),

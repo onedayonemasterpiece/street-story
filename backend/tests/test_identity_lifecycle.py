@@ -161,3 +161,39 @@ def test_delete_story_cascades_and_scheduled_story_is_blocked(tmp_path):
     with pytest.raises(ConflictError) as exc:
         service.delete_story(scheduled["id"])
     assert exc.value.code == "scheduled_story_delete_blocked"
+
+def test_candidate_catalog_prioritizes_nearby_visible_objects():
+    osm = {
+        "reverse": {},
+        "nearby": [
+            {
+                "type": "way",
+                "id": 300,
+                "tags": {"name": "Дальний памятник"},
+                "distance_m": 390.0,
+            },
+            {
+                "type": "node",
+                "id": 100,
+                "tags": {"name": "Ближние ворота"},
+                "distance_m": 45.0,
+            },
+        ],
+    }
+    wikipedia = [
+        {
+            "pageid": 77,
+            "title": "Средний объект",
+            "url": "https://ru.wikipedia.org/wiki/Middle",
+            "extract": "",
+            "distance_m": 120.0,
+        }
+    ]
+
+    candidates = MvpResearchStreetStoryService._candidate_catalog(osm, wikipedia)
+
+    assert [item["name"] for item in candidates[:3]] == [
+        "Ближние ворота",
+        "Средний объект",
+        "Дальний памятник",
+    ]

@@ -81,6 +81,17 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         var story = store.story(initial.clientStoryId) ?: return false
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
+        val identityBackfillEligible = remote.visualIdentity == null &&
+            remote.state !in setOf(
+                StoryStage.IDENTIFYING,
+                StoryStage.SCHEDULED,
+                StoryStage.PUBLISHED,
+                StoryStage.SCHEDULING,
+            )
+        if (identityBackfillEligible) {
+            remote = api.ensureIdentity(remote.id)
+            validateStoryIdentity(story, remote)
+        }
         if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
         applyRemote(store, feed, research, story.clientStoryId, remote)
         story = requireNotNull(store.story(story.clientStoryId))
@@ -121,7 +132,13 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             api.downloadAsset(assetUrl, target)
             store.setProcessedImagePath(story.clientStoryId, target.absolutePath)
         }
-        return current.stage in setOf(StoryStage.QUEUED, StoryStage.RESEARCHING, StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING)
+        return current.stage in setOf(
+            StoryStage.QUEUED,
+            StoryStage.IDENTIFYING,
+            StoryStage.RESEARCHING,
+            StoryStage.VISUAL_PROCESSING,
+            StoryStage.SCHEDULING,
+        )
     }
 
     private fun syncVoice(store: StoryStore, api: ApiClient, serverStoryId: String, session: VoiceSessionSnapshot) {
@@ -214,6 +231,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
 
     private fun normalizeState(value: String): String = when (value) {
         StoryStage.PHOTO_READY, "created", "voice_pending" -> StoryStage.PHOTO_READY
+        StoryStage.IDENTIFYING -> StoryStage.IDENTIFYING
+        StoryStage.IDENTITY_READY -> StoryStage.IDENTITY_READY
         StoryStage.QUEUED, "uploaded" -> StoryStage.QUEUED
         StoryStage.VOICE_READY -> StoryStage.VOICE_READY
         StoryStage.RESEARCHING, "processing" -> StoryStage.RESEARCHING

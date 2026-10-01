@@ -140,6 +140,13 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def delete_story(story_id: str):
         return service.delete_story(story_id)
 
+    @app.post("/v1/stories/{story_id}/identity", dependencies=[Depends(auth)])
+    async def ensure_story_identity(story_id: str):
+        ensure_identity = getattr(service, "ensure_identity", None)
+        if not callable(ensure_identity):
+            raise ConflictError("identity_unavailable", "Automatic identity is unavailable")
+        return ensure_identity(story_id)
+
     @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
     async def start_live(story_id: str, request: Request):
         return await start_live_socket(live_host, story_id, request)

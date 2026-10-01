@@ -305,58 +305,156 @@ class MvpResearchMixin:
     @staticmethod
     def _candidate_catalog(osm: dict[str, Any], wikipedia: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        seen_ids: set[str] = set()
         wiki_refs: dict[str, list[str]] = {}
+        wikipedia_names: set[str] = set()
+
         for page in wikipedia:
             title = str(page.get("title") or "").strip()
             if not title:
                 continue
+            normalized = re.sub(r"\s+", " ", title.casefold())
+            wikipedia_names.add(normalized)
             raw_id = str(page.get("pageid") or hashlib.sha256(title.encode()).hexdigest()[:12])
             cid = f"wiki:{raw_id}"
-            if cid not in seen:
-                seen.add(cid)
-                refs: list[str] = []
-                for raw in (page.get("thumbnail_url"), page.get("image_url")):
-                    value = str(raw or "").strip()
-                    parsed = urlparse(value)
-                    if parsed.scheme == "https" and parsed.hostname == "upload.wikimedia.org" and value not in refs:
-                        refs.append(value)
-                wiki_refs[re.sub(r"\s+", " ", title.strip().casefold())] = refs[:2]
-                candidates.append(
-                    {
-                        "candidate_id": cid,
-                        "name": title,
-                        "type": "wikipedia",
-                        "url": _norm_url(page.get("url")),
-                        "reference_excerpt": str(page.get("extract") or "")[:1200],
-                        "reference_image_urls": refs[:2],
-                    }
-                )
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            refs: list[str] = []
+            for raw in (page.get("thumbnail_url"), page.get("image_url")):
+                value = str(raw or "").strip()
+                parsed = urlparse(value)
+                if parsed.scheme == "https" and parsed.hostname == "upload.wikimedia.org" and value not in refs:
+                    refs.append(value)
+            wiki_refs[normalized] = refs[:2]
+            candidates.append({
+                "candidate_id": cid,
+                "name": title,
+                "type": "wikipedia",
+                "url": _norm_url(page.get("url")),
+                "reference_excerpt": str(page.get("extract") or "")[:1200],
+                "reference_image_urls": refs[:2],
+                "distance_m": page.get("distance_m"),
+                "selection_bucket": "wikipedia",
+                "salience_rank": 0,
+            })
+
         for item in [osm.get("reverse", {}), *osm.get("nearby", [])]:
             osm_type = str(item.get("osm_type") or item.get("type") or "")
             osm_id = item.get("osm_id") or item.get("id")
-            tags = item.get("tags") or {}
-            name = str(tags.get("name") or item.get("display_name") or "").strip()
-            if not name or osm_type not in {"node", "way", "relation"} or osm_id is None:
+            tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+            address_name = " ".join(
+                part for part in (
+                    str(tags.get("addr:street") or "").strip(),
+                    str(tags.get("addr:housenumber") or "").strip(),
+                ) if part
+            )
+            name = str(tags.get("name") or address_name or item.get("display_name") or "").strip()
+            normalized = re.sub(r"\s+", " ", name.casefold())
+            if (
+                not name
+                or osm_type not in {"node", "way", "relation"}
+                or osm_id is None
+                or (
+                    str(item.get("selection_bucket") or "") != "reverse"
+                    and normalized
+                    and normalized in wikipedia_names
+                )
+            ):
+                continue
+            if osm_type == "relation" and (
+                tags.get("route")
+                or tags.get("boundary")
+                or str(tags.get("type") or "") in {"route", "boundary", "network"}
+            ):
                 continue
             cid = f"osm:{osm_type}:{osm_id}"
-            if cid in seen:
+            if cid in seen_ids:
                 continue
-            seen.add(cid)
-            candidates.append(
-                {
-                    "candidate_id": cid,
-                    "name": name,
-                    "type": "osm",
-                    "url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}",
-                    "reference_excerpt": canonical(tags)[:1200],
-                    "reference_image_urls": wiki_refs.get(
-                        re.sub(r"\s+", " ", name.strip().casefold()),
-                        [],
-                    ),
-                }
+            seen_ids.add(cid)
+            candidates.append({
+                "candidate_id": cid,
+                "name": name,
+                "type": "osm",
+                "url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}",
+                "reference_excerpt": canonical(tags)[:1200],
+                "reference_image_urls": wiki_refs.get(normalized, []),
+                "distance_m": item.get("distance_m"),
+                "selection_bucket": item.get("selection_bucket"),
+                "salience_rank": item.get("salience_rank", 3),
+            })
+
+        def distance(item: dict[str, Any]) -> float:
+            try:
+                return max(0.0, float(item.get("distance_m")))
+            except (TypeError, ValueError):
+                return 10_000.0
+
+        shortlist: list[dict[str, Any]] = []
+        chosen: set[str] = set()
+
+        def take(items: list[dict[str, Any]], limit: int, bucket: str) -> None:
+            added = 0
+            for item in items:
+                cid = str(item.get("candidate_id") or "")
+                if not cid or cid in chosen:
+                    continue
+                chosen.add(cid)
+                shortlist.append({**item, "shortlist_bucket": bucket})
+                added += 1
+                if added >= limit:
+                    return
+
+        reverse = sorted(
+            [item for item in candidates if item.get("selection_bucket") == "reverse"],
+            key=distance,
+        )
+        nearby = sorted(
+            [item for item in candidates if item.get("selection_bucket") == "nearby"],
+            key=distance,
+        )
+        landmarks = [item for item in candidates if item.get("selection_bucket") == "landmark"]
+        wikipedia_candidates = sorted(
+            [item for item in candidates if item.get("type") == "wikipedia"],
+            key=lambda item: (0 if item.get("reference_image_urls") else 1, distance(item)),
+        )
+
+        take(reverse, 1, "reverse")
+        take(nearby, 3, "nearby")
+
+        for low, high, limit, label in (
+            (0.0, 200.0, 3, "landmark_near"),
+            (200.0, 400.0, 3, "landmark_mid"),
+            (400.0, 600.1, 3, "landmark_far"),
+        ):
+            band = [
+                item for item in landmarks
+                if low <= distance(item) < high
+            ]
+            band.sort(
+                key=lambda item: (
+                    int(item.get("salience_rank", 3)),
+                    0 if item.get("reference_image_urls") else 1,
+                    distance(item),
+                )
             )
-        return candidates[:12]
+            take(band, limit, label)
+
+        take(wikipedia_candidates, 4, "wikipedia")
+
+        # Fill unused capacity with the best remaining landmarks/nearby objects,
+        # but never exceed the bounded visual-analysis shortlist.
+        remaining = sorted(
+            [item for item in candidates if str(item.get("candidate_id") or "") not in chosen],
+            key=lambda item: (
+                int(item.get("salience_rank", 3)),
+                0 if item.get("reference_image_urls") else 1,
+                distance(item),
+            ),
+        )
+        take(remaining, 16 - len(shortlist), "fill")
+        shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
+        return shortlist[:16]
 
     async def _candidate_reference_images(
         self, candidates: list[dict[str, Any]]
@@ -369,7 +467,12 @@ class MvpResearchMixin:
             follow_redirects=False,
             headers={"User-Agent": "StreetStory/0.1 Wikimedia visual matcher"},
         ) as client:
-            for candidate in candidates[:8]:
+            image_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.get("reference_image_urls")
+            ][:6]
+            for candidate in image_candidates:
                 candidate_id = str(candidate.get("candidate_id") or "")
                 for raw_url in (candidate.get("reference_image_urls") or [])[:1]:
                     url = str(raw_url or "").strip()
@@ -433,7 +536,7 @@ class MvpResearchMixin:
         }
         prompt = (
             "Ты выполняешь только визуальную идентификацию объекта Street Story, до исследования фактов. "
-            "Сравни исходное фото с кандидатами OSM/Wikipedia по наблюдаемым признакам. Не выдавай исторические факты. "
+            "Сравни исходное фото с shortlist-кандидатами OSM/Wikipedia по наблюдаемым признакам. GPS — точка съёмки, "            "а не координата объекта: кандидат в сотнях метров может быть правильнее ближайшего. Расстояние — только prior; "            "визуальное совпадение важнее. Не выдавай исторические факты. "
             "status=match только если конкретный кандидат визуально достаточно убедителен; при сомнении uncertain, "
             "при явном несовпадении mismatch. candidate_id обязан быть из списка или пустой строкой. "
             "Кратко перечисли видимые признаки, на которых основано решение.\n"

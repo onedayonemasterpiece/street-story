@@ -140,6 +140,31 @@ def settings(tmp_path: Path) -> Settings:
     )
 
 
+def mark_identity_ready(svc, story_id: str, *, name: str = "Бранденбургские ворота") -> None:
+    with svc.store.tx() as db:
+        row = svc._story_row(db, story_id)
+        research = json.loads(row["research_json"] or "{}")
+        research["visual_identity"] = {
+            "status": "owner_confirmed",
+            "candidate_id": "wiki:77",
+            "candidate_name": name,
+            "confidence": None,
+            "observations": ["Подтверждено для теста."],
+            "candidates": [
+                {
+                    "candidate_id": "wiki:77",
+                    "name": name,
+                    "type": "wikipedia",
+                    "url": "https://ru.wikipedia.org/wiki/Test",
+                }
+            ],
+        }
+        db.execute(
+            "UPDATE stories SET state='identity_ready',place_name=?,research_json=?,updated_at=? WHERE id=?",
+            (name, json.dumps(research, ensure_ascii=False), svc.store.now(), story_id),
+        )
+
+
 def make_service(tmp_path: Path):
     svc = MvpLocationStreetStoryService(
         settings(tmp_path), ProviderBundle(FakeOSM(), FakeWiki(), FakeGemini(), FakeVP())
@@ -210,9 +235,55 @@ async def test_live_place_resolution_and_owner_confirmation_use_osm_wikipedia_co
 
 
 @pytest.mark.asyncio
+async def test_live_search_and_publication_are_blocked_until_identity_is_ready(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+
+    with pytest.raises(Exception) as search_error:
+        await adapter.execute_tool(
+            session,
+            {
+                "name": "search_web",
+                "id": "search-before-identity",
+                "args": {"query": "история объекта"},
+            },
+        )
+    assert getattr(search_error.value, "code", None) == "identity_required"
+
+    with pytest.raises(Exception) as visual_error:
+        await adapter.execute_tool(
+            session,
+            {
+                "name": "generate_visual",
+                "id": "visual-before-identity",
+                "args": {"visual_instruction": "сделай постер"},
+            },
+        )
+    assert getattr(visual_error.value, "code", None) == "identity_required"
+
+    future = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds")
+    with pytest.raises(Exception) as publish_error:
+        await adapter.execute_tool(
+            session,
+            {
+                "name": "prepare_publication",
+                "id": "publish-before-identity",
+                "args": {
+                    "destinations": ["street_story_e2e_test"],
+                    "scheduled_for": future,
+                    "timezone": "Europe/Kaliningrad",
+                },
+            },
+        )
+    assert getattr(publish_error.value, "code", None) == "identity_required"
+
+
+@pytest.mark.asyncio
 async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_path):
     svc, adapter, session, events = make_service(tmp_path)
     story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
     with svc.store.tx() as db:
         db.execute("UPDATE stories SET draft_text='Авторский текст' WHERE id=?", (story_id,))
 
@@ -318,6 +389,7 @@ async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path):
 async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
     with svc.store.tx() as db:
         db.execute(
             "UPDATE stories SET state='ready_to_publish',draft_text='Готовый текст',"

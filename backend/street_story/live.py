@@ -274,10 +274,12 @@ SYSTEM_INSTRUCTION = """
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
 - исходное фото текущей темы передаётся тебе отдельным visual snapshot. Если автор спрашивает, что видно на фото, описывай только реально видимые признаки этого snapshot; если visual snapshot недоступен, честно скажи, что не видишь фото;
 - вопрос "что видно/что ты видишь на фото" — это визуальный вопрос: ответь по snapshot и не вызывай resolve_place/search_web только ради такого вопроса;
-- новая тема сама по себе не повод запускать resolve_place. Вызывай resolve_place, когда автор явно просит определить, найти или проверить объект либо перейти к идентификации/поиску; однословный или явно обрывочный ввод не должен запускать дорогие product functions — коротко уточни намерение;
-- факты не выдумывать. resolve_place независимо сопоставляет исходное фото и координаты с OSM/Wikipedia и возвращает кандидатов;
-- если resolve_place не дал уверенного match, коротко уточни объект. После явного подтверждения автора вызови confirm_place с candidate_id или однозначным candidate_name;
-- когда нужны внешние сведения и проверяемые источники, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
+- сразу после выбора фото backend автоматически выполняет обязательную идентификацию: EXIF-координаты — центр поиска ближайших OSM/Wikipedia объектов, а не готовый ответ. visual_identity со статусом match/owner_confirmed является обязательной границей перед фактами и публикацией;
+- если автоматическая идентификация уже дала match, используй этот результат и коротко сообщи автору, что объект найден. Не запускай resolve_place повторно без причины;
+- если visual_identity uncertain/mismatch или координат нет, сначала помоги определить объект через resolve_place и при необходимости confirm_place. при этом однословный или явно обрывочный ввод не должен запускать дорогие product functions — коротко уточни намерение;
+- факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
+- пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
+- когда идентичность подтверждена и нужны внешние сведения, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
@@ -768,6 +770,7 @@ class StreetStoryLiveAdapter:
             db.execute(
                 "UPDATE stories SET latitude=COALESCE(?,latitude),longitude=COALESCE(?,longitude),"
                 "place_name=COALESCE(?,place_name),research_json=?,"
+                "state=CASE WHEN ? THEN 'identity_ready' ELSE state END,"
                 "error_code=CASE WHEN ? THEN NULL ELSE error_code END,"
                 "error_message=CASE WHEN ? THEN NULL ELSE error_message END,"
                 "revision=revision+1,updated_at=? WHERE id=?",
@@ -776,6 +779,7 @@ class StreetStoryLiveAdapter:
                     lon,
                     chosen_name,
                     canonical(research),
+                    int(identity.get("status") == "match"),
                     int(identity.get("status") == "match"),
                     int(identity.get("status") == "match"),
                     self.service.store.now(),
@@ -874,9 +878,9 @@ class StreetStoryLiveAdapter:
         with self.service.store.tx() as db:
             self.service._story_row(db, story_id)
             db.execute(
-                "UPDATE stories SET place_name=?,research_json=?,"
-                "error_code=CASE WHEN error_code='visual_identity_uncertain' THEN NULL ELSE error_code END,"
-                "error_message=CASE WHEN error_code='visual_identity_uncertain' THEN NULL ELSE error_message END,"
+                "UPDATE stories SET place_name=?,research_json=?,state='identity_ready',"
+                "error_code=CASE WHEN error_code IN ('visual_identity_uncertain','identity_location_missing') THEN NULL ELSE error_code END,"
+                "error_message=CASE WHEN error_code IN ('visual_identity_uncertain','identity_location_missing') THEN NULL ELSE error_message END,"
                 "revision=revision+1,updated_at=? WHERE id=?",
                 (
                     confirmed["candidate_name"],
@@ -903,6 +907,13 @@ class StreetStoryLiveAdapter:
 
         with self.service.store.connection() as db:
             story = dict(self.service._story_row(db, story_id))
+            research = json.loads(story.get("research_json") or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            if identity.get("status") not in {"match", "owner_confirmed"}:
+                raise InvalidStateError(
+                    "identity_required",
+                    "Сначала нужно определить объект на фотографии.",
+                )
             known_facts = [
                 {
                     "fact_id": row["fact_id"],
@@ -922,11 +933,7 @@ class StreetStoryLiveAdapter:
             "current_draft": str(story.get("draft_text") or "")[:2500],
             "recent_author_context": self._recent_transcript(session, "")[:6000],
             "known_facts": known_facts,
-            "visual_identity": (
-                json.loads(story.get("research_json") or "{}").get("visual_identity")
-                if story.get("research_json")
-                else None
-            ),
+            "visual_identity": identity,
         }
         grounded = await self.service.providers.gemini.search_web(query, topic_context)
 
@@ -1284,6 +1291,15 @@ class StreetStoryLiveAdapter:
             return result
 
     def _generate_visual(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        with self.service.store.connection() as db:
+            row = self.service._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            if identity.get("status") not in {"match", "owner_confirmed"}:
+                raise InvalidStateError(
+                    "identity_required",
+                    "Сначала нужно определить объект на фотографии.",
+                )
         instruction = _bounded_text(args.get("visual_instruction"), 600)
         supplied = args.get("fact_ids")
         if supplied is None:
@@ -1311,6 +1327,15 @@ class StreetStoryLiveAdapter:
         return result
 
     async def _prepare_publication(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        with self.service.store.connection() as db:
+            row = self.service._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            if identity.get("status") not in {"match", "owner_confirmed"}:
+                raise InvalidStateError(
+                    "identity_required",
+                    "Сначала нужно определить объект на фотографии.",
+                )
         destinations = [str(v).strip() for v in args.get("destinations", []) if str(v).strip()]
         if not destinations or len(destinations) > 8:
             raise ConflictError("publish_destinations_required", "At least one bounded destination is required")

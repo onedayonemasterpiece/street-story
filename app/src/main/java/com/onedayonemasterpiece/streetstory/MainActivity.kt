@@ -58,6 +58,8 @@ class MainActivity : Activity() {
 
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
+    private var pendingLiveAutoIdentity = false
+    private var autoIdentityLiveStartingStoryId: String? = null
     private var receiverRegistered = false
     private var pendingUpdate: UpdateInfo? = null
     private var waitingForInstallPermission = false
@@ -82,6 +84,9 @@ class MainActivity : Activity() {
     private var micButton: ImageButton? = null
     private var micPulse: ObjectAnimator? = null
     private var shownImagePath: String? = null
+    private var topicScroll: ScrollView? = null
+    private var previewExpanded = true
+    private var lastDialogueMessageCount = 0
 
     private val liveListener: (LiveUiState) -> Unit = { state ->
         runOnUiThread { applyLiveState(state) }
@@ -158,19 +163,17 @@ class MainActivity : Activity() {
         )
         dock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = rounded(PAPER, 22)
-            elevation = dp(10).toFloat()
-            setPadding(dp(14), dp(10), dp(14), dp(10))
+            gravity = Gravity.CENTER
+            background = null
+            elevation = 0f
             visibility = View.GONE
         }
         root.addView(
             dock,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(142)).apply {
-                gravity = Gravity.BOTTOM
-                leftMargin = dp(9)
-                rightMargin = dp(9)
-                bottomMargin = dp(7)
+            FrameLayout.LayoutParams(dp(96), dp(96)).apply {
+                gravity = Gravity.END or Gravity.BOTTOM
+                rightMargin = dp(14)
+                bottomMargin = dp(10)
             },
         )
         setContentView(root)
@@ -258,6 +261,16 @@ class MainActivity : Activity() {
             }
         )
         row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val delete = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_delete)
+            imageTintList = ColorStateList.valueOf(MUTED)
+            background = null
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            contentDescription = "delete-topic"
+            setOnClickListener { confirmDeleteTopic(story) }
+        }
+        row.addView(delete, LinearLayout.LayoutParams(dp(44), dp(44)))
         return row
     }
 
@@ -266,15 +279,25 @@ class MainActivity : Activity() {
         setActiveStory(storyId)
         contentHost.removeAllViews()
         shownImagePath = null
+        previewExpanded = true
+        lastDialogueMessageCount = 0
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
             contentDescription = "topic-scroll"
+            setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+                if (scrollY < oldScrollY) {
+                    setPreviewCompact(false)
+                } else if (scrollY > oldScrollY && lastDialogueMessageCount > 0) {
+                    setPreviewCompact(true)
+                }
+            }
         }
+        topicScroll = scroll
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(30))
+            setPadding(dp(18), dp(14), dp(18), dp(118))
         }
         scroll.addView(column)
         contentHost.addView(scroll)
@@ -298,12 +321,14 @@ class MainActivity : Activity() {
         column.addView(topicStatusView)
 
         previewImage = ImageView(this).apply {
+            adjustViewBounds = true
             scaleType = ImageView.ScaleType.FIT_CENTER
             background = rounded(SAGE_DARK, 22)
             clipToOutline = true
             contentDescription = "publication-image"
+            setOnClickListener { setPreviewCompact(previewExpanded) }
         }
-        column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(280)))
+        column.addView(previewImage, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         chatBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -405,50 +430,19 @@ class MainActivity : Activity() {
         dock.removeAllViews()
         dock.visibility = View.VISIBLE
         (contentHost.layoutParams as? FrameLayout.LayoutParams)?.let {
-            it.bottomMargin = dp(154)
+            it.bottomMargin = 0
             contentHost.layoutParams = it
-        }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
         }
         micButton = ImageButton(this).apply {
             setImageResource(R.drawable.ic_mic)
             imageTintList = ColorStateList.valueOf(PAPER)
             background = oval(INK)
-            setPadding(dp(23), dp(23), dp(23), dp(23))
+            elevation = dp(8).toFloat()
+            setPadding(dp(21), dp(21), dp(21), dp(21))
             contentDescription = "live-mic"
             setOnClickListener { toggleLive(storyId) }
         }
-        row.addView(micButton, LinearLayout.LayoutParams(dp(84), dp(84)))
-
-        val labels = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, 0, 0)
-        }
-        dockTopic = label("Тема · ${topicTitle(store.story(storyId))}", 12, MUTED, Typeface.DEFAULT).apply {
-            maxLines = 1
-        }
-        labels.addView(dockTopic)
-        dockStatus = label("Микрофон выключен", 15, INK, Typeface.DEFAULT_BOLD).apply {
-            setPadding(0, dp(5), 0, 0)
-            maxLines = 2
-        }
-        labels.addView(dockStatus)
-        labels.addView(
-            label(
-                "Нажмите большую кнопку, чтобы включить или остановить Live",
-                11,
-                MUTED,
-                Typeface.DEFAULT,
-            ).apply {
-                setPadding(0, dp(4), 0, 0)
-                maxLines = 2
-            }
-        )
-        row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
-        dock.addView(row)
+        dock.addView(micButton, LinearLayout.LayoutParams(dp(78), dp(78)))
     }
 
     private fun refreshSurface() {
@@ -463,6 +457,8 @@ class MainActivity : Activity() {
         dockTopic?.text = "Тема · ${topicTitle(story)}"
 
         val meaningful = story.stage in setOf(
+            StoryStage.IDENTIFYING,
+            StoryStage.IDENTITY_READY,
             StoryStage.RESEARCHING,
             StoryStage.VISUAL_PROCESSING,
             StoryStage.SCHEDULING,
@@ -491,7 +487,12 @@ class MainActivity : Activity() {
         }
 
         val projection = research.get(id)
-        sourceButton?.text = "Источники · ${projection?.sourceCount ?: 0}"
+        sourceButton?.apply {
+            val count = projection?.sourceCount ?: 0
+            text = "Источники · $count"
+            visibility = if (count > 0) View.VISIBLE else View.GONE
+        }
+        maybeAutoStartIdentityLive(story, projection)
 
         publishButton?.apply {
             val hasResult = !story.draftText.isNullOrBlank() &&
@@ -511,12 +512,25 @@ class MainActivity : Activity() {
             return
         }
 
-        dockStatus?.text = state.error ?: state.status
         chatStatus?.apply {
             text = if (state.error.isNullOrBlank()) "• ${state.status}" else "⚠ ${state.error}"
             setTextColor(if (state.error.isNullOrBlank()) MUTED else ACCENT)
         }
         renderLiveMessages(state.messages)
+        val dialogueCount = state.messages.count {
+            it.role == LiveRole.USER || it.role == LiveRole.ASSISTANT
+        }
+        if (dialogueCount > lastDialogueMessageCount) {
+            lastDialogueMessageCount = dialogueCount
+            setPreviewCompact(true)
+            chatBox?.post {
+                val scroll = topicScroll ?: return@post
+                val target = ((chatBox?.top ?: 0) - dp(10)).coerceAtLeast(0)
+                scroll.smoothScrollTo(0, target)
+            }
+        } else {
+            lastDialogueMessageCount = maxOf(lastDialogueMessageCount, dialogueCount)
+        }
         micButton?.apply {
             background = oval(if (state.active) ACCENT else INK)
             contentDescription = if (state.active) "live-stop" else "live-mic"
@@ -592,16 +606,19 @@ class MainActivity : Activity() {
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             pendingLiveStoryId = storyId
+            pendingLiveAutoIdentity = false
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
             return
         }
         startLive(storyId)
     }
 
-    private fun startLive(storyId: String) {
+    private fun startLive(storyId: String, autoIdentity: Boolean = false) {
         pendingLiveStoryId = null
+        if (!autoIdentity) pendingLiveAutoIdentity = false
         live.start(storyId) { ready, error ->
             runOnUiThread {
+                if (autoIdentity) autoIdentityLiveStartingStoryId = null
                 if (ready) {
                     RecordingService.start(this, storyId, RecordingKind.LIVE_ARCHIVE)
                 } else if (!error.isNullOrBlank()) {
@@ -609,6 +626,32 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun maybeAutoStartIdentityLive(
+        story: StorySnapshot,
+        projection: ResearchProjectionSnapshot?,
+    ) {
+        val status = projection?.identityStatus ?: return
+        if (status !in setOf("match", "owner_confirmed", "uncertain", "mismatch")) return
+        if (!config.configured) return
+
+        val current = live.snapshot()
+        if (current.active) return
+        if (autoIdentityLiveStartingStoryId != null) return
+
+        val attemptKey = "identity_live_attempted:${story.clientStoryId}"
+        if (prefs.getBoolean(attemptKey, false)) return
+        prefs.edit().putBoolean(attemptKey, true).apply()
+        autoIdentityLiveStartingStoryId = story.clientStoryId
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            pendingLiveStoryId = story.clientStoryId
+            pendingLiveAutoIdentity = true
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            return
+        }
+        startLive(story.clientStoryId, autoIdentity = true)
     }
 
     override fun onRequestPermissionsResult(
@@ -619,10 +662,13 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQUEST_MIC) return
         val storyId = pendingLiveStoryId
+        val autoIdentity = pendingLiveAutoIdentity
         pendingLiveStoryId = null
+        pendingLiveAutoIdentity = false
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && storyId != null) {
-            startLive(storyId)
+            startLive(storyId, autoIdentity = autoIdentity)
         } else {
+            if (autoIdentity) autoIdentityLiveStartingStoryId = null
             Toast.makeText(this, "Для Live нужен микрофон", Toast.LENGTH_LONG).show()
         }
     }
@@ -935,6 +981,9 @@ class MainActivity : Activity() {
         dockStatus = null
         micButton = null
         shownImagePath = null
+        topicScroll = null
+        previewExpanded = true
+        lastDialogueMessageCount = 0
     }
 
     private fun topicTitle(story: StorySnapshot?): String {
@@ -953,8 +1002,10 @@ class MainActivity : Activity() {
         val text = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val lower = text.lowercase(Locale.ROOT)
         return when {
+            lower.contains("resource_token_budget") ->
+                "Голосовой лимит временно исчерпан. Подождите около минуты."
             lower.contains("429") || lower.contains("503") ||
-                lower.contains("resource_capacity") || lower.contains("resource_token_budget") ||
+                lower.contains("resource_capacity") ||
                 lower.contains("live_busy") || lower.contains("provider_quota") ->
                 "Мира сейчас занята. Результат сохранён — попробуйте ещё раз через несколько секунд."
             lower.contains("timeout") || lower.contains("timed out") || lower.contains("connection") ||
@@ -970,6 +1021,8 @@ class MainActivity : Activity() {
         StoryStage.SCHEDULED -> "Запланировано · ${story.scheduledFor.orEmpty()}"
         StoryStage.PUBLISHED -> "Опубликовано"
         StoryStage.NEEDS_REVIEW, StoryStage.VISUAL_BLOCKED -> "Нужно внимание"
+        StoryStage.IDENTIFYING -> "Определяю объект"
+        StoryStage.IDENTITY_READY -> "Объект определён"
         StoryStage.RESEARCHING -> "Ищем факты"
         StoryStage.VISUAL_PROCESSING -> "Готовим изображение"
         StoryStage.SCHEDULING -> "Планируем публикацию"
@@ -1029,7 +1082,19 @@ class MainActivity : Activity() {
     private fun renderLiveMessages(messages: List<LiveChatMessage>) {
         val host = chatMessages ?: return
         host.removeAllViews()
-        messages.takeLast(18).forEach { message ->
+        val identity = activeStoryId?.let(research::get)
+        val identityMessage = identity
+            ?.takeIf {
+                it.identityStatus in setOf("match", "owner_confirmed") &&
+                    !it.candidateName.isNullOrBlank()
+            }
+            ?.candidateName
+            ?.let { LiveChatMessage(LiveRole.ASSISTANT, "Я нашла, что изображено на фото: это $it.") }
+        val visible = buildList {
+            identityMessage?.let(::add)
+            addAll(messages.takeLast(18))
+        }
+        visible.forEach { message ->
             val row = LinearLayout(this).apply {
                 gravity = if (message.role == LiveRole.USER) Gravity.END else Gravity.START
             }
@@ -1049,6 +1114,80 @@ class MainActivity : Activity() {
             row.addView(bubble)
             host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         }
+    }
+
+    private fun setPreviewCompact(compact: Boolean) {
+        val image = previewImage ?: return
+        val expanded = !compact
+        if (previewExpanded == expanded && image.layoutParams != null) return
+        previewExpanded = expanded
+        image.adjustViewBounds = true
+        image.scaleType = ImageView.ScaleType.FIT_CENTER
+        val params = image.layoutParams as? LinearLayout.LayoutParams ?: return
+        params.width = if (expanded) ViewGroup.LayoutParams.MATCH_PARENT else dp(190)
+        params.height = ViewGroup.LayoutParams.WRAP_CONTENT
+        params.gravity = Gravity.CENTER_HORIZONTAL
+        image.layoutParams = params
+        image.requestLayout()
+    }
+
+    private fun confirmDeleteTopic(story: StorySnapshot) {
+        val activeRecording = store.activeVoiceSession()
+        if (live.isActiveFor(story.clientStoryId) || activeRecording?.storyId == story.clientStoryId) {
+            Toast.makeText(this, "Сначала остановите Live или запись этой темы.", Toast.LENGTH_LONG).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Удалить тему?")
+            .setMessage("Фото, локальная история этой темы и серверная запись будут удалены.")
+            .setPositiveButton("Удалить") { _, _ -> deleteTopic(story) }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun deleteTopic(story: StorySnapshot) {
+        Thread {
+            runCatching {
+                val serverId = story.serverStoryId
+                if (!serverId.isNullOrBlank()) {
+                    val base = config.backendUrl
+                    val token = config.deviceToken
+                    check(!base.isNullOrBlank() && !token.isNullOrBlank()) {
+                        "Backend не настроен — серверную тему нельзя безопасно удалить."
+                    }
+                    try {
+                        val receipt = ApiClient(base, token).deleteStory(serverId)
+                        check(receipt.ok && receipt.storyId == serverId) {
+                            "Backend не подтвердил удаление темы."
+                        }
+                    } catch (exc: ApiException) {
+                        if (exc.status != 404) throw exc
+                    }
+                }
+                store.deleteStory(story.clientStoryId)
+                research.clear(story.clientStoryId)
+                val feed = FeedProjectionStore(this)
+                try {
+                    feed.clear(story.clientStoryId)
+                } finally {
+                    feed.close()
+                }
+            }.onSuccess {
+                runOnUiThread {
+                    if (activeStoryId == story.clientStoryId) setActiveStory(null)
+                    showTopics()
+                    Toast.makeText(this, "Тема удалена", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure { exc ->
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Не удалось удалить тему: ${exc.message ?: "ошибка"}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }.start()
     }
 
     private fun updateMicPulse(active: Boolean) {
