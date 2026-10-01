@@ -120,11 +120,13 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         if x_photo_sha256 and x_photo_sha256.lower() != photo_sha256.lower():
             raise ConflictError("photo_digest_header_conflict", "X-Photo-SHA256 disagrees with multipart photo_sha256")
         data = await photo.read()
-        return service.create_story(
+        created = service.create_story(
             key=idem(idempotency_key), client_story_id=client_story_id, photo_sha256=photo_sha256,
             photo_mime_type=photo.content_type or "application/octet-stream", photo_bytes=data,
             voice_protocol=voice_protocol, lat=lat, lon=lon,
         )
+        ensure_identity = getattr(service, "ensure_identity", None)
+        return ensure_identity(created["id"]) if callable(ensure_identity) else created
 
     @app.get("/v1/stories", dependencies=[Depends(auth)])
     async def list_stories():
@@ -133,6 +135,10 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.get("/v1/stories/{story_id}", dependencies=[Depends(auth)])
     async def get_story(story_id: str):
         return service.story(story_id)
+
+    @app.delete("/v1/stories/{story_id}", dependencies=[Depends(auth)])
+    async def delete_story(story_id: str):
+        return service.delete_story(story_id)
 
     @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
     async def start_live(story_id: str, request: Request):

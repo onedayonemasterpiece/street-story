@@ -104,8 +104,9 @@ class WikipediaClient:
                 return []
             ids = "|".join(str(hit["pageid"]) for hit in hits)
             extracts = await client.get(self.endpoint, params={
-                "action": "query", "pageids": ids, "prop": "extracts|info", "exintro": 1,
-                "explaintext": 1, "inprop": "url", "format": "json", "formatversion": 2,
+                "action": "query", "pageids": ids, "prop": "extracts|info|pageimages", "exintro": 1,
+                "explaintext": 1, "inprop": "url", "piprop": "original|thumbnail", "pithumbsize": 1200,
+                "format": "json", "formatversion": 2,
             }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
             extracts.raise_for_status()
             pages = extracts.json().get("query", {}).get("pages", [])
@@ -113,6 +114,8 @@ class WikipediaClient:
                 "pageid": page.get("pageid"), "title": page.get("title", ""),
                 "extract": page.get("extract", "")[:6000],
                 "url": page.get("fullurl") or f"https://ru.wikipedia.org/wiki/{quote(page.get('title', '').replace(' ', '_'))}",
+                "image_url": (page.get("original") or {}).get("source"),
+                "thumbnail_url": (page.get("thumbnail") or {}).get("source"),
             } for page in pages if page.get("title")]
             self.store.cache_put(key, result, 7 * 24 * 3600)
             return result
