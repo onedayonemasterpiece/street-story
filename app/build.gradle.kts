@@ -5,6 +5,9 @@ plugins {
 
 val embeddedSourceSha = System.getenv("STREET_STORY_SOURCE_SHA")
     ?: providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim()
+val ownerSigningStorePath = System.getenv("STREET_STORY_SIGNING_STORE_FILE").orEmpty()
+val ownerSigningStorePassword = System.getenv("STREET_STORY_SIGNING_STORE_PASSWORD").orEmpty()
+val ownerSigningEnabled = ownerSigningStorePath.isNotBlank() && ownerSigningStorePassword.isNotBlank()
 val prepareSharedLive by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir)
     commandLine("python3", "scripts/prepare_live_framework.py")
@@ -27,7 +30,25 @@ android {
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"${System.getenv("STREET_STORY_BACKEND_URL") ?: ""}\"")
         buildConfigField("String", "SOURCE_SHA", "\"$embeddedSourceSha\"")
     }
-    buildTypes { release { isMinifyEnabled = false } }
+    signingConfigs {
+        if (ownerSigningEnabled) {
+            create("owner") {
+                storeFile = file(ownerSigningStorePath)
+                storePassword = ownerSigningStorePassword
+                keyAlias = "streetstory"
+                keyPassword = ownerSigningStorePassword
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            if (ownerSigningEnabled) signingConfig = signingConfigs.getByName("owner")
+        }
+        release {
+            isMinifyEnabled = false
+            if (ownerSigningEnabled) signingConfig = signingConfigs.getByName("owner")
+        }
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     buildFeatures { buildConfig = true }
     sourceSets.getByName("main").java.srcDir(rootProject.file(".live-framework/android/src/main/java"))

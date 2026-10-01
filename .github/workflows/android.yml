@@ -22,11 +22,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Restore stable owner debug signing key
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: street-story-owner-debug-keystore-v1
+      - name: Restore canonical owner signing key
+        if: github.event_name != 'pull_request'
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.STREET_STORY_SIGNING_KEYSTORE_B64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.STREET_STORY_SIGNING_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEYSTORE_B64"
+          test -n "$SIGNING_STORE_PASSWORD"
+          install -d -m 0700 "$RUNNER_TEMP/street-story-signing"
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/street-story-signing/owner-signing.p12"
+          chmod 0600 "$RUNNER_TEMP/street-story-signing/owner-signing.p12"
+          keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/street-story-signing/owner-signing.p12" \
+            -storepass "$SIGNING_STORE_PASSWORD" -alias streetstory >/dev/null
       - uses: android-actions/setup-android@v4
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -35,6 +44,8 @@ jobs:
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: Unit tests, lint and APKs
         env:
+          STREET_STORY_SIGNING_STORE_FILE: ${{ runner.temp }}/street-story-signing/owner-signing.p12
+          STREET_STORY_SIGNING_STORE_PASSWORD: ${{ secrets.STREET_STORY_SIGNING_STORE_PASSWORD }}
           STREET_STORY_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Prepare installable artifact
@@ -48,6 +59,16 @@ jobs:
           (cd release && sha256sum street-story.apk > SHA256SUMS)
           printf 'source_sha=%s\nrun_id=%s\napplication_id=com.onedayonemasterpiece.streetstory\nversion_code=%s\nversion_name=0.1.%s\n' \
             "$STREET_STORY_SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
+      - name: Verify canonical signing certificate
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          expected="fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94"
+          actual="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs release/street-story.apk \
+            | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}' \
+            | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          test -n "$actual"
+          test "$actual" = "$expected"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -95,7 +116,6 @@ jobs:
         with:
           name: street-story-emulator-${{ github.run_number }}
           path: instrumentation.txt
-
 
   release:
     needs: [checks, emulator]
