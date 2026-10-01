@@ -7,7 +7,11 @@ val embeddedSourceSha = System.getenv("STREET_STORY_SOURCE_SHA")
     ?: providers.exec { commandLine("git", "rev-parse", "HEAD") }.standardOutput.asText.get().trim()
 val ownerSigningStorePath = System.getenv("STREET_STORY_SIGNING_STORE_FILE").orEmpty()
 val ownerSigningStorePassword = System.getenv("STREET_STORY_SIGNING_STORE_PASSWORD").orEmpty()
-val ownerSigningEnabled = ownerSigningStorePath.isNotBlank() && ownerSigningStorePassword.isNotBlank()
+val ownerSigningStoreFile = rootProject.file(ownerSigningStorePath)
+val ownerSigningEnabled =
+    ownerSigningStorePath.isNotBlank() &&
+        ownerSigningStorePassword.isNotBlank() &&
+        ownerSigningStoreFile.isFile
 val prepareSharedLive by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir)
     commandLine("python3", "scripts/prepare_live_framework.py")
@@ -33,7 +37,7 @@ android {
     signingConfigs {
         if (ownerSigningEnabled) {
             create("owner") {
-                storeFile = file(ownerSigningStorePath)
+                storeFile = ownerSigningStoreFile
                 storePassword = ownerSigningStorePassword
                 keyAlias = "streetstory"
                 keyPassword = ownerSigningStorePassword
