@@ -58,8 +58,11 @@ proof, and representative polygon centres are approximate. The fixed radius does
 not calculate physical line of sight or guarantee every visible object is mapped.
 
 Compare batches of 4, 6, then 6 candidates. Fetch references lazily for the current
-batch, at most two per batch / six total, rather than downloading every candidate's
-image first. The source photo is EXIF-normalized and resized for model input; the
+batch, initially at most two, rather than downloading every candidate's image.
+A promising candidate whose reference was not sent gets one targeted reference
+verification before moving farther. All passes share six references and a
+60-second deadline (at most three batch and three targeted comparisons).
+The source photo is EXIF-normalized and resized for model input; the
 stored original is not changed. Total visual evaluation has a 60-second deadline.
 
 Stop early only for a valid candidate ID, model match with score >=0.90, nonempty

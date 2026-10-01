@@ -13,6 +13,14 @@ async def identify_nearest(service, story, transcript, candidates):
     remaining_refs = 6
     started = time.monotonic()
     offset = 0
+
+    async def evaluate(batch, budget):
+        remaining_time = 60 - (time.monotonic() - started)
+        if remaining_time <= 0:
+            raise TimeoutError('Identity visual deadline')
+        return await asyncio.wait_for(service._identify_photo_batch(
+            story, transcript, batch, reference_limit=budget), timeout=remaining_time)
+
     for number, count in enumerate((4, 6, 6), 1):
         batch = ordered[offset:offset + count]
         offset += count
@@ -20,12 +28,24 @@ async def identify_nearest(service, story, transcript, candidates):
             break
         record_identity_event(service, story['id'], 'identity_batch_started', {
             'batch': number, 'candidate_ids': [item['candidate_id'] for item in batch], 'reference_budget': remaining_refs})
-        remaining_time = 60 - (time.monotonic() - started)
-        if remaining_time <= 0:
+        if time.monotonic() - started >= 60:
             break
-        result = await asyncio.wait_for(service._identify_photo_batch(
-            story, transcript, batch, reference_limit=min(2, remaining_refs)), timeout=remaining_time)
+        result = await evaluate(batch, min(2, remaining_refs))
         remaining_refs -= min(remaining_refs, len(result.get('_references_sent', [])))
+        chosen = next((x for x in batch if x['candidate_id'] == result.get('candidate_id')), None)
+        # A promising candidate must not lose solely because its image was not
+        # among the first two references. Verify just that candidate before
+        # moving farther away; share the same six-image / sixty-second budget.
+        if (chosen and chosen.get('reference_image_urls') and remaining_refs > 0
+                and chosen['candidate_id'] not in result.get('_references_sent', [])
+                and confidence(result) >= .60 and result.get('status') in {'match', 'uncertain'}):
+            record_identity_event(service, story['id'], 'identity_targeted_reference', {
+                'batch': number, 'candidate_id': chosen['candidate_id']})
+            targeted = await evaluate([chosen], 1)
+            remaining_refs -= min(remaining_refs, len(targeted.get('_references_sent', [])))
+            # A failed reference verification cannot preserve an earlier claim
+            # that the same object was already confirmed.
+            result = targeted
         accepted = visual_match(result, batch)
         record_identity_event(service, story['id'], 'identity_batch_finished', {
             'batch': number, 'candidate_id': result.get('candidate_id'), 'status': result.get('status'),
