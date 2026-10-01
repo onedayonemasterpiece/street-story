@@ -64,6 +64,7 @@ class FakeGemini:
         if self.identity_status == "match":
             return {
                 "status": "match",
+                "_references_sent": ["wiki:1"],
                 "candidate_id": "wiki:1",
                 "confidence": 0.94,
                 "observations": ["Форма и положение объекта совпадают с кандидатом."],

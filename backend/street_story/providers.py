@@ -34,7 +34,7 @@ class OSMClient:
         self.overpass_url = "https://overpass-api.de/api/interpreter"
 
     async def lookup(self, lat: float, lon: float) -> dict[str, Any]:
-        key = _stable_cache_key("osm-visible-nearby-v3", [round(lat, 6), round(lon, 6)])
+        key = _stable_cache_key("osm-visible-nearby-v4", [round(lat, 6), round(lon, 6)])
         cached = self.store.cache_get(key)
         if cached is not None:
             return cached
@@ -182,8 +182,18 @@ class OSMClient:
             nearby.sort(key=lambda item: float(item.get("distance_m", close_radius_m + 1)))
             add(nearby, 20)
 
+            # Reverse geocoding returns an object's representative position,
+            # not necessarily the camera location and never a confirmed identity.
+            try:
+                rlat, rlon = float(reverse["lat"]), float(reverse["lon"])
+                if not math.isfinite(rlat) or not math.isfinite(rlon):
+                    raise ValueError
+                a = math.sin(math.radians(rlat - lat) / 2) ** 2 + math.cos(math.radians(lat)) * math.cos(math.radians(rlat)) * math.sin(math.radians(rlon - lon) / 2) ** 2
+                reverse_distance = round(6_371_000 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, a)))), 1)
+            except (KeyError, TypeError, ValueError):
+                reverse_distance = None
             result = {
-                "reverse": {**reverse, "distance_m": 0.0, "selection_bucket": "reverse", "salience_rank": -1},
+                "reverse": {**reverse, "distance_m": reverse_distance, "selection_bucket": "reverse", "salience_rank": -1},
                 "nearby": selected[:68],
                 "radius_m": radius_m,
                 "close_radius_m": close_radius_m,

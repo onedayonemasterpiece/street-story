@@ -170,6 +170,12 @@ FUNCTIONS = [
         },
     ),
     _tool_schema(
+        "reject_place",
+        "Reject the CURRENT photographed object only when the author explicitly says it is wrong. Invalidates old factual/visual approval and tries alternatives without reselecting the rejected candidate. Does not delete the photo or publish.",
+        {"candidate_id": {"type": "string"}, "reason": {"type": "string"}},
+        ["candidate_id"],
+    ),
+    _tool_schema(
         "search_web",
         "Search the internet for evidence when the author asks to find, check or update facts. "
         "The search result returns to this same Gemini Live conversation and never rewrites publication text by itself.",
@@ -272,6 +278,8 @@ SYSTEM_INSTRUCTION = """
 
 Правила:
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
+- Если автор говорит «это не тот объект», вызови reject_place с текущим candidate_id, а не повторяй старое подтверждение. Подтверждённый объект сохраняется в теме; для его чтения не запускай поиск заново.
+- Если GPS недоступен в переданной копии, не утверждай, что координат нет в оригинале. Объясни, что нужно разрешить чтение геометок и выбрать оригинал через кнопку в теме.
 - исходное фото текущей темы передаётся тебе отдельным visual snapshot. Если автор спрашивает, что видно на фото, описывай только реально видимые признаки этого snapshot; если visual snapshot недоступен, честно скажи, что не видишь фото;
 - вопрос "что видно/что ты видишь на фото" — это визуальный вопрос: ответь по snapshot и не вызывай resolve_place/search_web только ради такого вопроса;
 - сразу после выбора фото backend автоматически выполняет обязательную идентификацию: EXIF-координаты — центр поиска ближайших OSM/Wikipedia объектов, а не готовый ответ. visual_identity со статусом match/owner_confirmed является обязательной границей перед фактами и публикацией;
@@ -465,6 +473,8 @@ class StreetStoryLiveAdapter:
 
         if name == "resolve_place":
             result = await self._resolve_place(session, command_id, args)
+        elif name == "reject_place":
+            result = await self._reject_place(session, command_id, args)
         elif name == "confirm_place":
             result = await self._confirm_place(session, command_id, args)
         elif name == "search_web":
@@ -503,7 +513,7 @@ class StreetStoryLiveAdapter:
         candidates.sort(key=lambda item: str(item.get("candidate_id") or "") != chosen)
         return {
             key: identity.get(key)
-            for key in ("status", "candidate_id", "candidate_name", "confidence")
+            for key in ("status", "candidate_id", "candidate_name", "confidence", "candidate_url", "photo_sha256", "generation")
         } | {
             "observations": [str(value)[:300] for value in identity.get("observations", [])[:3]],
             "candidate_count": len(candidates),
@@ -682,126 +692,39 @@ class StreetStoryLiveAdapter:
 
     async def _resolve_place_state(self, session, owner_hint: str) -> dict[str, Any]:
         story_id = session.resource_id
-        transcript = self._recent_transcript(session, owner_hint)
         with self.service.store.connection() as db:
-            story = dict(self.service._story_row(db, story_id))
-            research = json.loads(story["research_json"] or "{}")
-
-        lat = story.get("latitude")
-        lon = story.get("longitude")
-        if lat is None or lon is None:
-            query = owner_hint.strip()
-            if not query:
-                extractor = getattr(self.service, "_extract_place_query", None)
-                if callable(extractor):
-                    query = str(await extractor(transcript) or "").strip()[:300]
+            row = dict(self.service._story_row(db, story_id))
+        if (row.get("latitude") is None or row.get("longitude") is None) and owner_hint.strip():
+            # Only the author's explicit address, never infer a geocode query
+            # from a clipped VAD fragment or substitute current device position.
             resolver = getattr(self.service, "_resolve_place_query", None)
-            if query and callable(resolver):
-                resolved = await resolver(query)
-                if isinstance(resolved, dict):
-                    lat = float(resolved["lat"])
-                    lon = float(resolved["lon"])
-                    story["latitude"] = lat
-                    story["longitude"] = lon
-                    research["location_provenance"] = {
-                        "kind": "owner_live_place_query",
-                        "query": query,
-                        "resolved_lat": lat,
-                        "resolved_lon": lon,
-                        "display_name": str(resolved.get("display_name") or query)[:500],
-                        "not_device_current_location": True,
-                    }
+            resolved = await resolver(owner_hint.strip()) if callable(resolver) else None
+            if resolved:
+                with self.service.store.tx() as db:
+                    fresh = self.service._story_row(db, story_id)
+                    prior = json.loads(fresh["research_json"] or "{}")
+                    prior["identity_generation"] = int(prior.get("identity_generation") or 0) + 1
+                    prior["location_provenance"] = {"kind": "owner_live_place_query", "query": owner_hint[:300], "not_device_current_location": True}
+                    db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?",
+                               (float(resolved["lat"]), float(resolved["lon"]), canonical(prior), story_id))
+        story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint))
+        identity = story.get("visual_identity") or {}
+        with self.service.store.connection() as db:
+            saved = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")
+        pages = [{"title": str(page.get("title") or ""), "url": str(page.get("url") or "")}
+                 for page in (saved.get("wikipedia") or [])[:12] if isinstance(page, dict)]
+        return {"visual_identity": identity, "wikipedia": pages, "story": story}
 
-        osm: dict[str, Any] = {"reverse": {}, "nearby": []}
-        wikipedia: list[dict[str, Any]] = []
-        if lat is not None and lon is not None:
-            osm = await self.service.providers.osm.lookup(float(lat), float(lon))
-            wikipedia = await self.service.providers.wikipedia.nearby(float(lat), float(lon))
-
-        catalog_builder = getattr(self.service, "_candidate_catalog", None)
-        candidates = catalog_builder(osm, wikipedia) if callable(catalog_builder) else []
-        catalog = {str(item.get("candidate_id") or ""): item for item in candidates}
-        if not candidates:
-            identity: dict[str, Any] = {
-                "status": "uncertain",
-                "candidate_id": None,
-                "candidate_name": None,
-                "confidence": 0.0,
-                "observations": ["Не найдено достаточно OSM/Wikipedia-кандидатов; уточните название или адрес."],
-                "candidates": [],
-            }
-        else:
-            identifier = getattr(self.service, "_identify_photo", None)
-            if not callable(identifier):
-                raise InvalidStateError("visual_identity_unavailable", "Photo identity resolver is unavailable")
-            raw = await identifier(story, transcript, candidates)
-            candidate_id = str(raw.get("candidate_id") or "")
-            status = str(raw.get("status") or "uncertain")
-            if status not in {"match", "uncertain", "mismatch"} or candidate_id not in catalog:
-                status = "uncertain"
-                candidate_id = ""
-            chosen = catalog.get(candidate_id)
-            try:
-                confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
-            except (TypeError, ValueError):
-                confidence = 0.0
-            identity = {
-                "status": status,
-                "candidate_id": candidate_id or None,
-                "candidate_name": chosen.get("name") if chosen else None,
-                "confidence": confidence,
-                "observations": [str(value)[:300] for value in raw.get("observations", [])[:6]],
-                "alternative_candidate_ids": [
-                    str(value)
-                    for value in raw.get("alternative_candidate_ids", [])[:6]
-                    if str(value) in catalog
-                ],
-                "candidates": candidates,
-            }
-
-        research["osm"] = osm
-        research["wikipedia"] = wikipedia
-        research["visual_identity"] = identity
-        if transcript:
-            research["transcript"] = transcript
-        chosen_name = identity.get("candidate_name") if identity.get("status") == "match" else None
+    async def _reject_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        candidate_id = _bounded_text(args.get("candidate_id"), 300, required=True)
+        reason = _bounded_text(args.get("reason"), 500)
+        self.service.reject_identity(session.resource_id, candidate_id, reason)
+        # Same provider session and same source photo. The service serializes
+        # concurrent job/tool work and generation-checks late results.
+        result = await self._resolve_place_state(session, "")
         with self.service.store.tx() as db:
-            self.service._story_row(db, story_id)
-            db.execute(
-                "UPDATE stories SET latitude=COALESCE(?,latitude),longitude=COALESCE(?,longitude),"
-                "place_name=COALESCE(?,place_name),research_json=?,"
-                "state=CASE WHEN ? THEN 'identity_ready' ELSE state END,"
-                "error_code=CASE WHEN ? THEN NULL ELSE error_code END,"
-                "error_message=CASE WHEN ? THEN NULL ELSE error_message END,"
-                "revision=revision+1,updated_at=? WHERE id=?",
-                (
-                    lat,
-                    lon,
-                    chosen_name,
-                    canonical(research),
-                    int(identity.get("status") == "match"),
-                    int(identity.get("status") == "match"),
-                    int(identity.get("status") == "match"),
-                    self.service.store.now(),
-                    story_id,
-                ),
-            )
-            story_result = self.service._story_repr(db, self.service._story_row(db, story_id))
-        logger.info(
-            "street_story_live_place_resolved story_id=%s status=%s candidates=%s",
-            story_id,
-            identity.get("status"),
-            len(candidates),
-        )
-        return {
-            "visual_identity": identity,
-            "wikipedia": [
-                {"title": str(item.get("title") or ""), "url": str(item.get("url") or "")}
-                for item in wikipedia[:12]
-                if isinstance(item, dict)
-            ],
-            "story": story_result,
-        }
+            self._store_command(db, session.resource_id, command_id, "reject_place", args, result)
+        return result
 
     async def _resolve_place(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         owner_hint = _bounded_text(args.get("owner_hint"), 500)
@@ -868,6 +791,10 @@ class StreetStoryLiveAdapter:
             "candidate_id": str(chosen.get("candidate_id") or ""),
             "candidate_name": str(chosen.get("name") or ""),
             "confidence": None,
+            "photo_sha256": row["photo_sha256"],
+            "candidate_url": chosen.get("url"),
+            "source_links": [chosen["url"]] if chosen.get("url") else [],
+            "generation": int(research.get("identity_generation") or 0),
             "observations": ["Объект явно подтверждён автором в текущем Live-разговоре."],
             "candidates": candidates,
         }
@@ -1121,6 +1048,10 @@ class StreetStoryLiveAdapter:
                         "literal_span_protected",
                         "The edit would change protected verbatim text without explicit author permission",
                     )
+            research = json.loads(story["research_json"] or "{}")
+            if research.get("content_identity_changed"):
+                research["content_identity_changed"] = False
+                db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
             history = json.loads(editor["history_json"] or "[]")
             if not isinstance(history, list):
                 history = []
@@ -1330,6 +1261,8 @@ class StreetStoryLiveAdapter:
         with self.service.store.connection() as db:
             row = self.service._story_row(db, story_id)
             research = json.loads(row["research_json"] or "{}")
+            if research.get("content_identity_changed"):
+                raise InvalidStateError("identity_content_review_required", "После смены объекта нужно проверить и обновить текст публикации.")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
             if identity.get("status") not in {"match", "owner_confirmed"}:
                 raise InvalidStateError(

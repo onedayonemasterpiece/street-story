@@ -59,6 +59,7 @@ class FakeGemini:
         self.identity_calls.append(candidates)
         return {
             "status": "match",
+                "_references_sent": ["wiki:77"],
             "candidate_id": "wiki:77",
             "confidence": 0.97,
             "observations": ["Башни и фасад совпадают."],

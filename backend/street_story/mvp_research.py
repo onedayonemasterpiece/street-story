@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 import httpx
 
 from .errors import MalformedProviderResponse
+from .identity_lifecycle import IdentityLifecycleMixin
+from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
 from .providers import PermanentProviderError
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
@@ -43,31 +45,8 @@ def _excerpt_supports(claim: str, excerpt: str) -> bool:
     return hits >= min(2, len(claim_words))
 
 
-class MvpResearchMixin:
+class MvpResearchMixin(IdentityLifecycleMixin):
     """Explicit multi-message research and evidence semantics for the MVP."""
-
-    def ensure_identity(self, story_id: str) -> dict[str, Any]:
-        with self.store.tx() as db:
-            row = self._story_row(db, story_id)
-            research = json.loads(row["research_json"] or "{}")
-            identity = research.get("visual_identity")
-            if isinstance(identity, dict) and identity.get("status") in {"match", "owner_confirmed"}:
-                return self._story_repr(db, row)
-            semantic = "identity:" + digest(
-                {
-                    "photo_sha256": row["photo_sha256"],
-                    "lat": row["latitude"],
-                    "lon": row["longitude"],
-                }
-            )
-            self._enqueue_job(db, story_id, "identity", semantic, {})
-            if row["state"] in {"photo_ready", "voice_ready", "needs_review"}:
-                db.execute(
-                    "UPDATE stories SET state='identifying',error_code=NULL,error_message=NULL,"
-                    "revision=revision+1,updated_at=? WHERE id=?",
-                    (self.store.now(), story_id),
-                )
-            return self._story_repr(db, self._story_row(db, story_id))
 
     def complete_voice(self, story_id: str, session_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
@@ -303,7 +282,7 @@ class MvpResearchMixin:
             return self._story_repr(db, self._story_row(db, story_id))
 
     @staticmethod
-    def _candidate_catalog(osm: dict[str, Any], wikipedia: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _candidate_catalog(osm: dict[str, Any], wikipedia: list[dict[str, Any]], excluded_ids: set[str] | None = None) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         wiki_refs: dict[str, list[str]] = {}
@@ -384,9 +363,15 @@ class MvpResearchMixin:
                 "salience_rank": item.get("salience_rank", 3),
             })
 
+        # Exclusion precedes the shortlist cap so a previously 17th candidate
+        # can be considered after the owner rejects the current result.
+        excluded = excluded_ids or set()
+        candidates = [item for item in candidates if item.get("candidate_id") not in excluded]
+
         def distance(item: dict[str, Any]) -> float:
             try:
-                return max(0.0, float(item.get("distance_m")))
+                value = float(item.get("distance_m"))
+                return value if math.isfinite(value) and value >= 0 else 10_000.0
             except (TypeError, ValueError):
                 return 10_000.0
 
@@ -394,6 +379,9 @@ class MvpResearchMixin:
         chosen: set[str] = set()
 
         def take(items: list[dict[str, Any]], limit: int, bucket: str) -> None:
+            limit = min(limit, 16 - len(shortlist))
+            if limit <= 0:
+                return
             added = 0
             for item in items:
                 cid = str(item.get("candidate_id") or "")
@@ -440,7 +428,7 @@ class MvpResearchMixin:
             )
             take(band, limit, label)
 
-        take(wikipedia_candidates, 4, "wikipedia")
+        take(wikipedia_candidates, 3, "wikipedia")
 
         # Fill unused capacity with the best remaining landmarks/nearby objects,
         # but never exceed the bounded visual-analysis shortlist.
@@ -457,7 +445,7 @@ class MvpResearchMixin:
         return shortlist[:16]
 
     async def _candidate_reference_images(
-        self, candidates: list[dict[str, Any]]
+        self, candidates: list[dict[str, Any]], limit: int = 6
     ) -> list[tuple[str, str, bytes]]:
         result: list[tuple[str, str, bytes]] = []
         seen_urls: set[str] = set()
@@ -471,7 +459,7 @@ class MvpResearchMixin:
                 candidate
                 for candidate in candidates
                 if candidate.get("reference_image_urls")
-            ][:6]
+            ][:max(0, min(6, limit))]
             for candidate in image_candidates:
                 candidate_id = str(candidate.get("candidate_id") or "")
                 for raw_url in (candidate.get("reference_image_urls") or [])[:1]:
@@ -509,11 +497,15 @@ class MvpResearchMixin:
                         continue
         return result
 
-    async def _identify_photo(
+    async def _identify_photo(self, story, transcript, candidates):
+        return await identify_nearest(self, story, transcript, candidates)
+
+    async def _identify_photo_batch(
         self,
         story: dict[str, Any],
         transcript: str,
         candidates: list[dict[str, Any]],
+        reference_limit: int = 2,
     ) -> dict[str, Any]:
         custom = getattr(self.providers.gemini, "identify_photo", None)
         if callable(custom):
@@ -537,7 +529,9 @@ class MvpResearchMixin:
         prompt = (
             "Ты выполняешь только визуальную идентификацию объекта Street Story, до исследования фактов. "
             "Сравни исходное фото с shortlist-кандидатами OSM/Wikipedia по наблюдаемым признакам. GPS — точка съёмки, "            "а не координата объекта: кандидат в сотнях метров может быть правильнее ближайшего. Расстояние — только prior; "            "визуальное совпадение важнее. Не выдавай исторические факты. "
-            "status=match только если конкретный кандидат визуально достаточно убедителен; при сомнении uncertain, "
+            "Это текущая ближайшая группа кандидатов; дальние будут проверены только при необходимости. "
+            "status=match только при совпадении отличительных деталей с приложенным REFERENCE_IMAGE; "
+            "близость GPS или известность названия сами по себе не доказательство. При сомнении uncertain, "
             "при явном несовпадении mismatch. candidate_id обязан быть из списка или пустой строкой. "
             "Кратко перечисли видимые признаки, на которых основано решение.\n"
             + json.dumps({"voice_context": transcript, "candidates": candidates}, ensure_ascii=False)
@@ -545,10 +539,17 @@ class MvpResearchMixin:
         config = types.GenerateContentConfig(
             response_mime_type="application/json", response_json_schema=schema
         )
-        photo = Path(story["photo_path"]).read_bytes()
-        reference_images = await self._candidate_reference_images(candidates)
+        from PIL import Image, ImageOps
+        import io
+        with Image.open(story["photo_path"]) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((1280, 1280))
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=82, optimize=True)
+            photo = output.getvalue()
+        reference_images = await self._candidate_reference_images(candidates, limit=reference_limit)
         parts: list[Any] = [
-            types.Part.from_bytes(data=photo, mime_type=story["photo_mime_type"]),
+            types.Part.from_bytes(data=photo, mime_type="image/jpeg"),
             prompt,
         ]
         for candidate_id, mime_type, data in reference_images:
@@ -572,7 +573,7 @@ class MvpResearchMixin:
                     raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_visual_identity") from None
-            return payload
+            return {**payload, "_references_sent": [item[0] for item in reference_images]}
 
         return await gemini.executor.execute("grounded_research", call)
 
@@ -683,141 +684,6 @@ class MvpResearchMixin:
 
         return await gemini.executor.execute("grounded_research", call)
 
-    async def _run_identity(self, job: dict[str, Any]) -> None:
-        story_id = job["story_id"]
-        with self.store.connection() as db:
-            story = dict(self._story_row(db, story_id))
-            prior = json.loads(story["research_json"] or "{}")
-        previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
-        if previous_identity and previous_identity.get("status") in {"match", "owner_confirmed"}:
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE stories SET state='identity_ready',place_name=?,error_code=NULL,error_message=NULL,"
-                    "revision=revision+1,updated_at=? WHERE id=?",
-                    (
-                        previous_identity.get("candidate_name"),
-                        self.store.now(),
-                        story_id,
-                    ),
-                )
-            return
-
-        lat, lon = story["latitude"], story["longitude"]
-        if lat is None or lon is None:
-            identity = {
-                "status": "uncertain",
-                "candidate_id": None,
-                "candidate_name": None,
-                "confidence": 0.0,
-                "observations": ["В EXIF нет координат: назовите объект или адрес."],
-                "candidates": [],
-            }
-            with self.store.tx() as db:
-                db.execute(
-                    "UPDATE stories SET state='needs_review',research_json=?,"
-                    "error_code='identity_location_missing',"
-                    "error_message='Не удалось получить координаты из фото. Назовите объект или адрес.',"
-                    "revision=revision+1,updated_at=? WHERE id=?",
-                    (canonical({**prior, "visual_identity": identity}), self.store.now(), story_id),
-                )
-            return
-
-        osm = self.store.checkpoint_get(job["id"], "identity_osm")
-        if osm is None:
-            osm = await self.providers.osm.lookup(float(lat), float(lon))
-            self.store.checkpoint_put(job["id"], "identity_osm", osm)
-        wikipedia = self.store.checkpoint_get(job["id"], "identity_wikipedia")
-        if wikipedia is None:
-            wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
-            self.store.checkpoint_put(job["id"], "identity_wikipedia", wikipedia)
-        candidates = self._candidate_catalog(osm, wikipedia)
-        catalog = {item["candidate_id"]: item for item in candidates}
-
-        if not candidates:
-            raw_identity: dict[str, Any] = {
-                "status": "uncertain",
-                "candidate_id": "",
-                "confidence": 0.0,
-                "observations": ["Рядом с координатами EXIF не найдено подходящих объектов OSM/Wikipedia."],
-                "alternative_candidate_ids": [],
-            }
-        else:
-            raw_identity = self.store.checkpoint_get(job["id"], "identity_visual")
-            if raw_identity is None:
-                raw_identity = await self._identify_photo(story, "", candidates)
-                self.store.checkpoint_put(job["id"], "identity_visual", raw_identity)
-
-        candidate_id = str(raw_identity.get("candidate_id") or "")
-        status = str(raw_identity.get("status") or "uncertain")
-        if candidate_id not in catalog:
-            status = "uncertain"
-            candidate_id = ""
-        chosen = catalog.get(candidate_id)
-
-        # A precise reverse-geocoded building can still be identified by EXIF coordinates
-        # when no encyclopedic visual reference exists.
-        if status != "match":
-            reverse = osm.get("reverse") or {}
-            reverse_type = str(reverse.get("osm_type") or reverse.get("type") or "")
-            reverse_id = reverse.get("osm_id") or reverse.get("id")
-            address = reverse.get("address") or {}
-            reverse_candidate_id = (
-                f"osm:{reverse_type}:{reverse_id}"
-                if reverse_type in {"node", "way", "relation"} and reverse_id is not None
-                else ""
-            )
-            reverse_candidate = catalog.get(reverse_candidate_id)
-            if (
-                reverse_candidate
-                and (address.get("house_number") or str(reverse.get("type") or "") in {"house", "building", "residential"})
-                and not any(item.get("type") == "wikipedia" for item in candidates)
-            ):
-                status = "match"
-                candidate_id = reverse_candidate_id
-                chosen = reverse_candidate
-                raw_identity = {
-                    **raw_identity,
-                    "confidence": max(0.72, float(raw_identity.get("confidence", 0.0))),
-                    "observations": [
-                        "Координаты EXIF однозначно попадают в этот объект OSM; энциклопедического фото для отдельной сверки нет."
-                    ],
-                }
-
-        identity = {
-            "status": status,
-            "candidate_id": candidate_id or None,
-            "candidate_name": chosen["name"] if chosen else None,
-            "confidence": max(0.0, min(1.0, float(raw_identity.get("confidence", 0.0)))),
-            "observations": [str(value)[:300] for value in raw_identity.get("observations", [])[:6]],
-            "alternative_candidate_ids": [
-                str(value)
-                for value in raw_identity.get("alternative_candidate_ids", [])[:6]
-                if str(value) in catalog
-            ],
-            "candidates": candidates,
-        }
-        research = {
-            **prior,
-            "visual_identity": identity,
-            "osm": osm,
-            "wikipedia": wikipedia,
-        }
-        matched = identity["status"] == "match" and bool(identity["candidate_id"])
-        with self.store.tx() as db:
-            db.execute(
-                "UPDATE stories SET state=?,place_name=?,research_json=?,error_code=?,error_message=?,"
-                "revision=revision+1,updated_at=? WHERE id=?",
-                (
-                    "identity_ready" if matched else "needs_review",
-                    identity.get("candidate_name") if matched else None,
-                    canonical(research),
-                    None if matched else "visual_identity_uncertain",
-                    None if matched else "Не удалось однозначно определить объект. Уточните его голосом.",
-                    self.store.now(),
-                    story_id,
-                ),
-            )
-
     async def _run_research(self, job: dict[str, Any]) -> None:
         story_id = job["story_id"]
         payload = json.loads(job["payload_json"] or "{}")
@@ -860,7 +726,13 @@ class MvpResearchMixin:
             if wikipedia is None:
                 wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
                 self.store.checkpoint_put(job["id"], "wikipedia", wikipedia)
-        candidates = self._candidate_catalog(osm, wikipedia)
+        excluded = set(prior.get("identity_rejected_ids") or [])
+        candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
+        binding = prior.get("visual_identity") or {}
+        if binding.get("status") in {"match", "owner_confirmed"}:
+            saved_candidate = next((item for item in binding.get("candidates", []) if item.get("candidate_id") == binding.get("candidate_id")), None)
+            if saved_candidate and saved_candidate["candidate_id"] not in {item["candidate_id"] for item in candidates}:
+                candidates.append(saved_candidate)
 
         confirmed_candidate_id = str(payload.get("confirmed_candidate_id") or "")
         previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
@@ -928,6 +800,9 @@ class MvpResearchMixin:
                 "wikipedia": wikipedia,
             }
             with self.store.tx() as db:
+                latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
+                if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
+                    return
                 db.execute(
                     "UPDATE stories SET state='needs_review',research_json=?,error_code='visual_identity_uncertain',"
                     "error_message='Выберите подходящий объект перед поиском фактов.',revision=revision+1,updated_at=? WHERE id=?",
@@ -1026,6 +901,9 @@ class MvpResearchMixin:
             )
 
         with self.store.tx() as db:
+            latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
+            if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
+                return
             db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
             for fact in normalized:
                 db.execute(
@@ -1052,6 +930,8 @@ class MvpResearchMixin:
                 if source.get("url")
             }
             research = {
+                **prior,
+                "content_identity_changed": False,
                 "input_revision": input_revision,
                 "ordered_voice_ids": session_ids,
                 "transcript": transcript,
@@ -1138,6 +1018,8 @@ class MvpResearchMixin:
         with self.store.connection() as db:
             story = self._story_row(db, story_id)
             research = json.loads(story["research_json"] or "{}")
+            if research.get("content_identity_changed"):
+                raise ConflictError("identity_content_review_required", "После смены объекта нужно проверить и обновить текст публикации.")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
             if identity.get("status") not in {"match", "owner_confirmed"}:
                 raise ConflictError(

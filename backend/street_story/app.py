@@ -147,6 +147,36 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             raise ConflictError("identity_unavailable", "Automatic identity is unavailable")
         return ensure_identity(story_id)
 
+    @app.post("/v1/stories/{story_id}/photo-location", dependencies=[Depends(auth)])
+    async def recover_photo_location(story_id: str, photo: UploadFile = File(...), expected_photo_sha256: str = Form(...)):
+        original = bytearray()
+        while chunk := await photo.read(65536):
+            original.extend(chunk)
+            if len(original) > 16 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Selected original exceeds the photo limit")
+        return service.recover_photo_location(story_id, expected_photo_sha256, bytes(original))
+
+    @app.post("/v1/stories/{story_id}/diagnostics", dependencies=[Depends(auth)])
+    async def photo_diagnostics(story_id: str, request: Request):
+        from .identity_telemetry import client_fields, record_identity_event
+        service.story(story_id)
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 8192:
+                raise HTTPException(status_code=413, detail="Photo diagnostic payload exceeds limit")
+        try:
+            body = json.loads(raw)
+        except (ValueError, UnicodeError):
+            raise HTTPException(status_code=400, detail="Invalid photo diagnostic") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Invalid photo diagnostic")
+        event = body.get("event", "photo_import")
+        if event not in {"photo_import", "live_start_requested", "stop_requested", "live_start_cancelled"}:
+            raise HTTPException(status_code=400, detail="Unsupported client lifecycle diagnostic")
+        record_identity_event(service, story_id, event, client_fields(body), source="android_import" if event == "photo_import" else "android_lifecycle")
+        return {"ok": True, "story_id": story_id}
+
     @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
     async def start_live(story_id: str, request: Request):
         return await start_live_socket(live_host, story_id, request)

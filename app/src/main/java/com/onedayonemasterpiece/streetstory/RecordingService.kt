@@ -30,6 +30,8 @@ class RecordingService : Service() {
     private val store by lazy { AppGraph.store(this) }
     private val audioDirectory by lazy { File(filesDir,"audio") }
     private var sessionId:String?=null
+    private var finishingCapture=false
+    private var pendingStartIntent:Intent?=null
     private val runtime by lazy { RecordingRuntime(this) }
 
     override fun onCreate(){super.onCreate();createNotificationChannel()}
@@ -39,6 +41,7 @@ class RecordingService : Service() {
         return START_NOT_STICKY
     }
     private fun startNewSession(intent:Intent){
+        if(finishingCapture){pendingStartIntent=Intent(intent);return}
         if(store.activeVoiceSession()!=null)return
         val storyId=intent.getStringExtra(EXTRA_STORY_ID)?:return
         val kind=intent.getStringExtra(EXTRA_KIND)?:RecordingKind.INITIAL
@@ -49,13 +52,49 @@ class RecordingService : Service() {
     private fun pauseSession(){val active=store.activeVoiceSession()?:return;sessionId=active.sessionId;if(active.captureState==CaptureState.RECORDING)stopCapture();store.beginManualPause(active.sessionId);val refreshed=store.voiceSession(active.sessionId)?:active;runtime.update(active.sessionId,refreshed.durationMs,elapsedFromStart(refreshed.startedAt),refreshed.autoSilenceSkippedMs,CaptureActivity.MANUAL_PAUSE);enterForeground("Пауза · микрофон остановлен",true);SyncScheduler.enqueue(this);broadcast()}
     private fun resumeSession(){val active=store.activeVoiceSession()?:return;sessionId=active.sessionId;store.endManualPause(active.sessionId);enterForeground("Слушаю · тишина не записывается",false);beginCapture();broadcast()}
     private fun finishSession(stopLive:Boolean=true){
-        val active=store.activeVoiceSession()?:return;sessionId=active.sessionId
-        if(stopLive&&active.kind==RecordingKind.LIVE_ARCHIVE)AppGraph.live(this).stopLocal()
-        if(active.captureState==CaptureState.RECORDING)stopCapture() else store.endManualPause(active.sessionId)
-        val refreshed=store.voiceSession(active.sessionId)?:return
-        if(refreshed.durationMs<MIN_SESSION_MS||refreshed.chunkCount==0){store.discardVoiceSession(active.sessionId);runtime.clear(active.sessionId);stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();broadcast("Слишком короткая запись удалена");return}
-        val ended=OffsetDateTime.now();val wall=elapsedBetween(refreshed.startedAt,ended);val skipped=(wall-refreshed.manualPauseMs-refreshed.durationMs).coerceAtLeast(0)
-        store.finishVoiceSession(active.sessionId,ended.toString(),wall,skipped);runtime.clear(active.sessionId);SyncScheduler.enqueue(this);stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();broadcast()
+        val active=store.activeVoiceSession()
+        if(stopLive&&(active==null||active.kind==RecordingKind.LIVE_ARCHIVE))AppGraph.live(this).stopLocal()
+        pendingStartIntent=null
+        if(finishingCapture)return
+        finishingCapture=true
+        // Stop hardware admission immediately. Archive finalization must not
+        // block the Activity/UI thread for the old ten-second join timeout.
+        captureRequested=false
+        runCatching{audioRecord?.stop()}
+        val closingThread=captureThread
+        Thread({
+            closingThread?.join(10_000)
+            android.os.Handler(mainLooper).post {
+                if(closingThread?.isAlive==true){
+                    finishingCapture=false
+                    AppGraph.live(this).diagnostic("capture_stop_timeout")
+                    broadcast("Микрофон остановлен; сохранение записи ещё завершается")
+                    return@post
+                }
+                captureThread=null
+                var message:String?=null
+                if(active!=null){
+                    if(active.captureState!=CaptureState.RECORDING)store.endManualPause(active.sessionId)
+                    val refreshed=store.voiceSession(active.sessionId)
+                    if(refreshed!=null){
+                        if(refreshed.durationMs<MIN_SESSION_MS||refreshed.chunkCount==0){
+                            store.discardVoiceSession(active.sessionId)
+                            if(active.kind!=RecordingKind.LIVE_ARCHIVE)message="Слишком короткая запись удалена"
+                        }else{
+                            val ended=OffsetDateTime.now();val wall=elapsedBetween(refreshed.startedAt,ended)
+                            val skipped=(wall-refreshed.manualPauseMs-refreshed.durationMs).coerceAtLeast(0)
+                            store.finishVoiceSession(active.sessionId,ended.toString(),wall,skipped)
+                            SyncScheduler.enqueue(this)
+                        }
+                    }
+                    runtime.clear(active.sessionId)
+                }
+                finishingCapture=false
+                val next=pendingStartIntent;pendingStartIntent=null
+                if(next!=null){startNewSession(next)}else{stopForeground(STOP_FOREGROUND_REMOVE);stopSelf()}
+                broadcast(message)
+            }
+        },"street-story-finish").start()
     }
     @Synchronized private fun beginCapture(){
         if(captureThread?.isAlive==true)return
@@ -94,10 +133,18 @@ class RecordingService : Service() {
             ),
         )
         val detector=EfficientVad(true);val latch=SpeechLatch(LIVE_ATTACK_FRAMES,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
+        var signalSamples=0L;var signalSquares=0.0;var signalPeak=0;var lastSignalAt=System.currentTimeMillis()
         try{
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
             while(captureRequested){
                 if(!readFrame(recorder,frame))continue
+                frame.forEach { sample -> val value=sample.toInt();signalSquares+=value.toDouble()*value;signalPeak=maxOf(signalPeak,kotlin.math.abs(value)) }
+                signalSamples+=frame.size
+                val signalAt=System.currentTimeMillis()
+                if(signalAt-lastSignalAt>=5000){
+                    live?.diagnostic("capture_signal",mapOf("samples" to signalSamples,"rms" to kotlin.math.sqrt(signalSquares/signalSamples.coerceAtLeast(1)).toInt(),"peak" to signalPeak,"vad_open" to latch.active))
+                    lastSignalAt=signalAt;signalSamples=0;signalSquares=0.0;signalPeak=0
+                }
                 val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0)
                 val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0)
                 val wasActive=latch.active
