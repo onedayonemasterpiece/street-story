@@ -109,33 +109,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
           disable-animations: true
           script: |
-            set -eu
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              adb install -r apks/street-story.apk
-            else
-              previous_dir="$RUNNER_TEMP/street-story-previous"
-              mkdir -p "$previous_dir"
-              previous_tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')"
-              test -n "$previous_tag"
-              gh release download "$previous_tag" \
-                --repo "$GITHUB_REPOSITORY" \
-                --pattern 'street-story.apk' \
-                --dir "$previous_dir"
-              previous_apk="$previous_dir/street-story.apk"
-              previous_cert="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$previous_apk" \
-                | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}' \
-                | tr '[:upper:]' '[:lower:]' | tr -d ':')"
-              test -n "$previous_cert"
-              test "$previous_cert" = "$STREET_STORY_CANONICAL_CERT_SHA256"
-              adb install "$previous_apk"
-              adb install -r apks/street-story.apk
-              echo "upgrade-compat previous=$previous_tag current=0.1.$GITHUB_RUN_NUMBER"
-            fi
-            adb install -r apks/street-story-debug-androidTest.apk
-            adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.RECORD_AUDIO || true
-            adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.POST_NOTIFICATIONS || true
-            adb shell am instrument -w com.onedayonemasterpiece.streetstory.test/androidx.test.runner.AndroidJUnitRunner | tee instrumentation.txt
-            grep -q 'OK (' instrumentation.txt
+            bash .github/scripts/android-emulator-upgrade.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
