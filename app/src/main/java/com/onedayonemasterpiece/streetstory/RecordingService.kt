@@ -98,7 +98,18 @@ class RecordingService : Service() {
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
             while(captureRequested){
                 if(!readFrame(recorder,frame))continue
-                val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0);val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0);val wasActive=latch.active;val active=latch.onFrame(detector.isSpeech(frame))
+                val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0)
+                val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0)
+                val wasActive=latch.active
+                val suppressForPlayback=live?.shouldSuppressMicrophoneInput()==true
+                val active=if(suppressForPlayback){
+                    if(wasActive)live?.endSpeech()
+                    latch.reset()
+                    preRoll.clear()
+                    false
+                }else{
+                    latch.onFrame(detector.isSpeech(frame))
+                }
                 if(active){
                     silenceStart=null;writer=writer?:newWriter(id,persisted)
                     if(!wasActive){
@@ -108,8 +119,9 @@ class RecordingService : Service() {
                     activity=if(detector.isFailOpen)CaptureActivity.FALLBACK_CONTINUOUS else CaptureActivity.VOICE
                     if((writer?.durationMs?:0)>=M4aChunkWriter.TARGET_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
                 }else{
-                    if(wasActive)live?.endSpeech()
-                    pushPreRoll(preRoll,frame,wallStart,wallEnd);if(silenceStart==null)silenceStart=wallStart;activity=CaptureActivity.AUTO_SILENCE;val silenceMs=wallEnd-(silenceStart?:wallEnd);if(silenceMs>=LONG_SILENCE_CLOSE_MS&&(writer?.durationMs?:0)>=MIN_DURABLE_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
+                    if(wasActive&&!suppressForPlayback)live?.endSpeech()
+                    if(!suppressForPlayback)pushPreRoll(preRoll,frame,wallStart,wallEnd)
+                    if(silenceStart==null)silenceStart=wallStart;activity=CaptureActivity.AUTO_SILENCE;val silenceMs=wallEnd-(silenceStart?:wallEnd);if(silenceMs>=LONG_SILENCE_CLOSE_MS&&(writer?.durationMs?:0)>=MIN_DURABLE_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
                 }
                 val recorded=persisted+(writer?.durationMs?:0);val skipped=(wallEnd-manualPauseMs-recorded).coerceAtLeast(0);val changed=activity!=lastActivity
                 if(lastRuntime<0||wallEnd-lastRuntime>=RUNTIME_UPDATE_INTERVAL_MS||changed){runtime.update(id,recorded,wallEnd,skipped,activity);lastRuntime=wallEnd}
