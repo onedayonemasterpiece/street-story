@@ -6,6 +6,8 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+env:
+  STREET_STORY_CANONICAL_CERT_SHA256: fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94
 concurrency:
   group: street-story-android-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -63,7 +65,7 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
-          expected="fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94"
+          expected="$STREET_STORY_CANONICAL_CERT_SHA256"
           actual="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs release/street-story.apk \
             | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}' \
             | tr '[:upper:]' '[:lower:]' | tr -d ':')"
@@ -95,7 +97,9 @@ jobs:
         run: |
           test -c /dev/kvm
           sudo chmod 0666 /dev/kvm
-      - name: Android 15 durable storage, M4A and UI smoke
+      - name: Android 15 durable storage, in-place update and UI smoke
+        env:
+          GH_TOKEN: ${{ github.token }}
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 35
@@ -105,7 +109,28 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
           disable-animations: true
           script: |
-            adb install -r apks/street-story.apk
+            set -euo pipefail
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              adb install -r apks/street-story.apk
+            else
+              previous_dir="$RUNNER_TEMP/street-story-previous"
+              mkdir -p "$previous_dir"
+              previous_tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')"
+              test -n "$previous_tag"
+              gh release download "$previous_tag" \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern 'street-story.apk' \
+                --dir "$previous_dir"
+              previous_apk="$previous_dir/street-story.apk"
+              previous_cert="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$previous_apk" \
+                | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}' \
+                | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+              test -n "$previous_cert"
+              test "$previous_cert" = "$STREET_STORY_CANONICAL_CERT_SHA256"
+              adb install "$previous_apk"
+              adb install -r apks/street-story.apk
+              echo "upgrade-compat previous=$previous_tag current=0.1.$GITHUB_RUN_NUMBER"
+            fi
             adb install -r apks/street-story-debug-androidTest.apk
             adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.RECORD_AUDIO || true
             adb shell pm grant com.onedayonemasterpiece.streetstory android.permission.POST_NOTIFICATIONS || true
