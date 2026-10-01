@@ -68,6 +68,7 @@ class FakeGemini:
         assert any(item["candidate_id"] == "wiki:1" for item in candidates)
         return {
             "status": "match",
+                "_references_sent": ["wiki:1"],
             "candidate_id": "wiki:1",
             "confidence": 0.94,
             "observations": ["Архитектурный облик совпадает с кандидатом."],

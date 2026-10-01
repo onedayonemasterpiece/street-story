@@ -58,6 +58,9 @@ class MainActivity : Activity() {
 
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
+    private var pendingPhotoRecoveryStoryId: String? = null
+    private var photoRecoveryButton: Button? = null
+    private var identityLinkView: TextView? = null
     private var pendingLiveAutoIdentity = false
     private var autoIdentityLiveStartingStoryId: String? = null
     private var receiverRegistered = false
@@ -108,6 +111,7 @@ class MainActivity : Activity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = SAGE
         window.navigationBarColor = SAGE
+        pendingPhotoRecoveryStoryId = savedInstanceState?.getString("photo_recovery_story")
         buildChrome()
         val active = activeStoryId
         if (active != null && store.story(active) != null) showTopic(active) else showTopics()
@@ -138,6 +142,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("active_story_id", activeStoryId)
+        outState.putString("photo_recovery_story", pendingPhotoRecoveryStoryId)
         super.onSaveInstanceState(outState)
     }
 
@@ -319,6 +324,18 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         column.addView(topicStatusView)
+        photoRecoveryButton = secondaryButton("Прочитать GPS из оригинала фото") {
+            pendingPhotoRecoveryStoryId = story.clientStoryId
+            stopLiveForOwner(story.clientStoryId)
+            launchPhotoPicker()
+        }.apply { visibility = View.GONE; contentDescription = "recover-photo-gps" }
+        column.addView(photoRecoveryButton)
+        identityLinkView = label("", 14, ACCENT, Typeface.DEFAULT).apply {
+            visibility = View.GONE
+            setPadding(0, dp(4), 0, dp(8))
+            contentDescription = "identified-object-source"
+        }
+        column.addView(identityLinkView)
 
         previewImage = ImageView(this).apply {
             adjustViewBounds = true
@@ -486,7 +503,19 @@ class MainActivity : Activity() {
             visibility = if (draft == null) View.GONE else View.VISIBLE
         }
 
+        photoRecoveryButton?.visibility = if ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW) View.VISIBLE else View.GONE
         val projection = research.get(id)
+        val identified = projection?.candidates?.firstOrNull { it.candidateId == projection.candidateId }
+        identityLinkView?.apply {
+            val accepted = projection?.identityStatus in setOf("match", "owner_confirmed")
+            text = if (accepted && identified != null) "${identified.name} ↗" else ""
+            visibility = if (text.isNotBlank()) View.VISIBLE else View.GONE
+            setOnClickListener {
+                val uri = identified?.url?.let(Uri::parse)
+                if (uri?.scheme == "https" && (uri.host == "www.openstreetmap.org" || uri.host?.endsWith(".wikipedia.org") == true))
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+            }
+        }
         sourceButton?.apply {
             val count = projection?.sourceCount ?: 0
             text = "Источники · $count"
@@ -532,7 +561,7 @@ class MainActivity : Activity() {
             lastDialogueMessageCount = maxOf(lastDialogueMessageCount, dialogueCount)
         }
         micButton?.apply {
-            background = oval(if (state.active) ACCENT else INK)
+            background = oval(if (state.active || state.connecting) ACCENT else INK)
             contentDescription = if (state.active) "live-stop" else "live-mic"
         }
         updateMicPulse(state.inputActive)
@@ -592,9 +621,9 @@ class MainActivity : Activity() {
 
     private fun toggleLive(storyId: String) {
         val current = live.snapshot()
-        if (current.active) {
-            if (current.storyId == storyId) {
-                RecordingService.command(this, RecordingService.ACTION_FINISH)
+        if (current.active || current.connecting || pendingLiveStoryId == storyId) {
+            if (current.storyId == storyId || pendingLiveStoryId == storyId) {
+                stopLiveForOwner(storyId)
             } else {
                 current.storyId?.let(::showTopic)
             }
@@ -613,13 +642,23 @@ class MainActivity : Activity() {
         startLive(storyId)
     }
 
+    private fun stopLiveForOwner(storyId: String) {
+        // Stop does not depend on an archive, successful handshake or server reply.
+        prefs.edit().putBoolean("identity_live_attempted:$storyId", true).apply()
+        pendingLiveStoryId = null
+        pendingLiveAutoIdentity = false
+        autoIdentityLiveStartingStoryId = null
+        live.stopLocal()
+        RecordingService.command(this, RecordingService.ACTION_TRANSPORT_FINISH)
+    }
+
     private fun startLive(storyId: String, autoIdentity: Boolean = false) {
         pendingLiveStoryId = null
         if (!autoIdentity) pendingLiveAutoIdentity = false
         live.start(storyId) { ready, error ->
             runOnUiThread {
                 if (autoIdentity) autoIdentityLiveStartingStoryId = null
-                if (ready) {
+                if (ready && live.isActiveFor(storyId) && !live.snapshot().connecting) {
                     RecordingService.start(this, storyId, RecordingKind.LIVE_ARCHIVE)
                 } else if (!error.isNullOrBlank()) {
                     Toast.makeText(this, error, Toast.LENGTH_LONG).show()
@@ -634,10 +673,11 @@ class MainActivity : Activity() {
     ) {
         val status = projection?.identityStatus ?: return
         if (status !in setOf("match", "owner_confirmed", "uncertain", "mismatch")) return
+        if (status !in setOf("match", "owner_confirmed") && projection.candidates.isEmpty()) return
         if (!config.configured) return
 
         val current = live.snapshot()
-        if (current.active) return
+        if (current.active || current.connecting) return
         if (autoIdentityLiveStartingStoryId != null) return
 
         val attemptKey = "identity_live_attempted:${story.clientStoryId}"
@@ -660,11 +700,16 @@ class MainActivity : Activity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_PHOTO_LOCATION) {
+            openOriginalPhotoPicker()
+            return
+        }
         if (requestCode != REQUEST_MIC) return
         val storyId = pendingLiveStoryId
         val autoIdentity = pendingLiveAutoIdentity
         pendingLiveStoryId = null
         pendingLiveAutoIdentity = false
+        if (storyId == null) return
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && storyId != null) {
             startLive(storyId, autoIdentity = autoIdentity)
         } else {
@@ -673,42 +718,69 @@ class MainActivity : Activity() {
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun launchPhotoPicker() {
-        val intent = if (Build.VERSION.SDK_INT >= 33) {
-            Intent(MediaStore.ACTION_PICK_IMAGES).apply { type = "image/*" }
-        } else {
-            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                type = "image/*"
-                addCategory(Intent.CATEGORY_OPENABLE)
-            }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            openOriginalPhotoPicker()
+            return
         }
-        startActivityForResult(intent, REQUEST_PHOTO)
+        AlertDialog.Builder(this)
+            .setTitle("Геометки выбранного фото")
+            .setMessage("Для поиска объекта нужны координаты внутри исходного фото. Разрешение относится к метаданным выбранного файла, не к вашей текущей геопозиции.")
+            .setPositiveButton("Продолжить") { _, _ ->
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_PHOTO_LOCATION)
+            }
+            .setNegativeButton("Без геометок") { _, _ -> openOriginalPhotoPicker() }
+            .show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openOriginalPhotoPicker() {
+        // A single user-selected original, without access to the whole gallery.
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }, REQUEST_PHOTO)
     }
 
     @Deprecated("Small standalone MVP activity result path")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_PHOTO || resultCode != RESULT_OK) return
+        if (requestCode != REQUEST_PHOTO) return
+        val recoveryId = pendingPhotoRecoveryStoryId
+        pendingPhotoRecoveryStoryId = null
+        if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         Thread {
+            var imported: ImportedPhoto? = null
             runCatching {
-                val imported = PhotoImporter.import(this, uri)
-                store.createStory(imported)
-                imported.clientStoryId
+                val photo = PhotoImporter.import(this, uri)
+                imported = photo
+                if (recoveryId != null) {
+                    val existing = requireNotNull(store.story(recoveryId)) { "Тема уже удалена" }
+                    val server = requireNotNull(existing.serverStoryId) { "Дождитесь синхронизации темы" }
+                    val api = ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken))
+                    val restored = api.recoverPhotoLocation(server, existing.photoSha256, photo)
+                    check(restored.id == server) { "Backend вернул другую тему" }
+                    PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { payload ->
+                        runCatching { api.photoDiagnostic(server, payload) }
+                    }
+                    recoveryId
+                } else {
+                    store.createStory(photo)
+                    photo.clientStoryId
+                }
             }.onSuccess { storyId ->
                 runOnUiThread {
                     SyncScheduler.enqueue(this)
                     showTopic(storyId)
                 }
             }.onFailure { exc ->
-                runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "Не удалось сохранить фото: ${exc.message}",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
+                runOnUiThread { Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show() }
+            }
+            if (recoveryId != null) imported?.let { photo ->
+                File(photo.path).delete()
+                PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(this, photo.clientStoryId, it) }
             }
         }.start()
     }
@@ -980,6 +1052,8 @@ class MainActivity : Activity() {
         dockTopic = null
         dockStatus = null
         micButton = null
+        photoRecoveryButton = null
+        identityLinkView = null
         shownImagePath = null
         topicScroll = null
         previewExpanded = true
@@ -1226,6 +1300,7 @@ class MainActivity : Activity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val REQUEST_PHOTO_LOCATION = 714
         private const val REQUEST_PHOTO = 710
         private const val REQUEST_MIC = 711
         private const val UPDATE_INTERVAL_MS = 6L * 60L * 60L * 1000L

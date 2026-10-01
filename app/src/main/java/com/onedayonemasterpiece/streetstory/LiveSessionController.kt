@@ -48,6 +48,7 @@ internal object LiveAudioTransportPolicy {
 data class LiveUiState(
     val storyId: String? = null,
     val active: Boolean = false,
+    val connecting: Boolean = false,
     val status: String = "Микрофон выключен",
     val literalMode: Boolean = false,
     val inputActive: Boolean = false,
@@ -138,8 +139,8 @@ class LiveSessionController(context: Context) {
     }
 
     fun diagnostic(event: String, fields: Map<String, Any?> = emptyMap()) {
-        val server = serverStoryId ?: return
-        val session = sessionId ?: return
+        val server = serverStoryId ?: state.storyId?.let { store.story(it)?.serverStoryId } ?: return
+        val session = sessionId
         val base = config.backendUrl ?: return
         val token = config.deviceToken ?: return
         val payload = linkedMapOf<String, Any?>(
@@ -152,12 +153,17 @@ class LiveSessionController(context: Context) {
             if (key.matches(Regex("[a-zA-Z0-9_.-]{1,64}"))) payload[key] = value
         }
         network.execute {
-            runCatching { LiveApiClient(base, token).diagnostic(server, session, payload) }
+            runCatching {
+                if (session != null) LiveApiClient(base, token).diagnostic(server, session, payload)
+                else if (event in setOf("live_start_requested", "stop_requested", "live_start_cancelled"))
+                    ApiClient(base, token).photoDiagnostic(server, gson.toJson(payload))
+            }
                 .onFailure { Log.w("StreetStoryLive", "diagnostic_send_failed event=$event type=${it.javaClass.simpleName}") }
         }
     }
 
     fun start(storyId: String, onReady: (Boolean, String?) -> Unit = { _, _ -> }) {
+        if (state.active || state.connecting) { onReady(false, null); return }
         val server = store.story(storyId)?.serverStoryId
         val base = config.backendUrl
         val token = config.deviceToken
@@ -167,11 +173,17 @@ class LiveSessionController(context: Context) {
             onReady(false, "Тема ещё не синхронизирована с backend")
             return
         }
-        stopLocal(sendRemote = true)
-        val gen = generation.incrementAndGet()
+        val gen = synchronized(this) {
+            if (state.active || state.connecting) { onReady(false, null); return }
+            val epoch = generation.incrementAndGet()
+            update(LiveUiState(storyId = storyId, connecting = true, status = "Подключаю Live…"))
+            epoch
+        }
+        playbackGeneration.incrementAndGet()
+        stopPlayback()
         val notified = AtomicBoolean(false)
         fun ready(ok: Boolean, error: String?) { if (notified.compareAndSet(false, true)) onReady(ok, error) }
-        update(LiveUiState(storyId = storyId, status = "Подключаю Live…"))
+        diagnostic("live_start_requested", mapOf("generation" to gen))
         network.execute {
             val api = LiveApiClient(base, token)
             try {
@@ -180,17 +192,25 @@ class LiveSessionController(context: Context) {
                     api.start(server, attempt)
                 } catch (first: ApiException) {
                     if (first.status !in setOf(429, 503)) throw first
-                    update(state.copy(status = "Live занят · повторное подключение…", error = null))
+                    updateForGeneration(gen, state.copy(status = "Live занят · повторное подключение…", error = null))
                     Thread.sleep(900)
+                    if (generation.get() != gen) { ready(false, null); return@execute }
                     api.start(server, attempt + "_retry")
                 }
                 if (generation.get() != gen) {
                     runCatching { api.stop(server, started.sessionId) }
-                    ready(false, "Подключение отменено")
+                    ready(false, null)
                     return@execute
                 }
-                serverStoryId = server
-                sessionId = started.sessionId
+                synchronized(this@LiveSessionController) {
+                    if (generation.get() != gen) {
+                        remoteStop(server, started.sessionId)
+                        ready(false, null)
+                        return@execute
+                    }
+                    serverStoryId = server
+                    sessionId = started.sessionId
+                }
                 if (started.transportProtocol != LiveSocketTransport.PROTOCOL || started.socketTicket.isBlank() || started.socketUrl.isBlank()) {
                     throw ApiProtocolException("Backend не поддерживает согласованный WSS-протокол")
                 }
@@ -233,8 +253,9 @@ class LiveSessionController(context: Context) {
                             val decision = reconnectPolicy.next(code)
                             if (decision != null && reconnecting.compareAndSet(false, true)) {
                                 inputOpen = false
-                                update(
+                                updateForGeneration(gen,
                                     state.copy(
+                                        connecting = true,
                                         status = "Восстанавливаю соединение с Мирой…",
                                         inputActive = false,
                                         error = null,
@@ -302,7 +323,10 @@ class LiveSessionController(context: Context) {
                             }
                         }
                     })
-                    socket = transport
+                    synchronized(this@LiveSessionController) {
+                        if (generation.get() != gen) { transport.close(false); return@connect }
+                        socket = transport
+                    }
                     try {
                         transport.connect(
                             base,
@@ -321,10 +345,13 @@ class LiveSessionController(context: Context) {
                         return@connect
                     }
                     reconnecting.set(false)
+                    synchronized(this@LiveSessionController) {
+                    if (generation.get() != gen) { transport.close(true); return@connect }
                     update(
                         state.copy(
                             storyId = storyId,
                             active = true,
+                            connecting = false,
                             status = "Слушаю",
                             inputActive = false,
                             transport = "wss",
@@ -341,6 +368,7 @@ class LiveSessionController(context: Context) {
                         ),
                     )
                     ready(true, null)
+                    }
                 }
                 connectTransport(started.socketUrl, started.socketTicket, 0L, true)
             } catch (exc: Exception) {
@@ -351,7 +379,7 @@ class LiveSessionController(context: Context) {
     }
 
     fun submitPcm(samples: ShortArray) {
-        if (!state.active) return
+        if (!state.active || state.connecting) return
         if (shouldSuppressMicrophoneInput()) {
             if (inputOpen) {
                 inputOpen = false
@@ -391,17 +419,28 @@ class LiveSessionController(context: Context) {
     }
 
     fun stopLocal(sendRemote: Boolean = true) {
-        val server = serverStoryId
-        val session = sessionId
-        generation.incrementAndGet()
-        serverStoryId = null; sessionId = null; inputOpen = false; waitStarted = 0
-        duplexGate.reset(); playbackSuppressionReported.set(false)
-        userTranscriptIndex = -1; assistantTranscriptIndex = -1
-        val old = socket; socket = null; old?.close(sendRemote)
-        playbackGeneration.incrementAndGet()
+        val stopped = synchronized(this) {
+            diagnostic("stop_requested", mapOf("active" to state.active, "connecting" to state.connecting, "generation" to generation.get()))
+            val prior = Triple(serverStoryId, sessionId, socket)
+            generation.incrementAndGet()
+            playbackGeneration.incrementAndGet()
+            serverStoryId = null; sessionId = null; socket = null
+            inputOpen = false; waitStarted = 0
+            duplexGate.reset(); playbackSuppressionReported.set(false)
+            userTranscriptIndex = -1; assistantTranscriptIndex = -1
+            update(state.copy(active = false, connecting = false, status = "Микрофон выключен", inputActive = false, error = null))
+            prior
+        }
+        // Never call transport callbacks while holding the controller state lock.
+        stopped.third?.close(sendRemote)
         stopPlayback()
-        update(state.copy(active = false, status = "Микрофон выключен", inputActive = false, error = null))
-        if (sendRemote) remoteStop(server, session)
+        if (sendRemote) remoteStop(stopped.first, stopped.second)
+    }
+
+    @Synchronized private fun updateForGeneration(epoch: Int, next: LiveUiState): Boolean {
+        if (generation.get() != epoch) return false
+        update(next)
+        return true
     }
 
     private fun handleEvent(gen: Int, event: LiveEventWire) {
@@ -416,7 +455,7 @@ class LiveSessionController(context: Context) {
                 val text = event.text?.trim().orEmpty()
                 if (text.isNotEmpty()) {
                     assistantTranscriptIndex = mergeMessage(LiveRole.ASSISTANT, text, assistantTranscriptIndex)
-                    update(state.copy(status = "Мира отвечает", assistantText = text, error = null))
+                    updateForGeneration(gen, state.copy(status = "Мира отвечает", assistantText = text, error = null))
                 }
             }
             "input_transcript" -> {
@@ -424,40 +463,40 @@ class LiveSessionController(context: Context) {
                 val text = event.text?.trim().orEmpty()
                 if (text.isNotEmpty()) {
                     userTranscriptIndex = mergeMessage(LiveRole.USER, text, userTranscriptIndex)
-                    update(state.copy(status = "Думаю", inputActive = false, error = null))
+                    updateForGeneration(gen, state.copy(status = "Думаю", inputActive = false, error = null))
                 } else if (waitStarted > 0) {
-                    update(state.copy(status = "Думаю", inputActive = false))
+                    updateForGeneration(gen, state.copy(status = "Думаю", inputActive = false))
                 }
             }
             "input_timing" -> {
                 waitStage = "provider"
-                if (waitStarted > 0) update(state.copy(status = "Думаю", inputActive = false))
+                if (waitStarted > 0) updateForGeneration(gen, state.copy(status = "Думаю", inputActive = false))
             }
             "turn_complete" -> {
                 waitStarted = 0
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
-                update(state.copy(status = "Слушаю", inputActive = false, completedTurns = state.completedTurns + 1, error = null))
+                updateForGeneration(gen, state.copy(status = "Слушаю", inputActive = false, completedTurns = state.completedTurns + 1, error = null))
             }
-            "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); update(state.copy(status = "Выполняю действие…")) }
-            "budget_wait" -> { waitStage = "resource"; waitStarted = SystemClock.elapsedRealtime(); update(state.copy(status = "Ожидаю доступный лимит")) }
-            "reconnecting" -> update(state.copy(status = "Восстанавливаю соединение с моделью…"))
-            "literal_mode" -> update(state.copy(literalMode = event.active == true, status = if (event.active == true) "Дословная диктовка" else "Слушаю"))
+            "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Выполняю действие…")) }
+            "budget_wait" -> { waitStage = "resource"; waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит")) }
+            "reconnecting" -> updateForGeneration(gen, state.copy(status = "Восстанавливаю соединение с моделью…"))
+            "literal_mode" -> updateForGeneration(gen, state.copy(literalMode = event.active == true, status = if (event.active == true) "Дословная диктовка" else "Слушаю"))
             "product_state" -> {
                 SyncScheduler.enqueue(app)
                 val product = event.state?.takeIf { it.isJsonObject }?.asJsonObject
                 val last = product?.get("last_change")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
-                update(state.copy(lastChange = last ?: state.lastChange, error = null))
+                updateForGeneration(gen, state.copy(lastChange = last ?: state.lastChange, error = null))
             }
             "tool_result" -> {
                 SyncScheduler.enqueue(app)
                 waitStage = "provider"
-                update(state.copy(status = if (event.status == "error") "Действие не выполнено" else "Обновляю результат…",
+                updateForGeneration(gen, state.copy(status = if (event.status == "error") "Действие не выполнено" else "Обновляю результат…",
                     lastChange = if (event.status == "error") event.code ?: "Ошибка действия" else state.lastChange))
             }
             "publication_confirmation" -> {
                 val id = event.confirmationId.orEmpty()
-                if (id.isNotBlank()) update(state.copy(
+                if (id.isNotBlank()) updateForGeneration(gen, state.copy(
                     confirmation = LiveConfirmation(id, event.text, event.imageUrl, event.destinations.toList(), event.scheduledFor, event.timezone),
                     status = "Проверь публикацию", error = null,
                 ))
@@ -473,7 +512,7 @@ class LiveSessionController(context: Context) {
                 playbackGeneration.incrementAndGet()
                 stopPlayback()
                 diagnostic("assistant_interrupted", mapOf("received_pcm_bytes" to receivedPcm.get()))
-                update(state.copy(status = "Слышу вас", inputActive = true))
+                updateForGeneration(gen, state.copy(status = "Слышу вас", inputActive = true))
             }
             "error" -> fail(gen, humanLiveError(event.code ?: "LIVE_PROVIDER_ERROR"))
             "closed" -> fail(gen, "Live-сессия завершилась. Результат сохранён — включите Live снова.")
@@ -554,17 +593,20 @@ class LiveSessionController(context: Context) {
     }
 
     private fun fail(gen: Int, message: String) {
-        if (!generation.compareAndSet(gen, gen + 1)) return
-        val server = serverStoryId; val session = sessionId
-        diagnostic("live_failed", mapOf("message" to message.take(240)))
-        serverStoryId = null; sessionId = null; waitStarted = 0; inputOpen = false
-        duplexGate.reset(); playbackSuppressionReported.set(false)
-        userTranscriptIndex = -1; assistantTranscriptIndex = -1
-        val old = socket; socket = null; old?.close(false)
-        // Do not increment playbackGeneration here: a provider/socket closure
-        // must not truncate PCM already received. Explicit Stop still flushes.
-        update(state.copy(active = false, status = "Live остановлен", inputActive = false, error = message))
-        remoteStop(server, session)
+        val stopped = synchronized(this) {
+            if (!generation.compareAndSet(gen, gen + 1)) return
+            diagnostic("live_failed", mapOf("message" to message.take(240), "pending_playback_bytes" to pendingPlayback.get()))
+            val prior = Triple(serverStoryId, sessionId, socket)
+            serverStoryId = null; sessionId = null; socket = null
+            waitStarted = 0; inputOpen = false
+            duplexGate.reset(); playbackSuppressionReported.set(false)
+            userTranscriptIndex = -1; assistantTranscriptIndex = -1
+            // Keep already received PCM; only explicit user Stop flushes playback.
+            update(state.copy(active = false, connecting = false, status = "Live остановлен", inputActive = false, error = message))
+            prior
+        }
+        stopped.third?.close(false)
+        remoteStop(stopped.first, stopped.second)
         RecordingService.command(app, RecordingService.ACTION_TRANSPORT_FINISH)
     }
 

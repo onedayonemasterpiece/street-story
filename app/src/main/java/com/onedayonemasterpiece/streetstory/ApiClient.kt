@@ -152,6 +152,26 @@ class ApiClient(private val baseUrl: String, private val token: String) {
     fun deleteStory(serverStoryId: String): DeleteStoryWire =
         requestJson("DELETE", "/v1/stories/${segment(serverStoryId)}", null, null, DeleteStoryWire::class.java)
 
+    fun photoDiagnostic(serverStoryId: String, payload: String): DeleteStoryWire =
+        requestJson("POST", "/v1/stories/${segment(serverStoryId)}/diagnostics", payload, null, DeleteStoryWire::class.java)
+
+    fun recoverPhotoLocation(serverStoryId: String, expectedHash: String, photo: ImportedPhoto): StoryWire {
+        val boundary = "street-story-${UUID.randomUUID()}"
+        val connection = open("POST", "/v1/stories/${segment(serverStoryId)}/photo-location", null).apply {
+            setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            doOutput = true
+            setChunkedStreamingMode(64 * 1024)
+        }
+        DataOutputStream(BufferedOutputStream(connection.outputStream)).use { out ->
+            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"expected_photo_sha256\"\r\n\r\n$expectedHash\r\n")
+            out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"original\"\r\n")
+            out.writeBytes("Content-Type: ${photo.mimeType}\r\n\r\n")
+            File(photo.path).inputStream().use { it.copyTo(out, 64 * 1024) }
+            out.writeBytes("\r\n--$boundary--\r\n")
+        }
+        return readJson(connection, StoryWire::class.java)
+    }
+
     fun capabilities(): CapabilitiesWire = requestJson("GET", "/v1/capabilities", null, null, CapabilitiesWire::class.java)
 
     fun openVoiceSession(serverStoryId: String, session: VoiceSessionSnapshot): VoiceReceipt {

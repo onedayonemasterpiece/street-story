@@ -147,6 +147,15 @@ CREATE TABLE IF NOT EXISTS research_checkpoints(
 """
 
 
+class ScopedConnection(sqlite3.Connection):
+    """sqlite3's standard context commits/rolls back but does not close its FD."""
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -156,7 +165,7 @@ class Store:
             db.executescript(RELIABILITY_SCHEMA)
 
     def connection(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        db = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=ScopedConnection)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")

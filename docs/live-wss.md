@@ -27,6 +27,9 @@ The complete cross-product rationale and contract are in the pinned framework's
 `docs/native-wss.md`. Future fixes to framing, tickets, queues and voice lifecycle
 belong there. Product repositories keep only authorization, tools/context and UI.
 
+Current photo GPS recovery, identity/correction and immediate Stop contract:
+[Photo identity and Stop](photo-identity-and-stop.md).
+
 ## What changed
 
 Android consumes the shared Java WSS transport from the immutable archive named

@@ -96,6 +96,11 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         applyRemote(store, feed, research, story.clientStoryId, remote)
         story = requireNotNull(store.story(story.clientStoryId))
         val serverId = requireNotNull(story.serverStoryId)
+        PhotoImportTelemetry.pending(applicationContext, story.clientStoryId)?.let { payload ->
+            runCatching { api.photoDiagnostic(serverId, payload) }.onSuccess {
+                PhotoImportTelemetry.acknowledge(applicationContext, story.clientStoryId, payload)
+            }
+        }
 
         for (session in store.finishedVoiceSessions().filter { it.storyId == story.clientStoryId }) {
             syncVoice(store, api, serverId, session)
