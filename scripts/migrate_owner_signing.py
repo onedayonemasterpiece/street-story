@@ -186,6 +186,7 @@ def make_backup(adb_bin: str, serial: str, root: Path) -> tuple[Path, list[str]]
             stderr=subprocess.PIPE,
             check=False,
         )
+    os.chmod(backup, 0o600)
     if proc.returncode != 0 or backup.stat().st_size == 0:
         stderr = proc.stderr.decode("utf-8", "replace").strip()
         raise MigrationError(f"ADB backup failed: {stderr[:500]}")
@@ -313,6 +314,7 @@ def main() -> int:
         "street-story-migration-" + time.strftime("%Y%m%d-%H%M%S")
     )
     root.mkdir(parents=True, exist_ok=False)
+    os.chmod(root, 0o700)
     backup, names = make_backup(adb_bin, serial, root)
 
     target_apk = root / "street-story-0.1.415.apk"
