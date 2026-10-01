@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -152,9 +155,14 @@ def make_service(tmp_path: Path):
         lon=20.5,
     )
     events = []
-    adapter = StreetStoryLiveAdapter(svc, lambda _session, event: events.append(event))
+    adapter = StreetStoryLiveAdapter(
+        svc,
+        lambda _session, event: events.append(event),
+        lambda _session, _message: None,
+    )
     ensure_live_schema(svc)
     session = SimpleNamespace(
+        id="live_1234567890abcdef",
         resource_id=story["id"],
         state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None},
     )
@@ -369,3 +377,53 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
             },
         )
     assert stale.value.code == "publication_confirmation_stale"
+
+def test_live_transcripts_are_retained_as_bounded_diagnostics(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    adapter.on_event(session, {"type": "input_transcript", "text": "Покажи, что ты видишь на фотографии."})
+    adapter.on_event(session, {"type": "output_transcript", "text": "Вижу кирпичную арку и башни."})
+    with svc.store.connection() as db:
+        rows = db.execute(
+            "SELECT source,event_type,payload_json FROM live_diagnostics WHERE story_id=? ORDER BY id",
+            (session.resource_id,),
+        ).fetchall()
+    assert [row["event_type"] for row in rows] == ["input_transcript", "output_transcript"]
+    payloads = [json.loads(row["payload_json"]) for row in rows]
+    assert payloads[0]["role"] == "user"
+    assert payloads[0]["text"] == "Покажи, что ты видишь на фотографии."
+    assert payloads[1]["role"] == "assistant"
+    assert payloads[1]["text"] == "Вижу кирпичную арку и башни."
+
+
+def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):
+    from PIL import Image
+
+    svc, _adapter, session, events = make_service(tmp_path)
+    with svc.store.connection() as db:
+        row = db.execute("SELECT photo_path FROM stories WHERE id=?", (session.resource_id,)).fetchone()
+        photo_path = Path(row["photo_path"])
+    image = Image.new("RGB", (80, 40), "white")
+    exif = image.getexif()
+    exif[274] = 6
+    image.save(photo_path, "JPEG", exif=exif)
+
+    writes = []
+    adapter = StreetStoryLiveAdapter(
+        svc,
+        lambda _session, event: events.append(event),
+        lambda _session, message: writes.append(message),
+    )
+    adapter.on_started(session)
+
+    assert len(writes) == 1
+    snapshot = writes[0]
+    assert snapshot["type"] == "snapshot"
+    assert snapshot["mime_type"] == "image/jpeg"
+    assert snapshot["optional"] is False
+    data = base64.b64decode(snapshot["data"])
+    assert len(data) <= 480 * 1024
+    with Image.open(io.BytesIO(data)) as normalized:
+        assert normalized.size == (40, 80)
+    visual = [event for event in events if event.get("type") == "visual_context"][-1]
+    assert visual["status"] == "ready"
+    assert (visual["width"], visual["height"]) == (40, 80)

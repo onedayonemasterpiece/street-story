@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -53,12 +55,71 @@ CREATE TABLE IF NOT EXISTS live_publication_confirmations(
 );
 CREATE INDEX IF NOT EXISTS live_confirmation_story_idx
   ON live_publication_confirmations(story_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS live_diagnostics(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS live_diagnostics_story_time_idx
+  ON live_diagnostics(story_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS live_diagnostics_session_time_idx
+  ON live_diagnostics(session_id,created_at DESC);
 """
 
 
 def ensure_live_schema(service: StreetStoryService) -> None:
     with service.store.connection() as db:
         db.executescript(LIVE_SCHEMA)
+
+
+def _diagnostic_value(value: Any, depth: int = 0) -> Any:
+    if depth > 3:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:8000]
+    if isinstance(value, dict):
+        return {
+            str(key)[:64]: _diagnostic_value(item, depth + 1)
+            for key, item in list(value.items())[:48]
+            if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", str(key))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_diagnostic_value(item, depth + 1) for item in list(value)[:48]]
+    return str(value)[:500]
+
+
+def record_live_diagnostic(
+    service: StreetStoryService,
+    story_id: str,
+    session_id: str,
+    source: str,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    if not re.fullmatch(r"story_[A-Za-z0-9]{8,80}", story_id):
+        return
+    if not re.fullmatch(r"live_[A-Za-z0-9]{8,80}", session_id):
+        return
+    source = str(source or "unknown")[:40]
+    event_type = str(event_type or "unknown")[:80]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", event_type):
+        return
+    safe = _diagnostic_value(payload or {})
+    now = service.store.now()
+    with service.store.tx() as db:
+        if not db.execute("SELECT 1 FROM stories WHERE id=?", (story_id,)).fetchone():
+            return
+        db.execute(
+            "INSERT INTO live_diagnostics(story_id,session_id,source,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)",
+            (story_id, session_id, source, event_type, canonical(safe), now),
+        )
+        db.execute("DELETE FROM live_diagnostics WHERE created_at < ?", (now - 7 * 24 * 3600,))
 
 
 def _bounded_text(value: Any, limit: int, *, required: bool = False) -> str:
@@ -211,7 +272,8 @@ SYSTEM_INSTRUCTION = """
 
 Правила:
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
-- факты не выдумывать. Для новой темы сначала вызови resolve_place: он сопоставляет фото и координаты с OSM/Wikipedia и возвращает кандидатов;
+- исходное фото текущей темы передаётся тебе отдельным visual snapshot. Если автор спрашивает, что видно на фото, описывай только реально видимые признаки этого snapshot; если visual snapshot недоступен, честно скажи, что не видишь фото;
+- факты не выдумывать. Для новой темы сначала вызови resolve_place: он независимо сопоставляет исходное фото и координаты с OSM/Wikipedia и возвращает кандидатов;
 - если resolve_place не дал уверенного match, коротко уточни объект. После явного подтверждения автора вызови confirm_place с candidate_id или однозначным candidate_name;
 - когда нужны внешние сведения и проверяемые источники, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
@@ -234,9 +296,10 @@ SYSTEM_INSTRUCTION = """
 
 
 class StreetStoryLiveAdapter:
-    def __init__(self, service: StreetStoryService, emit):
+    def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
         self.emit = emit
+        self.write = write
         ensure_live_schema(service)
 
     def initialize(self, *, resource_id: str, actor: Any, model: str, **_args: Any) -> dict[str, Any]:
@@ -253,6 +316,7 @@ class StreetStoryLiveAdapter:
                 "context_instruction": "Authoritative current topic snapshot; product functions supersede this snapshot when state changes: ",
                 "functions": FUNCTIONS,
                 "voice": "Aoede",
+                "media_resolution": "MEDIA_RESOLUTION_HIGH",
                 "manual_activity_detection": True,
                 "search_enabled": True,
                 "application_search_function": "search_web",
@@ -265,7 +329,7 @@ class StreetStoryLiveAdapter:
         }
 
     def on_event(self, session, event: dict[str, Any]) -> None:
-        kind = event.get("type")
+        kind = str(event.get("type") or "unknown")
         text = str(event.get("text") or "").strip()
         if kind == "input_transcript" and text:
             recent: deque[str] = session.state["recent_user"]
@@ -282,7 +346,89 @@ class StreetStoryLiveAdapter:
             if not recent_model or recent_model[-1] != text:
                 recent_model.append(text)
 
+        if kind in {"input_transcript", "output_transcript"} and text:
+            role = "user" if kind == "input_transcript" else "assistant"
+            payload = {"role": role, "text": text[:8000], "provider_at": event.get("provider_at")}
+            record_live_diagnostic(self.service, session.resource_id, session.id, "provider", kind, payload)
+            logger.info(
+                "street_story_live_transcript %s",
+                canonical({"story_id": session.resource_id, "session_id": session.id, **payload}),
+            )
+        elif kind in {
+            "input_timing", "tool_result", "tool_call", "turn_complete", "generation_complete",
+            "interrupted", "error", "closed", "resource_budget", "resource_budget_wait",
+            "resource_budget_ready", "input_dropped", "timing", "interaction_status",
+        }:
+            excluded = {"data", "metadata", "text", "args", "response"}
+            payload = {key: value for key, value in event.items() if key not in excluded}
+            record_live_diagnostic(self.service, session.resource_id, session.id, "provider", kind, payload)
+            logger.info(
+                "street_story_live_event %s",
+                canonical({
+                    "story_id": session.resource_id,
+                    "session_id": session.id,
+                    "type": kind,
+                    **payload,
+                }),
+            )
+
+    def _visual_snapshot(self, story_id: str) -> tuple[bytes, int, int] | None:
+        with self.service.store.connection() as db:
+            story = self.service._story_row(db, story_id)
+            path = str(story["photo_path"] or "")
+        try:
+            from PIL import Image, ImageOps
+
+            with Image.open(path) as opened:
+                image = ImageOps.exif_transpose(opened)
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+                width, height = image.size
+                for quality in (84, 76, 68, 60, 52):
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+                    data = buffer.getvalue()
+                    if len(data) <= 480 * 1024:
+                        return data, width, height
+        except Exception as exc:
+            logger.warning(
+                "street_story_live_snapshot_prepare_failed %s",
+                canonical({"story_id": story_id, "type": type(exc).__name__}),
+            )
+        return None
+
+    def _send_visual_snapshot(self, session) -> None:
+        snapshot = self._visual_snapshot(session.resource_id)
+        if snapshot is None:
+            self.emit(session, {"type": "visual_context", "status": "unavailable"})
+            record_live_diagnostic(
+                self.service, session.resource_id, session.id, "backend", "visual_context",
+                {"status": "unavailable"},
+            )
+            return
+        data, width, height = snapshot
+        self.write(
+            session,
+            {
+                "type": "snapshot",
+                "data": base64.b64encode(data).decode("ascii"),
+                "mime_type": "image/jpeg",
+                "context": {"kind": "source_photo", "story_id": session.resource_id},
+                "optional": False,
+            },
+        )
+        payload = {"status": "ready", "width": width, "height": height, "jpeg_bytes": len(data)}
+        self.emit(session, {"type": "visual_context", **payload})
+        record_live_diagnostic(
+            self.service, session.resource_id, session.id, "backend", "visual_context", payload
+        )
+
+    def on_started(self, session) -> None:
+        self._send_visual_snapshot(session)
+
     def on_resumed(self, session) -> None:
+        self._send_visual_snapshot(session)
         self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
 
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
@@ -1347,7 +1493,7 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
     ensure_live_schema(service)
 
     def adapter_factory(**kwargs):
-        return StreetStoryLiveAdapter(service, kwargs["emit"])
+        return StreetStoryLiveAdapter(service, kwargs["emit"], kwargs["write"])
 
     async def managed_runner(*, session, reader, on_event):
         environment = _live_resource_environment(settings)
@@ -1373,10 +1519,25 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
         finally:
             environment.clear()
 
+    def transport_diagnostic(record: dict[str, Any]) -> None:
+        story_id = str(record.get("resource_id") or "")
+        session_id = str(record.get("session_id") or "")
+        event_type = str(record.get("event") or "transport")
+        record_live_diagnostic(service, story_id, session_id, "transport", event_type, record)
+        logger.info(
+            "street_story_live_transport %s",
+            canonical({
+                key: value
+                for key, value in record.items()
+                if key not in {"ticket", "text", "data", "audio", "credentials"}
+            }),
+        )
+
     return LiveSessionHost(
         adapter_factory=adapter_factory,
         managed_runner=managed_runner,
         models=("gemini-3.8-live",),
         ready_timeout_ms=30_000,
         max_sessions=3,
+        diagnostic=transport_diagnostic,
     )
