@@ -18,16 +18,23 @@ The current owner flow is a list of topics → one Topic Detail → iterative co
 
 Street Story uses application-owned VAD as the speech-activity authority. Live sessions therefore enable the shared framework's `manual_activity_detection`: each VAD speech segment is sent as `activity_start` → ordered bounded PCM16/16 kHz → `activity_end`. Provider auto-VAD is disabled for these sessions, so the same contract works for physical microphone capture and already-durable prepared PCM without inventing a second transport or using `audio_stream_end`.
 
-The Android app sends bounded PCM16/16 kHz speech to the authenticated Live session endpoints:
+The Android app bootstraps the authenticated Live session over HTTPS and then keeps speech/events on WSS:
 
-- `POST /v1/stories/{story_id}/live-sessions`
-- `POST /v1/stories/{story_id}/live-sessions/{session_id}/input`
-- `GET /v1/stories/{story_id}/live-sessions/{session_id}/events?after=N`
-- `POST /v1/stories/{story_id}/live-sessions/{session_id}/stop`
+- `POST /v1/stories/{story_id}/live-sessions` — authenticated bootstrap; returns relative socket URL and one-use ticket;
+- `GET /v1/stories/{story_id}/live-sessions/{session_id}/socket` — `wl-live-v1` WebSocket carrying binary PCM and pushed events/audio;
+- `POST /v1/stories/{story_id}/live-sessions/{session_id}/socket-ticket` — authenticated ticket renewal;
+- `POST /v1/stories/{story_id}/live-sessions/{session_id}/diagnostics` — bounded Android transport/capture/playback diagnostics;
+- `POST /v1/stories/{story_id}/live-sessions/{session_id}/stop`.
+
+The old HTTP `input`/`events` routes are compatibility-only. Once WSS attaches, HTTP input cannot silently become a fallback.
 
 The backend uses `live-interaction` for provider transport/session lifecycle and `ai-resource-control` for the common
 Google Live lease. Street Story owns only topic context and domain tools (research, fact selection, text/literal editing,
 Undo, visual generation, publication preparation/confirmation/cancel).
+
+Before Android reports Live ready, the backend queues an orientation-normalized, bounded JPEG snapshot of the current source photo into the same Gemini Live session. This lets Mira answer direct visual questions about the selected photo. Object identity is still verified independently by `resolve_place`, which compares the original source photo with OSM/Wikipedia candidates; conversational vision never replaces that guard.
+
+On physical-phone Live capture Android uses the existing WebRTC VAD with `VOICE_COMMUNICATION` input and enables Acoustic Echo Canceler/Noise Suppressor when the device exposes them. This is intended to preserve barge-in while reducing the assistant speaker output being reclassified as new user speech.
 
 Live agent structure follows the shared `live-interaction` operating standard (`docs/live-agent-architecture.md` in that repository). The Live model remains the conversational controller; the backend validates capability transitions and exposes only the small tool bundle needed for the current task. Research, visual work and publication are distinct capabilities rather than one eager tool surface. Capability changes must preserve conversation continuity and use the shared provider/session-resumption primitives once released and adopted. Any Street Story-specific prompt remains here; transport/prompt-layering/tool-loading rules remain centralized in `live-interaction`.
 

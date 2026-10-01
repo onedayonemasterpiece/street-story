@@ -1,6 +1,8 @@
 package com.onedayonemasterpiece.streetstory
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
@@ -8,8 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -26,12 +27,16 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.gson.Gson
 import java.io.File
 import java.time.Instant
@@ -65,13 +70,17 @@ class MainActivity : Activity() {
     private var previewText: TextView? = null
     private var literalBanner: TextView? = null
     private var lastChangeView: TextView? = null
+    private var chatBox: LinearLayout? = null
+    private var chatMessages: LinearLayout? = null
+    private var chatStatus: TextView? = null
     private var sourceButton: Button? = null
     private var undoButton: Button? = null
     private var publishButton: Button? = null
     private var confirmationBox: LinearLayout? = null
     private var dockTopic: TextView? = null
     private var dockStatus: TextView? = null
-    private var micButton: Button? = null
+    private var micButton: ImageButton? = null
+    private var micPulse: ObjectAnimator? = null
     private var shownImagePath: String? = null
 
     private val liveListener: (LiveUiState) -> Unit = { state ->
@@ -91,6 +100,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         activeStoryId = savedInstanceState?.getString("active_story_id")
             ?: prefs.getString("active_story_id", null)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = SAGE
         window.navigationBarColor = SAGE
         buildChrome()
@@ -133,38 +143,48 @@ class MainActivity : Activity() {
 
     private fun buildChrome() {
         root = FrameLayout(this).apply { setBackgroundColor(SAGE) }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(0, bars.top, 0, bars.bottom)
+            insets
+        }
         contentHost = FrameLayout(this)
         root.addView(
             contentHost,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
-            ).apply { bottomMargin = dp(106) },
+            ).apply { bottomMargin = 0 },
         )
         dock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
             background = rounded(PAPER, 22)
             elevation = dp(10).toFloat()
-            setPadding(dp(16), dp(10), dp(16), dp(10))
+            setPadding(dp(14), dp(10), dp(14), dp(10))
             visibility = View.GONE
         }
         root.addView(
             dock,
-            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(96)).apply {
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(142)).apply {
                 gravity = Gravity.BOTTOM
                 leftMargin = dp(9)
                 rightMargin = dp(9)
-                bottomMargin = dp(6)
+                bottomMargin = dp(7)
             },
         )
         setContentView(root)
+        ViewCompat.requestApplyInsets(root)
     }
 
     private fun showTopics() {
         setActiveStory(null)
         clearTopicRefs()
         dock.visibility = View.GONE
+        (contentHost.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.bottomMargin = 0
+            contentHost.layoutParams = it
+        }
         contentHost.removeAllViews()
 
         val scroll = ScrollView(this).apply {
@@ -220,7 +240,7 @@ class MainActivity : Activity() {
         }
         val image = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            decodeSampled(story.processedImagePath ?: story.photoPath, 240, 240)?.let(::setImageBitmap)
+            ImagePreviewDecoder.decode(story.processedImagePath ?: story.photoPath, 240, 240)?.let(::setImageBitmap)
             background = rounded(SAGE_DARK, 14)
             clipToOutline = true
         }
@@ -285,6 +305,25 @@ class MainActivity : Activity() {
         }
         column.addView(previewImage, LinearLayout.LayoutParams(-1, dp(280)))
 
+        chatBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(0xfff4f2ec.toInt(), 18)
+            setPadding(dp(12), dp(12), dp(12), dp(11))
+            contentDescription = "live-chat"
+        }
+        chatBox?.addView(label("Разговор с Мирой", 14, INK, Typeface.DEFAULT_BOLD))
+        chatMessages = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        chatBox?.addView(chatMessages)
+        chatStatus = label("Микрофон выключен", 13, MUTED, Typeface.DEFAULT).apply {
+            setPadding(dp(2), dp(7), dp(2), 0)
+            contentDescription = "live-chat-status"
+        }
+        chatBox?.addView(chatStatus)
+        column.addView(chatBox, blockMargins(top = 12))
+
         literalBanner = label(
             "Дословная диктовка · ещё не применено",
             13,
@@ -302,6 +341,7 @@ class MainActivity : Activity() {
             background = rounded(PAPER, 18)
             setPadding(dp(16), dp(16), dp(16), dp(16))
             contentDescription = "publication-preview"
+            visibility = View.GONE
         }
         column.addView(previewText, blockMargins(top = 14))
 
@@ -364,33 +404,51 @@ class MainActivity : Activity() {
     private fun buildDock(storyId: String) {
         dock.removeAllViews()
         dock.visibility = View.VISIBLE
-        val top = LinearLayout(this).apply {
+        (contentHost.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.bottomMargin = dp(154)
+            contentHost.layoutParams = it
+        }
+        val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+        }
+        micButton = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_mic)
+            imageTintList = ColorStateList.valueOf(PAPER)
+            background = oval(INK)
+            setPadding(dp(23), dp(23), dp(23), dp(23))
+            contentDescription = "live-mic"
+            setOnClickListener { toggleLive(storyId) }
+        }
+        row.addView(micButton, LinearLayout.LayoutParams(dp(84), dp(84)))
+
+        val labels = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, 0, 0)
         }
         dockTopic = label("Тема · ${topicTitle(store.story(storyId))}", 12, MUTED, Typeface.DEFAULT).apply {
             maxLines = 1
         }
-        top.addView(dockTopic, LinearLayout.LayoutParams(0, -2, 1f))
-        micButton = Button(this).apply {
-            text = "Микрофон"
-            textSize = 15f
-            isAllCaps = false
-            setTextColor(PAPER)
-            background = rounded(INK, 18)
-            minHeight = 0
-            minWidth = 0
-            contentDescription = "live-mic"
-            setOnClickListener { toggleLive(storyId) }
+        labels.addView(dockTopic)
+        dockStatus = label("Микрофон выключен", 15, INK, Typeface.DEFAULT_BOLD).apply {
+            setPadding(0, dp(5), 0, 0)
+            maxLines = 2
         }
-        top.addView(micButton, LinearLayout.LayoutParams(dp(122), dp(44)))
-        dock.addView(top)
-
-        dockStatus = label("Микрофон выключен", 13, INK, Typeface.DEFAULT).apply {
-            setPadding(0, dp(6), 0, 0)
-            maxLines = 1
-        }
-        dock.addView(dockStatus)
+        labels.addView(dockStatus)
+        labels.addView(
+            label(
+                "Нажмите большую кнопку, чтобы включить или остановить Live",
+                11,
+                MUTED,
+                Typeface.DEFAULT,
+            ).apply {
+                setPadding(0, dp(4), 0, 0)
+                maxLines = 2
+            }
+        )
+        row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
+        dock.addView(row)
     }
 
     private fun refreshSurface() {
@@ -414,19 +472,23 @@ class MainActivity : Activity() {
             StoryStage.VISUAL_BLOCKED,
         ) || !story.lastError.isNullOrBlank()
         topicStatusView?.apply {
-            text = story.lastError?.takeIf { it.isNotBlank() } ?: topicStatus(story)
-            setTextColor(if (!story.lastError.isNullOrBlank()) ACCENT else statusColor(story.stage))
+            val ownerError = ownerVisibleStoryError(story.lastError)
+            text = ownerError ?: topicStatus(story)
+            setTextColor(if (ownerError != null) ACCENT else statusColor(story.stage))
             visibility = if (meaningful) View.VISIBLE else View.GONE
         }
 
         val imagePath = story.processedImagePath?.takeIf { File(it).isFile } ?: story.photoPath
         if (shownImagePath != imagePath) {
             shownImagePath = imagePath
-            previewImage?.setImageBitmap(decodeSampled(imagePath, 1200, 1000))
+            previewImage?.setImageBitmap(ImagePreviewDecoder.decode(imagePath, 1200, 1000))
         }
 
-        previewText?.text = story.draftText?.takeIf { it.isNotBlank() }
-            ?: "Расскажите голосом, что вы заметили и какой пост хотите получить."
+        previewText?.apply {
+            val draft = story.draftText?.takeIf { it.isNotBlank() }
+            text = draft.orEmpty()
+            visibility = if (draft == null) View.GONE else View.VISIBLE
+        }
 
         val projection = research.get(id)
         sourceButton?.text = "Источники · ${projection?.sourceCount ?: 0}"
@@ -444,12 +506,22 @@ class MainActivity : Activity() {
         val id = activeStoryId ?: return
         if (state.storyId != null && state.storyId != id) {
             dockStatus?.text = "Live идёт в другой теме"
-            micButton?.text = "Открыть"
+            chatStatus?.text = "• Live идёт в другой теме"
+            stopMicPulse()
             return
         }
 
         dockStatus?.text = state.error ?: state.status
-        micButton?.text = if (state.active) "Стоп" else "Микрофон"
+        chatStatus?.apply {
+            text = if (state.error.isNullOrBlank()) "• ${state.status}" else "⚠ ${state.error}"
+            setTextColor(if (state.error.isNullOrBlank()) MUTED else ACCENT)
+        }
+        renderLiveMessages(state.messages)
+        micButton?.apply {
+            background = oval(if (state.active) ACCENT else INK)
+            contentDescription = if (state.active) "live-stop" else "live-mic"
+        }
+        updateMicPulse(state.inputActive)
         literalBanner?.visibility = if (state.literalMode) View.VISIBLE else View.GONE
 
         val change = state.lastChange?.takeIf { it.isNotBlank() }
@@ -845,12 +917,16 @@ class MainActivity : Activity() {
     }
 
     private fun clearTopicRefs() {
+        stopMicPulse()
         topicTitleView = null
         topicStatusView = null
         previewImage = null
         previewText = null
         literalBanner = null
         lastChangeView = null
+        chatBox = null
+        chatMessages = null
+        chatStatus = null
         sourceButton = null
         undoButton = null
         publishButton = null
@@ -871,6 +947,23 @@ class MainActivity : Activity() {
             .atZone(ZoneId.systemDefault())
             .format(DateTimeFormatter.ofPattern("d MMM", Locale("ru")))
         return "Тема · $date"
+    }
+
+    private fun ownerVisibleStoryError(value: String?): String? {
+        val text = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val lower = text.lowercase(Locale.ROOT)
+        return when {
+            lower.contains("429") || lower.contains("503") ||
+                lower.contains("resource_capacity") || lower.contains("resource_token_budget") ||
+                lower.contains("live_busy") || lower.contains("provider_quota") ->
+                "Мира сейчас занята. Результат сохранён — попробуйте ещё раз через несколько секунд."
+            lower.contains("timeout") || lower.contains("timed out") || lower.contains("connection") ||
+                lower.contains("network") || lower.contains("socket") ->
+                "Связь прервалась. Локальные данные сохранены."
+            Regex("^[A-Z0-9_.:-]{4,}$").matches(text) || lower.startsWith("http_") ->
+                "Не удалось завершить действие. Диагностика сохранена."
+            else -> text.take(220)
+        }
     }
 
     private fun topicStatus(story: StorySnapshot): String = when (story.stage) {
@@ -933,20 +1026,63 @@ class MainActivity : Activity() {
             bottomMargin = dp(bottom)
         }
 
-    private fun decodeSampled(path: String, targetWidth: Int, targetHeight: Int): Bitmap? =
-        runCatching {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            var sample = 1
-            while (
-                bounds.outWidth / sample > targetWidth * 2 ||
-                bounds.outHeight / sample > targetHeight * 2
-            ) sample *= 2
-            BitmapFactory.decodeFile(
-                path,
-                BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) },
-            )
-        }.getOrNull()
+    private fun renderLiveMessages(messages: List<LiveChatMessage>) {
+        val host = chatMessages ?: return
+        host.removeAllViews()
+        messages.takeLast(18).forEach { message ->
+            val row = LinearLayout(this).apply {
+                gravity = if (message.role == LiveRole.USER) Gravity.END else Gravity.START
+            }
+            val title = when (message.role) {
+                LiveRole.USER -> "Вы"
+                LiveRole.ASSISTANT -> "Мира"
+                else -> "Система"
+            }
+            val bubble = label("$title\n${message.text}", 14, INK, Typeface.DEFAULT).apply {
+                background = rounded(
+                    if (message.role == LiveRole.USER) 0xffe2e8dd.toInt() else PAPER,
+                    14,
+                )
+                setPadding(dp(11), dp(8), dp(11), dp(8))
+                maxWidth = dp(310)
+            }
+            row.addView(bubble)
+            host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        }
+    }
+
+    private fun updateMicPulse(active: Boolean) {
+        val button = micButton ?: return
+        if (!active) {
+            stopMicPulse()
+            button.scaleX = 1f
+            button.scaleY = 1f
+            button.alpha = 1f
+            return
+        }
+        if (micPulse?.isRunning == true) return
+        micPulse = ObjectAnimator.ofPropertyValuesHolder(
+            button,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.10f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.10f),
+            PropertyValuesHolder.ofFloat(View.ALPHA, 1f, 0.72f),
+        ).apply {
+            duration = 520
+            repeatMode = ObjectAnimator.REVERSE
+            repeatCount = ObjectAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopMicPulse() {
+        micPulse?.cancel()
+        micPulse = null
+    }
+
+    private fun oval(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(color)
+    }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 

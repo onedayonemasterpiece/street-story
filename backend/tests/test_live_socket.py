@@ -41,7 +41,7 @@ def client(tmp_path, monkeypatch):
     svc, _, session, _ = make_service(tmp_path)
     provider = Provider()
     host = LiveSocketSessionHost(
-        adapter_factory=lambda **hooks: StreetStoryLiveAdapter(svc, hooks['emit']),
+        adapter_factory=lambda **hooks: StreetStoryLiveAdapter(svc, hooks['emit'], hooks['write']),
         key_resolver=lambda *_: 'fixture-key-not-a-provider', provider_run=provider.run,
         ready_timeout_ms=500,
     )
@@ -143,3 +143,24 @@ def test_bootstrap_and_ticket_renewal_are_bounded_and_authenticated(client):
     with socket(c, {**value, **renewed}) as ws:
         hello(ws, value)
         ws.send_json({'type': 'stop'})
+
+def test_android_diagnostics_are_authenticated_and_bounded(client):
+    c, story, _, _ = client
+    value = start(client)
+    url = f"/v1/stories/{story}/live-sessions/{value['session_id']}/diagnostics"
+    denied = c.post(url, json={"event": "capture_configured"}, headers={"Authorization": ""})
+    assert denied.status_code == 401
+    accepted = c.post(
+        url,
+        json={
+            "event": "capture_configured",
+            "aec_available": True,
+            "aec_enabled": True,
+            "noise_suppressor_enabled": True,
+            "app_version": "fixture",
+        },
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["ok"] is True
+    assert c.post(url, content=b"x" * 32769).status_code == 413
+    c.post(f"/v1/stories/{story}/live-sessions/{value['session_id']}/stop")

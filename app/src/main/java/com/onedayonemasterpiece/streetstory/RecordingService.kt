@@ -13,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.os.IBinder
@@ -69,8 +70,9 @@ class RecordingService : Service() {
         val manualPauseMs=initial.manualPauseMs
         val minBuffer=AudioRecord.getMinBufferSize(AudioProfile.SAMPLE_RATE_HZ,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
         if(minBuffer<=0){pauseForMicrophoneFailure(id,"Устройство не предоставило аудиобуфер");return}
+        val audioSource = if (live != null) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.VOICE_RECOGNITION
         val recorder=try{
-            AudioRecord.Builder().setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION).setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(AudioProfile.SAMPLE_RATE_HZ).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()).setBufferSizeInBytes(maxOf(minBuffer*2,EfficientVad.FRAME_SAMPLES*8)).build()
+            AudioRecord.Builder().setAudioSource(audioSource).setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(AudioProfile.SAMPLE_RATE_HZ).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()).setBufferSizeInBytes(maxOf(minBuffer*2,EfficientVad.FRAME_SAMPLES*8)).build()
         }catch(exc:SecurityException){
             pauseForMicrophoneFailure(id,"Разрешение на микрофон недоступно");return
         }catch(exc:Exception){
@@ -78,6 +80,19 @@ class RecordingService : Service() {
         }
         audioRecord=recorder
         val suppressor=if(NoiseSuppressor.isAvailable())runCatching{NoiseSuppressor.create(recorder.audioSessionId)?.also{it.enabled=true}}.getOrNull() else null
+        val echoCanceler=if(live!=null&&AcousticEchoCanceler.isAvailable())runCatching{AcousticEchoCanceler.create(recorder.audioSessionId)?.also{it.enabled=true}}.getOrNull() else null
+        live?.diagnostic(
+            "capture_configured",
+            mapOf(
+                "audio_source" to audioSource,
+                "sample_rate" to AudioProfile.SAMPLE_RATE_HZ,
+                "frame_ms" to EfficientVad.FRAME_MS,
+                "noise_suppressor_available" to NoiseSuppressor.isAvailable(),
+                "noise_suppressor_enabled" to (suppressor?.enabled == true),
+                "aec_available" to AcousticEchoCanceler.isAvailable(),
+                "aec_enabled" to (echoCanceler?.enabled == true),
+            ),
+        )
         val detector=EfficientVad(true);val latch=SpeechLatch(3,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
         try{
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
@@ -99,10 +114,36 @@ class RecordingService : Service() {
                 val recorded=persisted+(writer?.durationMs?:0);val skipped=(wallEnd-manualPauseMs-recorded).coerceAtLeast(0);val changed=activity!=lastActivity
                 if(lastRuntime<0||wallEnd-lastRuntime>=RUNTIME_UPDATE_INTERVAL_MS||changed){runtime.update(id,recorded,wallEnd,skipped,activity);lastRuntime=wallEnd}
                 if(lastStore<0||wallEnd-lastStore>=STORE_UPDATE_INTERVAL_MS||changed){store.updateCaptureProgress(id,recorded,wallEnd,manualPauseMs,skipped,activity);lastStore=wallEnd}
-                if(changed){updateNotification(activity);lastActivity=activity;broadcast(if(activity==CaptureActivity.FALLBACK_CONTINUOUS)"Автопропуск недоступен · записываю всё" else null)}
+                if(changed){
+                    updateNotification(activity)
+                    lastActivity=activity
+                    live?.diagnostic(
+                        "capture_activity",
+                        mapOf(
+                            "activity" to activity,
+                            "vad_fail_open" to detector.isFailOpen,
+                            "recorded_ms" to recorded,
+                            "wall_ms" to wallEnd,
+                        ),
+                    )
+                    broadcast(if(activity==CaptureActivity.FALLBACK_CONTINUOUS)"Автопропуск недоступен · записываю всё" else null)
+                }
             }
-        }catch(exc:Exception){if(captureRequested){captureRequested=false;store.beginManualPause(id);store.setLocalVoiceError(id,"Ошибка записи: ${exc.message}");enterForeground("Запись остановлена с ошибкой",true)}}finally{
-            runCatching{recorder.stop()};recorder.release();audioRecord=null;suppressor?.release();detector.close();persisted=persist(writer?.close(),persisted);val final=store.voiceSession(id);if(final!=null){val wall=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0);val skipped=(wall-final.manualPauseMs-persisted).coerceAtLeast(0);val finalActivity=if(captureRequested)activity else CaptureActivity.IDLE;store.updateCaptureProgress(id,persisted,wall,final.manualPauseMs,skipped,finalActivity);runtime.update(id,persisted,wall,skipped,finalActivity)};broadcast()
+        }catch(exc:Exception){
+            live?.diagnostic("capture_error",mapOf("type" to exc.javaClass.simpleName,"message" to (exc.message ?: "").take(240)))
+            if(captureRequested){captureRequested=false;store.beginManualPause(id);store.setLocalVoiceError(id,"Ошибка записи: ${exc.message}");enterForeground("Запись остановлена с ошибкой",true)}
+        }finally{
+            runCatching{recorder.stop()};recorder.release();audioRecord=null;suppressor?.release();echoCanceler?.release();detector.close();persisted=persist(writer?.close(),persisted)
+            val finalActivity=if(captureRequested)activity else CaptureActivity.IDLE
+            val final=store.voiceSession(id)
+            if(final!=null){
+                val wall=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0)
+                val skipped=(wall-final.manualPauseMs-persisted).coerceAtLeast(0)
+                store.updateCaptureProgress(id,persisted,wall,final.manualPauseMs,skipped,finalActivity)
+                runtime.update(id,persisted,wall,skipped,finalActivity)
+            }
+            live?.diagnostic("capture_stopped",mapOf("recorded_ms" to persisted,"activity" to finalActivity))
+            broadcast()
         }
     }
     private fun readFrame(recorder:AudioRecord,target:ShortArray):Boolean{var offset=0;while(offset<target.size&&captureRequested){val count=recorder.read(target,offset,target.size-offset,AudioRecord.READ_BLOCKING);if(count==AudioRecord.ERROR_DEAD_OBJECT)throw IllegalStateException("Android audio service was restarted");if(count<0)throw IllegalStateException("AudioRecord read failed: $count");if(count==0)continue;offset+=count};return offset==target.size}

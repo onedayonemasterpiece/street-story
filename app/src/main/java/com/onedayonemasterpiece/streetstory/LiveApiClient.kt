@@ -116,6 +116,15 @@ internal class LiveApiClient(private val baseUrl: String, private val token: Str
             7_000,
         )
 
+    fun diagnostic(serverStoryId: String, sessionId: String, payload: Map<String, Any?>): LiveAckWire =
+        request(
+            "POST",
+            "/v1/stories/${segment(serverStoryId)}/live-sessions/${segment(sessionId)}/diagnostics",
+            gson.toJson(payload),
+            LiveAckWire::class.java,
+            5_000,
+        )
+
     private fun <T> request(method: String, path: String, body: String?, type: Class<T>, readTimeoutMs: Int): T {
         val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method

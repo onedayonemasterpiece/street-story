@@ -55,9 +55,28 @@ recording before hello acknowledgement. Setup is shown before “Слушаю”
 The client separates transport and playback generations. Provider/transport
 failure finishes the durable microphone archive without flushing already
 received PCM. Explicit user Stop still interrupts/clears playback immediately.
-Errors and long waits distinguish transport, provider, tools and resource limits;
-routine diagnostic records contain identifiers/counters/codes, not audio, full
-transcripts, tickets, device tokens or provider credentials.
+Errors and long waits distinguish transport, provider, tools and resource limits.
+Transport/capture/playback diagnostics contain bounded identifiers, counters,
+timings and codes. Because the owner explicitly requested incident-grade voice
+diagnostics on 2026-10-01, provider-produced user/assistant transcript text is
+also retained for seven days and correlated by story/session. Raw PCM, image
+bytes, tickets, device tokens, tool arguments and provider credentials are never
+stored in that diagnostic stream.
+
+## Physical-phone UX contract
+
+Owner testing on 2026-10-01 (incident `inc_181ca71615174ed50b347a31`) is the acceptance baseline for the phone UI:
+
+- edge-to-edge Android must apply status/navigation-bar insets; neither header nor bottom Live dock may sit under system chrome;
+- the selected/source image is displayed with EXIF orientation applied, while original bytes/hash remain untouched;
+- the primary interaction is an approximately 84 dp circular microphone control. It pulses only while VAD is actually feeding speech PCM, not merely because a Live session exists;
+- directly below the photo is a bounded conversation view. Provider `input_transcript` renders as **Вы**, `output_transcript` as **Мира**, and the current listening/thinking/tool/error status is the final line in that conversation;
+- no large placeholder publication-text card is shown before a real draft exists; publication preview returns when there is actual draft text;
+- technical provider/socket codes are diagnostic data, not normal owner-facing copy;
+- the source photo is queued as a bounded orientation-normalized Live snapshot before microphone capture starts. If visual context cannot be prepared, the UI says so rather than claiming Mira sees the image; `resolve_place` still performs an independent vision/candidate comparison;
+- physical Live capture uses Android `VOICE_COMMUNICATION` plus best-effort AEC/NoiseSuppressor. An `interrupted` event and playback timing are logged so self-echo versus genuine barge-in can be distinguished.
+
+This phone acceptance is stronger than prepared-PCM CI. A new APK is not declared physically fixed until the owner reruns a real microphone turn and confirms intelligible continuous playback.
 
 ## Preserved domain boundaries
 

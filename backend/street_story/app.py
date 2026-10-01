@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import secrets
 from contextlib import asynccontextmanager
 
@@ -9,7 +11,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
-from .live import create_live_host
+from .live import create_live_host, record_live_diagnostic
 from .live_socket import install_live_socket_routes, start_live_socket
 from .runtime import RuntimeStreetStoryService
 from live_interaction import LiveError
@@ -137,6 +139,26 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         return await start_live_socket(live_host, story_id, request)
 
     install_live_socket_routes(app, live_host, auth)
+
+    @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/diagnostics", dependencies=[Depends(auth)])
+    async def live_diagnostics(story_id: str, session_id: str, request: Request):
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > 32_768:
+                raise HTTPException(status_code=413, detail="Live diagnostic payload exceeds its bound")
+        try:
+            body = json.loads(raw) if raw else {}
+        except (ValueError, UnicodeError):
+            raise HTTPException(status_code=400, detail="Invalid Live diagnostic payload") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Live diagnostic payload must be an object")
+        event = str(body.get("event") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", event):
+            raise HTTPException(status_code=400, detail="Invalid Live diagnostic event")
+        fields = {key: value for key, value in body.items() if key != "event"}
+        record_live_diagnostic(service, story_id, session_id, "android", event, fields)
+        return {"ok": True, "session_id": session_id}
 
     @app.post("/v1/stories/{story_id}/live-sessions/{session_id}/input", dependencies=[Depends(auth)])
     async def live_input(story_id: str, session_id: str, request: Request):
