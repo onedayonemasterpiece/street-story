@@ -6,6 +6,9 @@ import math
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+import httpx
 
 from .errors import MalformedProviderResponse
 from .mvp import MvpProductStreetStoryService
@@ -42,6 +45,29 @@ def _excerpt_supports(claim: str, excerpt: str) -> bool:
 
 class MvpResearchMixin:
     """Explicit multi-message research and evidence semantics for the MVP."""
+
+    def ensure_identity(self, story_id: str) -> dict[str, Any]:
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            research = json.loads(row["research_json"] or "{}")
+            identity = research.get("visual_identity")
+            if isinstance(identity, dict) and identity.get("status") in {"match", "owner_confirmed"}:
+                return self._story_repr(db, row)
+            semantic = "identity:" + digest(
+                {
+                    "photo_sha256": row["photo_sha256"],
+                    "lat": row["latitude"],
+                    "lon": row["longitude"],
+                }
+            )
+            self._enqueue_job(db, story_id, "identity", semantic, {})
+            if row["state"] in {"photo_ready", "voice_ready", "needs_review"}:
+                db.execute(
+                    "UPDATE stories SET state='identifying',error_code=NULL,error_message=NULL,"
+                    "revision=revision+1,updated_at=? WHERE id=?",
+                    (self.store.now(), story_id),
+                )
+            return self._story_repr(db, self._story_row(db, story_id))
 
     def complete_voice(self, story_id: str, session_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
@@ -93,8 +119,12 @@ class MvpResearchMixin:
                 ),
             )
             story = self._story_row(db, story_id)
-            has_research = bool(json.loads(story["research_json"] or "{}"))
-            state = "review" if has_research else "voice_ready"
+            research = json.loads(story["research_json"] or "{}")
+            has_research = bool(research.get("input_revision"))
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            state = "review" if has_research else (
+                "identity_ready" if identity.get("status") in {"match", "owner_confirmed"} else "voice_ready"
+            )
             db.execute(
                 "UPDATE stories SET state=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? "
                 "WHERE id=?",
@@ -275,45 +305,209 @@ class MvpResearchMixin:
     @staticmethod
     def _candidate_catalog(osm: dict[str, Any], wikipedia: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        seen_ids: set[str] = set()
+        wiki_refs: dict[str, list[str]] = {}
+        wikipedia_names: set[str] = set()
+
         for page in wikipedia:
             title = str(page.get("title") or "").strip()
             if not title:
                 continue
+            normalized = re.sub(r"\s+", " ", title.casefold())
+            wikipedia_names.add(normalized)
             raw_id = str(page.get("pageid") or hashlib.sha256(title.encode()).hexdigest()[:12])
             cid = f"wiki:{raw_id}"
-            if cid not in seen:
-                seen.add(cid)
-                candidates.append(
-                    {
-                        "candidate_id": cid,
-                        "name": title,
-                        "type": "wikipedia",
-                        "url": _norm_url(page.get("url")),
-                        "reference_excerpt": str(page.get("extract") or "")[:1200],
-                    }
-                )
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            refs: list[str] = []
+            for raw in (page.get("thumbnail_url"), page.get("image_url")):
+                value = str(raw or "").strip()
+                parsed = urlparse(value)
+                if parsed.scheme == "https" and parsed.hostname == "upload.wikimedia.org" and value not in refs:
+                    refs.append(value)
+            wiki_refs[normalized] = refs[:2]
+            candidates.append({
+                "candidate_id": cid,
+                "name": title,
+                "type": "wikipedia",
+                "url": _norm_url(page.get("url")),
+                "reference_excerpt": str(page.get("extract") or "")[:1200],
+                "reference_image_urls": refs[:2],
+                "distance_m": page.get("distance_m"),
+                "selection_bucket": "wikipedia",
+                "salience_rank": 0,
+            })
+
         for item in [osm.get("reverse", {}), *osm.get("nearby", [])]:
             osm_type = str(item.get("osm_type") or item.get("type") or "")
             osm_id = item.get("osm_id") or item.get("id")
-            tags = item.get("tags") or {}
-            name = str(tags.get("name") or item.get("display_name") or "").strip()
-            if not name or osm_type not in {"node", "way", "relation"} or osm_id is None:
+            tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
+            address_name = " ".join(
+                part for part in (
+                    str(tags.get("addr:street") or "").strip(),
+                    str(tags.get("addr:housenumber") or "").strip(),
+                ) if part
+            )
+            name = str(tags.get("name") or address_name or item.get("display_name") or "").strip()
+            normalized = re.sub(r"\s+", " ", name.casefold())
+            if (
+                not name
+                or osm_type not in {"node", "way", "relation"}
+                or osm_id is None
+                or (
+                    str(item.get("selection_bucket") or "") != "reverse"
+                    and normalized
+                    and normalized in wikipedia_names
+                )
+            ):
+                continue
+            if osm_type == "relation" and (
+                tags.get("route")
+                or tags.get("boundary")
+                or str(tags.get("type") or "") in {"route", "boundary", "network"}
+            ):
                 continue
             cid = f"osm:{osm_type}:{osm_id}"
-            if cid in seen:
+            if cid in seen_ids:
                 continue
-            seen.add(cid)
-            candidates.append(
-                {
-                    "candidate_id": cid,
-                    "name": name,
-                    "type": "osm",
-                    "url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}",
-                    "reference_excerpt": canonical(tags)[:1200],
-                }
+            seen_ids.add(cid)
+            candidates.append({
+                "candidate_id": cid,
+                "name": name,
+                "type": "osm",
+                "url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}",
+                "reference_excerpt": canonical(tags)[:1200],
+                "reference_image_urls": wiki_refs.get(normalized, []),
+                "distance_m": item.get("distance_m"),
+                "selection_bucket": item.get("selection_bucket"),
+                "salience_rank": item.get("salience_rank", 3),
+            })
+
+        def distance(item: dict[str, Any]) -> float:
+            try:
+                return max(0.0, float(item.get("distance_m")))
+            except (TypeError, ValueError):
+                return 10_000.0
+
+        shortlist: list[dict[str, Any]] = []
+        chosen: set[str] = set()
+
+        def take(items: list[dict[str, Any]], limit: int, bucket: str) -> None:
+            added = 0
+            for item in items:
+                cid = str(item.get("candidate_id") or "")
+                if not cid or cid in chosen:
+                    continue
+                chosen.add(cid)
+                shortlist.append({**item, "shortlist_bucket": bucket})
+                added += 1
+                if added >= limit:
+                    return
+
+        reverse = sorted(
+            [item for item in candidates if item.get("selection_bucket") == "reverse"],
+            key=distance,
+        )
+        nearby = sorted(
+            [item for item in candidates if item.get("selection_bucket") == "nearby"],
+            key=distance,
+        )
+        landmarks = [item for item in candidates if item.get("selection_bucket") == "landmark"]
+        wikipedia_candidates = sorted(
+            [item for item in candidates if item.get("type") == "wikipedia"],
+            key=lambda item: (0 if item.get("reference_image_urls") else 1, distance(item)),
+        )
+
+        take(reverse, 1, "reverse")
+        take(nearby, 3, "nearby")
+
+        for low, high, limit, label in (
+            (0.0, 200.0, 3, "landmark_near"),
+            (200.0, 400.0, 3, "landmark_mid"),
+            (400.0, 600.1, 3, "landmark_far"),
+        ):
+            band = [
+                item for item in landmarks
+                if low <= distance(item) < high
+            ]
+            band.sort(
+                key=lambda item: (
+                    int(item.get("salience_rank", 3)),
+                    0 if item.get("reference_image_urls") else 1,
+                    distance(item),
+                )
             )
-        return candidates[:12]
+            take(band, limit, label)
+
+        take(wikipedia_candidates, 4, "wikipedia")
+
+        # Fill unused capacity with the best remaining landmarks/nearby objects,
+        # but never exceed the bounded visual-analysis shortlist.
+        remaining = sorted(
+            [item for item in candidates if str(item.get("candidate_id") or "") not in chosen],
+            key=lambda item: (
+                int(item.get("salience_rank", 3)),
+                0 if item.get("reference_image_urls") else 1,
+                distance(item),
+            ),
+        )
+        take(remaining, 16 - len(shortlist), "fill")
+        shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
+        return shortlist[:16]
+
+    async def _candidate_reference_images(
+        self, candidates: list[dict[str, Any]]
+    ) -> list[tuple[str, str, bytes]]:
+        result: list[tuple[str, str, bytes]] = []
+        seen_urls: set[str] = set()
+        limits = {"image/jpeg", "image/png", "image/webp"}
+        async with httpx.AsyncClient(
+            timeout=8,
+            follow_redirects=False,
+            headers={"User-Agent": "StreetStory/0.1 Wikimedia visual matcher"},
+        ) as client:
+            image_candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.get("reference_image_urls")
+            ][:6]
+            for candidate in image_candidates:
+                candidate_id = str(candidate.get("candidate_id") or "")
+                for raw_url in (candidate.get("reference_image_urls") or [])[:1]:
+                    url = str(raw_url or "").strip()
+                    parsed = urlparse(url)
+                    if (
+                        not candidate_id
+                        or url in seen_urls
+                        or parsed.scheme != "https"
+                        or parsed.hostname != "upload.wikimedia.org"
+                    ):
+                        continue
+                    seen_urls.add(url)
+                    try:
+                        async with client.stream("GET", url) as response:
+                            if response.status_code != 200:
+                                continue
+                            mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                            if mime not in limits:
+                                continue
+                            declared = int(response.headers.get("content-length") or "0")
+                            if declared > 2 * 1024 * 1024:
+                                continue
+                            data = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                data.extend(chunk)
+                                if len(data) > 2 * 1024 * 1024:
+                                    data.clear()
+                                    break
+                            if data:
+                                result.append((candidate_id, mime, bytes(data)))
+                                if len(result) >= 6:
+                                    return result
+                    except (httpx.HTTPError, ValueError):
+                        continue
+        return result
 
     async def _identify_photo(
         self,
@@ -342,7 +536,7 @@ class MvpResearchMixin:
         }
         prompt = (
             "Ты выполняешь только визуальную идентификацию объекта Street Story, до исследования фактов. "
-            "Сравни исходное фото с кандидатами OSM/Wikipedia по наблюдаемым признакам. Не выдавай исторические факты. "
+            "Сравни исходное фото с shortlist-кандидатами OSM/Wikipedia по наблюдаемым признакам. GPS — точка съёмки, "            "а не координата объекта: кандидат в сотнях метров может быть правильнее ближайшего. Расстояние — только prior; "            "визуальное совпадение важнее. Не выдавай исторические факты. "
             "status=match только если конкретный кандидат визуально достаточно убедителен; при сомнении uncertain, "
             "при явном несовпадении mismatch. candidate_id обязан быть из списка или пустой строкой. "
             "Кратко перечисли видимые признаки, на которых основано решение.\n"
@@ -352,12 +546,20 @@ class MvpResearchMixin:
             response_mime_type="application/json", response_json_schema=schema
         )
         photo = Path(story["photo_path"]).read_bytes()
+        reference_images = await self._candidate_reference_images(candidates)
+        parts: list[Any] = [
+            types.Part.from_bytes(data=photo, mime_type=story["photo_mime_type"]),
+            prompt,
+        ]
+        for candidate_id, mime_type, data in reference_images:
+            parts.append(f"REFERENCE_IMAGE candidate_id={candidate_id}")
+            parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
         async def call(api_key, timeout):
             response = await gemini._generate(
                 api_key,
                 timeout,
-                [types.Part.from_bytes(data=photo, mime_type=story["photo_mime_type"]), prompt],
+                parts,
                 config,
             )
             try:
@@ -480,6 +682,141 @@ class MvpResearchMixin:
             }
 
         return await gemini.executor.execute("grounded_research", call)
+
+    async def _run_identity(self, job: dict[str, Any]) -> None:
+        story_id = job["story_id"]
+        with self.store.connection() as db:
+            story = dict(self._story_row(db, story_id))
+            prior = json.loads(story["research_json"] or "{}")
+        previous_identity = prior.get("visual_identity") if isinstance(prior.get("visual_identity"), dict) else None
+        if previous_identity and previous_identity.get("status") in {"match", "owner_confirmed"}:
+            with self.store.tx() as db:
+                db.execute(
+                    "UPDATE stories SET state='identity_ready',place_name=?,error_code=NULL,error_message=NULL,"
+                    "revision=revision+1,updated_at=? WHERE id=?",
+                    (
+                        previous_identity.get("candidate_name"),
+                        self.store.now(),
+                        story_id,
+                    ),
+                )
+            return
+
+        lat, lon = story["latitude"], story["longitude"]
+        if lat is None or lon is None:
+            identity = {
+                "status": "uncertain",
+                "candidate_id": None,
+                "candidate_name": None,
+                "confidence": 0.0,
+                "observations": ["В EXIF нет координат: назовите объект или адрес."],
+                "candidates": [],
+            }
+            with self.store.tx() as db:
+                db.execute(
+                    "UPDATE stories SET state='needs_review',research_json=?,"
+                    "error_code='identity_location_missing',"
+                    "error_message='Не удалось получить координаты из фото. Назовите объект или адрес.',"
+                    "revision=revision+1,updated_at=? WHERE id=?",
+                    (canonical({**prior, "visual_identity": identity}), self.store.now(), story_id),
+                )
+            return
+
+        osm = self.store.checkpoint_get(job["id"], "identity_osm")
+        if osm is None:
+            osm = await self.providers.osm.lookup(float(lat), float(lon))
+            self.store.checkpoint_put(job["id"], "identity_osm", osm)
+        wikipedia = self.store.checkpoint_get(job["id"], "identity_wikipedia")
+        if wikipedia is None:
+            wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
+            self.store.checkpoint_put(job["id"], "identity_wikipedia", wikipedia)
+        candidates = self._candidate_catalog(osm, wikipedia)
+        catalog = {item["candidate_id"]: item for item in candidates}
+
+        if not candidates:
+            raw_identity: dict[str, Any] = {
+                "status": "uncertain",
+                "candidate_id": "",
+                "confidence": 0.0,
+                "observations": ["Рядом с координатами EXIF не найдено подходящих объектов OSM/Wikipedia."],
+                "alternative_candidate_ids": [],
+            }
+        else:
+            raw_identity = self.store.checkpoint_get(job["id"], "identity_visual")
+            if raw_identity is None:
+                raw_identity = await self._identify_photo(story, "", candidates)
+                self.store.checkpoint_put(job["id"], "identity_visual", raw_identity)
+
+        candidate_id = str(raw_identity.get("candidate_id") or "")
+        status = str(raw_identity.get("status") or "uncertain")
+        if candidate_id not in catalog:
+            status = "uncertain"
+            candidate_id = ""
+        chosen = catalog.get(candidate_id)
+
+        # A precise reverse-geocoded building can still be identified by EXIF coordinates
+        # when no encyclopedic visual reference exists.
+        if status != "match":
+            reverse = osm.get("reverse") or {}
+            reverse_type = str(reverse.get("osm_type") or reverse.get("type") or "")
+            reverse_id = reverse.get("osm_id") or reverse.get("id")
+            address = reverse.get("address") or {}
+            reverse_candidate_id = (
+                f"osm:{reverse_type}:{reverse_id}"
+                if reverse_type in {"node", "way", "relation"} and reverse_id is not None
+                else ""
+            )
+            reverse_candidate = catalog.get(reverse_candidate_id)
+            if (
+                reverse_candidate
+                and (address.get("house_number") or str(reverse.get("type") or "") in {"house", "building", "residential"})
+                and not any(item.get("type") == "wikipedia" for item in candidates)
+            ):
+                status = "match"
+                candidate_id = reverse_candidate_id
+                chosen = reverse_candidate
+                raw_identity = {
+                    **raw_identity,
+                    "confidence": max(0.72, float(raw_identity.get("confidence", 0.0))),
+                    "observations": [
+                        "Координаты EXIF однозначно попадают в этот объект OSM; энциклопедического фото для отдельной сверки нет."
+                    ],
+                }
+
+        identity = {
+            "status": status,
+            "candidate_id": candidate_id or None,
+            "candidate_name": chosen["name"] if chosen else None,
+            "confidence": max(0.0, min(1.0, float(raw_identity.get("confidence", 0.0)))),
+            "observations": [str(value)[:300] for value in raw_identity.get("observations", [])[:6]],
+            "alternative_candidate_ids": [
+                str(value)
+                for value in raw_identity.get("alternative_candidate_ids", [])[:6]
+                if str(value) in catalog
+            ],
+            "candidates": candidates,
+        }
+        research = {
+            **prior,
+            "visual_identity": identity,
+            "osm": osm,
+            "wikipedia": wikipedia,
+        }
+        matched = identity["status"] == "match" and bool(identity["candidate_id"])
+        with self.store.tx() as db:
+            db.execute(
+                "UPDATE stories SET state=?,place_name=?,research_json=?,error_code=?,error_message=?,"
+                "revision=revision+1,updated_at=? WHERE id=?",
+                (
+                    "identity_ready" if matched else "needs_review",
+                    identity.get("candidate_name") if matched else None,
+                    canonical(research),
+                    None if matched else "visual_identity_uncertain",
+                    None if matched else "Не удалось однозначно определить объект. Уточните его голосом.",
+                    self.store.now(),
+                    story_id,
+                ),
+            )
 
     async def _run_research(self, job: dict[str, Any]) -> None:
         story_id = job["story_id"]
@@ -798,6 +1135,15 @@ class MvpResearchMixin:
                 "publish_text_too_long",
                 "Telegram photo caption exceeds the current VibePublish 1024-character limit",
             )
+        with self.store.connection() as db:
+            story = self._story_row(db, story_id)
+            research = json.loads(story["research_json"] or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            if identity.get("status") not in {"match", "owner_confirmed"}:
+                raise ConflictError(
+                    "identity_required",
+                    "Сначала нужно определить объект на фотографии.",
+                )
         result = super().mutate_publish(story_id, key, body)
         with self.store.tx() as db:
             story = self._story_row(db, story_id)

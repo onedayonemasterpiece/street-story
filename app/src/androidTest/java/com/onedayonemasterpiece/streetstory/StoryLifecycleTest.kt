@@ -24,6 +24,49 @@ class StoryLifecycleTest {
     }
 
     @Test
+    fun deleteStoryRemovesOwnedFilesAndDatabaseRows() {
+        val storyId = "story-delete-${System.nanoTime()}"
+        val png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII=")
+        val imported = PhotoImporter.importStream(context, ByteArrayInputStream(png), "image/png", storyId)
+        val photo = File(imported.path)
+        val audio: File
+
+        StoryStore(context).use { store ->
+            store.createStory(imported)
+            val voice = store.createVoiceSession(storyId, RecordingKind.REFINEMENT, "emulator")
+            audio = File(context.filesDir, "audio/delete-${voice.sessionId}.m4a").apply {
+                parentFile?.mkdirs()
+                writeBytes(byteArrayOf(1, 2, 3))
+            }
+            store.addChunk(
+                voice.sessionId,
+                0,
+                0,
+                1000,
+                0,
+                1100,
+                audio.absolutePath,
+                "c".repeat(64),
+                AudioProfile.MIME_M4A,
+            )
+            store.discardVoiceSession(voice.sessionId)
+            // discard removes its chunk file; use an owned processed file as a second
+            // durable file to prove story-directory cleanup as well.
+            val processed = File(context.filesDir, "stories/$storyId/processed.img").apply {
+                parentFile?.mkdirs()
+                writeBytes(byteArrayOf(4, 5, 6))
+            }
+            store.setProcessedImagePath(storyId, processed.absolutePath)
+            store.deleteStory(storyId)
+            assertNull(store.story(storyId))
+            assertTrue(store.facts(storyId).isEmpty())
+        }
+
+        assertFalse(photo.exists())
+        assertFalse(File(context.filesDir, "stories/$storyId").exists())
+    }
+
+    @Test
     fun photoDraftChunksChoicesAndCrashRecoverySurviveReopen() {
         val storyId = "story-test-${System.nanoTime()}"
         val png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII=")

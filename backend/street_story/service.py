@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -145,6 +146,47 @@ class StreetStoryService:
         with self.store.connection() as db:
             return [self._story_repr(db, row) for row in db.execute("SELECT * FROM stories ORDER BY created_at DESC")]
 
+    def delete_story(self, story_id: str) -> dict[str, Any]:
+        durable_paths: list[Path] = []
+        story_dir: Path | None = None
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            if row["state"] in {"scheduling", "scheduled"}:
+                raise ConflictError(
+                    "scheduled_story_delete_blocked",
+                    "Сначала отмените запланированную публикацию, затем удалите тему.",
+                )
+            for value in (row["photo_path"], row["processed_image_path"]):
+                if value:
+                    durable_paths.append(Path(str(value)))
+            durable_paths.extend(
+                Path(str(item["path"]))
+                for item in db.execute(
+                    "SELECT vc.path FROM voice_chunks vc JOIN voice_sessions vs ON vs.session_id=vc.session_id "
+                    "WHERE vs.story_id=?",
+                    (story_id,),
+                )
+                if item["path"]
+            )
+            story_dir = self.settings.data_dir / "stories" / story_id
+            db.execute("DELETE FROM stories WHERE id=?", (story_id,))
+        root = self.settings.data_dir.resolve()
+        for path in durable_paths:
+            try:
+                resolved = path.resolve()
+                if root in resolved.parents and resolved.is_file():
+                    resolved.unlink()
+            except OSError:
+                pass
+        if story_dir is not None:
+            try:
+                resolved_dir = story_dir.resolve()
+                if root in resolved_dir.parents and resolved_dir.is_dir():
+                    shutil.rmtree(resolved_dir)
+            except OSError:
+                pass
+        return {"ok": True, "story_id": story_id}
+
     def _story_repr(self, db, row) -> dict[str, Any]:
         facts = [{
             "fact_id": fact["fact_id"], "text": fact["text"], "confidence": fact["confidence"],
@@ -155,7 +197,20 @@ class StreetStoryService:
         if row["error_code"] or row["error_message"]:
             error = {"code": row["error_code"] or "backend_error", "message": row["error_message"] or "Backend error"}
         processing = None
-        if row["state"] == "researching":
+        if row["state"] == "identifying":
+            pending = db.execute(
+                "SELECT created_at,available_at FROM jobs WHERE story_id=? AND kind='identity' "
+                "AND state IN ('ready','running','retry') ORDER BY created_at LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            delayed = pending and self.store.now()-pending["created_at"] >= self.settings.processing_delayed_after_seconds
+            processing = {
+                "status": "processing_delayed" if delayed else "identifying",
+                "message": "Определение объекта займёт немного больше времени" if delayed else "Определяем объект",
+                "automatic_retry": True,
+            }
+            error = None
+        elif row["state"] == "researching":
             pending = db.execute("SELECT created_at,available_at FROM jobs WHERE story_id=? AND kind IN ('research','refinement') AND state IN ('ready','running','retry') ORDER BY created_at LIMIT 1", (row["id"],)).fetchone()
             delayed = pending and self.store.now()-pending["created_at"] >= self.settings.processing_delayed_after_seconds
             processing = {"status": "processing_delayed" if delayed else "researching", "message": "Обработка займёт немного больше времени" if delayed else "Исследуем", "automatic_retry": True}
@@ -523,7 +578,12 @@ class StreetStoryService:
 
         lease_task = asyncio.create_task(heartbeat())
         try:
-            if job["kind"] in {"research", "refinement"}:
+            if job["kind"] == "identity":
+                handler = getattr(self, "_run_identity", None)
+                if not callable(handler):
+                    raise PermanentProviderError("Identity worker is unavailable")
+                await handler(job)
+            elif job["kind"] in {"research", "refinement"}:
                 await self._run_research(job)
             elif job["kind"] == "visual":
                 await self._run_visual(job)

@@ -8,6 +8,8 @@ import java.util.UUID
 
 object StoryStage {
     const val PHOTO_READY = "photo_ready"
+    const val IDENTIFYING = "identifying"
+    const val IDENTITY_READY = "identity_ready"
     const val RECORDING = "recording"
     const val QUEUED = "queued"
     const val VOICE_READY = "voice_ready"

@@ -34,7 +34,7 @@ class OSMClient:
         self.overpass_url = "https://overpass-api.de/api/interpreter"
 
     async def lookup(self, lat: float, lon: float) -> dict[str, Any]:
-        key = _stable_cache_key("osm", [round(lat, 6), round(lon, 6)])
+        key = _stable_cache_key("osm-visible-nearby-v3", [round(lat, 6), round(lon, 6)])
         cached = self.store.cache_get(key)
         if cached is not None:
             return cached
@@ -48,15 +48,150 @@ class OSMClient:
             )
             reverse_response.raise_for_status()
             reverse = reverse_response.json()
-            query = f"""[out:json][timeout:12];(nwr(around:250,{lat:.6f},{lon:.6f})[name];nwr(around:250,{lat:.6f},{lon:.6f})[historic];nwr(around:250,{lat:.6f},{lon:.6f})[tourism];);out center tags 20;"""
+            radius_m = 600
+            close_radius_m = 160
+            landmark_query = f"""[out:json][timeout:12];(
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[historic];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[wikipedia];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[heritage];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[wikidata][name];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[tourism~"^(attraction|museum|gallery|viewpoint|artwork)$"];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[amenity~"^(place_of_worship|theatre|arts_centre|townhall|library)$"][name];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[man_made~"^(tower|lighthouse|obelisk)$"][name];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[barrier~"^(city_wall|gate)$"];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[bridge][name];
+                nwr(around:{radius_m},{lat:.6f},{lon:.6f})[leisure~"^(park|garden)$"][name];
+            );out center tags 240;"""
+            nearby_query = f"""[out:json][timeout:12];(
+                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[building];
+                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[name];
+            );out center tags 180;"""
+
+            landmark_response = await client.post(
+                self.overpass_url,
+                content=landmark_query.encode(),
+                headers={"User-Agent": self.user_agent, "Content-Type": "text/plain; charset=utf-8"},
+            )
+            landmark_response.raise_for_status()
             nearby_response = await client.post(
                 self.overpass_url,
-                content=query.encode(),
+                content=nearby_query.encode(),
                 headers={"User-Agent": self.user_agent, "Content-Type": "text/plain; charset=utf-8"},
             )
             nearby_response.raise_for_status()
-            nearby = nearby_response.json().get("elements", [])[:20]
-            result = {"reverse": reverse, "nearby": nearby}
+
+            def normalized(raw: Any, bucket: str) -> dict[str, Any] | None:
+                if not isinstance(raw, dict):
+                    return None
+                tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+                if str(raw.get("type") or "") == "relation" and (
+                    tags.get("route")
+                    or tags.get("boundary")
+                    or str(tags.get("type") or "") in {"route", "boundary", "network"}
+                ):
+                    return None
+                center = raw.get("center") if isinstance(raw.get("center"), dict) else {}
+                try:
+                    item_lat = float(raw.get("lat", center.get("lat")))
+                    item_lon = float(raw.get("lon", center.get("lon")))
+                    phi1, phi2 = math.radians(lat), math.radians(item_lat)
+                    dphi = math.radians(item_lat - lat)
+                    dlambda = math.radians(item_lon - lon)
+                    a = (
+                        math.sin(dphi / 2) ** 2
+                        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+                    )
+                    distance_m = 6_371_000 * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1 - a)))
+                except (TypeError, ValueError):
+                    distance_m = float(radius_m + 1)
+
+                historic = str(tags.get("historic") or "")
+                tourism = str(tags.get("tourism") or "")
+                amenity = str(tags.get("amenity") or "")
+                man_made = str(tags.get("man_made") or "")
+                barrier = str(tags.get("barrier") or "")
+                if (
+                    historic
+                    or tags.get("wikipedia")
+                    or tags.get("heritage")
+                    or barrier in {"city_wall", "gate"}
+                    or man_made in {"tower", "lighthouse", "obelisk"}
+                ):
+                    salience_rank = 0
+                elif tourism in {"attraction", "museum", "gallery", "viewpoint"} or amenity in {
+                    "place_of_worship", "theatre", "arts_centre", "townhall", "library"
+                }:
+                    salience_rank = 1
+                elif tourism == "artwork" or (tags.get("building") and tags.get("name")) or (
+                    tags.get("wikidata") and tags.get("name")
+                ):
+                    salience_rank = 2
+                else:
+                    salience_rank = 3
+                return {
+                    **raw,
+                    "distance_m": round(distance_m, 1),
+                    "selection_bucket": bucket,
+                    "salience_rank": salience_rank,
+                }
+
+            landmarks = [
+                item for item in (
+                    normalized(raw, "landmark")
+                    for raw in landmark_response.json().get("elements", [])[:240]
+                )
+                if item is not None and float(item.get("distance_m", radius_m + 1)) <= radius_m
+            ]
+            nearby = [
+                item for item in (
+                    normalized(raw, "nearby")
+                    for raw in nearby_response.json().get("elements", [])[:180]
+                )
+                if item is not None and float(item.get("distance_m", close_radius_m + 1)) <= close_radius_m
+            ]
+
+            def item_key(item: dict[str, Any]) -> tuple[str, str]:
+                return (str(item.get("type") or item.get("osm_type") or ""), str(item.get("id") or item.get("osm_id") or ""))
+
+            selected: list[dict[str, Any]] = []
+            seen_ids: set[tuple[str, str]] = set()
+
+            def add(items: list[dict[str, Any]], limit: int) -> None:
+                added = 0
+                for item in items:
+                    key = item_key(item)
+                    if not all(key) or key in seen_ids:
+                        continue
+                    seen_ids.add(key)
+                    selected.append(item)
+                    added += 1
+                    if added >= limit:
+                        return
+
+            # Preserve every distance zone independently. Stress tests in dense
+            # Kaliningrad blocks show relevant landmarks can rank hundreds of
+            # positions below generic POIs by pure distance.
+            for low, high in ((0.0, 200.0), (200.0, 400.0), (400.0, 600.1)):
+                band = [
+                    item for item in landmarks
+                    if low <= float(item.get("distance_m", radius_m + 1)) < high
+                ]
+                band.sort(key=lambda item: (int(item.get("salience_rank", 3)), float(item.get("distance_m", radius_m + 1))))
+                add(band, 16)
+
+            nearby.sort(key=lambda item: float(item.get("distance_m", close_radius_m + 1)))
+            add(nearby, 20)
+
+            result = {
+                "reverse": {**reverse, "distance_m": 0.0, "selection_bucket": "reverse", "salience_rank": -1},
+                "nearby": selected[:68],
+                "radius_m": radius_m,
+                "close_radius_m": close_radius_m,
+                "candidate_pool_counts": {
+                    "landmark": len(landmarks),
+                    "nearby": len(nearby),
+                },
+            }
             self.store.cache_put(key, result, 7 * 24 * 3600)
             return result
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
@@ -86,7 +221,7 @@ class WikipediaClient:
         self.endpoint = "https://ru.wikipedia.org/w/api.php"
 
     async def nearby(self, lat: float, lon: float) -> list[dict[str, Any]]:
-        key = _stable_cache_key("wikipedia", [round(lat, 6), round(lon, 6)])
+        key = _stable_cache_key("wikipedia-pageimages-distance-v3", [round(lat, 6), round(lon, 6)])
         cached = self.store.cache_get(key)
         if cached is not None:
             return cached
@@ -95,17 +230,23 @@ class WikipediaClient:
         try:
             geo = await client.get(self.endpoint, params={
                 "action": "query", "list": "geosearch", "gscoord": f"{lat}|{lon}", "gsradius": 750,
-                "gslimit": 6, "format": "json", "formatversion": 2,
+                "gslimit": 20, "format": "json", "formatversion": 2,
             }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
             geo.raise_for_status()
-            hits = geo.json().get("query", {}).get("geosearch", [])[:6]
+            hits = geo.json().get("query", {}).get("geosearch", [])[:20]
+            hit_by_page = {
+                str(hit.get("pageid")): hit
+                for hit in hits
+                if isinstance(hit, dict) and hit.get("pageid") is not None
+            }
             if not hits:
                 self.store.cache_put(key, [], 24 * 3600)
                 return []
             ids = "|".join(str(hit["pageid"]) for hit in hits)
             extracts = await client.get(self.endpoint, params={
-                "action": "query", "pageids": ids, "prop": "extracts|info", "exintro": 1,
-                "explaintext": 1, "inprop": "url", "format": "json", "formatversion": 2,
+                "action": "query", "pageids": ids, "prop": "extracts|info|pageimages", "exintro": 1,
+                "explaintext": 1, "inprop": "url", "piprop": "original|thumbnail", "pithumbsize": 1200,
+                "format": "json", "formatversion": 2,
             }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
             extracts.raise_for_status()
             pages = extracts.json().get("query", {}).get("pages", [])
@@ -113,6 +254,13 @@ class WikipediaClient:
                 "pageid": page.get("pageid"), "title": page.get("title", ""),
                 "extract": page.get("extract", "")[:6000],
                 "url": page.get("fullurl") or f"https://ru.wikipedia.org/wiki/{quote(page.get('title', '').replace(' ', '_'))}",
+                "image_url": (page.get("original") or {}).get("source"),
+                "thumbnail_url": (page.get("thumbnail") or {}).get("source"),
+                "distance_m": (
+                    float(hit_by_page.get(str(page.get("pageid")), {}).get("dist"))
+                    if hit_by_page.get(str(page.get("pageid")), {}).get("dist") is not None
+                    else None
+                ),
             } for page in pages if page.get("title")]
             self.store.cache_put(key, result, 7 * 24 * 3600)
             return result

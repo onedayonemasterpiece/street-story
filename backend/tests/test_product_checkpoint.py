@@ -321,8 +321,12 @@ async def test_mvp_research_refreshes_needs_review_before_publish(tmp_path):
     story = create_story(service, client_id="mvp-review-refresh")
     with service.store.tx() as db:
         db.execute(
-            "UPDATE stories SET state='ready_to_publish',vibepublish_asset_ref='asset_processed_1',draft_text='draft' WHERE id=?",
-            (story["id"],),
+            "UPDATE stories SET state='ready_to_publish',vibepublish_asset_ref='asset_processed_1',draft_text='draft',"
+            "research_json=? WHERE id=?",
+            (
+                '{"visual_identity":{"status":"owner_confirmed","candidate_id":"fixture","candidate_name":"Дом Советов"}}',
+                story["id"],
+            ),
         )
     service.mutate_publish(
         story["id"],

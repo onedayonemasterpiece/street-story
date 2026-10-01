@@ -97,6 +97,11 @@ class ReceivedChunkWire {
     var sha256: String = ""
 }
 
+class DeleteStoryWire {
+    var ok: Boolean = false
+    @SerializedName("story_id") var storyId: String = ""
+}
+
 class VoiceReceipt {
     @SerializedName("session_id") var sessionId: String = ""
     @SerializedName("recording_finished") var recordingFinished: Boolean = false
@@ -140,6 +145,12 @@ class ApiClient(private val baseUrl: String, private val token: String) {
     }
 
     fun getStory(serverStoryId: String): StoryWire = requestJson("GET", "/v1/stories/${segment(serverStoryId)}", null, null, StoryWire::class.java)
+
+    fun ensureIdentity(serverStoryId: String): StoryWire =
+        requestJson("POST", "/v1/stories/${segment(serverStoryId)}/identity", "{}", null, StoryWire::class.java)
+
+    fun deleteStory(serverStoryId: String): DeleteStoryWire =
+        requestJson("DELETE", "/v1/stories/${segment(serverStoryId)}", null, null, DeleteStoryWire::class.java)
 
     fun capabilities(): CapabilitiesWire = requestJson("GET", "/v1/capabilities", null, null, CapabilitiesWire::class.java)
 

@@ -313,7 +313,7 @@ async def test_osm_cache(tmp_path):
     await osm.lookup(54.7, 20.45)
     await osm.lookup(54.7, 20.45)
     await client.aclose()
-    assert calls == ["GET", "POST"]
+    assert calls == ["GET", "POST", "POST"]
 
 
 @pytest.mark.asyncio
