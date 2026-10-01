@@ -69,6 +69,8 @@ class LiveSessionController(context: Context) {
     private val generation = AtomicInteger(0)
     private val playbackGeneration = AtomicInteger(0)
     private val pendingPlayback = AtomicInteger(0)
+    private val duplexGate = LiveDuplexGate()
+    private val playbackSuppressionReported = AtomicBoolean(false)
     private val receivedPcm = AtomicLong(0)
     private val outputAudioChunks = AtomicLong(0)
     private val listeners = CopyOnWriteArrayList<(LiveUiState) -> Unit>()
@@ -118,6 +120,22 @@ class LiveSessionController(context: Context) {
         "http_audio_fallback" to false,
         "event_polling" to false,
     )
+
+    fun shouldSuppressMicrophoneInput(): Boolean {
+        val suppressed = state.active && duplexGate.shouldSuppress(
+            SystemClock.elapsedRealtime(),
+            pendingPlayback.get(),
+        )
+        if (suppressed && playbackSuppressionReported.compareAndSet(false, true)) {
+            diagnostic(
+                "input_suppressed_playback",
+                mapOf("pending_playback_bytes" to pendingPlayback.get()),
+            )
+        } else if (!suppressed && playbackSuppressionReported.compareAndSet(true, false)) {
+            diagnostic("input_resumed_after_playback")
+        }
+        return suppressed
+    }
 
     fun diagnostic(event: String, fields: Map<String, Any?> = emptyMap()) {
         val server = serverStoryId ?: return
@@ -178,6 +196,8 @@ class LiveSessionController(context: Context) {
                 }
                 receivedPcm.set(0)
                 outputAudioChunks.set(0)
+                duplexGate.reset()
+                playbackSuppressionReported.set(false)
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
                 val transport = LiveSocketTransport(http, object : LiveSocketTransport.Listener {
@@ -223,6 +243,14 @@ class LiveSessionController(context: Context) {
 
     fun submitPcm(samples: ShortArray) {
         if (!state.active) return
+        if (shouldSuppressMicrophoneInput()) {
+            if (inputOpen) {
+                inputOpen = false
+                socket?.endSpeech()
+                diagnostic("speech_closed_for_playback")
+            }
+            return
+        }
         if (!inputOpen) {
             inputOpen = true
             waitStarted = 0
@@ -258,6 +286,7 @@ class LiveSessionController(context: Context) {
         val session = sessionId
         generation.incrementAndGet()
         serverStoryId = null; sessionId = null; inputOpen = false; waitStarted = 0
+        duplexGate.reset(); playbackSuppressionReported.set(false)
         userTranscriptIndex = -1; assistantTranscriptIndex = -1
         val old = socket; socket = null; old?.close(sendRemote)
         playbackGeneration.incrementAndGet()
@@ -370,8 +399,16 @@ class LiveSessionController(context: Context) {
                     offset += count
                 }
                 val writeMs = SystemClock.elapsedRealtime() - started
-                if (writeMs > 180) {
-                    diagnostic("playback_slow_write", mapOf("duration_ms" to writeMs, "pcm_bytes" to bytes.size, "sample_rate" to rate))
+                if (duplexGate.isUnexpectedlySlowWrite(writeMs, bytes.size, rate)) {
+                    diagnostic(
+                        "playback_slow_write",
+                        mapOf(
+                            "duration_ms" to writeMs,
+                            "expected_pcm_ms" to duplexGate.pcmDurationMs(bytes.size, rate),
+                            "pcm_bytes" to bytes.size,
+                            "sample_rate" to rate,
+                        ),
+                    )
                 }
             } catch (_: Exception) {
                 if (playbackGeneration.get() == playbackEpoch) {
@@ -379,7 +416,10 @@ class LiveSessionController(context: Context) {
                     diagnostic("playback_error", mapOf("pcm_bytes" to bytes.size, "sample_rate" to rate))
                     if (generation.get() == gen) fail(gen, "Не удалось воспроизвести голос Миры")
                 }
-            } finally { pendingPlayback.addAndGet(-bytes.size) }
+            } finally {
+                val remaining = pendingPlayback.addAndGet(-bytes.size)
+                if (remaining <= 0) duplexGate.onPlaybackDrained(SystemClock.elapsedRealtime())
+            }
         }
     }
 
@@ -409,6 +449,7 @@ class LiveSessionController(context: Context) {
         val server = serverStoryId; val session = sessionId
         diagnostic("live_failed", mapOf("message" to message.take(240)))
         serverStoryId = null; sessionId = null; waitStarted = 0; inputOpen = false
+        duplexGate.reset(); playbackSuppressionReported.set(false)
         userTranscriptIndex = -1; assistantTranscriptIndex = -1
         val old = socket; socket = null; old?.close(false)
         // Do not increment playbackGeneration here: a provider/socket closure
@@ -452,7 +493,8 @@ class LiveSessionController(context: Context) {
     private fun humanLiveError(code: String): String = when (code) {
         "RESOURCE_CAPACITY", "RESOURCE_TOKEN_BUDGET", "LIVE_BUSY", "http_429", "http_503" ->
             "Мира сейчас занята. Нажмите кнопку ещё раз через несколько секунд."
-        "LIVE_SOCKET_ACK_TIMEOUT", "LIVE_SOCKET_HEARTBEAT_TIMEOUT", "LIVE_SOCKET_IO", "LIVE_CONNECTION_FAILED" ->
+        "LIVE_SOCKET_ACK_TIMEOUT", "LIVE_SOCKET_HEARTBEAT_TIMEOUT", "LIVE_SOCKET_IO", "LIVE_CONNECTION_FAILED",
+        "LIVE_AUDIO_BACKPRESSURE", "LIVE_AUDIO_STALE" ->
             "Связь с Мирой прервалась. Результат сохранён — включите Live снова."
         "LIVE_PLAYBACK_BACKPRESSURE", "LIVE_PLAYBACK_WRITE", "LIVE_PLAYBACK_UNAVAILABLE" ->
             "Не удалось полностью воспроизвести голос Миры."
