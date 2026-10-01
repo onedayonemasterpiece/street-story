@@ -19,6 +19,13 @@ class LiveStartWire {
     var revision: Int = 0
 }
 
+class LiveTicketWire {
+    @SerializedName("socket_ticket") var socketTicket: String = ""
+    @SerializedName("socket_url") var socketUrl: String = ""
+    @SerializedName("transport_protocol") var transportProtocol: String = ""
+    @SerializedName("attempt_id") var attemptId: String = ""
+}
+
 class LiveEventWire {
     var seq: Int = 0
     var type: String = ""
@@ -61,6 +68,15 @@ internal class LiveApiClient(private val baseUrl: String, private val token: Str
     fun start(serverStoryId: String, attemptId: String = "attempt_" + java.util.UUID.randomUUID().toString().replace("-", "")): LiveStartWire =
         request("POST", "/v1/stories/${segment(serverStoryId)}/live-sessions",
             gson.toJson(mapOf("attempt_id" to attemptId, "transport" to "wss")), LiveStartWire::class.java, 35_000)
+
+    fun renewSocketTicket(serverStoryId: String, sessionId: String): LiveTicketWire =
+        request(
+            "POST",
+            "/v1/stories/${segment(serverStoryId)}/live-sessions/${segment(sessionId)}/socket-ticket",
+            "{}",
+            LiveTicketWire::class.java,
+            7_000,
+        )
 
     fun inputAudio(serverStoryId: String, sessionId: String, base64Pcm: String): LiveAckWire =
         request(
