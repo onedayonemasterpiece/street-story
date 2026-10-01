@@ -93,7 +93,7 @@ class RecordingService : Service() {
                 "aec_enabled" to (echoCanceler?.enabled == true),
             ),
         )
-        val detector=EfficientVad(true);val latch=SpeechLatch(3,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
+        val detector=EfficientVad(true);val latch=SpeechLatch(LIVE_ATTACK_FRAMES,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
         try{
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
             while(captureRequested){
@@ -177,7 +177,7 @@ class RecordingService : Service() {
     companion object{
         const val ACTION_TRANSPORT_FINISH="com.onedayonemasterpiece.streetstory.TRANSPORT_FINISH"
         const val ACTION_START="com.onedayonemasterpiece.streetstory.START";const val ACTION_PAUSE="com.onedayonemasterpiece.streetstory.PAUSE";const val ACTION_RESUME="com.onedayonemasterpiece.streetstory.RESUME";const val ACTION_FINISH="com.onedayonemasterpiece.streetstory.FINISH";const val ACTION_STATE_CHANGED="com.onedayonemasterpiece.streetstory.STATE_CHANGED";const val EXTRA_MESSAGE="message";const val EXTRA_STORY_ID="story_id";const val EXTRA_KIND="kind"
-        private const val CHANNEL_ID="street-story-recording";private const val NOTIFICATION_ID=7101;private const val MIN_SESSION_MS=5_000L;private const val PRE_ROLL_FRAMES=20;private const val HANGOVER_FRAMES=40;private const val RUNTIME_UPDATE_INTERVAL_MS=500L;private const val STORE_UPDATE_INTERVAL_MS=2_000L;private const val LONG_SILENCE_CLOSE_MS=15_000L;private const val MIN_DURABLE_SEGMENT_MS=10_000L
+        private const val CHANNEL_ID="street-story-recording";private const val NOTIFICATION_ID=7101;private const val MIN_SESSION_MS=5_000L;private const val PRE_ROLL_FRAMES=20;private const val LIVE_ATTACK_FRAMES=2;private const val HANGOVER_FRAMES=40;private const val RUNTIME_UPDATE_INTERVAL_MS=500L;private const val STORE_UPDATE_INTERVAL_MS=2_000L;private const val LONG_SILENCE_CLOSE_MS=15_000L;private const val MIN_DURABLE_SEGMENT_MS=10_000L
         fun start(context:Context,storyId:String,kind:String){context.startForegroundService(Intent(context,RecordingService::class.java).setAction(ACTION_START).putExtra(EXTRA_STORY_ID,storyId).putExtra(EXTRA_KIND,kind))}
         fun command(context:Context,action:String){val i=Intent(context,RecordingService::class.java).setAction(action);if(action==ACTION_RESUME)context.startForegroundService(i)else context.startService(i)}
     }

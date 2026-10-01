@@ -200,40 +200,149 @@ class LiveSessionController(context: Context) {
                 playbackSuppressionReported.set(false)
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
-                val transport = LiveSocketTransport(http, object : LiveSocketTransport.Listener {
-                    override fun onEvent(event: JsonObject) {
-                        if (generation.get() == gen) handleEvent(gen, gson.fromJson(event, LiveEventWire::class.java))
-                    }
-                    override fun onAudio(sequence: Long, pcm: ByteArray, sampleRate: Int) {
-                        if (generation.get() == gen) playPcm(gen, pcm, sampleRate)
-                    }
-                    override fun onFailure(code: String) {
-                        val message = humanLiveError(code)
-                        fail(gen, message)
-                        ready(false, message)
-                    }
-                    override fun onDiagnostic(fields: Map<String, Any>) {
-                        if (generation.get() == gen) {
-                            Log.i("StreetStoryLive", gson.toJson(fields + mapOf("session_id" to started.sessionId, "attempt_id" to attempt)))
-                            diagnostic("wss_transport", fields)
+
+                val reconnectPolicy = LiveReconnectPolicy()
+                val connectionGeneration = AtomicInteger(1)
+                val reconnecting = AtomicBoolean(false)
+                lateinit var connectTransport: (String, String, Long, Boolean) -> Unit
+                connectTransport = connect@ { socketUrl, socketTicket, cursor, initial ->
+                    if (generation.get() != gen) return@connect
+                    lateinit var transport: LiveSocketTransport
+                    transport = LiveSocketTransport(http, object : LiveSocketTransport.Listener {
+                        override fun onEvent(event: JsonObject) {
+                            if (generation.get() == gen && socket === transport) {
+                                handleEvent(gen, gson.fromJson(event, LiveEventWire::class.java))
+                            }
                         }
+
+                        override fun onAudio(sequence: Long, pcm: ByteArray, sampleRate: Int) {
+                            if (generation.get() == gen && socket === transport) playPcm(gen, pcm, sampleRate)
+                        }
+
+                        override fun onFailure(code: String) {
+                            if (generation.get() != gen || socket !== transport) return
+                            val resumeCursor = transport.cursor()
+                            diagnostic(
+                                "transport_failure",
+                                mapOf(
+                                    "code" to code.take(80),
+                                    "cursor" to resumeCursor,
+                                    "connection_generation" to connectionGeneration.get(),
+                                ),
+                            )
+                            val decision = reconnectPolicy.next(code)
+                            if (decision != null && reconnecting.compareAndSet(false, true)) {
+                                inputOpen = false
+                                update(
+                                    state.copy(
+                                        status = "Восстанавливаю соединение с Мирой…",
+                                        inputActive = false,
+                                        error = null,
+                                    )
+                                )
+                                diagnostic(
+                                    "transport_reconnect_scheduled",
+                                    mapOf("attempt" to decision.attempt, "delay_ms" to decision.delayMs),
+                                )
+                                network.execute {
+                                    try {
+                                        Thread.sleep(decision.delayMs)
+                                        if (generation.get() != gen) return@execute
+                                        val renewed = api.renewSocketTicket(server, started.sessionId)
+                                        if (
+                                            renewed.transportProtocol != LiveSocketTransport.PROTOCOL ||
+                                            renewed.socketTicket.isBlank() ||
+                                            renewed.socketUrl.isBlank()
+                                        ) {
+                                            throw ApiProtocolException("Backend вернул несовместимый WSS ticket")
+                                        }
+                                        connectionGeneration.incrementAndGet()
+                                        connectTransport(
+                                            renewed.socketUrl,
+                                            renewed.socketTicket,
+                                            resumeCursor,
+                                            false,
+                                        )
+                                    } catch (exc: Exception) {
+                                        reconnecting.set(false)
+                                        if (generation.get() == gen) {
+                                            diagnostic(
+                                                "transport_reconnect_failed",
+                                                mapOf(
+                                                    "attempt" to decision.attempt,
+                                                    "type" to exc.javaClass.simpleName,
+                                                ),
+                                            )
+                                            val message = humanLiveError("LIVE_CONNECTION_FAILED")
+                                            fail(gen, message)
+                                            ready(false, message)
+                                        }
+                                    }
+                                }
+                                return
+                            }
+                            val message = humanLiveError(code)
+                            fail(gen, message)
+                            ready(false, message)
+                        }
+
+                        override fun onDiagnostic(fields: Map<String, Any>) {
+                            if (generation.get() == gen && socket === transport) {
+                                Log.i(
+                                    "StreetStoryLive",
+                                    gson.toJson(
+                                        fields + mapOf(
+                                            "session_id" to started.sessionId,
+                                            "attempt_id" to started.attemptId,
+                                            "connection_generation" to connectionGeneration.get(),
+                                        )
+                                    ),
+                                )
+                                diagnostic("wss_transport", fields)
+                            }
+                        }
+                    })
+                    socket = transport
+                    try {
+                        transport.connect(
+                            base,
+                            socketUrl,
+                            socketTicket,
+                            started.attemptId,
+                            connectionGeneration.get(),
+                            cursor,
+                        ).get(12, TimeUnit.SECONDS)
+                    } catch (exc: Exception) {
+                        if (generation.get() != gen || reconnecting.get()) return@connect
+                        throw exc
                     }
-                })
-                socket = transport
-                transport.connect(base, started.socketUrl, started.socketTicket, started.attemptId, 1, 0).get(12, TimeUnit.SECONDS)
-                if (generation.get() != gen) { transport.close(true); return@execute }
-                update(
-                    state.copy(
-                        storyId = storyId,
-                        active = true,
-                        status = "Слушаю",
-                        inputActive = false,
-                        transport = "wss",
-                        error = null,
+                    if (generation.get() != gen) {
+                        transport.close(true)
+                        return@connect
+                    }
+                    reconnecting.set(false)
+                    update(
+                        state.copy(
+                            storyId = storyId,
+                            active = true,
+                            status = "Слушаю",
+                            inputActive = false,
+                            transport = "wss",
+                            error = null,
+                        )
                     )
-                )
-                diagnostic("live_ready", mapOf("transport" to "wss", "attempt_id" to started.attemptId))
-                ready(true, null)
+                    diagnostic(
+                        if (initial) "live_ready" else "transport_reconnected",
+                        mapOf(
+                            "transport" to "wss",
+                            "attempt_id" to started.attemptId,
+                            "connection_generation" to connectionGeneration.get(),
+                            "cursor" to cursor,
+                        ),
+                    )
+                    ready(true, null)
+                }
+                connectTransport(started.socketUrl, started.socketTicket, 0L, true)
             } catch (exc: Exception) {
                 if (generation.get() == gen) fail(gen, "Live недоступен: ${safeMessage(exc)}")
                 ready(false, safeMessage(exc))
@@ -491,8 +600,10 @@ class LiveSessionController(context: Context) {
     }
 
     private fun humanLiveError(code: String): String = when (code) {
-        "RESOURCE_CAPACITY", "RESOURCE_TOKEN_BUDGET", "LIVE_BUSY", "http_429", "http_503" ->
+        "RESOURCE_CAPACITY", "LIVE_BUSY", "http_429", "http_503" ->
             "Мира сейчас занята. Нажмите кнопку ещё раз через несколько секунд."
+        "RESOURCE_TOKEN_BUDGET" ->
+            "Голосовой лимит временно исчерпан. Подождите около минуты и включите Live снова."
         "LIVE_SOCKET_ACK_TIMEOUT", "LIVE_SOCKET_HEARTBEAT_TIMEOUT", "LIVE_SOCKET_IO", "LIVE_CONNECTION_FAILED",
         "LIVE_AUDIO_BACKPRESSURE", "LIVE_AUDIO_STALE" ->
             "Связь с Мирой прервалась. Результат сохранён — включите Live снова."
