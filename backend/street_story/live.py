@@ -15,7 +15,7 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
-from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id
+from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id, semantic_fact_key
 from .live_author_intent import (
     begin_turn,
     consent_receipt,
@@ -956,6 +956,11 @@ class StreetStoryLiveAdapter:
             for source in grounded.grounding_sources
             if isinstance(source, dict) and str(source.get("url") or "").startswith("https://")
         }
+        prior_decisions = {
+            semantic_fact_key("", str(item.get("text") or "")): bool(item.get("selected"))
+            for item in known_facts
+            if atomic_fact_text(str(item.get("text") or "")) is not None
+        }
         normalized: list[dict[str, Any]] = []
         for item in (grounded.payload.get("facts") or [])[:12]:
             if not isinstance(item, dict):
@@ -979,7 +984,7 @@ class StreetStoryLiveAdapter:
                     "text": text,
                     "confidence": confidence,
                     "evidence_supported": bool(sources),
-                    "selected": bool(sources),
+                    "selected": bool(sources) and prior_decisions.get(semantic_fact_key("", text), True),
                     "sources": sources,
                 }
             )
