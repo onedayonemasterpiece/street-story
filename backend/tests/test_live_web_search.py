@@ -162,9 +162,18 @@ async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp
             SimpleNamespace(web=SimpleNamespace(uri=official, title="Museum")),
             SimpleNamespace(web=SimpleNamespace(uri=wiki, title="Wikipedia")),
         ]
+        support = SimpleNamespace(
+            segment=SimpleNamespace(text="Открыт в 2000 году."),
+            grounding_chunk_indices=[0],
+        )
         return SimpleNamespace(
             text=json.dumps(payload, ensure_ascii=False),
-            candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(grounding_chunks=chunks))],
+            candidates=[SimpleNamespace(
+                grounding_metadata=SimpleNamespace(
+                    grounding_chunks=chunks,
+                    grounding_supports=[support],
+                )
+            )],
         )
 
     client._generate = generate
@@ -172,4 +181,5 @@ async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp
 
     assert result.payload["official_source_urls"] == ["https://museum.example.org/object"]
     assert result.grounding_sources[0]["type"] == "official"
+    assert result.grounding_sources[0]["supports"][0]["text"] == "Открыт в 2000 году."
     assert result.grounding_sources[1]["type"] == "web"
