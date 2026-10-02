@@ -94,6 +94,11 @@ def semantic_fact_key(claim_key: str, text: str) -> str:
     return "text:" + hashlib.sha256(compact.lower().encode("utf-8")).hexdigest()[:20]
 
 
+def semantic_fact_id(claim_key: str, text: str) -> str:
+    key = semantic_fact_key(claim_key, text)
+    return "claim_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
+
+
 def _source_key(source: dict[str, Any]) -> str:
     return str(source.get("url") or "").rstrip("/")
 
@@ -115,7 +120,7 @@ def merge_fact_inventory(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             current = {
                 **item,
                 "semantic_key": key,
-                "fact_id": "claim_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20],
+                "fact_id": semantic_fact_id(str(item.get("claim_key") or ""), text),
                 "text": text,
                 "confidence": float(item.get("confidence") or 0.0),
                 "evidence_supported": bool(item.get("evidence_supported", bool(sources))),
