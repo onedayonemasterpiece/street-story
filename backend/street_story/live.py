@@ -768,6 +768,8 @@ class StreetStoryLiveAdapter:
                 "summary": str(result.get("summary") or "")[:480],
                 "search_provider": result.get("search_provider"),
                 "discovery_only": discovery_only,
+                "semantic_completion": result.get("semantic_completion"),
+                "source_count": len([source for source in (result.get("sources") or []) if isinstance(source, dict)]),
                 "facts": compact_facts[:20],
                 "sources": compact_sources[:12],
                 "fact_conflicts": list(result.get("fact_conflicts") or [])[:6],
@@ -819,6 +821,9 @@ class StreetStoryLiveAdapter:
                     "snippets": snippets,
                 })
             projected["sources"] = compact_sources
+            projected.pop("fact_conflicts", None)
+        elif name == "search_web" and result.get("semantic_completion"):
+            projected["sources"] = []
             projected.pop("fact_conflicts", None)
         elif name == "save_research_facts":
             projected["facts"] = [
@@ -1259,7 +1264,8 @@ class StreetStoryLiveAdapter:
         )
         grounded = await self.service.providers.gemini.search_web(query, topic_context)
         search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
-        discovery_only = search_provider == "duckduckgo_html_fallback"
+        semantic_completion = str(grounded.payload.get("semantic_completion") or "").strip()
+        discovery_only = search_provider == "duckduckgo_html_fallback" and not semantic_completion
         grounding_sources: list[dict[str, Any]] = []
         for source in grounded.grounding_sources:
             if not isinstance(source, dict):
@@ -1376,6 +1382,7 @@ class StreetStoryLiveAdapter:
                     ],
                     "search_provider": search_provider,
                     "discovery_only": discovery_only,
+                    "semantic_completion": semantic_completion or None,
                 }
             )
             research["grounding_sources"] = list(all_sources.values())[:80]
@@ -1389,6 +1396,7 @@ class StreetStoryLiveAdapter:
                 "summary": str(grounded.payload.get("summary") or "")[:2000],
                 "search_provider": search_provider,
                 "discovery_only": discovery_only,
+                "semantic_completion": semantic_completion or None,
                 "facts": normalized,
                 "sources": grounding_sources[:20],
                 "fact_conflicts": detected_conflicts[:12],

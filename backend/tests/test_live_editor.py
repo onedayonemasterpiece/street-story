@@ -286,6 +286,68 @@ async def test_live_search_and_publication_are_blocked_until_identity_is_ready(t
     assert getattr(publish_error.value, "code", None) == "identity_required"
 
 
+
+
+@pytest.mark.asyncio
+async def test_live_semanticized_discovery_persists_facts_without_second_tool_call(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    async def semantic_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Semantic extraction completed",
+                "facts": [{
+                    "claim_key": "gate-construction-period",
+                    "text": "Королевские ворота строились в 1843–1850 годах.",
+                    "confidence": 0.95,
+                    "source_urls": [
+                        "https://a.example/gate",
+                        "https://b.example/gate",
+                    ],
+                }],
+                "official_source_urls": [],
+                "search_provider": "duckduckgo_html_fallback",
+                "semantic_completion": "gemini_research",
+            },
+            grounding_sources=[
+                {
+                    "type": "web_search",
+                    "title": "A",
+                    "url": "https://a.example/gate",
+                    "supports": [{"kind": "search_snippet", "source_url": "https://a.example/gate", "text": "1843–1850"}],
+                },
+                {
+                    "type": "web_search",
+                    "title": "B",
+                    "url": "https://b.example/gate",
+                    "supports": [{"kind": "search_snippet", "source_url": "https://b.example/gate", "text": "1843–1850"}],
+                },
+            ],
+        )
+
+    svc.providers.gemini.search_web = semantic_search
+    result = await adapter.execute_tool(
+        session,
+        {"name": "search_web", "id": "semantic-search", "args": {"query": "годы строительства"}},
+    )
+
+    assert result["discovery_only"] is False
+    assert result["semantic_completion"] == "gemini_research"
+    assert len(result["facts"]) == 1
+    assert result["facts"][0]["source_count"] == 2
+    current = svc.story(story_id)
+    assert len(current["facts"]) == 1
+    assert len(current["facts"][0]["sources"]) == 2
+    with svc.store.connection() as db:
+        commands = db.execute(
+            "SELECT tool_name FROM live_commands WHERE story_id=? ORDER BY created_at",
+            (story_id,),
+        ).fetchall()
+    assert [row["tool_name"] for row in commands] == ["search_web"]
+
+
 @pytest.mark.asyncio
 async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
