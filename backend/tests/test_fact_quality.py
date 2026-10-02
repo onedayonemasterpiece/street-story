@@ -70,3 +70,21 @@ def test_source_heading_does_not_override_clean_later_sentence():
     assert atomic_fact_text(text) == (
         "Сохранившееся здание заложили в 1843 году и завершили в 1850 году."
     )
+
+
+def test_date_only_and_navigation_phrases_are_not_facts():
+    for text in (
+        "Во время Семилетней войны 1756-1763 гг.",
+        "Где находятся на карте и как до них добраться.",
+        "А с 2005 года началась их новая жизнь.",
+    ):
+        assert atomic_fact_text(text) is None
+
+
+def test_location_and_status_still_require_a_real_predicate():
+    assert atomic_fact_text(
+        "Расположены на пересечении улицы Фрунзе и Литовского вала."
+    ) == "Расположены на пересечении улицы Фрунзе и Литовского вала."
+    assert atomic_fact_text(
+        "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
+    ) == "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
