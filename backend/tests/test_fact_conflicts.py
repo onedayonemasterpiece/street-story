@@ -1,7 +1,6 @@
 import json
 from types import SimpleNamespace
 
-import pytest
 
 from street_story.db import Store
 from street_story.fact_conflicts import (
