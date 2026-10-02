@@ -220,3 +220,19 @@ The GPS-free case also demonstrated the important fail-closed property: plausibl
 but wrong churches remained uncertain; no nearest or confident model guess could
 cross the visual-proof gate. Full-corpus metrics are recorded from a fresh immutable
 run before release rather than inferred from individual debugging examples.
+
+## Owner review 2026-10-02 15:20 — visible progress
+
+IdeaHub voice packet `voice-20261002-152036-8d69118b` confirmed that durable
+identity-progress events were correct but the Android sync cadence made them appear
+as one late result. Active identity/research polling is reduced to a few seconds,
+and the topic shows a persistent checklist immediately while identification is in
+progress. Completed backend stages replace placeholders rather than removing the
+history.
+
+The source photo also has to remain visually continuous when it becomes the sticky
+island. The Android UI therefore uses an overlay image proxy that interpolates the
+actual source-photo rectangle into the sticky image slot while the island chrome
+appears. It no longer relies on fading the source out and independently popping a
+second image in at the top.
+
