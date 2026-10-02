@@ -1034,7 +1034,7 @@ class StreetStoryLiveAdapter:
             self.service,
             story_id,
             str(identity.get("candidate_id") or "") or None,
-            [*known_facts, *normalized],
+            [*known_facts, *poi_history, *normalized],
             context={
                 "place_name": story.get("place_name"),
                 "source": "live_search",
