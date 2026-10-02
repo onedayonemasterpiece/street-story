@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
+from .fact_conflicts import analyze_fact_conflicts
 from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
@@ -1016,6 +1017,29 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     story_id,
                 ),
             )
+
+        conflict_input = [
+            *[
+                {
+                    **item,
+                    "claim_key": "",
+                    "evidence_supported": bool(item.get("evidence_supported")),
+                }
+                for item in previous
+            ],
+            *normalized,
+        ]
+        await analyze_fact_conflicts(
+            self,
+            story_id,
+            str(identity.get("candidate_id") or "") or None,
+            conflict_input,
+            context={
+                "place_name": place_name,
+                "source": "research_job",
+                "publication_concept": str(prior.get("publication_concept") or "")[:500],
+            },
+        )
 
     def _story_repr(self, db, row) -> dict[str, Any]:
         result = super()._story_repr(db, row)
