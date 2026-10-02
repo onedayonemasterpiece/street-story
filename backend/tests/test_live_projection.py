@@ -66,3 +66,63 @@ def test_compact_context_keeps_confirmed_candidate_outside_first_page():
     assert result["visual_identity"]["candidates"][0]["candidate_id"] == "osm:29"
     assert result["text_revision"] == 4
     assert candidates[0]["candidate_id"] == "osm:0"
+
+
+def test_discovery_search_projection_keeps_refs_and_evidence_without_url_duplication():
+    sources = [
+        {
+            "source_ref": f"websrc_{i:020x}",
+            "title": "Very long source title " * 10,
+            "url": f"https://example{i}.org/very/long/source/path",
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": f"https://example{i}.org/very/long/source/path",
+                "text": ("Evidence sentence about the gate. " * 8).strip(),
+            }],
+        }
+        for i in range(10)
+    ]
+    full = {
+        "query": "gate history",
+        "summary": "Discovery evidence only.",
+        "search_provider": "duckduckgo_html_fallback",
+        "discovery_only": True,
+        "facts": [],
+        "sources": sources,
+        "fact_conflicts": [{"conflict_id": "bulk", "rationale": "x" * 4000}],
+        "story": {"id": "s1", "state": "identity_ready", "revision": 3, "place_name": "Gate",
+                  "source_count": 10, "draft_text": "draft " * 1000},
+    }
+    original = copy.deepcopy(full)
+    projected = StreetStoryLiveAdapter._model_result("search_web", full)
+    assert full == original
+    assert len(projected["sources"]) == 10
+    assert projected["sources"][0]["source_ref"].startswith("websrc_")
+    assert projected["sources"][0]["snippets"]
+    assert "url" not in projected["sources"][0]
+    assert "fact_conflicts" not in projected
+    assert "draft_text" not in projected["story"]
+    assert len(json.dumps(projected, ensure_ascii=False)) < 5000
+
+
+def test_save_facts_projection_confirms_ids_without_repeating_evidence():
+    full = {
+        "facts": [{
+            "fact_id": "claim_a",
+            "text": "A durable fact",
+            "sources": [
+                {"url": "https://one.example/a", "supports": [{"text": "evidence " * 100}]},
+                {"url": "https://two.example/a", "supports": [{"text": "more evidence " * 100}]},
+            ],
+        }],
+        "selected_fact_ids": ["claim_a"],
+        "story": {"id": "s1", "state": "identity_ready", "revision": 4, "source_count": 2,
+                  "draft_text": "draft " * 1000},
+    }
+    original = copy.deepcopy(full)
+    projected = StreetStoryLiveAdapter._model_result("save_research_facts", full)
+    assert full == original
+    assert projected["facts"] == [{"fact_id": "claim_a", "source_count": 2}]
+    assert projected["selected_fact_ids"] == ["claim_a"]
+    assert "draft_text" not in projected["story"]
+    assert len(json.dumps(projected)) < 1000
