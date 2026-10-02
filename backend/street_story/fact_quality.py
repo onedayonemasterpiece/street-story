@@ -12,7 +12,7 @@ _BAD = re.compile(
     r"(?:интересн\w*\s+факт|истори\w*\s+создани|смотрите\s+также|"
     r"\b(?:copyright|license|лицензи\w*|фотограф\w*|автор\s+фото|"
     r"фото\s*[:—-]|изображени\w*|читать\s+далее|подробнее|вечером|"
-    r"как\s+добраться|цены\s+в|экскурси\w*)\b)",
+    r"как\s+добраться|где\s+наход\w*|новая\s+жизн\w*|цены\s+в|экскурси\w*)\b)",
     re.IGNORECASE,
 )
 _PERSONAL = re.compile(
@@ -36,6 +36,7 @@ _SIGNAL = re.compile(
     r"использовал\w*|размещал\w*|посетил\w*|посещал\w*|"
     r"спроектир\w*|является\s+частью|принадлеж\w*|наход\w*|располож\w*|"
     r"потерял\w*\s+оборонительн\w*|перестал\w*|служил\w*|"
+    r"существовал\w*|символ\w*|является\s+памятник\w*|получил\w*\s+статус|"
     r"имеет\b|имеют\b|состоит\b|состоят\b)",
     re.IGNORECASE,
 )
@@ -96,7 +97,9 @@ def atomic_fact_text(raw: str) -> str | None:
             continue
         if "http://" in text.lower() or "https://" in text.lower():
             continue
-        if not (_YEAR.search(text) or _ROLE.search(text) or _SIGNAL.search(text)):
+        # A date by itself is not a fact. Require a factual predicate/role;
+        # the year then enriches/deduplicates that claim.
+        if not (_ROLE.search(text) or _SIGNAL.search(text)):
             continue
         candidates.append((_candidate_score(text, index), text))
     if not candidates:
