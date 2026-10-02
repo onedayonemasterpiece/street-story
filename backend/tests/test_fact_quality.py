@@ -186,7 +186,7 @@ def test_old_name_and_later_dismantling_are_separate_facts():
     )
     assert facts == [
         "Самые ранние ворота имели название Кальтхофские",
-        "В начале XVIII века их разобрали",
+        "В начале XVIII века их разобрали.",
     ]
 
 
