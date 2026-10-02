@@ -442,21 +442,40 @@ def ingest_poi_evidence(store, event: dict[str, Any]) -> dict[str, Any]:
 
         if poi_id is not None:
             claim = normalized["claim"]
-            claim_id = _claim_id(poi_id, claim["semantic_key"])
-            db.execute(
-                "INSERT INTO poi_claims(id,poi_id,semantic_key,kind,text,status,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,'candidate',?,?) "
-                "ON CONFLICT(poi_id,semantic_key) DO UPDATE SET updated_at=excluded.updated_at",
-                (
-                    claim_id,
-                    poi_id,
-                    claim["semantic_key"],
-                    claim["kind"],
-                    claim["text"],
-                    now,
-                    now,
-                ),
-            )
+            existing_claim = db.execute(
+                "SELECT id,kind,text FROM poi_claims "
+                "WHERE poi_id=? AND semantic_key=?",
+                (poi_id, claim["semantic_key"]),
+            ).fetchone()
+            if existing_claim is not None:
+                if (
+                    str(existing_claim["kind"]) != claim["kind"]
+                    or str(existing_claim["text"]) != claim["text"]
+                ):
+                    raise PoiEvidenceConflict(
+                        "semantic_key_claim_collision"
+                    )
+                claim_id = str(existing_claim["id"])
+                db.execute(
+                    "UPDATE poi_claims SET updated_at=? WHERE id=?",
+                    (now, claim_id),
+                )
+            else:
+                claim_id = _claim_id(poi_id, claim["semantic_key"])
+                db.execute(
+                    "INSERT INTO poi_claims("
+                    "id,poi_id,semantic_key,kind,text,status,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,'candidate',?,?)",
+                    (
+                        claim_id,
+                        poi_id,
+                        claim["semantic_key"],
+                        claim["kind"],
+                        claim["text"],
+                        now,
+                        now,
+                    ),
+                )
 
         db.execute(
             "INSERT INTO poi_external_events("
