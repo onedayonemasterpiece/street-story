@@ -11,8 +11,7 @@ import re
 import uuid
 from typing import Any
 
-from .fact_conflicts import conflict_candidate_pairs
-from .fact_quality import atomic_fact_text, fact_kind, semantic_fact_key
+from .poi_semantic import queue_poi_semantic_candidates
 
 
 _VISIBILITIES = {"private", "workspace", "public"}
@@ -182,18 +181,13 @@ def normalize_poi_evidence(event: dict[str, Any]) -> dict[str, Any]:
     if producer_kind not in _KINDS:
         raise PoiEvidenceError("claim_kind_invalid")
     source_text = _text(claim.get("text"), "claim_text", 500)
-    atomic = atomic_fact_text(source_text)
-    if atomic is None:
-        raise PoiEvidenceError("claim_not_atomic")
-    normalized_kind = fact_kind(atomic)
-    if normalized_kind not in _KINDS:
-        normalized_kind = "other"
-    semantic_key = semantic_fact_key("", atomic)
-    producer_semantic_key = _text(
+    semantic_key = _text(
         claim.get("semantic_key"),
-        "producer_semantic_key",
+        "semantic_key",
         300,
     )
+    normalized_kind = producer_kind
+    producer_semantic_key = semantic_key
     time_scope = _text(
         claim.get("time_scope"),
         "time_scope",
@@ -290,7 +284,7 @@ def normalize_poi_evidence(event: dict[str, Any]) -> dict[str, Any]:
             "semantic_key": semantic_key,
             "producer_kind": producer_kind,
             "kind": normalized_kind,
-            "text": atomic,
+            "text": source_text,
             "time_scope": time_scope,
         },
         "evidence": {
@@ -407,6 +401,7 @@ def _visible_claim_items(db, poi_id: str, normalized: dict[str, Any]) -> list[di
         {
             "fact_id": str(row["id"]),
             "claim_key": str(row["semantic_key"]),
+            "kind": str(row["kind"]),
             "text": str(row["text"]),
             "sources": [],
         }
@@ -438,11 +433,12 @@ def ingest_poi_evidence(store, event: dict[str, Any]) -> dict[str, Any]:
                 "claim_id": existing["claim_id"],
                 "replayed": True,
                 "conflict_ids": [],
+                "semantic_candidate_ids": [],
             }
 
         poi_id, state = _resolve_poi(db, normalized["poi_locator"], now)
         claim_id: str | None = None
-        conflict_ids: list[str] = []
+        semantic_candidate_ids: list[str] = []
 
         if poi_id is not None:
             claim = normalized["claim"]
@@ -510,35 +506,14 @@ def ingest_poi_evidence(store, event: dict[str, Any]) -> dict[str, Any]:
             )
 
             items = _visible_claim_items(db, poi_id, normalized)
-            pairs = conflict_candidate_pairs(items)
-            for pair in pairs:
-                ids = {pair["left"]["fact_id"], pair["right"]["fact_id"]}
-                if claim_id not in ids:
-                    continue
-                left, right = sorted(ids)
-                conflict_id = _conflict_id(left, right)
-                db.execute(
-                    "INSERT INTO poi_conflicts("
-                    "conflict_id,poi_id,left_claim_id,right_claim_id,relation,status,"
-                    "times_seen,first_seen_at,last_seen_at"
-                    ") VALUES(?,?,?,?,?,'open',1,?,?) "
-                    "ON CONFLICT(conflict_id) DO UPDATE SET "
-                    "times_seen=poi_conflicts.times_seen+1,last_seen_at=excluded.last_seen_at",
-                    (
-                        conflict_id,
-                        poi_id,
-                        left,
-                        right,
-                        "uncertain",
-                        now,
-                        now,
-                    ),
-                )
-                conflict_ids.append(conflict_id)
-                db.execute(
-                    "UPDATE poi_claims SET status='contested',updated_at=? WHERE id IN (?,?)",
-                    (now, left, right),
-                )
+            semantic_candidate_ids = queue_poi_semantic_candidates(
+                db,
+                poi_id=poi_id,
+                normalized_scope=normalized["scope"],
+                items=items,
+                focus_claim_id=claim_id,
+                now=now,
+            )
 
         return {
             "event_id": normalized["event_id"],
@@ -546,5 +521,6 @@ def ingest_poi_evidence(store, event: dict[str, Any]) -> dict[str, Any]:
             "poi_id": poi_id,
             "claim_id": claim_id,
             "replayed": False,
-            "conflict_ids": sorted(set(conflict_ids)),
+            "conflict_ids": [],
+            "semantic_candidate_ids": sorted(set(semantic_candidate_ids)),
         }
