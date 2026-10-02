@@ -45,3 +45,28 @@ def test_semantic_key_uses_event_type_and_year_not_model_wording():
     left = semantic_fact_key("one", "Построены в 1843 году.")
     right = semantic_fact_key("different", "Строительство завершили в 1843 году.")
     assert left == right
+
+
+def test_noisy_multi_sentence_source_is_reduced_to_one_atomic_fact():
+    text = (
+        "Королевские ворота снесли, а вместо них в 1843 году решили построить новые. "
+        "На закладке первого камня присутствовал король. Далее следует длинное описание страницы."
+    )
+    assert atomic_fact_text(text) == "Королевские ворота снесли, а вместо них в 1843 году решили построить новые."
+
+
+def test_personal_review_with_year_is_not_promoted_to_fact():
+    assert atomic_fact_text(
+        "Королевские ворота — достопримечательность Калининграда. "
+        "Я побывала здесь в октябре 2012 года и советую зайти внутрь."
+    ) is None
+
+
+def test_source_heading_does_not_override_clean_later_sentence():
+    text = (
+        "История создания Королевских ворот. "
+        "Сохранившееся здание заложили в 1843 году и завершили в 1850 году."
+    )
+    assert atomic_fact_text(text) == (
+        "Сохранившееся здание заложили в 1843 году и завершили в 1850 году."
+    )
