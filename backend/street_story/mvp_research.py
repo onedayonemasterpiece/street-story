@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
-from .fact_quality import atomic_fact_text, merge_fact_inventory
+from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
@@ -897,7 +897,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             claim_key = str(item.get("claim_key") or "").strip()
             if text is None:
                 continue
-            fact_id = _claim_id(claim_key, text)
+            fact_id = semantic_fact_id(claim_key, text)
             if fact_id in seen_claims:
                 continue
             seen_claims.add(fact_id)
