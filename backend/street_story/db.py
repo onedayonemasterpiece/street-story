@@ -190,6 +190,209 @@ CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_poi_time
 """
 
 
+POI_GRAPH_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS poi_intake_events(
+  event_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  request_digest TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  producer TEXT NOT NULL,
+  visibility TEXT NOT NULL
+    CHECK(visibility IN ('private','workspace','public')),
+  owner_sub TEXT,
+  workspace_id TEXT,
+  payload_json TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK(state IN ('received','identity_review','processed','rejected')),
+  resolved_poi_id TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_intake_state
+ ON poi_intake_events(state,created_at);
+
+CREATE TABLE IF NOT EXISTS pois(
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL
+    CHECK(status IN ('active','identity_review','merged','retired')),
+  canonical_name TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS poi_aliases(
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  alias_type TEXT NOT NULL,
+  alias_value TEXT NOT NULL,
+  normalized_value TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  PRIMARY KEY(poi_id,alias_type,normalized_value)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_alias_lookup
+ ON poi_aliases(alias_type,normalized_value);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_poi_external_alias_unique
+ ON poi_aliases(alias_type,normalized_value)
+ WHERE alias_type LIKE 'external:%';
+
+CREATE TABLE IF NOT EXISTS poi_claims(
+  claim_id TEXT PRIMARY KEY,
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  semantic_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  normalized_text TEXT NOT NULL,
+  time_scope TEXT,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active','contested','accepted','rejected','superseded')),
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE(poi_id,semantic_key,normalized_text)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_claims_semantic
+ ON poi_claims(poi_id,kind,semantic_key,status);
+
+CREATE TABLE IF NOT EXISTS poi_evidence(
+  evidence_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE
+    REFERENCES poi_intake_events(event_id) ON DELETE CASCADE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  request_digest TEXT NOT NULL,
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  claim_id TEXT NOT NULL REFERENCES poi_claims(claim_id) ON DELETE CASCADE,
+  producer TEXT NOT NULL,
+  visibility TEXT NOT NULL
+    CHECK(visibility IN ('private','workspace','public')),
+  owner_sub TEXT,
+  workspace_id TEXT,
+  source_family_id TEXT NOT NULL,
+  verification_score REAL,
+  payload_json TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_evidence_claim
+ ON poi_evidence(claim_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_poi_evidence_scope
+ ON poi_evidence(visibility,owner_sub,workspace_id);
+
+CREATE TABLE IF NOT EXISTS poi_media_links(
+  media_link_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE
+    REFERENCES poi_intake_events(event_id) ON DELETE CASCADE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  request_digest TEXT NOT NULL,
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  illustration_ref TEXT NOT NULL,
+  relation TEXT NOT NULL
+    CHECK(relation IN ('depicts','illustrates','map_of','detail_of')),
+  time_scope TEXT,
+  kind TEXT NOT NULL,
+  caption TEXT,
+  page_id TEXT NOT NULL,
+  source_crop_sha256 TEXT NOT NULL,
+  rights_status TEXT NOT NULL,
+  visibility TEXT NOT NULL
+    CHECK(visibility IN ('private','workspace','public')),
+  owner_sub TEXT,
+  workspace_id TEXT,
+  source_family_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_media_poi_time
+ ON poi_media_links(poi_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_poi_media_scope
+ ON poi_media_links(visibility,owner_sub,workspace_id);
+
+CREATE TABLE IF NOT EXISTS poi_conflicts(
+  conflict_id TEXT PRIMARY KEY,
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  left_claim_id TEXT NOT NULL
+    REFERENCES poi_claims(claim_id) ON DELETE CASCADE,
+  right_claim_id TEXT NOT NULL
+    REFERENCES poi_claims(claim_id) ON DELETE CASCADE,
+  relation TEXT NOT NULL
+    CHECK(relation IN (
+      'contradiction','scope_difference','temporal_sequence',
+      'source_disagreement','uncertain'
+    )),
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK(status IN ('open','resolved','deferred','superseded')),
+  detector_rationale TEXT NOT NULL,
+  required_reviews INTEGER NOT NULL DEFAULT 1
+    CHECK(required_reviews BETWEEN 1 AND 3),
+  final_resolution TEXT,
+  resolved_claim_id TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE(poi_id,left_claim_id,right_claim_id)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_conflicts_open
+ ON poi_conflicts(poi_id,status,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS poi_review_cases(
+  review_case_id TEXT PRIMARY KEY,
+  conflict_id TEXT REFERENCES poi_conflicts(conflict_id) ON DELETE CASCADE,
+  subject_ref TEXT,
+  poi_id TEXT REFERENCES pois(id) ON DELETE CASCADE,
+  status TEXT NOT NULL
+    CHECK(status IN (
+      'open','assigned','in_review','resolved','deferred','superseded'
+    )),
+  relation TEXT NOT NULL
+    CHECK(relation IN (
+      'contradiction','scope_difference','temporal_sequence',
+      'source_disagreement','uncertain','identity_ambiguity'
+    )),
+  required_expertise_json TEXT NOT NULL,
+  required_reviews INTEGER NOT NULL DEFAULT 1
+    CHECK(required_reviews BETWEEN 1 AND 3),
+  visibility TEXT NOT NULL
+    CHECK(visibility IN ('private','workspace','public')),
+  owner_sub TEXT,
+  workspace_id TEXT,
+  detector_suggestion_json TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_review_open
+ ON poi_review_cases(status,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS poi_review_assignments(
+  review_case_id TEXT NOT NULL
+    REFERENCES poi_review_cases(review_case_id) ON DELETE CASCADE,
+  expert_sub TEXT NOT NULL,
+  assignment_revision INTEGER NOT NULL,
+  expertise_snapshot_json TEXT NOT NULL,
+  status TEXT NOT NULL
+    CHECK(status IN ('assigned','accepted','submitted','cancelled')),
+  assigned_by TEXT NOT NULL,
+  assigned_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(review_case_id,expert_sub,assignment_revision)
+);
+
+CREATE TABLE IF NOT EXISTS poi_review_decisions(
+  decision_id TEXT PRIMARY KEY,
+  review_case_id TEXT NOT NULL
+    REFERENCES poi_review_cases(review_case_id) ON DELETE CASCADE,
+  expert_sub TEXT NOT NULL,
+  expected_case_revision INTEGER NOT NULL,
+  resolution TEXT NOT NULL
+    CHECK(resolution IN (
+      'prefer_left','prefer_right','both_valid_scope',
+      'both_valid_temporal','unresolved','needs_more_sources',
+      'wrong_poi_link'
+    )),
+  rationale TEXT NOT NULL,
+  confidence REAL,
+  submitted_at REAL NOT NULL,
+  receipt_json TEXT NOT NULL,
+  UNIQUE(review_case_id,expert_sub,expected_case_revision)
+);
+"""
+
+
 class ScopedConnection(sqlite3.Connection):
     """sqlite3's standard context commits/rolls back but does not close its FD."""
     def __exit__(self, exc_type, exc_value, traceback):
@@ -206,6 +409,7 @@ class Store:
         with self.connection() as db:
             db.executescript(SCHEMA)
             db.executescript(RELIABILITY_SCHEMA)
+            db.executescript(POI_GRAPH_SCHEMA)
 
     def connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=ScopedConnection)
