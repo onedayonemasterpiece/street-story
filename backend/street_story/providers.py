@@ -591,7 +591,22 @@ class GeminiClient:
             # leaking into the editorial checklist when Google grounding is exhausted.
             facts: list[dict[str, Any]] = []
             sources = [
-                {"type": "web_search", "title": item["title"], "url": item["url"]}
+                {
+                    "type": "web_search",
+                    "title": item["title"],
+                    "url": item["url"],
+                    "supports": (
+                        [
+                            {
+                                "kind": "search_snippet",
+                                "source_url": item["url"],
+                                "text": item["snippet"][:600],
+                            }
+                        ]
+                        if item["snippet"]
+                        else []
+                    ),
+                }
                 for item in results
             ]
             summary_lines = [

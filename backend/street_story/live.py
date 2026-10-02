@@ -16,7 +16,14 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
-from .fact_conflicts import analyze_fact_conflicts, conflict_rows, resolve_fact_conflict
+from .fact_conflicts import (
+    analyze_fact_conflicts,
+    conflict_rows,
+    conflict_scan_items,
+    normalize_model_conflict_records,
+    persist_fact_conflicts,
+    resolve_fact_conflict,
+)
 from .model_facts import (
     merge_model_fact_inventory,
     model_fact_id,
@@ -205,6 +212,72 @@ FUNCTIONS = [
         ["query"],
     ),
     _tool_schema(
+        "save_research_facts",
+        "Persist Mira's semantic extraction from the most recent search_web discovery evidence. "
+        "Use only when search_web returned discovery-only sources/snippets without durable facts. "
+        "Every source_url must be an exact URL from that latest search result. The server validates references but does not infer fact meaning.",
+        {
+            "facts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claim_key": {"type": "string"},
+                        "existing_fact_id": {"type": "string"},
+                        "text": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "selected": {"type": "boolean"},
+                        "source_urls": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["claim_key", "text", "confidence", "selected", "source_urls"],
+                },
+            },
+        },
+        ["facts"],
+    ),
+    _tool_schema(
+        "record_fact_conflicts",
+        "Persist conflicts that Mira itself detects between current evidence-backed facts. "
+        "The server validates fact IDs and relation shape only; it does not choose conflicting pairs.",
+        {
+            "conflicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "left_fact_id": {"type": "string"},
+                        "right_fact_id": {"type": "string"},
+                        "relation": {
+                            "type": "string",
+                            "enum": [
+                                "contradiction",
+                                "scope_difference",
+                                "temporal_sequence",
+                                "source_disagreement",
+                                "uncertain",
+                            ],
+                        },
+                        "suggested_resolution": {
+                            "type": "string",
+                            "enum": ["prefer_left", "prefer_right", "both_valid", "unresolved"],
+                        },
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": [
+                        "left_fact_id",
+                        "right_fact_id",
+                        "relation",
+                        "suggested_resolution",
+                        "confidence",
+                        "rationale",
+                    ],
+                },
+            },
+        },
+        ["conflicts"],
+    ),
+    _tool_schema(
         "resolve_fact_conflict",
         "Record Mira's evidence-based arbitration of an already detected fact conflict. "
         "This changes only the internal conflict ledger; it does not silently rewrite the publication or hide facts.",
@@ -331,10 +404,10 @@ SYSTEM_INSTRUCTION = """
 - однословный или явно обрывочный ввод не должен запускать дорогие product functions: коротко уточни намерение, не запрашивая у автора название неизвестного ему объекта;
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
-- когда идентичность подтверждена и нужны внешние сведения, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
+- когда идентичность подтверждена и нужны внешние сведения, используй search_web. При доступном grounded search он сохраняет реальные URL и evidence-backed facts. Если search_web вернул discovery_only=true и snippets без durable facts, сама оцени смысл этих snippets и вызови save_research_facts только для атомарных тезисов, которые действительно поддерживаются конкретными URL из последнего search result. Не превращай заголовок/сниппет в факт автоматически и не выдумывай source_url;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
-- fact_conflicts в состоянии темы — внутренний журнал возможных противоречий. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web. Когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict; если недостаточно — оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
+- после появления новых facts сама сравни их с текущими evidence-backed facts. Если видишь реальное противоречие/расхождение, зарегистрируй его через record_fact_conflicts; если противоречия нет, ничего не регистрируй. fact_conflicts — внутренний журнал. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web; когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict, иначе оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
 - когда доказательств уже достаточно для публикации, сама сформируй редакционную концепцию через set_concept (если автор её ещё не задал), при необходимости явно скорректируй выбор фактов через select_facts, затем подготовь или обнови публикационный текст через edit_text. Текст — не список фактов: обычно 2–5 коротких связных абзацев с ясным заходом, развитием и завершением; используй только выбранные evidence-backed facts и авторский контекст, не добавляй неподтверждённые сведения;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
@@ -568,6 +641,10 @@ class StreetStoryLiveAdapter:
             result = await self._confirm_place(session, command_id, args)
         elif name == "search_web":
             result = await self._search_web(session, command_id, args)
+        elif name == "save_research_facts":
+            result = self._save_research_facts(session, command_id, args)
+        elif name == "record_fact_conflicts":
+            result = self._record_fact_conflicts(session, command_id, args)
         elif name == "resolve_fact_conflict":
             result = self._resolve_fact_conflict(session, command_id, args)
         elif name == "select_facts":
@@ -1104,11 +1181,15 @@ class StreetStoryLiveAdapter:
 
             history = research.get("live_web_searches")
             history = list(history) if isinstance(history, list) else []
+            search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
+            discovery_only = search_provider == "duckduckgo_html_fallback"
             history.append(
                 {
                     "query": query,
                     "summary": str(grounded.payload.get("summary") or "")[:2000],
                     "source_urls": [source["url"] for source in grounded.grounding_sources[:20]],
+                    "search_provider": search_provider,
+                    "discovery_only": discovery_only,
                 }
             )
             research["grounding_sources"] = list(all_sources.values())[:80]
@@ -1120,6 +1201,8 @@ class StreetStoryLiveAdapter:
             result = {
                 "query": query,
                 "summary": str(grounded.payload.get("summary") or "")[:2000],
+                "search_provider": search_provider,
+                "discovery_only": discovery_only,
                 "facts": normalized,
                 "sources": grounded.grounding_sources[:20],
                 "fact_conflicts": detected_conflicts[:12],
@@ -1133,6 +1216,223 @@ class StreetStoryLiveAdapter:
                 len(grounded.grounding_sources),
             )
             return result
+
+    def _save_research_facts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        story_id = session.resource_id
+        raw_facts = args.get("facts")
+        if not isinstance(raw_facts, list) or not 1 <= len(raw_facts) <= 20:
+            raise ConflictError("live_research_facts_invalid", "Provide between 1 and 20 facts from the latest search evidence")
+
+        with self.service.store.tx() as db:
+            story = self.service._story_row(db, story_id)
+            research = json.loads(story["research_json"] or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            if identity.get("status") not in {"match", "owner_confirmed"}:
+                raise InvalidStateError("identity_required", "Сначала нужно определить объект на фотографии.")
+
+            history = research.get("live_web_searches")
+            if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
+                raise InvalidStateError("live_search_required", "Сначала выполните search_web в этой теме.")
+            latest_search = dict(history[-1])
+            if not latest_search.get("discovery_only"):
+                raise ConflictError(
+                    "live_research_facts_not_discovery",
+                    "save_research_facts is only for the discovery-only search fallback",
+                )
+            allowed_urls = {
+                str(url).rstrip("/")
+                for url in latest_search.get("source_urls", [])
+                if str(url).startswith("https://")
+            }
+            source_map: dict[str, dict[str, Any]] = {}
+            for source in research.get("grounding_sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                url = str(source.get("url") or "").rstrip("/")
+                supports = source.get("supports")
+                if url not in allowed_urls or not isinstance(supports, list):
+                    continue
+                valid_supports = [
+                    support
+                    for support in supports
+                    if isinstance(support, dict)
+                    and str(support.get("text") or "").strip()
+                    and str(support.get("source_url") or "").rstrip("/") == url
+                ]
+                if valid_supports:
+                    source_map[url] = {**source, "supports": valid_supports[:4]}
+
+            known_facts = [
+                {
+                    "fact_id": row["fact_id"],
+                    "claim_key": "",
+                    "text": str(row["text"]),
+                    "confidence": float(row["confidence"]),
+                    "evidence_supported": bool(row["evidence_supported"]),
+                    "selected": bool(row["selected"]),
+                    "sources": json.loads(row["sources_json"]),
+                }
+                for row in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,))
+            ]
+            known_by_id = {str(item["fact_id"]): item for item in known_facts}
+            prior_decisions = {str(item["fact_id"]): bool(item["selected"]) for item in known_facts}
+            old_selected = {
+                str(item["fact_id"])
+                for item in known_facts
+                if item["selected"] and item["evidence_supported"]
+            }
+
+            normalized: list[dict[str, Any]] = []
+            seen_ids: set[str] = set()
+            for item in raw_facts:
+                if not isinstance(item, dict):
+                    raise ConflictError("live_research_fact_invalid", "Each fact must be an object")
+                text = validated_model_fact_text(item.get("text"))
+                claim_key = normalized_claim_key(item.get("claim_key"))
+                if text is None or claim_key is None:
+                    raise ConflictError("live_research_fact_invalid", "Fact text and claim_key are required")
+                try:
+                    confidence = float(item.get("confidence"))
+                except (TypeError, ValueError):
+                    raise ConflictError("live_research_fact_confidence_invalid", "Fact confidence must be between 0 and 1") from None
+                if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+                    raise ConflictError("live_research_fact_confidence_invalid", "Fact confidence must be between 0 and 1")
+                source_urls = item.get("source_urls")
+                if not isinstance(source_urls, list) or not source_urls:
+                    raise ConflictError("live_research_fact_sources_required", "Each saved fact needs source URLs from the latest search")
+                urls: list[str] = []
+                for raw_url in source_urls[:8]:
+                    url = str(raw_url or "").rstrip("/")
+                    if url not in source_map:
+                        raise ConflictError(
+                            "live_research_fact_source_unknown",
+                            "A fact referenced a URL without evidence in the latest search result",
+                        )
+                    if url not in urls:
+                        urls.append(url)
+                existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+                fact_id = existing_fact_id if existing_fact_id in known_by_id else model_fact_id(claim_key, text)
+                if fact_id in seen_ids:
+                    continue
+                seen_ids.add(fact_id)
+                selected = bool(item.get("selected")) and prior_decisions.get(fact_id, True)
+                normalized.append(
+                    {
+                        "fact_id": fact_id,
+                        "claim_key": claim_key,
+                        "text": text,
+                        "confidence": confidence,
+                        "evidence_supported": True,
+                        "selected": selected,
+                        "sources": [source_map[url] for url in urls],
+                    }
+                )
+
+            if not normalized:
+                raise ConflictError("live_research_facts_empty", "No valid facts were supplied")
+
+            inventory = merge_model_fact_inventory([*known_facts, *normalized])
+            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
+            for fact in inventory:
+                db.execute(
+                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        story_id,
+                        fact["fact_id"],
+                        fact["text"],
+                        fact["confidence"],
+                        int(fact["evidence_supported"]),
+                        int(fact["selected"] and fact["evidence_supported"]),
+                        canonical(fact["sources"]),
+                    ),
+                )
+
+            selected_ids = [
+                row["fact_id"]
+                for row in db.execute(
+                    "SELECT fact_id FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    (story_id,),
+                )
+            ]
+            research["claim_decisions"] = {
+                row["fact_id"]: bool(row["selected"])
+                for row in db.execute("SELECT fact_id,selected FROM facts WHERE story_id=?", (story_id,))
+            }
+            research["image_notes"] = "\n".join(
+                str(row["text"])
+                for row in db.execute(
+                    "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid LIMIT 6",
+                    (story_id,),
+                )
+            )
+            new_selected = set(selected_ids)
+            if new_selected != old_selected:
+                research["draft_needs_refresh"] = True
+                self.service._mark_visual_stale(db, story, selected_ids)
+
+            latest_search["semantic_completion"] = "mira_live"
+            latest_search["mira_saved_fact_ids"] = [item["fact_id"] for item in normalized]
+            history[-1] = latest_search
+            research["live_web_searches"] = history[-12:]
+            db.execute(
+                "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
+                (canonical(research), self.service.store.now(), story_id),
+            )
+            result = {
+                "facts": normalized,
+                "selected_fact_ids": selected_ids,
+                "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
+            }
+            self._store_command(db, story_id, command_id, "save_research_facts", args, result)
+            return result
+
+    def _record_fact_conflicts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        story_id = session.resource_id
+        raw_conflicts = args.get("conflicts")
+        if not isinstance(raw_conflicts, list) or not 1 <= len(raw_conflicts) <= 12:
+            raise ConflictError("live_fact_conflicts_invalid", "Provide between 1 and 12 model-detected conflicts")
+
+        with self.service.store.connection() as db:
+            research = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")
+            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            items = [
+                {
+                    "fact_id": row["fact_id"],
+                    "claim_key": "",
+                    "text": str(row["text"]),
+                    "confidence": float(row["confidence"]),
+                    "evidence_supported": bool(row["evidence_supported"]),
+                    "selected": bool(row["selected"]),
+                    "sources": json.loads(row["sources_json"]),
+                }
+                for row in db.execute(
+                    "SELECT * FROM facts WHERE story_id=? AND evidence_supported=1 ORDER BY rowid LIMIT 80",
+                    (story_id,),
+                )
+            ]
+        model_items = conflict_scan_items(items)
+        records = normalize_model_conflict_records(model_items, {"conflicts": raw_conflicts})
+        if len(records) != len(raw_conflicts):
+            raise ConflictError(
+                "live_fact_conflicts_invalid",
+                "Conflict rows must reference distinct current evidence-backed fact IDs and valid relations",
+            )
+        durable = persist_fact_conflicts(
+            self.service,
+            story_id,
+            str(identity.get("candidate_id") or "") or None,
+            records,
+            detector="mira_live",
+        )
+        record_ids = {record["conflict_id"] for record in records}
+        result = {
+            "fact_conflicts": [item for item in durable if item.get("conflict_id") in record_ids],
+            "recorded_count": len(records),
+        }
+        with self.service.store.tx() as db:
+            self._store_command(db, story_id, command_id, "record_fact_conflicts", args, result)
+        return result
 
     def _resolve_fact_conflict(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         story_id = session.resource_id
