@@ -1507,7 +1507,7 @@ class MainActivity : Activity() {
                     .distinct()
                     .size
                 val sourceText = SpannableStringBuilder()
-                sourceText.append("Источники · ${sources.size} · сайтов $domainCount\n")
+                sourceText.append("Источники: ${sources.size} · сайтов: $domainCount\n")
                 sources.forEachIndexed { sourceIndex, source ->
                     if (sourceIndex > 0) sourceText.append(" · ")
                     val sourceLabel = FactPresentation.sourceLabel(source)
