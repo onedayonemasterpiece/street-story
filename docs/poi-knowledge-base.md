@@ -69,8 +69,9 @@ Unsupported model claims may remain visible as `evidence_supported=false` candid
 but they are never silently selected or used for publication. If dedicated grounded
 search models are quota-unavailable, independent public-web snippets remain discovery
 material until the already-running Live Mira explicitly interprets them through
-`save_research_facts`; the server then validates only exact source URLs and stored
-snippet evidence. Mira can also persist actual disagreements through
+`save_research_facts`. Discovery sources receive short opaque `source_ref` values; Mira
+copies those refs instead of reproducing canonical URLs, and the server maps each ref
+back to the exact stored HTTPS URL + snippet evidence. Mira can also persist actual disagreements through
 `record_fact_conflicts` before using the normal arbitration ledger. `fact_quality.py`
 and the legacy normalization command remain available solely for explicit repair of
 pre-LLM-first inventories.
@@ -197,8 +198,7 @@ Move toward the following logical entities without requiring a separate service:
 ~~~text
 pois
 poi_aliases
-poi_claims
-poi_evidence
+poi_claimspoi_evidence
 poi_conflicts
 poi_review_cases
 poi_review_decisions
@@ -398,110 +398,3 @@ If authorization or Street Story is unavailable, the book remains successfully
 finalized and the integration event stays pending.
 
 ## Cross-project acceptance
-
-Before calling the bridge ready, prove:
-
-1. Wikipedia, OSM and book evidence converge on one service-owned poi_id.
-2. Ambiguous object identity fails to review instead of silent merge.
-3. Private evidence remains private through Projects Hub.
-4. Author authority null stays null.
-5. Context-specific author scoring is reproducible from a versioned policy.
-6. Same-source propagation is not counted as independent corroboration.
-7. Conflicting high-score claims stay contested.
-8. Duplicate events are idempotent.
-9. Street Story downtime does not fail Knowledge ingestion.
-10. Expert decision updates Street Story and is read back in Projects Hub.
-
-
-## POI media evidence
-
-Regional Knowledge may deliver historical illustrations independently from
-textual facts.
-
-Versioned contract:
-
-- `docs/contracts/poi-media-evidence-v1.schema.json`
-- `contract_version = poi.media_evidence.v1`
-
-Street Story stores the POI association and evidence metadata, not Knowledge
-object-store bytes.
-
-A media evidence record preserves:
-- resolved/candidate POI identity;
-- `knowledge://illustrations/<id>`;
-- relation: `depicts | illustrates | map_of | detail_of`;
-- page/figure/caption provenance;
-- crop SHA-256;
-- caption/time scope/media kind;
-- rights status;
-- access visibility;
-- optional VibePublish mirror reference.
-
-The producer must explicitly state the POI↔illustration relation. Mere co-location
-on one page is not sufficient.
-
-### Future Street Story use
-
-```text
-POI
-  -> accessible historical media
-  -> filter by date / relation / kind / rights
-  -> fetch authorized Knowledge illustration or VibePublish mirror
-  -> editorial/publication workflow
-```
-
-Rights and visibility are hard filters. A public POI never makes a private or
-rights-restricted illustration publishable.
-
-Fact and media evidence remain separate, because a historical photograph may be
-useful for a POI even when it contributes no new atomic textual claim.
-
-
-## LLM-first contradiction workflow
-
-POI evidence intake does not itself decide that two claims contradict each other.
-
-Street Story follows the project-wide LLM-first invariant:
-
-```text
-claim evidence
-  -> deterministic bounded candidate pair
-  -> Mira/model semantic review
-  -> durable conflict only when model classifies conflict
-  -> expert review case
-  -> typed human resolution
-```
-
-The deterministic prefilter may compare already model-normalized `kind` and
-`semantic_key`, limit pair count, validate evidence visibility and persist
-candidate IDs. It must not:
-- rewrite a claim's semantic key;
-- infer a new claim kind from regexes;
-- declare a contradiction;
-- choose a winning fact.
-
-Model output contract:
-- `docs/contracts/poi-semantic-review-v1.schema.json`;
-- `contract_version = poi.semantic_review.v1`.
-
-The model returns either:
-- `no_conflict`; or
-- `conflict` plus relation, confidence, rationale and a non-binding suggested
-  resolution.
-
-Only model-confirmed conflicts enter `poi_conflicts` and generate
-`poi.review_case.v1` work for experts.
-
-### Human review mutation boundary
-
-Expert decisions are append-only and revision guarded. Deterministic code may
-mechanically apply a typed human outcome after the required independent reviews
-agree, because the semantic decision came from people rather than a heuristic.
-
-For multi-review cases:
-- one decision leaves the case `in_review`;
-- matching required decisions may resolve it;
-- disagreement does not become majority voting;
-- `needs_more_sources` defers the case without canonicalizing a claim.
-
-Every mutation uses a command ID, expected case revision and durable receipt.
