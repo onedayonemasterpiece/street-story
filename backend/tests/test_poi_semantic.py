@@ -1,5 +1,3 @@
-import uuid
-
 import pytest
 
 from street_story.db import Store
