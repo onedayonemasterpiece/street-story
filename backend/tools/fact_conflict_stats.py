@@ -51,9 +51,32 @@ def main() -> None:
             + "(final_resolution IS NULL OR final_resolution='unresolved')",
             params,
         ).fetchone()[0]
+
+        scan_where = " WHERE poi_key=?" if args.poi_key else ""
+        scan_params = params
+        scan = db.execute(
+            "SELECT COUNT(*) AS scans,COALESCE(SUM(pair_count),0) AS pairs,"
+            "COALESCE(SUM(detected_count),0) AS detected "
+            "FROM fact_conflict_scans" + scan_where,
+            scan_params,
+        ).fetchone()
+        scan_status = {
+            row["status"]: row["n"]
+            for row in db.execute(
+                "SELECT status,COUNT(*) AS n FROM fact_conflict_scans"
+                + scan_where
+                + " GROUP BY status",
+                scan_params,
+            )
+        }
+
     print(json.dumps({
         "poi_key": args.poi_key,
-        "total": total,
+        "scans": int(scan["scans"]),
+        "pairs_checked": int(scan["pairs"]),
+        "detected_observations": int(scan["detected"]),
+        "scan_status": scan_status,
+        "unique_conflicts": total,
         "open": open_count,
         "mira_arbitrated": mira,
         "relations": relation,
