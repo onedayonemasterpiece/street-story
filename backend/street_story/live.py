@@ -15,6 +15,7 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
+from .fact_quality import atomic_fact_text, merge_fact_inventory
 from .live_author_intent import (
     begin_turn,
     consent_receipt,
@@ -925,10 +926,13 @@ class StreetStoryLiveAdapter:
                 {
                     "fact_id": row["fact_id"],
                     "text": str(row["text"])[:400],
+                    "confidence": float(row["confidence"]),
+                    "evidence_supported": bool(row["evidence_supported"]),
                     "selected": bool(row["selected"]),
+                    "sources": json.loads(row["sources_json"]),
                 }
                 for row in db.execute(
-                    "SELECT fact_id,text,selected FROM facts WHERE story_id=? ORDER BY rowid LIMIT 24",
+                    "SELECT * FROM facts WHERE story_id=? ORDER BY rowid LIMIT 80",
                     (story_id,),
                 )
             ]
@@ -953,8 +957,8 @@ class StreetStoryLiveAdapter:
         for item in (grounded.payload.get("facts") or [])[:12]:
             if not isinstance(item, dict):
                 continue
-            text = str(item.get("text") or "").strip()
-            if not text:
+            text = atomic_fact_text(str(item.get("text") or ""))
+            if text is None:
                 continue
             sources: list[dict[str, str]] = []
             for raw_url in item.get("source_urls", []) or []:
@@ -968,42 +972,31 @@ class StreetStoryLiveAdapter:
             normalized.append(
                 {
                     "fact_id": stable_fact_id(text),
+                    "claim_key": "",
                     "text": text,
                     "confidence": confidence,
                     "evidence_supported": bool(sources),
+                    "selected": bool(sources),
                     "sources": sources,
                 }
             )
 
+        inventory = merge_fact_inventory([*known_facts, *normalized])
+
         with self.service.store.tx() as db:
             story_row = self.service._story_row(db, story_id)
-            selected_before = {
-                row["fact_id"]: bool(row["selected"])
-                for row in db.execute(
-                    "SELECT fact_id,selected FROM facts WHERE story_id=?",
-                    (story_id,),
-                )
-            }
-            for fact in normalized:
-                selected = fact["evidence_supported"] and selected_before.get(fact["fact_id"], True)
+            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
+            for fact in inventory:
                 db.execute(
-                    """
-                    INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json)
-                    VALUES(?,?,?,?,?,?,?)
-                    ON CONFLICT(story_id,fact_id) DO UPDATE SET
-                      text=excluded.text,
-                      confidence=excluded.confidence,
-                      evidence_supported=excluded.evidence_supported,
-                      selected=excluded.selected,
-                      sources_json=excluded.sources_json
-                    """,
+                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                    "VALUES(?,?,?,?,?,?,?)",
                     (
                         story_id,
                         fact["fact_id"],
                         fact["text"],
                         fact["confidence"],
                         int(fact["evidence_supported"]),
-                        int(selected),
+                        int(fact["selected"] and fact["evidence_supported"]),
                         canonical(fact["sources"]),
                     ),
                 )
