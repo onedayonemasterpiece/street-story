@@ -134,7 +134,8 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
         if signal is None:
             return None, None
         prefix = text[bad.end():signal.start()]
-        temporal = _TEMPORAL_PREFIX.search(prefix)
+        temporal_matches = list(_TEMPORAL_MARKER.finditer(prefix))
+        temporal = temporal_matches[-1] if temporal_matches else None
         start = bad.end() + temporal.start() if temporal else signal.start()
         text = text[start:]
     signal = _ROLE.search(text) or _SIGNAL.search(text)
