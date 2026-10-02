@@ -155,6 +155,11 @@ def _bounded_text(value: Any, limit: int, *, required: bool = False) -> str:
     return text
 
 
+def _search_source_ref(url: str) -> str:
+    canonical_url = str(url or "").rstrip("/")
+    return "websrc_" + hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:20]
+
+
 def _tool_schema(
     name: str,
     description: str,
@@ -215,7 +220,8 @@ FUNCTIONS = [
         "save_research_facts",
         "Persist Mira's semantic extraction from the most recent search_web discovery evidence. "
         "Use only when search_web returned discovery-only sources/snippets without durable facts. "
-        "Every source_url must be an exact URL from that latest search result. The server validates references but does not infer fact meaning.",
+        "Every source_ref must be copied exactly from a source object in that latest search result. "
+        "The server maps refs to canonical URLs/snippets and validates them without inferring fact meaning.",
         {
             "facts": {
                 "type": "array",
@@ -227,9 +233,9 @@ FUNCTIONS = [
                         "text": {"type": "string"},
                         "confidence": {"type": "number"},
                         "selected": {"type": "boolean"},
-                        "source_urls": {"type": "array", "items": {"type": "string"}},
+                        "source_refs": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["claim_key", "text", "confidence", "selected", "source_urls"],
+                    "required": ["claim_key", "text", "confidence", "selected", "source_refs"],
                 },
             },
         },
@@ -404,7 +410,7 @@ SYSTEM_INSTRUCTION = """
 - однословный или явно обрывочный ввод не должен запускать дорогие product functions: коротко уточни намерение, не запрашивая у автора название неизвестного ему объекта;
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
-- когда идентичность подтверждена и нужны внешние сведения, используй search_web. При доступном grounded search он сохраняет реальные URL и evidence-backed facts. Если search_web вернул discovery_only=true и snippets без durable facts, сама оцени смысл этих snippets и вызови save_research_facts только для атомарных тезисов, которые действительно поддерживаются конкретными URL из последнего search result. Не превращай заголовок/сниппет в факт автоматически и не выдумывай source_url;
+- когда идентичность подтверждена и нужны внешние сведения, используй search_web. При доступном grounded search он сохраняет реальные URL и evidence-backed facts. Если search_web вернул discovery_only=true и snippets без durable facts, сама оцени смысл этих snippets и вызови save_research_facts только для атомарных тезисов, которые действительно поддерживаются evidence из последнего search result. Для привязки используй только точные короткие source_ref из source objects; не перепечатывай URL, не превращай заголовок/сниппет в факт автоматически и не выдумывай source_ref;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
 - после появления новых facts сама сравни их с текущими evidence-backed facts. Если видишь реальное противоречие/расхождение, зарегистрируй его через record_fact_conflicts; если противоречия нет, ничего не регистрируй. fact_conflicts — внутренний журнал. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web; когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict, иначе оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
@@ -1086,11 +1092,23 @@ class StreetStoryLiveAdapter:
             "visual_identity": identity,
         }
         grounded = await self.service.providers.gemini.search_web(query, topic_context)
+        search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
+        discovery_only = search_provider == "duckduckgo_html_fallback"
+        grounding_sources: list[dict[str, Any]] = []
+        for source in grounded.grounding_sources:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").rstrip("/")
+            if not url.startswith("https://"):
+                continue
+            projected = dict(source)
+            if discovery_only:
+                projected["source_ref"] = _search_source_ref(url)
+            grounding_sources.append(projected)
 
         source_objects = {
             str(source["url"]).rstrip("/"): source
-            for source in grounded.grounding_sources
-            if isinstance(source, dict) and str(source.get("url") or "").startswith("https://")
+            for source in grounding_sources
         }
         prior_decisions = {
             str(item.get("fact_id") or ""): bool(item.get("selected"))
@@ -1175,19 +1193,21 @@ class StreetStoryLiveAdapter:
                 for source in prior_sources:
                     if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
                         all_sources[str(source["url"]).rstrip("/")] = source
-            for source in grounded.grounding_sources:
-                if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
-                    all_sources[str(source["url"]).rstrip("/")] = source
+            for source in grounding_sources:
+                all_sources[str(source["url"]).rstrip("/")] = source
 
             history = research.get("live_web_searches")
             history = list(history) if isinstance(history, list) else []
-            search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
-            discovery_only = search_provider == "duckduckgo_html_fallback"
             history.append(
                 {
                     "query": query,
                     "summary": str(grounded.payload.get("summary") or "")[:2000],
-                    "source_urls": [source["url"] for source in grounded.grounding_sources[:20]],
+                    "source_urls": [source["url"] for source in grounding_sources[:20]],
+                    "source_refs": [
+                        source["source_ref"]
+                        for source in grounding_sources[:20]
+                        if isinstance(source.get("source_ref"), str)
+                    ],
                     "search_provider": search_provider,
                     "discovery_only": discovery_only,
                 }
@@ -1204,7 +1224,7 @@ class StreetStoryLiveAdapter:
                 "search_provider": search_provider,
                 "discovery_only": discovery_only,
                 "facts": normalized,
-                "sources": grounded.grounding_sources[:20],
+                "sources": grounding_sources[:20],
                 "fact_conflicts": detected_conflicts[:12],
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
@@ -1213,7 +1233,7 @@ class StreetStoryLiveAdapter:
                 "street_story_live_web_search story_id=%s facts=%s sources=%s",
                 story_id,
                 len(normalized),
-                len(grounded.grounding_sources),
+                len(grounding_sources),
             )
             return result
 
@@ -1239,18 +1259,23 @@ class StreetStoryLiveAdapter:
                     "live_research_facts_not_discovery",
                     "save_research_facts is only for the discovery-only search fallback",
                 )
-            allowed_urls = {
-                str(url).rstrip("/")
-                for url in latest_search.get("source_urls", [])
-                if str(url).startswith("https://")
+            allowed_refs = {
+                str(ref)
+                for ref in latest_search.get("source_refs", [])
+                if re.fullmatch(r"websrc_[0-9a-f]{20}", str(ref))
             }
             source_map: dict[str, dict[str, Any]] = {}
             for source in research.get("grounding_sources") or []:
                 if not isinstance(source, dict):
                     continue
                 url = str(source.get("url") or "").rstrip("/")
+                source_ref = str(source.get("source_ref") or "")
                 supports = source.get("supports")
-                if url not in allowed_urls or not isinstance(supports, list):
+                if (
+                    source_ref not in allowed_refs
+                    or not url.startswith("https://")
+                    or not isinstance(supports, list)
+                ):
                     continue
                 valid_supports = [
                     support
@@ -1260,7 +1285,7 @@ class StreetStoryLiveAdapter:
                     and str(support.get("source_url") or "").rstrip("/") == url
                 ]
                 if valid_supports:
-                    source_map[url] = {**source, "supports": valid_supports[:4]}
+                    source_map[source_ref] = {**source, "supports": valid_supports[:4]}
 
             known_facts = [
                 {
@@ -1297,19 +1322,22 @@ class StreetStoryLiveAdapter:
                     raise ConflictError("live_research_fact_confidence_invalid", "Fact confidence must be between 0 and 1") from None
                 if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                     raise ConflictError("live_research_fact_confidence_invalid", "Fact confidence must be between 0 and 1")
-                source_urls = item.get("source_urls")
-                if not isinstance(source_urls, list) or not source_urls:
-                    raise ConflictError("live_research_fact_sources_required", "Each saved fact needs source URLs from the latest search")
-                urls: list[str] = []
-                for raw_url in source_urls[:8]:
-                    url = str(raw_url or "").rstrip("/")
-                    if url not in source_map:
+                source_refs = item.get("source_refs")
+                if not isinstance(source_refs, list) or not source_refs:
+                    raise ConflictError(
+                        "live_research_fact_sources_required",
+                        "Each saved fact needs source_refs from the latest search",
+                    )
+                refs: list[str] = []
+                for raw_ref in source_refs[:8]:
+                    source_ref = str(raw_ref or "")
+                    if source_ref not in source_map:
                         raise ConflictError(
                             "live_research_fact_source_unknown",
-                            "A fact referenced a URL without evidence in the latest search result",
+                            "A fact referenced a source_ref without evidence in the latest search result",
                         )
-                    if url not in urls:
-                        urls.append(url)
+                    if source_ref not in refs:
+                        refs.append(source_ref)
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
                 fact_id = existing_fact_id if existing_fact_id in known_by_id else model_fact_id(claim_key, text)
                 if fact_id in seen_ids:
@@ -1324,7 +1352,7 @@ class StreetStoryLiveAdapter:
                         "confidence": confidence,
                         "evidence_supported": True,
                         "selected": selected,
-                        "sources": [source_map[url] for url in urls],
+                        "sources": [source_map[source_ref] for source_ref in refs],
                     }
                 )
 

@@ -321,6 +321,8 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
     )
     assert search_result["discovery_only"] is True
     assert search_result["facts"] == []
+    source_ref = search_result["sources"][0]["source_ref"]
+    assert source_ref.startswith("websrc_")
 
     saved = await adapter.execute_tool(
         session,
@@ -333,7 +335,7 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
                     "text": "Строительство нынешних ворот началось в 1843 году.",
                     "confidence": 0.82,
                     "selected": True,
-                    "source_urls": ["https://archive.example/gate"],
+                    "source_refs": [source_ref],
                 }],
             },
         },
@@ -374,10 +376,11 @@ async def test_live_discovery_fallback_rejects_unseen_source_url(tmp_path):
         )
 
     svc.providers.gemini.search_web = fallback_search
-    await adapter.execute_tool(
+    search_result = await adapter.execute_tool(
         session,
         {"name": "search_web", "id": "search-discovery-unknown", "args": {"query": "история ворот"}},
     )
+    assert search_result["sources"][0]["source_ref"].startswith("websrc_")
     with pytest.raises(ConflictError) as exc:
         await adapter.execute_tool(
             session,
@@ -390,7 +393,7 @@ async def test_live_discovery_fallback_rejects_unseen_source_url(tmp_path):
                         "text": "Новый факт.",
                         "confidence": 0.9,
                         "selected": True,
-                        "source_urls": ["https://invented.example/source"],
+                        "source_refs": ["websrc_00000000000000000000"],
                     }],
                 },
             },
