@@ -549,15 +549,10 @@ class GeminiClient:
             if not results:
                 raise RetryableProviderError("public_web_search_empty")
 
-            facts = [
-                {
-                    "text": item["snippet"],
-                    "confidence": 0.4,
-                    "source_urls": [item["url"]],
-                }
-                for item in results
-                if item["snippet"]
-            ]
+            # Public snippets are discovery material, not verified facts.
+            # Keeping them out of facts prevents article titles/descriptions from
+            # leaking into the editorial checklist when Google grounding is exhausted.
+            facts: list[dict[str, Any]] = []
             sources = [
                 {"type": "web_search", "title": item["title"], "url": item["url"]}
                 for item in results
