@@ -388,3 +388,47 @@ Before calling the bridge ready, prove:
 8. Duplicate events are idempotent.
 9. Street Story downtime does not fail Knowledge ingestion.
 10. Expert decision updates Street Story and is read back in Projects Hub.
+
+
+## POI media evidence
+
+Regional Knowledge may deliver historical illustrations independently from
+textual facts.
+
+Versioned contract:
+
+- `docs/contracts/poi-media-evidence-v1.schema.json`
+- `contract_version = poi.media_evidence.v1`
+
+Street Story stores the POI association and evidence metadata, not Knowledge
+object-store bytes.
+
+A media evidence record preserves:
+- resolved/candidate POI identity;
+- `knowledge://illustrations/<id>`;
+- relation: `depicts | illustrates | map_of | detail_of`;
+- page/figure/caption provenance;
+- crop SHA-256;
+- caption/time scope/media kind;
+- rights status;
+- access visibility;
+- optional VibePublish mirror reference.
+
+The producer must explicitly state the POI↔illustration relation. Mere co-location
+on one page is not sufficient.
+
+### Future Street Story use
+
+```text
+POI
+  -> accessible historical media
+  -> filter by date / relation / kind / rights
+  -> fetch authorized Knowledge illustration or VibePublish mirror
+  -> editorial/publication workflow
+```
+
+Rights and visibility are hard filters. A public POI never makes a private or
+rights-restricted illustration publishable.
+
+Fact and media evidence remain separate, because a historical photograph may be
+useful for a POI even when it contributes no new atomic textual claim.
