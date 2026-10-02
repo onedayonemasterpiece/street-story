@@ -145,9 +145,30 @@ def sync_review_cases(
             }
             scopes = _unique_scopes(left, right)
             required_reviews = _required_reviews(left, right)
+            semantic = db.execute(
+                "SELECT analysis_json FROM poi_semantic_candidates "
+                "WHERE poi_id=? "
+                "AND ((left_claim_id=? AND right_claim_id=?) "
+                "OR (left_claim_id=? AND right_claim_id=?)) "
+                "AND state='confirmed_conflict' "
+                "ORDER BY last_seen_at DESC LIMIT 1",
+                (
+                    str(conflict["poi_id"]),
+                    left_id,
+                    right_id,
+                    right_id,
+                    left_id,
+                ),
+            ).fetchone()
+            model_analysis = (
+                json.loads(str(semantic["analysis_json"]))
+                if semantic and semantic["analysis_json"]
+                else None
+            )
             suggestion = {
-                "source": "street_story_conflict_ledger",
+                "source": "mira_semantic_review",
                 "relation": str(conflict["relation"]),
+                "analysis": model_analysis,
             }
             review_case_id = _case_id(conflict_id)
             existing = db.execute(
@@ -379,11 +400,14 @@ def ingest_poi_evidence_with_reviews(
     store,
     event: dict[str, Any],
 ) -> dict[str, Any]:
+    """Compatibility wrapper.
+
+    Intake only queues semantic candidates. Review cases appear after Mira/model
+    confirms a conflict through apply_poi_semantic_analysis().
+    """
+
     from .poi_external import ingest_poi_evidence
 
     result = ingest_poi_evidence(store, event)
-    conflict_ids = result.get("conflict_ids") or []
-    result["review_case_ids"] = sync_review_cases(
-        store, conflict_ids
-    ) if conflict_ids else []
+    result["review_case_ids"] = []
     return result
