@@ -719,13 +719,25 @@ class StreetStoryLiveAdapter:
             "facts": facts,
             "fact_conflicts": [
                 {
-                    key: item.get(key)
-                    for key in (
-                        "conflict_id", "left_fact_id", "right_fact_id", "left_text", "right_text",
-                        "relation", "detector_confidence", "suggested_resolution", "suggested_fact_id",
-                        "detector_rationale", "final_resolution", "final_fact_id",
-                        "arbitration_reason", "arbitrated_by", "times_seen",
-                    )
+                    **{
+                        key: item.get(key)
+                        for key in (
+                            "conflict_id", "left_fact_id", "right_fact_id", "left_text", "right_text",
+                            "relation", "detector_confidence", "suggested_resolution", "suggested_fact_id",
+                            "detector_rationale", "final_resolution", "final_fact_id",
+                            "arbitration_reason", "arbitration_confidence", "arbitrated_by", "times_seen",
+                        )
+                    },
+                    "evidence": {
+                        side: {
+                            "source_count": (item.get("evidence") or {}).get(side, {}).get("source_count", 0),
+                            "domain_count": (item.get("evidence") or {}).get(side, {}).get("domain_count", 0),
+                            "official": bool((item.get("evidence") or {}).get(side, {}).get("official")),
+                            "source_urls": list((item.get("evidence") or {}).get(side, {}).get("source_urls", []))[:3],
+                            "supports": list((item.get("evidence") or {}).get(side, {}).get("supports", []))[:2],
+                        }
+                        for side in ("left", "right")
+                    },
                 }
                 for item in state.get("fact_conflicts", [])[:12]
             ],
