@@ -258,6 +258,6 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
 
     companion object {
         const val ACTION_STATE_CHANGED = "com.onedayonemasterpiece.streetstory.SYNC_CHANGED"
-        private const val POLL_SECONDS = 20L
+        // Active identity/research is user-visible; keep checklist projection fresh enough to show stages.\n        private const val POLL_SECONDS = 3L
     }
 }
