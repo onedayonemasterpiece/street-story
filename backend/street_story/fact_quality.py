@@ -250,6 +250,8 @@ def materialize_curation(
     current_items: list[dict[str, Any]],
     proposal_facts: list[dict[str, Any]],
     source_objects: dict[str, dict[str, Any]],
+    *,
+    select_new: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     current_by_key = {semantic_key(item["semantic_key"]): dict(item) for item in current_items}
     retired: set[str] = set()
@@ -294,7 +296,7 @@ def materialize_curation(
         elif inherited_current:
             selected = any(bool(item.get("selected")) for item in inherited_current)
         else:
-            selected = bool(base_sources)
+            selected = select_new and bool(base_sources)
 
         item = {
             "semantic_key": key,
