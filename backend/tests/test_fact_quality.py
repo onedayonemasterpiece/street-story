@@ -1,4 +1,4 @@
-from street_story.fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_key
+from street_story.fact_quality import atomic_fact_text, atomic_fact_texts, merge_fact_inventory, semantic_fact_key
 
 
 def test_article_titles_and_media_metadata_are_not_facts():
@@ -70,3 +70,76 @@ def test_source_heading_does_not_override_clean_later_sentence():
     assert atomic_fact_text(text) == (
         "Сохранившееся здание заложили в 1843 году и завершили в 1850 году."
     )
+
+
+def test_date_only_and_navigation_phrases_are_not_facts():
+    for text in (
+        "Во время Семилетней войны 1756-1763 гг.",
+        "Где находятся на карте и как до них добраться.",
+        "А с 2005 года началась их новая жизнь.",
+    ):
+        assert atomic_fact_text(text) is None
+
+
+def test_location_and_status_still_require_a_real_predicate():
+    assert atomic_fact_text(
+        "Расположены на пересечении улицы Фрунзе и Литовского вала."
+    ) == "Расположены на пересечении улицы Фрунзе и Литовского вала."
+    assert atomic_fact_text(
+        "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
+    ) == "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
+
+
+def test_legacy_heading_glued_to_fact_is_stripped_not_dropped():
+    assert atomic_fact_text(
+        "История создания Королевские ворота были построены в 1843-1850 годах как часть второго вального кольца."
+    ) == "построены в 1843-1850 годах как часть второго вального кольца."
+
+
+def test_legacy_interesting_facts_heading_can_salvage_arrival_fact():
+    assert atomic_fact_text(
+        "Интересные факты Великое посольство прибыло в Кёнигсберг в 1697 году."
+    ) == "прибыло в Кёнигсберг в 1697 году."
+
+
+def test_current_institutional_status_is_a_fact():
+    assert atomic_fact_text(
+        "Сейчас Королевские ворота — одно из зданий Музея Мирового океана."
+    ) == "Сейчас Королевские ворота — одно из зданий Музея Мирового океана."
+
+
+def test_legacy_item_can_yield_multiple_atomic_facts_with_same_evidence():
+    raw = (
+        "В 2005 году Королевские ворота были символом юбилея города. "
+        "С того же года в воротах размещается центр «Великое посольство», являющийся филиалом музея."
+    )
+    facts = atomic_fact_texts(raw)
+    assert facts == [
+        "В 2005 году Королевские ворота были символом юбилея города.",
+        "С 2005 года в воротах размещается центр «Великое посольство», являющийся филиалом музея.",
+    ]
+
+
+def test_architect_clause_is_extracted_as_its_own_fact():
+    raw = (
+        "Королевские ворота были возведены в 1850 году по проекту архитектора "
+        "Фридриха Августа Штюлера, известного своими работами."
+    )
+    facts = atomic_fact_texts(raw)
+    assert "По проекту архитектора Фридриха Августа Штюлера." in facts
+    assert any("возведены в 1850 году" in fact for fact in facts)
+
+
+def test_bad_caption_prefix_can_be_discarded_while_later_fact_survives():
+    raw = (
+        "Королевские ворота вечером, фото Wikimedia. "
+        "Интересные факты: Великое посольство прибыло в Кёнигсберг в 1697 году."
+    )
+    facts = atomic_fact_texts(raw)
+    assert facts == ["прибыло в Кёнигсберг в 1697 году."]
+
+
+def test_documented_presence_event_is_a_fact():
+    assert atomic_fact_text(
+        "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
+    ) == "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."

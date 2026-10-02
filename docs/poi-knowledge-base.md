@@ -90,10 +90,13 @@ sets are unioned rather than replacing one another.
 Older topics created before the atomic-fact boundary may contain article titles,
 photo captions or multi-sentence excerpts. The maintenance command
 `backend/tools/normalize_fact_inventory.py` is dry-run by default and normalizes
-one explicitly named non-published story. It extracts the best atomic factual
-sentence, drops non-factual/media text, merges semantic duplicates and unions all
-supporting source URLs. It refuses scheduled/published stories and refuses a topic
-with an already frozen visual asset.
+one explicitly named non-published story. It can split one noisy legacy source
+excerpt into several atomic claims, carries an explicit “same year” reference
+forward within that excerpt, salvages useful claims glued to page headings/captions,
+and extracts a separate architect claim when it is embedded in a construction
+sentence. It drops navigation/date-only/media/personal-review text, merges semantic
+duplicates and unions all supporting source URLs. It refuses scheduled/published
+stories and refuses a topic with an already frozen visual asset.
 
 This migration does not rewrite an authored draft. It only repairs the fact
 inventory and its selection map so the existing topic can continue under the new
