@@ -372,10 +372,11 @@ class MainActivity : Activity() {
         column.addView(previewImage, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         column.addView(identityLinkView, blockMargins(top = 8))
         column.addView(topicStatusView)
-        identityProgressView = label("", 13, MUTED, Typeface.DEFAULT).apply {
+        identityProgressView = label("", 13, INK, Typeface.DEFAULT).apply {
             contentDescription = "identity-progress"
             visibility = View.GONE
-            setPadding(dp(2), dp(6), dp(2), dp(6))
+            background = rounded(PAPER, 14)
+            setPadding(dp(10), dp(9), dp(10), dp(9))
         }
         column.addView(identityProgressView)
 
@@ -569,7 +570,15 @@ class MainActivity : Activity() {
                 val mark = when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
                 "$mark ${step.label}"
             } ?: emptyList()
-            val summary = lines.joinToString(10.toChar().toString()) + if(progress?.finished == true) "${10.toChar()}${progress.elapsedMs / 1000} с · попыток: ${progress.attempt}" else ""
+            val waiting = story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING)
+            val visibleLines = if (lines.isNotEmpty()) lines else if (waiting) listOf(
+                "… Проверяю геометки снимка",
+                "○ Ищу объекты рядом",
+                "○ Проверяю статьи и эталонные фото",
+                "○ Сравниваю видимые признаки",
+            ) else emptyList()
+            val summary = visibleLines.joinToString(10.toChar().toString()) +
+                if(progress?.finished == true) "${10.toChar()}${progress.elapsedMs / 1000} с · попыток: ${progress.attempt}" else ""
             if(text.toString() != summary) text = summary
             visibility = if(summary.isNotBlank()) View.VISIBLE else View.GONE
         }
