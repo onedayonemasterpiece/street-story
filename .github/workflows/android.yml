@@ -1,0 +1,144 @@
+name: Street Story Android MVP
+on:
+  push:
+    branches: [main, work/street-story-mvp-20260908]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  STREET_STORY_CANONICAL_CERT_SHA256: fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94
+concurrency:
+  group: street-story-android-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Restore canonical owner signing key
+        if: github.event_name != 'pull_request'
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.STREET_STORY_SIGNING_KEYSTORE_B64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.STREET_STORY_SIGNING_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEYSTORE_B64"
+          test -n "$SIGNING_STORE_PASSWORD"
+          install -d -m 0700 "$RUNNER_TEMP/street-story-signing"
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/street-story-signing/owner-signing.p12"
+          chmod 0600 "$RUNNER_TEMP/street-story-signing/owner-signing.p12"
+          keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/street-story-signing/owner-signing.p12" \
+            -storepass "$SIGNING_STORE_PASSWORD" -alias streetstory >/dev/null
+      - uses: android-actions/setup-android@v4
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Unit tests, lint and APKs
+        env:
+          STREET_STORY_SIGNING_STORE_FILE: ${{ runner.temp }}/street-story-signing/owner-signing.p12
+          STREET_STORY_SIGNING_STORE_PASSWORD: ${{ secrets.STREET_STORY_SIGNING_STORE_PASSWORD }}
+          STREET_STORY_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Prepare installable artifact
+        env:
+          STREET_STORY_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/street-story.apk
+          cp app/build/outputs/apk/debug/app-debug.apk release/street-story-debug.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk release/street-story-debug-androidTest.apk
+          (cd release && sha256sum street-story.apk > SHA256SUMS)
+          printf 'source_sha=%s\nrun_id=%s\napplication_id=com.onedayonemasterpiece.streetstory\nversion_code=%s\nversion_name=0.1.%s\n' \
+            "$STREET_STORY_SOURCE_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" > release/BUILD.txt
+      - name: Verify canonical signing certificate
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          expected="$STREET_STORY_CANONICAL_CERT_SHA256"
+          actual="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs release/street-story.apk \
+            | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}' \
+            | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          test -n "$actual"
+          test "$actual" = "$expected"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: street-story-reports-${{ github.run_number }}
+          path: app/build/reports/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: street-story-apk-${{ github.run_number }}
+          path: release/
+
+  emulator:
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: street-story-apk-${{ github.run_number }}
+          path: apks
+      - name: Enable KVM
+        run: |
+          test -c /dev/kvm
+          sudo chmod 0666 /dev/kvm
+      - name: Android 15 durable storage, in-place update and UI smoke
+        env:
+          GH_TOKEN: ${{ github.token }}
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -timezone Etc/UTC
+          disable-animations: true
+          script: |
+            bash .github/scripts/android-emulator-upgrade.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: street-story-emulator-${{ github.run_number }}
+          path: instrumentation.txt
+
+  release:
+    needs: [checks, emulator]
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/work/street-story-mvp-20260908')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: street-story-apk-${{ github.run_number }}
+          path: apks
+      - name: Publish owner-installable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="android-v${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Street Story Android 0.1.${GITHUB_RUN_NUMBER}" \
+            --notes "Owner MVP build from ${GITHUB_SHA}. Install street-story.apk; future versions can be installed from inside Street Story." \
+            apks/street-story.apk \
+            apks/BUILD.txt \
+            apks/SHA256SUMS

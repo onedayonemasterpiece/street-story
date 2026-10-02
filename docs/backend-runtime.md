@@ -1,0 +1,156 @@
+# Street Story backend · DevCoveer runtime
+
+Current Android WSS integration, dependency integrity and the cross-project
+Python/Node decision: [Live WSS](live-wss.md). HTTP audio below is compatibility-only.
+
+This is the deployment boundary for the backend source in `backend/`. It intentionally contains no Fly.io plan and no provider credentials.
+
+## Runtime shape
+
+- Python 3.12.
+- One FastAPI/Uvicorn process with one in-process durable worker; SQLite is the local source of truth.
+- Persistent `DATA_DIR`, recommended `/var/lib/street-story`.
+- SQLite WAL plus `synchronous=FULL`.
+- Service supervisor with restart policy; see `backend/deploy/street-story.service.example`.
+- Reverse proxy/TLS in front of local Uvicorn; Android receives HTTPS only.
+- VibePublish is a separate persistent DevCoveer service. Street Story uses only its bearer-protected HTTP API.
+
+## Required runtime configuration
+
+Create a Python 3.12 environment, install `backend/requirements.txt`, place the repository at `/opt/street-story` (or equivalent exact checkout), and configure the systemd example. Populate runtime secrets locally; never commit them.
+
+Required values:
+- `STREET_STORY_DEVICE_TOKEN`
+- configured Google key pool credentials for ordinary transcription/research
+- `AI_RESOURCE_CONTROL_URL`
+- `AI_RESOURCE_CONTROL_SERVICE_KEY`
+- `GOOGLE_API_KEY3` as Street Story's dedicated emergency Live fallback source; trusted backend maps it to `AI_RESOURCE_CONTROL_FALLBACK_KEY`
+- optional `AI_RESOURCE_LEDGER_ID` after the shared Live migration has been verified
+- `VIBEPUBLISH_BASE_URL`
+- `VIBEPUBLISH_BEARER_TOKEN`
+- `VIBEPUBLISH_HTTP_HOST=mcp-vibepublish.kenigevents.ru` when the local loopback VibePublish service runs behind its OAuth public-host boundary
+- `DATA_DIR=/var/lib/street-story`
+
+Ordinary transcription/research keeps the existing request limiter semantics. Managed Live sessions use the private
+`ai-resource-control v0.1.11` lease SDK pinned to commit `8f5a0dc9aed257515d2ed5dd71ba1dc866d8b1fe` plus the public
+`live-interaction` version and archive checksum in `live-framework.lock.json` (currently `0.3.7-rc.1`, candidate).
+This retains the existing central admission semantics, manual activity, provider continuity and bounded resource waits; adds shared WSS and native transport; and includes the accepted media-resolution wire fix. A genuine resource denial is never bypassed. The installer builds the private
+controller wheel from the exact accepted private commit and never vendors that private source into this public repository.
+
+### Shared Live interaction architecture
+
+Street Story is a consumer of the canonical cross-product Live architecture in `onedayonemasterpiece/live-interaction/docs/live-agent-architecture.md`. That document is the single source of truth for prompt layering, progressive capability disclosure, session continuity, Gemini session-resumption reconfiguration, visual-context policy, sanitized observability and real-provider acceptance. Do not copy the shared standard into this repository.
+
+Street Story owns only its domain modes, capability bundles and authorization. New Live work must not grow one flat prompt/tool catalog containing research, visual, publication and cancellation functions at once. Keep a small core/router and activate bounded task-specific bundles (normally fewer than 10 functions, preferably 3–6). Preserve one user conversation across capability switches and provider reconnects. Tool availability and instructions must always match. Show/read-only-like modes must never gain write capabilities through a shared transport shortcut.
+
+Production diagnostics must correlate session, mode, active capability, configuration digest, tool lifecycle, provider lifecycle, resource-budget events, Android capture/VAD/AEC state and playback/WSS timing. Following the owner's explicit 2026-10-01 debugging requirement, Street Story additionally retains the bounded provider-produced `input_transcript` and `output_transcript` text for seven days in `live_diagnostics` and writes the same transcript events to the backend operational log with story/session correlation. This is intentional diagnostic content, not ordinary analytics. Never store raw PCM, image bytes, device tokens, provider credentials, resumption handles or tool arguments in diagnostics. Android diagnostics use the authenticated bounded `/live-sessions/{session_id}/diagnostics` endpoint and contain counters/states/timings rather than audio. Modality-aware resource accounting is inherited from the shared `ai-resource-control` contract; base64 image bytes are transport encoding, not text-token usage.
+
+Do not substitute generic product `SUPABASE_URL` / `SUPABASE_KEY` for the dedicated Google AI limiter authority.
+Application runtime configuration never falls back to generic Supabase aliases. The DevCoveer installer pins the canonical
+limiter origin to `https://epyznmylqmchteykjsqj.supabase.co`. If dedicated limiter aliases are not present yet, it may
+consider an existing server-side **service-role key alias only** as a candidate (including the established KenigEvents
+`PERSONALIZATION_SUPABASE_SECRET_KEY` alias), never a generic URL: the candidate is promoted only after a read-only call
+to `google_ai_limiter_capabilities()` on that canonical origin authenticates it and returns the
+exact `google_ai_project_model_atomic_v1` / `google_cloud_project` contract. A key for any other Supabase project therefore
+cannot silently become the quota authority.
+
+If the shared Live RPC/migrations or a verified canonical credential are absent, Live starts fail closed; Street Story must
+not fall back to a direct API key or to the legacy async voice path.
+
+Before any service restart, the DevCoveer installer performs a read-only shared-resource preflight through the pinned
+private SDK. It verifies the legacy limiter contract, the `ai_resource_leases_v1` capability surface, a nonempty
+ledger id, and at least one eligible registered key. The preflight does not acquire a Live lease and does not call
+Gemini; failure leaves the currently running Street Story release untouched.
+
+The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search stays inside that same Live session. Provider-native Google Search on `gemini-3.8-live` is preferred because it preserves one conversational context with no second research workflow. If native search is unavailable, Street Story falls back to its synchronous `search_web` application function using grounded `gemini-3.1-flash-lite`, then `gemini-3.5-flash-lite`, then search-only `gemini-3.8-flash`. If Google grounding is exhausted across all of those routes, `search_web` performs one bounded independent web-result lookup and returns source-linked search snippets to the same Live session as low-confidence discovery evidence; it never silently upgrades snippets into verified facts. Lite/search helpers return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
+
+## Exact source SHA gate
+
+`GET /healthz` returns `ok=true` and `source_sha`. For PR Live E2E, `source_sha` must equal the exact current PR HEAD. A missing/mismatched SHA is a deployment failure and the workflow stops before product effects. Do not disable this gate and do not test a newer source harness against an older deployed backend.
+
+When redeploying a source checkpoint, update **both Street Story runtime endpoints** to the same exact checkout, set `STREET_STORY_DEPLOY_SHA` when the deployment mechanism uses it (or otherwise ensure checkout-derived SHA is authoritative), restart the service, then read back `/healthz.source_sha` from both endpoints before dispatching Live E2E.
+
+## Restart/recovery semantics
+
+Admission handlers commit durable state only. Research, visual, publication and cancellation are leased SQLite jobs. Expired `running` jobs are reclaimed on restart. Per-chunk transcripts are persisted, so confirmed chunks are not retranscribed merely because the process restarted.
+
+Raw ASR and cleaned `display_text` are persisted separately. Restart/readback does not recompute cleaned owner text once stored.
+
+VibePublish identity is committed/recoverable across every external effect:
+
+- source image ingress uses a stable idempotency key and immutable source SHA;
+- visual command and candidate selection use stable keys and operation readback;
+- publication intent stores the exact VibePublish request key before external admission;
+- cancellation stores a stable command key and reconciles the existing publication revision.
+
+Lost HTTP responses therefore repeat the same semantic key rather than create a new asset, visual job, publication or cancellation.
+
+## VibePublish requirement
+
+Runtime must expose the VibePublish lineage represented by public commit `dec1c69920f09ebdc0551132e6bdffba73d03e8e` or a compatible newer contract, including:
+
+- authenticated `POST /v1/assets` source-image ingress;
+- authenticated asset readback;
+- visual command + official selection + operation reconciliation;
+- publication scheduling/status;
+- publication cancel command/status.
+
+The previous Street Story `visual_blocked / vibepublish_media_ingress_not_enabled` boundary is obsolete. Do not reintroduce it by pinning an older VibePublish runtime. Also do not bypass the contract via VibePublish SQLite, a second Imagegen, or direct Telegram/VK publication.
+
+## VibePublish resident service
+
+VibePublish is supervised independently on DevCoveer and reachable through `VIBEPUBLISH_BASE_URL`. Its own deployment/runbook remains authoritative for provider credentials, native workers and Imagegen. Street Story stores none of those provider secrets.
+
+## Gemini reliability and shared limits
+
+See [Gemini P0 reliability](gemini-reliability.md). Ordinary request work keeps the existing
+`reserve → mark_sent → provider → finalize` authority.
+
+Live capacity is a separate lease shape in the **same dedicated limiter**, not a second quota database or gateway.
+Street Story calls `ai_resource_control.run_guarded(consumer="street-story", ...)` with only the central authority URL/service credential
+and an opaque per-session binding. The authority atomically chooses a quota scope and returns the selected provider key only as a lease-bound encrypted envelope. A classified credential/quota/capacity
+fault may select another scope only before provider `ready`; after `ready` the conversation remains pinned to one
+key/scope through resumption. Expired/fenced resource state is terminal and cannot trigger a hidden direct-key retry.
+
+Provider Live RPM/RPD being reported as Unlimited does not imply unlimited concurrency. The common controller keeps
+finite local admission and records unexposed provider concurrency honestly. Production authority migrations 001–008 and Vault bootstrap are complete; each consumer still remains fail-closed until its central capability preflight succeeds.
+
+## Authority-outage fallback
+
+Street Story owns exactly one emergency Live alias: `GOOGLE_API_KEY3`. Normal Live sessions use the central Vault-backed authority and do not receive the ordinary local provider-key pool. The trusted backend maps the assigned alias value into the single generic `AI_RESOURCE_CONTROL_FALLBACK_KEY`; the original alias and the rest of the Google pool are not forwarded to `ai-resource-control`.
+
+The shared SDK may use the mapped `AI_RESOURCE_CONTROL_FALLBACK_KEY` only when the initial read-only authority capability probe returns `RESOURCE_CONTROL_UNAVAILABLE`, before any mutating acquire. It must not activate for admission/quota/429/capacity/credential decisions, after a successful authority probe, after a lost acquire response, or after provider ready. Emergency mode still uses the shared `resource_guard`, permits one local Street Story fallback session per host and expires after two hours.
+
+The app must never borrow Wonderful Lections' `GOOGLE_API_KEY`, KenigEvents' `GOOGLE_API_KEY2`, Projects Hub's `GOOGLE_API_KEY4`, or shared reserve keys 5–6 for this fallback. Android never receives any provider key.
+
+## DevCoveer fallback smoke runner
+
+If GitHub Actions accepts `live-e2e.yml` but never allocates a job, DevCoveer may run the same repository-owned smoke through `backend/tools/devcoveer_live_smoke.py --expected-sha <deployed-sha>`. The runner does not install host packages: it uses a disposable official Python/Debian Docker container, installs `espeak`, `ffmpeg`, ExifTool and `httpx` only inside that container, mounts repository source read-only and writes only the sanitized Live E2E diagnostic.
+
+The runner refuses to mint a device token: <redacted> existing 0600 token file must already exist before it calls the deploy module's `device_token()` helper. The helper's existing idempotent GitHub secret synchronization remains the only allowed credential-side effect. The token is passed to Docker by environment-name inheritance rather than argv, child stdout/stderr is not emitted, and the named container is force-removed in `finally` if the smoke times out. This is a production acceptance rail and therefore creates the same smoke-mode Street Story/research/provider side effects as `live_e2e.py`; it does not schedule Telegram publication.
+
+## Live E2E acceptance
+
+The current acceptance path is **Live-only**. The old voice-session/M4A HTTP protocol is not exercised as a fallback.
+
+The Android golden run uses prepared PCM only after the capture/VAD boundary (so CI does not pretend to have a physical
+microphone) and then follows the production realtime path:
+
+1. exact deployed source SHA and authenticated topic;
+2. one Gemini Live session under the shared resource lease;
+3. multiple Russian realtime turns through the bounded Android PCM queue;
+4. explicit `search_web` call inside the same Gemini 3.8 Live session with grounded source readback;
+5. fact selection and iterative text editing;
+6. literal/verbatim dictation with protected-span preservation;
+7. a subsequent edit plus Undo;
+8. visual-only change proving the text revision is unchanged;
+9. verified VibePublish visual asset and readback;
+10. exact publication confirmation card;
+11. provider-native Telegram schedule/readback/cancel on an explicitly safe test destination.
+
+The evidence must say `physical_mic=false`, `prepared_pcm_after_capture_boundary=true` and
+`legacy_voice_endpoint_used=false`. A legacy cancellation call is allowed only as best-effort emergency cleanup after
+a failed test; it can never make acceptance green.
+
+The long-lived async voice endpoints remain available for compatibility and possible future development, but a Live
+failure is surfaced as a Live/resource error. There is no automatic route switch to those endpoints.

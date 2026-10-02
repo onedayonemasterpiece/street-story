@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+httpx>=0.27,<1
+cryptography>=42,<51
+python-multipart>=0.0.9,<1
+Pillow>=10,<13
+google-genai>=1.55,<2
+live-interaction @ https://github.com/onedayonemasterpiece/live-interaction/archive/refs/tags/v0.3.7-rc.1.tar.gz#sha256=f817bea35bb8d7d1e9778ba6dac9fb88a42e50c3f827b25aa025c6d25d8e7660
