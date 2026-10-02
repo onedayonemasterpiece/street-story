@@ -187,6 +187,21 @@ CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_story_time
  ON fact_conflict_scans(story_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_poi_time
  ON fact_conflict_scans(poi_key,created_at DESC);
+CREATE TABLE IF NOT EXISTS fact_semantic_scans(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+ poi_key TEXT,
+ detector TEXT NOT NULL,
+ status TEXT NOT NULL,
+ fact_count INTEGER NOT NULL,
+ detected_count INTEGER NOT NULL,
+ error_type TEXT,
+ created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_semantic_scans_story_time
+ ON fact_semantic_scans(story_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fact_semantic_scans_poi_time
+ ON fact_semantic_scans(poi_key,created_at DESC);
 """
 
 
