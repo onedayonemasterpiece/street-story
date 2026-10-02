@@ -1,0 +1,301 @@
+"""Conflict detection ledger for evidence-backed POI facts.
+
+Detection is model-assisted, but pair selection, validation, persistence and telemetry
+are deterministic. A conflict record is evidence for later arbitration, not a truth vote.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from urllib.parse import urlparse
+from typing import Any
+
+from .fact_quality import atomic_fact_text, fact_kind, semantic_fact_id, semantic_fact_key
+
+
+RELATIONS = {
+    "contradiction",
+    "scope_difference",
+    "temporal_sequence",
+    "source_disagreement",
+    "uncertain",
+}
+SUGGESTED_RESOLUTIONS = {
+    "prefer_left",
+    "prefer_right",
+    "both_valid",
+    "unresolved",
+}
+FINAL_RESOLUTIONS = SUGGESTED_RESOLUTIONS
+_SINGLE_VALUE_KINDS = {"architect", "foundation", "location"}
+_INTERESTING_KINDS = {
+    "construction", "architect", "foundation", "reconstruction", "demolition",
+    "ownership", "visit", "use", "opening", "location", "structure",
+}
+
+
+def _source_summary(item: dict[str, Any]) -> dict[str, Any]:
+    sources = [
+        source for source in (item.get("sources") or [])
+        if isinstance(source, dict) and str(source.get("url") or "").startswith("https://")
+    ]
+    urls = list(dict.fromkeys(str(source["url"]).rstrip("/") for source in sources))
+    domains = list(dict.fromkeys(
+        (urlparse(url).hostname or "").lower().removeprefix("www.") for url in urls
+    ))
+    official_urls = [
+        str(source["url"]).rstrip("/")
+        for source in sources
+        if str(source.get("type") or "") == "official"
+    ]
+    supports: list[dict[str, str]] = []
+    for source in sources:
+        for support in source.get("supports") or []:
+            if isinstance(support, dict) and str(support.get("text") or "").strip():
+                supports.append({
+                    "url": str(source.get("url") or "")[:500],
+                    "text": str(support.get("text") or "")[:500],
+                })
+                if len(supports) >= 4:
+                    break
+        if len(supports) >= 4:
+            break
+    return {
+        "source_count": len(urls),
+        "domain_count": len([domain for domain in domains if domain]),
+        "official": bool(official_urls),
+        "official_urls": official_urls[:3],
+        "source_urls": urls[:8],
+        "supports": supports,
+    }
+
+
+def _fact_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
+    text = atomic_fact_text(str(item.get("text") or ""))
+    if text is None:
+        return None
+    claim_key = str(item.get("claim_key") or "")
+    return {
+        "fact_id": str(item.get("fact_id") or semantic_fact_id(claim_key, text)),
+        "semantic_key": semantic_fact_key(claim_key, text),
+        "kind": fact_kind(text),
+        "text": text,
+        "evidence": _source_summary(item),
+    }
+
+
+def _pair_id(left: dict[str, Any], right: dict[str, Any]) -> str:
+    identities = sorted([
+        left["fact_id"] + ":" + hashlib.sha256(left["text"].encode("utf-8")).hexdigest()[:12],
+        right["fact_id"] + ":" + hashlib.sha256(right["text"].encode("utf-8")).hexdigest()[:12],
+    ])
+    return "conflict_" + hashlib.sha256("|".join(identities).encode("utf-8")).hexdigest()[:20]
+
+
+def conflict_candidate_pairs(items: list[dict[str, Any]], max_pairs: int = 24) -> list[dict[str, Any]]:
+    facts = [fact for item in items if (fact := _fact_snapshot(item)) is not None]
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    seen_pairs: set[str] = set()
+    for left_index, left in enumerate(facts):
+        if left["kind"] not in _INTERESTING_KINDS:
+            continue
+        for right in facts[left_index + 1:]:
+            if right["kind"] != left["kind"] or right["text"].casefold() == left["text"].casefold():
+                continue
+            pair_id = _pair_id(left, right)
+            if pair_id in seen_pairs:
+                continue
+            seen_pairs.add(pair_id)
+            score = 1
+            if left["semantic_key"] == right["semantic_key"]:
+                score += 8
+            if left["kind"] in _SINGLE_VALUE_KINDS:
+                score += 5
+            if left["evidence"]["official"] != right["evidence"]["official"]:
+                score += 2
+            score += min(3, left["evidence"]["source_count"] + right["evidence"]["source_count"])
+            candidates.append((score, {"pair_id": pair_id, "left": left, "right": right}))
+    candidates.sort(key=lambda item: (-item[0], item[1]["pair_id"]))
+    return [pair for _score, pair in candidates[:max_pairs]]
+
+
+def normalize_conflict_records(
+    pairs: list[dict[str, Any]],
+    payload: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    by_id = {pair["pair_id"]: pair for pair in pairs}
+    raw = payload.get("conflicts") if isinstance(payload, dict) else []
+    if not isinstance(raw, list):
+        return []
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw[: len(pairs)]:
+        if not isinstance(item, dict):
+            continue
+        pair_id = str(item.get("pair_id") or "")
+        pair = by_id.get(pair_id)
+        relation = str(item.get("relation") or "")
+        suggested = str(item.get("suggested_resolution") or "")
+        if pair is None or relation not in RELATIONS or suggested not in SUGGESTED_RESOLUTIONS:
+            continue
+        if pair_id in seen:
+            continue
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        preferred_fact_id = None
+        if suggested == "prefer_left":
+            preferred_fact_id = pair["left"]["fact_id"]
+        elif suggested == "prefer_right":
+            preferred_fact_id = pair["right"]["fact_id"]
+        records.append({
+            "conflict_id": pair_id,
+            "left_fact_id": pair["left"]["fact_id"],
+            "right_fact_id": pair["right"]["fact_id"],
+            "left_text": pair["left"]["text"],
+            "right_text": pair["right"]["text"],
+            "relation": relation,
+            "detector_confidence": confidence,
+            "suggested_resolution": suggested,
+            "suggested_fact_id": preferred_fact_id,
+            "detector_rationale": str(item.get("rationale") or "")[:1000],
+            "evidence": {
+                "left": pair["left"]["evidence"],
+                "right": pair["right"]["evidence"],
+            },
+        })
+        seen.add(pair_id)
+    return records
+
+
+def persist_fact_conflicts(
+    service,
+    story_id: str,
+    poi_key: str | None,
+    records: list[dict[str, Any]],
+    *,
+    detector: str,
+) -> list[dict[str, Any]]:
+    if not records:
+        return []
+    now = service.store.now()
+    with service.store.tx() as db:
+        row = db.execute("SELECT research_json FROM stories WHERE id=?", (story_id,)).fetchone()
+        if row is None:
+            return []
+        for record in records:
+            db.execute(
+                """
+                INSERT INTO fact_conflicts(
+                  story_id,conflict_id,poi_key,left_fact_id,right_fact_id,left_text,right_text,
+                  relation,detector_confidence,suggested_resolution,suggested_fact_id,
+                  detector_rationale,final_resolution,final_fact_id,arbitration_reason,
+                  arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,1,?,?)
+                ON CONFLICT(story_id,conflict_id) DO UPDATE SET
+                  poi_key=excluded.poi_key,
+                  relation=excluded.relation,
+                  detector_confidence=excluded.detector_confidence,
+                  suggested_resolution=excluded.suggested_resolution,
+                  suggested_fact_id=excluded.suggested_fact_id,
+                  detector_rationale=excluded.detector_rationale,
+                  evidence_json=excluded.evidence_json,
+                  times_seen=fact_conflicts.times_seen+1,
+                  last_seen_at=excluded.last_seen_at
+                """,
+                (
+                    story_id,
+                    record["conflict_id"],
+                    poi_key,
+                    record["left_fact_id"],
+                    record["right_fact_id"],
+                    record["left_text"],
+                    record["right_text"],
+                    record["relation"],
+                    record["detector_confidence"],
+                    record["suggested_resolution"],
+                    record["suggested_fact_id"],
+                    record["detector_rationale"],
+                    json.dumps(record["evidence"], ensure_ascii=False, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+        rows = list(db.execute(
+            """
+            SELECT conflict_id,left_fact_id,right_fact_id,left_text,right_text,relation,
+                   detector_confidence,suggested_resolution,suggested_fact_id,
+                   detector_rationale,final_resolution,final_fact_id,arbitration_reason,
+                   arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
+            FROM fact_conflicts WHERE story_id=? ORDER BY last_seen_at DESC LIMIT 40
+            """,
+            (story_id,),
+        ))
+        durable = [
+            {
+                **{key: item[key] for key in item.keys() if key != "evidence_json"},
+                "evidence": json.loads(item["evidence_json"] or "{}"),
+            }
+            for item in rows
+        ]
+        research = json.loads(row["research_json"] or "{}")
+        research["fact_conflicts"] = durable
+        research["fact_conflict_stats"] = {
+            "total_detected": db.execute(
+                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
+            ).fetchone()[0],
+            "open": db.execute(
+                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
+                "AND (final_resolution IS NULL OR final_resolution='unresolved')",
+                (story_id,),
+            ).fetchone()[0],
+            "detector": detector[:120],
+        }
+        db.execute(
+            "UPDATE stories SET research_json=? WHERE id=?",
+            (json.dumps(research, ensure_ascii=False, separators=(",", ":")), story_id),
+        )
+    from .identity_telemetry import record_identity_event
+    for record in records:
+        evidence = record["evidence"]
+        record_identity_event(
+            service,
+            story_id,
+            "fact_conflict_detected",
+            {
+                "conflict_id": record["conflict_id"],
+                "relation": record["relation"],
+                "confidence": record["detector_confidence"],
+                "suggested_resolution": record["suggested_resolution"],
+                "left_sources": evidence["left"]["source_count"],
+                "right_sources": evidence["right"]["source_count"],
+                "left_domains": evidence["left"]["domain_count"],
+                "right_domains": evidence["right"]["domain_count"],
+                "left_official": evidence["left"]["official"],
+                "right_official": evidence["right"]["official"],
+                "detector": detector[:120],
+            },
+            source="fact_conflict",
+        )
+    return durable
+
+
+def conflict_rows(db, story_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    rows = list(db.execute(
+        """
+        SELECT conflict_id,left_fact_id,right_fact_id,left_text,right_text,relation,
+               detector_confidence,suggested_resolution,suggested_fact_id,
+               detector_rationale,final_resolution,final_fact_id,arbitration_reason,
+               arbitrated_by,evidence_json,times_seen
+        FROM fact_conflicts WHERE story_id=? ORDER BY last_seen_at DESC LIMIT ?
+        """,
+        (story_id, limit),
+    ))
+    return [
+        {
+            **{key: row[key] for key in row.keys() if key != "evidence_json"},
+            "evidence": json.loads(row["evidence_json"] or "{}"),
+        }
+        for row in rows
+    ]
