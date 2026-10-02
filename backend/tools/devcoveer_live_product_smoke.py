@@ -670,6 +670,24 @@ def run(
             )
             after_search = story(client, story_id)
             fact_ids = supported_fact_ids(after_search)
+            semantic_fallback_turn = None
+            if not fact_ids or int(after_search.get("source_count") or 0) < 1:
+                cursor, semantic_fallback_turn = send_tool_turn(
+                    client,
+                    story_id,
+                    session_id,
+                    cursor,
+                    expected_tool="save_research_facts",
+                    text=(
+                        "В предыдущем search_web отдельная grounded search-модель могла быть недоступна. "
+                        "Если tool result помечен discovery_only=true, сама проанализируй только полученные там "
+                        "search snippets и URL. Сохрани через save_research_facts несколько атомарных фактов только "
+                        "там, где конкретный snippet действительно поддерживает тезис; не выдумывай сведения и URL. "
+                        "Релевантные факты можешь отметить selected=true. Если evidence недостаточно, не сохраняй его как факт."
+                    ),
+                )
+                after_search = story(client, story_id)
+                fact_ids = supported_fact_ids(after_search)
             if not fact_ids or int(after_search.get("source_count") or 0) < 1:
                 raise ProductSmokeError("search_evidence_missing")
             if str(after_search.get("state") or "") == "researching":
@@ -874,6 +892,9 @@ def run(
                 },
                 "search": {
                     "tool_ok": search_turn["tool_ok"],
+                    "mira_semantic_fallback_tool_ok": (
+                        semantic_fallback_turn["tool_ok"] if semantic_fallback_turn else None
+                    ),
                     "fact_count": len(after_search.get("facts") or []),
                     "supported_fact_count": len(fact_ids),
                     "source_count": int(after_search.get("source_count") or 0),

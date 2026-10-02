@@ -134,8 +134,26 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
     assert result.payload["search_provider"] == "duckduckgo_html_fallback"
     assert result.payload["facts"] == []
     assert result.grounding_sources == [
-        {"type": "web_search", "title": "Official source", "url": "https://example.com/official"},
-        {"type": "web_search", "title": "Archive", "url": "https://example.org/archive"},
+        {
+            "type": "web_search",
+            "title": "Official source",
+            "url": "https://example.com/official",
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": "https://example.com/official",
+                "text": "The gate was rebuilt in 1843.",
+            }],
+        },
+        {
+            "type": "web_search",
+            "title": "Archive",
+            "url": "https://example.org/archive",
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": "https://example.org/archive",
+                "text": "Historical archive entry.",
+            }],
+        },
     ]
     assert len(client.search_http.calls) == 1
 

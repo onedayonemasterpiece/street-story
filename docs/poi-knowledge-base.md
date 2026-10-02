@@ -66,10 +66,14 @@ source/evidence references and referenced IDs, but does not infer facthood or
 semantic equivalence.
 
 Unsupported model claims may remain visible as `evidence_supported=false` candidates,
-but they are never silently selected or used for publication. Emergency public-web
-snippets remain discovery material only. `fact_quality.py` and the legacy
-normalization command remain available solely for explicit repair of pre-LLM-first
-inventories.
+but they are never silently selected or used for publication. If dedicated grounded
+search models are quota-unavailable, independent public-web snippets remain discovery
+material until the already-running Live Mira explicitly interprets them through
+`save_research_facts`; the server then validates only exact source URLs and stored
+snippet evidence. Mira can also persist actual disagreements through
+`record_fact_conflicts` before using the normal arbitration ledger. `fact_quality.py`
+and the legacy normalization command remain available solely for explicit repair of
+pre-LLM-first inventories.
 
 ## Multiple sources for one fact
 

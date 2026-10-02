@@ -42,6 +42,8 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "resolve_place" in names
     assert "confirm_place" in names
     assert "search_web" in names
+    assert "save_research_facts" in names
+    assert "record_fact_conflicts" in names
     assert "resolve_fact_conflict" in names
     assert "start_research" not in names
 
@@ -281,6 +283,172 @@ async def test_live_search_and_publication_are_blocked_until_identity_is_ready(t
             },
         )
     assert getattr(publish_error.value, "code", None) == "identity_required"
+
+
+@pytest.mark.asyncio
+async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Discovery only",
+                "facts": [],
+                "search_provider": "duckduckgo_html_fallback",
+            },
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "Archive",
+                "url": "https://archive.example/gate",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": "https://archive.example/gate",
+                    "text": "В 1843 году началось строительство нынешних ворот.",
+                }],
+            }],
+        )
+
+    svc.providers.gemini.search_web = fallback_search
+    search_result = await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-discovery",
+            "args": {"query": "история ворот"},
+        },
+    )
+    assert search_result["discovery_only"] is True
+    assert search_result["facts"] == []
+
+    saved = await adapter.execute_tool(
+        session,
+        {
+            "name": "save_research_facts",
+            "id": "save-discovery-facts",
+            "args": {
+                "facts": [{
+                    "claim_key": "current-gate-construction-start-1843",
+                    "text": "Строительство нынешних ворот началось в 1843 году.",
+                    "confidence": 0.82,
+                    "selected": True,
+                    "source_urls": ["https://archive.example/gate"],
+                }],
+            },
+        },
+    )
+    assert len(saved["facts"]) == 1
+    current = svc.story(story_id)
+    assert len(current["facts"]) == 1
+    assert current["facts"][0]["evidence_supported"] is True
+    assert current["facts"][0]["selected"] is True
+    assert current["facts"][0]["sources"][0]["supports"][0]["kind"] == "search_snippet"
+    with svc.store.connection() as db:
+        research = json.loads(
+            db.execute("SELECT research_json FROM stories WHERE id=?", (story_id,)).fetchone()[0]
+        )
+    assert research["live_web_searches"][-1]["semantic_completion"] == "mira_live"
+    assert research["draft_needs_refresh"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_discovery_fallback_rejects_unseen_source_url(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={"summary": "Discovery only", "facts": [], "search_provider": "duckduckgo_html_fallback"},
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "Archive",
+                "url": "https://archive.example/gate",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": "https://archive.example/gate",
+                    "text": "В 1843 году началось строительство нынешних ворот.",
+                }],
+            }],
+        )
+
+    svc.providers.gemini.search_web = fallback_search
+    await adapter.execute_tool(
+        session,
+        {"name": "search_web", "id": "search-discovery-unknown", "args": {"query": "история ворот"}},
+    )
+    with pytest.raises(ConflictError) as exc:
+        await adapter.execute_tool(
+            session,
+            {
+                "name": "save_research_facts",
+                "id": "save-bad-source",
+                "args": {
+                    "facts": [{
+                        "claim_key": "invented",
+                        "text": "Новый факт.",
+                        "confidence": 0.9,
+                        "selected": True,
+                        "source_urls": ["https://invented.example/source"],
+                    }],
+                },
+            },
+        )
+    assert exc.value.code == "live_research_fact_source_unknown"
+
+
+@pytest.mark.asyncio
+async def test_mira_can_record_conflict_without_server_pair_heuristics(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    with svc.store.tx() as db:
+        for fact_id, fact_text, url in (
+            ("fact-a", "Строительство ворот началось в 1843 году.", "https://a.example/source"),
+            ("fact-b", "Строительство ворот началось в 1845 году.", "https://b.example/source"),
+        ):
+            db.execute(
+                "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (
+                    story_id,
+                    fact_id,
+                    fact_text,
+                    0.8,
+                    1,
+                    1,
+                    json.dumps([{
+                        "type": "web",
+                        "title": "Source",
+                        "url": url,
+                        "supports": [{"kind": "model_evidence", "source_url": url, "text": fact_text}],
+                    }], ensure_ascii=False),
+                ),
+            )
+
+    result = await adapter.execute_tool(
+        session,
+        {
+            "name": "record_fact_conflicts",
+            "id": "record-conflict",
+            "args": {
+                "conflicts": [{
+                    "left_fact_id": "fact-a",
+                    "right_fact_id": "fact-b",
+                    "relation": "contradiction",
+                    "suggested_resolution": "unresolved",
+                    "confidence": 0.88,
+                    "rationale": "Один и тот же этап строительства указан с разными датами.",
+                }],
+            },
+        },
+    )
+    assert result["recorded_count"] == 1
+    conflicts = adapter._topic_state(story_id)["fact_conflicts"]
+    assert len(conflicts) == 1
+    assert conflicts[0]["relation"] == "contradiction"
+    assert conflicts[0]["arbitrated_by"] is None
 
 
 @pytest.mark.asyncio
