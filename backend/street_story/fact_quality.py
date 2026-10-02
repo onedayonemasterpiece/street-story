@@ -8,7 +8,7 @@ from typing import Any
 _SPACE = re.compile(r"\s+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+|\s*;\s*")
 _CLAUSE_SPLIT = re.compile(
-    r",\s*(?=(?:а\s+вместо|однако|поэтому)\b)|\s+(?=и\s+стали\b)",
+    r",\s*(?=(?:а\s+вместо|однако|поэтому)\b)",
     re.IGNORECASE,
 )
 _INLINE_HEADING = re.compile(
@@ -20,7 +20,9 @@ _RELATIVE_ASIDE = re.compile(
     re.IGNORECASE,
 )
 _TEMPORAL_PREFIX = re.compile(
-    r"\b(?:В|К|С|До|После|Летом|Зимой|Осенью|Весной)\b[^,.]{0,70}$",
+    r"(?:(?:\b(?:В|К|С|До|После)\s+\d{3,4}\s+(?:году|года)\b)|"
+    r"(?:\bВ\s+(?:начале|конце|середине)\s+(?:[IVXLCDM]+|\d{3,4})\s*(?:века|столетия)?\b)|"
+    r"(?:\b(?:Летом|Зимой|Осенью|Весной)\s+\d{3,4}\s+года\b))[^,.]{0,45}$",
     re.IGNORECASE,
 )
 _YEAR = re.compile(r"(?<!\d)(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})(?!\d)(?![-‑–—](?:лет|лети|летн|й|я|у)\w*)")
@@ -81,6 +83,7 @@ _STOP = {
 def compact_fact_text(raw: str, limit: int = 180) -> str:
     text = _SPACE.sub(" ", str(raw or "")).strip(" \t\r\n-•")
     text = re.sub(r"\s*\[\d{1,3}\]\s*", " ", text).strip()
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     if len(text) <= limit:
         return text
     stops = [pos + 1 for mark in (".", ";") if (pos := text.rfind(mark, 0, limit)) >= 60]
@@ -130,9 +133,12 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
         start = bad.end() + temporal.start() if temporal else signal.start()
         text = text[start:]
     signal = _ROLE.search(text) or _SIGNAL.search(text)
-    if signal is not None and signal.start() > 60:
+    if signal is not None:
         temporal = _TEMPORAL_PREFIX.search(text[:signal.start()])
-        text = text[temporal.start():] if temporal else text[signal.start():]
+        if temporal is not None:
+            text = text[temporal.start():]
+        elif signal.start() > 60:
+            text = text[signal.start():]
     text = compact_fact_text(text)
     if re.search(r"(?:снес\w*|разобрал\w*|демонтир\w*|разруш\w*)", text, re.IGNORECASE):
         comma = text.find(",")
