@@ -373,8 +373,8 @@ async def test_mira_arbitration_is_persisted_without_changing_fact_selection(tmp
               story_id,conflict_id,poi_key,left_fact_id,right_fact_id,left_text,right_text,
               relation,detector_confidence,suggested_resolution,suggested_fact_id,
               detector_rationale,final_resolution,final_fact_id,arbitration_reason,
-              arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,?,1,?,?)
+              arbitration_confidence,arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,1,?,?)
             """,
             (
                 story_id,
@@ -422,7 +422,7 @@ async def test_mira_arbitration_is_persisted_without_changing_fact_selection(tmp
     assert result["preferred_fact_id"] == "fact_left"
     with svc.store.connection() as db:
         conflict = db.execute(
-            "SELECT final_resolution,final_fact_id,arbitrated_by,evidence_json "
+            "SELECT final_resolution,final_fact_id,arbitration_confidence,arbitrated_by,evidence_json "
             "FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
             (story_id, "conflict_test"),
         ).fetchone()
@@ -438,7 +438,7 @@ async def test_mira_arbitration_is_persisted_without_changing_fact_selection(tmp
     assert conflict["final_resolution"] == "prefer_left"
     assert conflict["final_fact_id"] == "fact_left"
     assert conflict["arbitrated_by"] == "mira"
-    assert json.loads(conflict["evidence_json"])["mira_arbitration_confidence"] == .84
+    assert conflict["arbitration_confidence"] == .84
     assert [bool(row["selected"]) for row in selected] == [True, True]
     assert telemetry == 1
 
