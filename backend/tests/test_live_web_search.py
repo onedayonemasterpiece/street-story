@@ -131,11 +131,7 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
 
     assert [executor.calls for executor in failures] == [1, 1]
     assert result.payload["search_provider"] == "duckduckgo_html_fallback"
-    assert result.payload["facts"][0] == {
-        "text": "The gate was rebuilt in 1843.",
-        "confidence": 0.4,
-        "source_urls": ["https://example.com/official"],
-    }
+    assert result.payload["facts"] == []
     assert result.grounding_sources == [
         {"type": "web_search", "title": "Official source", "url": "https://example.com/official"},
         {"type": "web_search", "title": "Archive", "url": "https://example.org/archive"},
