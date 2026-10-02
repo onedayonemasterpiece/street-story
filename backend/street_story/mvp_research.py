@@ -1027,6 +1027,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 }
                 for item in previous
             ],
+            *poi_history,
             *normalized,
         ]
         await analyze_fact_conflicts(
