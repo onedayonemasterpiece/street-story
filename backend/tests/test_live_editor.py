@@ -34,6 +34,7 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     assert configuration["search_enabled"] is True
     assert configuration["manual_activity_detection"] is True
     assert configuration["application_search_function"] == "search_web"
+    assert configuration["media_resolution"] == "MEDIA_RESOLUTION_MEDIUM"
     assert any(item["name"] == "search_web" for item in configuration["functions"])
 
 
