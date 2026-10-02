@@ -10,7 +10,9 @@ import json
 from urllib.parse import urlparse
 from typing import Any
 
+from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .fact_quality import atomic_fact_text, fact_kind, semantic_fact_id, semantic_fact_key
+from .gemini import GeminiUnavailable
 
 
 RELATIONS = {
@@ -293,11 +295,14 @@ async def analyze_fact_conflicts(
     pairs = conflict_candidate_pairs(items)
     if not pairs:
         return []
+    detector_fn = getattr(service.providers.gemini, "detect_fact_conflicts", None)
+    if not callable(detector_fn):
+        return []
     try:
-        records = await service.providers.gemini.detect_fact_conflicts(pairs, context or {})
-    except Exception as exc:
-        # Conflict analysis is observability/arbitration support. It must not make
-        # factual research unavailable when the auxiliary model/quota is unavailable.
+        records = await detector_fn(pairs, context or {})
+    except (GeminiUnavailable, MalformedProviderResponse, PermanentProviderError, RetryableProviderError) as exc:
+        # Conflict analysis is observability/arbitration support. Provider failure
+        # must not make the primary factual research unavailable.
         from .identity_telemetry import record_identity_event
         record_identity_event(
             service,
