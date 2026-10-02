@@ -175,7 +175,7 @@ def test_compound_demolition_and_new_construction_become_separate_facts():
     )
     assert facts == [
         "Королевские ворота снесли",
-        "а вместо них в 1843 году решили построить новые.",
+        "В 1843 году решили построить новые Королевские ворота.",
     ]
 
 
@@ -186,7 +186,7 @@ def test_old_name_and_later_dismantling_are_separate_facts():
     )
     assert facts == [
         "Самые ранние ворота имели название Кальтхофские",
-        "однако в начале XVIII века их разобрали.",
+        "В начале XVIII века их разобрали.",
     ]
 
 
