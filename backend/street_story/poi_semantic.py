@@ -10,8 +10,6 @@ import hashlib
 import json
 from typing import Any, Iterable
 
-from .fact_conflicts import conflict_candidate_pairs
-
 
 _RELATIONS = {
     "contradiction",
@@ -105,6 +103,42 @@ def _evidence_allowed(
     return False
 
 
+def _candidate_pairs(
+    items: list[dict[str, Any]],
+    *,
+    max_pairs: int,
+) -> list[dict[str, Any]]:
+    """Mechanical bounded prefilter over model-normalized kind/semantic_key."""
+
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for index, left in enumerate(items):
+        for right in items[index + 1 :]:
+            if str(left.get("kind")) != str(right.get("kind")):
+                continue
+            if str(left.get("text") or "").casefold() == str(
+                right.get("text") or ""
+            ).casefold():
+                continue
+            ids = sorted(
+                (str(left["fact_id"]), str(right["fact_id"]))
+            )
+            pair_key = "|".join(ids)
+            if pair_key in seen:
+                continue
+            seen.add(pair_key)
+            score = 2 if left.get("claim_key") == right.get("claim_key") else 1
+            ranked.append(
+                (
+                    score,
+                    pair_key,
+                    {"left": left, "right": right},
+                )
+            )
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [item[2] for item in ranked[:max_pairs]]
+
+
 def queue_poi_semantic_candidates(
     db,
     *,
@@ -118,7 +152,7 @@ def queue_poi_semantic_candidates(
     """Persist only bounded candidate pairs; no contradiction decision occurs."""
 
     candidate_ids: list[str] = []
-    for pair in conflict_candidate_pairs(items, max_pairs=max_pairs):
+    for pair in _candidate_pairs(items, max_pairs=max_pairs):
         ids = {str(pair["left"]["fact_id"]), str(pair["right"]["fact_id"])}
         if focus_claim_id not in ids:
             continue
