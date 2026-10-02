@@ -302,8 +302,8 @@ async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_p
 
     assert result["summary"] == "Найдено два проверяемых факта."
     assert len(result["sources"]) == 1
+    assert len(result["facts"]) == 1
     assert result["facts"][0]["evidence_supported"] is True
-    assert result["facts"][1]["evidence_supported"] is False
     assert svc.providers.gemini.searches[0][0] == "Бранденбургские ворота Калининград история"
     assert "Я снимаю Бранденбургские ворота" in svc.providers.gemini.searches[0][1]["recent_author_context"]
 
@@ -312,10 +312,9 @@ async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_p
         assert db.execute("SELECT COUNT(*) FROM voice_sessions").fetchone()[0] == 0
         rows = list(db.execute("SELECT text,evidence_supported,sources_json FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
         story = db.execute("SELECT state,draft_text,research_json FROM stories WHERE id=?", (story_id,)).fetchone()
-    assert len(rows) == 2
+    assert len(rows) == 1
     assert rows[0]["evidence_supported"] == 1
     assert "example.com/brandenburg" in rows[0]["sources_json"]
-    assert rows[1]["evidence_supported"] == 0
     assert story["draft_text"] == "Авторский текст"
     assert story["state"] != "researching"
     research = __import__("json").loads(story["research_json"])
