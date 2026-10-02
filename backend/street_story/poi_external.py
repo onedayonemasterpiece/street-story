@@ -11,8 +11,7 @@ import re
 import uuid
 from typing import Any
 
-from .fact_conflicts import conflict_candidate_pairs
-from .fact_quality import atomic_fact_text, fact_kind, semantic_fact_key
+from .model_facts import normalized_claim_key, validated_model_fact_text
 
 
 _VISIBILITIES = {"private", "workspace", "public"}
@@ -181,19 +180,18 @@ def normalize_poi_evidence(event: dict[str, Any]) -> dict[str, Any]:
     producer_kind = str(claim.get("kind") or "")
     if producer_kind not in _KINDS:
         raise PoiEvidenceError("claim_kind_invalid")
-    source_text = _text(claim.get("text"), "claim_text", 500)
-    atomic = atomic_fact_text(source_text)
-    if atomic is None:
-        raise PoiEvidenceError("claim_not_atomic")
-    normalized_kind = fact_kind(atomic)
-    if normalized_kind not in _KINDS:
-        normalized_kind = "other"
-    semantic_key = semantic_fact_key("", atomic)
+    source_text = validated_model_fact_text(_text(claim.get("text"), "claim_text", 500))
+    if source_text is None:
+        raise PoiEvidenceError("claim_text_invalid")
     producer_semantic_key = _text(
         claim.get("semantic_key"),
         "producer_semantic_key",
         300,
     )
+    semantic_key = normalized_claim_key(producer_semantic_key)
+    if semantic_key is None:
+        raise PoiEvidenceError("producer_semantic_key_invalid")
+    normalized_kind = producer_kind
     time_scope = _text(
         claim.get("time_scope"),
         "time_scope",
@@ -290,7 +288,7 @@ def normalize_poi_evidence(event: dict[str, Any]) -> dict[str, Any]:
             "semantic_key": semantic_key,
             "producer_kind": producer_kind,
             "kind": normalized_kind,
-            "text": atomic,
+            "text": source_text,
             "time_scope": time_scope,
         },
         "evidence": {
@@ -378,40 +376,6 @@ def _resolve_poi(db, locator: dict[str, Any], now: float) -> tuple[str | None, s
 def _claim_id(poi_id: str, semantic_key: str) -> str:
     raw = f"{poi_id}|{semantic_key}".encode("utf-8")
     return "poi_claim_" + hashlib.sha256(raw).hexdigest()[:24]
-
-
-def _conflict_id(left: str, right: str) -> str:
-    pair = "|".join(sorted((left, right)))
-    return "poi_conflict_" + hashlib.sha256(pair.encode("utf-8")).hexdigest()[:24]
-
-
-def _visible_claim_items(db, poi_id: str, normalized: dict[str, Any]) -> list[dict[str, Any]]:
-    scope = normalized["scope"]
-    clauses = ["e.visibility='public'"]
-    args: list[Any] = [poi_id]
-    if scope.get("owner_sub"):
-        clauses.append("(e.visibility='private' AND e.owner_sub=?)")
-        args.append(scope["owner_sub"])
-    if scope.get("workspace_id"):
-        clauses.append("(e.visibility='workspace' AND e.workspace_id=?)")
-        args.append(scope["workspace_id"])
-    where_scope = " OR ".join(clauses)
-    rows = db.execute(
-        "SELECT DISTINCT c.id,c.semantic_key,c.kind,c.text "
-        "FROM poi_claims c JOIN poi_claim_evidence ce ON ce.claim_id=c.id "
-        "JOIN poi_external_events e ON e.event_id=ce.event_id "
-        f"WHERE c.poi_id=? AND ({where_scope})",
-        tuple(args),
-    )
-    return [
-        {
-            "fact_id": str(row["id"]),
-            "claim_key": str(row["semantic_key"]),
-            "text": str(row["text"]),
-            "sources": [],
-        }
-        for row in rows
-    ]
 
 
 def ingest_poi_evidence(store, event: dict[str, Any]) -> dict[str, Any]:
@@ -509,36 +473,8 @@ def ingest_poi_evidence(store, event: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
 
-            items = _visible_claim_items(db, poi_id, normalized)
-            pairs = conflict_candidate_pairs(items)
-            for pair in pairs:
-                ids = {pair["left"]["fact_id"], pair["right"]["fact_id"]}
-                if claim_id not in ids:
-                    continue
-                left, right = sorted(ids)
-                conflict_id = _conflict_id(left, right)
-                db.execute(
-                    "INSERT INTO poi_conflicts("
-                    "conflict_id,poi_id,left_claim_id,right_claim_id,relation,status,"
-                    "times_seen,first_seen_at,last_seen_at"
-                    ") VALUES(?,?,?,?,?,'open',1,?,?) "
-                    "ON CONFLICT(conflict_id) DO UPDATE SET "
-                    "times_seen=poi_conflicts.times_seen+1,last_seen_at=excluded.last_seen_at",
-                    (
-                        conflict_id,
-                        poi_id,
-                        left,
-                        right,
-                        "uncertain",
-                        now,
-                        now,
-                    ),
-                )
-                conflict_ids.append(conflict_id)
-                db.execute(
-                    "UPDATE poi_claims SET status='contested',updated_at=? WHERE id IN (?,?)",
-                    (now, left, right),
-                )
+            # Conflict semantics are evaluated by the model when POI evidence
+            # enters research. Intake persists provenance and never guesses a conflict.
 
         return {
             "event_id": normalized["event_id"],

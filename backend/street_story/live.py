@@ -17,7 +17,12 @@ from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
 from .fact_conflicts import analyze_fact_conflicts, conflict_rows, resolve_fact_conflict
-from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id, semantic_fact_key
+from .model_facts import (
+    merge_model_fact_inventory,
+    model_fact_id,
+    normalized_claim_key,
+    validated_model_fact_text,
+)
 from .live_author_intent import (
     begin_turn,
     consent_receipt,
@@ -327,8 +332,10 @@ SYSTEM_INSTRUCTION = """
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
 - когда идентичность подтверждена и нужны внешние сведения, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
-- количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным;
+- семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
+- количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
 - fact_conflicts в состоянии темы — внутренний журнал возможных противоречий. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web. Когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict; если недостаточно — оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
+- когда доказательств уже достаточно для публикации, сама сформируй редакционную концепцию через set_concept (если автор её ещё не задал), при необходимости явно скорректируй выбор фактов через select_facts, затем подготовь или обнови публикационный текст через edit_text. Текст — не список фактов: обычно 2–5 коротких связных абзацев с ясным заходом, развитием и завершением; используй только выбранные evidence-backed facts и авторский контекст, не добавляй неподтверждённые сведения;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
@@ -1009,18 +1016,24 @@ class StreetStoryLiveAdapter:
             if isinstance(source, dict) and str(source.get("url") or "").startswith("https://")
         }
         prior_decisions = {
-            semantic_fact_key("", str(item.get("text") or "")): bool(item.get("selected"))
+            str(item.get("fact_id") or ""): bool(item.get("selected"))
             for item in known_facts
-            if atomic_fact_text(str(item.get("text") or "")) is not None
+            if str(item.get("fact_id") or "").strip()
+        }
+        known_by_id = {
+            str(item.get("fact_id") or ""): item
+            for item in known_facts
+            if str(item.get("fact_id") or "").strip()
         }
         normalized: list[dict[str, Any]] = []
         for item in (grounded.payload.get("facts") or [])[:12]:
             if not isinstance(item, dict):
                 continue
-            text = atomic_fact_text(str(item.get("text") or ""))
-            if text is None:
+            text = validated_model_fact_text(item.get("text"))
+            claim_key = normalized_claim_key(item.get("claim_key"))
+            if text is None or claim_key is None:
                 continue
-            sources: list[dict[str, str]] = []
+            sources: list[dict[str, Any]] = []
             for raw_url in item.get("source_urls", []) or []:
                 candidate = source_objects.get(str(raw_url).rstrip("/"))
                 if candidate and candidate not in sources:
@@ -1029,24 +1042,30 @@ class StreetStoryLiveAdapter:
                 confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
             except (TypeError, ValueError):
                 confidence = 0.0
+            existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+            fact_id = (
+                existing_fact_id
+                if existing_fact_id in known_by_id
+                else model_fact_id(claim_key, text)
+            )
             normalized.append(
                 {
-                    "fact_id": semantic_fact_id("", text),
-                    "claim_key": "",
+                    "fact_id": fact_id,
+                    "claim_key": claim_key,
                     "text": text,
                     "confidence": confidence,
                     "evidence_supported": bool(sources),
-                    "selected": bool(sources) and prior_decisions.get(semantic_fact_key("", text), True),
+                    "selected": bool(sources) and prior_decisions.get(fact_id, True),
                     "sources": sources,
                 }
             )
 
-        inventory = merge_fact_inventory([*known_facts, *normalized])
+        inventory = merge_model_fact_inventory([*known_facts, *normalized])
         detected_conflicts = await analyze_fact_conflicts(
             self.service,
             story_id,
             str(identity.get("candidate_id") or "") or None,
-            [*known_facts, *poi_history, *normalized],
+            [*normalized, *known_facts, *poi_history],
             context={
                 "place_name": story.get("place_name"),
                 "source": "live_search",
@@ -1189,6 +1208,7 @@ class StreetStoryLiveAdapter:
                 )
             ]
             research["image_notes"] = "\n".join(selected_text[:6])
+            research["draft_needs_refresh"] = True
             self.service._mark_visual_stale(db, story, ids)
             db.execute(
                 "UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?",
@@ -1214,6 +1234,8 @@ class StreetStoryLiveAdapter:
             research = json.loads(story["research_json"] or "{}")
             previous = str(research.get("publication_concept") or "")
             research["publication_concept"] = concept
+            if concept != previous:
+                research["draft_needs_refresh"] = True
             context = json.loads(story["visual_context_json"] or "{}")
             state = str(story["state"] or "")
             clear_visual = bool(context) and concept != previous and state not in {"scheduled", "published"}
@@ -1281,7 +1303,9 @@ class StreetStoryLiveAdapter:
             research = json.loads(story["research_json"] or "{}")
             if research.get("content_identity_changed"):
                 research["content_identity_changed"] = False
-                db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
+            research["draft_needs_refresh"] = False
+            research["draft_composed_by"] = "mira_live"
+            db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
             history = json.loads(editor["history_json"] or "[]")
             if not isinstance(history, list):
                 history = []
@@ -1537,6 +1561,12 @@ class StreetStoryLiveAdapter:
         with self.service.store.tx() as db:
             story, editor = self._editor_row(db, story_id)
             visual = json.loads(story["visual_context_json"] or "{}")
+            research = json.loads(story["research_json"] or "{}")
+            if research.get("draft_needs_refresh"):
+                raise InvalidStateError(
+                    "publication_text_stale",
+                    "Выбор фактов или концепция изменились; Мире нужно обновить текст публикации.",
+                )
             asset_ref = str(story["vibepublish_asset_ref"] or "")
             visual_revision = str(visual.get("content_revision") or "")
             text_value = str(story["draft_text"] or "")

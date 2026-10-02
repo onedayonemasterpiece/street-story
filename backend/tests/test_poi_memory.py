@@ -3,6 +3,8 @@ from street_story.poi_memory import poi_key, prior_facts
 
 class FakeDB:
     def execute(self, _query, args):
+        if "FROM poi_aliases" in _query:
+            return []
         assert args[0] == "current"
         assert args[1] == "wiki:1"
         return [

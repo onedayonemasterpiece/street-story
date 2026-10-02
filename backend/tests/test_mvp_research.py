@@ -108,6 +108,15 @@ class FakeGemini:
             "grounding_supports": [],
         }
 
+    async def compose_publication(self, *, place_name, concept, author_note, facts):
+        body = "\n\n".join(
+            part for part in [author_note, " ".join(str(item["text"]) for item in facts)] if part
+        )
+        return {
+            "concept": concept or "Городская история объекта",
+            "draft_text": body or "Проверенный городской факт.",
+        }
+
 
 class NoopVP:
     async def bootstrap(self):
@@ -341,9 +350,16 @@ async def test_three_voice_messages_are_ordered_and_research_is_explicit(tmp_pat
     assert result["visual_identity"]["candidate_id"] == "wiki:1"
     assert result["source_count"] == 1
     assert result["sources"] == [{"type": "wikipedia", "title": "Дом Советов", "url": WIKI_URL}]
-    assert len(result["facts"]) == 1
-    assert result["facts"][0]["evidence_supported"] is True
-    assert result["facts"][0]["sources"][0]["supports"][0]["kind"] == "retrieved_excerpt"
+    assert len(result["facts"]) == 2
+    supported = [fact for fact in result["facts"] if fact["evidence_supported"]]
+    unsupported = [fact for fact in result["facts"] if not fact["evidence_supported"]]
+    assert len(supported) == 1
+    assert len(unsupported) == 1
+    assert supported[0]["sources"][0]["url"] == WIKI_URL
+    assert supported[0]["sources"][0]["supports"] == []
+    assert unsupported[0]["selected"] is False
+    assert unsupported[0]["text"] not in (result["draft_text"] or "")
+    assert "\n\n" in (result["draft_text"] or "")
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ def event(
     names=None,
     text="Ворота построены в 1843 году.",
     kind="construction",
+    semantic_key="producer-key",
 ):
     event_id = event_id or str(uuid.uuid4())
     candidate_id = candidate_id or str(uuid.uuid4())
@@ -61,7 +62,7 @@ def event(
         },
         "claim": {
             "candidate_id": candidate_id,
-            "semantic_key": "producer-key",
+            "semantic_key": semantic_key,
             "kind": kind,
             "text": text,
             "time_scope": None,
@@ -81,14 +82,26 @@ def event(
     }
 
 
-def test_normalizer_recomputes_street_story_semantics():
+def test_normalizer_preserves_model_semantics():
     payload = event()
     normalized = normalize_poi_evidence(payload)
     assert normalized["claim"]["kind"] == "construction"
-    assert normalized["claim"]["semantic_key"] == "construction:1843"
+    assert normalized["claim"]["semantic_key"] == "producer-key"
     assert normalized["claim"]["producer_semantic_key"] == "producer-key"
     assert normalized["evidence"]["source_family_id"] == "unknown"
 
+
+
+def test_model_semantic_claim_is_not_rejected_by_regex_shape():
+    payload = event(
+        text="Первое письменное упоминание объекта относится к 1255 году.",
+        kind="other",
+    )
+    payload["claim"]["semantic_key"] = "first-written-mention-1255"
+    normalized = normalize_poi_evidence(payload)
+    assert normalized["claim"]["text"] == "Первое письменное упоминание объекта относится к 1255 году."
+    assert normalized["claim"]["semantic_key"] == "first-written-mention-1255"
+    assert normalized["claim"]["kind"] == "other"
 
 def test_idempotent_external_evidence_creates_candidate_poi_and_claim(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
@@ -138,7 +151,7 @@ def test_name_only_unknown_place_stays_unresolved_without_creating_poi(tmp_path)
         assert row["claim_id"] is None
 
 
-def test_same_external_id_merges_poi_and_opens_uncertain_conflict(tmp_path):
+def test_same_external_id_persists_distinct_model_claims_without_guessing_conflict(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     first = ingest_poi_evidence(
         store,
@@ -147,6 +160,7 @@ def test_same_external_id_merges_poi_and_opens_uncertain_conflict(tmp_path):
             candidate_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             idempotency_key="knowledge:first",
             text="Ворота построены в 1843 году.",
+            semantic_key="construction-date-1843",
         ),
     )
     second = ingest_poi_evidence(
@@ -156,23 +170,22 @@ def test_same_external_id_merges_poi_and_opens_uncertain_conflict(tmp_path):
             candidate_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
             idempotency_key="knowledge:second",
             text="Ворота построены в 1850 году.",
+            semantic_key="construction-date-1850",
         ),
     )
 
     assert second["poi_id"] == first["poi_id"]
-    assert len(second["conflict_ids"]) == 1
+    assert second["conflict_ids"] == []
 
     with store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM pois").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM poi_claims").fetchone()[0] == 2
-        conflict = db.execute("SELECT * FROM poi_conflicts").fetchone()
-        assert conflict["relation"] == "uncertain"
-        assert conflict["status"] == "open"
+        assert db.execute("SELECT COUNT(*) FROM poi_conflicts").fetchone()[0] == 0
         statuses = {
             row["status"]
             for row in db.execute("SELECT status FROM poi_claims")
         }
-        assert statuses == {"contested"}
+        assert statuses == {"candidate"}
 
 
 def test_private_evidence_from_different_owners_does_not_cross_conflict(tmp_path):
@@ -213,6 +226,7 @@ def test_public_evidence_is_visible_to_private_owner_conflict_check(tmp_path):
         visibility="public",
         owner=OWNER_A,
         text="Ворота построены в 1843 году.",
+        semantic_key="public-construction-1843",
     )
     private_payload = event(
         event_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -221,8 +235,9 @@ def test_public_evidence_is_visible_to_private_owner_conflict_check(tmp_path):
         visibility="private",
         owner=OWNER_B,
         text="Ворота построены в 1850 году.",
+        semantic_key="private-construction-1850",
     )
     ingest_poi_evidence(store, public_payload)
     second = ingest_poi_evidence(store, private_payload)
 
-    assert len(second["conflict_ids"]) == 1
+    assert second["conflict_ids"] == []

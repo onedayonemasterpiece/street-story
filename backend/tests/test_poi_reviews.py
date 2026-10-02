@@ -1,10 +1,11 @@
 import pytest
+from types import SimpleNamespace
 
 from street_story.db import Store
+from street_story.fact_conflicts import persist_fact_conflicts
 from street_story.poi_external import ingest_poi_evidence
 from street_story.poi_reviews import (
     PoiReviewAccessError,
-    ingest_poi_evidence_with_reviews,
     list_review_cases_for_actor,
     review_case_projection,
     sync_review_cases,
@@ -27,6 +28,7 @@ def event(
     visibility="private",
     owner=OWNER_A,
     verification_score=90,
+    semantic_key="producer-key",
 ):
     return {
         "contract_version": "poi.fact_evidence.v1",
@@ -52,7 +54,7 @@ def event(
         },
         "claim": {
             "candidate_id": candidate_id,
-            "semantic_key": "producer-key",
+            "semantic_key": semantic_key,
             "kind": "construction",
             "text": text,
             "time_scope": None,
@@ -73,25 +75,93 @@ def event(
 
 
 def create_conflict(store):
-    ingest_poi_evidence(
+    first = ingest_poi_evidence(
         store,
         event(
             event_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
             candidate_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             key="knowledge:left",
             text="Ворота построены в 1843 году.",
+            semantic_key="construction-date-1843",
         ),
     )
-    second = ingest_poi_evidence_with_reviews(
+    second = ingest_poi_evidence(
         store,
         event(
             event_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
             candidate_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
             key="knowledge:right",
             text="Ворота построены в 1850 году.",
+            semantic_key="construction-date-1850",
         ),
     )
-    return second
+    assert first["poi_id"] == second["poi_id"]
+    assert first["claim_id"] and second["claim_id"]
+
+    story_id = "story_model_conflict"
+    now = store.now()
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stories("
+            "id,client_story_id,photo_sha256,photo_mime_type,photo_path,voice_protocol,state,"
+            "research_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                story_id,
+                "client-model-conflict",
+                "a" * 64,
+                "image/jpeg",
+                "/tmp/photo.jpg",
+                "voice-chunks-v2",
+                "review",
+                "{}",
+                now,
+                now,
+            ),
+        )
+
+    evidence = {
+        "source_count": 1,
+        "domain_count": 0,
+        "official": False,
+        "official_urls": [],
+        "source_urls": [],
+        "evidence_refs": ["knowledge://evidence/test"],
+        "supports": [],
+    }
+    persist_fact_conflicts(
+        SimpleNamespace(store=store),
+        story_id,
+        str(first["poi_id"]),
+        [{
+            "conflict_id": "conflict_model_detected",
+            "left_fact_id": str(first["claim_id"]),
+            "right_fact_id": str(second["claim_id"]),
+            "left_text": "Ворота построены в 1843 году.",
+            "right_text": "Ворота построены в 1850 году.",
+            "relation": "contradiction",
+            "detector_confidence": 0.96,
+            "suggested_resolution": "unresolved",
+            "suggested_fact_id": None,
+            "detector_rationale": "Модель выявила две взаимоисключающие даты в одном временном смысле.",
+            "evidence": {"left": evidence, "right": evidence},
+            "poi_id": str(first["poi_id"]),
+        }],
+        detector="test_model",
+    )
+    with store.connection() as db:
+        conflict_ids = [
+            str(row["conflict_id"])
+            for row in db.execute("SELECT conflict_id FROM poi_conflicts ORDER BY conflict_id")
+        ]
+        review_case_ids = [
+            str(row["review_case_id"])
+            for row in db.execute("SELECT review_case_id FROM poi_review_cases ORDER BY review_case_id")
+        ]
+    return {
+        "conflict_ids": conflict_ids,
+        "review_case_ids": review_case_ids,
+    }
 
 
 def test_conflict_materializes_projects_hub_compatible_review_case(tmp_path):
@@ -108,7 +178,7 @@ def test_conflict_materializes_projects_hub_compatible_review_case(tmp_path):
     )
 
     assert case["contract_version"] == "poi.review_case.v1"
-    assert case["relation"] == "uncertain"
+    assert case["relation"] == "contradiction"
     assert len(case["claims"]) == 2
     assert case["required_reviews"] == 2
     assert case["required_expertise"]["subject"] == ["construction"]

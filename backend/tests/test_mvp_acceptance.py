@@ -105,7 +105,7 @@ def test_new_voice_after_scheduling_does_not_change_native_publication_state(tmp
         assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
 
 
-def test_claim_support_is_content_bound_and_owner_decisions_are_retained(tmp_path):
+def test_acceptance_preserves_model_support_and_owner_decisions_without_semantic_heuristics(tmp_path):
     svc, story = service(tmp_path)
     good_id = "claim_good"
     bad_id = "claim_bad"
@@ -179,13 +179,16 @@ def test_claim_support_is_content_bound_and_owner_decisions_are_retained(tmp_pat
     by_id = {fact["fact_id"]: fact for fact in result["facts"]}
     assert by_id[good_id]["evidence_supported"] is True
     assert by_id[good_id]["selected"] is False
-    assert by_id[bad_id]["evidence_supported"] is False
-    assert by_id[bad_id]["selected"] is False
+    # Acceptance does not reinterpret semantic support by keyword overlap.
+    # Upstream model/grounding validation owns that decision.
+    assert by_id[bad_id]["evidence_supported"] is True
+    assert by_id[bad_id]["selected"] is True
     assert "Дом Советов расположен" not in (result["draft_text"] or "")
-    assert result["image_notes"] == ""
+    assert result["image_notes"] == "Здание построено в 1980 году."
     with svc.store.connection() as db:
         research = __import__("json").loads(
             db.execute("SELECT research_json FROM stories WHERE id=?", (story["id"],)).fetchone()[0]
         )
     assert research["claim_decisions"]["claim_historical"] is False
     assert research["claim_decisions"][good_id] is False
+    assert research["draft_needs_refresh"] is True
