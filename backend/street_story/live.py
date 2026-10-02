@@ -461,7 +461,7 @@ class StreetStoryLiveAdapter:
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
                 "manual_activity_detection": True,
-                "search_enabled": True,
+                "search_enabled": False,
                 "application_search_function": "search_web",
             },
             "response": {
