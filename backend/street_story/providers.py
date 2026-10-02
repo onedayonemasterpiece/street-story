@@ -636,7 +636,7 @@ class GeminiClient:
         )
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_json_schema=self.FACT_CONFLICT_SCHEMA,
+            response_json_schema=GeminiClient.FACT_CONFLICT_SCHEMA,
         )
 
         async def call(key, timeout, *, model=None, quota=None):
