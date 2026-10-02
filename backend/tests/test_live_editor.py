@@ -302,8 +302,8 @@ async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_p
 
     assert result["summary"] == "Найдено два проверяемых факта."
     assert len(result["sources"]) == 1
+    assert len(result["facts"]) == 1
     assert result["facts"][0]["evidence_supported"] is True
-    assert result["facts"][1]["evidence_supported"] is False
     assert svc.providers.gemini.searches[0][0] == "Бранденбургские ворота Калининград история"
     assert "Я снимаю Бранденбургские ворота" in svc.providers.gemini.searches[0][1]["recent_author_context"]
 
@@ -312,16 +312,51 @@ async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_p
         assert db.execute("SELECT COUNT(*) FROM voice_sessions").fetchone()[0] == 0
         rows = list(db.execute("SELECT text,evidence_supported,sources_json FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
         story = db.execute("SELECT state,draft_text,research_json FROM stories WHERE id=?", (story_id,)).fetchone()
-    assert len(rows) == 2
+    assert len(rows) == 1
     assert rows[0]["evidence_supported"] == 1
     assert "example.com/brandenburg" in rows[0]["sources_json"]
-    assert rows[1]["evidence_supported"] == 0
     assert story["draft_text"] == "Авторский текст"
     assert story["state"] != "researching"
     research = __import__("json").loads(story["research_json"])
     assert research["live_web_searches"][-1]["query"] == "Бранденбургские ворота Калининград история"
     assert any(event.get("type") == "product_state" for event in events)
 
+
+
+@pytest.mark.asyncio
+async def test_live_web_search_does_not_reselect_a_previously_rejected_fact(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    with svc.store.tx() as db:
+        db.execute(
+            "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                story_id,
+                "legacy-location",
+                "Бранденбургские ворота находятся в Калининграде.",
+                0.98,
+                1,
+                0,
+                '[{"type":"web","title":"Brandenburg source","url":"https://example.com/brandenburg"}]',
+            ),
+        )
+
+    await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-rejected",
+            "args": {"query": "Бранденбургские ворота Калининград история"},
+        },
+    )
+
+    with svc.store.connection() as db:
+        rows = list(db.execute("SELECT text,selected FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
+    assert len(rows) == 1
+    assert rows[0]["text"] == "Бранденбургские ворота находятся в Калининграде."
+    assert rows[0]["selected"] == 0
 
 @pytest.mark.asyncio
 async def test_literal_span_is_protected_and_undo_restores_previous_text(tmp_path):

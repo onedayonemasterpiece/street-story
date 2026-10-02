@@ -7,7 +7,7 @@ import kotlin.math.max
  * Tuning is conservative and must be evaluated on the owner's physical device.
  */
 internal class LiveSpeechAdmission {
-    private val votes = BooleanArray(8)
+    private val votes = BooleanArray(16)
     private var index = 0
     private var opened = false
     var noiseFloorRms = 24.0
@@ -28,7 +28,7 @@ internal class LiveSpeechAdmission {
         val eligible = rawSpeech && rms.isFinite() && rms >= threshold
         votes[index] = eligible
         index = (index + 1) % votes.size
-        if (!opened && votes.count { it } >= 6) opened = true
+        if (!opened && votes.count { it } >= 12) opened = true
         val accepted = opened && eligible
         if (accepted) acceptedFrames++ else rejectedFrames++
         return accepted
@@ -47,8 +47,8 @@ internal class LiveSpeechAdmission {
         "admitted_positive_frames" to acceptedFrames,
         "rejected_frames" to rejectedFrames,
         "noise_floor_rms" to noiseFloorRms.toInt(),
-        "attack_window_frames" to 8,
-        "required_positive_frames" to 6,
+        "attack_window_frames" to 16,
+        "required_positive_frames" to 12,
     )
 }
 

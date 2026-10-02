@@ -49,3 +49,39 @@ author's intent. Unsupported search snippets are not promoted into durable facts
 This remains inside the existing Street Story backend and SQLite store. A separate
 POI service or materialized database should be introduced only if future scale or
 query requirements justify it.
+
+## Owner review 2026-10-02 15:20 — quality boundary
+
+The canonical review `voice-20261002-152036-8d69118b` showed that prompt wording
+alone was insufficient: article titles, photo/licence metadata and multiple
+rephrasings of the same event still entered the visible fact list.
+
+A deterministic fact-quality boundary now sits after research and Live web search:
+non-factual titles/media metadata are rejected, text is compacted, and facts are
+merged by semantic event key (event type + year/period where available). Evidence
+URLs from duplicate claims are unioned, with official sources ordered first.
+Re-running research rebuilds the current topic inventory from valid accumulated
+facts, which also cleans legacy polluted entries.
+
+Emergency public-web snippets remain useful discovery material but are no longer
+promoted to durable facts. A source snippet becomes a fact only after the normal
+evidence-backed research path expresses an atomic claim.
+
+## Multiple sources for one fact
+
+A merged fact may retain many evidence URLs. This is desirable: one atomic claim can
+be supported by an official page, Wikipedia and several independent publications
+without becoming several duplicate checklist items.
+
+Source multiplicity is treated as evidence richness, not as a truth vote. Repetition
+across many sites can still propagate the same false claim. Street Story therefore:
+
+- keeps every distinct supporting URL attached to the merged fact;
+- keeps the official source first when one exists;
+- exposes the number of URLs and distinct sites in the UI;
+- does not automatically convert source count into factual certainty;
+- preserves source diversity for later editorial judgment and future scoring.
+
+When two differently worded claims merge into the same semantic event, their source
+sets are unioned rather than replacing one another.
+

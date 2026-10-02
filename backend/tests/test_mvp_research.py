@@ -341,10 +341,9 @@ async def test_three_voice_messages_are_ordered_and_research_is_explicit(tmp_pat
     assert result["visual_identity"]["candidate_id"] == "wiki:1"
     assert result["source_count"] == 1
     assert result["sources"] == [{"type": "wikipedia", "title": "Дом Советов", "url": WIKI_URL}]
+    assert len(result["facts"]) == 1
     assert result["facts"][0]["evidence_supported"] is True
     assert result["facts"][0]["sources"][0]["supports"][0]["kind"] == "retrieved_excerpt"
-    assert result["facts"][1]["evidence_supported"] is False
-    assert result["facts"][1]["selected"] is False
 
 
 @pytest.mark.asyncio
