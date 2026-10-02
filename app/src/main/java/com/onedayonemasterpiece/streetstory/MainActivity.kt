@@ -90,6 +90,19 @@ class MainActivity : Activity() {
     private var shownImagePath: String? = null
     private var topicScroll: ScrollView? = null
     private var previewExpanded = true
+    private var stickyIsland: LinearLayout? = null
+    private var stickyImage: ImageView? = null
+    private var stickyTitle: TextView? = null
+    private var stickyFacts: TextView? = null
+    private var stickyConcept: TextView? = null
+    private var stickyVisible = false
+    private var identityProgressView: TextView? = null
+    private var factsBlock: LinearLayout? = null
+    private var conceptBlock: TextView? = null
+    private var publicationEventView: TextView? = null
+    private var renderedMessages: List<LiveChatMessage> = emptyList()
+    private var micHalo: View? = null
+    private var micHaloPulse: ObjectAnimator? = null
     private var lastDialogueMessageCount = 0
 
     private val liveListener: (LiveUiState) -> Unit = { state ->
@@ -153,7 +166,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildChrome() {
-        root = FrameLayout(this).apply { setBackgroundColor(SAGE) }
+        root = FrameLayout(this).apply { setBackgroundColor(SAGE); clipChildren = false; clipToPadding = false }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(0, bars.top, 0, bars.bottom)
@@ -173,13 +186,15 @@ class MainActivity : Activity() {
             background = null
             elevation = 0f
             visibility = View.GONE
+            clipChildren = false
+            clipToPadding = false
         }
         root.addView(
             dock,
-            FrameLayout.LayoutParams(dp(96), dp(96)).apply {
+            FrameLayout.LayoutParams(dp(120), dp(120)).apply {
                 gravity = Gravity.END or Gravity.BOTTOM
-                rightMargin = dp(14)
-                bottomMargin = dp(10)
+                rightMargin = dp(6)
+                bottomMargin = dp(16)
             },
         )
         setContentView(root)
@@ -202,7 +217,7 @@ class MainActivity : Activity() {
         }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(28))
+            setPadding(dp(18), dp(18), dp(18), dp(150))
         }
         scroll.addView(column)
         contentHost.addView(scroll)
@@ -215,10 +230,7 @@ class MainActivity : Activity() {
         heading.addView(secondaryButton("Настройки") { showSettings() })
         column.addView(heading)
 
-        val create = primaryButton("+ Новая тема") { launchPhotoPicker() }.apply {
-            contentDescription = "new-topic"
-        }
-        column.addView(create, blockMargins(top = 18, bottom = 20))
+        buildNewTopicFab()
 
         val stories = store.stories()
         if (stories.isEmpty()) {
@@ -266,6 +278,12 @@ class MainActivity : Activity() {
                 maxLines = 1
             }
         )
+        publicationLabel(research.get(story.clientStoryId)).takeIf { it.isNotBlank() }?.let { publication ->
+            text.addView(label(publication, 12, MUTED, Typeface.DEFAULT).apply {
+                setPadding(0, dp(4), 0, 0)
+                maxLines = 1
+            })
+        }
         row.addView(text, LinearLayout.LayoutParams(0, -2, 1f))
 
         val delete = ImageButton(this).apply {
@@ -287,23 +305,23 @@ class MainActivity : Activity() {
         shownImagePath = null
         previewExpanded = true
         lastDialogueMessageCount = 0
+        renderedMessages = emptyList()
+        stickyIsland = null; stickyImage = null; stickyTitle = null
+        stickyFacts = null; stickyConcept = null; stickyVisible = false
+        factsBlock = null; conceptBlock = null; publicationEventView = null
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
             contentDescription = "topic-scroll"
-            setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
-                if (scrollY < oldScrollY) {
-                    setPreviewCompact(false)
-                } else if (scrollY > oldScrollY && lastDialogueMessageCount > 0) {
-                    setPreviewCompact(true)
-                }
-            }
+            // Never resize scroll content from a scroll callback: that used to
+            // reverse the scroll direction and repeatedly move the chat away.
+            setOnScrollChangeListener { _, _, _, _, _ -> updateStickyPhoto() }
         }
         topicScroll = scroll
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(118))
+            setPadding(dp(18), dp(14), dp(18), dp(158))
         }
         scroll.addView(column)
         contentHost.addView(scroll)
@@ -313,7 +331,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(secondaryButton("‹ Темы") { showTopics() })
-        topicTitleView = label(topicTitle(story), 20, INK, Typeface.DEFAULT_BOLD).apply {
+        topicTitleView = label("Тема", 20, INK, Typeface.DEFAULT_BOLD).apply {
             maxLines = 2
             setPadding(dp(10), 0, 0, 0)
         }
@@ -324,7 +342,6 @@ class MainActivity : Activity() {
             setPadding(0, dp(11), 0, dp(8))
             visibility = View.GONE
         }
-        column.addView(topicStatusView)
         photoRecoveryButton = secondaryButton("Прочитать GPS из оригинала фото") {
             pendingPhotoRecoveryStoryId = story.clientStoryId
             stopLiveForOwner(story.clientStoryId)
@@ -336,7 +353,6 @@ class MainActivity : Activity() {
             setPadding(0, dp(4), 0, dp(8))
             contentDescription = "identified-object-source"
         }
-        column.addView(identityLinkView)
 
         previewImage = ImageView(this).apply {
             adjustViewBounds = true
@@ -344,14 +360,22 @@ class MainActivity : Activity() {
             background = rounded(SAGE_DARK, 22)
             clipToOutline = true
             contentDescription = "publication-image"
-            setOnClickListener { setPreviewCompact(previewExpanded) }
+            setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
         }
         column.addView(previewImage, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
+        column.addView(identityLinkView, blockMargins(top = 8))
+        column.addView(topicStatusView)
+        identityProgressView = label("", 13, MUTED, Typeface.DEFAULT).apply {
+            contentDescription = "identity-progress"
+            visibility = View.GONE
+            setPadding(dp(2), dp(6), dp(2), dp(6))
+        }
+        column.addView(identityProgressView)
 
         chatBox = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(0xfff4f2ec.toInt(), 18)
-            setPadding(dp(12), dp(12), dp(12), dp(11))
+            background = null
+            setPadding(0, dp(10), 0, dp(11))
             contentDescription = "live-chat"
         }
         chatBox?.addView(label("Разговор с Мирой", 14, INK, Typeface.DEFAULT_BOLD))
@@ -365,6 +389,23 @@ class MainActivity : Activity() {
             contentDescription = "live-chat-status"
         }
         chatBox?.addView(chatStatus)
+
+        factsBlock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            contentDescription = "facts-island-expanded"
+            setPadding(0, dp(12), 0, 0)
+        }
+        chatBox?.addView(factsBlock)
+
+        conceptBlock = label("", 15, INK, Typeface.DEFAULT).apply {
+            background = rounded(PAPER, 16)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            visibility = View.GONE
+            contentDescription = "concept-island-expanded"
+        }
+        chatBox?.addView(conceptBlock, blockMargins(top = 10))
+
         column.addView(chatBox, blockMargins(top = 12))
 
         literalBanner = label(
@@ -379,14 +420,22 @@ class MainActivity : Activity() {
         }
         column.addView(literalBanner, blockMargins(top = 12))
 
-        previewText = label("", 18, INK, Typeface.DEFAULT).apply {
-            setLineSpacing(dp(4).toFloat(), 1.08f)
-            background = rounded(PAPER, 18)
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            contentDescription = "publication-preview"
+        previewText = label("", 16, INK, Typeface.DEFAULT).apply {
+            setLineSpacing(dp(3).toFloat(), 1.06f)
+            background = rounded(PAPER, 16)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            contentDescription = "publication-preview-chat"
             visibility = View.GONE
         }
-        column.addView(previewText, blockMargins(top = 14))
+        chatBox?.addView(previewText, blockMargins(top = 10))
+
+        publicationEventView = label("", 14, MUTED, Typeface.DEFAULT_BOLD).apply {
+            background = rounded(0xffe9e6df.toInt(), 14)
+            setPadding(dp(11), dp(9), dp(11), dp(9))
+            visibility = View.GONE
+            contentDescription = "publication-event"
+        }
+        chatBox?.addView(publicationEventView, blockMargins(top = 8))
 
         lastChangeView = label("", 13, MUTED, Typeface.DEFAULT).apply {
             setPadding(dp(4), dp(9), dp(4), 0)
@@ -394,26 +443,14 @@ class MainActivity : Activity() {
         }
         column.addView(lastChangeView)
 
-        val minorActions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, 0)
-        }
-        sourceButton = secondaryButton("Источники · 0") { showSources(storyId) }.apply {
-            contentDescription = "sources"
-        }
-        minorActions.addView(sourceButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+        sourceButton = null
         undoButton = secondaryButton("Отменить") {
             if (live.isActiveFor(storyId)) live.sendText("Верни предыдущую правку.")
         }.apply {
             contentDescription = "undo"
             visibility = View.GONE
         }
-        minorActions.addView(
-            undoButton,
-            LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) },
-        )
-        column.addView(minorActions)
+        column.addView(undoButton, blockMargins(top = 10))
 
         publishButton = primaryButton("Опубликовать") {
             val current = store.story(storyId) ?: return@primaryButton
@@ -437,8 +474,9 @@ class MainActivity : Activity() {
             visibility = View.GONE
             contentDescription = "publication-confirmation"
         }
-        column.addView(confirmationBox, blockMargins(top = 12))
+        chatBox?.addView(confirmationBox, blockMargins(top = 10))
 
+        buildStickyPhoto()
         buildDock(storyId)
         refreshTopicDetail()
         applyLiveState(live.snapshot())
@@ -460,7 +498,11 @@ class MainActivity : Activity() {
             contentDescription = "live-mic"
             setOnClickListener { toggleLive(storyId) }
         }
-        dock.addView(micButton, LinearLayout.LayoutParams(dp(78), dp(78)))
+        val pulseIsland = FrameLayout(this).apply { clipChildren = false; clipToPadding = false }
+        micHalo = View(this).apply { background = oval(ACCENT); alpha = .12f; visibility = View.INVISIBLE }
+        pulseIsland.addView(micHalo, FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER))
+        pulseIsland.addView(micButton, FrameLayout.LayoutParams(dp(78), dp(78), Gravity.CENTER))
+        dock.addView(pulseIsland, LinearLayout.LayoutParams(dp(120), dp(120)))
     }
 
     private fun refreshSurface() {
@@ -471,7 +513,7 @@ class MainActivity : Activity() {
         val id = activeStoryId ?: return
         val story = store.story(id) ?: run { showTopics(); return }
 
-        topicTitleView?.text = topicTitle(story)
+        topicTitleView?.text = "Тема"
         dockTopic?.text = "Тема · ${topicTitle(story)}"
 
         val meaningful = story.stage in setOf(
@@ -496,6 +538,7 @@ class MainActivity : Activity() {
         if (shownImagePath != imagePath) {
             shownImagePath = imagePath
             previewImage?.setImageBitmap(ImagePreviewDecoder.decode(imagePath, 1200, 1000))
+            stickyImage?.setImageBitmap(ImagePreviewDecoder.decode(imagePath, 240, 320))
         }
 
         previewText?.apply {
@@ -506,10 +549,26 @@ class MainActivity : Activity() {
 
         photoRecoveryButton?.visibility = if ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW) View.VISIBLE else View.GONE
         val projection = research.get(id)
+        renderFactsIsland(id)
+        conceptBlock?.apply {
+            val concept = projection?.publicationConcept.orEmpty()
+            text = if (concept.isBlank()) "" else "Концепция\n$concept"
+            visibility = if (concept.isBlank()) View.GONE else View.VISIBLE
+        }
+        identityProgressView?.apply {
+            val progress = projection?.identityProgress
+            val lines = progress?.steps?.map { step ->
+                val mark = when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
+                "$mark ${step.label}"
+            } ?: emptyList()
+            val summary = lines.joinToString(10.toChar().toString()) + if(progress?.finished == true) "${10.toChar()}${progress.elapsedMs / 1000} с · попыток: ${progress.attempt}" else ""
+            if(text.toString() != summary) text = summary
+            visibility = if(summary.isNotBlank()) View.VISIBLE else View.GONE
+        }
         val identified = projection?.candidates?.firstOrNull { it.candidateId == projection.candidateId }
         identityLinkView?.apply {
             val accepted = projection?.identityStatus in setOf("match", "owner_confirmed")
-            text = if (accepted && identified != null) "${identified.name} ↗" else ""
+            text = if (identified != null) (if(accepted) "${identified.name} ↗" else "Вероятно: ${identified.name} · подтвердите ↗") else ""
             visibility = if (text.isNotBlank()) View.VISIBLE else View.GONE
             setOnClickListener {
                 val uri = identified?.url?.let(Uri::parse)
@@ -522,6 +581,26 @@ class MainActivity : Activity() {
             text = "Источники · $count"
             visibility = if (count > 0) View.VISIBLE else View.GONE
         }
+        stickyTitle?.text = identified?.let { if(projection?.identityStatus in setOf("match", "owner_confirmed")) it.name else "Вероятно: ${it.name}" } ?: topicTitle(story)
+        stickyTitle?.setOnClickListener { identityLinkView?.performClick() }
+        val facts = store.facts(id)
+        stickyFacts?.apply {
+            val selected = facts.count { it.selected && it.evidenceSupported }
+            text = if (facts.isEmpty()) "" else "Факты · $selected/${facts.size}"
+            visibility = if (facts.isEmpty()) View.GONE else View.VISIBLE
+            setOnClickListener { factsBlock?.let(::scrollToSection) }
+        }
+        stickyConcept?.apply {
+            val concept = projection?.publicationConcept.orEmpty()
+            text = if (concept.isBlank()) "" else "Концепция · ${concept.take(70)}"
+            visibility = if (concept.isBlank()) View.GONE else View.VISIBLE
+            setOnClickListener { conceptBlock?.let(::scrollToSection) }
+        }
+        publicationEventView?.apply {
+            text = publicationLabel(projection)
+            visibility = if (text.isBlank()) View.GONE else View.VISIBLE
+        }
+        updateStickyPhoto()
         maybeAutoStartIdentityLive(story, projection)
 
         publishButton?.apply {
@@ -546,21 +625,15 @@ class MainActivity : Activity() {
             text = if (state.error.isNullOrBlank()) "• ${state.status}" else "⚠ ${state.error}"
             setTextColor(if (state.error.isNullOrBlank()) MUTED else ACCENT)
         }
+        val scroll = topicScroll
+        val nearEnd = scroll == null || (scroll.getChildAt(0)?.height ?: 0) - scroll.scrollY - scroll.height <= dp(180)
+        val changed = state.messages != renderedMessages
+        val dialogueCount = state.messages.count { it.role == LiveRole.USER || it.role == LiveRole.ASSISTANT }
         renderLiveMessages(state.messages)
-        val dialogueCount = state.messages.count {
-            it.role == LiveRole.USER || it.role == LiveRole.ASSISTANT
+        if (changed && (nearEnd || lastDialogueMessageCount == 0 && dialogueCount > 0)) {
+            scroll?.post { scroll.smoothScrollTo(0, ((scroll.getChildAt(0)?.height ?: 0) - scroll.height).coerceAtLeast(0)) }
         }
-        if (dialogueCount > lastDialogueMessageCount) {
-            lastDialogueMessageCount = dialogueCount
-            setPreviewCompact(true)
-            chatBox?.post {
-                val scroll = topicScroll ?: return@post
-                val target = ((chatBox?.top ?: 0) - dp(10)).coerceAtLeast(0)
-                scroll.smoothScrollTo(0, target)
-            }
-        } else {
-            lastDialogueMessageCount = maxOf(lastDialogueMessageCount, dialogueCount)
-        }
+        lastDialogueMessageCount = dialogueCount
         micButton?.apply {
             background = oval(if (state.active || state.connecting) ACCENT else INK)
             contentDescription = if (state.active) "live-stop" else "live-mic"
@@ -1036,6 +1109,11 @@ class MainActivity : Activity() {
     }
 
     private fun clearTopicRefs() {
+        stickyIsland = null; stickyImage = null; stickyTitle = null
+        stickyFacts = null; stickyConcept = null; stickyVisible = false
+        factsBlock = null; conceptBlock = null; publicationEventView = null
+        identityProgressView = null
+        renderedMessages = emptyList()
         stopMicPulse()
         topicTitleView = null
         topicStatusView = null
@@ -1156,54 +1234,216 @@ class MainActivity : Activity() {
 
     private fun renderLiveMessages(messages: List<LiveChatMessage>) {
         val host = chatMessages ?: return
-        host.removeAllViews()
-        val identity = activeStoryId?.let(research::get)
-        val identityMessage = identity
-            ?.takeIf {
-                it.identityStatus in setOf("match", "owner_confirmed") &&
-                    !it.candidateName.isNullOrBlank()
+        if (messages == renderedMessages && host.childCount == messages.size) return
+        val compatible = host.childCount == messages.size && renderedMessages.map { it.role } == messages.map { it.role }
+        if (!compatible) host.removeAllViews()
+        messages.forEachIndexed { index, message ->
+            val role = when(message.role) { LiveRole.USER -> "Вы"; LiveRole.ASSISTANT -> "Мира"; else -> "Система" }
+            val body = if(message.role == LiveRole.SYSTEM) "Система\n${message.text}" else message.text
+            if (compatible) {
+                val row = host.getChildAt(index) as LinearLayout
+                (row.getChildAt(0) as TextView).apply { text = body; contentDescription = "$role: ${message.text}" }
+            } else {
+                val row = LinearLayout(this).apply { gravity = if(message.role == LiveRole.USER) Gravity.END else Gravity.START }
+                val bubble = label(body, 15, INK, Typeface.DEFAULT).apply {
+                    background = rounded(if(message.role == LiveRole.USER) 0xffe2e8dd.toInt() else PAPER, 16)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    maxWidth = resources.displayMetrics.widthPixels - dp(36)
+                    contentDescription = "$role: ${message.text}"
+                }
+                row.addView(bubble)
+                host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
             }
-            ?.candidateName
-            ?.let { LiveChatMessage(LiveRole.ASSISTANT, "Я нашла, что изображено на фото: это $it.") }
-        val visible = buildList {
-            identityMessage?.let(::add)
-            addAll(messages.takeLast(18))
         }
-        visible.forEach { message ->
-            val row = LinearLayout(this).apply {
-                gravity = if (message.role == LiveRole.USER) Gravity.END else Gravity.START
+        renderedMessages = messages.toList()
+    }
+
+    private fun buildStickyPhoto() {
+        val island = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(PAPER, 20)
+            elevation = dp(5).toFloat()
+            setPadding(dp(8), dp(8), dp(10), dp(8))
+            visibility = View.GONE
+            alpha = 0f
+            translationY = -dp(8).toFloat()
+            contentDescription = "sticky-topic-bento"
+        }
+        stickyImage = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(SAGE_DARK, 14)
+            clipToOutline = true
+            contentDescription = "expand-topic-photo"
+            setOnClickListener { topicScroll?.smoothScrollTo(0, 0) }
+        }
+        island.addView(stickyImage, LinearLayout.LayoutParams(dp(86), dp(114)))
+        val right = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        stickyTitle = label("", 15, ACCENT, Typeface.DEFAULT_BOLD).apply {
+            maxLines = 3
+            contentDescription = "sticky-object"
+        }
+        right.addView(stickyTitle)
+        stickyFacts = label("", 13, INK, Typeface.DEFAULT_BOLD).apply {
+            setPadding(0, dp(7), 0, 0)
+            contentDescription = "sticky-facts"
+        }
+        right.addView(stickyFacts)
+        stickyConcept = label("", 12, MUTED, Typeface.DEFAULT).apply {
+            setPadding(0, dp(6), 0, 0)
+            maxLines = 2
+            contentDescription = "sticky-concept"
+        }
+        right.addView(stickyConcept)
+        island.addView(right, LinearLayout.LayoutParams(0, -2, 1f))
+        stickyIsland = island
+        contentHost.addView(island, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
+            leftMargin = dp(18); rightMargin = dp(18); topMargin = dp(10)
+        })
+    }
+
+    private fun updateStickyPhoto() {
+        val scroll = topicScroll ?: return
+        val image = previewImage ?: return
+        val shouldShow = image.height > 0 && scroll.scrollY >= image.bottom
+        if (shouldShow == stickyVisible) return
+        stickyVisible = shouldShow
+        stickyIsland?.let { island ->
+            if (shouldShow) {
+                island.visibility = View.VISIBLE
+                island.animate().alpha(1f).translationY(0f).setDuration(180).start()
+            } else {
+                island.animate().alpha(0f).translationY(-dp(8).toFloat()).setDuration(140)
+                    .withEndAction { if (!stickyVisible) island.visibility = View.GONE }
+                    .start()
             }
-            val title = when (message.role) {
-                LiveRole.USER -> "Вы"
-                LiveRole.ASSISTANT -> "Мира"
-                else -> "Система"
-            }
-            val bubble = label("$title\n${message.text}", 14, INK, Typeface.DEFAULT).apply {
-                background = rounded(
-                    if (message.role == LiveRole.USER) 0xffe2e8dd.toInt() else PAPER,
-                    14,
-                )
-                setPadding(dp(11), dp(8), dp(11), dp(8))
-                maxWidth = dp(310)
-            }
-            row.addView(bubble)
-            host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         }
     }
 
-    private fun setPreviewCompact(compact: Boolean) {
-        val image = previewImage ?: return
-        val expanded = !compact
-        if (previewExpanded == expanded && image.layoutParams != null) return
-        previewExpanded = expanded
-        image.adjustViewBounds = true
-        image.scaleType = ImageView.ScaleType.FIT_CENTER
-        val params = image.layoutParams as? LinearLayout.LayoutParams ?: return
-        params.width = if (expanded) ViewGroup.LayoutParams.MATCH_PARENT else dp(190)
-        params.height = ViewGroup.LayoutParams.WRAP_CONTENT
-        params.gravity = Gravity.CENTER_HORIZONTAL
-        image.layoutParams = params
-        image.requestLayout()
+    private fun scrollToSection(view: View) {
+        val scroll = topicScroll ?: return
+        val content = scroll.getChildAt(0) ?: return
+        var top = 0
+        var current: View? = view
+        while (current != null && current !== content) {
+            top += current.top
+            current = current.parent as? View
+        }
+        scroll.smoothScrollTo(0, (top - dp(12)).coerceAtLeast(0))
+    }
+
+    private fun renderFactsIsland(storyId: String) {
+        val host = factsBlock ?: return
+        host.removeAllViews()
+        val facts = store.facts(storyId)
+        if (facts.isEmpty()) {
+            host.visibility = View.GONE
+            return
+        }
+        host.visibility = View.VISIBLE
+        val selectedCount = facts.count { it.selected && it.evidenceSupported }
+        host.addView(label("Факты · выбрано $selectedCount из ${facts.size}", 15, INK, Typeface.DEFAULT_BOLD))
+        facts.take(16).forEach { fact ->
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(PAPER, 14)
+                setPadding(dp(8), dp(6), dp(8), dp(7))
+            }
+            val box = CheckBox(this).apply {
+                text = fact.text
+                textSize = 14f
+                isChecked = fact.selected
+                isEnabled = fact.evidenceSupported
+                setTextColor(if (fact.evidenceSupported) INK else MUTED)
+                setOnCheckedChangeListener { _, checked ->
+                    store.setFactSelected(storyId, fact.factId, checked && fact.evidenceSupported)
+                    enqueueFactSelection(storyId)
+                    val updated = store.facts(storyId)
+                    stickyFacts?.text = "Факты · ${updated.count { it.selected && it.evidenceSupported }}/${updated.size}"
+                }
+            }
+            item.addView(box)
+            val sources = runCatching {
+                gson.fromJson(fact.sourcesJson, Array<SourceWire>::class.java).toList()
+            }.getOrDefault(emptyList())
+            sources.firstOrNull { it.url.isNotBlank() }?.let { source ->
+                item.addView(
+                    label(
+                        "${source.title?.takeIf { it.isNotBlank() } ?: "Источник"}\\n${source.url}",
+                        11,
+                        MUTED,
+                        Typeface.DEFAULT,
+                    ).apply {
+                        setPadding(dp(48), 0, dp(4), dp(2))
+                        autoLinkMask = Linkify.WEB_URLS
+                        movementMethod = LinkMovementMethod.getInstance()
+                        contentDescription = "fact-source: ${source.url}"
+                    }
+                )
+            }
+            host.addView(item, blockMargins(top = 7))
+        }
+    }
+
+    private fun enqueueFactSelection(storyId: String) {
+        val selected = store.facts(storyId)
+            .filter { it.selected && it.evidenceSupported }
+            .map { it.factId }
+        val stable = selected.sorted().joinToString("|").hashCode().toUInt().toString(16)
+        store.enqueueOperation(
+            storyId,
+            "facts",
+            newRequestKey("facts-ui", "$storyId-$stable"),
+            gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true)),
+        )
+        SyncScheduler.enqueue(this)
+    }
+
+    private fun publicationLabel(projection: ResearchProjectionSnapshot?): String {
+        val state = projection?.publicationState.orEmpty()
+        val channels = projection?.publicationChannels
+            ?.mapNotNull(::shortChannel)
+            ?.distinct()
+            ?.joinToString(" · ")
+            .orEmpty()
+        val prefix = when (state) {
+            "published", "verified" -> "Опубликовано"
+            "scheduled" -> "Запланировано"
+            "scheduling", "accepted", "pending" -> "Публикация готовится"
+            "failed", "blocked", "outcome_unknown" -> "Публикация требует проверки"
+            "cancelled" -> "Публикация отменена"
+            else -> return ""
+        }
+        return listOf(prefix, channels).filter { it.isNotBlank() }.joinToString(" · ")
+    }
+
+    private fun shortChannel(alias: String): String? {
+        val value = alias.lowercase(Locale.ROOT)
+        return when {
+            "telegram" in value || value.endsWith("_tg") || value.startsWith("tg_") -> "ТГ"
+            value == "vk" || value.startsWith("vk_") || "_vk" in value -> "ВК"
+            value == "max" || value.startsWith("max_") || "_max" in value -> "MAX"
+            else -> null
+        }
+    }
+
+    private fun buildNewTopicFab() {
+        dock.removeAllViews()
+        dock.visibility = View.VISIBLE
+        val fab = TextView(this).apply {
+            text = "+"
+            textSize = 34f
+            gravity = Gravity.CENTER
+            setTextColor(PAPER)
+            background = oval(INK)
+            elevation = dp(8).toFloat()
+            contentDescription = "new-topic"
+            setOnClickListener { launchPhotoPicker() }
+        }
+        dock.addView(fab, LinearLayout.LayoutParams(dp(78), dp(78)))
     }
 
     private fun confirmDeleteTopic(story: StorySnapshot) {
@@ -1274,7 +1514,15 @@ class MainActivity : Activity() {
             button.alpha = 1f
             return
         }
+        val halo = micHalo ?: return
+        halo.visibility = View.VISIBLE
         if (micPulse?.isRunning == true) return
+        micHaloPulse = ObjectAnimator.ofPropertyValuesHolder(halo,
+            PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.12f),
+            PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.12f),
+            PropertyValuesHolder.ofFloat(View.ALPHA, .12f, .30f)).apply {
+            duration = 520; repeatMode = ObjectAnimator.REVERSE; repeatCount = ObjectAnimator.INFINITE; start()
+        }
         micPulse = ObjectAnimator.ofPropertyValuesHolder(
             button,
             PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.10f),
@@ -1291,6 +1539,8 @@ class MainActivity : Activity() {
     private fun stopMicPulse() {
         micPulse?.cancel()
         micPulse = null
+        micHaloPulse?.cancel(); micHaloPulse = null
+        micHalo?.visibility = View.INVISIBLE
     }
 
     private fun oval(color: Int) = GradientDrawable().apply {

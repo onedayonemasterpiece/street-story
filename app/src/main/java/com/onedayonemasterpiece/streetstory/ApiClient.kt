@@ -16,7 +16,28 @@ import java.util.UUID
 class ApiException(val status: Int, val code: String, override val message: String, val retryable: Boolean) : IOException(message)
 class ApiProtocolException(message: String) : IOException(message)
 
+class IdentityStepWire {
+    var key: String = ""
+    var label: String = ""
+    var status: String = ""
+}
+class IdentityProgressWire {
+    var steps: ArrayList<IdentityStepWire> = arrayListOf()
+    var attempt: Int = 0
+    var finished: Boolean = false
+    @SerializedName("elapsed_ms") var elapsedMs: Long = 0
+}
+
+class PublicationWire {
+    var state: String = ""
+    var destinations: ArrayList<String> = arrayListOf()
+    @SerializedName("scheduled_for") var scheduledFor: String? = null
+}
+
 class StoryWire {
+    @SerializedName("identity_progress") var identityProgress: IdentityProgressWire? = null
+    @SerializedName("publication_concept") var publicationConcept: String? = null
+    var publication: PublicationWire? = null
     var id: String = ""
     @SerializedName("client_story_id") var clientStoryId: String = ""
     var state: String = ""

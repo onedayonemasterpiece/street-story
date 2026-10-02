@@ -103,10 +103,10 @@ class FeedProjectionInstrumentedTest {
                 val root = activity.findViewById<android.view.View>(android.R.id.content)
                 assertNotNull(findByDescription(root, "topic-scroll") as? ScrollView)
                 assertNotNull(findByDescription(root, "publication-image"))
-                val preview = findByDescription(root, "publication-preview") as? TextView
+                val preview = findByDescription(root, "publication-preview-chat") as? TextView
                 assertNotNull(preview)
                 assertTrue(preview?.text?.toString()?.contains("Первый готовый текст") == true)
-                assertNotNull(findByDescription(root, "sources"))
+                assertNotNull(findByDescription(root, "facts-island-expanded"))
                 assertNotNull(findByDescription(root, "live-mic"))
                 assertFalse(collectText(root).any { it.contains("voice-cleaned-persist") })
             }
@@ -114,7 +114,7 @@ class FeedProjectionInstrumentedTest {
             instrumentation.waitForIdleSync()
             scenario.onActivity { activity ->
                 val root = activity.findViewById<android.view.View>(android.R.id.content)
-                assertNotNull(findByDescription(root, "publication-preview"))
+                assertNotNull(findByDescription(root, "publication-preview-chat"))
                 assertNotNull(findByDescription(root, "live-mic"))
             }
         }

@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from typing import Any
+from .identity_progress import advance
 
 LOG = logging.getLogger('uvicorn.error')
 CLIENT_FIELDS = frozenset({
@@ -43,6 +44,13 @@ def record_identity_event(service, story_id: str, event: str, fields: dict[str, 
                 (story_id, source, event, payload),
             ).fetchone():
                 return
+            if source == 'identity':
+                row = db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()
+                research = json.loads(row['research_json'] or '{}')
+                field_generation = (fields or {}).get('generation', research.get('identity_generation', 0))
+                if field_generation == research.get('identity_generation', 0):
+                    research['identity_progress'] = advance(research.get('identity_progress') or {}, event, fields or {}, service.store.now())
+                    db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research, ensure_ascii=False), story_id))
             db.execute('INSERT INTO live_diagnostics(story_id,session_id,source,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)',
                        (story_id, '', source, event, payload, service.store.now()))
             db.execute('DELETE FROM live_diagnostics WHERE created_at<?', (service.store.now() - 7 * 86400,))
