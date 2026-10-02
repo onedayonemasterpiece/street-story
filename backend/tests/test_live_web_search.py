@@ -59,6 +59,7 @@ async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
         models.append(model)
         payload = {
             "summary": "Search summary",
+            "official_source_urls": [],
             "facts": [{
                 "text": "Fact",
                 "confidence": 0.9,
@@ -140,3 +141,39 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
         {"type": "web_search", "title": "Archive", "url": "https://example.org/archive"},
     ]
     assert len(client.search_http.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    route = client.web_search_routes[0]
+    client.web_search_routes = [(route[0], route[1], route[2], PassingSearchExecutor())]
+
+    async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        official = "https://museum.example.org/object"
+        wiki = "https://ru.wikipedia.org/wiki/Object"
+        payload = {
+            "summary": "Sources found",
+            "official_source_urls": [official, wiki],
+            "facts": [{"text": "Открыт в 2000 году.", "confidence": 0.95, "source_urls": [official]}],
+        }
+        chunks = [
+            SimpleNamespace(web=SimpleNamespace(uri=official, title="Museum")),
+            SimpleNamespace(web=SimpleNamespace(uri=wiki, title="Wikipedia")),
+        ]
+        return SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+            candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(grounding_chunks=chunks))],
+        )
+
+    client._generate = generate
+    result = await client.search_web("object official site", {"place_name": "Object"})
+
+    assert result.payload["official_source_urls"] == ["https://museum.example.org/object"]
+    assert result.grounding_sources[0]["type"] == "official"
+    assert result.grounding_sources[1]["type"] == "web"

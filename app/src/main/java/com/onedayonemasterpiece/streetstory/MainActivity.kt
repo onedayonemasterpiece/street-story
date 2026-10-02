@@ -330,13 +330,19 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(secondaryButton("‹ Темы") { showTopics() })
+        header.addView(
+            secondaryButton("‹ Темы") { showTopics() },
+            LinearLayout.LayoutParams(-2, dp(44)).apply {
+                topMargin = dp(4)
+                bottomMargin = dp(8)
+            },
+        )
         topicTitleView = label("Тема", 20, INK, Typeface.DEFAULT_BOLD).apply {
             maxLines = 2
             setPadding(dp(10), 0, 0, 0)
         }
         header.addView(topicTitleView, LinearLayout.LayoutParams(0, -2, 1f))
-        column.addView(header)
+        column.addView(header, blockMargins(bottom = 4))
 
         topicStatusView = label("", 13, MUTED, Typeface.DEFAULT).apply {
             setPadding(0, dp(11), 0, dp(8))
@@ -394,7 +400,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             contentDescription = "facts-island-expanded"
-            setPadding(0, dp(12), 0, 0)
+            background = rounded(PAPER, 18)
+            setPadding(dp(12), dp(12), dp(12), dp(10))
         }
         chatBox?.addView(factsBlock)
 
@@ -1113,6 +1120,13 @@ class MainActivity : Activity() {
     }
 
     private fun clearTopicRefs() {
+        previewImage?.apply {
+            animate().cancel()
+            alpha = 1f
+            scaleX = 1f
+            scaleY = 1f
+        }
+        stickyIsland?.animate()?.cancel()
         stickyIsland = null; stickyImage = null; stickyTitle = null
         stickyFacts = null; stickyConcept = null; stickyVisible = false
         factsBlock = null; conceptBlock = null; publicationEventView = null
@@ -1230,6 +1244,17 @@ class MainActivity : Activity() {
         cornerRadius = dp(radiusDp).toFloat()
     }
 
+    private fun chatBubble(color: Int, user: Boolean) = GradientDrawable().apply {
+        setColor(color)
+        val round = dp(18).toFloat()
+        val tight = dp(5).toFloat()
+        cornerRadii = if (user) {
+            floatArrayOf(round, round, round, round, tight, tight, round, round)
+        } else {
+            floatArrayOf(round, round, round, round, round, round, tight, tight)
+        }
+    }
+
     private fun blockMargins(top: Int = 0, bottom: Int = 0) =
         LinearLayout.LayoutParams(-1, -2).apply {
             topMargin = dp(top)
@@ -1243,20 +1268,42 @@ class MainActivity : Activity() {
         if (!compatible) host.removeAllViews()
         messages.forEachIndexed { index, message ->
             val role = when(message.role) { LiveRole.USER -> "Вы"; LiveRole.ASSISTANT -> "Мира"; else -> "Система" }
-            val body = if(message.role == LiveRole.SYSTEM) "Система\n${message.text}" else message.text
+            val displayText = if (message.role == LiveRole.ASSISTANT) MarkdownLite.render(message.text) else message.text
             if (compatible) {
                 val row = host.getChildAt(index) as LinearLayout
-                (row.getChildAt(0) as TextView).apply { text = body; contentDescription = "$role: ${message.text}" }
+                (row.getChildAt(0) as TextView).apply {
+                    text = displayText
+                    movementMethod = if (message.role == LiveRole.ASSISTANT) LinkMovementMethod.getInstance() else null
+                    contentDescription = "$role: ${message.text}"
+                }
             } else {
-                val row = LinearLayout(this).apply { gravity = if(message.role == LiveRole.USER) Gravity.END else Gravity.START }
-                val bubble = label(body, 15, INK, Typeface.DEFAULT).apply {
-                    background = rounded(if(message.role == LiveRole.USER) 0xffe2e8dd.toInt() else PAPER, 16)
-                    setPadding(dp(12), dp(10), dp(12), dp(10))
-                    maxWidth = resources.displayMetrics.widthPixels - dp(36)
+                val row = LinearLayout(this).apply {
+                    gravity = when (message.role) {
+                        LiveRole.USER -> Gravity.END
+                        LiveRole.ASSISTANT -> Gravity.START
+                        else -> Gravity.CENTER
+                    }
+                }
+                val system = message.role == LiveRole.SYSTEM
+                val bubble = label("", if (system) 12 else 15, if (system) MUTED else INK, Typeface.DEFAULT).apply {
+                    text = displayText
+                    background = when (message.role) {
+                        LiveRole.USER -> chatBubble(0xffe2e8dd.toInt(), user = true)
+                        LiveRole.ASSISTANT -> chatBubble(PAPER, user = false)
+                        else -> rounded(0xffeceae5.toInt(), 12)
+                    }
+                    setPadding(
+                        dp(if (system) 10 else 13),
+                        dp(if (system) 6 else 9),
+                        dp(if (system) 10 else 13),
+                        dp(if (system) 6 else 9),
+                    )
+                    maxWidth = (resources.displayMetrics.widthPixels * if (system) 0.72f else 0.82f).toInt()
+                    movementMethod = if (message.role == LiveRole.ASSISTANT) LinkMovementMethod.getInstance() else null
                     contentDescription = "$role: ${message.text}"
                 }
                 row.addView(bubble)
-                host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+                host.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(if (system) 6 else 8) })
             }
         }
         renderedMessages = messages.toList()
@@ -1312,17 +1359,30 @@ class MainActivity : Activity() {
     private fun updateStickyPhoto() {
         val scroll = topicScroll ?: return
         val image = previewImage ?: return
-        val shouldShow = image.height > 0 && scroll.scrollY >= image.bottom
-        if (shouldShow == stickyVisible) return
-        stickyVisible = shouldShow
+        if (image.height <= 0) return
+        val state = FloatingIslandTransition.state(scroll.scrollY, image.top, image.height, dp(114))
+        image.apply {
+            pivotX = 0f
+            pivotY = 0f
+            scaleX = state.previewScale
+            scaleY = state.previewScale
+            alpha = state.previewAlpha
+        }
+        stickyVisible = state.progress > 0f
         stickyIsland?.let { island ->
-            if (shouldShow) {
-                island.visibility = View.VISIBLE
-                island.animate().alpha(1f).translationY(0f).setDuration(180).start()
+            island.animate().cancel()
+            if (state.progress == 0f) {
+                island.visibility = View.GONE
+                island.alpha = 0f
+                island.scaleX = .96f
+                island.scaleY = .96f
+                island.translationY = -dp(6).toFloat()
             } else {
-                island.animate().alpha(0f).translationY(-dp(8).toFloat()).setDuration(140)
-                    .withEndAction { if (!stickyVisible) island.visibility = View.GONE }
-                    .start()
+                island.visibility = View.VISIBLE
+                island.alpha = state.islandAlpha
+                island.scaleX = .96f + .04f * state.progress
+                island.scaleY = .96f + .04f * state.progress
+                island.translationY = -dp(6).toFloat() * (1f - state.progress)
             }
         }
     }
@@ -1350,14 +1410,14 @@ class MainActivity : Activity() {
         host.visibility = View.VISIBLE
         val selectedCount = facts.count { it.selected && it.evidenceSupported }
         host.addView(label("Факты · выбрано $selectedCount из ${facts.size}", 15, INK, Typeface.DEFAULT_BOLD))
-        facts.take(16).forEach { fact ->
+        val shownFacts = facts.take(16)
+        shownFacts.forEachIndexed { index, fact ->
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = rounded(PAPER, 14)
-                setPadding(dp(8), dp(6), dp(8), dp(7))
+                setPadding(0, dp(4), 0, dp(5))
             }
             val box = CheckBox(this).apply {
-                text = fact.text
+                text = FactPresentation.concise(fact.text)
                 textSize = 14f
                 isChecked = fact.selected
                 isEnabled = fact.evidenceSupported
@@ -1373,22 +1433,40 @@ class MainActivity : Activity() {
             val sources = runCatching {
                 gson.fromJson(fact.sourcesJson, Array<SourceWire>::class.java).toList()
             }.getOrDefault(emptyList())
-            sources.firstOrNull { it.url.isNotBlank() }?.let { source ->
-                item.addView(
-                    label(
-                        "${source.title?.takeIf { it.isNotBlank() } ?: "Источник"}\\n${source.url}",
-                        11,
-                        MUTED,
-                        Typeface.DEFAULT,
-                    ).apply {
-                        setPadding(dp(48), 0, dp(4), dp(2))
-                        autoLinkMask = Linkify.WEB_URLS
-                        movementMethod = LinkMovementMethod.getInstance()
-                        contentDescription = "fact-source: ${source.url}"
-                    }
+                .filter { it.url.startsWith("https://") }
+                .sortedByDescending { it.type == "official" }
+            val unique = LinkedHashMap<String, SourceWire>()
+            sources.forEach { source ->
+                val sourceLabel = FactPresentation.sourceLabel(source)
+                if (unique.size < 3) unique.putIfAbsent(sourceLabel, source)
+            }
+            if (unique.isNotEmpty()) {
+                val sourceRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(48), 0, dp(4), dp(2))
+                }
+                unique.entries.forEachIndexed { sourceIndex, (sourceLabel, source) ->
+                    if (sourceIndex > 0) sourceRow.addView(label(" · ", 11, MUTED, Typeface.DEFAULT))
+                    sourceRow.addView(
+                        label(sourceLabel, 11, ACCENT, Typeface.DEFAULT).apply {
+                            setOnClickListener {
+                                val uri = Uri.parse(source.url)
+                                if (uri.scheme == "https") startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            }
+                            contentDescription = "Источник: $sourceLabel"
+                        }
+                    )
+                }
+                item.addView(sourceRow)
+            }
+            host.addView(item)
+            if (index < shownFacts.lastIndex) {
+                host.addView(
+                    View(this).apply { setBackgroundColor(0x14242822) },
+                    LinearLayout.LayoutParams(-1, dp(1)),
                 )
             }
-            host.addView(item, blockMargins(top = 7))
         }
     }
 

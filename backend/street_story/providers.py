@@ -361,13 +361,14 @@ class GeminiClient:
         "type": "object",
         "properties": {
             "summary": {"type": "string"},
+            "official_source_urls": {"type": "array", "items": {"type": "string"}},
             "facts": {"type": "array", "items": {"type": "object", "properties": {
                 "text": {"type": "string"},
                 "confidence": {"type": "number"},
                 "source_urls": {"type": "array", "items": {"type": "string"}},
             }, "required": ["text", "confidence", "source_urls"]}},
         },
-        "required": ["summary", "facts"],
+        "required": ["summary", "official_source_urls", "facts"],
     }
 
     FACT_SCHEMA = {
@@ -574,6 +575,7 @@ class GeminiClient:
                         "а не как автоматически доказанные утверждения.\n"
                         + "\n".join(summary_lines)
                     )[:6000],
+                    "official_source_urls": [],
                     "facts": facts,
                     "search_provider": "duckduckgo_html_fallback",
                 },
@@ -605,9 +607,16 @@ class GeminiClient:
         prompt = (
             "Ты внутренний поисковый инструмент Street Story, а не собеседник. "
             "Используй Google Search grounding только для запроса пользователя. "
-            "Верни краткий summary и до 12 проверяемых фактов. Для каждого факта "
-            "укажи только source_urls, которые реально видел в grounding. "
-            "Не пиши публикацию и не предлагай редактуру.\n\n"
+            "Сначала обязательно попробуй найти официальный источник объекта или организации, если он существует: "
+            "сайт владельца, музея, учреждения, муниципалитета или оператора. Wikipedia, СМИ, агрегатор и "
+            "туристический каталог официальным источником не являются. Верни реально найденные официальные URL "
+            "в official_source_urls. Верни до 12 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
+            "один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, реконструкция, "
+            "посещение или другой конкретный факт. Без вводных вроде «источник сообщает», без URL и без нескольких "
+            "разных утверждений в одном пункте. Самые важные факты ставь первыми; сведения официального источника "
+            "имеют приоритет. Если Current topic context содержит previously_considered_poi_facts, не повторяй их "
+            "без явной просьбы пользователя повторить или перепроверить: ищи новую фактологию. Для каждого факта "
+            "укажи только source_urls, которые реально видел в grounding. Не пиши публикацию и не предлагай редактуру.\n\n"
             "Search query: " + query[:1000] + "\n"
             "Current topic context: " + json.dumps(topic_context, ensure_ascii=False)[:12000]
         )
@@ -629,7 +638,13 @@ class GeminiClient:
             )
             try:
                 payload = json.loads(response.text or "{}")
-                if not isinstance(payload, dict) or not isinstance(payload.get("summary"), str) or not isinstance(payload.get("facts"), list):
+                if (
+                    not isinstance(payload, dict)
+                    or not isinstance(payload.get("summary"), str)
+                    or not isinstance(payload.get("official_source_urls"), list)
+                    or any(not isinstance(url, str) for url in payload["official_source_urls"])
+                    or not isinstance(payload.get("facts"), list)
+                ):
                     raise ValueError
                 for fact in payload["facts"]:
                     if (
@@ -655,10 +670,25 @@ class GeminiClient:
                             "title": str(getattr(web, "title", "") or uri),
                             "url": uri,
                         })
-            return GroundedResearch(
-                payload=payload,
-                grounding_sources=list({source["url"]: source for source in sources}.values()),
-            )
+            unique_sources = list({source["url"]: source for source in sources}.values())
+            seen = {source["url"].rstrip("/") for source in unique_sources}
+            blocked_official_hosts = {
+                "wikipedia.org", "wikimedia.org", "openstreetmap.org", "google.com",
+            }
+            official_urls: list[str] = []
+            for raw_url in payload.get("official_source_urls", []):
+                normalized = str(raw_url).rstrip("/")
+                host = (urlparse(normalized).hostname or "").lower().removeprefix("www.")
+                blocked = any(host == domain or host.endswith("." + domain) for domain in blocked_official_hosts)
+                if normalized in seen and not blocked and normalized not in official_urls:
+                    official_urls.append(normalized)
+            payload["official_source_urls"] = official_urls
+            official_set = set(official_urls)
+            decorated = [
+                {**source, "type": "official" if source["url"].rstrip("/") in official_set else source["type"]}
+                for source in unique_sources
+            ]
+            return GroundedResearch(payload=payload, grounding_sources=decorated)
 
         retry_at: list[float] = []
         for model, _pool, quota, executor in self.web_search_routes:
