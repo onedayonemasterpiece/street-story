@@ -13,6 +13,7 @@ import httpx
 
 from .config import Settings, reveal
 from .db import Store
+from .fact_conflicts import normalize_conflict_records
 
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
@@ -357,6 +358,29 @@ class _DuckDuckGoResultParser(HTMLParser):
 
 
 class GeminiClient:
+    FACT_CONFLICT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "conflicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "pair_id": {"type": "string"},
+                        "relation": {"type": "string"},
+                        "suggested_resolution": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": [
+                        "pair_id", "relation", "suggested_resolution", "confidence", "rationale",
+                    ],
+                },
+            },
+        },
+        "required": ["conflicts"],
+    }
+
     WEB_SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
@@ -583,6 +607,73 @@ class GeminiClient:
         finally:
             if own:
                 await client.aclose()
+
+    async def detect_fact_conflicts(
+        self,
+        pairs: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Classify plausible contradictions without turning source count into truth."""
+        if not pairs:
+            return []
+        from google.genai import types
+
+        prompt = (
+            "Ты внутренний арбитр фактов Street Story. Перед тобой пары уже извлечённых атомарных "
+            "утверждений об одном POI. Для каждой пары реши, есть ли реальное противоречие. "
+            "relation: none — утверждения совместимы/эквивалентны; contradiction — одновременно истинными "
+            "быть не могут; scope_difference — отличаются период, объект, смысл или область применимости; "
+            "temporal_sequence — описывают разные этапы времени; source_disagreement — источники расходятся, "
+            "но сам конфликт без дополнительной проверки не разрешён; uncertain — данных недостаточно. "
+            "suggested_resolution: prefer_left, prefer_right, both_valid или unresolved. "
+            "Количество сайтов НЕ является голосованием за истину: массово тиражируемая ошибка остаётся ошибкой. "
+            "Официальный источник полезнее для текущего статуса учреждения/владельца, но не автоматически истиннее "
+            "для любого исторического тезиса. Смотри на конкретику, дату, первичность и приведённые supports. "
+            "Если доказательств недостаточно — unresolved. Не выдумывай новые факты и источники. "
+            "Верни запись для каждой входной pair_id.\n\n"
+            "Context: " + json.dumps(context or {}, ensure_ascii=False)[:4000] + "\n"
+            "Pairs: " + json.dumps(pairs, ensure_ascii=False)[:42000]
+        )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.FACT_CONFLICT_SCHEMA,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(
+                key,
+                timeout,
+                [prompt],
+                config,
+                operation="grounded_research",
+                model=model,
+                quota=quota,
+            )
+            try:
+                payload = json.loads(response.text or "{}")
+                if not isinstance(payload, dict) or not isinstance(payload.get("conflicts"), list):
+                    raise ValueError
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise MalformedProviderResponse("gemini:malformed_fact_conflicts") from None
+            return normalize_conflict_records(pairs, payload)
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_fact_conflict_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
 
     async def search_web(
         self,
