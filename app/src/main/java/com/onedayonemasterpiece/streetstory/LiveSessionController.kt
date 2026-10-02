@@ -70,6 +70,8 @@ class LiveSessionController(context: Context) {
     private val generation = AtomicInteger(0)
     private val playbackGeneration = AtomicInteger(0)
     private val pendingPlayback = AtomicInteger(0)
+    private val playbackDrain = PlaybackDrainTracker()
+    private val playbackOutstanding = AtomicBoolean(false)
     private val duplexGate = LiveDuplexGate()
     private val playbackSuppressionReported = AtomicBoolean(false)
     private val receivedPcm = AtomicLong(0)
@@ -123,10 +125,16 @@ class LiveSessionController(context: Context) {
     )
 
     fun shouldSuppressMicrophoneInput(): Boolean {
-        val suppressed = state.active && duplexGate.shouldSuppress(
-            SystemClock.elapsedRealtime(),
-            pendingPlayback.get(),
-        )
+        val now = SystemClock.elapsedRealtime()
+        val hardwarePending = audioTrack?.let { track ->
+            runCatching { playbackDrain.pending(track.playbackHeadPosition) > 0 }.getOrDefault(false)
+        } ?: false
+        val outputPending = pendingPlayback.get() > 0 || hardwarePending
+        if (!outputPending && playbackOutstanding.compareAndSet(true, false)) {
+            duplexGate.onPlaybackDrained(now)
+            diagnostic("playback_drained", mapOf("hardware_queue_empty" to true, "received_pcm_bytes" to receivedPcm.get()))
+        }
+        val suppressed = state.active && duplexGate.shouldSuppress(now, if (outputPending) 1 else 0)
         if (suppressed && playbackSuppressionReported.compareAndSet(false, true)) {
             diagnostic(
                 "input_suppressed_playback",
@@ -420,6 +428,7 @@ class LiveSessionController(context: Context) {
 
     fun stopLocal(sendRemote: Boolean = true) {
         val stopped = synchronized(this) {
+            diagnostic("live_client_summary", transportEvidence() + mapOf("completed_turns" to state.completedTurns, "pending_playback_bytes" to pendingPlayback.get()))
             diagnostic("stop_requested", mapOf("active" to state.active, "connecting" to state.connecting, "generation" to generation.get()))
             val prior = Triple(serverStoryId, sessionId, socket)
             generation.incrementAndGet()
@@ -527,6 +536,7 @@ class LiveSessionController(context: Context) {
             fail(gen, "LIVE_PLAYBACK_BACKPRESSURE")
             return
         }
+        playbackOutstanding.set(true)
         receivedPcm.addAndGet(bytes.size.toLong())
         val chunkNumber = outputAudioChunks.incrementAndGet()
         if (chunkNumber == 1L || chunkNumber % 24L == 0L) {
@@ -544,6 +554,8 @@ class LiveSessionController(context: Context) {
                 while (offset < bytes.size && playbackGeneration.get() == playbackEpoch) {
                     val count = track.write(bytes, offset, bytes.size - offset, AudioTrack.WRITE_BLOCKING)
                     if (count <= 0) throw IllegalStateException("LIVE_PLAYBACK_WRITE")
+                    playbackOutstanding.set(true)
+                    playbackDrain.wrote(count.toLong() / 2)
                     offset += count
                 }
                 val writeMs = SystemClock.elapsedRealtime() - started
@@ -565,8 +577,8 @@ class LiveSessionController(context: Context) {
                     if (generation.get() == gen) fail(gen, "Не удалось воспроизвести голос Миры")
                 }
             } finally {
-                val remaining = pendingPlayback.addAndGet(-bytes.size)
-                if (remaining <= 0) duplexGate.onPlaybackDrained(SystemClock.elapsedRealtime())
+                pendingPlayback.addAndGet(-bytes.size)
+                // AudioTrack.write accepts queued PCM; the capture clock waits for playbackHeadPosition.
             }
         }
     }
@@ -582,13 +594,15 @@ class LiveSessionController(context: Context) {
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
                 .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(maxOf(min * 2, rate)).build()
-                .also { it.play(); audioTrack = it }
+                .also { playbackDrain.reset(); it.play(); audioTrack = it }
         }.getOrNull()
     }
 
     @Synchronized private fun stopPlayback() {
         val track = audioTrack ?: return
         audioTrack = null
+        playbackDrain.reset()
+        playbackOutstanding.set(false)
         runCatching { track.pause() }; runCatching { track.flush() }; runCatching { track.stop() }; runCatching { track.release() }
     }
 

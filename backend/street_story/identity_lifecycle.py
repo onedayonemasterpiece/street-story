@@ -105,6 +105,7 @@ class IdentityLifecycleMixin:
             if not recovered_hints:
                 binding = {'photo_sha256': story['photo_sha256'], 'source': 'source_photo_exif', 'metadata': hints}
             story['_camera_hints'] = hints
+            story['_identity_generation'] = generation
             if lat is None or lon is None:
                 lat, lon = metadata['latitude'], metadata['longitude']
             valid = lat is not None and lon is not None and math.isfinite(float(lat)) and math.isfinite(float(lon)) and -90 <= float(lat) <= 90 and -180 <= float(lon) <= 180
@@ -126,11 +127,20 @@ class IdentityLifecycleMixin:
                 error = 'identity_location_missing'
             else:
                 try:
+                    osm_error = None
                     osm = prior.get('osm')
                     if not isinstance(osm, dict) or not osm:
-                        osm = await self.providers.osm.lookup(float(lat), float(lon))
+                        try:
+                            osm = await self.providers.osm.lookup(float(lat), float(lon))
+                        except Exception as exc:
+                            from .providers import RetryableProviderError
+                            if not isinstance(exc, RetryableProviderError):
+                                raise
+                            osm_error = exc
+                            osm = {}
+                            record_identity_event(self, story_id, 'identity_osm_unavailable', {'generation': generation, 'error_type': type(exc).__name__})
                     record_identity_event(self, story_id, 'identity_osm', {'generation': generation,
-                        'candidate_pool_counts': osm.get('candidate_pool_counts', {}), 'retained_count': len(osm.get('nearby') or []),
+                        'candidate_pool_counts': osm.get('candidate_pool_counts', {}), 'retained_count': len(osm.get('nearby') or []), 'available': bool(osm),
                         'duration_ms': round((time.monotonic() - started) * 1000)})
                     wikipedia = prior.get('wikipedia')
                     if not isinstance(wikipedia, list):
@@ -141,6 +151,9 @@ class IdentityLifecycleMixin:
                             # keep OSM candidates and require author confirmation then.
                             wikipedia = []
                             record_identity_event(self, story_id, 'identity_wikipedia_unavailable', {'generation': generation, 'error_type': type(exc).__name__})
+                    if osm_error is not None and not wikipedia:
+                        raise osm_error
+                    record_identity_event(self, story_id, 'identity_wikipedia', {'generation': generation, 'count': len(wikipedia)})
                     excluded = set(prior.get('identity_rejected_ids') or [])
                     candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
                     candidates.sort(key=lambda item: (distance(item), str(item.get('candidate_id'))))

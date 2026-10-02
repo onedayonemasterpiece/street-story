@@ -15,6 +15,15 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
+from .live_author_intent import (
+    begin_turn,
+    consent_receipt,
+    has_place_consent,
+    noise_receipt,
+    observe_input_timing,
+    observe_transcript,
+    suspected_noise_turn,
+)
 from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest, stable_fact_id
 
 
@@ -196,6 +205,14 @@ FUNCTIONS = [
         ["fact_ids"],
     ),
     _tool_schema(
+        "set_concept",
+        "Store or replace the current publication concept/angle without silently rewriting the draft. "
+        "Use when the author says what the story should focus on; if this changes selected facts, "
+        "call select_facts separately and tell the author what changed.",
+        {"concept": {"type": "string"}},
+        ["concept"],
+    ),
+    _tool_schema(
         "edit_text",
         "Replace the current publication text after an author editing request. Preserve literal spans unless the author explicitly allowed changing them.",
         {
@@ -277,6 +294,9 @@ SYSTEM_INSTRUCTION = """
 итеративно править его сколько угодно. Не превращай разговор в длинный отчёт о своей работе.
 
 Правила:
+- Основной язык автора — русский. Случайный короткий иностранный фрагмент на фоне тишины/шуршания вероятнее ошибка распознавания, чем просьба сменить язык. Не сочиняй речь из шума и не отвечай на неразборчивые звуки. Осознанную связную речь на другом языке и явную просьбу сменить язык поддерживай; это предпочтение, а не запрет языка.
+- confirm_place разрешён только после свежей явной фразы автора, называющей объект и подтверждающей его. Приветствие, «что?», молчание, собственная догадка и аргументы tool call не являются согласием автора. При сомнении попроси назвать и подтвердить объект.
+- когда автор задаёт концепцию/угол публикации («про современное назначение», «про кухню», «самое интересное»), сохрани её через set_concept. Концепция может менять релевантность фактов; если меняешь выбор фактов, вызови select_facts отдельно и коротко сообщи об этом в разговоре.
 - никаких shell/SQL/HTTP и никаких скрытых внешних действий: используй только доступные product functions;
 - Если автор говорит «это не тот объект», вызови reject_place с текущим candidate_id, а не повторяй старое подтверждение. Подтверждённый объект сохраняется в теме; для его чтения не запускай поиск заново.
 - Если GPS недоступен в переданной копии, не утверждай, что координат нет в оригинале. Объясни, что нужно разрешить чтение геометок и выбрать оригинал через кнопку в теме.
@@ -340,19 +360,44 @@ class StreetStoryLiveAdapter:
             },
         }
 
+    def input(self, session, message: dict[str, Any]) -> None:
+        if message.get("activity_start"):
+            begin_turn(session)
+        text = message.get("text")
+        if isinstance(text, str) and text.strip() and len(text) <= 4000:
+            begin_turn(session, text.strip(), origin="text")
+
     def on_event(self, session, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "unknown")
         text = str(event.get("text") or "").strip()
+        if kind == "input_timing":
+            observe_input_timing(session, event)
         if kind == "input_transcript" and text:
-            recent: deque[str] = session.state["recent_user"]
-            if not recent or recent[-1] != text:
-                recent.append(text)
-            literal = session.state.get("literal")
-            if isinstance(literal, dict):
-                buf: list[str] = literal.setdefault("buffer", [])
-                if not buf or buf[-1] != text:
-                    buf.append(text[:2000])
-                    del buf[:-64]
+            suspected = observe_transcript(session, text)
+            if suspected:
+                receipt = noise_receipt(session)
+                record_live_diagnostic(
+                    self.service,
+                    session.resource_id,
+                    session.id,
+                    "backend",
+                    "suspected_noise_turn",
+                    receipt,
+                )
+                logger.info(
+                    "street_story_live_suspected_noise %s",
+                    canonical({"story_id": session.resource_id, "session_id": session.id, **receipt}),
+                )
+            else:
+                recent: deque[str] = session.state["recent_user"]
+                if not recent or recent[-1] != text:
+                    recent.append(text)
+                literal = session.state.get("literal")
+                if isinstance(literal, dict):
+                    buf: list[str] = literal.setdefault("buffer", [])
+                    if not buf or buf[-1] != text:
+                        buf.append(text[:2000])
+                        del buf[:-64]
         elif kind == "output_transcript" and text:
             recent_model: deque[str] = session.state["recent_model"]
             if not recent_model or recent_model[-1] != text:
@@ -461,6 +506,22 @@ class StreetStoryLiveAdapter:
             self.emit(session, {"type": "literal_mode", "active": False, "cancelled": True})
             return {"ok": True, "literal_mode": False}
 
+        if suspected_noise_turn(session):
+            receipt = noise_receipt(session)
+            record_live_diagnostic(
+                self.service,
+                story_id,
+                session.id,
+                "backend",
+                "suspected_noise_tool_blocked",
+                {"tool": name[:80], **receipt},
+            )
+            return {
+                "ignored": True,
+                "reason": "suspected_noise_turn",
+                "instruction": "Do not mutate product state or answer this fragment. Wait for the author's next clear utterance.",
+            }
+
         if not command_id:
             raise ConflictError("live_command_id_required", "Provider call id is required for mutations")
 
@@ -481,6 +542,8 @@ class StreetStoryLiveAdapter:
             result = await self._search_web(session, command_id, args)
         elif name == "select_facts":
             result = self._select_facts(story_id, command_id, args)
+        elif name == "set_concept":
+            result = self._set_concept(story_id, command_id, args)
         elif name == "edit_text":
             result = self._edit_text(story_id, command_id, args)
         elif name == "literal_finish":
@@ -625,6 +688,8 @@ class StreetStoryLiveAdapter:
             "visual_identity": compact_identity,
             "facts": facts,
             "source_count": story.get("source_count", 0),
+            "publication_concept": story.get("publication_concept"),
+            "publication": story.get("publication"),
             "visual": {
                 "content_revision": visual.get("content_revision"),
                 "stale": visual.get("stale", False),
@@ -785,8 +850,14 @@ class StreetStoryLiveAdapter:
                 "The confirmed place does not uniquely match the current OSM/Wikipedia candidates",
             )
 
+        if not has_place_consent(session, str(chosen.get("name") or "")):
+            record_live_diagnostic(self.service, story_id, session.id, "backend", "identity_confirmation_blocked",
+                {"candidate_id": chosen.get("candidate_id"), "reason": "no_fresh_explicit_named_author_consent"})
+            raise ConflictError("live_place_author_consent_required", "Нужно явное подтверждение автора с названием объекта. Шум, приветствие и догадка модели не являются согласием.")
+        approval = consent_receipt(session)
         confirmed = {
             **identity,
+            "approval_evidence": approval,
             "status": "owner_confirmed",
             "candidate_id": str(chosen.get("candidate_id") or ""),
             "candidate_name": str(chosen.get("name") or ""),
@@ -803,7 +874,10 @@ class StreetStoryLiveAdapter:
         if transcript:
             research["transcript"] = transcript
         with self.service.store.tx() as db:
-            self.service._story_row(db, story_id)
+            current = self.service._story_row(db, story_id)
+            current_research = json.loads(current["research_json"] or "{}")
+            if current["photo_sha256"] != row["photo_sha256"] or int(current_research.get("identity_generation") or 0) != int(research.get("identity_generation") or 0):
+                raise ConflictError("identity_candidate_changed", "Объект изменился; проверьте актуальный вариант.")
             db.execute(
                 "UPDATE stories SET place_name=?,research_json=?,state='identity_ready',"
                 "error_code=CASE WHEN error_code IN ('visual_identity_uncertain','identity_location_missing') THEN NULL ELSE error_code END,"
@@ -821,6 +895,11 @@ class StreetStoryLiveAdapter:
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "confirm_place", args, result)
+        session.state["author_turn"]["consumed"] = True
+        from .identity_telemetry import record_identity_event
+        record_identity_event(self.service, story_id, "identity_owner_confirmed", {"generation": confirmed["generation"], "candidate_id": confirmed["candidate_id"]})
+        record_live_diagnostic(self.service, story_id, session.id, "backend", "identity_author_confirmed",
+            {"candidate_id": confirmed["candidate_id"], **approval})
         logger.info(
             "street_story_live_place_confirmed story_id=%s candidate_id=%s",
             story_id,
@@ -1015,6 +1094,46 @@ class StreetStoryLiveAdapter:
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "select_facts", args, result)
+            return result
+
+    def _set_concept(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        concept = _bounded_text(args.get("concept"), 1200, required=True)
+        with self.service.store.tx() as db:
+            story, _editor = self._editor_row(db, story_id)
+            research = json.loads(story["research_json"] or "{}")
+            previous = str(research.get("publication_concept") or "")
+            research["publication_concept"] = concept
+            context = json.loads(story["visual_context_json"] or "{}")
+            state = str(story["state"] or "")
+            clear_visual = bool(context) and concept != previous and state not in {"scheduled", "published"}
+            if clear_visual:
+                context["stale"] = True
+                context["stale_reason"] = "publication_concept_changed"
+            db.execute(
+                "UPDATE stories SET research_json=?,visual_context_json=?,"
+                "vibepublish_asset_ref=CASE WHEN ? THEN NULL ELSE vibepublish_asset_ref END,"
+                "processed_image_url=CASE WHEN ? THEN NULL ELSE processed_image_url END,"
+                "state=CASE WHEN ? THEN 'needs_review' ELSE state END,"
+                "error_code=CASE WHEN ? THEN 'visual_stale' ELSE error_code END,"
+                "error_message=CASE WHEN ? THEN 'Концепция публикации изменилась; изображение нужно обновить.' ELSE error_message END,"
+                "revision=revision+1,updated_at=? WHERE id=?",
+                (
+                    canonical(research),
+                    canonical(context),
+                    int(clear_visual),
+                    int(clear_visual),
+                    int(clear_visual),
+                    int(clear_visual),
+                    int(clear_visual),
+                    self.service.store.now(),
+                    story_id,
+                ),
+            )
+            result = {
+                "publication_concept": concept,
+                "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
+            }
+            self._store_command(db, story_id, command_id, "set_concept", args, result)
             return result
 
     @staticmethod

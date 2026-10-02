@@ -57,6 +57,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             notes.append(
                 "Проверенные факты: " + " ".join(f"• {fact[:240]}" for fact in facts[:6])
             )
+        concept = str(context.get("publication_concept") or "").strip()
+        if concept:
+            notes.append("Концепция публикации: " + concept[:1200])
         intent = str(context.get("user_voice_intent") or "").strip()
         if intent:
             notes.append("Авторское наблюдение: " + intent[:600])
@@ -146,6 +149,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     {"fact_id": item["fact_id"], "text": item["text"]}
                     for item in selected_facts
                 ],
+                "publication_concept": str(research.get("publication_concept") or "")[:1200],
                 "visual_instruction": str(body.get("visual_instruction") or "").strip()[:600],
                 "prompt_version": self.PROMPT_VERSION,
                 "prompt_sha256": template_sha,

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
 
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
@@ -348,6 +347,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 or str(tags.get("type") or "") in {"route", "boundary", "network"}
             ):
                 continue
+            if (item.get("class") == "boundary" or item.get("category") == "boundary"
+                    or item.get("type") == "administrative" or tags.get("boundary")
+                    or (tags.get("highway") and not (tags.get("bridge") or tags.get("historic") or tags.get("building")))):
+                continue
             cid = f"osm:{osm_type}:{osm_id}"
             if cid in seen_ids:
                 continue
@@ -445,58 +448,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
         return shortlist[:16]
 
-    async def _candidate_reference_images(
-        self, candidates: list[dict[str, Any]], limit: int = 6
-    ) -> list[tuple[str, str, bytes]]:
-        result: list[tuple[str, str, bytes]] = []
-        seen_urls: set[str] = set()
-        limits = {"image/jpeg", "image/png", "image/webp"}
-        async with httpx.AsyncClient(
-            timeout=8,
-            follow_redirects=False,
-            headers={"User-Agent": "StreetStory/0.1 Wikimedia visual matcher"},
-        ) as client:
-            image_candidates = [
-                candidate
-                for candidate in candidates
-                if candidate.get("reference_image_urls")
-            ][:max(0, min(6, limit))]
-            for candidate in image_candidates:
-                candidate_id = str(candidate.get("candidate_id") or "")
-                for raw_url in (candidate.get("reference_image_urls") or [])[:1]:
-                    url = str(raw_url or "").strip()
-                    parsed = urlparse(url)
-                    if (
-                        not candidate_id
-                        or url in seen_urls
-                        or parsed.scheme != "https"
-                        or parsed.hostname != "upload.wikimedia.org"
-                    ):
-                        continue
-                    seen_urls.add(url)
-                    try:
-                        async with client.stream("GET", url) as response:
-                            if response.status_code != 200:
-                                continue
-                            mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-                            if mime not in limits:
-                                continue
-                            declared = int(response.headers.get("content-length") or "0")
-                            if declared > 2 * 1024 * 1024:
-                                continue
-                            data = bytearray()
-                            async for chunk in response.aiter_bytes():
-                                data.extend(chunk)
-                                if len(data) > 2 * 1024 * 1024:
-                                    data.clear()
-                                    break
-                            if data:
-                                result.append((candidate_id, mime, bytes(data)))
-                                if len(result) >= 6:
-                                    return result
-                    except (httpx.HTTPError, ValueError):
-                        continue
-        return result
+    async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None):
+        from .identity_references import reference_images
+        return await reference_images(self, candidates, limit, story_id=story_id)
 
     async def _identify_photo(self, story, transcript, candidates):
         return await identify_nearest(self, story, transcript, candidates)
@@ -553,7 +507,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             image.save(output, format="JPEG", quality=82, optimize=True)
             photo = output.getvalue()
         reference_candidates = reference_order(candidates)
-        reference_images = await self._candidate_reference_images(reference_candidates, limit=reference_limit)
+        reference_images = await self._candidate_reference_images(reference_candidates, limit=reference_limit, story_id=story["id"])
         from .identity_telemetry import record_identity_event
         record_identity_event(self, story['id'], 'identity_reference_priority', {
             'candidate_ids': [item['candidate_id'] for item in reference_candidates],
@@ -586,7 +540,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_visual_identity") from None
-            return {**payload, "_references_sent": [item[0] for item in reference_images]}
+            considered = [x["candidate_id"] for x in reference_candidates if x.get("reference_image_urls")][:reference_limit]
+            return {**payload, "_references_unavailable_ids": [cid for cid in considered if cid not in {x[0] for x in reference_images}],
+                    "_references_sent": [item[0] for item in reference_images],
+                    "_references_rate_limited": getattr(self, "_wikimedia_reference_wait_until", 0) > __import__("time").monotonic()}
 
         return await gemini.executor.execute("grounded_research", call)
 
@@ -974,10 +931,33 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         result = super()._story_repr(db, row)
         research = json.loads(row["research_json"] or "{}")
         identity = research.get("visual_identity")
+        from .identity_progress import from_history
+        result["identity_progress"] = research.get("identity_progress") or from_history(db, row["id"], int(research.get("identity_generation") or 0))
         if isinstance(identity, dict):
             result["visual_identity"] = identity
         if research.get("input_revision"):
             result["research_revision"] = research["input_revision"]
+        result["publication_concept"] = str(research.get("publication_concept") or "")[:1200] or None
+        intent = db.execute(
+            "SELECT state,request_json,scheduled_for FROM publish_intents "
+            "WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if intent:
+            try:
+                request = json.loads(intent["request_json"] or "{}")
+            except (TypeError, ValueError):
+                request = {}
+            aliases = [str(value)[:120] for value in request.get("destinations", []) if str(value).strip()][:8]
+            existing_publication = result.get("publication") if isinstance(result.get("publication"), dict) else {}
+            result["publication"] = {
+                **existing_publication,
+                "state": str(row["state"] if row["state"] in {"scheduled", "published"} else intent["state"]),
+                "destinations": aliases,
+                "scheduled_for": row["scheduled_for"] or intent["scheduled_for"],
+            }
+        else:
+            result["publication"] = None
         unique: dict[str, dict[str, str]] = {}
         for fact in result.get("facts", []):
             for source in fact.get("sources", []):

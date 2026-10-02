@@ -132,7 +132,10 @@ class RecordingService : Service() {
                 "aec_enabled" to (echoCanceler?.enabled == true),
             ),
         )
-        val detector=EfficientVad(true);val latch=SpeechLatch(LIVE_ATTACK_FRAMES,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
+        val admission=if(live!=null)LiveSpeechAdmission() else null
+        var wasPlaybackSuppressed=false
+        var speechEpisodes=0
+        val detector=EfficientVad(true,interactive=live!=null);val latch=SpeechLatch(if(live!=null)1 else LIVE_ATTACK_FRAMES,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
         var signalSamples=0L;var signalSquares=0.0;var signalPeak=0;var lastSignalAt=System.currentTimeMillis()
         try{
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
@@ -142,31 +145,42 @@ class RecordingService : Service() {
                 signalSamples+=frame.size
                 val signalAt=System.currentTimeMillis()
                 if(signalAt-lastSignalAt>=5000){
-                    live?.diagnostic("capture_signal",mapOf("samples" to signalSamples,"rms" to kotlin.math.sqrt(signalSquares/signalSamples.coerceAtLeast(1)).toInt(),"peak" to signalPeak,"vad_open" to latch.active))
+                    live?.diagnostic("capture_signal",mapOf("samples" to signalSamples,"rms" to kotlin.math.sqrt(signalSquares/signalSamples.coerceAtLeast(1)).toInt(),"peak" to signalPeak,"vad_open" to latch.active,"speech_episodes" to speechEpisodes,"vad_mode" to if(live!=null)3 else EfficientVad.MODE) + (admission?.metrics() ?: emptyMap()))
                     lastSignalAt=signalAt;signalSamples=0;signalSquares=0.0;signalPeak=0
                 }
                 val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0)
                 val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0)
                 val wasActive=latch.active
                 val suppressForPlayback=live?.shouldSuppressMicrophoneInput()==true
+                if(wasPlaybackSuppressed&&!suppressForPlayback){
+                    detector.resetAfterPlayback()
+                    admission?.resetEvidence()
+                    live?.diagnostic("vad_reset_after_playback",mapOf("native_reset" to true))
+                }
+                wasPlaybackSuppressed=suppressForPlayback
+                if(detector.isUnavailable)throw IllegalStateException("LIVE_VAD_UNAVAILABLE")
                 val active=if(suppressForPlayback){
                     if(wasActive)live?.endSpeech()
                     latch.reset()
                     preRoll.clear()
+                    admission?.resetEvidence()
                     false
                 }else{
-                    latch.onFrame(detector.isSpeech(frame))
+                    val rawSpeech=detector.isSpeech(frame)
+                    latch.onFrame(admission?.accept(rawSpeech,frameRms(frame)) ?: rawSpeech)
                 }
                 if(active){
                     silenceStart=null;writer=writer?:newWriter(id,persisted)
                     if(!wasActive){
+                        speechEpisodes++
+                        live?.diagnostic("speech_admission", (admission?.metrics() ?: emptyMap()) + mapOf("episode" to speechEpisodes,"frame_rms" to frameRms(frame).toInt()))
                         pushPreRoll(preRoll,frame,wallStart,wallEnd)
                         while(preRoll.isNotEmpty()){val buffered=preRoll.removeFirst();writer?.writeFrame(buffered.samples,buffered.wallStartMs,buffered.wallEndMs);live?.submitPcm(buffered.samples)}
                     }else{writer?.writeFrame(frame,wallStart,wallEnd);live?.submitPcm(frame)}
                     activity=if(detector.isFailOpen)CaptureActivity.FALLBACK_CONTINUOUS else CaptureActivity.VOICE
                     if((writer?.durationMs?:0)>=M4aChunkWriter.TARGET_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
                 }else{
-                    if(wasActive&&!suppressForPlayback)live?.endSpeech()
+                    if(wasActive&&!suppressForPlayback){live?.endSpeech();admission?.resetEvidence()}
                     if(!suppressForPlayback)pushPreRoll(preRoll,frame,wallStart,wallEnd)
                     if(silenceStart==null)silenceStart=wallStart;activity=CaptureActivity.AUTO_SILENCE;val silenceMs=wallEnd-(silenceStart?:wallEnd);if(silenceMs>=LONG_SILENCE_CLOSE_MS&&(writer?.durationMs?:0)>=MIN_DURABLE_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
                 }
@@ -190,6 +204,7 @@ class RecordingService : Service() {
             }
         }catch(exc:Exception){
             live?.diagnostic("capture_error",mapOf("type" to exc.javaClass.simpleName,"message" to (exc.message ?: "").take(240)))
+            if(live!=null && detector.isUnavailable)live.stopLocal()
             if(captureRequested){captureRequested=false;store.beginManualPause(id);store.setLocalVoiceError(id,"Ошибка записи: ${exc.message}");enterForeground("Запись остановлена с ошибкой",true)}
         }finally{
             runCatching{recorder.stop()};recorder.release();audioRecord=null;suppressor?.release();echoCanceler?.release();detector.close();persisted=persist(writer?.close(),persisted)

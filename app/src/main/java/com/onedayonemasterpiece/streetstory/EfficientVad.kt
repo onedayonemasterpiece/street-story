@@ -8,33 +8,44 @@ import java.io.Closeable
 import kotlin.math.max
 import kotlin.math.sqrt
 
-class EfficientVad(private val enabled: Boolean) : Closeable {
-    private var detector: VadWebRTC? = if (enabled) runCatching {
+class EfficientVad(private val enabled: Boolean, private val interactive: Boolean = false) : Closeable {
+    private fun createDetector(): VadWebRTC? = if (enabled) runCatching {
         VadWebRTC(
             sampleRate = SampleRate.SAMPLE_RATE_16K,
             frameSize = FrameSize.FRAME_SIZE_480,
-            mode = Mode.LOW_BITRATE,
+            mode = if (interactive) Mode.VERY_AGGRESSIVE else Mode.LOW_BITRATE,
             speechDurationMs = 0,
             silenceDurationMs = 0,
         )
     }.getOrNull() else null
+    private var detector: VadWebRTC? = createDetector()
     private val energyGate = AdaptiveEnergyGate()
     private var failedOpen = enabled && detector == null
 
-    val isFailOpen: Boolean get() = failedOpen
+    val isFailOpen: Boolean get() = failedOpen && !interactive
+    val isUnavailable: Boolean get() = failedOpen && interactive
+
+    fun resetAfterPlayback() {
+        detector?.let { runCatching { it.close() } }
+        detector = createDetector()
+        failedOpen = enabled && detector == null
+    }
 
     fun isSpeech(frame: ShortArray): Boolean {
-        if (!enabled || failedOpen) return true
-        val activeDetector = detector ?: return true
+        if (!enabled) return true
+        if (failedOpen) return !interactive
+        val activeDetector = detector ?: return !interactive
         val rms = frameRms(frame)
-        if (!energyGate.shouldRunVad(rms)) return false
+        // Interactive admission needs a continuous vote window; the recording
+        // energy-probe optimization would leave gaps and suppress quiet speech.
+        if (!interactive && !energyGate.shouldRunVad(rms)) return false
         return try {
             activeDetector.isSpeech(frame).also { speech -> energyGate.observeVadResult(rms, speech) }
         } catch (_: Throwable) {
             failedOpen = true
             runCatching { activeDetector.close() }
             detector = null
-            true
+            !interactive
         }
     }
 
