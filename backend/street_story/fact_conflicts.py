@@ -170,6 +170,54 @@ def normalize_conflict_records(
     return records
 
 
+def _record_conflict_scan(
+    service,
+    story_id: str,
+    poi_key: str | None,
+    *,
+    detector: str,
+    status: str,
+    pair_count: int,
+    detected_count: int,
+    error_type: str | None = None,
+) -> None:
+    now = service.store.now()
+    with service.store.tx() as db:
+        if not db.execute("SELECT 1 FROM stories WHERE id=?", (story_id,)).fetchone():
+            return
+        db.execute(
+            """
+            INSERT INTO fact_conflict_scans(
+              story_id,poi_key,detector,status,pair_count,detected_count,error_type,created_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                story_id,
+                poi_key,
+                detector[:120],
+                status[:40],
+                max(0, int(pair_count)),
+                max(0, int(detected_count)),
+                str(error_type or "")[:120] or None,
+                now,
+            ),
+        )
+    from .identity_telemetry import record_identity_event
+    record_identity_event(
+        service,
+        story_id,
+        "fact_conflict_scan",
+        {
+            "status": status[:40],
+            "pair_count": max(0, int(pair_count)),
+            "detected_count": max(0, int(detected_count)),
+            "error_type": str(error_type or "")[:120] or None,
+            "detector": detector[:120],
+        },
+        source="fact_conflict",
+    )
+
+
 def conflict_stats(db, story_id: str, poi_key: str | None = None) -> dict[str, Any]:
     by_relation = {
         str(row["relation"]): int(row["count"])
@@ -179,7 +227,18 @@ def conflict_stats(db, story_id: str, poi_key: str | None = None) -> dict[str, A
             (story_id,),
         )
     }
+    scan = db.execute(
+        "SELECT COUNT(*) AS scans,COALESCE(SUM(pair_count),0) AS pairs,"
+        "COALESCE(SUM(detected_count),0) AS detected,"
+        "COALESCE(SUM(CASE WHEN status='ok' OR status='no_candidates' THEN 0 ELSE 1 END),0) AS failures "
+        "FROM fact_conflict_scans WHERE story_id=?",
+        (story_id,),
+    ).fetchone()
     result: dict[str, Any] = {
+        "scan_count": int(scan["scans"]),
+        "pairs_checked": int(scan["pairs"]),
+        "detected_observations": int(scan["detected"]),
+        "scan_failures": int(scan["failures"]),
         "total_detected": db.execute(
             "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
         ).fetchone()[0],
@@ -196,6 +255,15 @@ def conflict_stats(db, story_id: str, poi_key: str | None = None) -> dict[str, A
         "by_relation": by_relation,
     }
     if poi_key:
+        poi_scan = db.execute(
+            "SELECT COUNT(*) AS scans,COALESCE(SUM(pair_count),0) AS pairs,"
+            "COALESCE(SUM(detected_count),0) AS detected "
+            "FROM fact_conflict_scans WHERE poi_key=?",
+            (poi_key,),
+        ).fetchone()
+        result["poi_scan_count"] = int(poi_scan["scans"])
+        result["poi_pairs_checked"] = int(poi_scan["pairs"])
+        result["poi_detected_observations"] = int(poi_scan["detected"])
         result["poi_total_detected"] = db.execute(
             "SELECT COUNT(DISTINCT conflict_id) FROM fact_conflicts WHERE poi_key=?", (poi_key,)
         ).fetchone()[0]
@@ -326,15 +394,41 @@ async def analyze_fact_conflicts(
 ) -> list[dict[str, Any]]:
     pairs = conflict_candidate_pairs(items)
     if not pairs:
+        _record_conflict_scan(
+            service,
+            story_id,
+            poi_key,
+            detector=detector,
+            status="no_candidates",
+            pair_count=0,
+            detected_count=0,
+        )
         return []
     detector_fn = getattr(service.providers.gemini, "detect_fact_conflicts", None)
     if not callable(detector_fn):
+        _record_conflict_scan(
+            service,
+            story_id,
+            poi_key,
+            detector=detector,
+            status="detector_missing",
+            pair_count=len(pairs),
+            detected_count=0,
+        )
         return []
     try:
         records = await detector_fn(pairs, context or {})
     except (GeminiUnavailable, MalformedProviderResponse, PermanentProviderError, RetryableProviderError) as exc:
-        # Conflict analysis is observability/arbitration support. Provider failure
-        # must not make the primary factual research unavailable.
+        _record_conflict_scan(
+            service,
+            story_id,
+            poi_key,
+            detector=detector,
+            status="detector_unavailable",
+            pair_count=len(pairs),
+            detected_count=0,
+            error_type=type(exc).__name__,
+        )
         from .identity_telemetry import record_identity_event
         record_identity_event(
             service,
@@ -348,6 +442,15 @@ async def analyze_fact_conflicts(
             source="fact_conflict",
         )
         return []
+    _record_conflict_scan(
+        service,
+        story_id,
+        poi_key,
+        detector=detector,
+        status="ok",
+        pair_count=len(pairs),
+        detected_count=len(records),
+    )
     return persist_fact_conflicts(
         service,
         story_id,
