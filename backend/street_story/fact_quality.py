@@ -19,10 +19,12 @@ _RELATIVE_ASIDE = re.compile(
     r",\s*(?:именем|в\s+честь)\s+котор\w*[^,]{0,120},\s*",
     re.IGNORECASE,
 )
-_TEMPORAL_PREFIX = re.compile(
-    r"(?:(?:\b(?:В|К|С|До|После)\s+\d{3,4}\s+(?:году|года)\b)|"
-    r"(?:\bВ\s+(?:начале|конце|середине)\s+(?:[IVXLCDM]+|\d{3,4})\s*(?:века|столетия)?\b)|"
-    r"(?:\b(?:Летом|Зимой|Осенью|Весной)\s+\d{3,4}\s+года\b))[^,.]{0,45}$",
+_TEMPORAL_MARKER = re.compile(
+    r"\b(?:"
+    r"В\s+(?:начале|конце|середине)\s+(?:[IVXLCDM]+|\d{3,4})\s*(?:века|столетия)?|"
+    r"(?:В|К|С|До|После)\s+\d{3,4}\s+(?:году|года)|"
+    r"(?:Летом|Зимой|Осенью|Весной)\s+\d{3,4}\s+года"
+    r")\b",
     re.IGNORECASE,
 )
 _YEAR = re.compile(r"(?<!\d)(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})(?!\d)(?![-‑–—](?:лет|лети|летн|й|я|у)\w*)")
@@ -137,9 +139,9 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
         text = text[start:]
     signal = _ROLE.search(text) or _SIGNAL.search(text)
     if signal is not None:
-        temporal = _TEMPORAL_PREFIX.search(text[:signal.start()])
-        if temporal is not None:
-            text = text[temporal.start():]
+        temporal_matches = list(_TEMPORAL_MARKER.finditer(text[:signal.start()]))
+        if temporal_matches:
+            text = text[temporal_matches[-1].start():]
         elif signal.start() > 60:
             text = text[signal.start():]
     text = compact_fact_text(text)
@@ -210,22 +212,13 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
 
 
 def atomic_fact_text(raw: str) -> str | None:
-    original = _SPACE.sub(" ", str(raw or "")).strip(" \t\r\n-•")
-    if len(original) < 12:
+    facts = atomic_fact_texts(raw, limit=4)
+    if not facts:
         return None
-    candidates: list[tuple[tuple[int, int, int], str]] = []
-    prior_year: str | None = None
-    for index, sentence in enumerate(_SENTENCE_SPLIT.split(original)):
-        years = _YEAR.findall(sentence)
-        for clause_index, clause in enumerate(_CLAUSE_SPLIT.split(sentence)):
-            text, _unused = _normalize_candidate(clause, prior_year)
-            if text:
-                candidates.append((_candidate_score(text, index * 4 + clause_index), text))
-        if years:
-            prior_year = years[-1]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+    return max(
+        enumerate(facts),
+        key=lambda item: _candidate_score(item[1], item[0]),
+    )[1]
 
 def fact_kind(text: str) -> str:
     for name, pattern in _KINDS:
