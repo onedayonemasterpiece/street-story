@@ -573,16 +573,24 @@ class PoiKnowledgeBridge:
 
             left, right = sorted([claim_id, str(other["claim_id"])])
             conflict_id = _id("pconf_", poi_id, left, right)
-            strengths = [
-                row["verification_score"]
-                for row in db.execute(
-                    "SELECT verification_score FROM poi_evidence "
-                    "WHERE claim_id IN (?,?) AND verification_score IS NOT NULL",
-                    (left, right),
+            strongest_by_claim = []
+            for candidate_claim_id in (left, right):
+                row = db.execute(
+                    "SELECT MAX(verification_score) AS score "
+                    "FROM poi_evidence WHERE claim_id=?",
+                    (candidate_claim_id,),
+                ).fetchone()
+                strongest_by_claim.append(
+                    None if row is None else row["score"]
                 )
-            ]
-            strong_count = sum(float(value) >= 80 for value in strengths)
-            required_reviews = 2 if relation == "contradiction" and strong_count >= 2 else 1
+            both_strong = all(
+                value is not None and float(value) >= 80
+                for value in strongest_by_claim
+            )
+            required_reviews = 2 if relation == "contradiction" and both_strong else 1
+            review_visibility, review_owner, review_workspace = (
+                self._conflict_scope(db, left, right)
+            )
             db.execute(
                 """
                 INSERT INTO poi_conflicts(
@@ -619,13 +627,53 @@ class PoiKnowledgeBridge:
                 kind=kind,
                 relation=relation,
                 required_reviews=required_reviews,
-                visibility=visibility,
-                owner_sub=owner_sub,
-                workspace_id=workspace_id,
+                visibility=review_visibility,
+                owner_sub=review_owner,
+                workspace_id=review_workspace,
                 now=now,
             )
             created.append(conflict_id)
         return created
+
+    def _conflict_scope(
+        self,
+        db,
+        left_claim_id: str,
+        right_claim_id: str,
+    ) -> tuple[str, str | None, str | None]:
+        rows = list(db.execute(
+            "SELECT visibility,owner_sub,workspace_id FROM poi_evidence "
+            "WHERE claim_id IN (?,?)",
+            (left_claim_id, right_claim_id),
+        ))
+        if not rows:
+            return "private", None, None
+
+        private = [row for row in rows if row["visibility"] == "private"]
+        if private:
+            owners = {
+                str(row["owner_sub"])
+                for row in private
+                if row["owner_sub"]
+            }
+            return (
+                "private",
+                next(iter(owners)) if len(owners) == 1 else None,
+                None,
+            )
+
+        workspace = [row for row in rows if row["visibility"] == "workspace"]
+        if workspace:
+            workspaces = {
+                str(row["workspace_id"])
+                for row in workspace
+                if row["workspace_id"]
+            }
+            if len(workspaces) == 1:
+                return "workspace", None, next(iter(workspaces))
+            return "private", None, None
+
+        return "public", None, None
 
     def _ensure_conflict_review_case(
         self,
