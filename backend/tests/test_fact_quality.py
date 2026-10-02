@@ -160,7 +160,7 @@ def test_long_photo_caption_before_arrival_does_not_hide_fact():
         "прибыло в Кёнигсберг в 1697 году."
     )
     facts = atomic_fact_texts(raw)
-    assert facts == ["прибыло в Кёнигсберг в 1697 году."]
+    assert facts == ["Великое посольство прибыло в Кёнигсберг в 1697 году."]
 
 
 def test_vague_anniversary_copy_is_not_fact():
