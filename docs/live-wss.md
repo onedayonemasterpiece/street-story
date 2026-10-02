@@ -77,14 +77,20 @@ Owner testing on 2026-10-01 (incident `inc_181ca71615174ed50b347a31`) is the acc
 - no large placeholder publication-text card is shown before a real draft exists; publication preview returns when there is actual draft text;
 - technical provider/socket codes are diagnostic data, not normal owner-facing copy;
 - the source photo is queued as a bounded orientation-normalized Live snapshot before microphone capture starts. If visual context cannot be prepared, the UI says so rather than claiming Mira sees the image; `resolve_place` still performs an independent vision/candidate comparison;
-- physical Live capture uses Android `VOICE_COMMUNICATION` plus best-effort AEC/NoiseSuppressor. An `interrupted` event and playback timing are logged so self-echo versus genuine barge-in can be distinguished.
+- physical Live capture uses Android `VOICE_RECOGNITION` with optional hardware AEC/NoiseSuppressor disabled for Live. Native VAD/admission and local playback suppression remain. Diagnostics include requested/actual source, route type, system mute, client silencing and pre-VAD RMS/peak. A measured input-level indicator appears in the conversation footer.
 
 This phone acceptance is stronger than prepared-PCM CI. A new APK is not declared physically fixed until the owner reruns a real microphone turn and confirms intelligible continuous playback.
 
+The 2026-10-02 v449 trace showed two connected WSS sessions but no admitted
+speech: pre-VAD 16-bit PCM RMS stayed approximately 1–27. Replacing the VoIP/DSP
+path addresses this capture-stage failure, but its exact hardware cause remains
+unproven until a physical retest. A separate rapid restart hit
+RESOURCE_TOKEN_BUDGET; that refusal no longer triggers a 900 ms reservation retry.
+
 ## Preserved domain boundaries
 
-One existing story/photo, resolve_place -> owner confirmation -> grounded
-search_web, independent text/image revisions, immutable reviewed visual, test
+One existing story/photo, automatic evidence-backed resolve_place -> grounded
+search_web, optional author correction, independent text/image revisions, immutable reviewed visual, test
 Telegram-only destination and exact two-step publication confirmation remain.
 No raw provider calls move to Android. No PostgreSQL, broker, new service or
 alternative credential path is introduced. The fixed image-v2 safe layout and
@@ -114,3 +120,25 @@ to make the acceptance test green. Candidate rollout is test-only until receipts
 show the end-to-end result. Rollback changes the immutable release, not SQLite,
 device token or publication records. Future updates use semantic versions and
 explicit per-consumer acceptance, never live-session auto-update.
+
+## Product web-search route (2026-10-02)
+
+Internet research remains an explicit product function search_web; it does not
+turn the Live model into an unbounded autonomous browser. The function returns
+grounded sources/results into the same Live turn and persists evidence through the
+normal Street Story research contract.
+
+The default Google Search grounding route is now gemini-3.5-flash-lite, with
+gemini-3.8-flash as the stronger fallback. gemini-3.1-flash-lite remains a
+general research fallback where configured, but is not placed ahead of the
+documented Search-grounding models. If both Google-grounded routes are unavailable,
+the existing bounded public-web result fallback may return low-confidence snippets;
+those snippets are discovery evidence, never automatically promoted to verified
+facts.
+
+The model choice follows the current Google Gemini model/Search documentation:
+- https://ai.google.dev/gemini-api/docs/models
+- https://ai.google.dev/gemini-api/docs/google-search
+
+Provider quota exhaustion is kept visible in diagnostics and never bypassed by
+switching to an undocumented credential path.

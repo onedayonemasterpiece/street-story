@@ -50,6 +50,7 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
     ]
     assert settings.gemini_model == "gemini-3.1-flash-lite"
     assert settings.gemini_fallback_model == "gemini-3.5-flash-lite"
+    assert settings.gemini_web_search_model == "gemini-3.5-flash-lite"
     assert settings.gemini_web_search_tertiary_model == "gemini-3.8-flash"
     assert settings.gemini_transcription_model == "gemini-3.5-flash-lite"
     assert settings.gemini_transcription_fallback_model == "gemini-3.1-flash-lite"
@@ -65,7 +66,6 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
         "gemini-3.5-flash-lite",
     ]
     assert [route[0] for route in client.web_search_routes] == [
-        "gemini-3.1-flash-lite",
         "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
     ]

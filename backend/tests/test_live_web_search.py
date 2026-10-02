@@ -35,7 +35,7 @@ class PassingSearchExecutor:
 
 
 @pytest.mark.asyncio
-async def test_web_search_stays_on_lite_models_and_uses_grounding(tmp_path):
+async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
     settings = replace(
         config(tmp_path),
         gemini_api_key=SecretStr("key-a"),
@@ -45,15 +45,12 @@ async def test_web_search_stays_on_lite_models_and_uses_grounding(tmp_path):
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
     primary = FailingSearchExecutor()
-    fallback = FailingSearchExecutor()
-    tertiary = PassingSearchExecutor()
+    fallback = PassingSearchExecutor()
     first = client.web_search_routes[0]
     second = client.web_search_routes[1]
-    third = client.web_search_routes[2]
     client.web_search_routes = [
         (first[0], first[1], first[2], primary),
         (second[0], second[1], second[2], fallback),
-        (third[0], third[1], third[2], tertiary),
     ]
     models = []
 
@@ -79,7 +76,6 @@ async def test_web_search_stays_on_lite_models_and_uses_grounding(tmp_path):
 
     assert primary.calls == 1
     assert fallback.calls == 1
-    assert tertiary.calls == 1
     assert models == ["gemini-3.8-flash"]
     assert result.payload["summary"] == "Search summary"
     assert result.grounding_sources == [{
@@ -110,7 +106,7 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
         gemini_fallback_model="gemini-3.5-flash-lite",
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
-    failures = [FailingSearchExecutor(), FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
@@ -132,7 +128,7 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
 
     result = await client.search_web("Brandenburg Gate Kaliningrad", {"place_name": "Kaliningrad"})
 
-    assert [executor.calls for executor in failures] == [1, 1, 1]
+    assert [executor.calls for executor in failures] == [1, 1]
     assert result.payload["search_provider"] == "duckduckgo_html_fallback"
     assert result.payload["facts"][0] == {
         "text": "The gate was rebuilt in 1843.",

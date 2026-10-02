@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
+from .identity_candidate_policy import wikipedia_identity_eligible
+from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
 from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
@@ -313,6 +315,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "url": _norm_url(page.get("url")),
                 "reference_excerpt": str(page.get("extract") or "")[:1200],
                 "reference_image_urls": refs[:2],
+                "identity_eligible": wikipedia_identity_eligible(title, str(page.get("extract") or "")),
                 "distance_m": page.get("distance_m"),
                 "selection_bucket": "wikipedia",
                 "salience_rank": 0,
@@ -448,9 +451,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
         return shortlist[:16]
 
-    async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None):
+    async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None, evidence=None):
         from .identity_references import reference_images
-        return await reference_images(self, candidates, limit, story_id=story_id)
+        return await reference_images(self, candidates, limit, story_id=story_id, evidence=evidence)
 
     async def _identify_photo(self, story, transcript, candidates):
         return await identify_nearest(self, story, transcript, candidates)
@@ -488,15 +491,22 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             "status=match только при совпадении отличительных деталей с приложенным REFERENCE_IMAGE; "
             "близость GPS или известность названия сами по себе не доказательство. При сомнении uncertain, "
             "при явном несовпадении mismatch. candidate_id обязан быть из списка или пустой строкой. "
+            "Кандидат с identity_eligible=false — только географический/поисковый контекст; его нельзя выбирать как match. "
             "Параметры объектива не определяют расстояние до объекта; эквивалентное фокусное и зум не перемножай. "
             "camera_alignment и угловое отклонение — лишь подсказки по неточному компасу и центру OSM-объекта, "
             "не основание исключать кандидата или подтверждать совпадение. "
-            "Кратко перечисли видимые признаки, на которых основано решение.\n"
+            "Фото может показывать только часть объекта с другого ракурса: детали вне кадра не считаются несовпадением. "
+            "Ищи конкретные повторяющиеся формы, пропорции, проёмы и декор на видимой части, а не сходство общего стиля. "
+            "alternative_candidate_ids указывай только для других физических объектов, которые после сравнения реально "
+            "остаются визуально неотличимыми. Не перечисляй туда просто остальные кандидаты, страницы города/района, "
+            "явно несовпавшие эталоны или современное/историческое имя того же здания. "
+            "Кратко, по-русски перечисли видимые признаки, на которых основано решение.\n"
             + json.dumps({"voice_context": transcript, "candidates": candidates,
                           "capture_hints": model_camera_hints(story.get('_camera_hints') or {})}, ensure_ascii=False)
         )
         config = types.GenerateContentConfig(
-            response_mime_type="application/json", response_json_schema=schema
+            response_mime_type="application/json", response_json_schema=schema,
+            system_instruction="Все observations пиши по-русски. Название города или района само по себе не является идентификацией конкретного здания. Несколько изображений одного объекта — не разные альтернативные объекты."
         )
         from PIL import Image, ImageOps
         import io
@@ -507,7 +517,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             image.save(output, format="JPEG", quality=82, optimize=True)
             photo = output.getvalue()
         reference_candidates = reference_order(candidates)
-        reference_images = await self._candidate_reference_images(reference_candidates, limit=reference_limit, story_id=story["id"])
+        reference_evidence = []
+        reference_images = await self._candidate_reference_images(
+            reference_candidates, limit=reference_limit, story_id=story["id"], evidence=reference_evidence)
         from .identity_telemetry import record_identity_event
         record_identity_event(self, story['id'], 'identity_reference_priority', {
             'candidate_ids': [item['candidate_id'] for item in reference_candidates],
@@ -523,12 +535,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             parts.append(f"REFERENCE_IMAGE candidate_id={candidate_id}")
             parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
-        async def call(api_key, timeout):
+        async def call(api_key, timeout, *, model=None, quota=None):
             response = await gemini._generate(
                 api_key,
                 timeout,
                 parts,
                 config,
+                operation="grounded_research",
+                model=model,
+                quota=quota,
             )
             try:
                 payload = json.loads(response.text or "{}")
@@ -543,9 +558,29 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             considered = [x["candidate_id"] for x in reference_candidates if x.get("reference_image_urls")][:reference_limit]
             return {**payload, "_references_unavailable_ids": [cid for cid in considered if cid not in {x[0] for x in reference_images}],
                     "_references_sent": [item[0] for item in reference_images],
+                    "_reference_evidence": reference_evidence,
                     "_references_rate_limited": getattr(self, "_wikimedia_reference_wait_until", 0) > __import__("time").monotonic()}
 
-        return await gemini.executor.execute("grounded_research", call)
+        routes = getattr(gemini, "research_routes", None)
+        if not routes:
+            return await gemini.executor.execute("grounded_research", call)
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in routes:
+            async def routed_call(api_key, timeout, *, _model=model, _quota=quota):
+                return await call(api_key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_visual_identity_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
 
     async def _research_claims(
         self,
@@ -931,8 +966,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         result = super()._story_repr(db, row)
         research = json.loads(row["research_json"] or "{}")
         identity = research.get("visual_identity")
-        from .identity_progress import from_history
-        result["identity_progress"] = research.get("identity_progress") or from_history(db, row["id"], int(research.get("identity_generation") or 0))
+        from .identity_progress import from_history, current_projection
+        result["identity_progress"] = current_projection(
+            research.get("identity_progress") or from_history(db, row["id"], int(research.get("identity_generation") or 0)),
+            identity if isinstance(identity, dict) else None)
         if isinstance(identity, dict):
             result["visual_identity"] = identity
         if research.get("input_revision"):

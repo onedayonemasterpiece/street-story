@@ -58,6 +58,7 @@ class Settings:
     osm_user_agent: str
     vibepublish_http_host: str | None = None
     gemini_fallback_model: str = 'gemini-3.5-flash-lite'
+    gemini_web_search_model: str = 'gemini-3.5-flash-lite'
     gemini_web_search_tertiary_model: str = 'gemini-3.8-flash'
     gemini_transcription_model: str = 'gemini-3.5-flash-lite'
     gemini_transcription_fallback_model: str = 'gemini-3.1-flash-lite'
@@ -142,6 +143,7 @@ class Settings:
             gemini_quota_supabase_key=quota_key,
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite'),
             gemini_fallback_model=os.getenv('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
+            gemini_web_search_model=os.getenv('GEMINI_WEB_SEARCH_MODEL', 'gemini-3.5-flash-lite'),
             gemini_web_search_tertiary_model=os.getenv('GEMINI_WEB_SEARCH_TERTIARY_MODEL', 'gemini-3.8-flash'),
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),

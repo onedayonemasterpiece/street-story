@@ -418,8 +418,7 @@ class GeminiClient:
             model_quota = SharedQuotaGate(settings, model_pool)
             self.research_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
         web_search_models = tuple(dict.fromkeys((
-            settings.gemini_model,
-            settings.gemini_fallback_model,
+            settings.gemini_web_search_model,
             settings.gemini_web_search_tertiary_model,
         )))
         self.web_search_routes = []
