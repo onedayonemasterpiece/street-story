@@ -92,6 +92,7 @@ class MainActivity : Activity() {
     private var previewExpanded = true
     private var stickyIsland: LinearLayout? = null
     private var stickyImage: ImageView? = null
+    private var floatingImageProxy: ImageView? = null
     private var stickyTitle: TextView? = null
     private var stickyFacts: TextView? = null
     private var stickyConcept: TextView? = null
@@ -1127,6 +1128,8 @@ class MainActivity : Activity() {
             scaleY = 1f
         }
         stickyIsland?.animate()?.cancel()
+        floatingImageProxy?.let { contentHost.removeView(it) }
+        floatingImageProxy = null
         stickyIsland = null; stickyImage = null; stickyTitle = null
         stickyFacts = null; stickyConcept = null; stickyVisible = false
         factsBlock = null; conceptBlock = null; publicationEventView = null
@@ -1316,7 +1319,7 @@ class MainActivity : Activity() {
             background = rounded(PAPER, 20)
             elevation = dp(5).toFloat()
             setPadding(dp(8), dp(8), dp(10), dp(8))
-            visibility = View.GONE
+            visibility = View.INVISIBLE
             alpha = 0f
             translationY = -dp(8).toFloat()
             contentDescription = "sticky-topic-bento"
@@ -1359,32 +1362,78 @@ class MainActivity : Activity() {
     private fun updateStickyPhoto() {
         val scroll = topicScroll ?: return
         val image = previewImage ?: return
+        val island = stickyIsland ?: return
+        val target = stickyImage ?: return
         if (image.height <= 0) return
+
         val state = FloatingIslandTransition.state(scroll.scrollY, image.top, image.height, dp(114))
-        image.apply {
-            pivotX = 0f
-            pivotY = 0f
-            scaleX = state.previewScale
-            scaleY = state.previewScale
-            alpha = state.previewAlpha
-        }
         stickyVisible = state.progress > 0f
-        stickyIsland?.let { island ->
-            island.animate().cancel()
-            if (state.progress == 0f) {
-                island.visibility = View.GONE
-                island.alpha = 0f
-                island.scaleX = .96f
-                island.scaleY = .96f
-                island.translationY = -dp(6).toFloat()
-            } else {
-                island.visibility = View.VISIBLE
-                island.alpha = state.islandAlpha
-                island.scaleX = .96f + .04f * state.progress
-                island.scaleY = .96f + .04f * state.progress
-                island.translationY = -dp(6).toFloat() * (1f - state.progress)
-            }
+
+        if (state.progress <= 0f) {
+            floatingImageProxy?.visibility = View.GONE
+            image.alpha = 1f
+            image.scaleX = 1f
+            image.scaleY = 1f
+            target.alpha = 1f
+            island.visibility = View.INVISIBLE
+            island.alpha = 0f
+            return
         }
+
+        island.visibility = View.VISIBLE
+        island.alpha = ((state.progress - .18f) / .82f).coerceIn(0f, 1f)
+        island.translationY = -dp(4).toFloat() * (1f - state.progress)
+        island.scaleX = .985f + .015f * state.progress
+        island.scaleY = .985f + .015f * state.progress
+
+        if (target.width <= 0 || target.height <= 0) {
+            island.post { updateStickyPhoto() }
+            return
+        }
+
+        val proxy = floatingImageProxy ?: ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(SAGE_DARK, 18)
+            clipToOutline = true
+            elevation = dp(7).toFloat()
+            contentDescription = "floating-photo-transition"
+            isClickable = false
+            contentHost.addView(this, FrameLayout.LayoutParams(1, 1))
+            floatingImageProxy = this
+        }
+        if (proxy.drawable == null || proxy.tag != shownImagePath) {
+            proxy.setImageDrawable(image.drawable?.constantState?.newDrawable(resources)?.mutate() ?: image.drawable)
+            proxy.tag = shownImagePath
+        }
+
+        val sourceLocation = IntArray(2)
+        val targetLocation = IntArray(2)
+        val hostLocation = IntArray(2)
+        image.getLocationInWindow(sourceLocation)
+        target.getLocationInWindow(targetLocation)
+        contentHost.getLocationInWindow(hostLocation)
+
+        val p = state.progress.coerceIn(0f, 1f)
+        fun lerp(startValue: Int, endValue: Int): Int =
+            (startValue + (endValue - startValue) * p).toInt()
+
+        val sourceLeft = sourceLocation[0] - hostLocation[0]
+        val sourceTop = sourceLocation[1] - hostLocation[1]
+        val targetLeft = targetLocation[0] - hostLocation[0]
+        val targetTop = targetLocation[1] - hostLocation[1]
+        val width = lerp(image.width, target.width).coerceAtLeast(1)
+        val height = lerp(image.height, target.height).coerceAtLeast(1)
+
+        proxy.layoutParams = FrameLayout.LayoutParams(width, height).apply {
+            leftMargin = lerp(sourceLeft, targetLeft)
+            topMargin = lerp(sourceTop, targetTop)
+        }
+        proxy.visibility = if (p < .995f) View.VISIBLE else View.GONE
+        proxy.alpha = 1f
+        image.alpha = 0f
+        image.scaleX = 1f
+        image.scaleY = 1f
+        target.alpha = if (p < .995f) 0f else 1f
     }
 
     private fun scrollToSection(view: View) {
