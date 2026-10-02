@@ -857,7 +857,7 @@ def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):
     snapshot = writes[0]
     assert snapshot["type"] == "snapshot"
     assert snapshot["mime_type"] == "image/jpeg"
-    assert snapshot["optional"] is False
+    assert snapshot["optional"] is True
     data = base64.b64decode(snapshot["data"])
     assert len(data) <= 480 * 1024
     with Image.open(io.BytesIO(data)) as normalized:
