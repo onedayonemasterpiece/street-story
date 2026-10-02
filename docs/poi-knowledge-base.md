@@ -50,22 +50,24 @@ This remains inside the existing Street Story backend and SQLite store. A separa
 POI service or materialized database should be introduced only if future scale or
 query requirements justify it.
 
-## Owner review 2026-10-02 15:20 — quality boundary
+The semantic architecture is defined in [LLM-first fact intelligence](llm-first-facts.md)
+and overrides any older wording that assigned fact meaning to deterministic rules.
 
-The canonical review `voice-20261002-152036-8d69118b` showed that prompt wording
-alone was insufficient: article titles, photo/licence metadata and multiple
-rephrasings of the same event still entered the visible fact list.
+## Owner review 2026-10-02 15:20 — LLM-first quality boundary
 
-A deterministic fact-quality boundary now sits after research and Live web search:
-non-factual titles/media metadata are rejected, text is compacted, and facts are
-merged by semantic event key (event type + year/period where available). Evidence
-URLs from duplicate claims are unioned, with official sources ordered first.
-Re-running research rebuilds the current topic inventory from valid accumulated
-facts, which also cleans legacy polluted entries.
+The canonical review `voice-20261002-152036-8d69118b` showed that article titles,
+photo/licence metadata and duplicate rephrasings were entering the fact list.
 
-Emergency public-web snippets remain useful discovery material but are no longer
-promoted to durable facts. A source snippet becomes a fact only after the normal
-evidence-backed research path expresses an atomic claim.
+The attempted regex/event-key postprocessor was the wrong architecture and is now
+explicitly deprecated. Fact extraction, atomization, deduplication, novelty checks
+and semantic comparison belong to the model. The host may validate structure and
+provenance, but must not decide meaning from keywords, years or hand-written event
+categories.
+
+Both background research and Mira use the same semantic curation contract described
+in `docs/llm-first-facts.md`. If curation is unavailable, raw search snippets stay
+evidence-only and the durable fact inventory is left unchanged rather than repaired
+by deterministic heuristics.
 
 ## Multiple sources for one fact
 
@@ -87,37 +89,35 @@ sets are unioned rather than replacing one another.
 
 ## Legacy inventory normalization
 
-Older topics created before the atomic-fact boundary may contain article titles,
-photo captions or multi-sentence excerpts. The maintenance command
-`backend/tools/normalize_fact_inventory.py` is dry-run by default and normalizes
-one explicitly named non-published story. It extracts the best atomic factual
-sentence, drops non-factual/media text, merges semantic duplicates and unions all
-supporting source URLs. It refuses scheduled/published stories and refuses a topic
-with an already frozen visual asset.
+Older topics may contain titles, captions, multi-sentence excerpts and duplicate
+formulations. They must be migrated through the same **model semantic-curation
+contract** used for new research. A maintenance command may perform dry-run/apply
+around that model call, but deterministic code must not extract or merge meanings.
 
-This migration does not rewrite an authored draft. It only repairs the fact
-inventory and its selection map so the existing topic can continue under the new
-contract.
+Scheduled/published stories and frozen reviewed visuals remain protected. Migration
+does not rewrite authored draft text; it repairs only the fact/evidence inventory
+after a model-generated proposal has passed provenance/schema validation.
 
 ## Contradictions and arbitration
 
-Source multiplicity is evidence richness, not majority voting. Street Story therefore
-keeps a separate durable contradiction ledger instead of hiding disagreement inside
-the merged fact.
+Source multiplicity is evidence richness, not majority voting. Street Story keeps a
+durable contradiction ledger instead of hiding disagreement inside a merged fact.
 
-After factual extraction, deterministic code selects only plausible competing pairs
-(same semantic kind such as construction date, architect, ownership or use). A
-bounded research model then classifies each pair as one of:
+Contradiction discovery is also LLM-first. The model receives the bounded fact
+inventory and evidence summaries and may identify *any* conflicting semantic keys;
+the host does not preselect pairs by regex-derived event type. The relation remains:
 
-- `contradiction` — both claims cannot be true in the same meaning;
-- `scope_difference` — the wording refers to a different object, period or scope;
-- `temporal_sequence` — both can be true at different times;
-- `source_disagreement` — sources disagree and current evidence cannot resolve it;
-- `uncertain` — there is not enough evidence to classify safely.
+- `contradiction`;
+- `scope_difference`;
+- `temporal_sequence`;
+- `source_disagreement`;
+- `uncertain`.
 
-The model also records a suggested resolution (`prefer_left`, `prefer_right`,
-`both_valid`, or `unresolved`) with confidence and rationale. This suggestion is
-not silently applied to fact selection and does not change the publication text.
+The model may propose `prefer_left`, `prefer_right`, `both_valid` or
+`unresolved`, with rationale and confidence. That proposal is not silently applied
+to fact selection or publication text. Mira remains the product arbiter: when an
+unresolved conflict matters, she can request more evidence and record a separate
+final arbitration.
 
 Every detected conflict is stored durably in SQLite with both claim snapshots,
 source/domain counts, official-source presence, detector confidence, suggestion,
