@@ -93,13 +93,13 @@ def test_location_and_status_still_require_a_real_predicate():
 def test_legacy_heading_glued_to_fact_is_stripped_not_dropped():
     assert atomic_fact_text(
         "История создания Королевские ворота были построены в 1843-1850 годах как часть второго вального кольца."
-    ) == "построены в 1843-1850 годах как часть второго вального кольца."
+    ) == "Королевские ворота были построены в 1843-1850 годах как часть второго вального кольца."
 
 
 def test_legacy_interesting_facts_heading_can_salvage_arrival_fact():
     assert atomic_fact_text(
         "Интересные факты Великое посольство прибыло в Кёнигсберг в 1697 году."
-    ) == "прибыло в Кёнигсберг в 1697 году."
+    ) == "Великое посольство прибыло в Кёнигсберг в 1697 году."
 
 
 def test_current_institutional_status_is_a_fact():
@@ -136,7 +136,7 @@ def test_bad_caption_prefix_can_be_discarded_while_later_fact_survives():
         "Интересные факты: Великое посольство прибыло в Кёнигсберг в 1697 году."
     )
     facts = atomic_fact_texts(raw)
-    assert facts == ["прибыло в Кёнигсберг в 1697 году."]
+    assert facts == ["Великое посольство прибыло в Кёнигсберг в 1697 году."]
 
 
 def test_documented_presence_event_is_a_fact():
@@ -185,6 +185,41 @@ def test_old_name_and_later_dismantling_are_separate_facts():
         "однако в начале XVIII века их разобрали."
     )
     assert facts == [
-        "имели название Кальтхофские",
+        "Самые ранние ворота имели название Кальтхофские",
         "однако в начале XVIII века их разобрали.",
     ]
+
+
+def test_reference_markers_are_removed_from_display_fact():
+    assert atomic_fact_text(
+        "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда [1]."
+    ) == "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
+
+
+def test_incomplete_ellipsis_fact_is_rejected():
+    assert atomic_fact_text(
+        "С 2005 года в воротах размещается Историко-культурный центр «Великое посольство», являющийся филиалом ..."
+    ) is None
+
+
+def test_temporal_prefix_is_kept_when_caption_prefix_is_removed():
+    raw = (
+        "Королевские ворота в Кёнигсберге в 1928 году "
+        "В начале XX столетия ворота потеряли оборонительную функцию и стали городской аркой."
+    )
+    assert atomic_fact_text(raw) == (
+        "В начале XX столетия ворота потеряли оборонительную функцию и стали городской аркой."
+    )
+
+
+def test_demolition_fact_drops_trailing_non_atomic_consequence():
+    assert atomic_fact_text(
+        "В начале XVIII века их разобрали, и почти четыре десятилетия здесь оставалось пустое место."
+    ) == "В начале XVIII века их разобрали"
+
+
+def test_reason_clause_after_existing_fact_is_not_kept_as_second_fact():
+    facts = atomic_fact_texts(
+        "На этом месте существовали более ранние ворота, поэтому история самого прохода старше нынешней постройки."
+    )
+    assert facts == ["На этом месте существовали более ранние ворота"]
