@@ -7,6 +7,7 @@ from typing import Any
 
 _SPACE = re.compile(r"\s+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+|\s*;\s*")
+_CLAUSE_SPLIT = re.compile(r",\s*(?=(?:а\s+вместо|однако)\b)", re.IGNORECASE)
 _YEAR = re.compile(r"(?<!\d)(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})(?!\d)(?![-‑–—](?:лет|лети|летн|й|я|у)\w*)")
 _BAD = re.compile(
     r"(?:интересн\w*\s+факт|истори\w*\s+создани|смотрите\s+также|"
@@ -133,9 +134,12 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
     prior_year: str | None = None
     for sentence in _SENTENCE_SPLIT.split(original):
         years = _YEAR.findall(sentence)
-        text, _score = _normalize_candidate(sentence, prior_year)
-        if text and text not in result:
-            result.append(text)
+        for clause in _CLAUSE_SPLIT.split(sentence):
+            text, _score = _normalize_candidate(clause, prior_year)
+            if text and text not in result:
+                result.append(text)
+            if len(result) >= limit:
+                break
         # A sentence can contain a second independent architect claim.
         architect = re.search(
             r"\bпо\s+проекту\s+архитектора\s+([^,.;]{3,100})",
@@ -161,9 +165,10 @@ def atomic_fact_text(raw: str) -> str | None:
     prior_year: str | None = None
     for index, sentence in enumerate(_SENTENCE_SPLIT.split(original)):
         years = _YEAR.findall(sentence)
-        text, _unused = _normalize_candidate(sentence, prior_year)
-        if text:
-            candidates.append((_candidate_score(text, index), text))
+        for clause_index, clause in enumerate(_CLAUSE_SPLIT.split(sentence)):
+            text, _unused = _normalize_candidate(clause, prior_year)
+            if text:
+                candidates.append((_candidate_score(text, index * 4 + clause_index), text))
         if years:
             prior_year = years[-1]
     if not candidates:
