@@ -744,18 +744,36 @@ class GeminiClient:
             except (ValueError, TypeError):
                 raise MalformedProviderResponse("gemini:malformed_web_search") from None
 
-            sources: list[dict[str, str]] = []
+            sources: list[dict[str, Any]] = []
+            supports_by_url: dict[str, list[dict[str, str]]] = {}
             for candidate in getattr(response, "candidates", []) or []:
                 metadata = getattr(candidate, "grounding_metadata", None)
+                local_sources: list[dict[str, Any]] = []
                 for chunk in getattr(metadata, "grounding_chunks", []) or []:
                     web = getattr(chunk, "web", None)
                     uri = getattr(web, "uri", None)
-                    if isinstance(uri, str) and uri.startswith("https://"):
-                        sources.append({
-                            "type": "web",
-                            "title": str(getattr(web, "title", "") or uri),
-                            "url": uri,
-                        })
+                    source = {
+                        "type": "web",
+                        "title": str(getattr(web, "title", "") or uri or ""),
+                        "url": uri if isinstance(uri, str) and uri.startswith("https://") else "",
+                    }
+                    local_sources.append(source)
+                    if source["url"]:
+                        sources.append(source)
+                for support in getattr(metadata, "grounding_supports", []) or []:
+                    segment = getattr(support, "segment", None)
+                    text = str(getattr(segment, "text", "") or "").strip()
+                    if not text:
+                        continue
+                    for index in getattr(support, "grounding_chunk_indices", []) or []:
+                        if isinstance(index, int) and 0 <= index < len(local_sources):
+                            url = str(local_sources[index].get("url") or "")
+                            if url:
+                                supports_by_url.setdefault(url, []).append({
+                                    "kind": "google_grounding",
+                                    "source_url": url,
+                                    "text": text[:600],
+                                })
             unique_sources = list({source["url"]: source for source in sources}.values())
             seen = {source["url"].rstrip("/") for source in unique_sources}
             blocked_official_hosts = {
@@ -771,7 +789,11 @@ class GeminiClient:
             payload["official_source_urls"] = official_urls
             official_set = set(official_urls)
             decorated = [
-                {**source, "type": "official" if source["url"].rstrip("/") in official_set else source["type"]}
+                {
+                    **source,
+                    "type": "official" if source["url"].rstrip("/") in official_set else source["type"],
+                    "supports": supports_by_url.get(source["url"], [])[:4],
+                }
                 for source in unique_sources
             ]
             return GroundedResearch(payload=payload, grounding_sources=decorated)
