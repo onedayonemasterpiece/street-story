@@ -281,6 +281,45 @@ def persist_fact_conflicts(
     return durable
 
 
+async def analyze_fact_conflicts(
+    service,
+    story_id: str,
+    poi_key: str | None,
+    items: list[dict[str, Any]],
+    *,
+    context: dict[str, Any] | None = None,
+    detector: str = "gemini_research",
+) -> list[dict[str, Any]]:
+    pairs = conflict_candidate_pairs(items)
+    if not pairs:
+        return []
+    try:
+        records = await service.providers.gemini.detect_fact_conflicts(pairs, context or {})
+    except Exception as exc:
+        # Conflict analysis is observability/arbitration support. It must not make
+        # factual research unavailable when the auxiliary model/quota is unavailable.
+        from .identity_telemetry import record_identity_event
+        record_identity_event(
+            service,
+            story_id,
+            "fact_conflict_detector_unavailable",
+            {
+                "error_type": type(exc).__name__,
+                "pair_count": len(pairs),
+                "detector": detector[:120],
+            },
+            source="fact_conflict",
+        )
+        return []
+    return persist_fact_conflicts(
+        service,
+        story_id,
+        poi_key,
+        records,
+        detector=detector,
+    )
+
+
 def conflict_rows(db, story_id: str, limit: int = 20) -> list[dict[str, Any]]:
     rows = list(db.execute(
         """
