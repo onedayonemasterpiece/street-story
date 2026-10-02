@@ -87,10 +87,9 @@ def _fact_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _pair_id(left: dict[str, Any], right: dict[str, Any]) -> str:
-    identities = sorted([
-        left["fact_id"] + ":" + hashlib.sha256(left["text"].encode("utf-8")).hexdigest()[:12],
-        right["fact_id"] + ":" + hashlib.sha256(right["text"].encode("utf-8")).hexdigest()[:12],
-    ])
+    # Fact ids are semantic ids. Keeping text out of the pair id lets the same
+    # underlying disagreement accumulate times_seen even when wording changes.
+    identities = sorted([left["fact_id"], right["fact_id"]])
     return "conflict_" + hashlib.sha256("|".join(identities).encode("utf-8")).hexdigest()[:20]
 
 
@@ -198,10 +197,13 @@ def conflict_stats(db, story_id: str, poi_key: str | None = None) -> dict[str, A
     }
     if poi_key:
         result["poi_total_detected"] = db.execute(
-            "SELECT COUNT(*) FROM fact_conflicts WHERE poi_key=?", (poi_key,)
+            "SELECT COUNT(DISTINCT conflict_id) FROM fact_conflicts WHERE poi_key=?", (poi_key,)
+        ).fetchone()[0]
+        result["poi_observations"] = db.execute(
+            "SELECT COALESCE(SUM(times_seen),0) FROM fact_conflicts WHERE poi_key=?", (poi_key,)
         ).fetchone()[0]
         result["poi_open"] = db.execute(
-            "SELECT COUNT(*) FROM fact_conflicts WHERE poi_key=? "
+            "SELECT COUNT(DISTINCT conflict_id) FROM fact_conflicts WHERE poi_key=? "
             "AND (final_resolution IS NULL OR final_resolution='unresolved')",
             (poi_key,),
         ).fetchone()[0]
