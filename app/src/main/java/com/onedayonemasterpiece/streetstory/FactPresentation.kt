@@ -1,6 +1,6 @@
 package com.onedayonemasterpiece.streetstory
 
-import android.net.Uri
+import java.net.URI
 import java.util.Locale
 
 internal object FactPresentation {
@@ -15,7 +15,7 @@ internal object FactPresentation {
     }
 
     fun sourceHost(source: SourceWire): String =
-        runCatching { Uri.parse(source.url).host.orEmpty().lowercase(Locale.ROOT) }
+        runCatching { URI(source.url).host.orEmpty().lowercase(Locale.ROOT) }
             .getOrDefault("")
             .removePrefix("www.")
 
