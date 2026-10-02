@@ -14,10 +14,14 @@ internal object FactPresentation {
         return if (end >= 70) text.take(end).trimEnd() + "…" else text.take(MAX_FACT_CHARS - 1).trimEnd() + "…"
     }
 
+    fun sourceHost(source: SourceWire): String =
+        runCatching { Uri.parse(source.url).host.orEmpty().lowercase(Locale.ROOT) }
+            .getOrDefault("")
+            .removePrefix("www.")
+
     fun sourceLabel(source: SourceWire): String {
         if (source.type == "official") return "Официальный сайт"
-        val host = runCatching { Uri.parse(source.url).host.orEmpty().lowercase(Locale.ROOT) }.getOrDefault("")
-            .removePrefix("www.")
+        val host = sourceHost(source)
         return when {
             host == "wikipedia.org" || host.endsWith(".wikipedia.org") -> "Википедия"
             host == "klops.ru" || host.endsWith(".klops.ru") -> "Клопс"
