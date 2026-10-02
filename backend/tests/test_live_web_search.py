@@ -125,6 +125,10 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
           <a class="result__a" href="https://example.org/archive">Archive</a>
           <a class="result__snippet">Historical archive entry.</a>
         </div>
+        <div class="result">
+          <a class="result__a" href="http://legacy.example/insecure">Legacy HTTP</a>
+          <a class="result__snippet">This must never be exposed as saveable evidence.</a>
+        </div>
         """
     )
 
@@ -155,6 +159,8 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
             }],
         },
     ]
+    assert all(source["url"].startswith("https://") for source in result.grounding_sources)
+    assert "Legacy HTTP" not in result.payload["summary"]
     assert len(client.search_http.calls) == 1
 
 

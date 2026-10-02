@@ -587,8 +587,17 @@ class GeminiClient:
                 raise RetryableProviderError("public_web_search_empty")
 
             # Public snippets are discovery material, not verified facts.
-            # Keeping them out of facts prevents article titles/descriptions from
-            # leaking into the editorial checklist when Google grounding is exhausted.
+            # Keep only HTTPS evidence because downstream fact persistence deliberately
+            # rejects non-HTTPS source references. Never show Mira evidence she cannot
+            # subsequently bind to a durable fact.
+            results = [
+                item
+                for item in results
+                if str(item.get("url") or "").startswith("https://")
+            ]
+            if not results:
+                raise RetryableProviderError("public_web_search_no_https_results")
+
             facts: list[dict[str, Any]] = []
             sources = [
                 {
