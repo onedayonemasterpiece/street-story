@@ -6,6 +6,7 @@ from street_story.poi_reviews import review_case_projection
 from street_story.poi_semantic import (
     PoiSemanticAccessError,
     PoiSemanticConflict,
+    _candidate_pairs,
     apply_poi_semantic_analysis,
     semantic_candidate_projection,
 )
@@ -83,6 +84,33 @@ def candidate(store):
         ),
     )
     return second["semantic_candidate_ids"][0]
+
+
+def test_candidate_pair_bounding_does_not_make_semantic_decisions():
+    items = [
+        {
+            "fact_id": "claim-new",
+            "claim_key": "modern-use",
+            "kind": "use",
+            "text": "Сейчас объект используется как музей.",
+        },
+        {
+            "fact_id": "claim-old",
+            "claim_key": "ownership-history",
+            "kind": "ownership",
+            "text": "Источник утверждает, что объект передали другой организации.",
+        },
+    ]
+    pairs = _candidate_pairs(
+        items,
+        focus_claim_id="claim-new",
+        max_pairs=24,
+    )
+    assert len(pairs) == 1
+    assert {pairs[0]["left"]["fact_id"], pairs[0]["right"]["fact_id"]} == {
+        "claim-new",
+        "claim-old",
+    }
 
 
 def conflict_analysis(candidate_id):

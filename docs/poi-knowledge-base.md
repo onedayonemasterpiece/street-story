@@ -50,22 +50,26 @@ This remains inside the existing Street Story backend and SQLite store. A separa
 POI service or materialized database should be introduced only if future scale or
 query requirements justify it.
 
-## Owner review 2026-10-02 15:20 — quality boundary
+## Owner review 2026-10-02 — LLM-first quality boundary
 
-The canonical review `voice-20261002-152036-8d69118b` showed that prompt wording
-alone was insufficient: article titles, photo/licence metadata and multiple
-rephrasings of the same event still entered the visible fact list.
+The canonical review `voice-20261002-152036-8d69118b` exposed article titles,
+photo/licence metadata and repeated formulations in the visible fact list. The
+first repair used a deterministic regex/event/year normalizer. That implementation
+is now legacy migration/repair code only because semantic product decisions belong
+to Mira/the configured model.
 
-A deterministic fact-quality boundary now sits after research and Live web search:
-non-factual titles/media metadata are rejected, text is compacted, and facts are
-merged by semantic event key (event type + year/period where available). Evidence
-URLs from duplicate claims are unioned, with official sources ordered first.
-Re-running research rebuilds the current topic inventory from valid accumulated
-facts, which also cleans legacy polluted entries.
+The normal research and Live paths are LLM-first. The model decides whether an item
+is a fact, emits one atomic formulation plus a stable `claim_key`, and may reference
+an exact existing `fact_id` when it judges a new formulation semantically equivalent
+to a fact already in the topic. Server code validates bounded text, retrieved
+source/evidence references and referenced IDs, but does not infer facthood or
+semantic equivalence.
 
-Emergency public-web snippets remain useful discovery material but are no longer
-promoted to durable facts. A source snippet becomes a fact only after the normal
-evidence-backed research path expresses an atomic claim.
+Unsupported model claims may remain visible as `evidence_supported=false` candidates,
+but they are never silently selected or used for publication. Emergency public-web
+snippets remain discovery material only. `fact_quality.py` and the legacy
+normalization command remain available solely for explicit repair of pre-LLM-first
+inventories.
 
 ## Multiple sources for one fact
 
@@ -105,9 +109,10 @@ Source multiplicity is evidence richness, not majority voting. Street Story ther
 keeps a separate durable contradiction ledger instead of hiding disagreement inside
 the merged fact.
 
-After factual extraction, deterministic code selects only plausible competing pairs
-(same semantic kind such as construction date, architect, ownership or use). A
-bounded research model then classifies each pair as one of:
+After factual extraction, deterministic code only bounds the comparison set and
+validates references. It does not filter candidates by kind, keywords, dates,
+claim-key similarity or source score. Mira/the configured model decides which
+claims are actually competing and classifies the selected conflict as one of:
 
 - `contradiction` — both claims cannot be true in the same meaning;
 - `scope_difference` — the wording refers to a different object, period or scope;
@@ -136,6 +141,20 @@ before deciding how conflicts should be represented to the author.
 The read-only `backend/tools/fact_conflict_stats.py` reports aggregate relation,
 open/resolved and Mira-arbitrated counts for later analysis.
 
+### Regional Knowledge / RAG bridge
+
+`poi.fact_evidence.v1` intake preserves model-produced `claim.text`,
+`claim.kind` and `claim.semantic_key`; Street Story validates provenance,
+scope, evidence scores and POI aliases without re-extracting semantics locally.
+New POI claims are mechanically paired with a bounded set of existing claims and
+queued as `pending_model` semantic-review candidates. Only a typed
+`poi.semantic_review.v1` model decision may classify a pair as a conflict and
+materialize it in the shared contradiction journal / expert-review workflow.
+
+When a Street Story identity resolves to a unique POI alias, public Regional
+Knowledge claims are passed to Mira as prior POI context together with facts from
+earlier Street Story topics. Private/workspace evidence remains isolated until the
+corresponding actor/workspace scope is available.
 
 
 ## Cross-service evolution: Regional Knowledge Base
