@@ -171,6 +171,43 @@ def normalize_conflict_records(
     return records
 
 
+def conflict_stats(db, story_id: str, poi_key: str | None = None) -> dict[str, Any]:
+    by_relation = {
+        str(row["relation"]): int(row["count"])
+        for row in db.execute(
+            "SELECT relation,COUNT(*) AS count FROM fact_conflicts "
+            "WHERE story_id=? GROUP BY relation",
+            (story_id,),
+        )
+    }
+    result: dict[str, Any] = {
+        "total_detected": db.execute(
+            "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
+        ).fetchone()[0],
+        "open": db.execute(
+            "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
+            "AND (final_resolution IS NULL OR final_resolution='unresolved')",
+            (story_id,),
+        ).fetchone()[0],
+        "arbitrated": db.execute(
+            "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
+            "AND final_resolution IS NOT NULL AND final_resolution<>'unresolved'",
+            (story_id,),
+        ).fetchone()[0],
+        "by_relation": by_relation,
+    }
+    if poi_key:
+        result["poi_total_detected"] = db.execute(
+            "SELECT COUNT(*) FROM fact_conflicts WHERE poi_key=?", (poi_key,)
+        ).fetchone()[0]
+        result["poi_open"] = db.execute(
+            "SELECT COUNT(*) FROM fact_conflicts WHERE poi_key=? "
+            "AND (final_resolution IS NULL OR final_resolution='unresolved')",
+            (poi_key,),
+        ).fetchone()[0]
+    return result
+
+
 def persist_fact_conflicts(
     service,
     story_id: str,
@@ -244,14 +281,7 @@ def persist_fact_conflicts(
         research = json.loads(row["research_json"] or "{}")
         research["fact_conflicts"] = durable
         research["fact_conflict_stats"] = {
-            "total_detected": db.execute(
-                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
-            ).fetchone()[0],
-            "open": db.execute(
-                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
-                "AND (final_resolution IS NULL OR final_resolution='unresolved')",
-                (story_id,),
-            ).fetchone()[0],
+            **conflict_stats(db, story_id, poi_key),
             "detector": detector[:120],
         }
         db.execute(
@@ -343,6 +373,7 @@ def resolve_fact_conflict(
     if not reason or len(reason) > 1200:
         raise ValueError("fact_conflict_reason_required")
     confidence = max(0.0, min(1.0, float(confidence)))
+    changed = False
     with service.store.tx() as db:
         row = db.execute(
             "SELECT * FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
@@ -355,66 +386,66 @@ def resolve_fact_conflict(
             final_fact_id = row["left_fact_id"]
         elif resolution == "prefer_right":
             final_fact_id = row["right_fact_id"]
-        now = service.store.now()
-        db.execute(
-            """
-            UPDATE fact_conflicts
-            SET final_resolution=?,final_fact_id=?,arbitration_reason=?,
-                arbitration_confidence=?,arbitrated_by=?,last_seen_at=?
-            WHERE story_id=? AND conflict_id=?
-            """,
-            (
-                resolution,
-                final_fact_id,
-                reason,
-                confidence,
-                arbitrated_by[:120],
-                now,
-                story_id,
-                conflict_id,
-            ),
+        same = (
+            row["final_resolution"] == resolution
+            and row["final_fact_id"] == final_fact_id
+            and row["arbitration_reason"] == reason
+            and row["arbitrated_by"] == arbitrated_by[:120]
+            and row["arbitration_confidence"] is not None
+            and abs(float(row["arbitration_confidence"]) - confidence) < 1e-9
         )
+        if not same:
+            changed = True
+            db.execute(
+                """
+                UPDATE fact_conflicts
+                SET final_resolution=?,final_fact_id=?,arbitration_reason=?,
+                    arbitration_confidence=?,arbitrated_by=?,last_seen_at=?
+                WHERE story_id=? AND conflict_id=?
+                """,
+                (
+                    resolution,
+                    final_fact_id,
+                    reason,
+                    confidence,
+                    arbitrated_by[:120],
+                    service.store.now(),
+                    story_id,
+                    conflict_id,
+                ),
+            )
         story = db.execute(
             "SELECT research_json FROM stories WHERE id=?", (story_id,)
         ).fetchone()
         durable = conflict_rows(db, story_id, limit=40)
+        current = next(item for item in durable if item["conflict_id"] == conflict_id)
+        poi_key = db.execute(
+            "SELECT poi_key FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
+            (story_id, conflict_id),
+        ).fetchone()["poi_key"]
         research = json.loads(story["research_json"] or "{}")
         research["fact_conflicts"] = durable
-        research["fact_conflict_stats"] = {
-            "total_detected": db.execute(
-                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
-            ).fetchone()[0],
-            "open": db.execute(
-                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
-                "AND (final_resolution IS NULL OR final_resolution='unresolved')",
-                (story_id,),
-            ).fetchone()[0],
-            "arbitrated": db.execute(
-                "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
-                "AND final_resolution IS NOT NULL AND final_resolution<>'unresolved'",
-                (story_id,),
-            ).fetchone()[0],
-        }
+        research["fact_conflict_stats"] = conflict_stats(db, story_id, poi_key)
         db.execute(
             "UPDATE stories SET research_json=? WHERE id=?",
             (json.dumps(research, ensure_ascii=False, separators=(",", ":")), story_id),
         )
-        resolved = next(item for item in durable if item["conflict_id"] == conflict_id)
-    from .identity_telemetry import record_identity_event
-    record_identity_event(
-        service,
-        story_id,
-        "fact_conflict_arbitrated",
-        {
-            "conflict_id": conflict_id,
-            "resolution": resolution,
-            "confidence": confidence,
-            "final_fact_id": final_fact_id,
-            "arbitrated_by": arbitrated_by[:120],
-        },
-        source="fact_conflict",
-    )
-    return resolved
+    if changed:
+        from .identity_telemetry import record_identity_event
+        record_identity_event(
+            service,
+            story_id,
+            "fact_conflict_arbitrated",
+            {
+                "conflict_id": conflict_id,
+                "resolution": resolution,
+                "confidence": confidence,
+                "final_fact_id": final_fact_id,
+                "arbitrated_by": arbitrated_by[:120],
+            },
+            source="fact_conflict",
+        )
+    return current
 
 
 def conflict_rows(db, story_id: str, limit: int = 20) -> list[dict[str, Any]]:
