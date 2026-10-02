@@ -170,14 +170,33 @@ class IdentityLifecycleMixin:
                         'duration_ms': round((time.monotonic() - started) * 1000)})
                     raise
                 error = 'visual_identity_uncertain'
+            if not visual_match(raw, candidates):
+                from .identity_discovery import recover
+                rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
+                recovery = await recover(self, {**story, 'latitude': lat if valid else None,
+                    'longitude': lon if valid else None}, transcript, candidates, rejected)
+                if recovery:
+                    recovered_raw, discovered = recovery
+                    if visual_match(recovered_raw, discovered) or (
+                        recovered_raw.get('status') in {'match', 'uncertain'} and
+                        confidence(recovered_raw) > confidence(raw)):
+                        raw = recovered_raw
+                        ids = {item['candidate_id'] for item in discovered}
+                        candidates = (discovered + [item for item in candidates if item['candidate_id'] not in ids])[:16]
+                        for item in discovered:
+                            if item['candidate_id'].startswith('wiki:'):
+                                wikipedia.append({'pageid': int(item['candidate_id'].split(':')[1]),
+                                    'title': item['name'], 'url': item['url'], 'extract': item.get('extract', '')})
             catalog = {item['candidate_id']: item for item in candidates}
-            selected = catalog.get(str(raw.get('candidate_id') or ''))
+            selected = catalog.get(str(raw.get('candidate_id') or '')) if raw.get('status') != 'mismatch' else None
             matched = selected is not None and visual_match(raw, candidates)
             identity = {'status': 'match' if matched else 'uncertain',
                 'candidate_id': selected['candidate_id'] if selected else None,
                 'candidate_name': selected['name'] if selected else None,
                 'candidate_url': selected.get('url') if selected else None,
                 'source_links': [selected['url']] if selected and selected.get('url') else [],
+                'reference_evidence': [item for item in raw.get('_reference_evidence', [])[:6]
+                    if item.get('candidate_id') == raw.get('candidate_id')],
                 'photo_sha256': story['photo_sha256'], 'generation': generation, 'policy': POLICY,
                 'confidence': confidence(raw), 'observations': [str(x)[:300] for x in raw.get('observations', [])[:6]],
                 'alternative_candidate_ids': [x for x in raw.get('alternative_candidate_ids', [])[:6] if x in catalog],
@@ -193,7 +212,7 @@ class IdentityLifecycleMixin:
                     'state=?,place_name=?,research_json=?,error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?',
                     (float(lat) if valid else None, float(lon) if valid else None, 'identity_ready' if matched else 'needs_review',
                      identity['candidate_name'] if matched else None, canonical(latest), None if matched else error,
-                     None if matched else identity['observations'][0] if identity['observations'] else 'Уточните объект на фотографии.', self.store.now(), story_id))
+                     None if matched else 'Пока недостаточно доказательств: варианты и основания доступны в теме.', self.store.now(), story_id))
                 result = self._story_repr(db, self._story_row(db, story_id))
             record_identity_event(self, story_id, 'identity_finished', {'generation': generation, 'status': identity['status'],
                 'candidate_id': identity['candidate_id'], 'candidate_url': identity['candidate_url'], 'confidence': identity['confidence'],

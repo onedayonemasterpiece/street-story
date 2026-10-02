@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
@@ -109,7 +110,10 @@ class RecordingService : Service() {
         val manualPauseMs=initial.manualPauseMs
         val minBuffer=AudioRecord.getMinBufferSize(AudioProfile.SAMPLE_RATE_HZ,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT)
         if(minBuffer<=0){pauseForMicrophoneFailure(id,"Устройство не предоставило аудиобуфер");return}
-        val audioSource = if (live != null) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.VOICE_RECOGNITION
+        // The owner's VoIP capture trace was nearly silent before VAD.
+        // Live gates playback locally; avoid redundant voice-call processing.
+        val audioSource = MediaRecorder.AudioSource.VOICE_RECOGNITION
+        val audioManager = getSystemService(AudioManager::class.java)
         val recorder=try{
             AudioRecord.Builder().setAudioSource(audioSource).setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(AudioProfile.SAMPLE_RATE_HZ).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()).setBufferSizeInBytes(maxOf(minBuffer*2,EfficientVad.FRAME_SAMPLES*8)).build()
         }catch(exc:SecurityException){
@@ -118,8 +122,8 @@ class RecordingService : Service() {
             pauseForMicrophoneFailure(id,"Не удалось открыть микрофон: ${exc.message}");return
         }
         audioRecord=recorder
-        val suppressor=if(NoiseSuppressor.isAvailable())runCatching{NoiseSuppressor.create(recorder.audioSessionId)?.also{it.enabled=true}}.getOrNull() else null
-        val echoCanceler=if(live!=null&&AcousticEchoCanceler.isAvailable())runCatching{AcousticEchoCanceler.create(recorder.audioSessionId)?.also{it.enabled=true}}.getOrNull() else null
+        val suppressor=if(NoiseSuppressor.isAvailable())runCatching{NoiseSuppressor.create(recorder.audioSessionId)?.also{it.enabled=live==null}}.getOrNull() else null
+        val echoCanceler=if(live!=null&&AcousticEchoCanceler.isAvailable())runCatching{AcousticEchoCanceler.create(recorder.audioSessionId)?.also{it.enabled=false}}.getOrNull() else null
         live?.diagnostic(
             "capture_configured",
             mapOf(
@@ -133,25 +137,53 @@ class RecordingService : Service() {
             ),
         )
         val admission=if(live!=null)LiveSpeechAdmission() else null
+        val microphoneHealth = LiveMicrophoneHealth()
+        var meterSamples=0L;var meterSquares=0.0;var lastMeterAt=android.os.SystemClock.elapsedRealtime()
         var wasPlaybackSuppressed=false
         var speechEpisodes=0
         val detector=EfficientVad(true,interactive=live!=null);val latch=SpeechLatch(if(live!=null)1 else LIVE_ATTACK_FRAMES,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
-        var signalSamples=0L;var signalSquares=0.0;var signalPeak=0;var lastSignalAt=System.currentTimeMillis()
+        var signalSamples=0L;var signalSquares=0.0;var signalPeak=0;var lastSignalAt=android.os.SystemClock.elapsedRealtime()
         try{
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
             while(captureRequested){
                 if(!readFrame(recorder,frame))continue
-                frame.forEach { sample -> val value=sample.toInt();signalSquares+=value.toDouble()*value;signalPeak=maxOf(signalPeak,kotlin.math.abs(value)) }
-                signalSamples+=frame.size
-                val signalAt=System.currentTimeMillis()
+                val suppressForPlayback=live?.shouldSuppressMicrophoneInput()==true
+                frame.forEach { sample ->
+                    val value=sample.toInt()
+                    val square=value.toDouble()*value
+                    signalSquares+=square;meterSquares+=square
+                    signalPeak=maxOf(signalPeak,kotlin.math.abs(value))
+                }
+                signalSamples+=frame.size;meterSamples+=frame.size
+                val signalAt=android.os.SystemClock.elapsedRealtime()
+                if(live!=null&&signalAt-lastMeterAt>=250){
+                    val muted=runCatching{audioManager.isMicrophoneMute}.getOrDefault(false)
+                    val silenced=runCatching{recorder.activeRecordingConfiguration?.isClientSilenced==true}.getOrDefault(false)
+                    live.observeMicrophone(initial.storyId, microphoneHealth.observe(
+                        signalAt,kotlin.math.sqrt(meterSquares/meterSamples.coerceAtLeast(1)),
+                        muted,silenced,suppressForPlayback,
+                    ))
+                }
+                if(signalAt-lastMeterAt>=250){
+                    lastMeterAt=signalAt;meterSamples=0;meterSquares=0.0
+                }
                 if(signalAt-lastSignalAt>=5000){
-                    live?.diagnostic("capture_signal",mapOf("samples" to signalSamples,"rms" to kotlin.math.sqrt(signalSquares/signalSamples.coerceAtLeast(1)).toInt(),"peak" to signalPeak,"vad_open" to latch.active,"speech_episodes" to speechEpisodes,"vad_mode" to if(live!=null)3 else EfficientVad.MODE) + (admission?.metrics() ?: emptyMap()))
+                    val capture=runCatching{recorder.activeRecordingConfiguration}.getOrNull()
+                    live?.diagnostic("capture_signal",mapOf(
+                        "samples" to signalSamples,"rms" to kotlin.math.sqrt(signalSquares/signalSamples.coerceAtLeast(1)).toInt(),
+                        "peak" to signalPeak,"vad_open" to latch.active,"speech_episodes" to speechEpisodes,
+                        "vad_mode" to if(live!=null)3 else EfficientVad.MODE,
+                        "audio_source" to audioSource,"actual_audio_source" to capture?.clientAudioSource,
+                        "system_muted" to runCatching{audioManager.isMicrophoneMute}.getOrDefault(false),
+                        "client_silenced" to capture?.isClientSilenced,
+                        "route_type" to runCatching{recorder.routedDevice?.type}.getOrNull(),
+                        "playback_suppressed" to suppressForPlayback,
+                    ) + (admission?.metrics() ?: emptyMap()))
                     lastSignalAt=signalAt;signalSamples=0;signalSquares=0.0;signalPeak=0
                 }
                 val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0)
                 val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0)
                 val wasActive=latch.active
-                val suppressForPlayback=live?.shouldSuppressMicrophoneInput()==true
                 if(wasPlaybackSuppressed&&!suppressForPlayback){
                     detector.resetAfterPlayback()
                     admission?.resetEvidence()

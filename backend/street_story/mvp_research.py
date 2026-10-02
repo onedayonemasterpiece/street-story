@@ -448,9 +448,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
         return shortlist[:16]
 
-    async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None):
+    async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None, evidence=None):
         from .identity_references import reference_images
-        return await reference_images(self, candidates, limit, story_id=story_id)
+        return await reference_images(self, candidates, limit, story_id=story_id, evidence=evidence)
 
     async def _identify_photo(self, story, transcript, candidates):
         return await identify_nearest(self, story, transcript, candidates)
@@ -491,12 +491,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             "Параметры объектива не определяют расстояние до объекта; эквивалентное фокусное и зум не перемножай. "
             "camera_alignment и угловое отклонение — лишь подсказки по неточному компасу и центру OSM-объекта, "
             "не основание исключать кандидата или подтверждать совпадение. "
-            "Кратко перечисли видимые признаки, на которых основано решение.\n"
+            "Фото может показывать только часть объекта с другого ракурса: детали вне кадра не считаются несовпадением. "
+            "Ищи конкретные повторяющиеся формы, пропорции, проёмы и декор на видимой части, а не сходство общего стиля. "
+            "Кратко, по-русски перечисли видимые признаки, на которых основано решение.\n"
             + json.dumps({"voice_context": transcript, "candidates": candidates,
                           "capture_hints": model_camera_hints(story.get('_camera_hints') or {})}, ensure_ascii=False)
         )
         config = types.GenerateContentConfig(
-            response_mime_type="application/json", response_json_schema=schema
+            response_mime_type="application/json", response_json_schema=schema,
+            system_instruction="Все observations пиши по-русски. Название города или района само по себе не является идентификацией конкретного здания. Несколько изображений одного объекта — не разные альтернативные объекты."
         )
         from PIL import Image, ImageOps
         import io
@@ -507,7 +510,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             image.save(output, format="JPEG", quality=82, optimize=True)
             photo = output.getvalue()
         reference_candidates = reference_order(candidates)
-        reference_images = await self._candidate_reference_images(reference_candidates, limit=reference_limit, story_id=story["id"])
+        reference_evidence = []
+        reference_images = await self._candidate_reference_images(
+            reference_candidates, limit=reference_limit, story_id=story["id"], evidence=reference_evidence)
         from .identity_telemetry import record_identity_event
         record_identity_event(self, story['id'], 'identity_reference_priority', {
             'candidate_ids': [item['candidate_id'] for item in reference_candidates],
@@ -543,6 +548,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             considered = [x["candidate_id"] for x in reference_candidates if x.get("reference_image_urls")][:reference_limit]
             return {**payload, "_references_unavailable_ids": [cid for cid in considered if cid not in {x[0] for x in reference_images}],
                     "_references_sent": [item[0] for item in reference_images],
+                    "_reference_evidence": reference_evidence,
                     "_references_rate_limited": getattr(self, "_wikimedia_reference_wait_until", 0) > __import__("time").monotonic()}
 
         return await gemini.executor.execute("grounded_research", call)
@@ -931,8 +937,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         result = super()._story_repr(db, row)
         research = json.loads(row["research_json"] or "{}")
         identity = research.get("visual_identity")
-        from .identity_progress import from_history
-        result["identity_progress"] = research.get("identity_progress") or from_history(db, row["id"], int(research.get("identity_generation") or 0))
+        from .identity_progress import from_history, current_projection
+        result["identity_progress"] = current_projection(
+            research.get("identity_progress") or from_history(db, row["id"], int(research.get("identity_generation") or 0)),
+            identity if isinstance(identity, dict) else None)
         if isinstance(identity, dict):
             result["visual_identity"] = identity
         if research.get("input_revision"):

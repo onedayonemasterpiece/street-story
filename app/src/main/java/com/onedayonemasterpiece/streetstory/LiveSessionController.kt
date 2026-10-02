@@ -59,6 +59,7 @@ data class LiveUiState(
     val error: String? = null,
     val completedTurns: Int = 0,
     val transport: String? = null,
+    val microphone: MicrophoneReading? = null,
 )
 
 /** Product UI/state only. Ordered PCM, WSS framing and ACKs belong to the shared SDK. */
@@ -108,6 +109,11 @@ class LiveSessionController(context: Context) {
                 }
             }
         }, 1, 1, TimeUnit.SECONDS)
+    }
+
+    @Synchronized internal fun observeMicrophone(storyId: String, reading: MicrophoneReading) {
+        if (!state.active || state.storyId != storyId || state.microphone == reading) return
+        update(state.copy(microphone = reading))
     }
 
     fun snapshot(): LiveUiState = state
@@ -199,6 +205,8 @@ class LiveSessionController(context: Context) {
                 val started = try {
                     api.start(server, attempt)
                 } catch (first: ApiException) {
+                    // A resource budget refusal must not trigger another reservation in 900 ms.
+                    if (first.code.equals("RESOURCE_TOKEN_BUDGET", ignoreCase = true)) throw first
                     if (first.status !in setOf(429, 503)) throw first
                     updateForGeneration(gen, state.copy(status = "Live занят · повторное подключение…", error = null))
                     Thread.sleep(900)
@@ -523,7 +531,10 @@ class LiveSessionController(context: Context) {
                 diagnostic("assistant_interrupted", mapOf("received_pcm_bytes" to receivedPcm.get()))
                 updateForGeneration(gen, state.copy(status = "Слышу вас", inputActive = true))
             }
-            "error" -> fail(gen, humanLiveError(event.code ?: "LIVE_PROVIDER_ERROR"))
+            "error" -> {
+                diagnostic("provider_error", mapOf("code" to (event.code ?: "LIVE_PROVIDER_ERROR")))
+                fail(gen, humanLiveError(event.code ?: "LIVE_PROVIDER_ERROR"))
+            }
             "closed" -> fail(gen, "Live-сессия завершилась. Результат сохранён — включите Live снова.")
         }
     }
@@ -655,8 +666,8 @@ class LiveSessionController(context: Context) {
         update(state.copy(messages = messages))
     }
 
-    private fun humanLiveError(code: String): String = when (code) {
-        "RESOURCE_CAPACITY", "LIVE_BUSY", "http_429", "http_503" ->
+    private fun humanLiveError(code: String): String = when (code.uppercase(java.util.Locale.ROOT)) {
+        "RESOURCE_CAPACITY", "LIVE_BUSY", "HTTP_429", "HTTP_503" ->
             "Мира сейчас занята. Нажмите кнопку ещё раз через несколько секунд."
         "RESOURCE_TOKEN_BUDGET" ->
             "Голосовой лимит временно исчерпан. Подождите около минуты и включите Live снова."
@@ -665,6 +676,8 @@ class LiveSessionController(context: Context) {
             "Связь с Мирой прервалась. Результат сохранён — включите Live снова."
         "LIVE_PLAYBACK_BACKPRESSURE", "LIVE_PLAYBACK_WRITE", "LIVE_PLAYBACK_UNAVAILABLE" ->
             "Не удалось полностью воспроизвести голос Миры."
+        "LIVE_PROVIDER_ERROR" ->
+            "Модель завершила голосовую сессию. Тема сохранена — включите Live снова."
         else -> "Live остановлен: ${code.take(80)}"
     }
 

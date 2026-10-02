@@ -2,8 +2,24 @@
 from __future__ import annotations
 
 
+def current_projection(previous: dict, identity: dict | None = None) -> dict:
+    """Refresh obsolete UI copy without a write, new lookup or lost stage timings."""
+    result = dict(previous or {})
+    labels = {
+        'Найден вероятный вариант · подтвердите объект': 'Найден вероятный вариант · пока недостаточно доказательств',
+        'Объект пока не подтверждён · уточните место': 'Объект пока не определён · доказательств недостаточно',
+    }
+    result['steps'] = [dict(step, label=labels.get(step.get('label'), step.get('label', '')))
+                       for step in result.get('steps', []) if isinstance(step, dict)]
+    if identity and identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
+        for step in result['steps']:
+            if step.get('key') == 'references':
+                step.update(label='Эталон выбранного объекта проверен', status='done')
+    return result
+
+
 def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
-    progress = dict(previous or {})
+    progress = current_projection(previous)
     generation = fields.get('generation', progress.get('generation', 0))
     if generation != progress.get('generation', generation):
         progress = {}
@@ -16,6 +32,7 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         step('gps', 'Проверяю геометки снимка', 'working')
     elif event == 'identity_started':
         progress['attempt'] = int(progress.get('attempt', 0)) + 1
+        progress['finished'] = False
     elif event == 'identity_location':
         ok = bool(fields.get('coordinates_usable'))
         step('gps', 'Геометки найдены' if ok else 'В выбранной копии нет доступных геометок', 'done' if ok else 'warning')
@@ -45,8 +62,10 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
     elif event == 'identity_batch_finished':
         progress['reviewed_count'] = min(progress.get('candidate_count', 16), int(progress.get('reviewed_count', 0)) + int(fields.get('batch_candidate_count', progress.get('current_batch_size', 0))))
         step('compare', f"Проверено {progress['reviewed_count']} из {progress.get('candidate_count', 0)} кандидатов", 'working')
+    elif event == 'identity_reference_loaded':
+        step('references', 'Эталонное фото загружено для сравнения', 'done')
     elif event == 'identity_reference_unavailable':
-        step('references', 'Эталонные фото временно недоступны; визуальная проверка не завершена', 'warning')
+        step('references', 'Не все эталоны доступны; проверяю оставшиеся', 'warning')
     elif event == 'identity_failed':
         step('retry', f"Источник не ответил · попытка {progress.get('attempt', 1)}", 'warning')
     elif event == 'identity_owner_confirmed':
@@ -54,7 +73,11 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         progress['finished'] = True
     elif event == 'identity_finished':
         matched = fields.get('status') == 'match' and fields.get('reference_verified') is True
-        step('result', 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · подтвердите объект' if fields.get('candidate_id') else 'Объект пока не подтверждён · уточните место'), 'done' if matched else 'warning')
+        step('result', 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · пока недостаточно доказательств' if fields.get('candidate_id') else 'Объект пока не определён · доказательств недостаточно'), 'done' if matched else 'warning')
+        if matched:
+            step('references', 'Эталон выбранного объекта проверен', 'done')
+        if 'compare' in steps:
+            steps['compare']['status'] = 'done' if matched else 'warning'
         progress['finished'] = True
         progress['elapsed_ms'] = max(0, round((now - progress['started_at']) * 1000))
     else:
@@ -73,7 +96,7 @@ def from_history(db, story_id: str, generation: int) -> dict:
     except sqlite3.OperationalError:
         return {}
     if len(rows) > 200:
-        return {}  # Do not manufacture elapsed time from truncated history.
+        return {}
     progress = {}
     for row in reversed(rows):
         try:

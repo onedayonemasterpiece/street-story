@@ -77,16 +77,19 @@ async def test_wikimedia_429_is_visible_and_does_not_repeat_for_targeted_or_othe
 @pytest.mark.asyncio
 async def test_failed_first_reference_tries_second_bounded_url_and_refuses_foreign_redirect(tmp_path):
     service, _, _, _ = make_service(tmp_path)
+    from test_reference_image_codec import jpeg
+    from street_story.reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference
+    fixture = jpeg()
     async def handler(request):
         if request.url.path == '/original.jpg':
-            return httpx.Response(200, headers={'content-type':'image/jpeg', 'content-length':str(3*1024*1024)})
+            return httpx.Response(200, headers={'content-type':'image/jpeg', 'content-length':str(MAX_DOWNLOAD_BYTES + 1)})
         if request.url.path == '/redirect.jpg':
             return httpx.Response(302, headers={'Location':'https://another.invalid/image.jpg'})
-        return httpx.Response(200, headers={'content-type':'image/jpeg'}, content=b'jpeg-fixture')
+        return httpx.Response(200, headers={'content-type':'image/jpeg'}, content=fixture)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         images = await reference_images(service, [{'candidate_id':'c','reference_image_urls':[
             'https://upload.wikimedia.org/original.jpg', 'https://upload.wikimedia.org/thumbnail.jpg']}], http=client)
-        assert images == [('c','image/jpeg',b'jpeg-fixture')]
+        assert images == [('c', *normalize_reference(fixture))]
         assert await reference_images(service,[{'candidate_id':'r','reference_image_urls':['https://upload.wikimedia.org/redirect.jpg']}], http=client) == []
     assert canonical_reference('https://user:pass@upload.wikimedia.org/a.jpg') is None
 

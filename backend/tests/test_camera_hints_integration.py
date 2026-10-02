@@ -19,7 +19,7 @@ async def test_real_provider_payload_gets_lens_hints_and_prioritized_references(
     row['_camera_hints'] = read_camera_hints(photo_bytes)
     seen = {}
 
-    async def references(candidates, limit, *, story_id=None):
+    async def references(candidates, limit, *, story_id=None, evidence=None):
         seen['reference_order'] = [x['candidate_id'] for x in candidates]
         return [(x['candidate_id'], 'image/jpeg', photo_bytes) for x in candidates[:limit]]
 

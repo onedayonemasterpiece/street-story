@@ -4,15 +4,18 @@ No alternate host, credential or proxy bypass. Negative cache prevents the same
 unavailable image being requested again by a targeted visual verification.
 """
 from __future__ import annotations
+import asyncio
 import time
 import math
 from email.utils import parsedate_to_datetime
 from collections import OrderedDict
 from urllib.parse import urlsplit, urljoin, urlunsplit, parse_qsl, urlencode
 import httpx
+import hashlib
 from .identity_telemetry import record_identity_event
+from .reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference
 
-MAX_BYTES = 2 * 1024 * 1024
+MAX_BYTES = MAX_DOWNLOAD_BYTES
 
 
 def canonical_reference(raw: str) -> str | None:
@@ -26,7 +29,7 @@ def canonical_reference(raw: str) -> str | None:
         return None
 
 
-async def reference_images(service, candidates, limit=6, *, story_id=None, http=None):
+async def reference_images(service, candidates, limit=6, *, story_id=None, http=None, evidence=None):
     if not hasattr(service, '_identity_reference_cache'):
         service._identity_reference_cache = OrderedDict()
     cache = service._identity_reference_cache
@@ -37,6 +40,11 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
     def event(name, payload):
         if story_id:
             record_identity_event(service, story_id, name, payload)
+    def receipt(cid, url, image, cache_hit):
+        if evidence is not None:
+            evidence.append({'candidate_id': cid, 'source_url': url,
+                'model_image_sha256': hashlib.sha256(image[1]).hexdigest(),
+                'model_image_bytes': len(image[1]), 'cache_hit': cache_hit})
     try:
         for candidate in [x for x in candidates if x.get('reference_image_urls')][:max(0, min(6, limit))]:
             cid = candidate.get('candidate_id')
@@ -50,6 +58,8 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
                 if saved and saved[0] > now:
                     if saved[1]:
                         result.append((cid, saved[1][0], saved[1][1]))
+                        receipt(cid, url, saved[1], True)
+                        event('identity_reference_loaded', {'candidate_id': cid, 'bytes': len(saved[1][1]), 'cache_hit': True})
                         break
                     event('identity_reference_unavailable', {'candidate_id': cid, 'reason': saved[2], 'cache_hit': True})
                     continue
@@ -101,10 +111,10 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
                                     break
                                 data.extend(chunk)
                             if data:
-                                image = (mime, bytes(data))
+                                image = await asyncio.to_thread(normalize_reference, bytes(data))
                                 reason = 'ready'
                             break
-                except (httpx.HTTPError, ValueError) as exc:
+                except (httpx.HTTPError, ValueError, OSError) as exc:
                     reason = type(exc).__name__
                 cache[url] = (time.monotonic() + (300 if image else 60), image, reason)
                 cache.move_to_end(url)
@@ -116,6 +126,7 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
                     'bytes': len(image[1]) if image else 0, 'cache_hit': False})
                 if image:
                     result.append((cid, image[0], image[1]))
+                    receipt(cid, url, image, False)
                     break
     finally:
         if own:

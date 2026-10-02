@@ -568,7 +568,7 @@ class MainActivity : Activity() {
         val identified = projection?.candidates?.firstOrNull { it.candidateId == projection.candidateId }
         identityLinkView?.apply {
             val accepted = projection?.identityStatus in setOf("match", "owner_confirmed")
-            text = if (identified != null) (if(accepted) "${identified.name} ↗" else "Вероятно: ${identified.name} · подтвердите ↗") else ""
+            text = if (identified != null) (if(accepted) "${identified.name} ↗" else "Вероятно: ${identified.name} · пока не доказано ↗") else ""
             visibility = if (text.isNotBlank()) View.VISIBLE else View.GONE
             setOnClickListener {
                 val uri = identified?.url?.let(Uri::parse)
@@ -622,8 +622,12 @@ class MainActivity : Activity() {
         }
 
         chatStatus?.apply {
-            text = if (state.error.isNullOrBlank()) "• ${state.status}" else "⚠ ${state.error}"
-            setTextColor(if (state.error.isNullOrBlank()) MUTED else ACCENT)
+            val microphone = state.microphone?.takeIf { state.active && !it.playbackSuppressed }
+            val label = microphone?.warning ?: state.status
+            val meter = microphone?.let { "  " + "●".repeat(it.level) + "○".repeat(4 - it.level) }.orEmpty()
+            text = if (state.error.isNullOrBlank()) "• $label$meter" else "⚠ ${state.error}"
+            contentDescription = state.error ?: (label + microphone?.let { ". Уровень микрофона ${it.level} из 4" }.orEmpty())
+            setTextColor(if (state.error.isNullOrBlank() && microphone?.warning == null) MUTED else ACCENT)
         }
         val scroll = topicScroll
         val nearEnd = scroll == null || (scroll.getChildAt(0)?.height ?: 0) - scroll.scrollY - scroll.height <= dp(180)

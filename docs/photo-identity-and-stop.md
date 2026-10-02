@@ -70,8 +70,48 @@ visual observations, no competing alternative, and an actual reference image for
 that candidate included in the request. This is an engineering threshold, NOT a
 calibrated 90% probability. Model-authored claims that a reference was sent are not
 accepted: the host records the actual transmitted reference IDs. Missing images,
-lookalikes, ambiguous results or exhausted budget produce an uncertain result and
-require the author, not a forced nearest-building match.
+lookalikes, ambiguous results or exhausted budget produce an uncertain result,
+not a forced nearest-building match or a mandatory request for the author to name
+the object. The UI presents the candidate, observations and missing evidence;
+voluntary correction is separate from publication consent.
+
+### Reference delivery and partial views (2026-10-02)
+
+The v449 Royal Gate trace fetched an original successfully (HTTP 200), but rejected
+it against the former 2 MiB input limit. The model consequently saw no reference.
+A reference download now has a separate bounded 12 MiB budget and 40-million-pixel
+decode limit. It is EXIF-normalized and fitted, without cropping, to a 1280-pixel
+JPEG capped at 2 MiB before model input. Decode work is off the event loop.
+The existing HTTPS host/redirect checks, six-image budget, deadline, cache and
+Retry-After behavior remain. No new service or database is introduced.
+
+A successful comparison records the actual reference URL, normalized byte count
+and SHA-256 alongside the source-photo hash. A proposed URL or the model's own
+claim of having seen a photo is not this receipt. The comparison prompt treats
+partial framing and another viewpoint as normal: a feature outside the frame is
+not a contradiction; visible distinctive details must match. Observations are
+requested in Russian.
+
+Wikipedia text and its Wikimedia illustration are related evidence, not two
+independent votes. Geography selects candidates; the article establishes an
+object record; actual visual agreement selects the object. A second source or
+angle is useful only when it resolves a remaining ambiguity. Confidence alone
+does not replace any of these checks.
+
+### Private corpus procedure
+
+`tools/owner_topic_corpus.py` acquires only the authorized forum topic through
+the standard Telegram E2E launcher, preserving original bytes and hashes.
+`tools/identity_corpus.py` runs the real resolver without workers, generation or
+publication in a retained private artifact directory; it uses the same provider
+configuration and resource control as the deployed application. Completed cases
+are not silently rerun. A changed source snapshot requires a new run name.
+Expected labels are reviewed independently and never enter model input.
+
+The acquired corpus contains 14 original image documents, messages 7–20.
+GPS metadata is present in 13; message 15 has no GPS metadata. This is a distinct
+case, not permission to substitute guessed coordinates. Full corpus accuracy,
+latency and physical-phone acceptance are recorded only after execution.
 
 ## Durable binding and correction
 
