@@ -1138,7 +1138,7 @@ class StreetStoryLiveAdapter:
                 resolution,
                 reason,
                 confidence,
-                arbitrated_by="mira_live",
+                arbitrated_by="mira",
             )
         except KeyError:
             raise ConflictError(
@@ -1150,6 +1150,8 @@ class StreetStoryLiveAdapter:
             ) from None
         result = {
             "conflict": resolved,
+            "resolution": resolved.get("final_resolution"),
+            "preferred_fact_id": resolved.get("final_fact_id"),
             "fact_conflicts": self._topic_state(story_id).get("fact_conflicts", [])[:12],
         }
         with self.service.store.tx() as db:
@@ -1165,7 +1167,7 @@ class StreetStoryLiveAdapter:
                 "resolution": resolution,
                 "confidence": confidence,
                 "final_fact_id": resolved.get("final_fact_id"),
-                "arbitrated_by": "mira_live",
+                "arbitrated_by": "mira",
             },
         )
         return result
