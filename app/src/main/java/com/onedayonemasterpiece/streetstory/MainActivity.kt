@@ -18,6 +18,9 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ClickableSpan
 import android.text.method.LinkMovementMethod
 import android.text.util.Linkify
 import android.view.Gravity
@@ -1492,31 +1495,46 @@ class MainActivity : Activity() {
                 gson.fromJson(fact.sourcesJson, Array<SourceWire>::class.java).toList()
             }.getOrDefault(emptyList())
                 .filter { it.url.startsWith("https://") }
-                .sortedByDescending { it.type == "official" }
-            val unique = LinkedHashMap<String, SourceWire>()
-            sources.forEach { source ->
-                val sourceLabel = FactPresentation.sourceLabel(source)
-                if (unique.size < 3) unique.putIfAbsent(sourceLabel, source)
-            }
-            if (unique.isNotEmpty()) {
-                val sourceRow = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    setPadding(dp(48), 0, dp(4), dp(2))
-                }
-                unique.entries.forEachIndexed { sourceIndex, (sourceLabel, source) ->
-                    if (sourceIndex > 0) sourceRow.addView(label(" · ", 11, MUTED, Typeface.DEFAULT))
-                    sourceRow.addView(
-                        label(sourceLabel, 11, ACCENT, Typeface.DEFAULT).apply {
-                            setOnClickListener {
+                .distinctBy { it.url.trimEnd('/') }
+                .sortedWith(
+                    compareByDescending<SourceWire> { it.type == "official" }
+                        .thenBy { FactPresentation.sourceLabel(it) }
+                        .thenBy { it.url },
+                )
+            if (sources.isNotEmpty()) {
+                val domainCount = sources.map { FactPresentation.sourceHost(it) }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .size
+                val sourceText = SpannableStringBuilder()
+                sourceText.append("Источники · ${sources.size} · сайтов $domainCount\n")
+                sources.forEachIndexed { sourceIndex, source ->
+                    if (sourceIndex > 0) sourceText.append(" · ")
+                    val sourceLabel = FactPresentation.sourceLabel(source)
+                    val start = sourceText.length
+                    sourceText.append(sourceLabel)
+                    sourceText.setSpan(
+                        object : ClickableSpan() {
+                            override fun onClick(widget: View) {
                                 val uri = Uri.parse(source.url)
                                 if (uri.scheme == "https") startActivity(Intent(Intent.ACTION_VIEW, uri))
                             }
-                            contentDescription = "Источник: $sourceLabel"
-                        }
+                        },
+                        start,
+                        sourceText.length,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
                     )
                 }
-                item.addView(sourceRow)
+                item.addView(
+                    label("", 11, MUTED, Typeface.DEFAULT).apply {
+                        text = sourceText
+                        setPadding(dp(48), 0, dp(4), dp(2))
+                        movementMethod = LinkMovementMethod.getInstance()
+                        setLinkTextColor(ACCENT)
+                        linksClickable = true
+                        contentDescription = "Источники факта: ${sources.size}; сайтов: $domainCount"
+                    },
+                )
             }
             host.addView(item)
             if (index < shownFacts.lastIndex) {
