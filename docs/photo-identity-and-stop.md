@@ -173,3 +173,50 @@ Physical Samsung gallery/provider permission behavior and subjective audio quali
 still require owner retesting. Generated GPS fixtures and simulated connecting
 states are not a substitute for that evidence. Public provider timeouts/quotas
 remain visible and are not bypassed by alternative credential selection.
+
+## Autonomous recovery after the geographic shortlist (2026-10-02)
+
+The geographic shortlist remains the cheap first pass. If it produces no visually
+verified match, one bounded recovery pass starts automatically; the author is not
+asked to supply the name of the object.
+
+The recovery pass uses the source photo to produce search hypotheses, but a model
+hypothesis is never accepted as evidence. It performs three complementary searches:
+
+1. up to two proper-name queries in Russian Wikipedia;
+2. one query made from visible physical features plus the product region hint
+   (Калининградская область in the current regional MVP), deliberately independent
+   of the guessed name;
+3. a matching English visible-feature query in Wikimedia Commons.
+
+Fetched Wikipedia pages, Commons files and Commons categories become candidates
+only after the provider actually returns them. Files within one Commons category,
+Wikipedia aliases and modern/historical names are clustered as one physical object
+when they share the same original media, a specific Commons/heritage entity key, or
+an explicit category-member relationship. Wikipedia is preferred as the display
+name when it represents the same physical cluster; Commons remains independent
+visual evidence rather than a second object. A cluster may send two different
+views under the existing global six-reference budget.
+
+Wikimedia originals are normalized by trying a bounded same-host 1280 px thumbnail
+first and the original only when needed. This removes the former >2 MiB failure
+without accepting arbitrary redirect hosts or cropping the reference. Every image
+actually passed to the model gets a SHA-256/byte-count/source receipt. The visual
+gate still requires a real transmitted reference for the selected cluster, concrete
+observations, score >=0.90 and no genuinely different competing object. Duplicate
+aliases of the same structure no longer veto an otherwise valid match.
+
+Visual identification and visual-query generation use the configured research-model
+route with the same bounded key/quota control as other research calls. A temporary
+quota/model failure therefore fails over from the primary research model to the
+configured research fallback instead of retrying the same unavailable route or
+changing credentials.
+
+The private regression corpus exposed the reason for these changes. An early run
+verified only 5 of 14 deliberately imperfect photos. After thumbnail-first delivery,
+entity clustering and recovery search, a previously missed partial view of the
+Zelenogradsk water tower was independently accepted with two delivered references.
+The GPS-free case also demonstrated the important fail-closed property: plausible
+but wrong churches remained uncertain; no nearest or confident model guess could
+cross the visual-proof gate. Full-corpus metrics are recorded from a fresh immutable
+run before release rather than inferred from individual debugging examples.

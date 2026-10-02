@@ -46,6 +46,8 @@ async def run(args):
         os.environ.update(installer.parse_dotenv(config))
     settings = replace(Settings.from_env(), data_dir=output / 'data',
                        vibepublish_base_url=None, vibepublish_bearer_token=None)
+    if args.model:
+        settings = replace(settings, gemini_model=args.model)
     service = RuntimeStreetStoryService(settings)
     service.providers.vibepublish = NoPublication()
     code = Path(__file__).resolve().parents[1] / 'street_story'
@@ -101,6 +103,7 @@ def main():
     parser.add_argument('--corpus', type=Path, required=True)
     parser.add_argument('--run-name', required=True)
     parser.add_argument('--messages', default='')
+    parser.add_argument('--model', choices=('gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'))
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', args.run_name):
         parser.error('Use a bounded run name')

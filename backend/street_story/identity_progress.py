@@ -62,6 +62,15 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
     elif event == 'identity_batch_finished':
         progress['reviewed_count'] = min(progress.get('candidate_count', 16), int(progress.get('reviewed_count', 0)) + int(fields.get('batch_candidate_count', progress.get('current_batch_size', 0))))
         step('compare', f"Проверено {progress['reviewed_count']} из {progress.get('candidate_count', 0)} кандидатов", 'working')
+    elif event == 'identity_discovery_started':
+        step('discover', 'Расширяю поиск по виду объекта', 'working')
+    elif event == 'identity_discovery_candidates':
+        count = len(fields.get('candidate_ids') or [])
+        step('discover', f"Расширенный поиск: {count} вариантов для визуальной проверки", 'done' if count else 'warning')
+        if count:
+            step('compare', 'Сверяю дополнительные эталонные фотографии', 'working')
+    elif event == 'identity_discovery_unavailable':
+        step('discover', 'Расширенный поиск временно недоступен', 'warning')
     elif event == 'identity_reference_loaded':
         step('references', 'Эталонное фото загружено для сравнения', 'done')
     elif event == 'identity_reference_unavailable':

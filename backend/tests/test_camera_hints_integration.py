@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.camera_hints import read_camera_hints
+from street_story.gemini import GeminiUnavailable
 from test_camera_hints import jpeg
 from test_identity_lifecycle import make_service
 from test_identity_recovery_policy import create_photo
@@ -23,7 +24,7 @@ async def test_real_provider_payload_gets_lens_hints_and_prioritized_references(
         seen['reference_order'] = [x['candidate_id'] for x in candidates]
         return [(x['candidate_id'], 'image/jpeg', photo_bytes) for x in candidates[:limit]]
 
-    async def generate(_key, _timeout, parts, _config):
+    async def generate(_key, _timeout, parts, _config, **_kwargs):
         text = next(x for x in parts if isinstance(x, str) and 'voice_context' in x)
         seen['context'] = json.loads(text.split('\n', 1)[1])
         return SimpleNamespace(text=json.dumps({'status': 'match', 'candidate_id': 'ahead', 'confidence': .96,
@@ -49,6 +50,47 @@ async def test_real_provider_payload_gets_lens_hints_and_prioritized_references(
         receipt = json.loads(db.execute("SELECT payload_json FROM live_diagnostics WHERE story_id=? AND event_type='identity_reference_priority'", (story['id'],)).fetchone()[0])
     assert receipt['priority_applied'] is True
     assert receipt['reference_ids_sent'] == ['ahead']
+
+
+@pytest.mark.asyncio
+async def test_visual_identity_fails_over_between_research_models(tmp_path):
+    service, _ = make_service(tmp_path)
+    photo_bytes = jpeg(direction=0)
+    story = create_photo(service, photo_bytes, client='visual-model-failover')
+    with service.store.connection() as db:
+        row = dict(db.execute('SELECT * FROM stories WHERE id=?', (story['id'],)).fetchone())
+    calls = []
+
+    async def references(candidates, limit, *, story_id=None, evidence=None):
+        return [(candidates[0]['candidate_id'], 'image/jpeg', photo_bytes)]
+
+    async def generate(_key, _timeout, _parts, _config, *, operation='grounded_research', model=None, quota=None):
+        calls.append(model)
+        return SimpleNamespace(text=json.dumps({'status':'match','candidate_id':'target','confidence':.97,
+            'observations':['Совпадают башня и окна'], 'alternative_candidate_ids':[]}))
+
+    class Failing:
+        async def execute(self, operation, call):
+            raise GeminiUnavailable(123.0)
+
+    class Passing:
+        async def execute(self, operation, call):
+            return await call('test-key', 2)
+
+    service._candidate_reference_images = references
+    service.providers.gemini = SimpleNamespace(
+        _generate=generate,
+        executor=Failing(),
+        research_routes=[
+            ('gemini-primary', object(), object(), Failing()),
+            ('gemini-fallback', object(), object(), Passing()),
+        ],
+    )
+    result = await service._identify_photo_batch(row, '', [
+        {'candidate_id':'target','name':'Башня','reference_image_urls':['https://upload.wikimedia.org/tower.jpg']}
+    ], reference_limit=1)
+    assert result['status'] == 'match'
+    assert calls == ['gemini-fallback']
 
 
 @pytest.mark.asyncio

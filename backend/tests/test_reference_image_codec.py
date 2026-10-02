@@ -6,7 +6,7 @@ import httpx
 from PIL import Image, ImageDraw
 import pytest
 
-from street_story.identity_references import reference_images
+from street_story.identity_references import reference_images, thumbnail_reference
 from street_story.reference_image_codec import MAX_DOWNLOAD_BYTES, MAX_MODEL_BYTES, normalize_reference
 
 
@@ -91,3 +91,40 @@ async def test_too_large_header_and_broken_body_fail_without_model_image():
         'https://upload.wikimedia.org/huge.jpg', 'https://upload.wikimedia.org/broken.jpg']}]
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         assert await reference_images(SimpleNamespace(), candidates, http=client) == []
+
+def test_wikimedia_original_has_same_host_bounded_thumbnail():
+    original = 'https://upload.wikimedia.org/wikipedia/commons/1/1b/Water_Tower.jpg'
+    assert thumbnail_reference(original) == (
+        'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Water_Tower.jpg/1280px-Water_Tower.jpg')
+    assert thumbnail_reference('https://evil.invalid/a.jpg') is None
+
+
+@pytest.mark.asyncio
+async def test_oversized_wikimedia_original_falls_back_to_thumbnail():
+    small = jpeg((640, 480))
+    calls = []
+    original = 'https://upload.wikimedia.org/wikipedia/commons/1/1b/Tower.jpg'
+    async def handler(request):
+        calls.append(request.url.path)
+        if '/thumb/' not in request.url.path:
+            return httpx.Response(200, headers={'content-type':'image/jpeg',
+                'content-length': str(MAX_DOWNLOAD_BYTES + 1)})
+        return httpx.Response(200, headers={'content-type':'image/jpeg'}, content=small)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        images = await reference_images(SimpleNamespace(), [
+            {'candidate_id':'commons:1','reference_image_urls':[original]}], http=client)
+    assert len(images) == 1
+    assert calls == ['/wikipedia/commons/thumb/1/1b/Tower.jpg/1280px-Tower.jpg']
+
+
+@pytest.mark.asyncio
+async def test_multiview_candidate_can_send_two_actual_images_under_one_total_budget():
+    first, second = jpeg((100,80)), jpeg((120,90))
+    async def handler(request):
+        return httpx.Response(200, headers={'content-type':'image/jpeg'},
+            content=first if request.url.path.endswith('a.jpg') else second)
+    candidate = {'candidate_id':'entity:1', 'multi_view':True,
+        'reference_image_urls':['https://upload.wikimedia.org/a.jpg','https://upload.wikimedia.org/b.jpg']}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        images = await reference_images(SimpleNamespace(), [candidate], limit=2, http=client)
+    assert [item[0] for item in images] == ['entity:1','entity:1']

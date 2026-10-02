@@ -120,3 +120,25 @@ to make the acceptance test green. Candidate rollout is test-only until receipts
 show the end-to-end result. Rollback changes the immutable release, not SQLite,
 device token or publication records. Future updates use semantic versions and
 explicit per-consumer acceptance, never live-session auto-update.
+
+## Product web-search route (2026-10-02)
+
+Internet research remains an explicit product function search_web; it does not
+turn the Live model into an unbounded autonomous browser. The function returns
+grounded sources/results into the same Live turn and persists evidence through the
+normal Street Story research contract.
+
+The default Google Search grounding route is now gemini-3.5-flash-lite, with
+gemini-3.8-flash as the stronger fallback. gemini-3.1-flash-lite remains a
+general research fallback where configured, but is not placed ahead of the
+documented Search-grounding models. If both Google-grounded routes are unavailable,
+the existing bounded public-web result fallback may return low-confidence snippets;
+those snippets are discovery evidence, never automatically promoted to verified
+facts.
+
+The model choice follows the current Google Gemini model/Search documentation:
+- https://ai.google.dev/gemini-api/docs/models
+- https://ai.google.dev/gemini-api/docs/google-search
+
+Provider quota exhaustion is kept visible in diagnostics and never bypassed by
+switching to an undocumented credential path.
