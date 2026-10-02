@@ -34,6 +34,26 @@ class PassingSearchExecutor:
         return await call("key-a", 5.0)
 
 
+class FailingResearchExecutor:
+    def __init__(self):
+        self.calls = 0
+
+    async def execute(self, operation, call):
+        assert operation == "grounded_research"
+        self.calls += 1
+        raise GeminiUnavailable(123.0)
+
+
+class PassingResearchExecutor:
+    def __init__(self):
+        self.calls = 0
+
+    async def execute(self, operation, call):
+        assert operation == "grounded_research"
+        self.calls += 1
+        return await call("key-a", 5.0)
+
+
 @pytest.mark.asyncio
 async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
     settings = replace(
@@ -113,6 +133,11 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
     ]
+    research_failures = [FailingResearchExecutor() for _ in client.research_routes]
+    client.research_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.research_routes, research_failures, strict=True)
+    ]
     client.search_http = FakeSearchHTTP(
         """
         <div class="result">
@@ -162,6 +187,80 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
     assert all(source["url"].startswith("https://") for source in result.grounding_sources)
     assert "Legacy HTTP" not in result.payload["summary"]
     assert len(client.search_http.calls) == 1
+
+
+
+
+@pytest.mark.asyncio
+async def test_web_search_semantically_completes_discovery_snippets_with_research_model(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+        gemini_model="gemini-3.1-flash-lite",
+        gemini_fallback_model="gemini-3.5-flash-lite",
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+    client.search_http = FakeSearchHTTP(
+        """
+        <div class="result">
+          <a class="result__a" href="https://one.example/gate">One</a>
+          <a class="result__snippet">The current gate was built from 1843 to 1850.</a>
+        </div>
+        <div class="result">
+          <a class="result__a" href="https://two.example/archive">Two</a>
+          <a class="result__snippet">Construction of the current gate lasted from 1843 until 1850.</a>
+        </div>
+        """
+    )
+
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        assert operation == "grounded_research"
+        payload = {
+            "summary": "Two snippets corroborate the construction period.",
+            "official_source_urls": [],
+            "facts": [{
+                "claim_key": "royal-gate-construction-period",
+                "existing_fact_id": "fact-existing",
+                "text": "Королевские ворота строились в 1843–1850 годах.",
+                "confidence": 0.94,
+                "source_urls": [
+                    "https://one.example/gate",
+                    "https://two.example/archive",
+                    "https://invented.example/not-allowed",
+                ],
+            }],
+        }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.search_web(
+        "Королевские ворота годы строительства",
+        {
+            "place_name": "Королевские ворота",
+            "known_facts": [{"fact_id": "fact-existing", "text": "Строительство: 1843–1850."}],
+        },
+    )
+
+    assert semantic.calls == 1
+    assert result.payload["search_provider"] == "duckduckgo_html_fallback"
+    assert result.payload["semantic_completion"] == "gemini_research"
+    assert len(result.payload["facts"]) == 1
+    fact = result.payload["facts"][0]
+    assert fact["existing_fact_id"] == "fact-existing"
+    assert fact["source_urls"] == [
+        "https://one.example/gate",
+        "https://two.example/archive",
+    ]
+    assert len(result.grounding_sources) == 2
 
 
 @pytest.mark.asyncio
