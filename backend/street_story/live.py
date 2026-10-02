@@ -583,7 +583,7 @@ class StreetStoryLiveAdapter:
                 "data": base64.b64encode(data).decode("ascii"),
                 "mime_type": "image/jpeg",
                 "context": {"kind": "source_photo", "story_id": session.resource_id},
-                "optional": False,
+                "optional": True,
             },
         )
         payload = {"status": "ready", "width": width, "height": height, "jpeg_bytes": len(data)}
