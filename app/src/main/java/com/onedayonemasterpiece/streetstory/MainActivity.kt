@@ -1471,7 +1471,7 @@ class MainActivity : Activity() {
         host.visibility = View.VISIBLE
         val selectedCount = facts.count { it.selected && it.evidenceSupported }
         host.addView(label("Факты · выбрано $selectedCount из ${facts.size}", 15, INK, Typeface.DEFAULT_BOLD))
-        val shownFacts = facts.take(16)
+        val shownFacts = facts
         shownFacts.forEachIndexed { index, fact ->
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
