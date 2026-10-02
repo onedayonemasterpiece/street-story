@@ -85,3 +85,17 @@ across many sites can still propagate the same false claim. Street Story therefo
 When two differently worded claims merge into the same semantic event, their source
 sets are unioned rather than replacing one another.
 
+## Legacy inventory normalization
+
+Older topics created before the atomic-fact boundary may contain article titles,
+photo captions or multi-sentence excerpts. The maintenance command
+`backend/tools/normalize_fact_inventory.py` is dry-run by default and normalizes
+one explicitly named non-published story. It extracts the best atomic factual
+sentence, drops non-factual/media text, merges semantic duplicates and unions all
+supporting source URLs. It refuses scheduled/published stories and refuses a topic
+with an already frozen visual asset.
+
+This migration does not rewrite an authored draft. It only repairs the fact
+inventory and its selection map so the existing topic can continue under the new
+contract.
+
