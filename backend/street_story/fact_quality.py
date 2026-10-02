@@ -7,7 +7,22 @@ from typing import Any
 
 _SPACE = re.compile(r"\s+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+|\s*;\s*")
-_CLAUSE_SPLIT = re.compile(r",\s*(?=(?:а\s+вместо|однако)\b)", re.IGNORECASE)
+_CLAUSE_SPLIT = re.compile(
+    r",\s*(?=(?:а\s+вместо|однако|поэтому)\b)|\s+(?=и\s+стали\b)",
+    re.IGNORECASE,
+)
+_INLINE_HEADING = re.compile(
+    r".*?\b(?:интересн\w*\s+факт\w*|история\s+создания)\b[:\s]*",
+    re.IGNORECASE,
+)
+_RELATIVE_ASIDE = re.compile(
+    r",\s*(?:именем|в\s+честь)\s+котор\w*[^,]{0,120},\s*",
+    re.IGNORECASE,
+)
+_TEMPORAL_PREFIX = re.compile(
+    r"\b(?:В|К|С|До|После|Летом|Зимой|Осенью|Весной)\b[^,.]{0,70}$",
+    re.IGNORECASE,
+)
 _YEAR = re.compile(r"(?<!\d)(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})(?!\d)(?![-‑–—](?:лет|лети|летн|й|я|у)\w*)")
 _BAD = re.compile(
     r"(?:интересн\w*\s+факт|истори\w*\s+создани|смотрите\s+также|"
@@ -65,6 +80,7 @@ _STOP = {
 
 def compact_fact_text(raw: str, limit: int = 180) -> str:
     text = _SPACE.sub(" ", str(raw or "")).strip(" \t\r\n-•")
+    text = re.sub(r"\s*\[\d{1,3}\]\s*", " ", text).strip()
     if len(text) <= limit:
         return text
     stops = [pos + 1 for mark in (".", ";") if (pos := text.rfind(mark, 0, limit)) >= 60]
@@ -89,6 +105,13 @@ def _candidate_score(text: str, index: int) -> tuple[int, int, int]:
 
 def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[str | None, tuple[int, int, int] | None]:
     text = _SPACE.sub(" ", str(sentence or "")).strip(" \t\r\n-•")
+    inline_heading = _INLINE_HEADING.search(text)
+    if inline_heading:
+        text = text[inline_heading.end():].strip(" :—-")
+    heading = _HEADING.search(text)
+    if heading:
+        text = text[heading.end():].strip(" :—-")
+    text = _RELATIVE_ASIDE.sub(" ", text)
     if prior_year and re.match(r"^с\s+того\s+же\s+года\b", text, re.IGNORECASE):
         text = re.sub(
             r"^с\s+того\s+же\s+года\b",
@@ -97,24 +120,26 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
             count=1,
             flags=re.IGNORECASE,
         )
-    if _HEADING.search(text):
-        signal = _ROLE.search(text) or _SIGNAL.search(text)
-        if signal is None:
-            return None, None
-        text = compact_fact_text(text[signal.start():])
     bad = _BAD.search(text)
     if bad:
         signal = _SIGNAL.search(text, bad.end()) or _ROLE.search(text, bad.end())
         if signal is None:
             return None, None
-        text = compact_fact_text(text[signal.start():])
+        prefix = text[bad.end():signal.start()]
+        temporal = _TEMPORAL_PREFIX.search(prefix)
+        start = bad.end() + temporal.start() if temporal else signal.start()
+        text = text[start:]
     signal = _ROLE.search(text) or _SIGNAL.search(text)
     if signal is not None and signal.start() > 60:
-        # Typical legacy image captions lead a useful sentence. Once the first
-        # factual predicate is far into the string, keep the claim rather than
-        # the caption-like prefix.
-        text = text[signal.start():]
+        temporal = _TEMPORAL_PREFIX.search(text[:signal.start()])
+        text = text[temporal.start():] if temporal else text[signal.start():]
     text = compact_fact_text(text)
+    if re.search(r"(?:снес\w*|разобрал\w*|демонтир\w*|разруш\w*)", text, re.IGNORECASE):
+        comma = text.find(",")
+        if comma >= 12:
+            text = text[:comma].rstrip()
+    if text.endswith(("...", "…")):
+        return None, None
     if len(text) < 12 or len(text) > 181:
         return None, None
     if _BAD.search(text) or _PERSONAL.search(text):
