@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
+from .fact_quality import atomic_fact_text, merge_fact_inventory
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
@@ -736,6 +737,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 {
                     "fact_id": row["fact_id"],
                     "text": row["text"],
+                    "confidence": float(row["confidence"]),
+                    "evidence_supported": bool(row["evidence_supported"]),
                     "selected": bool(row["selected"]),
                     "sources": json.loads(row["sources_json"]),
                 }
@@ -890,9 +893,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         normalized: list[dict[str, Any]] = []
         seen_claims: set[str] = set()
         for item in incoming:
-            text = str(item.get("text") or "").strip()
+            text = atomic_fact_text(str(item.get("text") or ""))
             claim_key = str(item.get("claim_key") or "").strip()
-            if not text:
+            if text is None:
                 continue
             fact_id = _claim_id(claim_key, text)
             if fact_id in seen_claims:
@@ -930,6 +933,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             normalized.append(
                 {
                     "fact_id": fact_id,
+                    "claim_key": claim_key,
                     "text": text,
                     "confidence": max(0.0, min(1.0, float(item.get("confidence", 0.0)))),
                     "evidence_supported": evidence_supported,
@@ -938,29 +942,37 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 }
             )
 
+        inventory = merge_fact_inventory([
+            *[
+                {
+                    **item,
+                    "claim_key": "",
+                    "evidence_supported": bool(item.get("evidence_supported")),
+                }
+                for item in previous
+            ],
+            *normalized,
+        ])
+
         with self.store.tx() as db:
             latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
             if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
                 return
-            for fact in normalized:
+            # Rebuild the topic inventory from the accumulated, quality-filtered,
+            # semantically merged facts. This removes legacy title/snippet pollution
+            # while preserving valid previously considered facts and decisions.
+            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
+            for fact in inventory:
                 db.execute(
-                    """
-                    INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json)
-                    VALUES(?,?,?,?,?,?,?)
-                    ON CONFLICT(story_id,fact_id) DO UPDATE SET
-                      text=excluded.text,
-                      confidence=excluded.confidence,
-                      evidence_supported=excluded.evidence_supported,
-                      selected=excluded.selected,
-                      sources_json=excluded.sources_json
-                    """,
+                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                    "VALUES(?,?,?,?,?,?,?)",
                     (
                         story_id,
                         fact["fact_id"],
                         fact["text"],
                         fact["confidence"],
                         int(fact["evidence_supported"]),
-                        int(fact["selected"]),
+                        int(fact["selected"] and fact["evidence_supported"]),
                         canonical(fact["sources"]),
                     ),
                 )
