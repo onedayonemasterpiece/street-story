@@ -106,6 +106,7 @@ class MainActivity : Activity() {
     private var conceptBlock: TextView? = null
     private var publicationEventView: TextView? = null
     private var renderedMessages: List<LiveChatMessage> = emptyList()
+    private var renderedResearchProgress: LiveResearchProgress? = null
     private var micHalo: View? = null
     private var micHaloPulse: ObjectAnimator? = null
     private var lastDialogueMessageCount = 0
@@ -311,6 +312,7 @@ class MainActivity : Activity() {
         previewExpanded = true
         lastDialogueMessageCount = 0
         renderedMessages = emptyList()
+        renderedResearchProgress = null
         stickyIsland = null; stickyImage = null; stickyTitle = null
         stickyFacts = null; stickyConcept = null; stickyVisible = false
         factsBlock = null; conceptBlock = null; publicationEventView = null
@@ -650,7 +652,10 @@ class MainActivity : Activity() {
             contentDescription = state.error ?: (label + microphone?.let { ". Уровень микрофона ${it.level} из 4" }.orEmpty())
             setTextColor(if (state.error.isNullOrBlank() && microphone?.warning == null) MUTED else ACCENT)
         }
-        renderFactsIsland(id)
+        if (state.researchProgress != renderedResearchProgress) {
+            renderedResearchProgress = state.researchProgress
+            renderFactsIsland(id)
+        }
         val scroll = topicScroll
         val nearEnd = scroll == null || (scroll.getChildAt(0)?.height ?: 0) - scroll.scrollY - scroll.height <= dp(180)
         val changed = state.messages != renderedMessages
@@ -1149,6 +1154,7 @@ class MainActivity : Activity() {
         factsBlock = null; conceptBlock = null; publicationEventView = null
         identityProgressView = null
         renderedMessages = emptyList()
+        renderedResearchProgress = null
         stopMicPulse()
         topicTitleView = null
         topicStatusView = null
