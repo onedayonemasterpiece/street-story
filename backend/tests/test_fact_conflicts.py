@@ -254,10 +254,73 @@ async def test_auxiliary_detector_failure_is_logged_but_does_not_fail_research(t
     assert result == []
     with store.connection() as db:
         events = list(db.execute(
-            "SELECT event_type FROM live_diagnostics WHERE story_id=? AND source='fact_conflict'",
+            "SELECT event_type FROM live_diagnostics WHERE story_id=? AND source='fact_conflict' ORDER BY id",
             ("story_conflict001",),
         ))
-    assert [row["event_type"] for row in events] == ["fact_conflict_detector_unavailable"]
+        scan = db.execute(
+            "SELECT status,pair_count,detected_count,error_type FROM fact_conflict_scans "
+            "WHERE story_id=? ORDER BY id DESC LIMIT 1",
+            ("story_conflict001",),
+        ).fetchone()
+    assert [row["event_type"] for row in events] == [
+        "fact_conflict_scan",
+        "fact_conflict_detector_unavailable",
+    ]
+    assert scan["status"] == "detector_unavailable"
+    assert scan["pair_count"] == 1
+    assert scan["detected_count"] == 0
+    assert scan["error_type"] == "GeminiUnavailable"
+
+
+@pytest.mark.asyncio
+async def test_successful_scan_accumulates_durable_denominator_statistics(tmp_path):
+    store = Store(tmp_path / "street-story.sqlite3")
+    _insert_story(store)
+    items = [
+        fact("Ворота построены в 1843 году.", fact_id="a", source_urls=("https://a.example/x",)),
+        fact("Ворота построены в 1850 году.", fact_id="b", source_urls=("https://b.example/y",)),
+    ]
+    pairs = conflict_candidate_pairs(items)
+
+    class Detector:
+        async def detect_fact_conflicts(self, actual_pairs, context):
+            return normalize_conflict_records(actual_pairs, {
+                "conflicts": [{
+                    "pair_id": pairs[0]["pair_id"],
+                    "relation": "contradiction",
+                    "suggested_resolution": "unresolved",
+                    "confidence": .8,
+                    "rationale": "Даты расходятся.",
+                }],
+            })
+
+    service = SimpleNamespace(
+        store=store,
+        providers=SimpleNamespace(gemini=Detector()),
+    )
+    await analyze_fact_conflicts(
+        service,
+        "story_conflict001",
+        "wiki:1",
+        items,
+        context={"place_name": "Test Gate"},
+    )
+
+    with store.connection() as db:
+        scan = db.execute(
+            "SELECT status,pair_count,detected_count FROM fact_conflict_scans "
+            "WHERE story_id=? ORDER BY id DESC LIMIT 1",
+            ("story_conflict001",),
+        ).fetchone()
+        research = json.loads(db.execute(
+            "SELECT research_json FROM stories WHERE id=?",
+            ("story_conflict001",),
+        ).fetchone()[0])
+    assert dict(scan) == {"status": "ok", "pair_count": 1, "detected_count": 1}
+    assert research["fact_conflict_stats"]["scan_count"] == 1
+    assert research["fact_conflict_stats"]["pairs_checked"] == 1
+    assert research["fact_conflict_stats"]["detected_observations"] == 1
+    assert research["fact_conflict_stats"]["poi_scan_count"] == 1
 
 
 @pytest.mark.asyncio
