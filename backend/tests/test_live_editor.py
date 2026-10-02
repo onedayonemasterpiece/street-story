@@ -412,7 +412,7 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
         },
     )
     assert len(saved["facts"]) == 1
-    assert len(saved["facts"][0]["sources"]) == 2
+    assert saved["facts"][0]["source_count"] == 2
     current = svc.story(story_id)
     assert len(current["facts"]) == 1
     assert len(current["facts"][0]["sources"]) == 2

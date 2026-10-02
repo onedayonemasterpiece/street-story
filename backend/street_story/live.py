@@ -719,6 +719,116 @@ class StreetStoryLiveAdapter:
             projected["story"] = {key: story[key] for key in keys if key in story}
             if name not in {"search_web", "save_research_facts"} and "draft_text" not in result:
                 projected["story"]["draft_text"] = str(story.get("draft_text") or "")[:5000]
+        if name == "search_web":
+            discovery_only = bool(result.get("discovery_only"))
+            compact_sources = []
+            for source in result.get("sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                supports = [
+                    str(support.get("text") or "")[:360]
+                    for support in (source.get("supports") or [])
+                    if isinstance(support, dict) and str(support.get("text") or "").strip()
+                ]
+                if discovery_only:
+                    compact_sources.append(
+                        {
+                            "source_ref": source.get("source_ref"),
+                            "title": str(source.get("title") or "")[:140],
+                            "supports": supports[:2],
+                        }
+                    )
+                else:
+                    compact_sources.append(
+                        {
+                            "type": str(source.get("type") or "web"),
+                            "title": str(source.get("title") or "")[:140],
+                            "url": str(source.get("url") or "")[:400],
+                        }
+                    )
+            compact_facts = []
+            for fact in result.get("facts") or []:
+                if not isinstance(fact, dict):
+                    continue
+                compact_facts.append(
+                    {
+                        "fact_id": fact.get("fact_id"),
+                        "claim_key": fact.get("claim_key"),
+                        "text": str(fact.get("text") or "")[:280],
+                        "confidence": fact.get("confidence"),
+                        "selected": bool(fact.get("selected")),
+                        "evidence_supported": bool(fact.get("evidence_supported")),
+                        "source_count": len(
+                            [source for source in (fact.get("sources") or []) if isinstance(source, dict)]
+                        ),
+                    }
+                )
+            projected = {
+                "query": str(result.get("query") or "")[:400],
+                "summary": str(result.get("summary") or "")[:480],
+                "search_provider": result.get("search_provider"),
+                "discovery_only": discovery_only,
+                "facts": compact_facts[:20],
+                "sources": compact_sources[:12],
+                "fact_conflicts": list(result.get("fact_conflicts") or [])[:6],
+                "story": projected.get("story"),
+            }
+        elif name == "save_research_facts":
+            projected = {
+                "facts": [
+                    {
+                        "fact_id": fact.get("fact_id"),
+                        "text": str(fact.get("text") or "")[:280],
+                        "selected": bool(fact.get("selected")),
+                        "source_count": len(
+                            [source for source in (fact.get("sources") or []) if isinstance(source, dict)]
+                        ),
+                        "sources": [
+                            {
+                                "type": str(source.get("type") or "web"),
+                                "title": str(source.get("title") or "")[:120],
+                                "url": str(source.get("url") or "")[:360],
+                            }
+                            for source in (fact.get("sources") or [])[:6]
+                            if isinstance(source, dict)
+                        ],
+                    }
+                    for fact in (result.get("facts") or [])[:32]
+                    if isinstance(fact, dict)
+                ],
+                "selected_fact_ids": list(result.get("selected_fact_ids") or [])[:80],
+                "story": projected.get("story"),
+            }
+        if name == "search_web" and result.get("discovery_only") is True:
+            compact_sources = []
+            for source in (result.get("sources") or [])[:20]:
+                if not isinstance(source, dict):
+                    continue
+                source_ref = str(source.get("source_ref") or "").strip()
+                if not source_ref:
+                    continue
+                snippets = []
+                for support in (source.get("supports") or [])[:2]:
+                    if not isinstance(support, dict):
+                        continue
+                    snippet = str(support.get("text") or "").strip()
+                    if snippet and snippet not in snippets:
+                        snippets.append(snippet[:600])
+                compact_sources.append({
+                    "source_ref": source_ref,
+                    "snippets": snippets,
+                })
+            projected["sources"] = compact_sources
+            projected.pop("fact_conflicts", None)
+        elif name == "save_research_facts":
+            projected["facts"] = [
+                {
+                    "fact_id": str(fact.get("fact_id") or ""),
+                    "source_count": len(fact.get("sources") or []),
+                }
+                for fact in (result.get("facts") or [])[:32]
+                if isinstance(fact, dict)
+            ]
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])
         logging.getLogger("uvicorn.error").info(
