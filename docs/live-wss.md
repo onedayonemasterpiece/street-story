@@ -142,3 +142,17 @@ The model choice follows the current Google Gemini model/Search documentation:
 
 Provider quota exhaustion is kept visible in diagnostics and never bypassed by
 switching to an undocumented credential path.
+
+## Owner review 2026-10-02 15:20 — non-speech transient
+
+The canonical review is IdeaHub voice packet `voice-20261002-152036-8d69118b`.
+The owner reproduced a false speech turn by taking a screenshot without speaking.
+This is treated as an admission-layer defect, not a transcription-language defect:
+a short system/shutter transient must not open a Live speech turn at all.
+
+Live admission therefore requires a longer sustained native-VAD attack before
+opening provider input (12 positive 30 ms frames inside a 16-frame window). The
+existing 600 ms preroll preserves the beginning of real speech after admission.
+The regression suite includes a high-energy screenshot-like transient that must
+produce zero admitted frames. Provider playback suppression remains separate.
+
