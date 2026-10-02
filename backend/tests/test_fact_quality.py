@@ -137,3 +137,9 @@ def test_bad_caption_prefix_can_be_discarded_while_later_fact_survives():
     )
     facts = atomic_fact_texts(raw)
     assert facts == ["прибыло в Кёнигсберг в 1697 году."]
+
+
+def test_documented_presence_event_is_a_fact():
+    assert atomic_fact_text(
+        "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
+    ) == "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
