@@ -16,7 +16,7 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
-from .fact_conflicts import analyze_fact_conflicts, conflict_rows
+from .fact_conflicts import analyze_fact_conflicts, conflict_rows, resolve_fact_conflict
 from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id, semantic_fact_key
 from .live_author_intent import (
     begin_turn,
@@ -1108,75 +1108,40 @@ class StreetStoryLiveAdapter:
         conflict_id = _bounded_text(args.get("conflict_id"), 120, required=True)
         resolution = _bounded_text(args.get("resolution"), 40, required=True)
         reason = _bounded_text(args.get("reason"), 1000, required=True)
-        if resolution not in {"prefer_left", "prefer_right", "both_valid", "unresolved"}:
-            raise ConflictError("fact_conflict_resolution_invalid", "Unknown fact conflict resolution")
         try:
             confidence = float(args.get("confidence", 0.0))
         except (TypeError, ValueError):
-            confidence = 0.0
-        if not math.isfinite(confidence) or confidence < 0.0 or confidence > 1.0:
-            raise ConflictError("fact_conflict_confidence_invalid", "Confidence must be between 0 and 1")
-
+            raise ConflictError(
+                "fact_conflict_confidence_invalid", "Confidence must be between 0 and 1"
+            ) from None
+        if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+            raise ConflictError(
+                "fact_conflict_confidence_invalid", "Confidence must be between 0 and 1"
+            )
+        try:
+            resolved = resolve_fact_conflict(
+                self.service,
+                story_id,
+                conflict_id,
+                resolution,
+                reason,
+                confidence,
+                arbitrated_by="mira_live",
+            )
+        except KeyError:
+            raise ConflictError(
+                "fact_conflict_unknown", "Conflict is not present in the current topic"
+            ) from None
+        except ValueError as exc:
+            raise ConflictError(
+                "fact_conflict_resolution_invalid", str(exc)
+            ) from None
+        result = {
+            "conflict": resolved,
+            "fact_conflicts": self._topic_state(story_id).get("fact_conflicts", [])[:12],
+        }
         with self.service.store.tx() as db:
-            row = db.execute(
-                "SELECT * FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
-                (story_id, conflict_id),
-            ).fetchone()
-            if row is None:
-                raise ConflictError("fact_conflict_unknown", "Conflict is not present in the current topic")
-            final_fact_id = None
-            if resolution == "prefer_left":
-                final_fact_id = row["left_fact_id"]
-            elif resolution == "prefer_right":
-                final_fact_id = row["right_fact_id"]
-            evidence = json.loads(row["evidence_json"] or "{}")
-            evidence["mira_arbitration_confidence"] = confidence
-            now = self.service.store.now()
-            db.execute(
-                "UPDATE fact_conflicts SET final_resolution=?,final_fact_id=?,arbitration_reason=?,"
-                "arbitrated_by='mira',evidence_json=?,last_seen_at=? WHERE story_id=? AND conflict_id=?",
-                (
-                    resolution,
-                    final_fact_id,
-                    reason,
-                    canonical(evidence),
-                    now,
-                    story_id,
-                    conflict_id,
-                ),
-            )
-            story = self.service._story_row(db, story_id)
-            research = json.loads(story["research_json"] or "{}")
-            conflicts = conflict_rows(db, story_id, limit=40)
-            research["fact_conflicts"] = conflicts
-            research["fact_conflict_stats"] = {
-                "total_detected": db.execute(
-                    "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
-                ).fetchone()[0],
-                "open": db.execute(
-                    "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
-                    "AND (final_resolution IS NULL OR final_resolution='unresolved')",
-                    (story_id,),
-                ).fetchone()[0],
-                "mira_arbitrated": db.execute(
-                    "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? AND arbitrated_by='mira'",
-                    (story_id,),
-                ).fetchone()[0],
-            }
-            db.execute(
-                "UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?",
-                (canonical(research), now, story_id),
-            )
-            result = {
-                "conflict_id": conflict_id,
-                "resolution": resolution,
-                "preferred_fact_id": final_fact_id,
-                "reason": reason,
-                "confidence": confidence,
-                "fact_conflicts": conflicts[:12],
-            }
             self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
-
         record_live_diagnostic(
             self.service,
             story_id,
@@ -1187,8 +1152,8 @@ class StreetStoryLiveAdapter:
                 "conflict_id": conflict_id,
                 "resolution": resolution,
                 "confidence": confidence,
-                "preferred_fact_id": final_fact_id,
-                "arbitrated_by": "mira",
+                "final_fact_id": resolved.get("final_fact_id"),
+                "arbitrated_by": "mira_live",
             },
         )
         return result
