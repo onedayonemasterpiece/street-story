@@ -618,19 +618,13 @@ class GeminiClient:
                 }
                 for item in results
             ]
-            summary_lines = [
-                f"{index}. {item['title']}: {item['snippet']}"
-                for index, item in enumerate(results[:12], start=1)
-                if item["snippet"]
-            ]
             return GroundedResearch(
                 payload={
                     "summary": (
-                        "Google Search grounding сейчас недоступен. Ниже поисковые сниппеты "
-                        "из независимой веб-выдачи; используй их как источник для проверки, "
-                        "а не как автоматически доказанные утверждения.\n"
-                        + "\n".join(summary_lines)
-                    )[:6000],
+                        f"Google Search grounding сейчас недоступен. Получено {len(sources)} "
+                        "discovery-источников; evidence находится в sources[].supports и не является "
+                        "автоматически доказанными фактами."
+                    ),
                     "official_source_urls": [],
                     "facts": facts,
                     "search_provider": "duckduckgo_html_fallback",

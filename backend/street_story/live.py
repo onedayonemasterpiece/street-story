@@ -717,7 +717,7 @@ class StreetStoryLiveAdapter:
         if isinstance(story, dict):
             keys = ("id", "state", "revision", "place_name", "source_count", "error")
             projected["story"] = {key: story[key] for key in keys if key in story}
-            if "draft_text" not in result:
+            if name not in {"search_web", "save_research_facts"} and "draft_text" not in result:
                 projected["story"]["draft_text"] = str(story.get("draft_text") or "")[:5000]
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])
