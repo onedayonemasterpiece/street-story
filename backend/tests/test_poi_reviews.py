@@ -4,11 +4,11 @@ from street_story.db import Store
 from street_story.poi_external import ingest_poi_evidence
 from street_story.poi_reviews import (
     PoiReviewAccessError,
-    ingest_poi_evidence_with_reviews,
     list_review_cases_for_actor,
     review_case_projection,
     sync_review_cases,
 )
+from street_story.poi_semantic import apply_poi_semantic_analysis
 
 
 OWNER_A = "11111111-1111-1111-1111-111111111111"
@@ -52,7 +52,7 @@ def event(
         },
         "claim": {
             "candidate_id": candidate_id,
-            "semantic_key": "producer-key",
+            "semantic_key": f"construction:{text}",
             "kind": "construction",
             "text": text,
             "time_scope": None,
@@ -82,7 +82,7 @@ def create_conflict(store):
             text="Ворота построены в 1843 году.",
         ),
     )
-    second = ingest_poi_evidence_with_reviews(
+    second = ingest_poi_evidence(
         store,
         event(
             event_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -91,19 +91,32 @@ def create_conflict(store):
             text="Ворота построены в 1850 году.",
         ),
     )
-    return second
+    candidate_id = second["semantic_candidate_ids"][0]
+    return apply_poi_semantic_analysis(
+        store,
+        candidate_id,
+        {
+            "contract_version": "poi.semantic_review.v1",
+            "candidate_id": candidate_id,
+            "classification": "conflict",
+            "relation": "uncertain",
+            "suggested_resolution": "unresolved",
+            "confidence": 0.82,
+            "rationale": "Mira считает, что утверждения требуют экспертной проверки.",
+        },
+    )
 
 
 def test_conflict_materializes_projects_hub_compatible_review_case(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
-    second = create_conflict(store)
+    result = create_conflict(store)
 
-    assert len(second["conflict_ids"]) == 1
-    assert len(second["review_case_ids"]) == 1
+    assert result["conflict_id"]
+    assert len(result["review_case_ids"]) == 1
 
     case = review_case_projection(
         store,
-        second["review_case_ids"][0],
+        result["review_case_ids"][0],
         actor_sub=OWNER_A,
     )
 
@@ -113,12 +126,13 @@ def test_conflict_materializes_projects_hub_compatible_review_case(tmp_path):
     assert case["required_reviews"] == 2
     assert case["required_expertise"]["subject"] == ["construction"]
     assert case["scope"]["visibility"] == "private"
+    assert case["detector_suggestion"]["source"] == "mira_semantic_review"
 
 
 def test_private_review_case_is_hidden_from_other_user(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
-    second = create_conflict(store)
-    case_id = second["review_case_ids"][0]
+    result = create_conflict(store)
+    case_id = result["review_case_ids"][0]
 
     with pytest.raises(PoiReviewAccessError):
         review_case_projection(
@@ -135,14 +149,15 @@ def test_private_review_case_is_hidden_from_other_user(tmp_path):
 
 def test_review_sync_is_idempotent(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
-    second = create_conflict(store)
-    conflict_id = second["conflict_ids"][0]
+    result = create_conflict(store)
+    conflict_id = result["conflict_id"]
 
     first = sync_review_cases(store, [conflict_id])
     second_sync = sync_review_cases(store, [conflict_id])
 
     assert first == second_sync
     with store.connection() as db:
-        assert db.execute(
-            "SELECT COUNT(*) FROM poi_review_cases"
-        ).fetchone()[0] == 1
+        assert (
+            db.execute("SELECT COUNT(*) FROM poi_review_cases").fetchone()[0]
+            == 1
+        )

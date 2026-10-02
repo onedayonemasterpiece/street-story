@@ -30,13 +30,17 @@ def event(
     names=None,
     text="Ворота построены в 1843 году.",
     kind="construction",
+    semantic_key=None,
 ):
     event_id = event_id or str(uuid.uuid4())
     candidate_id = candidate_id or str(uuid.uuid4())
     return {
         "contract_version": "poi.fact_evidence.v1",
         "event_id": event_id,
-        "idempotency_key": idempotency_key or f"knowledge:{DOCUMENT_ID}:1:{candidate_id}",
+        "idempotency_key": (
+            idempotency_key
+            or f"knowledge:{DOCUMENT_ID}:1:{candidate_id}"
+        ),
         "producer": "regional_knowledge",
         "scope": {
             "visibility": visibility,
@@ -61,7 +65,7 @@ def event(
         },
         "claim": {
             "candidate_id": candidate_id,
-            "semantic_key": "producer-key",
+            "semantic_key": semantic_key or f"construction:{text}",
             "kind": kind,
             "text": text,
             "time_scope": None,
@@ -81,18 +85,25 @@ def event(
     }
 
 
-def test_normalizer_recomputes_street_story_semantics():
-    payload = event()
+def test_normalizer_preserves_model_produced_semantics():
+    payload = event(
+        semantic_key="construction:1843",
+        kind="construction",
+    )
     normalized = normalize_poi_evidence(payload)
     assert normalized["claim"]["kind"] == "construction"
     assert normalized["claim"]["semantic_key"] == "construction:1843"
-    assert normalized["claim"]["producer_semantic_key"] == "producer-key"
+    assert normalized["claim"]["producer_semantic_key"] == "construction:1843"
+    assert normalized["claim"]["text"] == "Ворота построены в 1843 году."
     assert normalized["evidence"]["source_family_id"] == "unknown"
 
 
 def test_idempotent_external_evidence_creates_candidate_poi_and_claim(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
-    payload = event(event_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    payload = event(
+        event_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        semantic_key="construction:1843",
+    )
 
     first = ingest_poi_evidence(store, payload)
     again = ingest_poi_evidence(store, payload)
@@ -101,16 +112,32 @@ def test_idempotent_external_evidence_creates_candidate_poi_and_claim(tmp_path):
     assert first["poi_id"]
     assert first["claim_id"]
     assert first["replayed"] is False
-    assert again == {**first, "replayed": True, "conflict_ids": []}
+    assert first["semantic_candidate_ids"] == []
+    assert again == {
+        **first,
+        "replayed": True,
+        "conflict_ids": [],
+        "semantic_candidate_ids": [],
+    }
 
     with store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM pois").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM poi_external_events").fetchone()[0] == 1
+        assert (
+            db.execute("SELECT COUNT(*) FROM poi_external_events").fetchone()[0]
+            == 1
+        )
         assert db.execute("SELECT COUNT(*) FROM poi_claims").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM poi_claim_evidence").fetchone()[0] == 1
-        assert db.execute(
-            "SELECT COUNT(*) FROM poi_aliases WHERE namespace='wikidata' AND normalized_value='q12345'"
-        ).fetchone()[0] == 1
+        assert (
+            db.execute("SELECT COUNT(*) FROM poi_claim_evidence").fetchone()[0]
+            == 1
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM poi_aliases "
+                "WHERE namespace='wikidata' AND normalized_value='q12345'"
+            ).fetchone()[0]
+            == 1
+        )
 
     changed = copy.deepcopy(payload)
     changed["claim"]["text"] = "Ворота построены в 1850 году."
@@ -118,27 +145,56 @@ def test_idempotent_external_evidence_creates_candidate_poi_and_claim(tmp_path):
         ingest_poi_evidence(store, changed)
 
 
+def test_same_model_semantic_key_with_different_text_fails_closed(tmp_path):
+    store = Store(tmp_path / "street.sqlite3")
+    ingest_poi_evidence(
+        store,
+        event(
+            event_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            candidate_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+            idempotency_key="knowledge:collision-left",
+            text="Ворота построены в 1843 году.",
+            semantic_key="construction:date",
+        ),
+    )
+    with pytest.raises(PoiEvidenceConflict, match="semantic_key_claim_collision"):
+        ingest_poi_evidence(
+            store,
+            event(
+                event_id="12121212-1212-1212-1212-121212121212",
+                candidate_id="34343434-3434-3434-3434-343434343434",
+                idempotency_key="knowledge:collision-right",
+                text="Ворота построены в 1850 году.",
+                semantic_key="construction:date",
+            ),
+        )
+
+
 def test_name_only_unknown_place_stays_unresolved_without_creating_poi(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     payload = event(
         external_ids={},
         names=["Неоднозначный старый объект"],
+        semantic_key="construction:1843",
     )
     result = ingest_poi_evidence(store, payload)
 
     assert result["state"] == "unresolved_identity"
     assert result["poi_id"] is None
     assert result["claim_id"] is None
+    assert result["semantic_candidate_ids"] == []
 
     with store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM pois").fetchone()[0] == 0
-        row = db.execute("SELECT state,poi_id,claim_id FROM poi_external_events").fetchone()
+        row = db.execute(
+            "SELECT state,poi_id,claim_id FROM poi_external_events"
+        ).fetchone()
         assert row["state"] == "unresolved_identity"
         assert row["poi_id"] is None
         assert row["claim_id"] is None
 
 
-def test_same_external_id_merges_poi_and_opens_uncertain_conflict(tmp_path):
+def test_same_poi_queues_model_candidate_but_does_not_declare_conflict(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     first = ingest_poi_evidence(
         store,
@@ -147,6 +203,7 @@ def test_same_external_id_merges_poi_and_opens_uncertain_conflict(tmp_path):
             candidate_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             idempotency_key="knowledge:first",
             text="Ворота построены в 1843 году.",
+            semantic_key="construction:1843",
         ),
     )
     second = ingest_poi_evidence(
@@ -156,26 +213,31 @@ def test_same_external_id_merges_poi_and_opens_uncertain_conflict(tmp_path):
             candidate_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
             idempotency_key="knowledge:second",
             text="Ворота построены в 1850 году.",
+            semantic_key="construction:1850",
         ),
     )
 
     assert second["poi_id"] == first["poi_id"]
-    assert len(second["conflict_ids"]) == 1
+    assert len(second["semantic_candidate_ids"]) == 1
+    assert second["conflict_ids"] == []
 
     with store.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM pois").fetchone()[0] == 1
-        assert db.execute("SELECT COUNT(*) FROM poi_claims").fetchone()[0] == 2
-        conflict = db.execute("SELECT * FROM poi_conflicts").fetchone()
-        assert conflict["relation"] == "uncertain"
-        assert conflict["status"] == "open"
+        assert db.execute("SELECT COUNT(*) FROM poi_conflicts").fetchone()[0] == 0
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM poi_semantic_candidates "
+                "WHERE state='pending_model'"
+            ).fetchone()[0]
+            == 1
+        )
         statuses = {
             row["status"]
             for row in db.execute("SELECT status FROM poi_claims")
         }
-        assert statuses == {"contested"}
+        assert statuses == {"candidate"}
 
 
-def test_private_evidence_from_different_owners_does_not_cross_conflict(tmp_path):
+def test_private_evidence_from_different_owners_does_not_cross_candidate(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     first = ingest_poi_evidence(
         store,
@@ -185,6 +247,7 @@ def test_private_evidence_from_different_owners_does_not_cross_conflict(tmp_path
             idempotency_key="knowledge:a",
             owner=OWNER_A,
             text="Ворота построены в 1843 году.",
+            semantic_key="construction:1843",
         ),
     )
     second = ingest_poi_evidence(
@@ -195,16 +258,20 @@ def test_private_evidence_from_different_owners_does_not_cross_conflict(tmp_path
             idempotency_key="knowledge:b",
             owner=OWNER_B,
             text="Ворота построены в 1850 году.",
+            semantic_key="construction:1850",
         ),
     )
 
     assert second["poi_id"] == first["poi_id"]
-    assert second["conflict_ids"] == []
+    assert second["semantic_candidate_ids"] == []
     with store.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM poi_conflicts").fetchone()[0] == 0
+        assert (
+            db.execute("SELECT COUNT(*) FROM poi_semantic_candidates").fetchone()[0]
+            == 0
+        )
 
 
-def test_public_evidence_is_visible_to_private_owner_conflict_check(tmp_path):
+def test_public_evidence_can_be_model_candidate_with_private_owner_evidence(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     public_payload = event(
         event_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -213,6 +280,7 @@ def test_public_evidence_is_visible_to_private_owner_conflict_check(tmp_path):
         visibility="public",
         owner=OWNER_A,
         text="Ворота построены в 1843 году.",
+        semantic_key="construction:1843",
     )
     private_payload = event(
         event_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -221,8 +289,9 @@ def test_public_evidence_is_visible_to_private_owner_conflict_check(tmp_path):
         visibility="private",
         owner=OWNER_B,
         text="Ворота построены в 1850 году.",
+        semantic_key="construction:1850",
     )
     ingest_poi_evidence(store, public_payload)
     second = ingest_poi_evidence(store, private_payload)
 
-    assert len(second["conflict_ids"]) == 1
+    assert len(second["semantic_candidate_ids"]) == 1

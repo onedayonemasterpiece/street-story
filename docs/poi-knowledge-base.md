@@ -432,3 +432,53 @@ rights-restricted illustration publishable.
 
 Fact and media evidence remain separate, because a historical photograph may be
 useful for a POI even when it contributes no new atomic textual claim.
+
+
+## LLM-first contradiction workflow
+
+POI evidence intake does not itself decide that two claims contradict each other.
+
+Street Story follows the project-wide LLM-first invariant:
+
+```text
+claim evidence
+  -> deterministic bounded candidate pair
+  -> Mira/model semantic review
+  -> durable conflict only when model classifies conflict
+  -> expert review case
+  -> typed human resolution
+```
+
+The deterministic prefilter may compare already model-normalized `kind` and
+`semantic_key`, limit pair count, validate evidence visibility and persist
+candidate IDs. It must not:
+- rewrite a claim's semantic key;
+- infer a new claim kind from regexes;
+- declare a contradiction;
+- choose a winning fact.
+
+Model output contract:
+- `docs/contracts/poi-semantic-review-v1.schema.json`;
+- `contract_version = poi.semantic_review.v1`.
+
+The model returns either:
+- `no_conflict`; or
+- `conflict` plus relation, confidence, rationale and a non-binding suggested
+  resolution.
+
+Only model-confirmed conflicts enter `poi_conflicts` and generate
+`poi.review_case.v1` work for experts.
+
+### Human review mutation boundary
+
+Expert decisions are append-only and revision guarded. Deterministic code may
+mechanically apply a typed human outcome after the required independent reviews
+agree, because the semantic decision came from people rather than a heuristic.
+
+For multi-review cases:
+- one decision leaves the case `in_review`;
+- matching required decisions may resolve it;
+- disagreement does not become majority voting;
+- `needs_more_sources` defers the case without canonicalizing a claim.
+
+Every mutation uses a command ID, expected case revision and durable receipt.

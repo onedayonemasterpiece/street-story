@@ -379,6 +379,39 @@ CREATE TABLE IF NOT EXISTS poi_review_decisions(
   created_at REAL NOT NULL,
   UNIQUE(review_case_id,expert_sub,assignment_revision)
 );
+
+CREATE TABLE IF NOT EXISTS poi_semantic_candidates(
+  candidate_id TEXT PRIMARY KEY,
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  left_claim_id TEXT NOT NULL REFERENCES poi_claims(id) ON DELETE CASCADE,
+  right_claim_id TEXT NOT NULL REFERENCES poi_claims(id) ON DELETE CASCADE,
+  scope_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending_model'
+    CHECK(state IN (
+      'pending_model','confirmed_conflict','confirmed_no_conflict','superseded'
+    )),
+  analysis_digest TEXT,
+  analysis_json TEXT,
+  times_seen INTEGER NOT NULL DEFAULT 1,
+  first_seen_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL,
+  UNIQUE(poi_id,left_claim_id,right_claim_id)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_semantic_candidates_pending
+ ON poi_semantic_candidates(state,last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS poi_review_commands(
+  command_id TEXT PRIMARY KEY,
+  review_case_id TEXT NOT NULL
+    REFERENCES poi_review_cases(review_case_id) ON DELETE CASCADE,
+  actor_sub TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('accept','resolve','request_research')),
+  payload_digest TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_review_commands_case
+ ON poi_review_commands(review_case_id,created_at DESC);
 """
 
 
