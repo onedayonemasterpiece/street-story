@@ -1156,20 +1156,8 @@ class StreetStoryLiveAdapter:
         }
         with self.service.store.tx() as db:
             self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
-        record_live_diagnostic(
-            self.service,
-            story_id,
-            session.id,
-            "fact_conflict",
-            "fact_conflict_arbitrated",
-            {
-                "conflict_id": conflict_id,
-                "resolution": resolution,
-                "confidence": confidence,
-                "final_fact_id": resolved.get("final_fact_id"),
-                "arbitrated_by": "mira",
-            },
-        )
+        # The shared arbitration ledger emits the durable fact_conflict_arbitrated
+        # telemetry event exactly once. Avoid duplicating it in the Live adapter.
         return result
 
     def _select_facts(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
