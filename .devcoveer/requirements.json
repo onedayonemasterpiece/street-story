@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "project": "street-story",
+  "requirements": [
+    {
+      "id": "CORE-PHOTO-IDENTITY",
+      "statement": "After the owner selects a source photo, Street Story automatically identifies the depicted place or object through product automation/Mira; manual identification by the owner is not a required normal-path step.",
+      "critical": true,
+      "acceptance": [
+        "The source photo is evaluated before research and publication work depends on its identity.",
+        "Uncertain identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity."
+      ]
+    },
+    {
+      "id": "CORE-CONCEPT-DIALOG",
+      "statement": "The owner can shape and refine the concept or angle of the publication conversationally instead of being forced through a disconnected manual workflow.",
+      "critical": true,
+      "acceptance": [
+        "Concept refinement remains available in the same story conversation before the final publication output."
+      ]
+    },
+    {
+      "id": "CORE-SOURCE-RESEARCH",
+      "statement": "Street Story can find information on the internet about the identified subject and preserve source-backed evidence rather than inventing unsupported facts.",
+      "critical": true,
+      "acceptance": [
+        "Research exposes source-linked evidence for publication facts.",
+        "Low-confidence discovery material is not silently upgraded into a verified fact."
+      ]
+    },
+    {
+      "id": "CORE-FACT-SELECTION",
+      "statement": "The owner can review and choose which evidence-backed facts are used in the publication.",
+      "critical": true,
+      "acceptance": [
+        "Fact selection is visible to the owner and survives normal story refinement.",
+        "Unsupported facts cannot silently become selected publication facts."
+      ]
+    },
+    {
+      "id": "CORE-PUBLICATION-TEXT",
+      "statement": "The publication text is visible to the owner and can be reviewed or refined within the conversational story flow before publication.",
+      "critical": true,
+      "acceptance": [
+        "A real draft is presented when available and remains associated with the story and selected facts."
+      ]
+    },
+    {
+      "id": "CORE-VOICE-MIRA",
+      "statement": "The primary creation and refinement flow supports live voice communication with Mira while preserving the same story conversation and product context.",
+      "critical": true,
+      "acceptance": [
+        "Voice interaction does not force the owner into a separate manual research or editing workflow.",
+        "A transport or provider implementation change must preserve the conversational product outcome."
+      ]
+    },
+    {
+      "id": "CORE-FINAL-VISUAL",
+      "statement": "Street Story can generate final publication visuals from the source material and approved story context, and the owner can review or select the resulting visual before publication.",
+      "critical": true,
+      "acceptance": [
+        "Visual generation remains part of the story flow and is tied to the approved publication context."
+      ]
+    }
+  ]
+}
