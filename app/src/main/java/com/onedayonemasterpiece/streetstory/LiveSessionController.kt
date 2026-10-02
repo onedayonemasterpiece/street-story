@@ -39,6 +39,22 @@ data class LiveChatMessage(
     val text: String,
 )
 
+data class LiveResearchSource(
+    val type: String,
+    val title: String,
+    val url: String,
+)
+
+data class LiveResearchProgress(
+    val active: Boolean,
+    val stage: String,
+    val query: String,
+    val sourceCount: Int,
+    val factCount: Int,
+    val batchSourceCount: Int,
+    val sources: List<LiveResearchSource>,
+)
+
 internal object LiveAudioTransportPolicy {
     const val TARGET_PCM_BYTES = LiveSocketTransport.BATCH_BYTES
     const val OUTBOUND_CAPACITY = LiveSocketTransport.ACK_WINDOW
@@ -60,6 +76,7 @@ data class LiveUiState(
     val completedTurns: Int = 0,
     val transport: String? = null,
     val microphone: MicrophoneReading? = null,
+    val researchProgress: LiveResearchProgress? = null,
 )
 
 /** Product UI/state only. Ordered PCM, WSS framing and ACKs belong to the shared SDK. */
@@ -498,6 +515,34 @@ class LiveSessionController(context: Context) {
             "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Выполняю действие…")) }
             "budget_wait" -> { waitStage = "resource"; waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит")) }
             "reconnecting" -> updateForGeneration(gen, state.copy(status = "Восстанавливаю соединение с моделью…"))
+            "research_progress" -> {
+                val payload = event.state?.takeIf { it.isJsonObject }?.asJsonObject
+                val sourceRows = payload?.getAsJsonArray("sources")?.mapNotNull { element ->
+                    val item = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+                    val url = item.get("url")?.asString.orEmpty()
+                    if (!url.startsWith("https://")) return@mapNotNull null
+                    LiveResearchSource(
+                        item.get("type")?.asString.orEmpty(),
+                        item.get("title")?.asString.orEmpty().ifBlank { url },
+                        url,
+                    )
+                } ?: emptyList()
+                val progress = LiveResearchProgress(
+                    active = payload?.get("active")?.asBoolean ?: (event.status == "working"),
+                    stage = payload?.get("stage")?.asString ?: event.stage.orEmpty(),
+                    query = payload?.get("query")?.asString.orEmpty(),
+                    sourceCount = payload?.get("source_count")?.asInt ?: 0,
+                    factCount = payload?.get("fact_count")?.asInt ?: 0,
+                    batchSourceCount = payload?.get("batch_source_count")?.asInt ?: 0,
+                    sources = sourceRows,
+                )
+                val label = when (progress.stage) {
+                    "searching" -> "Ищу источники…"
+                    "extracting" -> "Извлекаю и сверяю факты…"
+                    else -> if (progress.active) "Обрабатываю факты…" else "Факты обновлены"
+                }
+                updateForGeneration(gen, state.copy(status = label, researchProgress = progress, error = null))
+            }
             "literal_mode" -> updateForGeneration(gen, state.copy(literalMode = event.active == true, status = if (event.active == true) "Дословная диктовка" else "Слушаю"))
             "product_state" -> {
                 SyncScheduler.enqueue(app)

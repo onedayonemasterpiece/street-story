@@ -34,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -649,6 +650,7 @@ class MainActivity : Activity() {
             contentDescription = state.error ?: (label + microphone?.let { ". Уровень микрофона ${it.level} из 4" }.orEmpty())
             setTextColor(if (state.error.isNullOrBlank() && microphone?.warning == null) MUTED else ACCENT)
         }
+        renderFactsIsland(id)
         val scroll = topicScroll
         val nearEnd = scroll == null || (scroll.getChildAt(0)?.height ?: 0) - scroll.scrollY - scroll.height <= dp(180)
         val changed = state.messages != renderedMessages
@@ -1464,13 +1466,65 @@ class MainActivity : Activity() {
         val host = factsBlock ?: return
         host.removeAllViews()
         val facts = store.facts(storyId)
-        if (facts.isEmpty()) {
+        val liveState = live.snapshot()
+        val progress = liveState.researchProgress?.takeIf { liveState.storyId == storyId }
+        if (facts.isEmpty() && progress == null) {
             host.visibility = View.GONE
             return
         }
         host.visibility = View.VISIBLE
         val selectedCount = facts.count { it.selected && it.evidenceSupported }
-        host.addView(label("Факты · выбрано $selectedCount из ${facts.size}", 15, INK, Typeface.DEFAULT_BOLD))
+        val title = when {
+            progress?.active == true -> "Факты · поиск продолжается"
+            facts.isNotEmpty() -> "Факты · выбрано $selectedCount из ${facts.size}"
+            else -> "Факты"
+        }
+        host.addView(label(title, 15, INK, Typeface.DEFAULT_BOLD))
+        if (progress != null) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(7), 0, dp(7))
+            }
+            if (progress.active) {
+                row.addView(
+                    ProgressBar(this).apply {
+                        isIndeterminate = true
+                        contentDescription = "research-loader"
+                    },
+                    LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(8) },
+                )
+            }
+            val stageLabel = when (progress.stage) {
+                "searching" -> "Ищу и проверяю источники"
+                "extracting" -> "Извлекаю и объединяю факты"
+                else -> if (progress.active) "Обрабатываю факты" else "Поиск обновлён"
+            }
+            row.addView(
+                label(
+                    "$stageLabel\nОбработано источников: ${progress.sourceCount} · найдено фактов: ${progress.factCount}",
+                    12,
+                    MUTED,
+                    Typeface.DEFAULT,
+                ),
+                LinearLayout.LayoutParams(0, -2, 1f),
+            )
+            host.addView(row)
+            if (progress.sources.isNotEmpty()) {
+                host.addView(
+                    label(
+                        progress.sources.takeLast(8).joinToString(" · ") {
+                            runCatching { Uri.parse(it.url).host.orEmpty().removePrefix("www.") }
+                                .getOrDefault("")
+                                .ifBlank { it.title.take(48) }
+                        },
+                        11,
+                        MUTED,
+                        Typeface.DEFAULT,
+                    ).apply { setPadding(0, 0, 0, dp(5)) },
+                )
+            }
+        }
         val shownFacts = facts
         shownFacts.forEachIndexed { index, fact ->
             val item = LinearLayout(this).apply {
@@ -1502,12 +1556,7 @@ class MainActivity : Activity() {
                         .thenBy { it.url },
                 )
             if (sources.isNotEmpty()) {
-                val domainCount = sources.map { FactPresentation.sourceHost(it) }
-                    .filter { it.isNotBlank() }
-                    .distinct()
-                    .size
                 val sourceText = SpannableStringBuilder()
-                sourceText.append("Источники: ${sources.size} · сайтов: $domainCount\n")
                 sources.forEachIndexed { sourceIndex, source ->
                     if (sourceIndex > 0) sourceText.append(" · ")
                     val sourceLabel = FactPresentation.sourceLabel(source)
@@ -1532,7 +1581,7 @@ class MainActivity : Activity() {
                         movementMethod = LinkMovementMethod.getInstance()
                         setLinkTextColor(ACCENT)
                         linksClickable = true
-                        contentDescription = "Источники факта: ${sources.size}; сайтов: $domainCount"
+                        contentDescription = "Источники факта: " + sources.joinToString(", ") { FactPresentation.sourceLabel(it) }
                     },
                 )
             }

@@ -320,7 +320,7 @@ class _DuckDuckGoResultParser(HTMLParser):
         url = self._target_url(self.current.get("href", ""))
         title = " ".join(self.current.get("title", "").split())
         snippet = " ".join(self.current.get("snippet", "").split())
-        if url and title and len(self.results) < 8:
+        if url and title and len(self.results) < 12:
             self.results.append({"url": url, "title": title[:300], "snippet": snippet[:700]})
         self.current = None
 
@@ -620,7 +620,7 @@ class GeminiClient:
             ]
             summary_lines = [
                 f"{index}. {item['title']}: {item['snippet']}"
-                for index, item in enumerate(results[:6], start=1)
+                for index, item in enumerate(results[:12], start=1)
                 if item["snippet"]
             ]
             return GroundedResearch(
@@ -807,7 +807,7 @@ class GeminiClient:
             "Сначала обязательно попробуй найти официальный источник объекта или организации, если он существует: "
             "сайт владельца, музея, учреждения, муниципалитета или оператора. Wikipedia, СМИ, агрегатор и "
             "туристический каталог официальным источником не являются. Верни реально найденные официальные URL "
-            "в official_source_urls. Верни до 12 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
+            "в official_source_urls. Верни до 20 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
             "один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, реконструкция, "
             "посещение или другой конкретный факт. Без вводных вроде «источник сообщает», без URL и без нескольких "
             "разных утверждений в одном пункте. Для каждого факта обязательно задай claim_key — короткую устойчивую "

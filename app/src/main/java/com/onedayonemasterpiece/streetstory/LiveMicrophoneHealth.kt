@@ -8,8 +8,6 @@ data class MicrophoneReading(
 )
 
 internal class LiveMicrophoneHealth {
-    private var quietSince: Long? = null
-
     fun observe(
         nowMs: Long,
         rms: Double,
@@ -17,18 +15,15 @@ internal class LiveMicrophoneHealth {
         clientSilenced: Boolean = false,
         playbackSuppressed: Boolean = false,
     ): MicrophoneReading {
+        @Suppress("UNUSED_VARIABLE")
+        val observedAt = nowMs
         if (playbackSuppressed) {
-            quietSince = null
             return MicrophoneReading(0, playbackSuppressed = true)
         }
         if (systemMuted || clientSilenced) {
-            quietSince = null
             return MicrophoneReading(0, "Android отключил звук микрофона")
         }
         val signal = if (rms.isFinite()) rms.coerceAtLeast(0.0) else 0.0
-        if (signal >= QUIET_RMS) quietSince = null
-        else if (quietSince == null || nowMs < quietSince!!) quietSince = nowMs
-        val quietFor = quietSince?.let { nowMs - it } ?: 0L
         val level = when {
             signal >= 1024 -> 4
             signal >= 256 -> 3
@@ -36,14 +31,8 @@ internal class LiveMicrophoneHealth {
             signal >= 16 -> 1
             else -> 0
         }
-        return MicrophoneReading(
-            level,
-            if (quietFor >= QUIET_NOTICE_MS) "Очень тихий сигнал · проверьте микрофон" else null,
-        )
-    }
-
-    companion object {
-        const val QUIET_RMS = 32.0
-        const val QUIET_NOTICE_MS = 8000L
+        // Quiet room / pause between phrases is normal. VAD already decides when
+        // speech is present; do not paint natural silence as a microphone failure.
+        return MicrophoneReading(level)
     }
 }

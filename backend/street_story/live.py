@@ -206,8 +206,10 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "search_web",
-        "Search the internet for evidence when the author asks to find, check or update facts. "
-        "The search result returns to this same Gemini Live conversation and never rewrites publication text by itself.",
+        "Search one focused aspect of the identified subject for evidence. For a broad request to collect facts, "
+        "Mira should perform a short multi-angle research sweep with several distinct queries, semantically merge the "
+        "results and enrich already-known facts with new supporting sources. The result returns to this same Gemini "
+        "Live conversation and never rewrites publication text by itself.",
         {
             "query": {
                 "type": "string",
@@ -410,7 +412,11 @@ SYSTEM_INSTRUCTION = """
 - однословный или явно обрывочный ввод не должен запускать дорогие product functions: коротко уточни намерение, не запрашивая у автора название неизвестного ему объекта;
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
-- когда идентичность подтверждена и нужны внешние сведения, используй search_web. При доступном grounded search он сохраняет реальные URL и evidence-backed facts. Если search_web вернул discovery_only=true и snippets без durable facts, сама оцени смысл этих snippets и вызови save_research_facts только для атомарных тезисов, которые действительно поддерживаются evidence из последнего search result. Для привязки используй только точные короткие source_ref из source objects; не перепечатывай URL, не превращай заголовок/сниппет в факт автоматически и не выдумывай source_ref;
+- когда идентичность подтверждена и автор просит собрать факты в целом, не ограничивайся одним общим поисковым запросом. Проведи короткий многоаспектный research sweep: обычно 4–6 разных фокусов (происхождение/хронология; архитектура/авторы/персоны; события и изменения; реставрация и современная функция; официальный или первичный источник; отдельный поиск для проверки уже найденных ключевых тезисов). Не повторяй почти одинаковые запросы. Можно завершить раньше, если основные аспекты покрыты и два последовательных поиска не добавляют новой фактологии или новых независимых evidence;
+- после КАЖДОГО search_web с discovery_only=true сразу выполни save_research_facts до следующего поиска. Извлекай все содержательные атомарные тезисы, которые действительно поддерживаются snippets, а не только 2–4 самых заметных. Для уже известного факта, который подтверждается новым evidence, обязательно используй его exact existing_fact_id и приложи ВСЕ source_ref из текущего search result, которые поддерживают этот же тезис. Не создавай новый факт только из-за перефразирования. Если один и тот же fact_id поддерживают несколько source_ref, передай их вместе в одном факте;
+- при доступном grounded search search_web сам возвращает evidence-backed facts. И там тоже считай повторное подтверждение существующего тезиса не новым фактом, а дополнительным evidence к той же semantic identity. Для discovery-only привязывай только точные короткие source_ref из source objects; не перепечатывай URL, не превращай заголовок/сниппет в факт автоматически и не выдумывай source_ref;
+- во время общего исследования не зачитывай автору список найденных фактов голосом без просьбы. Блок фактов в приложении показывает полный накопленный список и источники. После завершения достаточно коротко сказать, сколько фактов и источников найдено, и при желании назвать 1–2 действительно важных вывода;
+- перед первым долгим поиском дай короткий голосовой сигнал вроде «Ищу факты»; дальше не комментируй голосом каждый поисковый шаг — прогресс виден в блоке фактов;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
 - после появления новых facts сама сравни их с текущими evidence-backed facts. Если видишь реальное противоречие/расхождение, зарегистрируй его через record_fact_conflicts; если противоречия нет, ничего не регистрируй. fact_conflicts — внутренний журнал. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web; когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict, иначе оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
@@ -1051,6 +1057,45 @@ class StreetStoryLiveAdapter:
         )
         return result
 
+    def _emit_research_progress(
+        self,
+        session,
+        *,
+        stage: str,
+        active: bool,
+        query: str,
+        source_count: int,
+        fact_count: int,
+        sources: list[dict[str, Any]] | None = None,
+        batch_source_count: int = 0,
+    ) -> None:
+        visible_sources = []
+        for source in (sources or [])[-10:]:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "")
+            if not url.startswith("https://"):
+                continue
+            visible_sources.append({
+                "type": str(source.get("type") or "web"),
+                "title": str(source.get("title") or url)[:180],
+                "url": url,
+            })
+        self.emit(session, {
+            "type": "research_progress",
+            "status": "working" if active else "ready",
+            "stage": stage,
+            "state": {
+                "active": active,
+                "stage": stage,
+                "query": str(query or "")[:300],
+                "source_count": max(0, int(source_count)),
+                "fact_count": max(0, int(fact_count)),
+                "batch_source_count": max(0, int(batch_source_count)),
+                "sources": visible_sources,
+            },
+        })
+
     async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         query = _bounded_text(args.get("query"), 1000, required=True)
         story_id = session.resource_id
@@ -1091,6 +1136,19 @@ class StreetStoryLiveAdapter:
             "previously_considered_poi_facts": poi_history[:60],
             "visual_identity": identity,
         }
+        prior_progress_sources = [
+            source for source in (research.get("grounding_sources") or [])
+            if isinstance(source, dict)
+        ]
+        self._emit_research_progress(
+            session,
+            stage="searching",
+            active=True,
+            query=query,
+            source_count=len(prior_progress_sources),
+            fact_count=len(known_facts),
+            sources=prior_progress_sources,
+        )
         grounded = await self.service.providers.gemini.search_web(query, topic_context)
         search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
         discovery_only = search_provider == "duckduckgo_html_fallback"
@@ -1121,7 +1179,7 @@ class StreetStoryLiveAdapter:
             if str(item.get("fact_id") or "").strip()
         }
         normalized: list[dict[str, Any]] = []
-        for item in (grounded.payload.get("facts") or [])[:12]:
+        for item in (grounded.payload.get("facts") or [])[:20]:
             if not isinstance(item, dict):
                 continue
             text = validated_model_fact_text(item.get("text"))
@@ -1229,6 +1287,16 @@ class StreetStoryLiveAdapter:
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "search_web", args, result)
+            self._emit_research_progress(
+                session,
+                stage="extracting" if discovery_only else "facts",
+                active=discovery_only,
+                query=query,
+                source_count=len(all_sources),
+                fact_count=len(inventory),
+                sources=list(all_sources.values()),
+                batch_source_count=len(grounding_sources),
+            )
             logger.info(
                 "street_story_live_web_search story_id=%s facts=%s sources=%s",
                 story_id,
@@ -1240,8 +1308,8 @@ class StreetStoryLiveAdapter:
     def _save_research_facts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         story_id = session.resource_id
         raw_facts = args.get("facts")
-        if not isinstance(raw_facts, list) or not 1 <= len(raw_facts) <= 20:
-            raise ConflictError("live_research_facts_invalid", "Provide between 1 and 20 facts from the latest search evidence")
+        if not isinstance(raw_facts, list) or not 1 <= len(raw_facts) <= 32:
+            raise ConflictError("live_research_facts_invalid", "Provide between 1 and 32 facts from the latest search evidence")
 
         with self.service.store.tx() as db:
             story = self.service._story_row(db, story_id)
@@ -1307,8 +1375,7 @@ class StreetStoryLiveAdapter:
                 if item["selected"] and item["evidence_supported"]
             }
 
-            normalized: list[dict[str, Any]] = []
-            seen_ids: set[str] = set()
+            normalized_candidates: list[dict[str, Any]] = []
             for item in raw_facts:
                 if not isinstance(item, dict):
                     raise ConflictError("live_research_fact_invalid", "Each fact must be an object")
@@ -1340,11 +1407,8 @@ class StreetStoryLiveAdapter:
                         refs.append(source_ref)
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
                 fact_id = existing_fact_id if existing_fact_id in known_by_id else model_fact_id(claim_key, text)
-                if fact_id in seen_ids:
-                    continue
-                seen_ids.add(fact_id)
                 selected = bool(item.get("selected")) and prior_decisions.get(fact_id, True)
-                normalized.append(
+                normalized_candidates.append(
                     {
                         "fact_id": fact_id,
                         "claim_key": claim_key,
@@ -1356,6 +1420,7 @@ class StreetStoryLiveAdapter:
                     }
                 )
 
+            normalized = merge_model_fact_inventory(normalized_candidates)
             if not normalized:
                 raise ConflictError("live_research_facts_empty", "No valid facts were supplied")
 
@@ -1413,6 +1478,19 @@ class StreetStoryLiveAdapter:
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "save_research_facts", args, result)
+            all_research_sources = [
+                source for source in (research.get("grounding_sources") or [])
+                if isinstance(source, dict)
+            ]
+            self._emit_research_progress(
+                session,
+                stage="facts",
+                active=False,
+                query=str(latest_search.get("query") or ""),
+                source_count=len(all_research_sources),
+                fact_count=len(inventory),
+                sources=all_research_sources,
+            )
             return result
 
     def _record_fact_conflicts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
