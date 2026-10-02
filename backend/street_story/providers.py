@@ -358,27 +358,60 @@ class _DuckDuckGoResultParser(HTMLParser):
 
 
 class GeminiClient:
-    FACT_CONFLICT_SCHEMA = {
+    CURATED_FACT_SCHEMA = {
         "type": "object",
         "properties": {
-            "conflicts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "pair_id": {"type": "string"},
-                        "relation": {"type": "string"},
-                        "suggested_resolution": {"type": "string"},
-                        "confidence": {"type": "number"},
-                        "rationale": {"type": "string"},
-                    },
-                    "required": [
-                        "pair_id", "relation", "suggested_resolution", "confidence", "rationale",
-                    ],
-                },
+            "semantic_key": {"type": "string"},
+            "text": {"type": "string"},
+            "disposition": {
+                "type": "string",
+                "enum": ["new", "merge", "seen_before", "update"],
             },
+            "inherits_keys": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "number"},
+            "source_urls": {"type": "array", "items": {"type": "string"}},
+            "rationale": {"type": "string"},
         },
-        "required": ["conflicts"],
+        "required": [
+            "semantic_key", "text", "disposition", "inherits_keys",
+            "confidence", "source_urls", "rationale",
+        ],
+    }
+
+    CURATED_CONFLICT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "left_key": {"type": "string"},
+            "right_key": {"type": "string"},
+            "relation": {
+                "type": "string",
+                "enum": [
+                    "contradiction", "scope_difference", "temporal_sequence",
+                    "source_disagreement", "uncertain",
+                ],
+            },
+            "suggested_resolution": {
+                "type": "string",
+                "enum": ["prefer_left", "prefer_right", "both_valid", "unresolved"],
+            },
+            "confidence": {"type": "number"},
+            "rationale": {"type": "string"},
+            "needs_more_search": {"type": "boolean"},
+            "search_query": {"type": "string"},
+        },
+        "required": [
+            "left_key", "right_key", "relation", "suggested_resolution",
+            "confidence", "rationale", "needs_more_search", "search_query",
+        ],
+    }
+
+    FACT_CURATION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "facts": {"type": "array", "items": CURATED_FACT_SCHEMA},
+            "conflicts": {"type": "array", "items": CURATED_CONFLICT_SCHEMA},
+        },
+        "required": ["facts", "conflicts"],
     }
 
     WEB_SEARCH_SCHEMA = {
@@ -386,13 +419,10 @@ class GeminiClient:
         "properties": {
             "summary": {"type": "string"},
             "official_source_urls": {"type": "array", "items": {"type": "string"}},
-            "facts": {"type": "array", "items": {"type": "object", "properties": {
-                "text": {"type": "string"},
-                "confidence": {"type": "number"},
-                "source_urls": {"type": "array", "items": {"type": "string"}},
-            }, "required": ["text", "confidence", "source_urls"]}},
+            "facts": {"type": "array", "items": CURATED_FACT_SCHEMA},
+            "conflicts": {"type": "array", "items": CURATED_CONFLICT_SCHEMA},
         },
-        "required": ["summary", "official_source_urls", "facts"],
+        "required": ["summary", "official_source_urls", "facts", "conflicts"],
     }
 
     FACT_SCHEMA = {
@@ -401,12 +431,10 @@ class GeminiClient:
             "place_name": {"type": "string"},
             "summary": {"type": "string"},
             "draft_text": {"type": "string"},
-            "facts": {"type": "array", "items": {"type": "object", "properties": {
-                "text": {"type": "string"}, "confidence": {"type": "number"},
-                "source_urls": {"type": "array", "items": {"type": "string"}},
-            }, "required": ["text", "confidence", "source_urls"]}},
+            "facts": {"type": "array", "items": CURATED_FACT_SCHEMA},
+            "conflicts": {"type": "array", "items": CURATED_CONFLICT_SCHEMA},
         },
-        "required": ["place_name", "summary", "draft_text", "facts"],
+        "required": ["place_name", "summary", "draft_text", "facts", "conflicts"],
     }
 
     def __init__(self, settings: Settings, store: Store | None = None):
