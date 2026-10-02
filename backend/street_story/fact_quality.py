@@ -68,7 +68,9 @@ _KINDS = (
     ("ownership", re.compile(r"(?:передан\w*|вош[её]л\w*|стал\w*\s+частью|принадлеж\w*|одно\s+из\s+зданий|филиал\w*)", re.IGNORECASE)),
     ("visit", re.compile(r"(?:посетил\w*|посещал\w*|прибыл\w*|присутствовал\w*)", re.IGNORECASE)),
     ("name", re.compile(r"(?:имел\w*\s+назван\w*|называл\w*)", re.IGNORECASE)),
-    ("use", re.compile(r"(?:использовал\w*|размеща\w*|назначени\w*|служил\w*|перестал\w*|работает\s+экспозици\w*)", re.IGNORECASE)),
+    ("use", re.compile(r"(?:использовал\w*|размеща\w*|назначени\w*|служил\w*|перестал\w*|потерял\w*\s+оборонительн\w*|работает\s+экспозици\w*)", re.IGNORECASE)),
+    ("status", re.compile(r"(?:символ\w*|является\s+памятник\w*|получил\w*\s+статус)", re.IGNORECASE)),
+    ("existence", re.compile(r"(?:существовал\w*)", re.IGNORECASE)),
     ("opening", re.compile(r"(?:откры\w*)", re.IGNORECASE)),
     ("location", re.compile(r"(?:наход\w*|располож\w*)", re.IGNORECASE)),
     ("structure", re.compile(r"(?:имеет\b|имеют\b|состоит\b|состоят\b)", re.IGNORECASE)),
@@ -154,6 +156,9 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
         return None, None
     if not (_ROLE.search(text) or _SIGNAL.search(text)):
         return None, None
+    text = re.sub(r"^(?:а|однако)\s+", "", text, flags=re.IGNORECASE)
+    if text and text[0].isalpha():
+        text = text[0].upper() + text[1:]
     return text, _candidate_score(text, 0)
 
 
@@ -165,7 +170,22 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
     prior_year: str | None = None
     for sentence in _SENTENCE_SPLIT.split(original):
         years = _YEAR.findall(sentence)
-        for clause in _CLAUSE_SPLIT.split(sentence):
+        clauses = _CLAUSE_SPLIT.split(sentence)
+        first_signal = _SIGNAL.search(clauses[0]) or _ROLE.search(clauses[0])
+        subject = clauses[0][:first_signal.start()].strip(" ,:;—-") if first_signal else ""
+        if not subject or len(subject) > 80 or _YEAR.search(subject):
+            subject = ""
+        for clause_index, clause in enumerate(clauses):
+            if clause_index > 0 and re.match(r"^а\s+вместо\s+них\b", clause, re.IGNORECASE):
+                clause = re.sub(r"^а\s+вместо\s+них\s+", "", clause, flags=re.IGNORECASE)
+                if subject and re.search(r"\bновые\.?$", clause, re.IGNORECASE):
+                    clause = re.sub(
+                        r"\bновые(\.)?$",
+                        lambda match: f"новые {subject}{match.group(1) or ''}",
+                        clause,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
             text, _score = _normalize_candidate(clause, prior_year)
             if text and text not in result:
                 result.append(text)
