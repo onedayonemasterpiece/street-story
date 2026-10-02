@@ -30,7 +30,7 @@ _ROLE = re.compile(
     re.IGNORECASE,
 )
 _SIGNAL = re.compile(
-    r"(?:постро\w*|строительств\w*|возвед\w*|сооруж\w*|основан\w*|откры\w*|"
+    r"(?:постро\w*|строительств\w*|залож\w*|заверш\w*|возвед\w*|сооруж\w*|основан\w*|откры\w*|"
     r"реконстру\w*|реставр\w*|восстанов\w*|снес\w*|демонтир\w*|"
     r"разруш\w*|передан\w*|вош[её]л\w*|стал\w*\s+частью|"
     r"использовал\w*|размещал\w*|посетил\w*|посещал\w*|"
@@ -41,7 +41,7 @@ _SIGNAL = re.compile(
     re.IGNORECASE,
 )
 _KINDS = (
-    ("construction", re.compile(r"(?:постро\w*|строительств\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
+    ("construction", re.compile(r"(?:постро\w*|строительств\w*|залож\w*|заверш\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
     ("architect", re.compile(r"(?:архитектор|автор\s+проекта|спроектир\w*)", re.IGNORECASE)),
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
