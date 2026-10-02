@@ -396,6 +396,8 @@ def resolve_fact_conflict(
         )
         if not same:
             changed = True
+            evidence = json.loads(row["evidence_json"] or "{}")
+            evidence["mira_arbitration_confidence"] = confidence
             db.execute(
                 """
                 UPDATE fact_conflicts
@@ -410,6 +412,14 @@ def resolve_fact_conflict(
                     confidence,
                     arbitrated_by[:120],
                     service.store.now(),
+                    story_id,
+                    conflict_id,
+                ),
+            )
+            db.execute(
+                "UPDATE fact_conflicts SET evidence_json=? WHERE story_id=? AND conflict_id=?",
+                (
+                    json.dumps(evidence, ensure_ascii=False, separators=(",", ":")),
                     story_id,
                     conflict_id,
                 ),
