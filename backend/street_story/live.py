@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -1029,6 +1030,17 @@ class StreetStoryLiveAdapter:
             )
 
         inventory = merge_fact_inventory([*known_facts, *normalized])
+        detected_conflicts = await analyze_fact_conflicts(
+            self.service,
+            story_id,
+            str(identity.get("candidate_id") or "") or None,
+            [*known_facts, *normalized],
+            context={
+                "place_name": story.get("place_name"),
+                "source": "live_search",
+                "query": query[:500],
+            },
+        )
 
         with self.service.store.tx() as db:
             story_row = self.service._story_row(db, story_id)
@@ -1079,6 +1091,7 @@ class StreetStoryLiveAdapter:
                 "summary": str(grounded.payload.get("summary") or "")[:2000],
                 "facts": normalized,
                 "sources": grounded.grounding_sources[:20],
+                "fact_conflicts": detected_conflicts[:12],
                 "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
             }
             self._store_command(db, story_id, command_id, "search_web", args, result)
@@ -1089,6 +1102,96 @@ class StreetStoryLiveAdapter:
                 len(grounded.grounding_sources),
             )
             return result
+
+    def _resolve_fact_conflict(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        story_id = session.resource_id
+        conflict_id = _bounded_text(args.get("conflict_id"), 120, required=True)
+        resolution = _bounded_text(args.get("resolution"), 40, required=True)
+        reason = _bounded_text(args.get("reason"), 1000, required=True)
+        if resolution not in {"prefer_left", "prefer_right", "both_valid", "unresolved"}:
+            raise ConflictError("fact_conflict_resolution_invalid", "Unknown fact conflict resolution")
+        try:
+            confidence = float(args.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if not math.isfinite(confidence) or confidence < 0.0 or confidence > 1.0:
+            raise ConflictError("fact_conflict_confidence_invalid", "Confidence must be between 0 and 1")
+
+        with self.service.store.tx() as db:
+            row = db.execute(
+                "SELECT * FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
+                (story_id, conflict_id),
+            ).fetchone()
+            if row is None:
+                raise ConflictError("fact_conflict_unknown", "Conflict is not present in the current topic")
+            final_fact_id = None
+            if resolution == "prefer_left":
+                final_fact_id = row["left_fact_id"]
+            elif resolution == "prefer_right":
+                final_fact_id = row["right_fact_id"]
+            evidence = json.loads(row["evidence_json"] or "{}")
+            evidence["mira_arbitration_confidence"] = confidence
+            now = self.service.store.now()
+            db.execute(
+                "UPDATE fact_conflicts SET final_resolution=?,final_fact_id=?,arbitration_reason=?,"
+                "arbitrated_by='mira',evidence_json=?,last_seen_at=? WHERE story_id=? AND conflict_id=?",
+                (
+                    resolution,
+                    final_fact_id,
+                    reason,
+                    canonical(evidence),
+                    now,
+                    story_id,
+                    conflict_id,
+                ),
+            )
+            story = self.service._story_row(db, story_id)
+            research = json.loads(story["research_json"] or "{}")
+            conflicts = conflict_rows(db, story_id, limit=40)
+            research["fact_conflicts"] = conflicts
+            research["fact_conflict_stats"] = {
+                "total_detected": db.execute(
+                    "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=?", (story_id,)
+                ).fetchone()[0],
+                "open": db.execute(
+                    "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? "
+                    "AND (final_resolution IS NULL OR final_resolution='unresolved')",
+                    (story_id,),
+                ).fetchone()[0],
+                "mira_arbitrated": db.execute(
+                    "SELECT COUNT(*) FROM fact_conflicts WHERE story_id=? AND arbitrated_by='mira'",
+                    (story_id,),
+                ).fetchone()[0],
+            }
+            db.execute(
+                "UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?",
+                (canonical(research), now, story_id),
+            )
+            result = {
+                "conflict_id": conflict_id,
+                "resolution": resolution,
+                "preferred_fact_id": final_fact_id,
+                "reason": reason,
+                "confidence": confidence,
+                "fact_conflicts": conflicts[:12],
+            }
+            self._store_command(db, story_id, command_id, "resolve_fact_conflict", args, result)
+
+        record_live_diagnostic(
+            self.service,
+            story_id,
+            session.id,
+            "fact_conflict",
+            "fact_conflict_arbitrated",
+            {
+                "conflict_id": conflict_id,
+                "resolution": resolution,
+                "confidence": confidence,
+                "preferred_fact_id": final_fact_id,
+                "arbitrated_by": "mira",
+            },
+        )
+        return result
 
     def _select_facts(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         ids = [str(v) for v in args.get("fact_ids", [])]
