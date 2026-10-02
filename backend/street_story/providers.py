@@ -13,6 +13,7 @@ import httpx
 
 from .config import Settings, reveal
 from .db import Store
+from .fact_conflicts import normalize_conflict_records
 
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
@@ -357,6 +358,29 @@ class _DuckDuckGoResultParser(HTMLParser):
 
 
 class GeminiClient:
+    FACT_CONFLICT_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "conflicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "pair_id": {"type": "string"},
+                        "relation": {"type": "string"},
+                        "suggested_resolution": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": [
+                        "pair_id", "relation", "suggested_resolution", "confidence", "rationale",
+                    ],
+                },
+            },
+        },
+        "required": ["conflicts"],
+    }
+
     WEB_SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
@@ -584,6 +608,73 @@ class GeminiClient:
             if own:
                 await client.aclose()
 
+    async def detect_fact_conflicts(
+        self,
+        pairs: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Classify plausible contradictions without turning source count into truth."""
+        if not pairs:
+            return []
+        from google.genai import types
+
+        prompt = (
+            "Ты внутренний арбитр фактов Street Story. Перед тобой пары уже извлечённых атомарных "
+            "утверждений об одном POI. Для каждой пары реши, есть ли реальное противоречие. "
+            "relation: none — утверждения совместимы/эквивалентны; contradiction — одновременно истинными "
+            "быть не могут; scope_difference — отличаются период, объект, смысл или область применимости; "
+            "temporal_sequence — описывают разные этапы времени; source_disagreement — источники расходятся, "
+            "но сам конфликт без дополнительной проверки не разрешён; uncertain — данных недостаточно. "
+            "suggested_resolution: prefer_left, prefer_right, both_valid или unresolved. "
+            "Количество сайтов НЕ является голосованием за истину: массово тиражируемая ошибка остаётся ошибкой. "
+            "Официальный источник полезнее для текущего статуса учреждения/владельца, но не автоматически истиннее "
+            "для любого исторического тезиса. Смотри на конкретику, дату, первичность и приведённые supports. "
+            "Если доказательств недостаточно — unresolved. Не выдумывай новые факты и источники. "
+            "Верни запись для каждой входной pair_id.\n\n"
+            "Context: " + json.dumps(context or {}, ensure_ascii=False)[:4000] + "\n"
+            "Pairs: " + json.dumps(pairs, ensure_ascii=False)[:42000]
+        )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=GeminiClient.FACT_CONFLICT_SCHEMA,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(
+                key,
+                timeout,
+                [prompt],
+                config,
+                operation="grounded_research",
+                model=model,
+                quota=quota,
+            )
+            try:
+                payload = json.loads(response.text or "{}")
+                if not isinstance(payload, dict) or not isinstance(payload.get("conflicts"), list):
+                    raise ValueError
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise MalformedProviderResponse("gemini:malformed_fact_conflicts") from None
+            return normalize_conflict_records(pairs, payload)
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_fact_conflict_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
+
     async def search_web(
         self,
         query: str,
@@ -653,18 +744,36 @@ class GeminiClient:
             except (ValueError, TypeError):
                 raise MalformedProviderResponse("gemini:malformed_web_search") from None
 
-            sources: list[dict[str, str]] = []
+            sources: list[dict[str, Any]] = []
+            supports_by_url: dict[str, list[dict[str, str]]] = {}
             for candidate in getattr(response, "candidates", []) or []:
                 metadata = getattr(candidate, "grounding_metadata", None)
+                local_sources: list[dict[str, Any]] = []
                 for chunk in getattr(metadata, "grounding_chunks", []) or []:
                     web = getattr(chunk, "web", None)
                     uri = getattr(web, "uri", None)
-                    if isinstance(uri, str) and uri.startswith("https://"):
-                        sources.append({
-                            "type": "web",
-                            "title": str(getattr(web, "title", "") or uri),
-                            "url": uri,
-                        })
+                    source = {
+                        "type": "web",
+                        "title": str(getattr(web, "title", "") or uri or ""),
+                        "url": uri if isinstance(uri, str) and uri.startswith("https://") else "",
+                    }
+                    local_sources.append(source)
+                    if source["url"]:
+                        sources.append(source)
+                for support in getattr(metadata, "grounding_supports", []) or []:
+                    segment = getattr(support, "segment", None)
+                    text = str(getattr(segment, "text", "") or "").strip()
+                    if not text:
+                        continue
+                    for index in getattr(support, "grounding_chunk_indices", []) or []:
+                        if isinstance(index, int) and 0 <= index < len(local_sources):
+                            url = str(local_sources[index].get("url") or "")
+                            if url:
+                                supports_by_url.setdefault(url, []).append({
+                                    "kind": "google_grounding",
+                                    "source_url": url,
+                                    "text": text[:600],
+                                })
             unique_sources = list({source["url"]: source for source in sources}.values())
             seen = {source["url"].rstrip("/") for source in unique_sources}
             blocked_official_hosts = {
@@ -680,7 +789,15 @@ class GeminiClient:
             payload["official_source_urls"] = official_urls
             official_set = set(official_urls)
             decorated = [
-                {**source, "type": "official" if source["url"].rstrip("/") in official_set else source["type"]}
+                {
+                    **source,
+                    "type": "official" if source["url"].rstrip("/") in official_set else source["type"],
+                    **(
+                        {"supports": supports_by_url.get(source["url"], [])[:4]}
+                        if supports_by_url.get(source["url"])
+                        else {}
+                    ),
+                }
                 for source in unique_sources
             ]
             return GroundedResearch(payload=payload, grounding_sources=decorated)

@@ -6,11 +6,22 @@ import re
 from typing import Any
 
 _SPACE = re.compile(r"\s+")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+|\s*;\s*")
 _YEAR = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})\b")
 _BAD = re.compile(
-    r"(?:интересн\w*\s+факт|истори\w*\s+создани|"
+    r"(?:интересн\w*\s+факт|истори\w*\s+создани|смотрите\s+также|"
     r"\b(?:copyright|license|лицензи\w*|фотограф\w*|автор\s+фото|"
-    r"фото\s*[:—-]|изображени\w*|читать\s+далее|подробнее|вечером)\b)",
+    r"фото\s*[:—-]|изображени\w*|читать\s+далее|подробнее|вечером|"
+    r"как\s+добраться|цены\s+в|экскурси\w*)\b)",
+    re.IGNORECASE,
+)
+_PERSONAL = re.compile(
+    r"\b(?:я|мы|мне|нам|побывал\w*|посетил[аи]?\s+я|советую|рекомендую|отзыв\w*)\b",
+    re.IGNORECASE,
+)
+_HEADING = re.compile(
+    r"^(?:история(?:\s+создания)?|ранняя\s+история|интересные\s+факты|"
+    r"полный\s+гид|туры\s+на)\b",
     re.IGNORECASE,
 )
 _ROLE = re.compile(
@@ -23,7 +34,9 @@ _SIGNAL = re.compile(
     r"реконстру\w*|реставр\w*|восстанов\w*|снес\w*|демонтир\w*|"
     r"разруш\w*|передан\w*|вош[её]л\w*|стал\w*\s+частью|"
     r"использовал\w*|размещал\w*|посетил\w*|посещал\w*|"
-    r"спроектир\w*|является\s+частью|принадлеж\w*|наход\w*|располож\w*)",
+    r"спроектир\w*|является\s+частью|принадлеж\w*|наход\w*|располож\w*|"
+    r"потерял\w*\s+оборонительн\w*|перестал\w*|служил\w*|"
+    r"имеет\b|имеют\b|состоит\b|состоят\b)",
     re.IGNORECASE,
 )
 _KINDS = (
@@ -34,9 +47,10 @@ _KINDS = (
     ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*)", re.IGNORECASE)),
     ("ownership", re.compile(r"(?:передан\w*|вош[её]л\w*|стал\w*\s+частью|принадлеж\w*)", re.IGNORECASE)),
     ("visit", re.compile(r"(?:посетил\w*|посещал\w*)", re.IGNORECASE)),
-    ("use", re.compile(r"(?:использовал\w*|размещал\w*|назначени\w*)", re.IGNORECASE)),
+    ("use", re.compile(r"(?:использовал\w*|размещал\w*|назначени\w*|служил\w*|перестал\w*)", re.IGNORECASE)),
     ("opening", re.compile(r"(?:откры\w*)", re.IGNORECASE)),
     ("location", re.compile(r"(?:наход\w*|располож\w*)", re.IGNORECASE)),
+    ("structure", re.compile(r"(?:имеет\b|имеют\b|состоит\b|состоят\b)", re.IGNORECASE)),
 )
 _STOP = {
     "котор", "этого", "этой", "этот", "была", "были", "было", "стал", "стала",
@@ -56,15 +70,38 @@ def compact_fact_text(raw: str, limit: int = 180) -> str:
     return text[:end].rstrip(" ,;:-") + "…"
 
 
+def _candidate_score(text: str, index: int) -> tuple[int, int, int]:
+    score = 0
+    if _ROLE.search(text):
+        score += 5
+    if _SIGNAL.search(text):
+        score += 4
+    if _YEAR.search(text):
+        score += 3
+    if len(text) <= 140:
+        score += 1
+    return score, -index, -len(text)
+
+
 def atomic_fact_text(raw: str) -> str | None:
-    text = compact_fact_text(raw)
-    if len(text) < 12 or _BAD.search(text):
+    original = _SPACE.sub(" ", str(raw or "")).strip(" \t\r\n-•")
+    if len(original) < 12:
         return None
-    if "http://" in text.lower() or "https://" in text.lower():
+    candidates: list[tuple[tuple[int, int, int], str]] = []
+    for index, sentence in enumerate(_SENTENCE_SPLIT.split(original)):
+        text = compact_fact_text(sentence)
+        if len(text) < 12 or len(text) > 181:
+            continue
+        if _HEADING.search(text) or _BAD.search(text) or _PERSONAL.search(text):
+            continue
+        if "http://" in text.lower() or "https://" in text.lower():
+            continue
+        if not (_YEAR.search(text) or _ROLE.search(text) or _SIGNAL.search(text)):
+            continue
+        candidates.append((_candidate_score(text, index), text))
+    if not candidates:
         return None
-    if not (_YEAR.search(text) or _ROLE.search(text) or _SIGNAL.search(text)):
-        return None
-    return text
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def fact_kind(text: str) -> str:

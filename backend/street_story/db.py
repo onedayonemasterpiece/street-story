@@ -144,6 +144,49 @@ CREATE TABLE IF NOT EXISTS research_checkpoints(
  stage TEXT NOT NULL, value_json TEXT NOT NULL, created_at REAL NOT NULL,
  PRIMARY KEY(job_id,stage)
 );
+CREATE TABLE IF NOT EXISTS fact_conflicts(
+ story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+ conflict_id TEXT NOT NULL,
+ poi_key TEXT,
+ left_fact_id TEXT NOT NULL,
+ right_fact_id TEXT NOT NULL,
+ left_text TEXT NOT NULL,
+ right_text TEXT NOT NULL,
+ relation TEXT NOT NULL,
+ detector_confidence REAL NOT NULL,
+ suggested_resolution TEXT NOT NULL,
+ suggested_fact_id TEXT,
+ detector_rationale TEXT NOT NULL,
+ final_resolution TEXT,
+ final_fact_id TEXT,
+ arbitration_reason TEXT,
+ arbitration_confidence REAL,
+ arbitrated_by TEXT,
+ evidence_json TEXT NOT NULL,
+ times_seen INTEGER NOT NULL DEFAULT 1,
+ first_seen_at REAL NOT NULL,
+ last_seen_at REAL NOT NULL,
+ PRIMARY KEY(story_id,conflict_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_conflicts_story_open
+ ON fact_conflicts(story_id,final_resolution,last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fact_conflicts_poi_relation
+ ON fact_conflicts(poi_key,relation,last_seen_at DESC);
+CREATE TABLE IF NOT EXISTS fact_conflict_scans(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+ poi_key TEXT,
+ detector TEXT NOT NULL,
+ status TEXT NOT NULL,
+ pair_count INTEGER NOT NULL,
+ detected_count INTEGER NOT NULL,
+ error_type TEXT,
+ created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_story_time
+ ON fact_conflict_scans(story_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_poi_time
+ ON fact_conflict_scans(poi_key,created_at DESC);
 """
 
 

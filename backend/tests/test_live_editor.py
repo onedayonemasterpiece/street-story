@@ -42,6 +42,7 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "resolve_place" in names
     assert "confirm_place" in names
     assert "search_web" in names
+    assert "resolve_fact_conflict" in names
     assert "start_research" not in names
 
 
@@ -357,6 +358,89 @@ async def test_live_web_search_does_not_reselect_a_previously_rejected_fact(tmp_
     assert len(rows) == 1
     assert rows[0]["text"] == "Бранденбургские ворота находятся в Калининграде."
     assert rows[0]["selected"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mira_arbitration_is_persisted_without_changing_fact_selection(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    now = svc.store.now()
+    with svc.store.tx() as db:
+        db.execute(
+            """
+            INSERT INTO fact_conflicts(
+              story_id,conflict_id,poi_key,left_fact_id,right_fact_id,left_text,right_text,
+              relation,detector_confidence,suggested_resolution,suggested_fact_id,
+              detector_rationale,final_resolution,final_fact_id,arbitration_reason,
+              arbitration_confidence,arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,1,?,?)
+            """,
+            (
+                story_id,
+                "conflict_test",
+                "wiki:77",
+                "fact_left",
+                "fact_right",
+                "Построены в 1843 году.",
+                "Построены в 1845 году.",
+                "contradiction",
+                .91,
+                "unresolved",
+                None,
+                "Источники расходятся по дате.",
+                json.dumps({"left": {"source_count": 3}, "right": {"source_count": 1}}),
+                now,
+                now,
+            ),
+        )
+        for fact_id, text in (
+            ("fact_left", "Построены в 1843 году."),
+            ("fact_right", "Построены в 1845 году."),
+        ):
+            db.execute(
+                "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (story_id, fact_id, text, .9, 1, 1, "[]"),
+            )
+
+    result = await adapter.execute_tool(
+        session,
+        {
+            "name": "resolve_fact_conflict",
+            "id": "conflict-resolution-1",
+            "args": {
+                "conflict_id": "conflict_test",
+                "resolution": "prefer_left",
+                "reason": "Первичный источник датирует завершение 1843 годом.",
+                "confidence": .84,
+            },
+        },
+    )
+
+    assert result["resolution"] == "prefer_left"
+    assert result["preferred_fact_id"] == "fact_left"
+    with svc.store.connection() as db:
+        conflict = db.execute(
+            "SELECT final_resolution,final_fact_id,arbitration_confidence,arbitrated_by,evidence_json "
+            "FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
+            (story_id, "conflict_test"),
+        ).fetchone()
+        selected = list(db.execute(
+            "SELECT fact_id,selected FROM facts WHERE story_id=? ORDER BY fact_id",
+            (story_id,),
+        ))
+        telemetry = db.execute(
+            "SELECT COUNT(*) FROM live_diagnostics WHERE story_id=? AND source='fact_conflict' "
+            "AND event_type='fact_conflict_arbitrated'",
+            (story_id,),
+        ).fetchone()[0]
+    assert conflict["final_resolution"] == "prefer_left"
+    assert conflict["final_fact_id"] == "fact_left"
+    assert conflict["arbitrated_by"] == "mira"
+    assert conflict["arbitration_confidence"] == .84
+    assert [bool(row["selected"]) for row in selected] == [True, True]
+    assert telemetry == 1
 
 @pytest.mark.asyncio
 async def test_literal_span_is_protected_and_undo_restores_previous_text(tmp_path):
