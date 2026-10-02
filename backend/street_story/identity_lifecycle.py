@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from .identity_telemetry import record_identity_event
+from .camera_hints import read_camera_hints, metadata_summary, annotate_camera_alignment
 from .photo_metadata import inspect_gps, pixel_digest
 from .service import ConflictError, canonical, digest
 
 ACCEPTED = {'match', 'owner_confirmed'}
 PROTECTED = {'scheduling', 'scheduled', 'published'}
-POLICY = 'nearest_visual_batches_v1'
+POLICY = 'nearest_visual_batches_camera_v2'
 
 
 def distance(candidate: dict[str, Any]) -> float:
@@ -95,6 +96,15 @@ class IdentityLifecycleMixin:
             record_identity_event(self, story_id, 'identity_started', {'generation': generation, 'job_id': job_id, 'policy': POLICY})
             lat, lon = story.get('latitude'), story.get('longitude')
             metadata = inspect_gps(Path(story['photo_path']))
+            binding = prior.get('photo_camera_hints') or {}
+            recovered_hints = (binding.get('photo_sha256') == story['photo_sha256']
+                and binding.get('source') == 'selected_original_exif'
+                and (prior.get('location_provenance') or {}).get('kind') == 'selected_original_exif'
+                and (prior.get('location_provenance') or {}).get('same_pixels_verified') is True)
+            hints = binding['metadata'] if recovered_hints else read_camera_hints(Path(story['photo_path']))
+            if not recovered_hints:
+                binding = {'photo_sha256': story['photo_sha256'], 'source': 'source_photo_exif', 'metadata': hints}
+            story['_camera_hints'] = hints
             if lat is None or lon is None:
                 lat, lon = metadata['latitude'], metadata['longitude']
             valid = lat is not None and lon is not None and math.isfinite(float(lat)) and math.isfinite(float(lon)) and -90 <= float(lat) <= 90 and -180 <= float(lon) <= 180
@@ -103,6 +113,12 @@ class IdentityLifecycleMixin:
                 'photo_gps_status': metadata['status'], 'coordinates_usable': bool(valid),
                 'source': 'client_photo_metadata' if story.get('latitude') is not None else 'server_photo_exif',
             })
+            position_verified = bool(valid and (recovered_hints or (
+                metadata['status'] == 'gps_present'
+                and abs(float(lat) - metadata['latitude']) <= 0.00001
+                and abs(float(lon) - metadata['longitude']) <= 0.00001)))
+            record_identity_event(self, story_id, 'identity_camera_metadata', {
+                'generation': generation, 'position_verified': position_verified, **metadata_summary(hints)})
             osm, wikipedia, candidates = {}, [], []
             if not valid:
                 raw = {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
@@ -128,6 +144,8 @@ class IdentityLifecycleMixin:
                     excluded = set(prior.get('identity_rejected_ids') or [])
                     candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
                     candidates.sort(key=lambda item: (distance(item), str(item.get('candidate_id'))))
+                    candidates = annotate_camera_alignment(candidates, osm, wikipedia, lat, lon, hints,
+                                                           position_verified=position_verified)
                     record_identity_event(self, story_id, 'identity_shortlist', {'generation': generation,
                         'candidate_count': len(candidates), 'candidate_ids': [item.get('candidate_id') for item in candidates],
                         'distances_m': [round(distance(item), 1) if math.isfinite(distance(item)) else None for item in candidates],
@@ -157,7 +175,7 @@ class IdentityLifecycleMixin:
                 if (int(latest.get('identity_generation') or 0) != generation or current['photo_sha256'] != story['photo_sha256']
                     or (latest.get('visual_identity') or {}).get('status') == 'owner_confirmed'):
                     return self._story_repr(db, current)
-                latest.update({'visual_identity': identity, 'identity_attempted_generation': generation, 'osm': osm, 'wikipedia': wikipedia})
+                latest.update({'visual_identity': identity, 'identity_attempted_generation': generation, 'osm': osm, 'wikipedia': wikipedia, 'photo_camera_hints': binding})
                 db.execute('UPDATE stories SET latitude=COALESCE(latitude,?),longitude=COALESCE(longitude,?),'
                     'state=?,place_name=?,research_json=?,error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?',
                     (float(lat) if valid else None, float(lon) if valid else None, 'identity_ready' if matched else 'needs_review',
@@ -217,6 +235,8 @@ class IdentityLifecycleMixin:
             same = False
         if not same:
             raise ConflictError('photo_recovery_mismatch', 'Выбрано другое изображение. Для этой темы нужен оригинал того же фото.')
+        camera_binding = {'photo_sha256': expected_photo_sha256, 'source': 'selected_original_exif',
+                          'metadata': read_camera_hints(original)}
         with self.store.tx() as db:
             row = self._story_row(db, story_id)
             prior = json.loads(row['research_json'] or '{}')
@@ -227,9 +247,12 @@ class IdentityLifecycleMixin:
             if row['latitude'] is not None and row['longitude'] is not None:
                 if abs(row['latitude'] - gps['latitude']) > 0.00001 or abs(row['longitude'] - gps['longitude']) > 0.00001:
                     raise ConflictError('photo_location_conflict', 'Геометки отличаются от уже сохранённых.')
-                return self._story_repr(db, row)
+                # Successful replay may enrich optional metadata, never restart identity.
+                prior['photo_camera_hints'] = camera_binding
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
+                return self._story_repr(db, self._story_row(db, story_id))
             generation = int(prior.get('identity_generation') or 0) + 1
-            prior.update({'identity_generation': generation, 'location_provenance': {'kind': 'selected_original_exif', 'same_pixels_verified': True}})
+            prior.update({'identity_generation': generation, 'photo_camera_hints': camera_binding, 'location_provenance': {'kind': 'selected_original_exif', 'same_pixels_verified': True}})
             prior.pop('visual_identity', None)
             prior.pop('osm', None)
             prior.pop('wikipedia', None)

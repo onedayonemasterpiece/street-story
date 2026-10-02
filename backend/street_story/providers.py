@@ -231,7 +231,7 @@ class WikipediaClient:
         self.endpoint = "https://ru.wikipedia.org/w/api.php"
 
     async def nearby(self, lat: float, lon: float) -> list[dict[str, Any]]:
-        key = _stable_cache_key("wikipedia-pageimages-distance-v3", [round(lat, 6), round(lon, 6)])
+        key = _stable_cache_key("wikipedia-pageimages-position-v4", [round(lat, 6), round(lon, 6)])
         cached = self.store.cache_get(key)
         if cached is not None:
             return cached
@@ -266,6 +266,8 @@ class WikipediaClient:
                 "url": page.get("fullurl") or f"https://ru.wikipedia.org/wiki/{quote(page.get('title', '').replace(' ', '_'))}",
                 "image_url": (page.get("original") or {}).get("source"),
                 "thumbnail_url": (page.get("thumbnail") or {}).get("source"),
+                "lat": hit_by_page.get(str(page.get("pageid")), {}).get("lat"),
+                "lon": hit_by_page.get(str(page.get("pageid")), {}).get("lon"),
                 "distance_m": (
                     float(hit_by_page.get(str(page.get("pageid")), {}).get("dist"))
                     if hit_by_page.get(str(page.get("pageid")), {}).get("dist") is not None

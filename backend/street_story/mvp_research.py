@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from .errors import MalformedProviderResponse
+from .camera_hints import reference_order, model_camera_hints
 from .identity_lifecycle import IdentityLifecycleMixin
 from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
@@ -533,8 +534,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             "status=match только при совпадении отличительных деталей с приложенным REFERENCE_IMAGE; "
             "близость GPS или известность названия сами по себе не доказательство. При сомнении uncertain, "
             "при явном несовпадении mismatch. candidate_id обязан быть из списка или пустой строкой. "
+            "Параметры объектива не определяют расстояние до объекта; эквивалентное фокусное и зум не перемножай. "
+            "camera_alignment и угловое отклонение — лишь подсказки по неточному компасу и центру OSM-объекта, "
+            "не основание исключать кандидата или подтверждать совпадение. "
             "Кратко перечисли видимые признаки, на которых основано решение.\n"
-            + json.dumps({"voice_context": transcript, "candidates": candidates}, ensure_ascii=False)
+            + json.dumps({"voice_context": transcript, "candidates": candidates,
+                          "capture_hints": model_camera_hints(story.get('_camera_hints') or {})}, ensure_ascii=False)
         )
         config = types.GenerateContentConfig(
             response_mime_type="application/json", response_json_schema=schema
@@ -547,7 +552,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             output = io.BytesIO()
             image.save(output, format="JPEG", quality=82, optimize=True)
             photo = output.getvalue()
-        reference_images = await self._candidate_reference_images(candidates, limit=reference_limit)
+        reference_candidates = reference_order(candidates)
+        reference_images = await self._candidate_reference_images(reference_candidates, limit=reference_limit)
+        from .identity_telemetry import record_identity_event
+        record_identity_event(self, story['id'], 'identity_reference_priority', {
+            'candidate_ids': [item['candidate_id'] for item in reference_candidates],
+            'priority_applied': reference_candidates != candidates,
+            'reference_ids_sent': [item[0] for item in reference_images],
+            'alignment_available_count': sum('camera_alignment' in item for item in candidates),
+        })
         parts: list[Any] = [
             types.Part.from_bytes(data=photo, mime_type="image/jpeg"),
             prompt,
