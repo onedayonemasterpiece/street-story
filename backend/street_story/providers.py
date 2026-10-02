@@ -13,7 +13,7 @@ import httpx
 
 from .config import Settings, reveal
 from .db import Store
-from .fact_conflicts import normalize_conflict_records
+from .fact_conflicts import conflict_scan_items, normalize_model_conflict_records
 
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
@@ -366,14 +366,16 @@ class GeminiClient:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "pair_id": {"type": "string"},
+                        "left_fact_id": {"type": "string"},
+                        "right_fact_id": {"type": "string"},
                         "relation": {"type": "string"},
                         "suggested_resolution": {"type": "string"},
                         "confidence": {"type": "number"},
                         "rationale": {"type": "string"},
                     },
                     "required": [
-                        "pair_id", "relation", "suggested_resolution", "confidence", "rationale",
+                        "left_fact_id", "right_fact_id", "relation",
+                        "suggested_resolution", "confidence", "rationale",
                     ],
                 },
             },
@@ -387,12 +389,23 @@ class GeminiClient:
             "summary": {"type": "string"},
             "official_source_urls": {"type": "array", "items": {"type": "string"}},
             "facts": {"type": "array", "items": {"type": "object", "properties": {
+                "claim_key": {"type": "string"},
+                "existing_fact_id": {"type": "string"},
                 "text": {"type": "string"},
                 "confidence": {"type": "number"},
                 "source_urls": {"type": "array", "items": {"type": "string"}},
-            }, "required": ["text", "confidence", "source_urls"]}},
+            }, "required": ["claim_key", "text", "confidence", "source_urls"]}},
         },
         "required": ["summary", "official_source_urls", "facts"],
+    }
+
+    COMPOSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "concept": {"type": "string"},
+            "draft_text": {"type": "string"},
+        },
+        "required": ["concept", "draft_text"],
     }
 
     FACT_SCHEMA = {
@@ -610,29 +623,29 @@ class GeminiClient:
 
     async def detect_fact_conflicts(
         self,
-        pairs: list[dict[str, Any]],
+        items: list[dict[str, Any]],
         context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Classify plausible contradictions without turning source count into truth."""
-        if not pairs:
+        """Let the model select and classify actual conflicts across the bounded fact set."""
+        model_items = conflict_scan_items(items)
+        if len(model_items) < 2:
             return []
         from google.genai import types
 
         prompt = (
-            "Ты внутренний арбитр фактов Street Story. Перед тобой пары уже извлечённых атомарных "
-            "утверждений об одном POI. Для каждой пары реши, есть ли реальное противоречие. "
-            "relation: none — утверждения совместимы/эквивалентны; contradiction — одновременно истинными "
-            "быть не могут; scope_difference — отличаются период, объект, смысл или область применимости; "
-            "temporal_sequence — описывают разные этапы времени; source_disagreement — источники расходятся, "
-            "но сам конфликт без дополнительной проверки не разрешён; uncertain — данных недостаточно. "
-            "suggested_resolution: prefer_left, prefer_right, both_valid или unresolved. "
-            "Количество сайтов НЕ является голосованием за истину: массово тиражируемая ошибка остаётся ошибкой. "
-            "Официальный источник полезнее для текущего статуса учреждения/владельца, но не автоматически истиннее "
-            "для любого исторического тезиса. Смотри на конкретику, дату, первичность и приведённые supports. "
-            "Если доказательств недостаточно — unresolved. Не выдумывай новые факты и источники. "
-            "Верни запись для каждой входной pair_id.\n\n"
+            "Ты внутренний арбитр фактов Street Story. Перед тобой ограниченный набор уже извлечённых "
+            "моделью утверждений об одном POI. Самостоятельно найди только те пары, между которыми есть "
+            "смысловое противоречие или важное расхождение; сервер НЕ отбирал пары по словам, датам или типам. "
+            "Ссылайся только на существующие fact_id из входа через left_fact_id/right_fact_id. "
+            "relation: contradiction — одновременно истинными в одном смысле быть не могут; "
+            "scope_difference — различаются объект/период/область; temporal_sequence — разные этапы времени; "
+            "source_disagreement — источники расходятся и нужна дополнительная проверка; uncertain — данных мало. "
+            "Не возвращай эквивалентные или просто разные совместимые факты. suggested_resolution: prefer_left, "
+            "prefer_right, both_valid или unresolved. Количество сайтов НЕ является голосованием за истину. "
+            "Учитывай происхождение, период, первичность, supports и Regional Knowledge evidence. "
+            "Если доказательств недостаточно — unresolved. Не выдумывай факты, ссылки или идентификаторы.\n\n"
             "Context: " + json.dumps(context or {}, ensure_ascii=False)[:4000] + "\n"
-            "Pairs: " + json.dumps(pairs, ensure_ascii=False)[:42000]
+            "Facts: " + json.dumps(model_items, ensure_ascii=False)[:48000]
         )
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -655,7 +668,7 @@ class GeminiClient:
                     raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_fact_conflicts") from None
-            return normalize_conflict_records(pairs, payload)
+            return normalize_model_conflict_records(model_items, payload)
 
         retry_at: list[float] = []
         for model, _pool, quota, executor in self.research_routes:
@@ -673,6 +686,80 @@ class GeminiClient:
                 raise
         if retry_at:
             raise GeminiUnavailable(min(retry_at), "all_fact_conflict_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
+
+    async def compose_publication(
+        self,
+        *,
+        place_name: str | None,
+        concept: str,
+        author_note: str,
+        facts: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Compose editorial copy from already validated evidence-backed facts."""
+        if not facts and not author_note.strip():
+            return {"concept": concept.strip(), "draft_text": ""}
+        from google.genai import types
+
+        prompt = (
+            "Ты редактор Street Story. Сформируй концепцию и готовый текст публикации на русском языке. "
+            "Если publication_concept уже задан автором, сохрани его смысл; иначе предложи ясный редакционный угол. "
+            "Используй ТОЛЬКО evidence-backed facts из входа и субъективный author_note. Не добавляй новые исторические "
+            "сведения, даты, имена или причинно-следственные связи. Текст должен читаться как публикация, а не как "
+            "список тезисов: обычно 2–5 коротких связных абзацев, естественный заход, развитие и завершение. "
+            "Не делай каждый факт отдельным абзацем автоматически. Без Markdown-заголовка и служебных комментариев. "
+            "Уложись в 1000 символов, чтобы оставался запас под Telegram photo caption.\n\n"
+            + json.dumps(
+                {
+                    "place_name": place_name,
+                    "publication_concept": concept,
+                    "author_note": author_note,
+                    "facts": facts[:20],
+                },
+                ensure_ascii=False,
+            )
+        )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.COMPOSE_SCHEMA,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(
+                key,
+                timeout,
+                [prompt],
+                config,
+                operation="grounded_research",
+                model=model,
+                quota=quota,
+            )
+            try:
+                payload = json.loads(response.text or "{}")
+                result_concept = str(payload.get("concept") or "").strip()
+                draft = str(payload.get("draft_text") or "").strip()
+                if not draft or len(draft) > 1024 or len(result_concept) > 1200:
+                    raise ValueError
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise MalformedProviderResponse("gemini:malformed_publication_composition") from None
+            return {"concept": result_concept, "draft_text": draft}
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_publication_composition_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
     async def search_web(
@@ -699,8 +786,12 @@ class GeminiClient:
             "в official_source_urls. Верни до 12 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
             "один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, реконструкция, "
             "посещение или другой конкретный факт. Без вводных вроде «источник сообщает», без URL и без нескольких "
-            "разных утверждений в одном пункте. Самые важные факты ставь первыми; сведения официального источника "
-            "имеют приоритет. Если Current topic context содержит previously_considered_poi_facts, не повторяй их "
+            "разных утверждений в одном пункте. Для каждого факта обязательно задай claim_key — короткую устойчивую "
+            "семантическую идентичность смысла, не зависящую от перефразирования. Если новый найденный тезис семантически "
+            "совпадает с known_facts, укажи его точный fact_id в existing_fact_id; иначе existing_fact_id оставь пустым. "
+            "Не выдумывай existing_fact_id. Для новых тезисов используй устойчивый claim_key. Самые важные факты "
+            "ставь первыми; сведения официального источника имеют приоритет. Если Current topic context содержит "
+            "previously_considered_poi_facts, не повторяй их "
             "без явной просьбы пользователя повторить или перепроверить: ищи новую фактологию. Для каждого факта "
             "укажи только source_urls, которые реально видел в grounding. Не пиши публикацию и не предлагай редактуру.\n\n"
             "Search query: " + query[:1000] + "\n"
@@ -735,6 +826,11 @@ class GeminiClient:
                 for fact in payload["facts"]:
                     if (
                         not isinstance(fact, dict)
+                        or not isinstance(fact.get("claim_key"), str)
+                        or (
+                            fact.get("existing_fact_id") is not None
+                            and not isinstance(fact.get("existing_fact_id"), str)
+                        )
                         or not isinstance(fact.get("text"), str)
                         or not isinstance(fact.get("source_urls"), list)
                         or any(not isinstance(url, str) for url in fact["source_urls"])

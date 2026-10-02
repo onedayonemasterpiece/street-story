@@ -106,37 +106,36 @@ def _evidence_allowed(
 def _candidate_pairs(
     items: list[dict[str, Any]],
     *,
+    focus_claim_id: str,
     max_pairs: int,
 ) -> list[dict[str, Any]]:
-    """Mechanical bounded prefilter over model-normalized kind/semantic_key."""
+    """Mechanically bound comparisons for the new/focus claim.
 
-    ranked: list[tuple[int, str, dict[str, Any]]] = []
-    seen: set[str] = set()
-    for index, left in enumerate(items):
-        for right in items[index + 1 :]:
-            if str(left.get("kind")) != str(right.get("kind")):
-                continue
-            if str(left.get("text") or "").casefold() == str(
-                right.get("text") or ""
-            ).casefold():
-                continue
-            ids = sorted(
-                (str(left["fact_id"]), str(right["fact_id"]))
-            )
-            pair_key = "|".join(ids)
-            if pair_key in seen:
-                continue
-            seen.add(pair_key)
-            score = 2 if left.get("claim_key") == right.get("claim_key") else 1
-            ranked.append(
-                (
-                    score,
-                    pair_key,
-                    {"left": left, "right": right},
-                )
-            )
-    ranked.sort(key=lambda item: (-item[0], item[1]))
-    return [item[2] for item in ranked[:max_pairs]]
+    This function deliberately does not inspect kind, claim_key, dates, wording,
+    source scores or any other semantic signal. Mira decides whether a pair is
+    equivalent, contradictory, scope-different or unrelated.
+    """
+
+    focus = next(
+        (item for item in items if str(item.get("fact_id") or "") == focus_claim_id),
+        None,
+    )
+    if focus is None:
+        return []
+
+    others = sorted(
+        (
+            item
+            for item in items
+            if str(item.get("fact_id") or "")
+            and str(item.get("fact_id") or "") != focus_claim_id
+        ),
+        key=lambda item: str(item.get("fact_id") or ""),
+    )
+    return [
+        {"left": focus, "right": other}
+        for other in others[:max_pairs]
+    ]
 
 
 def queue_poi_semantic_candidates(
@@ -152,10 +151,12 @@ def queue_poi_semantic_candidates(
     """Persist only bounded candidate pairs; no contradiction decision occurs."""
 
     candidate_ids: list[str] = []
-    for pair in _candidate_pairs(items, max_pairs=max_pairs):
+    for pair in _candidate_pairs(
+        items,
+        focus_claim_id=focus_claim_id,
+        max_pairs=max_pairs,
+    ):
         ids = {str(pair["left"]["fact_id"]), str(pair["right"]["fact_id"])}
-        if focus_claim_id not in ids:
-            continue
         left, right = sorted(ids)
         candidate_id = _candidate_id(left, right)
         db.execute(

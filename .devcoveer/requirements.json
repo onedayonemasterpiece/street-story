@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "project": "street-story",
+  "requirements": [
+    {
+      "id": "CORE-PHOTO-IDENTITY",
+      "statement": "After the owner selects a source photo, Street Story automatically identifies the depicted place or object through product automation/Mira; manual identification by the owner is not a required normal-path step.",
+      "critical": true,
+      "acceptance": [
+        "The source photo is evaluated before research and publication work depends on its identity.",
+        "Uncertain identity is surfaced as uncertainty or an optional correction path rather than silently treated as a verified identity."
+      ]
+    },
+    {
+      "id": "CORE-CONCEPT-DIALOG",
+      "statement": "The owner can shape and refine the concept or angle of the publication conversationally instead of being forced through a disconnected manual workflow.",
+      "critical": true,
+      "acceptance": [
+        "Concept refinement remains available in the same story conversation before the final publication output."
+      ]
+    },
+    {
+      "id": "CORE-SOURCE-RESEARCH",
+      "statement": "Street Story can find information on the internet about the identified subject and preserve source-backed evidence rather than inventing unsupported facts.",
+      "critical": true,
+      "acceptance": [
+        "Research exposes source-linked evidence for publication facts.",
+        "Low-confidence discovery material is not silently upgraded into a verified fact."
+      ]
+    },
+    {
+      "id": "CORE-FACT-SELECTION",
+      "statement": "The owner can review and choose which evidence-backed facts are used in the publication.",
+      "critical": true,
+      "acceptance": [
+        "Fact selection is visible to the owner and survives normal story refinement.",
+        "Unsupported facts cannot silently become selected publication facts."
+      ]
+    },
+    {
+      "id": "CORE-PUBLICATION-TEXT",
+      "statement": "The publication text is visible to the owner and can be reviewed or refined within the conversational story flow before publication.",
+      "critical": true,
+      "acceptance": [
+        "A real draft is presented when available and remains associated with the story and selected facts."
+      ]
+    },
+    {
+      "id": "CORE-VOICE-MIRA",
+      "statement": "The primary creation and refinement flow supports live voice communication with Mira while preserving the same story conversation and product context.",
+      "critical": true,
+      "acceptance": [
+        "Voice interaction does not force the owner into a separate manual research or editing workflow.",
+        "A transport or provider implementation change must preserve the conversational product outcome."
+      ]
+    },
+    {
+      "id": "CORE-FINAL-VISUAL",
+      "statement": "Street Story can generate final publication visuals from the source material and approved story context, and the owner can review or select the resulting visual before publication.",
+      "critical": true,
+      "acceptance": [
+        "Visual generation remains part of the story flow and is tied to the approved publication context."
+      ]
+    },
+    {
+      "id": "CORE-LLM-FIRST-SEMANTICS",
+      "statement": "Street Story is LLM-first for semantic product decisions. Mira/the configured model owns object interpretation, fact extraction and normalization, semantic deduplication, contradiction detection and fact arbitration, concept shaping and editorial composition. Deterministic code is limited to transport, authentication, bounded orchestration, schemas, reference/evidence validation, idempotency, persistence, telemetry, mechanical formatting and fail-closed safety checks.",
+      "critical": true,
+      "acceptance": [
+        "Regexes, keyword lists, year/predicate heuristics or rule scores do not decide whether text is a fact, whether two claims are semantically equivalent, whether they contradict, or which claim is true.",
+        "Fact and conflict semantics come from model outputs with stable model-provided claim identifiers/relations; deterministic code may validate shape, evidence references and bounds but must not silently replace model judgment.",
+        "If the required model semantic step is unavailable or malformed, the product surfaces or logs that state and fails closed rather than synthesizing semantic facts through deterministic fallback.",
+        "Legacy deterministic normalization may exist only as explicitly labeled migration/repair compatibility code and is not used by the normal photo-to-publication path or POI/RAG evidence path."
+      ]
+    }
+  ]
+}

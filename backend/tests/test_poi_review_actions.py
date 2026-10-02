@@ -170,6 +170,13 @@ def test_accept_rejects_unverified_or_wrong_expertise(tmp_path):
 def test_two_independent_matching_decisions_apply_human_consensus(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     case_id, conflict_id = create_public_review_case(store)
+    initial_projection = review_case_projection(
+        store,
+        case_id,
+        actor_sub=None,
+    )
+    left_text = initial_projection["claims"][0]["text"]
+    right_text = initial_projection["claims"][1]["text"]
 
     accept_review_case(
         store,
@@ -226,8 +233,8 @@ def test_two_independent_matching_decisions_apply_human_consensus(tmp_path):
             row["text"]: row["status"]
             for row in db.execute("SELECT text,status FROM poi_claims")
         }
-        assert statuses["Ворота построены в 1843 году."] == "accepted"
-        assert statuses["Ворота построены в 1850 году."] == "rejected"
+        assert statuses[left_text] == "accepted"
+        assert statuses[right_text] == "rejected"
 
     projection = review_case_projection(
         store,

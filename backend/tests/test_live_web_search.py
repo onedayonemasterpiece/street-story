@@ -61,6 +61,7 @@ async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
             "summary": "Search summary",
             "official_source_urls": [],
             "facts": [{
+                "claim_key": "test-fact",
                 "text": "Fact",
                 "confidence": 0.9,
                 "source_urls": ["https://example.com/source"],
@@ -156,7 +157,7 @@ async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp
         payload = {
             "summary": "Sources found",
             "official_source_urls": [official, wiki],
-            "facts": [{"text": "Открыт в 2000 году.", "confidence": 0.95, "source_urls": [official]}],
+            "facts": [{"claim_key": "opened-2000", "text": "Открыт в 2000 году.", "confidence": 0.95, "source_urls": [official]}],
         }
         chunks = [
             SimpleNamespace(web=SimpleNamespace(uri=official, title="Museum")),

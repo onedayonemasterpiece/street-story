@@ -8,7 +8,9 @@ from street_story.fact_conflicts import (
     analyze_fact_conflicts,
     conflict_candidate_pairs,
     conflict_rows,
+    conflict_scan_items,
     normalize_conflict_records,
+    normalize_model_conflict_records,
     persist_fact_conflicts,
     resolve_fact_conflict,
 )
@@ -280,13 +282,12 @@ async def test_successful_scan_accumulates_durable_denominator_statistics(tmp_pa
         fact("Ворота построены в 1843 году.", fact_id="a", source_urls=("https://a.example/x",)),
         fact("Ворота построены в 1850 году.", fact_id="b", source_urls=("https://b.example/y",)),
     ]
-    pairs = conflict_candidate_pairs(items)
-
     class Detector:
-        async def detect_fact_conflicts(self, actual_pairs, context):
-            return normalize_conflict_records(actual_pairs, {
+        async def detect_fact_conflicts(self, actual_items, context):
+            return normalize_model_conflict_records(actual_items, {
                 "conflicts": [{
-                    "pair_id": pairs[0]["pair_id"],
+                    "left_fact_id": "a",
+                    "right_fact_id": "b",
                     "relation": "contradiction",
                     "suggested_resolution": "unresolved",
                     "confidence": .8,
@@ -327,19 +328,23 @@ async def test_successful_scan_accumulates_durable_denominator_statistics(tmp_pa
 async def test_model_detector_output_is_bounded_to_known_pairs():
     from street_story.providers import GeminiClient
 
-    pairs = conflict_candidate_pairs([
+    items = [
         fact("Ворота построены в 1843 году.", fact_id="a", source_urls=("https://a.example/x",)),
         fact("Ворота построены в 1850 году.", fact_id="b", source_urls=("https://b.example/y",)),
-    ])
+    ]
+    expected_id = conflict_candidate_pairs(items)[0]["pair_id"]
+    model_items = conflict_scan_items(items)
     payload = {
         "conflicts": [{
-            "pair_id": pairs[0]["pair_id"],
+            "left_fact_id": "a",
+            "right_fact_id": "b",
             "relation": "contradiction",
             "suggested_resolution": "unresolved",
             "confidence": .84,
             "rationale": "Даты расходятся.",
         }, {
-            "pair_id": "invented",
+            "left_fact_id": "invented",
+            "right_fact_id": "b",
             "relation": "contradiction",
             "suggested_resolution": "prefer_left",
             "confidence": 1,
@@ -358,7 +363,7 @@ async def test_model_detector_output_is_bounded_to_known_pairs():
         _generate=generate,
         research_routes=[("gemini-test", object(), object(), PassingExecutor())],
     )
-    records = await GeminiClient.detect_fact_conflicts(fake, pairs, {"place_name": "Test"})
+    records = await GeminiClient.detect_fact_conflicts(fake, model_items, {"place_name": "Test"})
     assert len(records) == 1
-    assert records[0]["conflict_id"] == pairs[0]["pair_id"]
+    assert records[0]["conflict_id"] == expected_id
     assert records[0]["relation"] == "contradiction"

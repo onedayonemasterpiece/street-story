@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .mvp_research import MvpResearchStreetStoryService, _excerpt_supports
+from .mvp_research import MvpResearchStreetStoryService
 from .service import canonical
 
 
@@ -33,6 +33,13 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
         story_id: str,
         prior_decisions: dict[str, bool],
     ) -> None:
+        """Preserve explicit owner decisions without re-interpreting fact semantics.
+
+        The research/model layer already decided fact identity and associated retrieved
+        evidence. Acceptance code may apply durable selection state and fail-closed
+        evidence flags, but it must not decide semantic support with token overlap or
+        rebuild publication prose deterministically.
+        """
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
             research = json.loads(story["research_json"] or "{}")
@@ -50,53 +57,36 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
                 return
 
             current_decisions: dict[str, bool] = {}
-            for row in list(db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,))):
-                sources = json.loads(row["sources_json"] or "[]")
-                valid_sources: list[dict[str, Any]] = []
-                for source in sources if isinstance(sources, list) else []:
-                    if not isinstance(source, dict):
-                        continue
-                    support_rows = source.get("supports")
-                    if not isinstance(support_rows, list):
-                        support_rows = []
-                    valid_supports = [
-                        support
-                        for support in support_rows
-                        if isinstance(support, dict)
-                        and _excerpt_supports(str(row["text"]), str(support.get("text") or ""))
-                    ]
-                    if valid_supports:
-                        valid_sources.append({**source, "supports": valid_supports})
-                supported = bool(valid_sources)
-                prior = prior_decisions.get(str(row["fact_id"]))
+            selection_changed = False
+            for row in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)):
+                supported = bool(row["evidence_supported"])
                 selected = supported and bool(row["selected"])
-                if prior is False:
+                if prior_decisions.get(str(row["fact_id"])) is False:
                     selected = False
+                if selected != bool(row["selected"]):
+                    selection_changed = True
+                    db.execute(
+                        "UPDATE facts SET selected=? WHERE story_id=? AND fact_id=?",
+                        (int(selected), story_id, row["fact_id"]),
+                    )
                 current_decisions[str(row["fact_id"])] = selected
-                db.execute(
-                    "UPDATE facts SET evidence_supported=?,selected=?,sources_json=? WHERE story_id=? AND fact_id=?",
-                    (
-                        int(supported),
-                        int(selected),
-                        canonical(valid_sources),
-                        story_id,
-                        row["fact_id"],
-                    ),
-                )
 
             merged_decisions = dict(prior_decisions)
             merged_decisions.update(current_decisions)
             research["claim_decisions"] = merged_decisions
-            draft, image_notes = self._selected_outputs(
-                db,
-                story_id,
-                story["place_name"],
-                str(research.get("author_note") or ""),
-            )
-            research["image_notes"] = image_notes
+            selected_text = [
+                str(row["text"])
+                for row in db.execute(
+                    "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    (story_id,),
+                )
+            ]
+            research["image_notes"] = "\n".join(selected_text[:6])
+            if selection_changed:
+                research["draft_needs_refresh"] = True
             db.execute(
-                "UPDATE stories SET draft_text=?,research_json=?,updated_at=? WHERE id=?",
-                (draft, canonical(research), self.store.now(), story_id),
+                "UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
+                (canonical(research), self.store.now(), story_id),
             )
 
     async def _run_research(self, job: dict[str, Any]) -> None:
