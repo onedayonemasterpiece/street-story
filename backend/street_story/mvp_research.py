@@ -11,8 +11,14 @@ from urllib.parse import urlparse
 
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
-from .fact_conflicts import analyze_fact_conflicts
-from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id
+from .fact_conflicts import persist_curation_conflicts
+from .fact_quality import (
+    FactCurationError,
+    compact_inventory_for_model,
+    inventory_context,
+    materialize_curation,
+    validate_curation,
+)
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
@@ -601,29 +607,37 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             raise PermanentProviderError("Gemini grounded research capability is unavailable")
         from google.genai import types
 
+        current_context = compact_inventory_for_model(previous, limit=40)
+        prior_context = compact_inventory_for_model(poi_history or [], limit=40)
         prompt = (
-            "Ты исследователь Street Story. Идентичность объекта уже определена отдельным visual step; исследуй ИМЕННО этот объект. "
-            "Используй Google Search grounding напрямую. Возвращай только проверяемые исторические/городские ФАКТЫ. "
-            "Каждый facts[].text — один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, "
-            "реконструкция, посещение или другой конкретный факт. Не пиши вместо факта описание источника, вводные "
-            "вроде «сайт сообщает», URL или несколько разных утверждений в одном пункте. Самые важные факты ставь первыми. "
-            "claim_key — короткая стабильная семантическая идентичность утверждения, не зависящая от перефразирования. "
-            "Сначала обязательно ищи официальный источник объекта/учреждения, если он существует. Официальным считается сайт "
-            "владельца, музея, учреждения, муниципалитета или оператора, но не Wikipedia, СМИ, агрегатор или туристический каталог. "
-            "URL официальных источников, реально увиденных через grounding, перечисли в official_source_urls. Факты из официального "
-            "источника имеют приоритет; для каждого факта source_urls перечисляй только реально поддерживающие его источники. "
-            "previously_considered_poi_facts — факты об этом же объекте из предыдущих тем: не повторяй их в новой публикации, "
-            "если пользователь явно не просит повторить или обновить их; ищи новую фактологию. "
-            "Не считай собственный ответ источником и не выдумывай цитаты. author_note может содержать только субъективное впечатление "
-            "пользователя из voice context, без добавленных исторических сведений. "
-            "Верни только один JSON-объект без Markdown и комментариев строго такой формы: "
-            '{"summary":"...","author_note":"...","official_source_urls":[],"facts":[{"claim_key":"...","text":"...","confidence":0.0,"source_urls":["https://..."]}]}.\\n'
+            "Ты исследователь и семантический редактор Street Story. Идентичность объекта уже подтверждена. "
+            "Это LLM-first factual pipeline: сам извлекай факты из grounded Search, сам разделяй составные утверждения, "
+            "сам решай, совпадает ли новая формулировка с существующим фактом, новый ли это факт, обновление или уже "
+            "рассмотренный материал. Никакой regex/keyword алгоритм после тебя не будет исправлять смысл. "
+            "Сначала обязательно ищи официальный источник объекта/учреждения, если он существует. "
+            "Для facts верни semantic_key, text, disposition (new/merge/seen_before/update), inherits_keys, confidence, "
+            "source_urls и rationale. semantic_key должен быть стабильным для одного реального утверждения; если это тот "
+            "же факт, переиспользуй существующий semantic_key. merge должен ссылаться inherits_keys на текущие факты. "
+            "seen_before должен ссылаться на prior POI fact и не выдавать его за новую находку. "
+            "text — короткое самодостаточное утверждение без URL, заголовка страницы или фото-подписи, но не ломай смысл "
+            "ради краткости. source_urls — только реально увиденные grounding URL, поддерживающие именно этот факт. "
+            "Сам сравни новые, текущие и prior facts и верни conflicts: left_key/right_key, relation, "
+            "suggested_resolution, confidence, rationale, needs_more_search/search_query. Не жди заранее отобранных пар. "
+            "Количество сайтов не является голосованием за истинность. Если доказательств мало — unresolved и узкий "
+            "search_query. author_note может содержать только субъективный контекст автора. "
+            "Верни один JSON без Markdown: "
+            '{"summary":"...","author_note":"...","official_source_urls":[],"facts":[{'
+            '"semantic_key":"...","text":"...","disposition":"new","inherits_keys":[],'
+            '"confidence":0.0,"source_urls":[],"rationale":"..."}],"conflicts":[{'
+            '"left_key":"...","right_key":"...","relation":"contradiction",'
+            '"suggested_resolution":"unresolved","confidence":0.0,"rationale":"...",'
+            '"needs_more_search":true,"search_query":"..."}]}.\n'
             + json.dumps(
                 {
                     "confirmed_identity": identity,
-                    "voice_context": transcript,
-                    "previous_claims_and_owner_decisions": previous,
-                    "previously_considered_poi_facts": (poi_history or [])[:60],
+                    "voice_context": transcript[:6000],
+                    "current_facts": current_context,
+                    "prior_poi_facts": prior_context,
                 },
                 ensure_ascii=False,
             )
@@ -645,23 +659,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     if len(fenced) >= 3 and fenced[0].strip().lower() in {fence, fence + "json"} and fenced[-1].strip() == fence:
                         raw = "\n".join(fenced[1:-1]).strip()
                 payload = json.loads(raw or "{}")
-                if not isinstance(payload.get("summary"), str) or not isinstance(payload.get("author_note"), str):
-                    raise ValueError
                 if (
-                    not isinstance(payload.get("official_source_urls", []), list)
-                    or any(not isinstance(url, str) for url in payload.get("official_source_urls", []))
+                    not isinstance(payload, dict)
+                    or not isinstance(payload.get("summary"), str)
+                    or not isinstance(payload.get("author_note"), str)
+                    or not isinstance(payload.get("official_source_urls", []), list)
                     or not isinstance(payload.get("facts"), list)
+                    or not isinstance(payload.get("conflicts"), list)
                 ):
                     raise ValueError
-                for fact in payload["facts"]:
-                    if (
-                        not isinstance(fact, dict)
-                        or not isinstance(fact.get("claim_key"), str)
-                        or not isinstance(fact.get("text"), str)
-                        or not isinstance(fact.get("source_urls"), list)
-                        or not math.isfinite(float(fact.get("confidence", 0.0)))
-                    ):
-                        raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_grounded_research") from None
 
@@ -734,17 +740,13 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         with self.store.connection() as db:
             story = dict(self._story_row(db, story_id))
             prior = json.loads(story["research_json"] or "{}")
-            previous = [
-                {
-                    "fact_id": row["fact_id"],
-                    "text": row["text"],
-                    "confidence": float(row["confidence"]),
-                    "evidence_supported": bool(row["evidence_supported"]),
-                    "selected": bool(row["selected"]),
-                    "sources": json.loads(row["sources_json"]),
-                }
-                for row in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,))
-            ]
+            fact_rows = list(db.execute(
+                "SELECT * FROM facts WHERE story_id=? ORDER BY rowid",
+                (story_id,),
+            ))
+            semantic_keys = prior.get("fact_semantic_keys")
+            semantic_keys = semantic_keys if isinstance(semantic_keys, dict) else {}
+            previous = inventory_context(fact_rows, semantic_keys, limit=80)
 
         if live_transcript:
             transcript = live_transcript[:12000]
