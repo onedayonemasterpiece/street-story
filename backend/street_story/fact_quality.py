@@ -19,15 +19,15 @@ _ROLE = re.compile(
     re.IGNORECASE,
 )
 _SIGNAL = re.compile(
-    r"(?:постро\w*|возвед\w*|сооруж\w*|основан\w*|откры\w*|"
+    r"(?:постро\w*|строительств\w*|возвед\w*|сооруж\w*|основан\w*|откры\w*|"
     r"реконстру\w*|реставр\w*|восстанов\w*|снес\w*|демонтир\w*|"
     r"разруш\w*|передан\w*|вош[её]л\w*|стал\w*\s+частью|"
     r"использовал\w*|размещал\w*|посетил\w*|посещал\w*|"
-    r"спроектир\w*|является\s+частью|принадлеж\w*)",
+    r"спроектир\w*|является\s+частью|принадлеж\w*|наход\w*|располож\w*)",
     re.IGNORECASE,
 )
 _KINDS = (
-    ("construction", re.compile(r"(?:постро\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
+    ("construction", re.compile(r"(?:постро\w*|строительств\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
     ("architect", re.compile(r"(?:архитектор|автор\s+проекта|спроектир\w*)", re.IGNORECASE)),
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
@@ -36,6 +36,7 @@ _KINDS = (
     ("visit", re.compile(r"(?:посетил\w*|посещал\w*)", re.IGNORECASE)),
     ("use", re.compile(r"(?:использовал\w*|размещал\w*|назначени\w*)", re.IGNORECASE)),
     ("opening", re.compile(r"(?:откры\w*)", re.IGNORECASE)),
+    ("location", re.compile(r"(?:наход\w*|располож\w*)", re.IGNORECASE)),
 )
 _STOP = {
     "котор", "этого", "этой", "этот", "была", "были", "было", "стал", "стала",
@@ -85,7 +86,8 @@ def semantic_fact_key(claim_key: str, text: str) -> str:
         if word.lower() not in _STOP
     ]
     if kind != "other" and words:
-        return f"{kind}:" + ":".join(dict.fromkeys(words[:5]))
+        stable_words = sorted(set(words))[:8]
+        return f"{kind}:" + ":".join(stable_words)
     normalized_claim = re.sub(r"[^a-zа-яё0-9]+", " ", str(claim_key or "").lower()).strip()
     if normalized_claim and normalized_claim not in {"fact", "history", "история", "факт"}:
         return "claim:" + normalized_claim[:120]
