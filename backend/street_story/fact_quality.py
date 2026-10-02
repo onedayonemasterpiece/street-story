@@ -37,7 +37,8 @@ _SIGNAL = re.compile(
     r"спроектир\w*|является\s+частью|принадлеж\w*|наход\w*|располож\w*|"
     r"потерял\w*\s+оборонительн\w*|перестал\w*|служил\w*|"
     r"существовал\w*|символ\w*|является\s+памятник\w*|получил\w*\s+статус|"
-    r"имеет\b|имеют\b|состоит\b|состоят\b)",
+    r"прибыл\w*|разобрал\w*|имел\w*\s+назван\w*|одно\s+из\s+зданий|"
+    r"размеща\w*|работает\s+экспозици\w*|имеет\b|имеют\b|состоит\b|состоят\b)",
     re.IGNORECASE,
 )
 _KINDS = (
@@ -46,9 +47,10 @@ _KINDS = (
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
     ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*)", re.IGNORECASE)),
-    ("ownership", re.compile(r"(?:передан\w*|вош[её]л\w*|стал\w*\s+частью|принадлеж\w*)", re.IGNORECASE)),
-    ("visit", re.compile(r"(?:посетил\w*|посещал\w*)", re.IGNORECASE)),
-    ("use", re.compile(r"(?:использовал\w*|размещал\w*|назначени\w*|служил\w*|перестал\w*)", re.IGNORECASE)),
+    ("ownership", re.compile(r"(?:передан\w*|вош[её]л\w*|стал\w*\s+частью|принадлеж\w*|одно\s+из\s+зданий|филиал\w*)", re.IGNORECASE)),
+    ("visit", re.compile(r"(?:посетил\w*|посещал\w*|прибыл\w*)", re.IGNORECASE)),
+    ("name", re.compile(r"(?:имел\w*\s+назван\w*|называл\w*)", re.IGNORECASE)),
+    ("use", re.compile(r"(?:использовал\w*|размеща\w*|назначени\w*|служил\w*|перестал\w*|работает\s+экспозици\w*)", re.IGNORECASE)),
     ("opening", re.compile(r"(?:откры\w*)", re.IGNORECASE)),
     ("location", re.compile(r"(?:наход\w*|располож\w*)", re.IGNORECASE)),
     ("structure", re.compile(r"(?:имеет\b|имеют\b|состоит\b|состоят\b)", re.IGNORECASE)),
@@ -91,9 +93,16 @@ def atomic_fact_text(raw: str) -> str | None:
     candidates: list[tuple[tuple[int, int, int], str]] = []
     for index, sentence in enumerate(_SENTENCE_SPLIT.split(original)):
         text = compact_fact_text(sentence)
+        if _HEADING.search(text):
+            # Legacy snippets often glue a page heading directly to a valid claim
+            # ("История создания ... построены ..."). Keep the claim, not the heading.
+            signal = _ROLE.search(text) or _SIGNAL.search(text)
+            if signal is None:
+                continue
+            text = compact_fact_text(text[signal.start():])
         if len(text) < 12 or len(text) > 181:
             continue
-        if _HEADING.search(text) or _BAD.search(text) or _PERSONAL.search(text):
+        if _BAD.search(text) or _PERSONAL.search(text):
             continue
         if "http://" in text.lower() or "https://" in text.lower():
             continue
