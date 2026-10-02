@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://street-story/contracts/poi.media_evidence.v1",
+  "title": "POI media evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "event_id",
+    "idempotency_key",
+    "producer",
+    "scope",
+    "source",
+    "poi_locator",
+    "media",
+    "evidence"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "poi.media_evidence.v1"
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "producer": {
+      "const": "regional_knowledge"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "visibility",
+        "owner_sub"
+      ],
+      "properties": {
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "private",
+            "workspace",
+            "public"
+          ]
+        },
+        "owner_sub": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "workspace_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_ref",
+        "revision",
+        "title"
+      ],
+      "properties": {
+        "document_ref": {
+          "type": "string",
+          "pattern": "^knowledge://documents/"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "publication_year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 3000
+        }
+      }
+    },
+    "poi_locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "external_ids"
+      ],
+      "properties": {
+        "names": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 30,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "external_ids": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "latitude": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": -90,
+          "maximum": 90
+        },
+        "longitude": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": -180,
+          "maximum": 180
+        }
+      }
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "link_id",
+        "illustration_id",
+        "illustration_ref",
+        "relation",
+        "kind",
+        "page_id",
+        "source_region_id",
+        "caption_region_ids",
+        "source_crop_sha256",
+        "rights_status",
+        "visibility"
+      ],
+      "properties": {
+        "link_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "illustration_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "illustration_ref": {
+          "type": "string",
+          "pattern": "^knowledge://illustrations/"
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "depicts",
+            "illustrates",
+            "map_of",
+            "detail_of"
+          ]
+        },
+        "time_scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 100
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "photo",
+            "map",
+            "drawing",
+            "diagram",
+            "facsimile",
+            "other"
+          ]
+        },
+        "caption": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "page_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "source_region_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "caption_region_ids": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "source_crop_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rights_status": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "private",
+            "workspace",
+            "public"
+          ]
+        },
+        "vibepublish_entry_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1000
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "page_ids",
+        "region_ids",
+        "source_family_id"
+      ],
+      "properties": {
+        "page_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "region_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "source_family_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}
