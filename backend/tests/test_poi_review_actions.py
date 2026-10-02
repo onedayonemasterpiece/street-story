@@ -46,7 +46,7 @@ def evidence_event(*, event_id, candidate_id, key, text):
         },
         "claim": {
             "candidate_id": candidate_id,
-            "semantic_key": "construction:date",
+            "semantic_key": f"construction:{text}",
             "kind": "construction",
             "text": text,
             "time_scope": None,
