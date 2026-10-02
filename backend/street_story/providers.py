@@ -792,7 +792,11 @@ class GeminiClient:
                 {
                     **source,
                     "type": "official" if source["url"].rstrip("/") in official_set else source["type"],
-                    "supports": supports_by_url.get(source["url"], [])[:4],
+                    **(
+                        {"supports": supports_by_url.get(source["url"], [])[:4]}
+                        if supports_by_url.get(source["url"])
+                        else {}
+                    ),
                 }
                 for source in unique_sources
             ]
