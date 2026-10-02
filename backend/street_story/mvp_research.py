@@ -875,7 +875,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             url = _norm_url(source.get("url"))
             if url:
                 known[url] = {
-                    "type": "web",
+                    "type": str(source.get("type") or "web"),
                     "title": str(source.get("title") or url),
                     "url": url,
                 }
