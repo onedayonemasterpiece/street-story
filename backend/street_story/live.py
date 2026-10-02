@@ -15,7 +15,7 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
-from .fact_quality import atomic_fact_text, merge_fact_inventory
+from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id
 from .live_author_intent import (
     begin_turn,
     consent_receipt,
@@ -25,7 +25,7 @@ from .live_author_intent import (
     observe_transcript,
     suspected_noise_turn,
 )
-from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest, stable_fact_id
+from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest
 
 
 logger = logging.getLogger("street_story.live")
@@ -974,7 +974,7 @@ class StreetStoryLiveAdapter:
                 confidence = 0.0
             normalized.append(
                 {
-                    "fact_id": stable_fact_id(text),
+                    "fact_id": semantic_fact_id("", text),
                     "claim_key": "",
                     "text": text,
                     "confidence": confidence,
