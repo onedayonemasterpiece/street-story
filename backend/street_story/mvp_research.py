@@ -16,6 +16,7 @@ from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
 from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
+from .poi_memory import prior_facts
 from .providers import PermanentProviderError
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
 
@@ -588,6 +589,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         transcript: str,
         identity: dict[str, Any],
         previous: list[dict[str, Any]],
+        poi_history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         custom = getattr(self.providers.gemini, "research_v2", None)
         if callable(custom):
@@ -599,18 +601,27 @@ class MvpResearchMixin(IdentityLifecycleMixin):
 
         prompt = (
             "Ты исследователь Street Story. Идентичность объекта уже определена отдельным visual step; исследуй ИМЕННО этот объект. "
-            "Используй Google Search grounding напрямую. Возвращай только проверяемые исторические/городские claims. "
+            "Используй Google Search grounding напрямую. Возвращай только проверяемые исторические/городские ФАКТЫ. "
+            "Каждый facts[].text — один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, "
+            "реконструкция, посещение или другой конкретный факт. Не пиши вместо факта описание источника, вводные "
+            "вроде «сайт сообщает», URL или несколько разных утверждений в одном пункте. Самые важные факты ставь первыми. "
             "claim_key — короткая стабильная семантическая идентичность утверждения, не зависящая от перефразирования. "
-            "source_urls перечисляй только для источников, реально поддерживающих конкретный claim и реально увиденных через grounding. "
+            "Сначала обязательно ищи официальный источник объекта/учреждения, если он существует. Официальным считается сайт "
+            "владельца, музея, учреждения, муниципалитета или оператора, но не Wikipedia, СМИ, агрегатор или туристический каталог. "
+            "URL официальных источников, реально увиденных через grounding, перечисли в official_source_urls. Факты из официального "
+            "источника имеют приоритет; для каждого факта source_urls перечисляй только реально поддерживающие его источники. "
+            "previously_considered_poi_facts — факты об этом же объекте из предыдущих тем: не повторяй их в новой публикации, "
+            "если пользователь явно не просит повторить или обновить их; ищи новую фактологию. "
             "Не считай собственный ответ источником и не выдумывай цитаты. author_note может содержать только субъективное впечатление "
             "пользователя из voice context, без добавленных исторических сведений. "
             "Верни только один JSON-объект без Markdown и комментариев строго такой формы: "
-            '{"summary":"...","author_note":"...","facts":[{"claim_key":"...","text":"...","confidence":0.0,"source_urls":["https://..."]}]}.\\n'
+            '{"summary":"...","author_note":"...","official_source_urls":[],"facts":[{"claim_key":"...","text":"...","confidence":0.0,"source_urls":["https://..."]}]}.\\n'
             + json.dumps(
                 {
                     "confirmed_identity": identity,
                     "voice_context": transcript,
                     "previous_claims_and_owner_decisions": previous,
+                    "previously_considered_poi_facts": (poi_history or [])[:60],
                 },
                 ensure_ascii=False,
             )
@@ -634,7 +645,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 payload = json.loads(raw or "{}")
                 if not isinstance(payload.get("summary"), str) or not isinstance(payload.get("author_note"), str):
                     raise ValueError
-                if not isinstance(payload.get("facts"), list):
+                if (
+                    not isinstance(payload.get("official_source_urls", []), list)
+                    or any(not isinstance(url, str) for url in payload.get("official_source_urls", []))
+                    or not isinstance(payload.get("facts"), list)
+                ):
                     raise ValueError
                 for fact in payload["facts"]:
                     if (
@@ -681,9 +696,25 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             unique_chunks = {item["url"]: item for item in chunks if item["url"]}
             if not unique_chunks or not supports:
                 raise MalformedProviderResponse("gemini:missing_search_grounding")
+            blocked_official_hosts = {
+                "wikipedia.org", "wikimedia.org", "openstreetmap.org", "google.com",
+            }
+            official_urls: list[str] = []
+            for raw_url in payload.get("official_source_urls", []):
+                url = _norm_url(raw_url)
+                host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+                blocked = any(host == domain or host.endswith("." + domain) for domain in blocked_official_hosts)
+                if url in unique_chunks and not blocked and url not in official_urls:
+                    official_urls.append(url)
+            payload["official_source_urls"] = official_urls
+            official_set = set(official_urls)
+            grounding = [
+                {**item, "type": "official" if item["url"] in official_set else item["type"]}
+                for item in unique_chunks.values()
+            ]
             return {
                 "payload": payload,
-                "grounding_sources": list(unique_chunks.values()),
+                "grounding_sources": grounding,
                 "grounding_supports": supports,
             }
 
@@ -815,9 +846,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 )
             return
 
+        with self.store.connection() as db:
+            poi_history = prior_facts(db, identity, story_id)
         saved = self.store.checkpoint_get(job["id"], "grounded_research_v2")
         if saved is None:
-            saved = await self._research_claims(story, transcript, identity, previous)
+            saved = await self._research_claims(story, transcript, identity, previous, poi_history)
             self.store.checkpoint_put(job["id"], "grounded_research_v2", saved)
 
         grounding_sources = saved.get("grounding_sources", [])
@@ -909,11 +942,18 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
             if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
                 return
-            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
             for fact in normalized:
                 db.execute(
-                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
-                    "VALUES(?,?,?,?,?,?,?)",
+                    """
+                    INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(story_id,fact_id) DO UPDATE SET
+                      text=excluded.text,
+                      confidence=excluded.confidence,
+                      evidence_supported=excluded.evidence_supported,
+                      selected=excluded.selected,
+                      sources_json=excluded.sources_json
+                    """,
                     (
                         story_id,
                         fact["fact_id"],
@@ -928,11 +968,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             place_name = str(identity.get("candidate_name") or (chosen or {}).get("name") or "").strip() or None
             author_note = str(saved.get("payload", {}).get("author_note") or "").strip()
             draft, image_notes = self._selected_outputs(db, story_id, place_name, author_note)
+            all_fact_rows = list(db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
             source_urls = {
                 source["url"]
-                for fact in normalized
-                for source in fact["sources"]
-                if source.get("url")
+                for row in all_fact_rows
+                for source in json.loads(row["sources_json"])
+                if isinstance(source, dict) and source.get("url")
             }
             research = {
                 **prior,
@@ -947,7 +988,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "source_count": len(source_urls),
                 "author_note": author_note,
                 "image_notes": image_notes,
-                "claim_decisions": {fact["fact_id"]: bool(fact["selected"]) for fact in normalized},
+                "poi_key": str(identity.get("candidate_id") or "") or None,
+                "prior_poi_fact_count": len(poi_history),
+                "claim_decisions": {row["fact_id"]: bool(row["selected"]) for row in all_fact_rows},
             }
             db.execute(
                 "UPDATE stories SET state='review',place_name=?,summary=?,draft_text=?,research_json=?,"
