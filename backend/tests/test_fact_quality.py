@@ -126,7 +126,7 @@ def test_architect_clause_is_extracted_as_its_own_fact():
         "Фридриха Августа Штюлера, известного своими работами."
     )
     facts = atomic_fact_texts(raw)
-    assert "По проекту архитектора Фридриха Августа Штюлера." in facts
+    assert "Проект архитектора Фридриха Августа Штюлера." in facts
     assert any("возведены в 1850 году" in fact for fact in facts)
 
 
@@ -143,3 +143,27 @@ def test_documented_presence_event_is_a_fact():
     assert atomic_fact_text(
         "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
     ) == "На закладке первого камня присутствовал король Фридрих-Вильгельм IV."
+
+
+def test_anniversary_number_is_not_reused_as_calendar_year():
+    raw = (
+        "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда. "
+        "С того же года в воротах размещается центр «Великое посольство»."
+    )
+    assert atomic_fact_texts(raw)[1].startswith("С 2005 года ")
+
+
+def test_long_photo_caption_before_arrival_does_not_hide_fact():
+    raw = (
+        "Королевские ворота вечером (Amber bracelet, CC BY-SA 4.0, via Wikimedia Commons) "
+        "Интересные факты Великое посольство, именем которого назван музейный центр, "
+        "прибыло в Кёнигсберг в 1697 году."
+    )
+    facts = atomic_fact_texts(raw)
+    assert facts == ["прибыло в Кёнигсберг в 1697 году."]
+
+
+def test_vague_anniversary_copy_is_not_fact():
+    assert atomic_fact_text(
+        "Именно они, отреставрированные к 750-у дню рождения города, и украшают собой Калининград."
+    ) is None
