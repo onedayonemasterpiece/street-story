@@ -67,3 +67,21 @@ Emergency public-web snippets remain useful discovery material but are no longer
 promoted to durable facts. A source snippet becomes a fact only after the normal
 evidence-backed research path expresses an atomic claim.
 
+## Multiple sources for one fact
+
+A merged fact may retain many evidence URLs. This is desirable: one atomic claim can
+be supported by an official page, Wikipedia and several independent publications
+without becoming several duplicate checklist items.
+
+Source multiplicity is treated as evidence richness, not as a truth vote. Repetition
+across many sites can still propagate the same false claim. Street Story therefore:
+
+- keeps every distinct supporting URL attached to the merged fact;
+- keeps the official source first when one exists;
+- exposes the number of URLs and distinct sites in the UI;
+- does not automatically convert source count into factual certainty;
+- preserves source diversity for later editorial judgment and future scoring.
+
+When two differently worded claims merge into the same semantic event, their source
+sets are unioned rather than replacing one another.
+
