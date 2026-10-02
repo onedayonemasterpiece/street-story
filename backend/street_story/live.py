@@ -15,6 +15,7 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
+from .fact_conflicts import analyze_fact_conflicts, conflict_rows
 from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id, semantic_fact_key
 from .live_author_intent import (
     begin_turn,
@@ -198,6 +199,21 @@ FUNCTIONS = [
         ["query"],
     ),
     _tool_schema(
+        "resolve_fact_conflict",
+        "Record Mira's evidence-based arbitration of an already detected fact conflict. "
+        "This changes only the internal conflict ledger; it does not silently rewrite the publication or hide facts.",
+        {
+            "conflict_id": {"type": "string"},
+            "resolution": {
+                "type": "string",
+                "enum": ["prefer_left", "prefer_right", "both_valid", "unresolved"],
+            },
+            "reason": {"type": "string"},
+            "confidence": {"type": "number"},
+        },
+        ["conflict_id", "resolution", "reason", "confidence"],
+    ),
+    _tool_schema(
         "select_facts",
         "Change selected evidence-backed facts without rewriting the current publication text.",
         {
@@ -310,6 +326,8 @@ SYSTEM_INSTRUCTION = """
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
 - когда идентичность подтверждена и нужны внешние сведения, используй search_web. Он сохраняет реальные URL и evidence-backed facts в теме; provider-native поиск может помогать ориентироваться, но не заменяет сохранённые источники Street Story;
+- количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным;
+- fact_conflicts в состоянии темы — внутренний журнал возможных противоречий. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web. Когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict; если недостаточно — оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
@@ -542,6 +560,8 @@ class StreetStoryLiveAdapter:
             result = await self._confirm_place(session, command_id, args)
         elif name == "search_web":
             result = await self._search_web(session, command_id, args)
+        elif name == "resolve_fact_conflict":
+            result = self._resolve_fact_conflict(session, command_id, args)
         elif name == "select_facts":
             result = self._select_facts(story_id, command_id, args)
         elif name == "set_concept":
@@ -647,6 +667,7 @@ class StreetStoryLiveAdapter:
                     (story_id,),
                 )
             ]
+            fact_conflict_state = conflict_rows(db, story_id, limit=20)
             confirmation = db.execute(
                 "SELECT * FROM live_publication_confirmations WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
                 (story_id,),
@@ -661,7 +682,13 @@ class StreetStoryLiveAdapter:
                     "timezone": confirmation["timezone"],
                     "state": confirmation["state"],
                 }
-        return {"story": story, "editor": editor_state, "jobs": jobs, "confirmation": latest_confirmation}
+        return {
+            "story": story,
+            "editor": editor_state,
+            "jobs": jobs,
+            "confirmation": latest_confirmation,
+            "fact_conflicts": fact_conflict_state,
+        }
 
     @staticmethod
     def _compact_context(state: dict[str, Any]) -> dict[str, Any]:
@@ -689,6 +716,18 @@ class StreetStoryLiveAdapter:
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
             "facts": facts,
+            "fact_conflicts": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "conflict_id", "left_fact_id", "right_fact_id", "left_text", "right_text",
+                        "relation", "detector_confidence", "suggested_resolution", "suggested_fact_id",
+                        "detector_rationale", "final_resolution", "final_fact_id",
+                        "arbitration_reason", "arbitrated_by", "times_seen",
+                    )
+                }
+                for item in state.get("fact_conflicts", [])[:12]
+            ],
             "source_count": story.get("source_count", 0),
             "publication_concept": story.get("publication_concept"),
             "publication": story.get("publication"),
