@@ -936,6 +936,8 @@ class StreetStoryLiveAdapter:
                     (story_id,),
                 )
             ]
+            from .poi_memory import prior_facts
+            poi_history = prior_facts(db, identity, story_id)
 
         topic_context = {
             "place_name": story.get("place_name"),
@@ -944,6 +946,7 @@ class StreetStoryLiveAdapter:
             "current_draft": str(story.get("draft_text") or "")[:2500],
             "recent_author_context": self._recent_transcript(session, "")[:6000],
             "known_facts": known_facts,
+            "previously_considered_poi_facts": poi_history[:60],
             "visual_identity": identity,
         }
         grounded = await self.service.providers.gemini.search_web(query, topic_context)
