@@ -355,6 +355,69 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identity(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={"summary": "Discovery only", "facts": [], "search_provider": "duckduckgo_html_fallback"},
+            grounding_sources=[
+                {
+                    "type": "web_search",
+                    "title": "Source A",
+                    "url": "https://a.example/gate",
+                    "supports": [{"kind": "search_snippet", "source_url": "https://a.example/gate", "text": "Ворота строились в 1843–1850 годах."}],
+                },
+                {
+                    "type": "web_search",
+                    "title": "Source B",
+                    "url": "https://b.example/gate",
+                    "supports": [{"kind": "search_snippet", "source_url": "https://b.example/gate", "text": "Строительство ворот продолжалось с 1843 по 1850 год."}],
+                },
+            ],
+        )
+
+    svc.providers.gemini.search_web = fallback_search
+    search_result = await adapter.execute_tool(
+        session,
+        {"name": "search_web", "id": "search-corroboration", "args": {"query": "годы строительства ворот"}},
+    )
+    refs = [item["source_ref"] for item in search_result["sources"]]
+    saved = await adapter.execute_tool(
+        session,
+        {
+            "name": "save_research_facts",
+            "id": "save-corroboration",
+            "args": {
+                "facts": [
+                    {
+                        "claim_key": "gate-construction-period",
+                        "text": "Королевские ворота строились в 1843–1850 годах.",
+                        "confidence": 0.9,
+                        "selected": True,
+                        "source_refs": [refs[0]],
+                    },
+                    {
+                        "claim_key": "gate-construction-period",
+                        "text": "Королевские ворота строились в 1843–1850 годах.",
+                        "confidence": 0.95,
+                        "selected": True,
+                        "source_refs": [refs[1]],
+                    },
+                ],
+            },
+        },
+    )
+    assert len(saved["facts"]) == 1
+    assert len(saved["facts"][0]["sources"]) == 2
+    current = svc.story(story_id)
+    assert len(current["facts"]) == 1
+    assert len(current["facts"][0]["sources"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_live_discovery_fallback_rejects_unseen_source_url(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     story_id = session.resource_id

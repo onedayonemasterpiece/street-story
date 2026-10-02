@@ -4,29 +4,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LiveMicrophoneHealthTest {
-    @Test fun quietCaptureIsVisibleWithoutPretendingSpeechWasSent() {
+    @Test fun naturalSilenceIsVisibleButNeverPaintedAsFailure() {
         val health = LiveMicrophoneHealth()
         assertNull(health.observe(0, 2.0).warning)
-        assertNull(health.observe(7999, 4.0).warning)
-        assertNotNull(health.observe(8000, 2.0).warning)
-        assertEquals(0, health.observe(9000, 2.0).level)
-        val speech = health.observe(9100, 1000.0)
+        assertNull(health.observe(8_000, 2.0).warning)
+        assertNull(health.observe(60_000, 0.0).warning)
+        assertEquals(0, health.observe(60_001, 2.0).level)
+        val speech = health.observe(60_100, 1000.0)
         assertNull(speech.warning)
         assertEquals(3, speech.level)
     }
 
     @Test fun playbackIsNotMisreportedAsABrokenMicrophone() {
         val health = LiveMicrophoneHealth()
-        health.observe(0, 0.0)
         val playback = health.observe(9000, 0.0, playbackSuppressed = true)
         assertTrue(playback.playbackSuppressed)
         assertNull(playback.warning)
-        assertNull(health.observe(9100, 0.0).warning)
-        assertNull(health.observe(17000, 0.0).warning)
-        assertNotNull(health.observe(17100, 0.0).warning)
+        assertNull(health.observe(90_000, 0.0).warning)
     }
 
-    @Test fun systemMuteAndClientSilencingAreDistinctFromNaturalSilence() {
+    @Test fun systemMuteAndClientSilencingRemainActionable() {
         val health = LiveMicrophoneHealth()
         assertNotNull(health.observe(0, 1000.0, systemMuted = true).warning)
         assertNotNull(health.observe(1, 1000.0, clientSilenced = true).warning)
