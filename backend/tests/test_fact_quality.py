@@ -88,3 +88,21 @@ def test_location_and_status_still_require_a_real_predicate():
     assert atomic_fact_text(
         "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
     ) == "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда."
+
+
+def test_legacy_heading_glued_to_fact_is_stripped_not_dropped():
+    assert atomic_fact_text(
+        "История создания Королевские ворота были построены в 1843-1850 годах как часть второго вального кольца."
+    ) == "построены в 1843-1850 годах как часть второго вального кольца."
+
+
+def test_legacy_interesting_facts_heading_can_salvage_arrival_fact():
+    assert atomic_fact_text(
+        "Интересные факты Великое посольство прибыло в Кёнигсберг в 1697 году."
+    ) == "прибыло в Кёнигсберг в 1697 году."
+
+
+def test_current_institutional_status_is_a_fact():
+    assert atomic_fact_text(
+        "Сейчас Королевские ворота — одно из зданий Музея Мирового океана."
+    ) == "Сейчас Королевские ворота — одно из зданий Музея Мирового океана."
