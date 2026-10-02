@@ -52,7 +52,7 @@ def test_noisy_multi_sentence_source_is_reduced_to_one_atomic_fact():
         "Королевские ворота снесли, а вместо них в 1843 году решили построить новые. "
         "На закладке первого камня присутствовал король. Далее следует длинное описание страницы."
     )
-    assert atomic_fact_text(text) == "а вместо них в 1843 году решили построить новые."
+    assert atomic_fact_text(text) == "В 1843 году решили построить новые Королевские ворота."
 
 
 def test_personal_review_with_year_is_not_promoted_to_fact():
@@ -186,7 +186,7 @@ def test_old_name_and_later_dismantling_are_separate_facts():
     )
     assert facts == [
         "Самые ранние ворота имели название Кальтхофские",
-        "В начале XVIII века их разобрали.",
+        "В начале XVIII века их разобрали",
     ]
 
 
