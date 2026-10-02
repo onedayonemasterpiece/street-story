@@ -167,3 +167,24 @@ def test_vague_anniversary_copy_is_not_fact():
     assert atomic_fact_text(
         "Именно они, отреставрированные к 750-у дню рождения города, и украшают собой Калининград."
     ) is None
+
+
+def test_compound_demolition_and_new_construction_become_separate_facts():
+    facts = atomic_fact_texts(
+        "Королевские ворота снесли, а вместо них в 1843 году решили построить новые."
+    )
+    assert facts == [
+        "Королевские ворота снесли",
+        "а вместо них в 1843 году решили построить новые.",
+    ]
+
+
+def test_old_name_and_later_dismantling_are_separate_facts():
+    facts = atomic_fact_texts(
+        "История Самые ранние ворота имели название Кальтхофские, "
+        "однако в начале XVIII века их разобрали."
+    )
+    assert facts == [
+        "имели название Кальтхофские",
+        "однако в начале XVIII века их разобрали.",
+    ]
