@@ -624,6 +624,7 @@ class GeminiClient:
                     )[:6000],
                     "official_source_urls": [],
                     "facts": facts,
+                    "conflicts": [],
                     "search_provider": "duckduckgo_html_fallback",
                 },
                 grounding_sources=sources,
@@ -638,44 +639,42 @@ class GeminiClient:
 
     async def detect_fact_conflicts(
         self,
-        pairs: list[dict[str, Any]],
+        facts: list[dict[str, Any]],
         context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Classify plausible contradictions without turning source count into truth."""
-        if not pairs:
+        """Let a model discover contradictions across the whole bounded inventory."""
+        if len(facts) < 2:
             return []
         from google.genai import types
 
         prompt = (
-            "Ты внутренний арбитр фактов Street Story. Перед тобой пары уже извлечённых атомарных "
-            "утверждений об одном POI. Для каждой пары реши, есть ли реальное противоречие. "
-            "relation: none — утверждения совместимы/эквивалентны; contradiction — одновременно истинными "
-            "быть не могут; scope_difference — отличаются период, объект, смысл или область применимости; "
-            "temporal_sequence — описывают разные этапы времени; source_disagreement — источники расходятся, "
-            "но сам конфликт без дополнительной проверки не разрешён; uncertain — данных недостаточно. "
-            "suggested_resolution: prefer_left, prefer_right, both_valid или unresolved. "
-            "Количество сайтов НЕ является голосованием за истину: массово тиражируемая ошибка остаётся ошибкой. "
-            "Официальный источник полезнее для текущего статуса учреждения/владельца, но не автоматически истиннее "
-            "для любого исторического тезиса. Смотри на конкретику, дату, первичность и приведённые supports. "
-            "Если доказательств недостаточно — unresolved. Не выдумывай новые факты и источники. "
-            "Верни запись для каждой входной pair_id.\n\n"
-            "Context: " + json.dumps(context or {}, ensure_ascii=False)[:4000] + "\n"
-            "Pairs: " + json.dumps(pairs, ensure_ascii=False)[:42000]
+            "Ты семантический арбитр Street Story. Получаешь компактный список фактов одного POI. "
+            "Сам реши, какие пары действительно относятся к одному смысловому вопросу и конфликтуют. "
+            "Не используй простое совпадение слов/дат как критерий. Не считай количество сайтов голосованием. "
+            "Различай contradiction, scope_difference, temporal_sequence, source_disagreement и uncertain. "
+            "Для каждого реального конфликта верни left_key/right_key из входа, suggested_resolution "
+            "(prefer_left/prefer_right/both_valid/unresolved), confidence, rationale, needs_more_search и "
+            "search_query. Не возвращай совместимые пары. Если доказательств мало — unresolved и при необходимости "
+            "предложи узкий search_query. Ничего не выдумывай.\n\n"
+            "Context: " + json.dumps(context or {}, ensure_ascii=False)[:5000] + "\n"
+            "Facts: " + json.dumps(facts, ensure_ascii=False)[:36000]
         )
+        schema = {
+            "type": "object",
+            "properties": {
+                "conflicts": {"type": "array", "items": self.CURATED_CONFLICT_SCHEMA},
+            },
+            "required": ["conflicts"],
+        }
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_json_schema=GeminiClient.FACT_CONFLICT_SCHEMA,
+            response_json_schema=schema,
         )
 
         async def call(key, timeout, *, model=None, quota=None):
             response = await self._generate(
-                key,
-                timeout,
-                [prompt],
-                config,
-                operation="grounded_research",
-                model=model,
-                quota=quota,
+                key, timeout, [prompt], config,
+                operation="grounded_research", model=model, quota=quota,
             )
             try:
                 payload = json.loads(response.text or "{}")
@@ -683,7 +682,7 @@ class GeminiClient:
                     raise ValueError
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_fact_conflicts") from None
-            return normalize_conflict_records(pairs, payload)
+            return normalize_conflict_records(facts, payload)
 
         retry_at: list[float] = []
         for model, _pool, quota, executor in self.research_routes:
@@ -703,6 +702,74 @@ class GeminiClient:
             raise GeminiUnavailable(min(retry_at), "all_fact_conflict_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
+    async def curate_fact_inventory(
+        self,
+        current_facts: list[dict[str, Any]],
+        prior_facts: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Semantic fact extraction/dedup/novelty pass; host only validates/persists."""
+        from google.genai import types
+
+        prompt = (
+            "Ты семантический редактор фактов Street Story. Это LLM-first задача: сам извлеки атомарные факты, "
+            "сохрани смысл, объедини только действительно эквивалентные формулировки и сравни их с current_facts "
+            "и prior_facts того же POI. Никакой алгоритм после тебя не будет угадывать смысл. "
+            "semantic_key должен быть стабильным для одного реального утверждения; если новый материал подтверждает "
+            "уже существующий факт — переиспользуй его semantic_key. Если объединяешь/заменяешь текущие формулировки, "
+            "перечисли их ключи в inherits_keys. disposition: new, merge, seen_before или update. "
+            "seen_before означает, что факт уже рассматривался в прошлой публикации и обычно не должен повторяться. "
+            "text — короткое самодостаточное утверждение без названия статьи, URL, фото-подписи и служебных слов. "
+            "source_urls — только URL из переданного evidence, которые реально поддерживают этот факт. "
+            "Также сам сравни весь релевантный набор фактов и верни conflicts; не жди заранее подготовленных пар. "
+            "Количество источников — не голосование за истинность. При противоречии можешь запросить дополнительный "
+            "поиск через needs_more_search/search_query. Не удаляй смысл ради краткости.\n\n"
+            "Context: " + json.dumps(context or {}, ensure_ascii=False)[:5000] + "\n"
+            "Current facts: " + json.dumps(current_facts, ensure_ascii=False)[:12000] + "\n"
+            "Prior POI facts: " + json.dumps(prior_facts, ensure_ascii=False)[:12000] + "\n"
+            "Evidence: " + json.dumps(evidence, ensure_ascii=False)[:26000]
+        )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.FACT_CURATION_SCHEMA,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            response = await self._generate(
+                key, timeout, [prompt], config,
+                operation="grounded_research", model=model, quota=quota,
+            )
+            try:
+                payload = json.loads(response.text or "{}")
+                if (
+                    not isinstance(payload, dict)
+                    or not isinstance(payload.get("facts"), list)
+                    or not isinstance(payload.get("conflicts"), list)
+                ):
+                    raise ValueError
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raise MalformedProviderResponse("gemini:malformed_fact_curation") from None
+            return payload
+
+        retry_at: list[float] = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                return await call(key, timeout, model=_model, quota=_quota)
+            try:
+                return await executor.execute("grounded_research", routed_call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+                continue
+            except PermanentProviderError as exc:
+                if str(exc) == "gemini:unsupported_model":
+                    continue
+                raise
+        if retry_at:
+            raise GeminiUnavailable(min(retry_at), "all_fact_curation_models_unavailable")
+        raise PermanentProviderError("gemini:unsupported_model")
+
     async def search_web(
         self,
         query: str,
@@ -719,20 +786,20 @@ class GeminiClient:
         if not query:
             raise ValueError("web search query is required")
         prompt = (
-            "Ты внутренний поисковый инструмент Street Story, а не собеседник. "
-            "Используй Google Search grounding только для запроса пользователя. "
-            "Сначала обязательно попробуй найти официальный источник объекта или организации, если он существует: "
-            "сайт владельца, музея, учреждения, муниципалитета или оператора. Wikipedia, СМИ, агрегатор и "
-            "туристический каталог официальным источником не являются. Верни реально найденные официальные URL "
-            "в official_source_urls. Верни до 12 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
-            "один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, реконструкция, "
-            "посещение или другой конкретный факт. Без вводных вроде «источник сообщает», без URL и без нескольких "
-            "разных утверждений в одном пункте. Самые важные факты ставь первыми; сведения официального источника "
-            "имеют приоритет. Если Current topic context содержит previously_considered_poi_facts, не повторяй их "
-            "без явной просьбы пользователя повторить или перепроверить: ищи новую фактологию. Для каждого факта "
-            "укажи только source_urls, которые реально видел в grounding. Не пиши публикацию и не предлагай редактуру.\n\n"
+            "Ты внутренний grounded-search и семантический редактор Street Story. "
+            "Сначала найди официальный источник объекта/учреждения, если он существует; Wikipedia, СМИ и агрегаторы "
+            "не являются официальными. Затем САМОСТОЯТЕЛЬНО извлеки атомарные факты из реально найденных источников, "
+            "сравни их с current_facts и prior_facts в Current topic context, выполни семантическую дедупликацию и "
+            "novelty check. Никакой regex после тебя не будет решать, что является фактом. "
+            "Для каждого факта верни semantic_key, короткий самодостаточный text, disposition "
+            "(new/merge/seen_before/update), inherits_keys, confidence, source_urls и rationale. "
+            "Если факт совпадает с существующим — используй его semantic_key; seen_before не нужно выдавать за новый. "
+            "source_urls только из фактически увиденного grounding. Сам также найди противоречия между новыми, текущими "
+            "и ранее рассмотренными фактами и верни conflicts с left_key/right_key, relation, suggested_resolution, "
+            "confidence, rationale и при необходимости needs_more_search/search_query. Количество сайтов не является "
+            "голосованием за истину. Не пиши публикацию.\n\n"
             "Search query: " + query[:1000] + "\n"
-            "Current topic context: " + json.dumps(topic_context, ensure_ascii=False)[:12000]
+            "Current topic context: " + json.dumps(topic_context, ensure_ascii=False)[:16000]
         )
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -756,20 +823,11 @@ class GeminiClient:
                     not isinstance(payload, dict)
                     or not isinstance(payload.get("summary"), str)
                     or not isinstance(payload.get("official_source_urls"), list)
-                    or any(not isinstance(url, str) for url in payload["official_source_urls"])
                     or not isinstance(payload.get("facts"), list)
+                    or not isinstance(payload.get("conflicts"), list)
                 ):
                     raise ValueError
-                for fact in payload["facts"]:
-                    if (
-                        not isinstance(fact, dict)
-                        or not isinstance(fact.get("text"), str)
-                        or not isinstance(fact.get("source_urls"), list)
-                        or any(not isinstance(url, str) for url in fact["source_urls"])
-                        or not math.isfinite(float(fact.get("confidence", 0)))
-                    ):
-                        raise ValueError
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_web_search") from None
 
             sources: list[dict[str, Any]] = []
