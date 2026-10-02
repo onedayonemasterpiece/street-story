@@ -15,17 +15,24 @@ class LiveSpeechAdmissionTest {
     }
     @Test fun sustainedVotesAdmitSpeechWithoutLosingExistingPreroll() {
         val gate = LiveSpeechAdmission()
-        repeat(5) { assertFalse(gate.accept(true, 350.0)) }
+        repeat(11) { assertFalse(gate.accept(true, 350.0)) }
         assertTrue(gate.accept(true, 350.0))
         assertTrue(gate.accept(true, 180.0))
     }
     @Test fun playbackRecoveryRequiresFreshVotes() {
         val gate = LiveSpeechAdmission()
-        repeat(8) { gate.accept(true, 350.0) }
+        repeat(16) { gate.accept(true, 350.0) }
         gate.resetEvidence()
         assertFalse(gate.accept(true, 350.0))
-        repeat(4) { assertFalse(gate.accept(true, 350.0)) }
+        repeat(10) { assertFalse(gate.accept(true, 350.0)) }
         assertTrue(gate.accept(true, 350.0))
+    }
+
+    @Test fun screenshotLikeTransientDoesNotOpenProviderActivity() {
+        val gate = LiveSpeechAdmission()
+        repeat(9) { assertFalse(gate.accept(true, 1200.0)) }
+        repeat(12) { assertFalse(gate.accept(false, 10.0)) }
+        assertEquals(0L, gate.acceptedFrames)
     }
     @Test fun nonFiniteEnergyNeverOpensInput() {
         val gate = LiveSpeechAdmission()
