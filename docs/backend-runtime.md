@@ -64,6 +64,27 @@ Gemini; failure leaves the currently running Street Story release untouched.
 
 The product conversation/orchestration path uses only `gemini-3.8-live`. Internet search stays inside that same Live session. Provider-native Google Search on `gemini-3.8-live` is preferred because it preserves one conversational context with no second research workflow. If native search is unavailable, Street Story falls back to its synchronous `search_web` application function using grounded `gemini-3.1-flash-lite`, then `gemini-3.5-flash-lite`, then search-only `gemini-3.8-flash`. If Google grounding is exhausted across all of those routes, `search_web` performs one bounded independent web-result lookup and returns source-linked search snippets to the same Live session as low-confidence discovery evidence; it never silently upgrades snippets into verified facts. Lite/search helpers return evidence and source URLs to the running Live conversation; they do not own the conversation, create a second research workflow, or rewrite publication text. Legacy async research endpoints remain compatibility code only. Legacy transcription remains independently routed through `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite`. Keep an identifying OSM User-Agent.
 
+## LLM-first semantic boundary
+
+Semantic product decisions are model-owned. Mira/the configured Gemini route decides what
+is a fact, assigns the stable `claim_key`, declares semantic equivalence to an existing
+`fact_id`, selects contradictory claims, proposes/arbitrates conflict resolution, shapes
+the publication concept and composes publication prose. The normal runtime must not replace
+those decisions with regexes, keyword lists, year/event classifiers or rule scores.
+
+Deterministic code is intentionally narrower: it validates response shape and bounds,
+checks that source URLs/POI evidence references were actually retrieved, verifies referenced
+IDs exist, enforces authentication/idempotency/state transitions, persists data and emits
+telemetry. If the required semantic model step is unavailable or malformed, the operation
+fails closed instead of synthesizing facts or prose with a deterministic fallback.
+
+Publication composition is a separate model step over the author note, concept and selected
+evidence-backed facts. The target is normal editorial Russian prose, usually 2–5 short
+connected paragraphs, not one paragraph per fact. A fact-selection or concept change marks
+the current draft `draft_needs_refresh`; publication preparation is blocked until Mira
+produces a current text. The legacy `fact_quality.py` rule engine is migration/repair code
+only and is not imported by research, Live, POI intake or conflict orchestration.
+
 ## Exact source SHA gate
 
 `GET /healthz` returns `ok=true` and `source_sha`. For PR Live E2E, `source_sha` must equal the exact current PR HEAD. A missing/mismatched SHA is a deployment failure and the workflow stops before product effects. Do not disable this gate and do not test a newer source harness against an older deployed backend.

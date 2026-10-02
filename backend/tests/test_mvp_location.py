@@ -93,6 +93,12 @@ class FakeGemini:
             "grounding_supports": [],
         }
 
+    async def compose_publication(self, *, place_name, concept, author_note, facts):
+        return {
+            "concept": concept or "История Бранденбургских ворот",
+            "draft_text": "\n\n".join(str(item["text"]) for item in facts) or author_note,
+        }
+
 
 class NoopVP:
     async def bootstrap(self):

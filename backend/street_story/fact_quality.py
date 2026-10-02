@@ -1,4 +1,9 @@
-"""Deterministic fact quality boundary shared by research and Live web-search."""
+"""Legacy deterministic fact repair helpers.
+
+Not used by the normal Street Story research/Live/POI path. Kept only for explicit
+migration/repair tooling over already stored legacy data. Semantic product decisions are
+LLM-first; do not import this module into runtime orchestration.
+"""
 from __future__ import annotations
 
 import hashlib

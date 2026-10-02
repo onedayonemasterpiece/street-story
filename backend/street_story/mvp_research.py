@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
 from .fact_conflicts import analyze_fact_conflicts
-from .fact_quality import atomic_fact_text, merge_fact_inventory, semantic_fact_id
+from .model_facts import merge_model_fact_inventory, model_fact_id, normalized_claim_key, validated_model_fact_text
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
@@ -23,9 +23,6 @@ from .providers import PermanentProviderError
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
 
 
-_WORD = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{4,}")
-
-
 def _is_internal_acceptance_destination(alias: Any) -> bool:
     value = str(alias or "").strip().lower()
     return value == "street_story_e2e_tg" or value.startswith("street_story_e2e_")
@@ -34,20 +31,6 @@ def _is_internal_acceptance_destination(alias: Any) -> bool:
 def _norm_url(value: Any) -> str:
     text = str(value or "").strip()
     return text.rstrip("/") if text.startswith("https://") else ""
-
-
-def _claim_id(claim_key: str, text: str) -> str:
-    identity = re.sub(r"\s+", " ", (claim_key or text).strip().lower())
-    return "claim_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
-
-
-def _excerpt_supports(claim: str, excerpt: str) -> bool:
-    claim_words = {word.lower() for word in _WORD.findall(claim) if len(word) >= 5}
-    if not claim_words:
-        return False
-    lowered = excerpt.lower()
-    hits = sum(1 for word in claim_words if word in lowered)
-    return hits >= min(2, len(claim_words))
 
 
 class MvpResearchMixin(IdentityLifecycleMixin):
@@ -186,25 +169,6 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             )
             return self._story_repr(db, self._story_row(db, story_id))
 
-    def _selected_outputs(self, db, story_id: str, place_name: str | None, author_note: str = "") -> tuple[str | None, str]:
-        selected = [
-            str(row["text"]).strip()
-            for row in db.execute(
-                "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
-                (story_id,),
-            )
-            if str(row["text"]).strip()
-        ]
-        post_parts: list[str] = []
-        if author_note.strip():
-            post_parts.append(author_note.strip())
-        post_parts.extend(selected)
-        draft = "\n\n".join(post_parts).strip() or None
-        image_notes = "\n".join(selected[:6])
-        if place_name and image_notes:
-            image_notes = f"{place_name}:\n{image_notes}"
-        return draft, image_notes
-
     def _mark_visual_stale(self, db, story, selected_ids: list[str]) -> None:
         context = json.loads(story["visual_context_json"] or "{}")
         if not context:
@@ -264,17 +228,18 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 for row in db.execute("SELECT fact_id,selected FROM facts WHERE story_id=?", (story_id,))
             }
             research["claim_decisions"] = decisions
-            generated_draft, image_notes = self._selected_outputs(
-                db, story_id, story["place_name"], str(research.get("author_note") or "")
-            )
-            # Live/manual selection can update evidence without erasing an already
-            # authored publication draft. Legacy callers keep the historical rebuild.
-            preserve_draft = bool(body.get("preserve_draft", False))
-            draft = str(story["draft_text"] or "") if preserve_draft else generated_draft
-            research["image_notes"] = image_notes
+            selected_text = [
+                str(row["text"])
+                for row in db.execute(
+                    "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    (story_id,),
+                )
+            ]
+            research["image_notes"] = "\n".join(selected_text[:6])
+            research["draft_needs_refresh"] = True
             db.execute(
-                "UPDATE stories SET draft_text=?,research_json=?,updated_at=? WHERE id=?",
-                (draft, canonical(research), self.store.now(), story_id),
+                "UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
+                (canonical(research), self.store.now(), story_id),
             )
             supported_selected = [
                 row["fact_id"]
@@ -608,16 +573,19 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             "реконструкция, посещение или другой конкретный факт. Не пиши вместо факта описание источника, вводные "
             "вроде «сайт сообщает», URL или несколько разных утверждений в одном пункте. Самые важные факты ставь первыми. "
             "claim_key — короткая стабильная семантическая идентичность утверждения, не зависящая от перефразирования. "
+            "Если факт семантически совпадает с previous_claims_and_owner_decisions, верни точный fact_id в existing_fact_id; "
+            "для нового факта existing_fact_id оставь пустой строкой. Это решение о тождестве принимает модель. "
             "Сначала обязательно ищи официальный источник объекта/учреждения, если он существует. Официальным считается сайт "
             "владельца, музея, учреждения, муниципалитета или оператора, но не Wikipedia, СМИ, агрегатор или туристический каталог. "
             "URL официальных источников, реально увиденных через grounding, перечисли в official_source_urls. Факты из официального "
             "источника имеют приоритет; для каждого факта source_urls перечисляй только реально поддерживающие его источники. "
-            "previously_considered_poi_facts — факты об этом же объекте из предыдущих тем: не повторяй их в новой публикации, "
-            "если пользователь явно не просит повторить или обновить их; ищи новую фактологию. "
+            "previously_considered_poi_facts — факты об этом же объекте из предыдущих тем и, когда доступно, из Regional Knowledge/POI: "
+            "используй их как модельный контекст для смыслового сопоставления и поиска противоречий; не считай их автоматически истинными "
+            "и не повторяй в новой публикации без причины. Если пользователь не просит повторить/обновить, ищи новую фактологию. "
             "Не считай собственный ответ источником и не выдумывай цитаты. author_note может содержать только субъективное впечатление "
             "пользователя из voice context, без добавленных исторических сведений. "
             "Верни только один JSON-объект без Markdown и комментариев строго такой формы: "
-            '{"summary":"...","author_note":"...","official_source_urls":[],"facts":[{"claim_key":"...","text":"...","confidence":0.0,"source_urls":["https://..."]}]}.\\n'
+            '{"summary":"...","author_note":"...","official_source_urls":[],"facts":[{"claim_key":"...","existing_fact_id":"","text":"...","confidence":0.0,"source_urls":["https://..."]}]}.\\n'
             + json.dumps(
                 {
                     "confirmed_identity": identity,
@@ -657,6 +625,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     if (
                         not isinstance(fact, dict)
                         or not isinstance(fact.get("claim_key"), str)
+                        or (
+                            "existing_fact_id" in fact
+                            and not isinstance(fact.get("existing_fact_id"), str)
+                        )
                         or not isinstance(fact.get("text"), str)
                         or not isinstance(fact.get("source_urls"), list)
                         or not math.isfinite(float(fact.get("confidence", 0.0)))
@@ -852,10 +824,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
 
         with self.store.connection() as db:
             poi_history = prior_facts(db, identity, story_id)
-        saved = self.store.checkpoint_get(job["id"], "grounded_research_v2")
+        saved = self.store.checkpoint_get(job["id"], "grounded_research_v3")
         if saved is None:
             saved = await self._research_claims(story, transcript, identity, previous, poi_history)
-            self.store.checkpoint_put(job["id"], "grounded_research_v2", saved)
+            self.store.checkpoint_put(job["id"], "grounded_research_v3", saved)
 
         grounding_sources = saved.get("grounding_sources", [])
         grounding_supports = saved.get("grounding_supports", [])
@@ -891,14 +863,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             for row in previous
             if row.get("fact_id")
         }
+        previous_fact_ids = set(old_decisions)
         normalized: list[dict[str, Any]] = []
         seen_claims: set[str] = set()
         for item in incoming:
-            text = atomic_fact_text(str(item.get("text") or ""))
-            claim_key = str(item.get("claim_key") or "").strip()
-            if text is None:
+            text = validated_model_fact_text(item.get("text"))
+            claim_key = normalized_claim_key(item.get("claim_key"))
+            if text is None or claim_key is None:
                 continue
-            fact_id = semantic_fact_id(claim_key, text)
+            existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+            fact_id = (
+                existing_fact_id
+                if existing_fact_id in previous_fact_ids
+                else model_fact_id(claim_key, text)
+            )
             if fact_id in seen_claims:
                 continue
             seen_claims.add(fact_id)
@@ -908,26 +886,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 source = known.get(url)
                 if not source:
                     continue
-                supports: list[dict[str, str]] = []
-                supports.extend(grounding_by_url.get(url, []))
-                excerpt = str(source.get("excerpt") or "")
-                if excerpt and _excerpt_supports(text, excerpt):
-                    supports.append(
-                        {
-                            "kind": "retrieved_excerpt",
-                            "source_url": url,
-                            "text": excerpt[:600],
-                        }
-                    )
-                if supports:
-                    sources.append(
-                        {
-                            "type": source["type"],
-                            "title": source["title"],
-                            "url": url,
-                            "supports": supports,
-                        }
-                    )
+                supports = list(grounding_by_url.get(url, []))
+                sources.append(
+                    {
+                        "type": source["type"],
+                        "title": source["title"],
+                        "url": url,
+                        "supports": supports,
+                    }
+                )
             evidence_supported = bool(sources)
             default_selected = evidence_supported and (not is_refinement)
             selected = evidence_supported and old_decisions.get(fact_id, default_selected)
@@ -943,17 +910,48 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 }
             )
 
-        inventory = merge_fact_inventory([
+        inventory = merge_model_fact_inventory([
             *[
                 {
                     **item,
-                    "claim_key": "",
                     "evidence_supported": bool(item.get("evidence_supported")),
                 }
                 for item in previous
             ],
             *normalized,
         ])
+
+        chosen = catalog.get(str(identity.get("candidate_id") or ""))
+        place_name = str(identity.get("candidate_name") or (chosen or {}).get("name") or "").strip() or None
+        author_note = str(saved.get("payload", {}).get("author_note") or "").strip()
+        selected_for_draft = [
+            {
+                "fact_id": str(fact.get("fact_id") or ""),
+                "text": str(fact.get("text") or ""),
+                "sources": fact.get("sources") or [],
+            }
+            for fact in inventory
+            if fact.get("selected") and fact.get("evidence_supported")
+        ]
+        compose = getattr(self.providers.gemini, "compose_publication", None)
+        if not callable(compose):
+            raise PermanentProviderError("Gemini publication composition capability is unavailable")
+        composition = await compose(
+            place_name=place_name,
+            concept=str(prior.get("publication_concept") or ""),
+            author_note=author_note,
+            facts=selected_for_draft,
+        )
+        draft = str(composition.get("draft_text") or "").strip()
+        if not draft:
+            raise PermanentProviderError("Gemini publication composition returned empty draft")
+        publication_concept = (
+            str(prior.get("publication_concept") or "").strip()
+            or str(composition.get("concept") or "").strip()
+        )
+        image_notes = "\n".join(str(fact["text"]) for fact in selected_for_draft[:6])
+        if place_name and image_notes:
+            image_notes = f"{place_name}:\n{image_notes}"
 
         with self.store.tx() as db:
             latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
@@ -977,10 +975,6 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                         canonical(fact["sources"]),
                     ),
                 )
-            chosen = catalog.get(str(identity.get("candidate_id") or ""))
-            place_name = str(identity.get("candidate_name") or (chosen or {}).get("name") or "").strip() or None
-            author_note = str(saved.get("payload", {}).get("author_note") or "").strip()
-            draft, image_notes = self._selected_outputs(db, story_id, place_name, author_note)
             all_fact_rows = list(db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
             source_urls = {
                 source["url"]
@@ -1000,6 +994,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "grounding_sources": grounding_sources,
                 "source_count": len(source_urls),
                 "author_note": author_note,
+                "publication_concept": publication_concept[:1200] or None,
+                "draft_composed_by": "gemini_model",
+                "draft_needs_refresh": False,
                 "image_notes": image_notes,
                 "poi_key": str(identity.get("candidate_id") or "") or None,
                 "prior_poi_fact_count": len(poi_history),
@@ -1022,7 +1019,6 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             *[
                 {
                     **item,
-                    "claim_key": "",
                     "evidence_supported": bool(item.get("evidence_supported")),
                 }
                 for item in previous
