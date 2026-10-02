@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS fact_conflicts(
  final_resolution TEXT,
  final_fact_id TEXT,
  arbitration_reason TEXT,
+ arbitration_confidence REAL,
  arbitrated_by TEXT,
  evidence_json TEXT NOT NULL,
  times_seen INTEGER NOT NULL DEFAULT 1,
