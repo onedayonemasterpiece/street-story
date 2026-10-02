@@ -4,9 +4,14 @@ import asyncio
 import time
 from .identity_lifecycle import confidence, distance, visual_match
 from .identity_telemetry import record_identity_event
+from .camera_hints import read_camera_hints
+from pathlib import Path
 
 
 async def identify_nearest(service, story, transcript, candidates):
+    story = dict(story)
+    if '_camera_hints' not in story:
+        story['_camera_hints'] = read_camera_hints(Path(story['photo_path'])) if story.get('photo_path') else {}
     ordered = sorted(candidates, key=lambda item: (distance(item), str(item.get('candidate_id'))))[:16]
     best = {'status': 'uncertain', 'candidate_id': '', 'confidence': 0.0,
             'observations': ['Нет достаточных визуальных свидетельств.'], 'alternative_candidate_ids': []}

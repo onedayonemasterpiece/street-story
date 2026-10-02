@@ -17,7 +17,7 @@ async def test_nearby_exposes_wikimedia_reference_image_urls(tmp_path):
         if calls == 1:
             return httpx.Response(
                 200,
-                json={"query": {"geosearch": [{"pageid": 77, "title": "Тестовые ворота", "dist": 57.0}]}},
+                json={"query": {"geosearch": [{"pageid": 77, "title": "Тестовые ворота", "dist": 57.0, "lat": 54.7005, "lon": 20.5}]}},
             )
         return httpx.Response(
             200,
@@ -52,3 +52,5 @@ async def test_nearby_exposes_wikimedia_reference_image_urls(tmp_path):
     assert pages[0]["image_url"].startswith("https://upload.wikimedia.org/")
     assert pages[0]["thumbnail_url"].startswith("https://upload.wikimedia.org/")
     assert pages[0]["distance_m"] == 57.0
+    assert pages[0]["lat"] == 54.7005
+    assert pages[0]["lon"] == 20.5
