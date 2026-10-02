@@ -145,6 +145,31 @@ def test_idempotent_external_evidence_creates_candidate_poi_and_claim(tmp_path):
         ingest_poi_evidence(store, changed)
 
 
+def test_same_model_semantic_key_with_different_text_fails_closed(tmp_path):
+    store = Store(tmp_path / "street.sqlite3")
+    ingest_poi_evidence(
+        store,
+        event(
+            event_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            candidate_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+            idempotency_key="knowledge:collision-left",
+            text="Ворота построены в 1843 году.",
+            semantic_key="construction:date",
+        ),
+    )
+    with pytest.raises(PoiEvidenceConflict, match="semantic_key_claim_collision"):
+        ingest_poi_evidence(
+            store,
+            event(
+                event_id="12121212-1212-1212-1212-121212121212",
+                candidate_id="34343434-3434-3434-3434-343434343434",
+                idempotency_key="knowledge:collision-right",
+                text="Ворота построены в 1850 году.",
+                semantic_key="construction:date",
+            ),
+        )
+
+
 def test_name_only_unknown_place_stays_unresolved_without_creating_poi(tmp_path):
     store = Store(tmp_path / "street.sqlite3")
     payload = event(
@@ -178,7 +203,7 @@ def test_same_poi_queues_model_candidate_but_does_not_declare_conflict(tmp_path)
             candidate_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             idempotency_key="knowledge:first",
             text="Ворота построены в 1843 году.",
-            semantic_key="construction:date",
+            semantic_key="construction:1843",
         ),
     )
     second = ingest_poi_evidence(
@@ -188,7 +213,7 @@ def test_same_poi_queues_model_candidate_but_does_not_declare_conflict(tmp_path)
             candidate_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
             idempotency_key="knowledge:second",
             text="Ворота построены в 1850 году.",
-            semantic_key="construction:date",
+            semantic_key="construction:1850",
         ),
     )
 
@@ -222,7 +247,7 @@ def test_private_evidence_from_different_owners_does_not_cross_candidate(tmp_pat
             idempotency_key="knowledge:a",
             owner=OWNER_A,
             text="Ворота построены в 1843 году.",
-            semantic_key="construction:date",
+            semantic_key="construction:1843",
         ),
     )
     second = ingest_poi_evidence(
@@ -233,7 +258,7 @@ def test_private_evidence_from_different_owners_does_not_cross_candidate(tmp_pat
             idempotency_key="knowledge:b",
             owner=OWNER_B,
             text="Ворота построены в 1850 году.",
-            semantic_key="construction:date",
+            semantic_key="construction:1850",
         ),
     )
 
@@ -255,7 +280,7 @@ def test_public_evidence_can_be_model_candidate_with_private_owner_evidence(tmp_
         visibility="public",
         owner=OWNER_A,
         text="Ворота построены в 1843 году.",
-        semantic_key="construction:date",
+        semantic_key="construction:1843",
     )
     private_payload = event(
         event_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -264,7 +289,7 @@ def test_public_evidence_can_be_model_candidate_with_private_owner_evidence(tmp_
         visibility="private",
         owner=OWNER_B,
         text="Ворота построены в 1850 году.",
-        semantic_key="construction:date",
+        semantic_key="construction:1850",
     )
     ingest_poi_evidence(store, public_payload)
     second = ingest_poi_evidence(store, private_payload)
