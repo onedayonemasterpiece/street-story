@@ -47,8 +47,9 @@ _ROLE = re.compile(
     r"первоначальное\s+назначение|современное\s+назначение|проект\s+архитектора)\b",
     re.IGNORECASE,
 )
+_CONSTRUCTION_ACTION = r"(?:постро(?:ен\w*|ил\w*|ить|ят\w*)|строительств\w*|залож\w*|возвед\w*|сооруж\w*)"
 _SIGNAL = re.compile(
-    r"(?:постро\w*|строительств\w*|залож\w*|заверш\w*|возвед\w*|сооруж\w*|основан\w*|откры\w*|"
+    rf"(?:{_CONSTRUCTION_ACTION}|заверш\w*|основан\w*|откры\w*|"
     r"реконстру\w*|реставр\w*|восстанов\w*|снес\w*|демонтир\w*|"
     r"разруш\w*|передан\w*|вош[её]л\w*|стал\w*\s+частью|"
     r"использовал\w*|размещал\w*|посетил\w*|посещал\w*|"
@@ -60,11 +61,11 @@ _SIGNAL = re.compile(
     re.IGNORECASE,
 )
 _KINDS = (
-    ("construction", re.compile(r"(?:постро\w*|строительств\w*|залож\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
+    ("construction", re.compile(_CONSTRUCTION_ACTION, re.IGNORECASE)),
     ("architect", re.compile(r"(?:архитектор|автор\s+проекта|проект\s+архитектора|спроектир\w*)", re.IGNORECASE)),
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
-    ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*)", re.IGNORECASE)),
+    ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*|разобрал\w*)", re.IGNORECASE)),
     ("ownership", re.compile(r"(?:передан\w*|вош[её]л\w*|стал\w*\s+частью|принадлеж\w*|одно\s+из\s+зданий|филиал\w*)", re.IGNORECASE)),
     ("visit", re.compile(r"(?:посетил\w*|посещал\w*|прибыл\w*|присутствовал\w*)", re.IGNORECASE)),
     ("name", re.compile(r"(?:имел\w*\s+назван\w*|называл\w*)", re.IGNORECASE)),
