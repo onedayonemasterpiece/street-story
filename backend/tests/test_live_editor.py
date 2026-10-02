@@ -322,6 +322,42 @@ async def test_live_web_search_stays_in_session_and_does_not_rewrite_draft(tmp_p
     assert any(event.get("type") == "product_state" for event in events)
 
 
+
+@pytest.mark.asyncio
+async def test_live_web_search_does_not_reselect_a_previously_rejected_fact(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    with svc.store.tx() as db:
+        db.execute(
+            "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                story_id,
+                "legacy-location",
+                "Бранденбургские ворота находятся в Калининграде.",
+                0.98,
+                1,
+                0,
+                '[{"type":"web","title":"Brandenburg source","url":"https://example.com/brandenburg"}]',
+            ),
+        )
+
+    await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-rejected",
+            "args": {"query": "Бранденбургские ворота Калининград история"},
+        },
+    )
+
+    with svc.store.connection() as db:
+        rows = list(db.execute("SELECT text,selected FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
+    assert len(rows) == 1
+    assert rows[0]["text"] == "Бранденбургские ворота находятся в Калининграде."
+    assert rows[0]["selected"] == 0
+
 @pytest.mark.asyncio
 async def test_literal_span_is_protected_and_undo_restores_previous_text(tmp_path):
     svc, adapter, session, events = make_service(tmp_path)
