@@ -41,7 +41,7 @@ _SIGNAL = re.compile(
     re.IGNORECASE,
 )
 _KINDS = (
-    ("construction", re.compile(r"(?:постро\w*|строительств\w*|залож\w*|заверш\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
+    ("construction", re.compile(r"(?:постро\w*|строительств\w*|залож\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
     ("architect", re.compile(r"(?:архитектор|автор\s+проекта|спроектир\w*)", re.IGNORECASE)),
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
