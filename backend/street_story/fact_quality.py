@@ -7,12 +7,12 @@ from typing import Any
 
 _SPACE = re.compile(r"\s+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+|\s*;\s*")
-_YEAR = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})\b")
+_YEAR = re.compile(r"(?<!\d)(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})(?!\d)(?![-‑–—](?:лет|лети|летн|й|я|у)\w*)")
 _BAD = re.compile(
     r"(?:интересн\w*\s+факт|истори\w*\s+создани|смотрите\s+также|"
     r"\b(?:copyright|license|лицензи\w*|фотограф\w*|автор\s+фото|"
     r"фото\s*[:—-]|изображени\w*|читать\s+далее|подробнее|вечером|"
-    r"как\s+добраться|где\s+наход\w*|новая\s+жизн\w*|цены\s+в|экскурси\w*)\b)",
+    r"как\s+добраться|где\s+наход\w*|новая\s+жизн\w*|украша\w*\s+собой|цены\s+в|экскурси\w*)\b)",
     re.IGNORECASE,
 )
 _PERSONAL = re.compile(
@@ -26,7 +26,7 @@ _HEADING = re.compile(
 )
 _ROLE = re.compile(
     r"^(?:архитектор|основатель|заказчик|владелец|автор\s+проекта|"
-    r"первоначальное\s+назначение|современное\s+назначение)\b",
+    r"первоначальное\s+назначение|современное\s+назначение|проект\s+архитектора)\b",
     re.IGNORECASE,
 )
 _SIGNAL = re.compile(
@@ -43,7 +43,7 @@ _SIGNAL = re.compile(
 )
 _KINDS = (
     ("construction", re.compile(r"(?:постро\w*|строительств\w*|залож\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
-    ("architect", re.compile(r"(?:архитектор|автор\s+проекта|спроектир\w*)", re.IGNORECASE)),
+    ("architect", re.compile(r"(?:архитектор|автор\s+проекта|проект\s+архитектора|спроектир\w*)", re.IGNORECASE)),
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
     ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*)", re.IGNORECASE)),
@@ -87,7 +87,7 @@ def _candidate_score(text: str, index: int) -> tuple[int, int, int]:
 
 
 def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[str | None, tuple[int, int, int] | None]:
-    text = compact_fact_text(sentence)
+    text = _SPACE.sub(" ", str(sentence or "")).strip(" \t\r\n-•")
     if prior_year and re.match(r"^с\s+того\s+же\s+года\b", text, re.IGNORECASE):
         text = re.sub(
             r"^с\s+того\s+же\s+года\b",
@@ -112,7 +112,8 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
         # Typical legacy image captions lead a useful sentence. Once the first
         # factual predicate is far into the string, keep the claim rather than
         # the caption-like prefix.
-        text = compact_fact_text(text[signal.start():])
+        text = text[signal.start():]
+    text = compact_fact_text(text)
     if len(text) < 12 or len(text) > 181:
         return None, None
     if _BAD.search(text) or _PERSONAL.search(text):
@@ -142,7 +143,7 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
             re.IGNORECASE,
         )
         if architect:
-            derived = compact_fact_text("По проекту архитектора " + architect.group(1).strip() + ".")
+            derived = compact_fact_text("Проект архитектора " + architect.group(1).strip() + ".")
             if derived not in result:
                 result.append(derived)
         if years:
