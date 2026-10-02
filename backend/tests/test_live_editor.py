@@ -31,11 +31,26 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     svc, adapter, session, _events = make_service(tmp_path)
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
     configuration = initialized["configuration"]
-    assert configuration["search_enabled"] is True
+    assert configuration["search_enabled"] is False
     assert configuration["manual_activity_detection"] is True
     assert configuration["application_search_function"] == "search_web"
     assert configuration["media_resolution"] == "MEDIA_RESOLUTION_MEDIUM"
     assert any(item["name"] == "search_web" for item in configuration["functions"])
+    from live_interaction.provider import setup_config
+
+    provider_setup = setup_config(
+        "gemini-3.8-live",
+        {},
+        configuration=configuration,
+        search=configuration["search_enabled"],
+    )["setup"]
+    assert not any("googleSearch" in tool for tool in provider_setup["tools"])
+    function_names = {
+        item["name"]
+        for tool in provider_setup["tools"]
+        for item in tool.get("functionDeclarations", [])
+    }
+    assert "search_web" in function_names
 
 
 def test_live_functions_expose_place_and_search_tools_not_async_research_job() -> None:
