@@ -7,6 +7,7 @@ import pytest
 
 from street_story.config import Settings
 from street_story.mvp_research import MvpResearchStreetStoryService
+from street_story.poi_memory import persist_research_memory
 from street_story.service import ConflictError, NotFoundError, ProviderBundle
 
 
@@ -128,6 +129,82 @@ async def test_identity_job_is_mandatory_and_does_not_collect_facts(tmp_path):
     assert gemini.identity_calls
     wiki = next(item for item in gemini.identity_calls[0] if item["candidate_id"] == "wiki:77")
     assert wiki["reference_image_urls"][0] == WIKI_IMAGE
+
+
+@pytest.mark.asyncio
+async def test_same_poi_hydrates_durable_facts_before_new_search(tmp_path):
+    service, gemini = make_service(tmp_path)
+    identity = {
+        "candidate_id": "wiki:77",
+        "candidate_name": "Тестовые ворота",
+        "candidate_url": "https://ru.wikipedia.org/wiki/Test",
+        "candidates": [{
+            "candidate_id": "wiki:77",
+            "name": "Тестовые ворота",
+            "url": "https://ru.wikipedia.org/wiki/Test",
+        }],
+    }
+    source = {
+        "type": "web_search",
+        "title": "Источник",
+        "url": "https://example.org/test-gate",
+        "supports": [{
+            "kind": "search_snippet",
+            "source_url": "https://example.org/test-gate",
+            "text": "На фасаде находятся три скульптуры.",
+        }],
+    }
+    durable_fact = {
+        "fact_id": "claim-durable-sculptures",
+        "claim_key": "test-gate-sculptures",
+        "text": "На фасаде находятся три исторические скульптуры.",
+        "confidence": .96,
+        "evidence_supported": True,
+        "selected": True,
+        "sources": [source],
+    }
+    with service.store.tx() as db:
+        persist_research_memory(
+            db, identity, [durable_fact], [source],
+            "скульптуры тестовых ворот", service.store.now(),
+        )
+
+    first = create(service, client="reuse-first")
+    assert service.ensure_identity(first["id"])["state"] == "identifying"
+    assert await service.run_once() is True
+    first_ready = service.story(first["id"])
+    assert [fact["fact_id"] for fact in first_ready["facts"]] == ["claim-durable-sculptures"]
+    assert first_ready["facts"][0]["evidence_supported"] is True
+    assert first_ready["facts"][0]["selected"] is True
+    assert gemini.research_calls == 0
+
+    with service.store.connection() as db:
+        research = __import__("json").loads(
+            db.execute("SELECT research_json FROM stories WHERE id=?", (first["id"],)).fetchone()[0]
+        )
+        assert research["poi_reused_fact_count"] == 1
+        poi_id = research["poi_id"]
+        poi = db.execute("SELECT canonical_name FROM pois WHERE id=?", (poi_id,)).fetchone()
+        assert poi["canonical_name"] == "Тестовые ворота"
+        aliases = {
+            (row["namespace"], row["value"])
+            for row in db.execute("SELECT namespace,value FROM poi_aliases WHERE poi_id=?", (poi_id,))
+        }
+        assert ("street_story_candidate", "wiki:77") in aliases
+        assert ("name", "Тестовые ворота") in aliases
+
+    service.delete_story(first["id"])
+    with service.store.connection() as db:
+        assert db.execute(
+            "SELECT 1 FROM poi_research_facts WHERE poi_key='wiki:77' AND fact_id='claim-durable-sculptures'"
+        ).fetchone() is not None
+
+    second = create(service, client="reuse-second")
+    assert service.ensure_identity(second["id"])["state"] == "identifying"
+    assert await service.run_once() is True
+    second_ready = service.story(second["id"])
+    assert [fact["fact_id"] for fact in second_ready["facts"]] == ["claim-durable-sculptures"]
+    assert gemini.research_calls == 0
 
 
 @pytest.mark.asyncio

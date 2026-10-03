@@ -226,6 +226,19 @@ class IdentityLifecycleMixin:
                     or (latest.get('visual_identity') or {}).get('status') == 'owner_confirmed'):
                     return self._story_repr(db, current)
                 latest.update({'visual_identity': identity, 'identity_attempted_generation': generation, 'osm': osm, 'wikipedia': wikipedia, 'photo_camera_hints': binding})
+                if matched:
+                    from .poi_memory import ensure_poi_identity, hydrate_story_facts
+                    now = self.store.now()
+                    poi_id = ensure_poi_identity(
+                        db,
+                        identity,
+                        latitude=float(lat) if valid else None,
+                        longitude=float(lon) if valid else None,
+                        now=now,
+                    )
+                    reused = hydrate_story_facts(db, identity, story_id)
+                    latest['poi_id'] = poi_id
+                    latest['poi_reused_fact_count'] = reused
                 db.execute('UPDATE stories SET latitude=COALESCE(latitude,?),longitude=COALESCE(longitude,?),'
                     'state=?,place_name=?,research_json=?,error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?',
                     (float(lat) if valid else None, float(lon) if valid else None, 'identity_ready' if matched else 'needs_review',
