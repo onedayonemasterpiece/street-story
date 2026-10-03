@@ -643,6 +643,8 @@ def resolve_fact_conflict(
             "SELECT poi_key FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
             (story_id, conflict_id),
         ).fetchone()["poi_key"]
+        from .fact_ledger import refresh_review_status
+        refresh_review_status(db, story_id, service.store.now())
         research = json.loads(story["research_json"] or "{}")
         research["fact_conflicts"] = durable
         research["fact_conflict_stats"] = conflict_stats(db, story_id, poi_key)

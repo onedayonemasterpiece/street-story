@@ -12,7 +12,8 @@ from urllib.parse import urlparse
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
 from .fact_conflicts import analyze_fact_conflicts
-from .model_facts import merge_model_fact_inventory, model_fact_id, normalized_claim_key, validated_model_fact_text
+from .fact_ledger import candidate_assertion_id, persist_fact_candidates, refresh_review_status, set_owner_selection
+from .model_facts import merge_model_fact_inventory, normalized_claim_key, validated_model_fact_text
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
@@ -216,12 +217,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             unknown = selected_set - valid
             if unknown:
                 raise ConflictError("fact_id_unknown", f"Unknown fact ids: {sorted(unknown)}")
-            for row in facts:
-                selected = row["fact_id"] in selected_set and bool(row["evidence_supported"])
-                db.execute(
-                    "UPDATE facts SET selected=? WHERE story_id=? AND fact_id=?",
-                    (int(selected), story_id, row["fact_id"]),
-                )
+            set_owner_selection(db, story_id, selected_ids, self.store.now())
             research = json.loads(story["research_json"] or "{}")
             decisions = {
                 row["fact_id"]: bool(row["selected"])
@@ -878,7 +874,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             fact_id = (
                 existing_fact_id
                 if existing_fact_id in previous_fact_ids
-                else model_fact_id(claim_key, text)
+                else candidate_assertion_id(claim_key, text)
             )
             if fact_id in seen_claims:
                 continue
@@ -910,6 +906,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             normalized.append(
                 {
                     "fact_id": fact_id,
+                    "existing_fact_id": existing_fact_id or None,
                     "claim_key": claim_key,
                     "text": text,
                     "confidence": max(0.0, min(1.0, confidence)),
@@ -972,24 +969,18 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
             if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
                 return
-            # Rebuild the topic inventory from the accumulated, quality-filtered,
-            # semantically merged facts. This removes legacy title/snippet pollution
-            # while preserving valid previously considered facts and decisions.
-            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
-            for fact in inventory:
-                db.execute(
-                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (
-                        story_id,
-                        fact["fact_id"],
-                        fact["text"],
-                        fact["confidence"],
-                        int(fact["evidence_supported"]),
-                        int(fact["selected"] and fact["evidence_supported"]),
-                        canonical(fact["sources"]),
-                    ),
-                )
+            now = self.store.now()
+            persist_fact_candidates(
+                db,
+                story_id=story_id,
+                poi_key=str(identity.get("candidate_id") or "") or None,
+                facts=normalized,
+                run_id=str(job["id"]),
+                batch_id="grounded_research_v3",
+                model_name="configured_research_model",
+                prompt_version="automatic-research-ledger-v1",
+                now=now,
+            )
             persist_research_memory(
                 db,
                 identity,
@@ -1067,6 +1058,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "publication_concept": str(prior.get("publication_concept") or "")[:500],
             },
         )
+        with self.store.tx() as db:
+            refresh_review_status(db, story_id, self.store.now())
 
     def _story_repr(self, db, row) -> dict[str, Any]:
         result = super()._story_repr(db, row)
@@ -1153,6 +1146,13 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             )
         with self.store.connection() as db:
             story = self._story_row(db, story_id)
+            from .fact_ledger import eligible_selected_fact_ids, selected_eligibility_issues
+            issues = selected_eligibility_issues(db, story_id)
+            if issues:
+                raise ConflictError(
+                    "fact_review_required",
+                    "Selected facts still need semantic review or arbitration before publication.",
+                )
             research = json.loads(story["research_json"] or "{}")
             if research.get("content_identity_changed"):
                 raise ConflictError("identity_content_review_required", "После смены объекта нужно проверить и обновить текст публикации.")
@@ -1190,13 +1190,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "source_photo_sha256": story["photo_sha256"],
                     "ordered_voice_ids": voice_ids,
                     "input_revision": research.get("input_revision"),
-                    "selected_fact_ids": [
-                        row["fact_id"]
-                        for row in db.execute(
-                            "SELECT fact_id FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
-                            (story_id,),
-                        )
-                    ],
+                    "selected_fact_ids": eligible_selected_fact_ids(db, story_id),
                     "prompt_version": visual.get("prompt_version"),
                     "prompt_sha256": visual.get("prompt_sha256"),
                     "visual_content_revision": visual.get("content_revision"),

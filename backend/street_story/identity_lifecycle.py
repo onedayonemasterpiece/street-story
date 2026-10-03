@@ -277,6 +277,11 @@ class IdentityLifecycleMixin:
             prior['content_identity_changed'] = bool(story['draft_text'])
             db.execute("UPDATE jobs SET state='cancelled',last_error='identity_changed',updated_at=? WHERE story_id=? AND kind IN ('research','visual') AND state IN ('ready','retry')", (self.store.now(), story_id))
             db.execute('UPDATE facts SET selected=0,evidence_supported=0 WHERE story_id=?', (story_id,))
+            db.execute(
+                "UPDATE fact_assertions SET owner_selected=0,review_status='withheld',eligibility='withheld',updated_at=? "
+                "WHERE story_id=?",
+                (self.store.now(), story_id),
+            )
             db.execute("UPDATE live_publication_confirmations SET state='invalidated',updated_at=? WHERE story_id=? AND state='pending'", (self.store.now(), story_id))
             db.execute("UPDATE stories SET place_name=NULL,state='needs_review',research_json=?,visual_context_json=?,"
                        'vibepublish_asset_ref=NULL,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?',

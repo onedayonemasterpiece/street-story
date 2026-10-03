@@ -112,6 +112,13 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 return self._story_repr(db, story)
 
             selected_ids = [str(value) for value in body.get("selected_fact_ids", [])]
+            from .fact_ledger import eligibility_issues_for_ids
+            issues = eligibility_issues_for_ids(db, story_id, selected_ids)
+            if issues:
+                raise InvalidStateError(
+                    "fact_review_required",
+                    "Requested facts still need semantic review before visual generation.",
+                )
             facts = {
                 row["fact_id"]: row
                 for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))

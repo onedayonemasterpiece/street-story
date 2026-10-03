@@ -183,8 +183,12 @@ def test_acceptance_preserves_model_support_and_owner_decisions_without_semantic
     # Upstream model/grounding validation owns that decision.
     assert by_id[bad_id]["evidence_supported"] is True
     assert by_id[bad_id]["selected"] is True
+    assert by_id[bad_id]["owner_selected"] is True
+    assert by_id[bad_id]["eligibility"] == "unreviewed"
     assert "Дом Советов расположен" not in (result["draft_text"] or "")
-    assert result["image_notes"] == "Здание построено в 1980 году."
+    # Owner selection is preserved, but unreviewed claims cannot leak into
+    # downstream visual/publication context.
+    assert result["image_notes"] == ""
     with svc.store.connection() as db:
         research = __import__("json").loads(
             db.execute("SELECT research_json FROM stories WHERE id=?", (story["id"],)).fetchone()[0]

@@ -201,6 +201,61 @@ CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_story_time
  ON fact_conflict_scans(story_id,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_poi_time
  ON fact_conflict_scans(poi_key,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS fact_assertions(
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  assertion_id TEXT NOT NULL,
+  semantic_key TEXT,
+  display_text TEXT NOT NULL,
+  owner_selected INTEGER NOT NULL DEFAULT 0,
+  review_status TEXT NOT NULL DEFAULT 'unreviewed'
+    CHECK(review_status IN ('unreviewed','eligible','disputed','withheld','quarantined')),
+  eligibility TEXT NOT NULL DEFAULT 'unreviewed'
+    CHECK(eligibility IN ('unreviewed','eligible','withheld')),
+  revision_digest TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(story_id,assertion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_assertions_story_review
+ ON fact_assertions(story_id,eligibility,owner_selected);
+
+CREATE TABLE IF NOT EXISTS fact_observations(
+  observation_id TEXT PRIMARY KEY,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  poi_key TEXT,
+  run_id TEXT NOT NULL,
+  batch_id TEXT NOT NULL,
+  assertion_id TEXT NOT NULL,
+  model_claim_key TEXT,
+  text TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('candidate','accepted','quarantined','retracted')),
+  structural_error TEXT,
+  model_name TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_observations_story_assertion
+ ON fact_observations(story_id,assertion_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_fact_observations_poi_time
+ ON fact_observations(poi_key,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS fact_evidence_spans(
+  evidence_id TEXT PRIMARY KEY,
+  observation_id TEXT NOT NULL REFERENCES fact_observations(observation_id) ON DELETE CASCADE,
+  source_url TEXT NOT NULL,
+  source_version_id TEXT NOT NULL,
+  support_kind TEXT NOT NULL,
+  span_text TEXT NOT NULL,
+  span_sha256 TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK(relation IN ('supports','contradicts','partial')),
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_evidence_observation
+ ON fact_evidence_spans(observation_id,source_version_id);
+CREATE INDEX IF NOT EXISTS idx_fact_evidence_source_version
+ ON fact_evidence_spans(source_version_id,evidence_id);
 """
 
 
@@ -472,6 +527,8 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(RELIABILITY_SCHEMA)
             db.executescript(POI_SCHEMA)
+            from .fact_ledger import backfill_legacy_fact_ledger
+            backfill_legacy_fact_ledger(db, self.now())
 
     def connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=ScopedConnection)
