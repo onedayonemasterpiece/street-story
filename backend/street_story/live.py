@@ -524,66 +524,25 @@ FUNCTIONS = [
         {"run_id": {"type": "string"}, "packet_ref": {"type": "string"}, "cursor": {"type": "integer"}}),
     _tool_schema(
         "finalize_fact_review",
-        "Finalize Mira's semantic review for one exact research run and exact assertion revisions. "
-        "Conflicts may be an empty array when Mira reviewed the full bundle and found none. "
-        "The server validates revisions/references and computes eligibility; it never invents semantic conflicts.",
+        "Commit semantic decisions for a frozen packet returned by get_review_packet. Never use a batch ID as packet_ref. Read all packet pages, use exact ZERO-BASED fact/evidence numbers, explicitly assess support/negation/roles/equivalence and compare relations across pages. Does not publish.",
         {
-            "packet_ref": {"type": "string"},
-            "decisions": {"type": "array", "items": {"type": "object", "properties": {"fact": {"type": "integer"}, "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch", "equivalent"]}, "evidence": {"type": "array", "items": {"type": "integer"}}, "equivalent_to": {"type": "integer"}}, "required": ["fact", "verdict", "evidence"]}},
-            "relations_complete": {"type": "boolean", "description": "True only after explicit equivalence/conflict comparison across ALL packet pages."},
-            "run_id": {"type": "string"},
-            "reviewed_assertions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "fact_id": {"type": "string"},
-                        "revision_digest": {"type": "string"},
-                        "supporting_evidence_ids": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "required": ["fact_id", "revision_digest", "supporting_evidence_ids"],
-                },
-            },
-            "conflicts": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "left": {"type": "integer"}, "right": {"type": "integer"},
-                        "left_fact_id": {"type": "string"},
-                        "right_fact_id": {"type": "string"},
-                        "relation": {
-                            "type": "string",
-                            "enum": [
-                                "contradiction",
-                                "scope_difference",
-                                "temporal_sequence",
-                                "source_disagreement",
-                                "uncertain",
-                            ],
-                        },
-                        "resolution": {
-                            "type": "string",
-                            "enum": ["prefer_left", "prefer_right", "both_valid", "unresolved"],
-                        },
-                        "confidence": {"type": "number"},
-                        "rationale": {"type": "string"},
-                    },
-                    "required": [
-                        "relation",
-                        "resolution",
-                        "confidence",
-                        "rationale",
-                    ],
-                },
-            },
+            "packet_ref": {"type": "string", "description": "Copy ONLY packet_ref returned by get_review_packet; never invent it."},
+            "decisions": {"type": "array", "items": {"type": "object", "properties": {
+                "fact": {"type": "integer", "description": "Zero-based local fact number from packet items."},
+                "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch", "equivalent"]},
+                "evidence": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based evidence numbers within THIS fact, from packet items."},
+                "equivalent_to": {"type": "integer"}}, "required": ["fact", "verdict", "evidence"]}},
+            "relations_complete": {"type": "boolean", "description": "True only after comparing ALL packet pages for equivalence and conflicts."},
+            "conflicts": {"type": "array", "items": {"type": "object", "properties": {
+                "left": {"type": "integer"}, "right": {"type": "integer"},
+                "relation": {"type": "string", "enum": ["contradiction", "scope_difference", "temporal_sequence", "source_disagreement", "uncertain"]},
+                "resolution": {"type": "string", "enum": ["prefer_left", "prefer_right", "both_valid", "unresolved"]},
+                "confidence": {"type": "number"}, "rationale": {"type": "string"}},
+                "required": ["left", "right", "relation", "resolution", "confidence", "rationale"]}},
             "coverage_complete": {"type": "boolean"},
-            "missing_aspects": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
+            "missing_aspects": {"type": "array", "items": {"type": "string"}},
         },
-        ["conflicts", "coverage_complete", "missing_aspects"],
+        ["packet_ref", "decisions", "relations_complete", "conflicts", "coverage_complete", "missing_aspects"],
     ),
     _tool_schema(
         "resolve_fact_conflict",
@@ -719,7 +678,7 @@ SYSTEM_INSTRUCTION = """
 - после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - get_research_chunk является постраничным: has_more_passages=true требует следующий get_research_chunk с next_args того же run/chunk. Отсутствие ответа в первой странице не разрешает повторный поиск: дочитай хвост. После прочтения всех страниц сохрани batch либо no_claims.
 - если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
-- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence постранично до has_more=false. Получай get_review_packet по run_id и прочитай все страницы. Верни packet_ref и decisions с локальными fact/evidence номерами и явными verdict supported/not_supported/contradicted/role_mismatch; relations_complete=true только после equivalence/conflict проверки всех страниц. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
+- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Для финализации сначала вызови get_review_packet с run_id БЕЗ packet_ref: сервер создаёт packet_ref. Packet уже содержит весь evidence-backed inventory и его passages; прочитай все страницы по packet_ref/cursor. Не используй batch_id вместо packet_ref и не придумывай локальные номера. Верни packet_ref и decisions с локальными fact/evidence номерами и явными verdict supported/not_supported/contradicted/role_mismatch; relations_complete=true только после equivalence/conflict проверки всех страниц. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - атомарность: один checkbox выбирает один самостоятельный тезис. Каждую изображённую персоналию, её роль, отдельное событие и датировку выделяй в отдельный факт; перечень нескольких людей нельзя сохранить одним фактом. Это твоя смысловая работа, не серверный split. При финальном review проверь атомарность и точность имён по passages.
@@ -1111,6 +1070,8 @@ class StreetStoryLiveAdapter:
                 staged, expanded, rejected = review_packets.prepare(self, session, args)
                 result = staged if staged is not None else self._finalize_fact_review(session, command_id, expanded, packet_rejected=rejected)
             else:
+                if args.get("decisions") is not None:
+                    raise ConflictError("live_review_packet_required", "Call get_review_packet with run_id ONLY. Then copy its packet_ref and exact zero-based fact/evidence numbers. A batch_id is not a packet_ref.")
                 result = self._finalize_fact_review(session, command_id, args)
         elif name == "resolve_fact_conflict":
             result = self._resolve_fact_conflict(session, command_id, args)
@@ -2488,7 +2449,7 @@ class StreetStoryLiveAdapter:
             source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"]), None)
             if source is None:
                 with self.service.store.connection() as db:
-                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_facts", "final_tool": "get_review_packet"}
+                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_review_packet", "next_args": {"run_id": run_id}, "final_tool": "finalize_fact_review"}
             fetch = getattr(self.service.providers.gemini, "_fetch_page_documents", None)
             if not callable(fetch):
                 raise ConflictError("live_research_fetch_unavailable", "Document reader is unavailable; saved evidence is preserved.")

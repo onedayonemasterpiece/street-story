@@ -93,6 +93,7 @@ def assess_gold(result, assessments):
 
 async def run_case(output, case, budget, guided=False, real_retrieval=False):
     name, filename, prompt = CASES[case]
+    source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     case_dir = output / (case + "-" + str(time.time_ns()))
     case_dir.mkdir(parents=True, exist_ok=True)
     settings = replace(Settings.from_env(), data_dir=case_dir)
@@ -196,7 +197,7 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
         status = "REVIEW_REQUIRED" if state_ok and eligible else "FAIL_CONTRACT" if contract_failures else "FAIL_SEMANTIC"
     # PCM is discarded; keep bounded state/tool evidence, never credentials/audio.
     clean_events = [{k: v for k, v in e.items() if k not in {"data", "audio", "audio_base64"}} for e in events if e.get("type") != "audio"]
-    result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "real_retrieval" if real_retrieval else "controlled_licensed_snapshot", "prompt_mode": "guided_diagnostic" if guided else "ordinary_request", "semantic_review": "pending_manual_gold_assessment", "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "dependencies": {name: importlib.metadata.version(name) for name in ("ai-resource-control", "live-interaction")}, "corpus_sha256": hashlib.sha256(body.encode()).hexdigest(), "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "tool_trace": tool_trace, "error": error}
+    result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "real_retrieval" if real_retrieval else "controlled_licensed_snapshot", "prompt_mode": "guided_diagnostic" if guided else "ordinary_request", "semantic_review": "pending_manual_gold_assessment", "source_sha": source_sha, "dependencies": {name: importlib.metadata.version(name) for name in ("ai-resource-control", "live-interaction")}, "corpus_sha256": hashlib.sha256(body.encode()).hexdigest(), "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "tool_trace": tool_trace, "error": error}
     (case_dir / "acceptance.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({k: result[k] for k in ["case", "status", "stage", "elapsed_seconds", "eligible_count", "gold_ok", "error"]}, ensure_ascii=False), flush=True)
     return status

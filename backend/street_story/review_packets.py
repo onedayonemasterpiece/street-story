@@ -8,7 +8,7 @@ from .service import ConflictError, canonical
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_review_packets(
- packet_ref TEXT PRIMARY KEY, story_id TEXT NOT NULL REFERENCES stories(id),
+ packet_ref TEXT PRIMARY KEY, story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
  run_id TEXT NOT NULL, binding TEXT NOT NULL, story_revision INTEGER NOT NULL,
  identity_generation INTEGER NOT NULL, payload_json TEXT NOT NULL,
  decisions_json TEXT NOT NULL DEFAULT '{}', result_json TEXT, request_json TEXT
@@ -31,7 +31,7 @@ def load(adapter, session, db, ref):
     row = db.execute('SELECT * FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                      (ref, session.resource_id)).fetchone()
     if row is None or row['binding'] != binding(session):
-        raise ConflictError('live_review_packet_unknown', 'Packet belongs to another story or owner.')
+        raise ConflictError('live_review_packet_unknown', 'Unknown or foreign packet. Call get_review_packet with the SAME run_id ONLY; OMIT packet_ref to get a new packet. Never use a batch_id as packet_ref.')
     if row['result_json']:
         return row, json.loads(row['payload_json'])
     story, _ = adapter._research_run_guard(db, session, row['run_id'])

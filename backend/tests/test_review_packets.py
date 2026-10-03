@@ -80,3 +80,25 @@ async def test_241_assertions_finish_via_bounded_decisions(tmp_path):
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'last', 'args': {**args, 'decisions': [{'fact': 240, 'evidence': [0], 'verdict': 'supported'}], 'relations_complete': True}})
     assert result['complete'] and result['eligible_count'] == 241
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unchanged_semantic_decisions_reused_without_claiming_cross_coverage(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save', 'args': findings(chunk, QUOTES)})
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported'}], 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
+    staged = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'first', 'args': args})
+    assert staged['remaining_facts'] == 2
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))
+    replacement = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    assert any(i['fact'] == 0 and i['saved_verdict'] == 'supported' for i in replacement['items'])
+    args = {**args, 'packet_ref': replacement['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in [1, 2]]}
+    staged = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'rest', 'args': args})
+    assert staged['remaining_facts'] == 0 and not staged['complete']
+    assert staged['cross_packet_review_required']
+    result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'relations', 'args': {**args, 'decisions': [], 'relations_complete': True}})
+    assert result['complete'] and result['eligible_count'] == 3
+    await reader.search_http.aclose()
