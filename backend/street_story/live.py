@@ -717,6 +717,7 @@ SYSTEM_INSTRUCTION = """
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
 - после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- get_research_chunk является постраничным: has_more_passages=true требует следующий get_research_chunk с next_args того же run/chunk. Отсутствие ответа в первой странице не разрешает повторный поиск: дочитай хвост. После прочтения всех страниц сохрани batch либо no_claims.
 - если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence постранично до has_more=false. Получай get_review_packet по run_id и прочитай все страницы. Верни packet_ref и decisions с локальными fact/evidence номерами и явными verdict supported/not_supported/contradicted/role_mismatch; relations_complete=true только после equivalence/conflict проверки всех страниц. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
@@ -1267,6 +1268,8 @@ class StreetStoryLiveAdapter:
                 "fact_conflicts": list(result.get("fact_conflicts") or [])[:6],
                 "story": projected.get("story"),
             }
+            if result.get("instruction"):
+                projected.update({"instruction": result["instruction"], "next_args": result.get("next_args")})
         elif name == "get_research_chunk":
             # Passages already contain every core character needed for extraction.
             # Avoid charging the shared Live budget for three copies of the page.
@@ -1910,6 +1913,27 @@ class StreetStoryLiveAdapter:
         if getattr(session, "closed", False) or session.state.get("research_cancelled"):
             raise ConflictError("live_research_partial", "This Live research phase is paused. Resume the saved run in a new Live session.")
         query = _bounded_text(args.get("query"), 1000, required=True)
+        current_run = str(session.state.get("research_run_id") or "")
+        if current_run:
+            with self.service.store.connection() as db:
+                pending_sources = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (current_run,)).fetchone()[0]
+                pending_chunks = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (current_run,)).fetchone()[0]
+                if pending_sources or pending_chunks:
+                    self._research_run_guard(db, session, current_run)
+                    redirects = int(session.state.get("pending_discovery_redirects") or 0) + 1
+                    session.state["pending_discovery_redirects"] = redirects
+                    if redirects >= 3:
+                        self._pause_research(session, "discovery_without_checkpoint_budget_exhausted")
+                        self._emit_research_progress(session, stage="partial", active=False, query="", source_count=0, fact_count=0)
+                        raise ConflictError("live_research_partial", "Read the saved run's pending document pages in a new Live session; repeated discovery produced no checkpoint.")
+                    next_args = {"run_id": current_run}
+                    for cid, offset in session.state.get("research_pending_page", {}).items():
+                        if offset:
+                            next_args.update({"chunk_id": cid, "passage_cursor": offset})
+                            break
+                    return {"research_run_id": current_run, "discovery_only": True, "semantic_status": "live_model_required", "continuation_required": True,
+                            "next_tool": "get_research_chunk", "next_args": next_args,
+                            "instruction": "Read the existing discovered document and ALL its next_args pages before repeating search. The saved run and goal are unchanged.", "facts": [], "sources": []}
         coverage_goal = _bounded_text(args.get("coverage_goal") or query, 1600, required=True)
         story_id = session.resource_id
 
@@ -2431,7 +2455,7 @@ class StreetStoryLiveAdapter:
                 if text:
                     offset = cursor + start + len(raw) - len(raw.lstrip())
                     ref = "evref_" + hashlib.sha256(f"{chunk_id}:{offset}:{text}".encode()).hexdigest()[:24]
-                    passages.append({"passage_id": len(passages), "evidence_ref": ref, "text": text})
+                    passages.append({"passage_id": len(passages), "evidence_ref": ref, "text": text, "core_offset": offset})
             cursor += len(line)
         return passages
 
@@ -2503,6 +2527,9 @@ class StreetStoryLiveAdapter:
         passages = result["evidence_passages"]
         offset = max(0, int(args.get("passage_cursor") or session.state.get("research_page_cursor", {}).get(candidate["chunk_id"], 0)))
         result["evidence_passages"] = []
+        if offset < len(passages):
+            start = passages[offset]["core_offset"]
+            result["context_before"] = core[max(0, start - 100):start] if start else result["context_before"]
         result["context_before"] = result["context_before"][-100:]
         result["context_after"] = result["context_after"][:100]
         # Saved payload remains durable; read its inventory separately instead
@@ -2516,8 +2543,17 @@ class StreetStoryLiveAdapter:
         next_offset = offset + len(result["evidence_passages"])
         if not result["evidence_passages"] and offset < len(passages):
             raise ConflictError("live_research_page_oversize", "Read inventory separately; one page exceeds the ceiling.")
+        if result["evidence_passages"]:
+            last = result["evidence_passages"][-1]
+            end = last["core_offset"] + len(last["text"])
+            if end < len(core):
+                result["context_after"] = core[end:end + 100]
         result["has_more_passages"] = next_offset < len(passages)
         result["next_passage_cursor"] = next_offset if next_offset < len(passages) else None
+        if result["has_more_passages"]:
+            result["next_tool"] = "get_research_chunk"
+            result["next_args"] = {"run_id": run_id, "chunk_id": candidate["chunk_id"], "passage_cursor": next_offset}
+            result["instruction"] = "The target may be in the unread tail. Read next_args before another search; do not assume missing facts from this first page. You may checkpoint this page with continuation_needed=true."
         seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
         seen.update(p["passage_id"] for p in result["evidence_passages"])
         session.state.setdefault("research_pending_page", {})[candidate["chunk_id"]] = next_offset if next_offset < len(passages) else 0
@@ -3306,6 +3342,7 @@ class StreetStoryLiveAdapter:
                 if isinstance(source, dict)
             ]
 
+        session.state["pending_discovery_redirects"] = 0
         if chunk_id:
             session.state.setdefault("research_page_cursor", {})[chunk_id] = session.state.get("research_pending_page", {}).get(chunk_id, 0)
         record_live_diagnostic(

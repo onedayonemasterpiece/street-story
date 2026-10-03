@@ -63,10 +63,24 @@ def read(adapter, session, args):
                 if not evidence:
                     raise ConflictError('live_fact_review_evidence_required', 'Accepted evidence is required for every assertion.')
                 items.append({'id': fact_id, 'text': text, 'evidence': evidence})
+            reused = {}
+            indexes = {item['id']: f for f, item in enumerate(items)}
+            for prior in db.execute('SELECT payload_json,decisions_json FROM live_review_packets WHERE story_id=? AND binding=? AND identity_generation=? ORDER BY rowid', (session.resource_id, binding(session), int(run['identity_generation']))):
+                old = json.loads(prior['payload_json'])
+                for number, decision in json.loads(prior['decisions_json']).items():
+                    old_item = old['items'][int(number)]
+                    fact_id = old_item['id']
+                    if fact_id not in indexes or old['bundle'].get(fact_id) != exact[fact_id] or decision['verdict'] == 'equivalent':
+                        continue
+                    f = indexes[fact_id]
+                    current_evs = {ev['id']: (e, ev['sha']) for e, ev in enumerate(items[f]['evidence'])}
+                    chosen = [old_item['evidence'][e] for e in decision['evidence']]
+                    if all(ev['id'] in current_evs and current_evs[ev['id']][1] == ev['sha'] for ev in chosen):
+                        reused[str(f)] = {**decision, 'fact': f, 'evidence': [current_evs[ev['id']][0] for ev in chosen]}
             ref = 'p' + uuid.uuid4().hex[:12]
             payload = {'bundle': exact, 'items': items}
-            db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json) VALUES(?,?,?,?,?,?,?)',
-                       (ref, session.resource_id, run_id, binding(session), int(story['revision']), int(run['identity_generation']), canonical(payload)))
+            db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
+                       (ref, session.resource_id, run_id, binding(session), int(story['revision']), int(run['identity_generation']), canonical(payload), canonical(reused)))
         row, payload = load(adapter, session, db, ref)
     cursor = max(0, int(args.get('cursor') or 0))
     # Each domain page contains one fact and one literal evidence slice. Every
@@ -77,7 +91,8 @@ def read(adapter, session, args):
             for start in range(0, len(ev['text']), 900):
                 slices.append({'fact': f, 'text': item['text'], 'evidence': e,
                                'passage': ev['text'][start:start + 900], 'offset': start,
-                               'passage_complete': start + 900 >= len(ev['text']), 'source_url': ev['url']})
+                               'passage_complete': start + 900 >= len(ev['text']), 'source_url': ev['url'],
+                               'saved_verdict': json.loads(row['decisions_json']).get(str(f), {}).get('verdict')})
     page = {'packet_ref': ref, 'run_id': row['run_id'], 'items': [], 'total_facts': len(payload['items']),
             'next_cursor': None, 'has_more': False, 'next_tool': 'finalize_fact_review'}
     while cursor < len(slices):

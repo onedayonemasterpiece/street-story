@@ -321,6 +321,6 @@ async def test_discovery_without_checkpoint_is_bounded_and_all_owned_runs_pause(
     assert stopped.value.code == "live_research_partial"
     assert events[-1]["state"]["active"] is False
     with svc.store.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=?", (session.resource_id,)).fetchone()[0] == 3
+        assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=?", (session.resource_id,)).fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=? AND state<>'partial'", (session.resource_id,)).fetchone()[0] == 0
     await reader.search_http.aclose()
