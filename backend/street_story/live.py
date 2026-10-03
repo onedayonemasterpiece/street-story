@@ -2537,6 +2537,10 @@ class StreetStoryLiveAdapter:
         result["checkpoint"] = {"next_batch_index": checkpoint["next_batch_index"], "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3], "terminal": checkpoint["terminal"]}
         for passage in passages[offset:]:
             trial = {**result, "evidence_passages": [*result["evidence_passages"], passage], "has_more_passages": True, "next_passage_cursor": passage["passage_id"] + 1}
+            end = passage["core_offset"] + len(passage["text"])
+            trial["context_after"] = core[end:end + 100] if end < len(core) else result["context_after"]
+            trial["next_args"] = {"run_id": run_id, "chunk_id": candidate["chunk_id"], "passage_cursor": passage["passage_id"] + 1}
+            trial["instruction"] = "The target may be in the unread tail. Read next_args before another search; do not assume missing facts from this first page. You may checkpoint this page with continuation_needed=true."
             if response_units("get_research_chunk", self._model_result("get_research_chunk", trial)) > PAGE_UNITS:
                 break
             result = trial
@@ -2550,6 +2554,9 @@ class StreetStoryLiveAdapter:
                 result["context_after"] = core[end:end + 100]
         result["has_more_passages"] = next_offset < len(passages)
         result["next_passage_cursor"] = next_offset if next_offset < len(passages) else None
+        if not result["has_more_passages"]:
+            result.pop("next_args", None)
+            result.pop("instruction", None)
         if result["has_more_passages"]:
             result["next_tool"] = "get_research_chunk"
             result["next_args"] = {"run_id": run_id, "chunk_id": candidate["chunk_id"], "passage_cursor": next_offset}
