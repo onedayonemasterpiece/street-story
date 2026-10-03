@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -421,6 +422,18 @@ class _ReadablePageParser(HTMLParser):
 
 
 class GeminiClient:
+    # Cache evaluation is an optional latency optimization. It must never spend
+    # the full multi-key research retry budget before ordinary discovery.
+    SEMANTIC_CACHE_PREFLIGHT_SECONDS = 8.0
+    # Public discovery still gets one bounded semantic-completion opportunity;
+    # after that the already-running Live model owns extraction via
+    # save_research_facts.
+    SEMANTIC_DISCOVERY_COMPLETION_SECONDS = 12.0
+    # Native Google Search grounding is useful but must not serialize the full
+    # per-key timeout budget inside a Live tool call. After this total phase
+    # deadline, fall back to public discovery instead of keeping the UI stuck.
+    NATIVE_WEB_SEARCH_PHASE_SECONDS = 10.0
+
     FACT_IDENTITY_RECONCILIATION_SCHEMA = {
         "type": "object",
         "properties": {
@@ -2762,6 +2775,29 @@ class GeminiClient:
             raise GeminiUnavailable(min(retry_at), "all_publication_composition_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
+    async def _semantic_complete_discovery_best_effort(
+        self,
+        query: str,
+        topic_context: dict[str, Any],
+        discovery: GroundedResearch,
+        *,
+        timeout_seconds: float,
+    ) -> GroundedResearch | None:
+        try:
+            async with asyncio.timeout(max(0.1, float(timeout_seconds))):
+                return await self._semantic_complete_discovery(
+                    query,
+                    topic_context,
+                    discovery,
+                )
+        except (
+            TimeoutError,
+            GeminiUnavailable,
+            PermanentProviderError,
+            MalformedProviderResponse,
+        ):
+            return None
+
     async def search_web(
         self,
         query: str,
@@ -2790,21 +2826,19 @@ class GeminiClient:
                 },
                 grounding_sources=cached_sources,
             )
-            try:
-                cached_result = await self._semantic_complete_discovery(
-                    query,
-                    topic_context,
-                    cached_discovery,
-                )
-                if (
-                    cached_result.payload.get("coverage_satisfied") is True
-                    and bool(cached_result.payload.get("facts"))
-                ):
-                    cached_result.payload["cache_only"] = True
-                    return cached_result
-            except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse):
-                # Cache evaluation must never make web discovery less available.
-                pass
+            cached_result = await self._semantic_complete_discovery_best_effort(
+                query,
+                topic_context,
+                cached_discovery,
+                timeout_seconds=self.SEMANTIC_CACHE_PREFLIGHT_SECONDS,
+            )
+            if (
+                cached_result is not None
+                and cached_result.payload.get("coverage_satisfied") is True
+                and bool(cached_result.payload.get("facts"))
+            ):
+                cached_result.payload["cache_only"] = True
+                return cached_result
 
         prompt = (
             "Ты внутренний поисковый инструмент Street Story, а не собеседник. "
@@ -3306,20 +3340,36 @@ class GeminiClient:
             return GroundedResearch(payload=payload, grounding_sources=decorated)
 
         retry_at: list[float] = []
-        for model, _pool, quota, executor in self.web_search_routes:
-            async def routed_call(key, timeout, *, _model=model, _quota=quota):
-                return await call(key, timeout, model=_model, quota=_quota)
+        native_search_status = "exhausted"
 
-            try:
-                return await executor.execute("web_search", routed_call)
-            except GeminiUnavailable as exc:
-                if exc.retry_at is not None:
-                    retry_at.append(exc.retry_at)
-                continue
-            except PermanentProviderError as exc:
-                if str(exc) == "gemini:unsupported_model":
+        async def native_search_phase() -> GroundedResearch | None:
+            for model, _pool, quota, executor in self.web_search_routes:
+                async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                    return await call(key, timeout, model=_model, quota=_quota)
+
+                try:
+                    return await executor.execute("web_search", routed_call)
+                except GeminiUnavailable as exc:
+                    if exc.retry_at is not None:
+                        retry_at.append(exc.retry_at)
                     continue
-                raise
+                except PermanentProviderError as exc:
+                    if str(exc) == "gemini:unsupported_model":
+                        continue
+                    raise
+            return None
+
+        try:
+            native_result = await asyncio.wait_for(
+                native_search_phase(),
+                timeout=max(0.01, float(self.NATIVE_WEB_SEARCH_PHASE_SECONDS)),
+            )
+        except TimeoutError:
+            native_search_status = "timeout"
+            native_result = None
+        if native_result is not None:
+            return native_result
+
         processed_urls = {
             str(item.get("url") or "").rstrip("/")
             for item in (topic_context.get("previously_processed_sources") or [])
@@ -3332,18 +3382,33 @@ class GeminiClient:
                 raise GeminiUnavailable(min(retry_at), "all_web_search_models_and_public_search_unavailable")
             raise
         discovery = GroundedResearch(
-            payload={**discovery.payload, "cached_source_count": len(cached_sources)},
+            payload={
+                **discovery.payload,
+                "cached_source_count": len(cached_sources),
+                "native_search_status": native_search_status,
+            },
             grounding_sources=self._merge_evidence_sources(
                 discovery.grounding_sources,
                 cached_sources,
             ),
         )
-        try:
-            return await self._semantic_complete_discovery(query, topic_context, discovery)
-        except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse):
-            # Fail open to the old Live-owned semantic fallback. The evidence is
-            # still exact and durable; no deterministic extractor is introduced.
-            return discovery
+        completed = await self._semantic_complete_discovery_best_effort(
+            query,
+            topic_context,
+            discovery,
+            timeout_seconds=self.SEMANTIC_DISCOVERY_COMPLETION_SECONDS,
+        )
+        if completed is not None:
+            return completed
+        # Fail open to the Live-owned semantic fallback. The evidence remains
+        # exact and durable; no deterministic extractor is introduced.
+        discovery.payload.update({
+            "semantic_completion": "",
+            "semantic_status": "live_model_required",
+            "coverage_satisfied": False,
+            "missing_aspects": ["semantic_model_temporarily_unavailable"],
+        })
+        return discovery
 
 
     async def research(
