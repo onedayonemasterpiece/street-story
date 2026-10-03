@@ -98,6 +98,7 @@ CREATE INDEX IF NOT EXISTS live_diagnostics_session_time_idx
 def ensure_live_schema(service: StreetStoryService) -> None:
     with service.store.connection() as db:
         db.executescript(LIVE_SCHEMA)
+    _backfill_legacy_live_messages(service)
 
 
 def _merge_live_transcript(current: str, fragment: str) -> str:
@@ -115,6 +116,109 @@ def _merge_live_transcript(current: str, fragment: str) -> str:
     while overlap >= 3 and current[-overlap:] != fragment[:overlap]:
         overlap -= 1
     return (current + fragment[overlap:]) if overlap >= 3 else f"{current} {fragment}"
+
+
+def _backfill_legacy_live_messages(service: StreetStoryService) -> None:
+    """Recover pre-durable Live chat from retained transcript diagnostics.
+
+    Only stories with no durable chat are eligible. Known suspected-noise turns
+    are skipped. This is a one-time recovery path for sessions recorded before
+    live_messages existed.
+    """
+    with service.store.connection() as db:
+        story_ids = [
+            str(row["story_id"])
+            for row in db.execute(
+                "SELECT DISTINCT d.story_id FROM live_diagnostics d "
+                "WHERE d.event_type IN ('input_transcript','output_transcript') "
+                "AND NOT EXISTS(SELECT 1 FROM live_messages m WHERE m.story_id=d.story_id)"
+            )
+        ]
+
+    for story_id in story_ids:
+        with service.store.connection() as db:
+            rows = list(db.execute(
+                "SELECT id,session_id,event_type,payload_json,created_at "
+                "FROM live_diagnostics WHERE story_id=? AND event_type IN "
+                "('input_transcript','output_transcript','turn_complete','interrupted','suspected_noise_turn') "
+                "ORDER BY id LIMIT 1200",
+                (story_id,),
+            ))
+        if not rows:
+            continue
+
+        messages: list[dict[str, Any]] = []
+        active: dict[str, Any] | None = None
+        skip_noise: set[str] = set()
+        seq_by_session: dict[str, int] = {}
+
+        def finish() -> None:
+            nonlocal active
+            if active is not None and str(active.get("text") or "").strip():
+                active["final"] = True
+                messages.append(active)
+            active = None
+
+        for row in rows:
+            session_id = str(row["session_id"] or "")
+            event_type = str(row["event_type"])
+            if event_type == "suspected_noise_turn":
+                skip_noise.add(session_id)
+                continue
+            if event_type in {"turn_complete", "interrupted"}:
+                finish()
+                continue
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                continue
+            role = "user" if event_type == "input_transcript" else "assistant"
+            if role == "user" and session_id in skip_noise:
+                skip_noise.discard(session_id)
+                continue
+            if active is not None and active["session_id"] == session_id and active["role"] == role:
+                active["text"] = _merge_live_transcript(str(active["text"]), text)[:8000]
+                active["updated_at"] = float(row["created_at"])
+                continue
+            finish()
+            seq = seq_by_session.get(session_id, 0) + 1
+            seq_by_session[session_id] = seq
+            active = {
+                "session_id": session_id,
+                "message_key": f"legacy:{session_id}:{seq}:{role}",
+                "role": role,
+                "text": text[:8000],
+                "final": False,
+                "created_at": float(row["created_at"]),
+                "updated_at": float(row["created_at"]),
+            }
+        finish()
+
+        if not messages:
+            continue
+        with service.store.tx() as db:
+            if db.execute("SELECT 1 FROM live_messages WHERE story_id=? LIMIT 1", (story_id,)).fetchone():
+                continue
+            if not db.execute("SELECT 1 FROM stories WHERE id=?", (story_id,)).fetchone():
+                continue
+            for item in messages[-100:]:
+                db.execute(
+                    "INSERT OR IGNORE INTO live_messages("
+                    "story_id,session_id,message_key,role,text,final,created_at,updated_at"
+                    ") VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        story_id, item["session_id"], item["message_key"], item["role"],
+                        item["text"], int(bool(item["final"])),
+                        item["created_at"], item["updated_at"],
+                    ),
+                )
+        logger.info(
+            "street_story_live_history_backfill %s",
+            canonical({"story_id": story_id, "message_count": len(messages[-100:])}),
+        )
 
 
 def live_history(service: StreetStoryService, story_id: str, limit: int = 8) -> list[dict[str, str]]:
