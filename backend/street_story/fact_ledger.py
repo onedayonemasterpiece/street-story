@@ -635,6 +635,9 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
                 (now, story_id, assertion_id),
             )
 
+    from .poi_memory import sync_poi_review_from_story
+    sync_poi_review_from_story(db, story_id, now)
+
 
 def selected_eligibility_issues(db, story_id: str) -> list[dict[str, Any]]:
     backfill_legacy_fact_ledger(db, 0.0)
