@@ -743,6 +743,8 @@ class StreetStoryLiveAdapter:
         }
 
     def input(self, session, message: dict[str, Any]) -> None:
+        if session.state.get("research_run_id") and (message.get("activity_start") or message.get("text")):
+            session.state["research_author_interrupted"] = True
         if message.get("activity_start"):
             begin_turn(session)
         text = message.get("text")
@@ -809,6 +811,11 @@ class StreetStoryLiveAdapter:
     def on_event(self, session, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "unknown")
         text = str(event.get("text") or "").strip()
+        if kind == "tool_call":
+            session.state["research_provider_tool_pending"] = True
+            session.state["research_continuation_queued"] = False
+        if kind == "output_transcript":
+            session.state["research_continuation_queued"] = False
         if kind == "input_timing":
             observe_input_timing(session, event)
         if kind == "resource_budget" and event.get("modality") == "tool_response":
@@ -855,6 +862,8 @@ class StreetStoryLiveAdapter:
             self._pause_research(session, "live_" + kind + "_resume_required")
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
+        if kind == "turn_complete":
+            self._continue_pending_research(session)
 
         if kind in {"input_transcript", "output_transcript"} and text:
             role = "user" if kind == "input_transcript" else "assistant"
@@ -971,7 +980,42 @@ class StreetStoryLiveAdapter:
     def on_stopped(self, session) -> None:
         self._pause_research(session, "live_stopped_resume_required")
 
+    def _continue_pending_research(self, session):
+        run_id = str(session.state.get("research_run_id") or "")
+        if not run_id or getattr(session, "closed", False) or any(session.state.get(key) for key in (
+            "research_cancelled", "research_tool_busy", "research_provider_tool_pending",
+            "research_author_interrupted", "research_continuation_queued",
+        )):
+            return
+        with self.service.store.connection() as db:
+            run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?", (run_id, session.resource_id)).fetchone()
+            if not run or run["state"] in {"completed", "partial", "failed", "cancelled"}:
+                return
+            pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
+            unfetched = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (run_id,)).fetchone()[0]
+            facts = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
+        attempts = int(session.state.get("research_continuation_count") or 0)
+        if attempts >= 2:
+            self._pause_research(session, "model_review_continuation_exhausted")
+            self._emit_research_progress(session, stage="partial", active=False, query="", source_count=0, fact_count=facts)
+            return
+        tool = "get_research_chunk" if pending or unfetched else "get_review_packet"
+        session.state["research_continuation_count"] = attempts + 1
+        session.state["research_continuation_queued"] = True
+        # Scoped server context for the SAME authorized operation and lease.
+        # No accepted tool is rerun; only the model chooses/executes the next step.
+        self.write(session, {"type": "text", "text": "Server context for the author's already authorized research operation: run " + run_id + " is still incomplete, with " + str(facts) + " durable facts. Continue " + tool + " with run_id only and follow returned next_args/pages, then explicit semantic review. Preserve checkpoints; this context grants no new author consent or publication permission. Do not announce completion while the run is incomplete."})
+        record_live_diagnostic(self.service, session.resource_id, session.id, "backend", "research_continuation", {"run_id": run_id, "next_tool": tool, "attempt": attempts + 1, "pending_chunks": pending})
+
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
+        session.state["research_tool_busy"] = True
+        try:
+            return await self._execute_tool(session, call)
+        finally:
+            session.state["research_tool_busy"] = False
+            session.state["research_provider_tool_pending"] = False
+
+    async def _execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         name = str(call.get("name") or "")
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
         command_id = str(call.get("id") or "")
