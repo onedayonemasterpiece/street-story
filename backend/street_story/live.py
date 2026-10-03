@@ -529,9 +529,9 @@ FUNCTIONS = [
             "packet_ref": {"type": "string", "description": "Copy ONLY packet_ref returned by get_review_packet; never invent it."},
             "decisions": {"type": "array", "items": {"type": "object", "properties": {
                 "fact": {"type": "integer", "description": "Zero-based local fact number from packet items."},
-                "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch", "equivalent"]},
+                "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch"]},
                 "evidence": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based evidence numbers within THIS fact, from packet items."},
-                "equivalent_to": {"type": "integer"}}, "required": ["fact", "verdict", "evidence"]}},
+                "equivalent_to": {"type": "integer", "description": "Optional canonical fact number for a semantic duplicate. Still return an explicit support verdict for EVERY fact including the canonical one. A supported canonical may reference itself."}}, "required": ["fact", "verdict", "evidence"]}},
             "relations_complete": {"type": "boolean", "description": "True only after comparing ALL packet pages for equivalence and conflicts."},
             "conflicts": {"type": "array", "items": {"type": "object", "properties": {
                 "left": {"type": "integer"}, "right": {"type": "integer"},

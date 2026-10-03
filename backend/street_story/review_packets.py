@@ -76,7 +76,7 @@ def read(adapter, session, args):
                 for number, decision in json.loads(prior['decisions_json']).items():
                     old_item = old['items'][int(number)]
                     fact_id = old_item['id']
-                    if fact_id not in indexes or old['bundle'].get(fact_id) != exact[fact_id] or decision['verdict'] == 'equivalent':
+                    if fact_id not in indexes or old['bundle'].get(fact_id) != exact[fact_id] or decision.get('equivalent_to') is not None:
                         continue
                     f = indexes[fact_id]
                     current_evs = {ev['id']: (e, ev['sha']) for e, ev in enumerate(items[f]['evidence'])}
@@ -128,12 +128,12 @@ def prepare(adapter, session, args):
             if not isinstance(decision, dict) or type(decision.get('fact')) is not int or not 0 <= decision['fact'] < len(payload['items']):
                 raise ConflictError('live_review_decisions_invalid', 'Use local fact numbers from this packet.')
             verdict = decision.get('verdict')
-            if verdict not in {'supported', 'not_supported', 'contradicted', 'role_mismatch', 'equivalent'}:
-                raise ConflictError('live_review_decisions_invalid', 'Explicit semantic support verdict required.')
-            if verdict == 'equivalent':
-                other = decision.get('equivalent_to')
-                if type(other) is not int or other == decision['fact'] or not 0 <= other < len(payload['items']):
-                    raise ConflictError('live_review_decisions_invalid', 'Equivalence requires a distinct canonical fact number.')
+            if verdict not in {'supported', 'not_supported', 'contradicted', 'role_mismatch'}:
+                raise ConflictError('live_review_decisions_invalid', 'Return supported/not_supported/contradicted/role_mismatch for EVERY fact, including the canonical one. Equivalence alone is not support; use optional equivalent_to only for duplicates.')
+            if decision.get('equivalent_to') is not None:
+                other = decision['equivalent_to']
+                if type(other) is not int or not 0 <= other < len(payload['items']):
+                    raise ConflictError('live_review_decisions_invalid', 'equivalent_to must be a canonical fact number from this packet.')
             refs = decision.get('evidence')
             evs = payload['items'][decision['fact']]['evidence']
             if not isinstance(refs, list) or not refs or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
@@ -155,7 +155,11 @@ def prepare(adapter, session, args):
         for f, item in enumerate(payload['items']):
             d = decisions[str(f)]
             reviewed.append({'fact_id': item['id'], 'revision_digest': payload['bundle'][item['id']], 'supporting_evidence_ids': [item['evidence'][e]['id'] for e in d['evidence']]})
-            if d['verdict'] != 'supported':
+            canonical_fact = d.get('equivalent_to', f)
+            canonical_decision = decisions[str(canonical_fact)]
+            if canonical_fact != f and (canonical_decision['verdict'] != 'supported' or canonical_decision.get('equivalent_to', canonical_fact) != canonical_fact):
+                raise ConflictError('live_review_canonical_invalid', 'Choose one explicitly supported canonical fact per equivalence group; do not form chains or cycles.')
+            if d['verdict'] != 'supported' or canonical_fact != f:
                 rejected.append(item['id'])
         expanded = {**args, '_packet_request': args, 'run_id': row['run_id'], 'reviewed_assertions': reviewed, 'conflicts': conflicts}
         return None, expanded, rejected
