@@ -375,7 +375,7 @@ FUNCTIONS = [
             },
             "limit": {
                 "type": "integer",
-                "description": "Page size from 1 to 50. Defaults to 30.",
+                "description": "Live evidence page size is capped at 5 to respect the shared response budget. Follow next_cursor until has_more=false.",
             },
         },
         ["fact_ids"],
@@ -458,8 +458,8 @@ FUNCTIONS = [
                     "properties": {
                         "claim_key": {"type": "string"},
                         "existing_fact_id": {"type": "string"},
-                        "text": {"type": "string"},
-                        "evidence_quotes": {"type": "array", "items": {"type": "string"}, "description": "For chunk batches: exact passages copied from core text. Leave source_refs/evidence_refs empty; server binds validated quotes."},
+                        "text": {"type": "string", "description": "One independently selectable atomic assertion. Each named figure/person gets a separate fact; never bundle a list of people, separate roles or events in one fact."},
+                        "evidence_quotes": {"type": "array", "items": {"type": "string"}, "description": "Optional verbatim alternative to evidence_refs from chunk evidence_passages. Never rewrite the quoted source."},
                         "confidence": {"type": "number"},
                         "selected": {"type": "boolean"},
                         "source_refs": {"type": "array", "items": {"type": "string"}},
@@ -716,9 +716,10 @@ SYSTEM_INSTRUCTION = """
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
 - после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и точными evidence_refs из evidence_passages (или дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
-- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence. Передай точные fact_id+revision_digest и supporting_evidence_ids из get_evidence. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
+- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence постранично до has_more=false. Передай точные fact_id+revision_digest и supporting_evidence_ids из get_evidence. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
+- атомарность: один checkbox выбирает один самостоятельный тезис. Каждую изображённую персоналию, её роль, отдельное событие и датировку выделяй в отдельный факт; перечень нескольких людей нельзя сохранить одним фактом. Это твоя смысловая работа, не серверный split. При финальном review проверь атомарность и точность имён по passages.
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
 - source_count/domain_count и URL сами по себе не доказывают тезис. Для важных сравнений и любого арбитража вызывай get_evidence по точным fact_id и при необходимости читай все страницы до has_more=false. Сравнивай exact span_text, source_version_id, chunk_id и контекст источника; не выбирай победителя по числу ссылок;
@@ -1014,7 +1015,13 @@ class StreetStoryLiveAdapter:
         if name == "get_facts":
             return self._get_facts(story_id, args)
         if name == "get_evidence":
-            return self._get_evidence(story_id, args)
+            # Live reads are paginated by the existing cursor contract so one
+            # verbose evidence reply cannot exceed the shared token budget.
+            try:
+                page_limit = max(1, min(int(args.get("limit") or 5), 5))
+            except (TypeError, ValueError):
+                raise ConflictError("live_pagination_invalid", "limit must be an integer") from None
+            return self._get_evidence(story_id, {**args, "limit": page_limit})
         if name == "get_research_chunk":
             return self._model_result(name, await self._get_research_chunk(session, args))
         if name == "literal_begin":
