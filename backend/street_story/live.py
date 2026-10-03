@@ -1250,6 +1250,18 @@ class StreetStoryLiveAdapter:
             current_research = json.loads(current["research_json"] or "{}")
             if current["photo_sha256"] != row["photo_sha256"] or int(current_research.get("identity_generation") or 0) != int(research.get("identity_generation") or 0):
                 raise ConflictError("identity_candidate_changed", "Объект изменился; проверьте актуальный вариант.")
+            from .poi_memory import ensure_poi_identity, hydrate_story_facts
+            now = self.service.store.now()
+            poi_id = ensure_poi_identity(
+                db,
+                confirmed,
+                latitude=current["latitude"],
+                longitude=current["longitude"],
+                now=now,
+            )
+            reused = hydrate_story_facts(db, confirmed, story_id)
+            research["poi_id"] = poi_id
+            research["poi_reused_fact_count"] = reused
             db.execute(
                 "UPDATE stories SET place_name=?,research_json=?,state='identity_ready',"
                 "error_code=CASE WHEN error_code IN ('visual_identity_uncertain','identity_location_missing') THEN NULL ELSE error_code END,"

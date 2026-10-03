@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -40,6 +41,128 @@ def _identity_alias_values(identity: dict[str, Any]) -> list[str]:
     return values
 
 
+
+
+def _normalized_alias(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def ensure_poi_identity(
+    db,
+    identity: dict[str, Any],
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    now: float | None = None,
+) -> str | None:
+    """Bind Street Story's stable identity to the canonical POI registry.
+
+    This is mechanical identity plumbing only: it does not infer semantic
+    equivalence beyond an exact existing alias/name match.
+    """
+    key = poi_key(identity)
+    name = str(identity.get("candidate_name") or "").strip()
+    if not key or not name:
+        return None
+    ts = float(now or 0.0)
+
+    aliases: list[tuple[str, str]] = [("street_story_candidate", key), ("name", name)]
+    candidate_url = str(identity.get("candidate_url") or "").strip()
+    if candidate_url.startswith("https://"):
+        aliases.append(("url", candidate_url))
+    chosen = next(
+        (
+            item for item in (identity.get("candidates") or [])
+            if isinstance(item, dict) and str(item.get("candidate_id") or "") == key
+        ),
+        None,
+    )
+    if isinstance(chosen, dict):
+        for namespace, raw in (
+            ("wikidata", chosen.get("wikidata")),
+            ("wikipedia_url", chosen.get("wikipedia_url") or chosen.get("url") if key.startswith("wiki:") else None),
+            ("osm_id", chosen.get("osm_id") or key if key.startswith("osm:") else None),
+        ):
+            value = str(raw or "").strip()
+            if value:
+                aliases.append((namespace, value))
+
+    def alias_owner(namespace: str, value: str) -> str | None:
+        row = db.execute(
+            "SELECT poi_id FROM poi_aliases WHERE namespace=? AND normalized_value=?",
+            (namespace, _normalized_alias(value)),
+        ).fetchone()
+        return str(row["poi_id"]) if row else None
+
+    poi_id = alias_owner("street_story_candidate", key)
+    if poi_id is None:
+        name_owner = alias_owner("name", name)
+        if name_owner:
+            poi_id = name_owner
+        else:
+            poi_id = "poi_ss_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+            db.execute(
+                "INSERT OR IGNORE INTO pois(id,status,canonical_name,latitude,longitude,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (poi_id, "candidate", name[:300], latitude, longitude, ts, ts),
+            )
+
+    db.execute(
+        "UPDATE pois SET canonical_name=CASE WHEN status='candidate' THEN ? ELSE canonical_name END,"
+        "latitude=COALESCE(latitude,?),longitude=COALESCE(longitude,?),updated_at=? WHERE id=?",
+        (name[:300], latitude, longitude, ts, poi_id),
+    )
+    for namespace, value in aliases:
+        normalized = _normalized_alias(value)
+        owner = alias_owner(namespace, value)
+        if owner and owner != poi_id:
+            continue
+        db.execute(
+            "INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,?,?,?,?)",
+            (poi_id, namespace, value[:500], normalized[:500], ts),
+        )
+    return poi_id
+
+
+def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> int:
+    """Hydrate a new topic from durable POI knowledge before another web search."""
+    if db.execute("SELECT 1 FROM facts WHERE story_id=? LIMIT 1", (story_id,)).fetchone():
+        return 0
+
+    candidates: list[dict[str, Any]] = []
+    candidates.extend(_research_memory_facts(db, identity, limit))
+    remaining = max(0, limit - len(candidates))
+    if remaining:
+        candidates.extend(_public_regional_knowledge_facts(db, identity, remaining))
+
+    inserted = 0
+    seen: set[str] = set()
+    for item in candidates:
+        fact_id = str(item.get("fact_id") or "").strip()
+        text = str(item.get("text") or "").strip()
+        sources = [source for source in (item.get("sources") or []) if isinstance(source, dict)]
+        if not fact_id or fact_id in seen or not text or not sources:
+            continue
+        seen.add(fact_id)
+        selected = item.get("poi_claim_status") != "contested"
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        db.execute(
+            "INSERT OR IGNORE INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+            "VALUES(?,?,?,?,1,?,?)",
+            (
+                story_id,
+                fact_id,
+                text[:500],
+                confidence,
+                int(selected),
+                json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
+            ),
+        )
+        inserted += 1
+    return inserted
 
 
 def _research_memory_facts(db, identity: dict[str, Any], limit: int) -> list[dict[str, Any]]:
@@ -98,6 +221,7 @@ def persist_research_memory(
     key = poi_key(identity)
     if not key:
         return
+    ensure_poi_identity(db, identity, now=now)
     source_by_url: dict[str, dict[str, Any]] = {}
     for source in sources:
         if not isinstance(source, dict):
