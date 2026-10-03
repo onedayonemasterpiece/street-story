@@ -2125,13 +2125,26 @@ class GeminiClient:
             if int(item["incoming_index"]) not in explicit
         }
         matches = dict(explicit)
+        decisions: list[dict[str, Any]] = [
+            {
+                "incoming_index": index,
+                "relation": "equivalent",
+                "existing_fact_id": fact_id,
+                "rationale": "Upstream extraction explicitly referenced this durable fact ID.",
+                "model_name": "upstream_existing_fact_id",
+                "prompt_version": "fact-identity-reconciliation-v1",
+            }
+            for index, fact_id in sorted(explicit.items())
+        ]
         if not unresolved or not existing:
             return {
                 "matches": matches,
+                "decisions": decisions,
                 "pages_reviewed": 0,
                 "existing_fact_count": len(existing),
                 "incoming_fact_count": len(incoming),
                 "complete": True,
+                "unmatched_count": len(unresolved),
             }
 
         size = max(10, min(int(page_size), 50))
@@ -2182,12 +2195,14 @@ class GeminiClient:
                 return rows
 
             rows = None
+            used_model = ""
             retry_at: list[float] = []
             for model, _pool, quota, executor in self.research_routes:
                 async def routed_call(key, timeout, *, _model=model, _quota=quota):
                     return await call(key, timeout, model=_model, quota=_quota)
                 try:
                     rows = await executor.execute("grounded_research", routed_call)
+                    used_model = str(model or "")
                     break
                 except GeminiUnavailable as exc:
                     if exc.retry_at is not None:
@@ -2214,10 +2229,19 @@ class GeminiClient:
                 if incoming_index not in unresolved or existing_fact_id not in page_ids:
                     continue
                 matches[incoming_index] = existing_fact_id
+                decisions.append({
+                    "incoming_index": incoming_index,
+                    "relation": "equivalent",
+                    "existing_fact_id": existing_fact_id,
+                    "rationale": str(row.get("rationale") or "")[:1000],
+                    "model_name": used_model,
+                    "prompt_version": "fact-identity-reconciliation-v1",
+                })
                 unresolved.discard(incoming_index)
 
         return {
             "matches": matches,
+            "decisions": decisions,
             "pages_reviewed": pages_reviewed,
             "existing_fact_count": len(existing),
             "incoming_fact_count": len(incoming),

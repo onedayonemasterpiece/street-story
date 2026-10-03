@@ -203,6 +203,51 @@ CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_story_time
 CREATE INDEX IF NOT EXISTS idx_fact_conflict_scans_poi_time
  ON fact_conflict_scans(poi_key,created_at DESC);
 
+CREATE TABLE IF NOT EXISTS fact_arbitration_events(
+  event_id TEXT PRIMARY KEY,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  conflict_id TEXT NOT NULL,
+  resolution TEXT NOT NULL,
+  final_fact_id TEXT,
+  reason TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  arbitrated_by TEXT NOT NULL,
+  left_revision_digest TEXT NOT NULL,
+  right_revision_digest TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('active','stale','superseded')),
+  stale_reason TEXT,
+  created_at REAL NOT NULL,
+  stale_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_arbitration_events_conflict
+ ON fact_arbitration_events(story_id,conflict_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fact_arbitration_events_state
+ ON fact_arbitration_events(story_id,state,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS fact_relation_events(
+  event_id TEXT PRIMARY KEY,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL,
+  incoming_index INTEGER NOT NULL,
+  incoming_text TEXT NOT NULL,
+  incoming_text_sha256 TEXT NOT NULL,
+  existing_fact_id TEXT NOT NULL,
+  existing_revision_digest TEXT NOT NULL,
+  relation TEXT NOT NULL CHECK(relation IN (
+    'equivalent','different','contradicts','refines',
+    'temporal_sequence','scope_difference','uncertain'
+  )),
+  model_name TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_relation_events_story_run
+ ON fact_relation_events(story_id,run_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_fact_relation_events_existing
+ ON fact_relation_events(story_id,existing_fact_id,created_at DESC);
+
 CREATE TABLE IF NOT EXISTS fact_assertions(
   story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
   assertion_id TEXT NOT NULL,

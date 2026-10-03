@@ -1156,6 +1156,14 @@ async def test_fact_identity_reconciliation_scans_complete_inventory_pages(tmp_p
     assert result["existing_fact_count"] == 85
     assert result["matches"] == {0: "fact-84"}
     assert result["unmatched_count"] == 0
+    assert result["decisions"] == [{
+        "incoming_index": 0,
+        "relation": "equivalent",
+        "existing_fact_id": "fact-84",
+        "rationale": "Это один и тот же тезис об открытии после реставрации.",
+        "model_name": route[0],
+        "prompt_version": "fact-identity-reconciliation-v1",
+    }]
 
 
 @pytest.mark.asyncio

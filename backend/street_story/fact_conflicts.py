@@ -617,6 +617,29 @@ def resolve_fact_conflict(
             final_fact_id = row["left_fact_id"]
         elif resolution == "prefer_right":
             final_fact_id = row["right_fact_id"]
+        revisions = {
+            str(item["assertion_id"]): str(item["revision_digest"] or "")
+            for item in db.execute(
+                "SELECT assertion_id,revision_digest FROM fact_assertions "
+                "WHERE story_id=? AND assertion_id IN (?,?)",
+                (story_id, row["left_fact_id"], row["right_fact_id"]),
+            )
+        }
+        left_revision = revisions.get(str(row["left_fact_id"]), "")
+        right_revision = revisions.get(str(row["right_fact_id"]), "")
+        evidence_before_arbitration = json.loads(row["evidence_json"] or "{}")
+        evidence_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "left_revision_digest": left_revision,
+                    "right_revision_digest": right_revision,
+                    "evidence": evidence_before_arbitration,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         same = (
             row["final_resolution"] == resolution
             and row["final_fact_id"] == final_fact_id
@@ -627,7 +650,55 @@ def resolve_fact_conflict(
         )
         if not same:
             changed = True
-            evidence = json.loads(row["evidence_json"] or "{}")
+            now = service.store.now()
+            event_payload = {
+                "story_id": story_id,
+                "conflict_id": conflict_id,
+                "resolution": resolution,
+                "final_fact_id": final_fact_id,
+                "reason": reason,
+                "confidence": confidence,
+                "arbitrated_by": arbitrated_by[:120],
+                "left_revision_digest": left_revision,
+                "right_revision_digest": right_revision,
+                "evidence_digest": evidence_digest,
+            }
+            event_id = "arbitration_" + hashlib.sha256(
+                json.dumps(
+                    event_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:24]
+            db.execute(
+                "UPDATE fact_arbitration_events SET state='superseded',"
+                "stale_reason='new_arbitration',stale_at=? "
+                "WHERE story_id=? AND conflict_id=? AND state='active'",
+                (now, story_id, conflict_id),
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO fact_arbitration_events("
+                "event_id,story_id,conflict_id,resolution,final_fact_id,reason,confidence,"
+                "arbitrated_by,left_revision_digest,right_revision_digest,evidence_digest,"
+                "state,stale_reason,created_at,stale_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,'active',NULL,?,NULL)",
+                (
+                    event_id,
+                    story_id,
+                    conflict_id,
+                    resolution,
+                    final_fact_id,
+                    reason,
+                    confidence,
+                    arbitrated_by[:120],
+                    left_revision,
+                    right_revision,
+                    evidence_digest,
+                    now,
+                ),
+            )
+            evidence = dict(evidence_before_arbitration)
             evidence["mira_arbitration_confidence"] = confidence
             db.execute(
                 """
@@ -642,7 +713,7 @@ def resolve_fact_conflict(
                     reason,
                     confidence,
                     arbitrated_by[:120],
-                    service.store.now(),
+                    now,
                     story_id,
                     conflict_id,
                 ),
