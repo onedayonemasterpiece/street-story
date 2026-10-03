@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.config import Settings
+from street_story.errors import RetryableProviderError
 from street_story.fact_ledger import persist_fact_candidates, set_owner_selection
 from street_story.live import FUNCTIONS, StreetStoryLiveAdapter, ensure_live_schema, live_history
 from street_story.mvp_location import MvpLocationStreetStoryService
@@ -863,6 +864,263 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
     current = svc.story(story_id)
     assert len(current["facts"]) == 1
     assert len(current["facts"][0]["sources"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_live_discovery_save_reconciles_against_existing_full_inventory(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    old_url = "https://old.example/sculptures"
+    old_text = "Скульптурные изображения на Королевских воротах были созданы около 1848 года."
+    with svc.store.tx() as db:
+        existing_id = persist_fact_candidates(
+            db,
+            story_id=story_id,
+            poi_key="wiki:77",
+            facts=[{
+                "claim_key": "royal-gate-sculptures-date",
+                "text": old_text,
+                "confidence": .9,
+                "selected": True,
+                "sources": [{
+                    "type": "web",
+                    "title": "Old source",
+                    "url": old_url,
+                    "supports": [{
+                        "kind": "page_excerpt",
+                        "source_url": old_url,
+                        "text": "Скульптуры датируются примерно 1848 годом.",
+                    }],
+                }],
+            }],
+            run_id="seed-run",
+            batch_id="seed-batch",
+            model_name="seed-model",
+            prompt_version="seed-v1",
+            now=svc.store.now(),
+        )[0]
+
+    new_url = "https://new.example/sculptures"
+    evidence_ref = "evref_" + "f" * 24
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Discovery only",
+                "facts": [],
+                "search_provider": "duckduckgo_html_fallback",
+            },
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "New source",
+                "url": new_url,
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": new_url,
+                    "text": "Время создания скульптур по документам — около 1848 года.",
+                    "evidence_ref": evidence_ref,
+                }],
+            }],
+        )
+
+    reconciler_calls = []
+
+    async def reconcile(incoming, existing):
+        reconciler_calls.append((incoming, existing))
+        assert len(existing) == 1
+        assert existing[0]["fact_id"] == existing_id
+        assert incoming[0]["text"] == old_text
+        return {
+            "matches": {0: existing_id},
+            "decisions": [{
+                "incoming_index": 0,
+                "relation": "equivalent",
+                "existing_fact_id": existing_id,
+                "rationale": "Это один и тот же тезис о датировке скульптур.",
+                "model_name": "test-reconciler",
+                "prompt_version": "fact-identity-reconciliation-v1",
+            }],
+            "pages_reviewed": 1,
+            "existing_fact_count": 1,
+            "incoming_fact_count": 1,
+            "complete": True,
+            "unmatched_count": 0,
+        }
+
+    svc.providers.gemini.search_web = fallback_search
+    svc.providers.gemini.reconcile_fact_identities = reconcile
+
+    search_result = await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-existing-sculpture-date",
+            "args": {"query": "дата создания скульптур"},
+        },
+    )
+    source_ref = search_result["sources"][0]["source_ref"]
+
+    saved = await adapter.execute_tool(
+        session,
+        {
+            "name": "save_research_facts",
+            "id": "save-existing-sculpture-date",
+            "args": {
+                "facts": [{
+                    "claim_key": "sculptures-created-around-1848",
+                    "text": old_text,
+                    "confidence": .99,
+                    "selected": True,
+                    "source_refs": [source_ref],
+                    "evidence_refs": [evidence_ref],
+                }],
+            },
+        },
+    )
+
+    assert len(reconciler_calls) == 1
+    assert saved["facts"][0]["fact_id"] == existing_id
+    assert saved["save_research_audit"] == {
+        "raw_candidate_count": 1,
+        "structurally_valid_count": 1,
+        "normalized_fact_count": 1,
+        "reconciled_match_count": 1,
+        "rejected": {},
+        "collapsed_in_batch_count": 0,
+    }
+    assert saved["fact_reconciliation"]["status"] == "complete"
+    assert saved["fact_reconciliation"]["matched_count"] == 1
+
+    current = svc.story(story_id)
+    assert len(current["facts"]) == 1
+    assert current["facts"][0]["fact_id"] == existing_id
+    assert {source["url"] for source in current["facts"][0]["sources"]} == {
+        old_url,
+        new_url,
+    }
+
+    with svc.store.connection() as db:
+        audit_row = db.execute(
+            "SELECT payload_json FROM live_diagnostics "
+            "WHERE story_id=? AND session_id=? AND event_type='fact_save_audit' "
+            "ORDER BY id DESC LIMIT 1",
+            (story_id, session.id),
+        ).fetchone()
+        research = json.loads(
+            db.execute(
+                "SELECT research_json FROM stories WHERE id=?",
+                (story_id,),
+            ).fetchone()[0]
+        )
+    assert audit_row is not None
+    audit_payload = json.loads(audit_row["payload_json"])
+    assert audit_payload["raw_candidate_count"] == 1
+    assert audit_payload["reconciled_match_count"] == 1
+    assert audit_payload["reconciliation_status"] == "complete"
+    assert research["live_web_searches"][-1]["save_research_audit"]["raw_candidate_count"] == 1
+    assert research["live_web_searches"][-1]["fact_reconciliation"]["matched_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_live_discovery_save_does_not_deterministically_merge_when_reconciler_unavailable(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    old_url = "https://old.example/date"
+    old_text = "Скульптуры датируются примерно 1848 годом."
+    with svc.store.tx() as db:
+        old_id = persist_fact_candidates(
+            db,
+            story_id=story_id,
+            poi_key="wiki:77",
+            facts=[{
+                "claim_key": "old-date-wording",
+                "text": old_text,
+                "confidence": .9,
+                "selected": True,
+                "sources": [{
+                    "type": "web",
+                    "title": "Old",
+                    "url": old_url,
+                    "supports": [{
+                        "kind": "page_excerpt",
+                        "source_url": old_url,
+                        "text": old_text,
+                    }],
+                }],
+            }],
+            run_id="seed-run",
+            batch_id="seed-batch",
+            model_name="seed-model",
+            prompt_version="seed-v1",
+            now=svc.store.now(),
+        )[0]
+
+    new_url = "https://new.example/date"
+    evidence_ref = "evref_" + "9" * 24
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Discovery only",
+                "facts": [],
+                "search_provider": "duckduckgo_html_fallback",
+            },
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "New",
+                "url": new_url,
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": new_url,
+                    "text": "Изображения созданы около 1848 года.",
+                    "evidence_ref": evidence_ref,
+                }],
+            }],
+        )
+
+    async def unavailable_reconciler(incoming, existing):
+        raise RetryableProviderError("reconciler_temporarily_unavailable")
+
+    svc.providers.gemini.search_web = fallback_search
+    svc.providers.gemini.reconcile_fact_identities = unavailable_reconciler
+
+    search_result = await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-reconcile-unavailable",
+            "args": {"query": "дата изображений"},
+        },
+    )
+    source_ref = search_result["sources"][0]["source_ref"]
+    saved = await adapter.execute_tool(
+        session,
+        {
+            "name": "save_research_facts",
+            "id": "save-reconcile-unavailable",
+            "args": {
+                "facts": [{
+                    "claim_key": "new-date-wording",
+                    "text": "Скульптурные изображения были созданы около 1848 года.",
+                    "confidence": .95,
+                    "selected": True,
+                    "source_refs": [source_ref],
+                    "evidence_refs": [evidence_ref],
+                }],
+            },
+        },
+    )
+
+    assert saved["fact_reconciliation"]["status"] == "unavailable"
+    assert saved["save_research_audit"]["reconciled_match_count"] == 0
+    current = svc.story(story_id)
+    assert len(current["facts"]) == 2
+    assert old_id in {fact["fact_id"] for fact in current["facts"]}
+    assert saved["facts"][0]["fact_id"] != old_id
 
 
 @pytest.mark.asyncio
