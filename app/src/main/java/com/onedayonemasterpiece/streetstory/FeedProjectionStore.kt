@@ -15,6 +15,15 @@ data class VoiceMessageSnapshot(
     val endedAt: String?,
 )
 
+data class LiveMessageSnapshot(
+    val storyId: String,
+    val messageId: String,
+    val sessionId: String,
+    val role: String,
+    val text: String,
+    val final: Boolean,
+)
+
 object FeedModel {
     const val STORY_LIMIT = 10
     fun <T> latest(items: List<T>): List<T> = items.take(STORY_LIMIT)
@@ -42,10 +51,27 @@ class FeedProjectionStore(context: Context) : SQLiteOpenHelper(context.applicati
             )""".trimIndent(),
         )
         db.execSQL("CREATE INDEX idx_feed_voice_story ON voice_messages(story_id,started_at,session_id)")
+        createLiveMessagesTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("No feed projection migration required before v1 release")
+        if (oldVersion < 2) createLiveMessagesTable(db)
+    }
+
+    private fun createLiveMessagesTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS live_messages(
+                story_id TEXT NOT NULL,
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                final INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )""".trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_feed_live_story ON live_messages(story_id,position,message_id)")
     }
 
     @Synchronized
@@ -89,8 +115,74 @@ class FeedProjectionStore(context: Context) : SQLiteOpenHelper(context.applicati
     }
 
     @Synchronized
+    fun replaceLiveMessages(storyId: String, incoming: List<LiveMessageWire>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("live_messages", "story_id=?", arrayOf(storyId))
+            val now = System.currentTimeMillis()
+            incoming.filter { it.messageId.isNotBlank() && it.role in setOf(LiveRole.USER, LiveRole.ASSISTANT) && it.text.isNotBlank() }
+                .takeLast(100)
+                .forEachIndexed { index, item ->
+                    db.insertWithOnConflict(
+                        "live_messages", null,
+                        ContentValues().apply {
+                            put("story_id", storyId); put("message_id", item.messageId)
+                            put("session_id", item.sessionId); put("role", item.role)
+                            put("text", item.text.take(8000)); put("final", if (item.final) 1 else 0)
+                            put("position", index); put("updated_at", now)
+                        },
+                        SQLiteDatabase.CONFLICT_REPLACE,
+                    )
+                }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    @Synchronized
+    fun replaceLocalLiveMessages(storyId: String, incoming: List<LiveChatMessage>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.delete("live_messages", "story_id=?", arrayOf(storyId))
+            val now = System.currentTimeMillis()
+            incoming.filter { it.role in setOf(LiveRole.USER, LiveRole.ASSISTANT) && it.text.isNotBlank() }
+                .takeLast(100)
+                .forEachIndexed { index, item ->
+                    db.insertWithOnConflict(
+                        "live_messages", null,
+                        ContentValues().apply {
+                            put("story_id", storyId); put("message_id", "local:" + index)
+                            put("session_id", "local"); put("role", item.role); put("text", item.text.take(8000))
+                            put("final", 1); put("position", index); put("updated_at", now)
+                        },
+                        SQLiteDatabase.CONFLICT_REPLACE,
+                    )
+                }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    @Synchronized
+    fun liveMessages(storyId: String): List<LiveMessageSnapshot> = readableDatabase.query(
+        "live_messages",
+        arrayOf("story_id","message_id","session_id","role","text","final"),
+        "story_id=?", arrayOf(storyId), null, null, "position,message_id",
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                add(LiveMessageSnapshot(
+                    cursor.getString(0), cursor.getString(1), cursor.getString(2),
+                    cursor.getString(3), cursor.getString(4), cursor.getInt(5) != 0,
+                ))
+            }
+        }
+    }
+
+    @Synchronized
     fun clear(storyId: String) {
         writableDatabase.delete("voice_messages", "story_id=?", arrayOf(storyId))
+        writableDatabase.delete("live_messages", "story_id=?", arrayOf(storyId))
     }
 
     @Synchronized
@@ -120,6 +212,6 @@ class FeedProjectionStore(context: Context) : SQLiteOpenHelper(context.applicati
 
     companion object {
         private const val DB_NAME = "street-story-feed.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
     }
 }

@@ -77,6 +77,20 @@ CREATE TABLE IF NOT EXISTS facts(
   sources_json TEXT NOT NULL,
   PRIMARY KEY(story_id, fact_id)
 );
+CREATE TABLE IF NOT EXISTS live_messages(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  message_key TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+  text TEXT NOT NULL,
+  final INTEGER NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE(story_id,message_key)
+);
+CREATE INDEX IF NOT EXISTS idx_live_messages_story_id
+  ON live_messages(story_id,id);
 CREATE TABLE IF NOT EXISTS jobs(
   id TEXT PRIMARY KEY,
   story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,

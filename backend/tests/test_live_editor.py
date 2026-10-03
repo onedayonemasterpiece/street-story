@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.config import Settings
-from street_story.live import FUNCTIONS, StreetStoryLiveAdapter, ensure_live_schema
+from street_story.live import FUNCTIONS, StreetStoryLiveAdapter, ensure_live_schema, live_history
 from street_story.mvp_location import MvpLocationStreetStoryService
 from street_story.providers import GroundedResearch
 from street_story.service import ConflictError, ProviderBundle
@@ -900,9 +900,11 @@ def test_live_transcripts_are_retained_as_bounded_diagnostics(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     adapter.on_event(session, {"type": "input_transcript", "text": "Покажи, что ты видишь на фотографии."})
     adapter.on_event(session, {"type": "output_transcript", "text": "Вижу кирпичную арку и башни."})
+    adapter.on_event(session, {"type": "turn_complete"})
     with svc.store.connection() as db:
         rows = db.execute(
-            "SELECT source,event_type,payload_json FROM live_diagnostics WHERE story_id=? ORDER BY id",
+            "SELECT source,event_type,payload_json FROM live_diagnostics "
+            "WHERE story_id=? AND event_type IN ('input_transcript','output_transcript') ORDER BY id",
             (session.resource_id,),
         ).fetchall()
     assert [row["event_type"] for row in rows] == ["input_transcript", "output_transcript"]
@@ -911,6 +913,15 @@ def test_live_transcripts_are_retained_as_bounded_diagnostics(tmp_path):
     assert payloads[0]["text"] == "Покажи, что ты видишь на фотографии."
     assert payloads[1]["role"] == "assistant"
     assert payloads[1]["text"] == "Вижу кирпичную арку и башни."
+    story = svc.story(session.resource_id)
+    assert [(item["role"], item["text"], item["final"]) for item in story["live_messages"]] == [
+        ("user", "Покажи, что ты видишь на фотографии.", True),
+        ("assistant", "Вижу кирпичную арку и башни.", True),
+    ]
+    assert live_history(svc, session.resource_id) == [
+        {"role": "user", "text": "Покажи, что ты видишь на фотографии."},
+        {"role": "model", "text": "Вижу кирпичную арку и башни."},
+    ]
 
 
 def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):

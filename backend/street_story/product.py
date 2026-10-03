@@ -274,6 +274,25 @@ class ProductStreetStoryService(StreetStoryService):
             )
         result["voice_messages"] = messages
 
+        live_rows = list(db.execute(
+            "SELECT message_key,session_id,role,text,final,created_at,updated_at "
+            "FROM live_messages WHERE story_id=? ORDER BY id DESC LIMIT 100",
+            (row["id"],),
+        ))
+        live_rows.reverse()
+        result["live_messages"] = [
+            {
+                "message_id": str(item["message_key"]),
+                "session_id": str(item["session_id"]),
+                "role": str(item["role"]),
+                "text": str(item["text"]),
+                "final": bool(item["final"]),
+                "created_at": item["created_at"],
+                "updated_at": item["updated_at"],
+            }
+            for item in live_rows
+        ]
+
         visual = json.loads(row["visual_context_json"] or "{}")
         safe_visual_keys = (
             "source_asset_ref",

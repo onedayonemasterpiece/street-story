@@ -84,6 +84,7 @@ class LiveSessionController(context: Context) {
     private val app = context.applicationContext
     private val config = AppGraph.config(app)
     private val store = AppGraph.store(app)
+    private val feed = FeedProjectionStore(app)
     private val gson = Gson()
     private val generation = AtomicInteger(0)
     private val playbackGeneration = AtomicInteger(0)
@@ -134,6 +135,23 @@ class LiveSessionController(context: Context) {
     }
 
     fun snapshot(): LiveUiState = state
+
+    @Synchronized
+    fun restoreMessages(storyId: String) {
+        if (state.active && state.storyId == storyId) return
+        val restored = feed.liveMessages(storyId).map { LiveChatMessage(it.role, it.text) }.takeLast(100)
+        if (state.storyId == storyId) {
+            if (restored.isNotEmpty() && restored != state.messages) update(state.copy(messages = restored))
+        } else {
+            update(LiveUiState(storyId = storyId, status = "Live выключен", messages = restored))
+        }
+    }
+
+    private fun persistMessages() {
+        val story = state.storyId ?: return
+        runCatching { feed.replaceLocalLiveMessages(story, state.messages) }
+    }
+
     fun addListener(listener: (LiveUiState) -> Unit) { listeners.add(listener); listener(state) }
     fun removeListener(listener: (LiveUiState) -> Unit) { listeners.remove(listener) }
     fun isActiveFor(storyId: String): Boolean = state.active && state.storyId == storyId && !sessionId.isNullOrBlank()
@@ -207,7 +225,12 @@ class LiveSessionController(context: Context) {
         val gen = synchronized(this) {
             if (state.active || state.connecting) { onReady(false, null); return }
             val epoch = generation.incrementAndGet()
-            update(LiveUiState(storyId = storyId, connecting = true, status = "Подключаю Live…"))
+            val restored = if (state.storyId == storyId && state.messages.isNotEmpty()) {
+                state.messages
+            } else {
+                feed.liveMessages(storyId).map { LiveChatMessage(it.role, it.text) }.takeLast(100)
+            }
+            update(LiveUiState(storyId = storyId, connecting = true, status = "Подключаю Live…", messages = restored))
             epoch
         }
         playbackGeneration.incrementAndGet()
@@ -219,32 +242,50 @@ class LiveSessionController(context: Context) {
             val api = LiveApiClient(base, token)
             try {
                 val attempt = "attempt_" + UUID.randomUUID().toString().replace("-", "")
-                val started = try {
-                    api.start(server, attempt)
-                } catch (first: ApiException) {
-                    // A resource budget refusal must not trigger another reservation in 900 ms.
-                    if (first.code.equals("RESOURCE_TOKEN_BUDGET", ignoreCase = true)) throw first
-                    if (first.status !in setOf(429, 503)) throw first
-                    updateForGeneration(gen, state.copy(status = "Live занят · повторное подключение…", error = null))
-                    Thread.sleep(900)
-                    if (generation.get() != gen) { ready(false, null); return@execute }
-                    api.start(server, attempt + "_retry")
+                val admission = LiveStartAdmissionPolicy()
+                var started: LiveStartWire? = null
+                var retry = 0
+                while (started == null) {
+                    try {
+                        started = api.start(server, if (retry == 0) attempt else attempt + "_retry_" + retry)
+                    } catch (exc: ApiException) {
+                        val decision = admission.next(exc.status, exc.code) ?: throw exc
+                        retry = decision.attempt
+                        waitStage = "resource"
+                        if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime()
+                        updateForGeneration(
+                            gen,
+                            state.copy(
+                                connecting = true,
+                                status = "Ожидаю доступный лимит · " + decision.attempt,
+                                error = null,
+                            ),
+                        )
+                        diagnostic(
+                            "live_start_admission_wait",
+                            mapOf("attempt" to decision.attempt, "delay_ms" to decision.delayMs, "status" to exc.status, "code" to exc.code),
+                        )
+                        Thread.sleep(decision.delayMs)
+                        if (generation.get() != gen) { ready(false, null); return@execute }
+                    }
                 }
+                waitStarted = 0
+                val startedSession = requireNotNull(started)
                 if (generation.get() != gen) {
-                    runCatching { api.stop(server, started.sessionId) }
+                    runCatching { api.stop(server, startedSession.sessionId) }
                     ready(false, null)
                     return@execute
                 }
                 synchronized(this@LiveSessionController) {
                     if (generation.get() != gen) {
-                        remoteStop(server, started.sessionId)
+                        remoteStop(server, startedSession.sessionId)
                         ready(false, null)
                         return@execute
                     }
                     serverStoryId = server
-                    sessionId = started.sessionId
+                    sessionId = startedSession.sessionId
                 }
-                if (started.transportProtocol != LiveSocketTransport.PROTOCOL || started.socketTicket.isBlank() || started.socketUrl.isBlank()) {
+                if (startedSession.transportProtocol != LiveSocketTransport.PROTOCOL || startedSession.socketTicket.isBlank() || startedSession.socketUrl.isBlank()) {
                     throw ApiProtocolException("Backend не поддерживает согласованный WSS-протокол")
                 }
                 receivedPcm.set(0)
@@ -302,7 +343,7 @@ class LiveSessionController(context: Context) {
                                     try {
                                         Thread.sleep(decision.delayMs)
                                         if (generation.get() != gen) return@execute
-                                        val renewed = api.renewSocketTicket(server, started.sessionId)
+                                        val renewed = api.renewSocketTicket(server, startedSession.sessionId)
                                         if (
                                             renewed.transportProtocol != LiveSocketTransport.PROTOCOL ||
                                             renewed.socketTicket.isBlank() ||
@@ -346,8 +387,8 @@ class LiveSessionController(context: Context) {
                                     "StreetStoryLive",
                                     gson.toJson(
                                         fields + mapOf(
-                                            "session_id" to started.sessionId,
-                                            "attempt_id" to started.attemptId,
+                                            "session_id" to startedSession.sessionId,
+                                            "attempt_id" to startedSession.attemptId,
                                             "connection_generation" to connectionGeneration.get(),
                                         )
                                     ),
@@ -365,7 +406,7 @@ class LiveSessionController(context: Context) {
                             base,
                             socketUrl,
                             socketTicket,
-                            started.attemptId,
+                            startedSession.attemptId,
                             connectionGeneration.get(),
                             cursor,
                         ).get(12, TimeUnit.SECONDS)
@@ -395,7 +436,7 @@ class LiveSessionController(context: Context) {
                         if (initial) "live_ready" else "transport_reconnected",
                         mapOf(
                             "transport" to "wss",
-                            "attempt_id" to started.attemptId,
+                            "attempt_id" to startedSession.attemptId,
                             "connection_generation" to connectionGeneration.get(),
                             "cursor" to cursor,
                         ),
@@ -403,7 +444,7 @@ class LiveSessionController(context: Context) {
                     ready(true, null)
                     }
                 }
-                connectTransport(started.socketUrl, started.socketTicket, 0L, true)
+                connectTransport(startedSession.socketUrl, startedSession.socketTicket, 0L, true)
             } catch (exc: Exception) {
                 if (generation.get() == gen) fail(gen, "Live недоступен: ${safeMessage(exc)}")
                 ready(false, safeMessage(exc))
@@ -511,6 +552,8 @@ class LiveSessionController(context: Context) {
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
                 updateForGeneration(gen, state.copy(status = "Слушаю", inputActive = false, completedTurns = state.completedTurns + 1, error = null))
+                persistMessages()
+                SyncScheduler.enqueue(app)
             }
             "tool_call" -> { waitStage = "tool"; if (waitStarted == 0L) waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Выполняю действие…")) }
             "budget_wait" -> { waitStage = "resource"; waitStarted = SystemClock.elapsedRealtime(); updateForGeneration(gen, state.copy(status = "Ожидаю доступный лимит")) }
@@ -673,6 +716,7 @@ class LiveSessionController(context: Context) {
             userTranscriptIndex = -1; assistantTranscriptIndex = -1
             // Keep already received PCM; only explicit user Stop flushes playback.
             update(state.copy(active = false, connecting = false, status = "Live остановлен", inputActive = false, error = message))
+            persistMessages()
             prior
         }
         stopped.third?.close(false)
@@ -687,12 +731,14 @@ class LiveSessionController(context: Context) {
         val index = preferredIndex.takeIf { it in messages.indices && messages[it].role == role }
         if (index == null) {
             messages.add(LiveChatMessage(role, clean.take(4000)))
-            while (messages.size > 24) messages.removeAt(0)
+            while (messages.size > 100) messages.removeAt(0)
             update(state.copy(messages = messages.toList()))
+            persistMessages()
             return messages.lastIndex
         }
         messages[index] = messages[index].copy(text = mergeTranscript(messages[index].text, clean).take(4000))
         update(state.copy(messages = messages.toList()))
+        persistMessages()
         return index
     }
 
@@ -707,7 +753,7 @@ class LiveSessionController(context: Context) {
 
     private fun addSystemMessage(text: String) {
         if (text.isBlank()) return
-        val messages = (state.messages + LiveChatMessage(LiveRole.SYSTEM, text.take(500))).takeLast(24)
+        val messages = (state.messages + LiveChatMessage(LiveRole.SYSTEM, text.take(500))).takeLast(100)
         update(state.copy(messages = messages))
     }
 

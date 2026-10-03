@@ -526,6 +526,7 @@ class MainActivity : Activity() {
 
     private fun refreshTopicDetail() {
         val id = activeStoryId ?: return
+        live.restoreMessages(id)
         val story = store.story(id) ?: run { showTopics(); return }
 
         topicTitleView?.text = "Тема"

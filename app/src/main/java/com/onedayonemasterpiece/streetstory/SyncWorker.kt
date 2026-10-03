@@ -228,6 +228,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             },
         )
         feed.replaceVoiceMessages(storyId, wire.voiceMessages)
+        feed.replaceLiveMessages(storyId, wire.liveMessages)
         research.replace(storyId, wire)
         if (wire.destinations.isNotEmpty()) store.replaceDestinations(storyId, wire.destinations.map { it.local() })
     }
