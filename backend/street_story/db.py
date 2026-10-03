@@ -738,8 +738,13 @@ class Store:
             ):
                 if name not in evidence_columns:
                     db.execute(f"ALTER TABLE fact_evidence_spans ADD COLUMN {name} {sql_type}")
-            from .fact_ledger import backfill_legacy_fact_ledger
-            backfill_legacy_fact_ledger(db, self.now())
+            from .fact_ledger import (
+                backfill_legacy_fact_ledger,
+                repair_missing_evidence_edges,
+            )
+            now = self.now()
+            backfill_legacy_fact_ledger(db, now)
+            repair_missing_evidence_edges(db, now)
             poi_assertion_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(poi_research_assertions)")
             }

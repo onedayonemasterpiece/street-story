@@ -9,6 +9,7 @@ from street_story.fact_ledger import (
     persist_fact_candidates,
     persist_fact_relation_events,
     refresh_review_status,
+    repair_missing_evidence_edges,
     revision_bundle_issues,
     selected_eligibility_issues,
     set_owner_selection,
@@ -743,3 +744,122 @@ def test_new_assertion_initial_selection_stays_in_sync_and_model_cannot_overwrit
         ).fetchone()
     assert projection["selected"] == 1
     assert assertion["owner_selected"] == 1
+
+
+def test_same_passage_can_support_two_distinct_observations(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    shared = "Один exact passage поддерживает два отдельных атомарных тезиса."
+    ids = persist(
+        store,
+        story_id,
+        [
+            fact("left", "Первый атомарный тезис.", "https://shared.example/page", shared),
+            fact("right", "Второй атомарный тезис.", "https://shared.example/page", shared),
+        ],
+        "run-shared",
+        "batch-shared",
+    )
+    with store.connection() as db:
+        rows = list(db.execute(
+            "SELECT e.evidence_id,e.span_text,o.assertion_id "
+            "FROM fact_evidence_spans e "
+            "JOIN fact_observations o ON o.observation_id=e.observation_id "
+            "WHERE o.story_id=? AND o.assertion_id IN (?,?) ORDER BY o.assertion_id",
+            (story_id, ids[0], ids[1]),
+        ))
+    assert len(rows) == 2
+    assert len({row["evidence_id"] for row in rows}) == 2
+    assert {row["span_text"] for row in rows} == {shared}
+    assert {row["assertion_id"] for row in rows} == set(ids)
+
+
+def test_legacy_collision_repair_restores_exact_existing_passage_edge(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    shared = "Exact shared evidence passage."
+    ids = persist(
+        store,
+        story_id,
+        [
+            fact("a", "Факт A.", "https://shared.example/page", shared),
+            fact("b", "Факт B.", "https://shared.example/page", shared),
+        ],
+        "run-repair",
+        "batch-repair",
+    )
+    with store.tx() as db:
+        observation_id = db.execute(
+            "SELECT observation_id FROM fact_observations "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, ids[1]),
+        ).fetchone()["observation_id"]
+        db.execute(
+            "DELETE FROM fact_evidence_spans WHERE observation_id=?",
+            (observation_id,),
+        )
+        result = repair_missing_evidence_edges(db, store.now())
+        assert result == {
+            "repaired_edges": 1,
+            "downgraded_observations": 0,
+        }
+        assert db.execute(
+            "SELECT COUNT(*) FROM fact_evidence_spans WHERE observation_id=?",
+            (observation_id,),
+        ).fetchone()[0] == 1
+
+
+def test_missing_unproven_evidence_is_downgraded_fail_closed(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    fact_id = persist(
+        store,
+        story_id,
+        [
+            fact(
+                "only",
+                "Факт с уникальным evidence.",
+                "https://only.example/page",
+                "Unique passage.",
+            )
+        ],
+        "run-missing",
+        "batch-missing",
+    )[0]
+    with store.tx() as db:
+        observation_id = db.execute(
+            "SELECT observation_id FROM fact_observations "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()["observation_id"]
+        db.execute(
+            "DELETE FROM fact_evidence_spans WHERE observation_id=?",
+            (observation_id,),
+        )
+        result = repair_missing_evidence_edges(db, store.now())
+        assert result == {
+            "repaired_edges": 0,
+            "downgraded_observations": 1,
+        }
+        observation = db.execute(
+            "SELECT status,structural_error FROM fact_observations "
+            "WHERE observation_id=?",
+            (observation_id,),
+        ).fetchone()
+        assert dict(observation) == {
+            "status": "candidate",
+            "structural_error": "evidence_edge_missing",
+        }
+        assertion = db.execute(
+            "SELECT review_status,eligibility FROM fact_assertions "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()
+        assert dict(assertion) == {
+            "review_status": "withheld",
+            "eligibility": "withheld",
+        }
+        assert db.execute(
+            "SELECT evidence_supported FROM facts WHERE story_id=? AND fact_id=?",
+            (story_id, fact_id),
+        ).fetchone()["evidence_supported"] == 0
