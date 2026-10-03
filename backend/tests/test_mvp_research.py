@@ -563,6 +563,19 @@ async def test_rejected_claim_stays_rejected_after_rephrased_refinement(tmp_path
     same_claim = next(item for item in refined["facts"] if item["fact_id"] == supported_id)
     assert same_claim["selected"] is False
     assert "У центральной площади" not in (refined["draft_text"] or "")
+    with svc.store.connection() as db:
+        event = db.execute(
+            "SELECT relation,existing_fact_id,model_name,prompt_version "
+            "FROM fact_relation_events WHERE story_id=? AND existing_fact_id=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (story["id"], supported_id),
+        ).fetchone()
+    assert dict(event) == {
+        "relation": "equivalent",
+        "existing_fact_id": supported_id,
+        "model_name": "upstream_existing_fact_id",
+        "prompt_version": "fact-identity-reconciliation-v1",
+    }
 
 
 @pytest.mark.asyncio

@@ -5,8 +5,11 @@ from street_story.fact_ledger import (
     backfill_legacy_fact_ledger,
     candidate_assertion_id,
     eligible_selected_fact_ids,
+    fact_revision_bundle,
     persist_fact_candidates,
+    persist_fact_relation_events,
     refresh_review_status,
+    revision_bundle_issues,
     selected_eligibility_issues,
     set_owner_selection,
 )
@@ -301,6 +304,35 @@ def test_new_evidence_reopens_previous_arbitration(tmp_path):
                 now,
             ),
         )
+        revisions = {
+            row["assertion_id"]: row["revision_digest"]
+            for row in db.execute(
+                "SELECT assertion_id,revision_digest FROM fact_assertions "
+                "WHERE story_id=? AND assertion_id IN (?,?)",
+                (story_id, left, right),
+            )
+        }
+        db.execute(
+            "INSERT INTO fact_arbitration_events("
+            "event_id,story_id,conflict_id,resolution,final_fact_id,reason,confidence,"
+            "arbitrated_by,left_revision_digest,right_revision_digest,evidence_digest,"
+            "state,stale_reason,created_at,stale_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,'active',NULL,?,NULL)",
+            (
+                "arbitration-test",
+                story_id,
+                "conflict-test",
+                "prefer_left",
+                left,
+                "Source A preferred.",
+                .8,
+                "mira",
+                revisions[left],
+                revisions[right],
+                "a" * 64,
+                now,
+            ),
+        )
 
     persist(
         store,
@@ -329,6 +361,13 @@ def test_new_evidence_reopens_previous_arbitration(tmp_path):
             "arbitration_reason": None,
             "arbitrated_by": None,
         }
+        event = db.execute(
+            "SELECT state,stale_reason,stale_at FROM fact_arbitration_events "
+            "WHERE event_id='arbitration-test'"
+        ).fetchone()
+        assert event["state"] == "stale"
+        assert event["stale_reason"] == "fact_revision_changed"
+        assert event["stale_at"] is not None
 
 
 def test_successful_bounded_review_never_marks_over_eighty_inventory_fully_eligible(tmp_path):
@@ -392,3 +431,268 @@ def test_complete_review_can_mark_over_eighty_inventory_eligible(tmp_path):
         refresh_review_status(db, story_id, store.now())
         assert selected_eligibility_issues(db, story_id) == []
         assert eligible_selected_fact_ids(db, story_id) == [ids[-1]]
+
+
+def test_revision_digest_ignores_duplicate_delivery_history(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    item = fact(
+        "architect",
+        "Архитектором был Штюлер.",
+        "https://same.example/page",
+        "Архитектор — Штюлер.",
+    )
+    fact_id = persist(store, story_id, [item], "run-1", "batch-1")[0]
+    with store.connection() as db:
+        first = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()["revision_digest"]
+
+    item_again = {
+        **item,
+        "existing_fact_id": fact_id,
+    }
+    persist(store, story_id, [item_again], "run-2", "batch-2")
+    with store.connection() as db:
+        second = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()["revision_digest"]
+        assert db.execute(
+            "SELECT COUNT(*) FROM fact_observations WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()[0] == 2
+    assert first.startswith("v2:")
+    assert second == first
+
+
+def test_revision_digest_changes_when_new_evidence_span_is_added(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    fact_id = persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://a.example/page",
+            "Архитектор — Штюлер.",
+        )],
+        "run-1",
+        "batch-1",
+    )[0]
+    with store.connection() as db:
+        first = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()["revision_digest"]
+
+    persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://b.example/page",
+            "Второй источник также называет Штюлера архитектором.",
+            existing_fact_id=fact_id,
+        )],
+        "run-2",
+        "batch-2",
+    )
+    with store.connection() as db:
+        second = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()["revision_digest"]
+    assert second.startswith("v2:")
+    assert second != first
+
+
+def test_fact_revision_bundle_detects_changed_and_missing_revisions(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    fact_id = persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://a.example/page",
+            "Архитектор — Штюлер.",
+        )],
+        "run-1",
+        "batch-1",
+    )[0]
+    with store.connection() as db:
+        frozen = fact_revision_bundle(db, story_id, [fact_id])
+        assert revision_bundle_issues(
+            db,
+            story_id,
+            frozen,
+            expected_fact_ids=[fact_id],
+        ) == []
+
+    persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://b.example/page",
+            "Новый независимый passage о Штюлере.",
+            existing_fact_id=fact_id,
+        )],
+        "run-2",
+        "batch-2",
+    )
+    with store.connection() as db:
+        issues = revision_bundle_issues(
+            db,
+            story_id,
+            frozen,
+            expected_fact_ids=[fact_id],
+        )
+        assert issues and issues[0]["reason"] == "revision_changed"
+        missing_bundle = revision_bundle_issues(
+            db,
+            story_id,
+            {},
+            expected_fact_ids=[fact_id],
+        )
+        assert missing_bundle and missing_bundle[0]["reason"] == "revision_not_frozen"
+
+
+def test_relation_event_is_durable_versioned_and_idempotent(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    existing_id = persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://a.example/page",
+            "Архитектор — Штюлер.",
+        )],
+        "run-existing",
+        "batch-existing",
+    )[0]
+    incoming = [{
+        "claim_key": "architect",
+        "text": "Автор архитектурного проекта — Штюлер.",
+    }]
+    decisions = [{
+        "incoming_index": 0,
+        "relation": "equivalent",
+        "existing_fact_id": existing_id,
+        "rationale": "Один и тот же проверяемый тезис об архитекторе.",
+        "model_name": "gemini-test",
+        "prompt_version": "fact-identity-reconciliation-v1",
+    }]
+    with store.tx() as db:
+        first = persist_fact_relation_events(
+            db,
+            story_id=story_id,
+            run_id="run-reconcile",
+            incoming_facts=incoming,
+            decisions=decisions,
+            now=store.now(),
+        )
+        second = persist_fact_relation_events(
+            db,
+            story_id=story_id,
+            run_id="run-reconcile",
+            incoming_facts=incoming,
+            decisions=decisions,
+            now=store.now(),
+        )
+    assert first == second
+    assert len(first) == 1
+
+    with store.connection() as db:
+        rows = [dict(row) for row in db.execute(
+            "SELECT relation,existing_fact_id,existing_revision_digest,"
+            "model_name,prompt_version,rationale FROM fact_relation_events "
+            "WHERE story_id=?",
+            (story_id,),
+        )]
+        revision = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, existing_id),
+        ).fetchone()["revision_digest"]
+    assert rows == [{
+        "relation": "equivalent",
+        "existing_fact_id": existing_id,
+        "existing_revision_digest": revision,
+        "model_name": "gemini-test",
+        "prompt_version": "fact-identity-reconciliation-v1",
+        "rationale": "Один и тот же проверяемый тезис об архитекторе.",
+    }]
+
+
+def test_fact_revision_change_marks_frozen_draft_and_visual_stale(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    fact_id = persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://a.example/page",
+            "Архитектор — Штюлер.",
+        )],
+        "run-1",
+        "batch-1",
+    )[0]
+    with store.tx() as db:
+        frozen = fact_revision_bundle(db, story_id, [fact_id])
+        db.execute(
+            "UPDATE stories SET state='review',research_json=?,visual_context_json=?,"
+            "vibepublish_asset_ref='asset-old',processed_image_url='https://image.example/old' "
+            "WHERE id=?",
+            (
+                json.dumps({
+                    "draft_needs_refresh": False,
+                    "draft_fact_revisions": frozen,
+                }, ensure_ascii=False),
+                json.dumps({
+                    "fact_revision_bundle": frozen,
+                    "selected_facts": [{"fact_id": fact_id, "text": "Архитектором был Штюлер."}],
+                    "stale": False,
+                }, ensure_ascii=False),
+                story_id,
+            ),
+        )
+
+    persist(
+        store,
+        story_id,
+        [fact(
+            "architect",
+            "Архитектором был Штюлер.",
+            "https://b.example/page",
+            "Новый независимый passage о Штюлере.",
+            existing_fact_id=fact_id,
+        )],
+        "run-2",
+        "batch-2",
+    )
+
+    with store.connection() as db:
+        row = db.execute(
+            "SELECT state,research_json,visual_context_json,vibepublish_asset_ref,processed_image_url "
+            "FROM stories WHERE id=?",
+            (story_id,),
+        ).fetchone()
+    research = json.loads(row["research_json"])
+    visual = json.loads(row["visual_context_json"])
+    assert research["draft_needs_refresh"] is True
+    assert research["draft_stale_reason"] == "fact_revision_changed"
+    assert visual["stale"] is True
+    assert visual["stale_reason"] == "fact_revision_changed"
+    assert row["vibepublish_asset_ref"] is None
+    assert row["processed_image_url"] is None
+    assert row["state"] == "needs_review"

@@ -192,26 +192,48 @@ def _assertion_exists(db, story_id: str, assertion_id: str) -> bool:
 
 
 def _recompute_assertion_digest(db, story_id: str, assertion_id: str) -> str:
-    rows = list(
-        db.execute(
-            "SELECT observation_id,text,status FROM fact_observations "
-            "WHERE story_id=? AND assertion_id=? ORDER BY created_at,observation_id",
+    observations = {
+        (
+            str(row["text"]),
+            str(row["status"]),
+            str(row["structural_error"] or ""),
+        )
+        for row in db.execute(
+            "SELECT text,status,structural_error FROM fact_observations "
+            "WHERE story_id=? AND assertion_id=?",
             (story_id, assertion_id),
         )
-    )
-    evidence = list(
-        db.execute(
-            "SELECT e.evidence_id,e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256,e.relation "
+    }
+    evidence = {
+        (
+            str(row["source_version_id"]),
+            str(row["chunk_id"] or ""),
+            row["span_start"],
+            row["span_end"],
+            str(row["span_sha256"]),
+            str(row["relation"]),
+        )
+        for row in db.execute(
+            "SELECT e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256,e.relation "
             "FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
-            "WHERE o.story_id=? AND o.assertion_id=? ORDER BY e.evidence_id",
+            "WHERE o.story_id=? AND o.assertion_id=?",
             (story_id, assertion_id),
         )
-    )
-    digest = hashlib.sha256(
+    }
+    digest = "v2:" + hashlib.sha256(
         _canonical(
             {
-                "observations": [dict(row) for row in rows],
-                "evidence": [dict(row) for row in evidence],
+                "observations": [list(item) for item in sorted(observations)],
+                "evidence": [
+                    list(item)
+                    for item in sorted(
+                        evidence,
+                        key=lambda value: tuple(
+                            "" if part is None else str(part)
+                            for part in value
+                        ),
+                    )
+                ],
             }
         ).encode("utf-8")
     ).hexdigest()
@@ -221,6 +243,73 @@ def _recompute_assertion_digest(db, story_id: str, assertion_id: str) -> str:
         (digest, db.execute("SELECT unixepoch('subsec')").fetchone()[0], story_id, assertion_id),
     )
     return digest
+
+
+def _invalidate_story_outputs_for_fact_revision(
+    db,
+    story_id: str,
+    assertion_id: str,
+    now: float,
+) -> None:
+    row = db.execute(
+        "SELECT research_json,visual_context_json,state FROM stories WHERE id=?",
+        (story_id,),
+    ).fetchone()
+    if row is None:
+        return
+
+    research = json.loads(row["research_json"] or "{}")
+    draft_bundle = (
+        research.get("draft_fact_revisions")
+        if isinstance(research.get("draft_fact_revisions"), dict)
+        else {}
+    )
+    research_changed = assertion_id in draft_bundle
+    if research_changed:
+        research["draft_needs_refresh"] = True
+        research["draft_stale_reason"] = "fact_revision_changed"
+
+    visual = json.loads(row["visual_context_json"] or "{}")
+    visual_bundle = (
+        visual.get("fact_revision_bundle")
+        if isinstance(visual.get("fact_revision_bundle"), dict)
+        else {}
+    )
+    selected_visual_ids = {
+        str(item.get("fact_id") or "")
+        for item in (visual.get("selected_facts") or [])
+        if isinstance(item, dict) and str(item.get("fact_id") or "")
+    }
+    visual_changed = assertion_id in visual_bundle or assertion_id in selected_visual_ids
+    clear_visual = visual_changed and str(row["state"] or "") not in {"scheduled", "published"}
+    if clear_visual:
+        visual["stale"] = True
+        visual["stale_reason"] = "fact_revision_changed"
+
+    if not research_changed and not clear_visual:
+        return
+
+    db.execute(
+        "UPDATE stories SET research_json=?,visual_context_json=?,"
+        "vibepublish_asset_ref=CASE WHEN ? THEN NULL ELSE vibepublish_asset_ref END,"
+        "processed_image_url=CASE WHEN ? THEN NULL ELSE processed_image_url END,"
+        "state=CASE WHEN ? THEN 'needs_review' ELSE state END,"
+        "error_code=CASE WHEN ? THEN 'visual_stale' ELSE error_code END,"
+        "error_message=CASE WHEN ? THEN "
+        "'Evidence for a used fact changed; refresh the draft/visual before publication.' "
+        "ELSE error_message END,updated_at=? WHERE id=?",
+        (
+            _canonical(research),
+            _canonical(visual),
+            int(clear_visual),
+            int(clear_visual),
+            int(clear_visual),
+            int(clear_visual),
+            int(clear_visual),
+            now,
+            story_id,
+        ),
+    )
 
 
 def persist_fact_candidates(
@@ -377,10 +466,25 @@ def persist_fact_candidates(
                 (now, story_id, assertion_id),
             )
             db.execute(
+                "UPDATE fact_arbitration_events SET state='stale',"
+                "stale_reason='fact_revision_changed',stale_at=? "
+                "WHERE story_id=? AND state='active' AND conflict_id IN ("
+                "SELECT conflict_id FROM fact_conflicts "
+                "WHERE story_id=? AND (left_fact_id=? OR right_fact_id=?)"
+                ")",
+                (now, story_id, story_id, assertion_id, assertion_id),
+            )
+            db.execute(
                 "UPDATE fact_conflicts SET final_resolution=NULL,final_fact_id=NULL,"
                 "arbitration_reason=NULL,arbitration_confidence=NULL,arbitrated_by=NULL,last_seen_at=? "
                 "WHERE story_id=? AND (left_fact_id=? OR right_fact_id=?)",
                 (now, story_id, assertion_id, assertion_id),
+            )
+            _invalidate_story_outputs_for_fact_revision(
+                db,
+                story_id,
+                assertion_id,
+                now,
             )
         persisted.append(assertion_id)
     return persisted
@@ -576,6 +680,188 @@ def eligibility_issues_for_ids(db, story_id: str, fact_ids: list[str]) -> list[d
                 "reason": "fact_not_eligible",
                 "review_status": row["review_status"],
                 "eligibility": row["eligibility"],
+            })
+    return issues
+
+
+def persist_fact_relation_events(
+    db,
+    *,
+    story_id: str,
+    run_id: str,
+    incoming_facts: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    now: float,
+) -> list[str]:
+    allowed_relations = {
+        "equivalent",
+        "different",
+        "contradicts",
+        "refines",
+        "temporal_sequence",
+        "scope_difference",
+        "uncertain",
+    }
+    existing_ids = {
+        str(item.get("existing_fact_id") or "").strip()
+        for item in decisions
+        if isinstance(item, dict) and str(item.get("existing_fact_id") or "").strip()
+    }
+    revisions: dict[str, str] = {}
+    if existing_ids:
+        placeholders = ",".join("?" for _ in existing_ids)
+        revisions = {
+            str(row["assertion_id"]): str(row["revision_digest"] or "")
+            for row in db.execute(
+                f"SELECT assertion_id,revision_digest FROM fact_assertions "
+                f"WHERE story_id=? AND assertion_id IN ({placeholders})",
+                (story_id, *sorted(existing_ids)),
+            )
+        }
+
+    event_ids: list[str] = []
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            continue
+        try:
+            incoming_index = int(decision.get("incoming_index"))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= incoming_index < len(incoming_facts):
+            continue
+        relation = str(decision.get("relation") or "").strip()
+        existing_fact_id = str(decision.get("existing_fact_id") or "").strip()
+        if relation not in allowed_relations or existing_fact_id not in revisions:
+            continue
+        raw = incoming_facts[incoming_index]
+        if not isinstance(raw, dict):
+            continue
+        incoming_text = " ".join(str(raw.get("text") or "").split()).strip()
+        if not incoming_text:
+            continue
+        incoming_text = incoming_text[:1200]
+        incoming_text_sha = hashlib.sha256(incoming_text.encode("utf-8")).hexdigest()
+        payload = {
+            "story_id": story_id,
+            "run_id": run_id,
+            "incoming_index": incoming_index,
+            "incoming_text_sha256": incoming_text_sha,
+            "existing_fact_id": existing_fact_id,
+            "existing_revision_digest": revisions[existing_fact_id],
+            "relation": relation,
+            "model_name": str(decision.get("model_name") or "")[:120],
+            "prompt_version": str(decision.get("prompt_version") or "")[:120],
+            "rationale": str(decision.get("rationale") or "")[:1000],
+        }
+        event_id = _sha("relation_", _canonical(payload), 24)
+        db.execute(
+            "INSERT OR IGNORE INTO fact_relation_events("
+            "event_id,story_id,run_id,incoming_index,incoming_text,incoming_text_sha256,"
+            "existing_fact_id,existing_revision_digest,relation,model_name,prompt_version,"
+            "rationale,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                story_id,
+                run_id,
+                incoming_index,
+                incoming_text,
+                incoming_text_sha,
+                existing_fact_id,
+                revisions[existing_fact_id],
+                relation,
+                payload["model_name"],
+                payload["prompt_version"],
+                payload["rationale"],
+                now,
+            ),
+        )
+        event_ids.append(event_id)
+    return event_ids
+
+
+def fact_revision_bundle(
+    db,
+    story_id: str,
+    fact_ids: list[str] | None = None,
+) -> dict[str, str]:
+    backfill_legacy_fact_ledger(db, 0.0)
+    if fact_ids is None:
+        rows = db.execute(
+            "SELECT assertion_id,revision_digest FROM fact_assertions "
+            "WHERE story_id=? AND owner_selected=1 AND eligibility='eligible' "
+            "ORDER BY assertion_id",
+            (story_id,),
+        )
+        return {
+            str(row["assertion_id"]): str(row["revision_digest"] or "")
+            for row in rows
+        }
+
+    ids = list(dict.fromkeys(str(value) for value in fact_ids if str(value)))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = {
+        str(row["assertion_id"]): str(row["revision_digest"] or "")
+        for row in db.execute(
+            f"SELECT assertion_id,revision_digest FROM fact_assertions "
+            f"WHERE story_id=? AND assertion_id IN ({placeholders})",
+            (story_id, *ids),
+        )
+    }
+    return {
+        fact_id: rows[fact_id]
+        for fact_id in ids
+        if fact_id in rows
+    }
+
+
+def revision_bundle_issues(
+    db,
+    story_id: str,
+    bundle: dict[str, Any] | None,
+    *,
+    expected_fact_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(bundle, dict):
+        bundle = {}
+    normalized = {
+        str(fact_id): str(revision or "")
+        for fact_id, revision in bundle.items()
+        if str(fact_id)
+    }
+    ids = list(dict.fromkeys(
+        [
+            *(str(value) for value in (expected_fact_ids or []) if str(value)),
+            *normalized.keys(),
+        ]
+    ))
+    current = fact_revision_bundle(db, story_id, ids)
+    issues: list[dict[str, Any]] = []
+    for fact_id in ids:
+        expected = normalized.get(fact_id)
+        actual = current.get(fact_id)
+        if actual is None:
+            issues.append({
+                "fact_id": fact_id,
+                "reason": "assertion_missing",
+                "expected_revision": expected,
+                "actual_revision": None,
+            })
+        elif expected is None:
+            issues.append({
+                "fact_id": fact_id,
+                "reason": "revision_not_frozen",
+                "expected_revision": None,
+                "actual_revision": actual,
+            })
+        elif expected != actual:
+            issues.append({
+                "fact_id": fact_id,
+                "reason": "revision_changed",
+                "expected_revision": expected,
+                "actual_revision": actual,
             })
     return issues
 

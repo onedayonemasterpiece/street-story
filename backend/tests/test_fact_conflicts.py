@@ -223,9 +223,21 @@ def test_mira_arbitration_is_separate_from_detector_suggestion(tmp_path):
             "AND event_type='fact_conflict_arbitrated'",
             ("story_conflict001",),
         ).fetchone()[0]
+        durable_events = [
+            dict(row)
+            for row in db.execute(
+                "SELECT event_id,resolution,state,evidence_digest FROM fact_arbitration_events "
+                "WHERE story_id=? AND conflict_id=? ORDER BY created_at",
+                ("story_conflict001", persisted["conflict_id"]),
+            )
+        ]
     assert research["fact_conflict_stats"]["poi_total_detected"] == 1
     assert research["fact_conflict_stats"]["open"] == 1
     assert arbitration_events == 1
+    assert len(durable_events) == 1
+    assert durable_events[0]["resolution"] == "unresolved"
+    assert durable_events[0]["state"] == "active"
+    assert len(durable_events[0]["evidence_digest"]) == 64
 
 
 @pytest.mark.asyncio

@@ -30,8 +30,11 @@ from .fact_ledger import (
     candidate_assertion_id,
     eligibility_issues_for_ids,
     eligible_selected_fact_ids,
+    fact_revision_bundle,
     persist_fact_candidates,
+    persist_fact_relation_events,
     refresh_review_status,
+    revision_bundle_issues,
     selected_eligibility_issues,
     set_owner_selection,
 )
@@ -1796,7 +1799,22 @@ class StreetStoryLiveAdapter:
             item for item in (grounded.payload.get("facts") or [])
             if isinstance(item, dict)
         ]
-        reconciliation_matches: dict[int, str] = {}
+        reconciliation_matches: dict[int, str] = {
+            index: str(item.get("existing_fact_id") or "")
+            for index, item in enumerate(raw_grounded_facts)
+            if str(item.get("existing_fact_id") or "") in known_by_id
+        }
+        reconciliation_decisions: list[dict[str, Any]] = [
+            {
+                "incoming_index": index,
+                "relation": "equivalent",
+                "existing_fact_id": fact_id,
+                "rationale": "Upstream extraction explicitly referenced this durable fact ID.",
+                "model_name": "upstream_existing_fact_id",
+                "prompt_version": "fact-identity-reconciliation-v1",
+            }
+            for index, fact_id in sorted(reconciliation_matches.items())
+        ]
         reconciliation_meta: dict[str, Any] = {
             "status": "not_needed",
             "pages_reviewed": 0,
@@ -1812,6 +1830,11 @@ class StreetStoryLiveAdapter:
                     for index, fact_id in (reconciliation.get("matches") or {}).items()
                     if str(fact_id) in known_by_id
                 }
+                reconciliation_decisions = [
+                    dict(item)
+                    for item in (reconciliation.get("decisions") or [])
+                    if isinstance(item, dict)
+                ]
                 reconciliation_meta = {
                     "status": "complete" if reconciliation.get("complete") is True else "partial",
                     "pages_reviewed": int(reconciliation.get("pages_reviewed") or 0),
@@ -1932,6 +1955,14 @@ class StreetStoryLiveAdapter:
         with self.service.store.tx() as db:
             story_row = self.service._story_row(db, story_id)
             now = self.service.store.now()
+            persist_fact_relation_events(
+                db,
+                story_id=story_id,
+                run_id=run_id,
+                incoming_facts=raw_grounded_facts,
+                decisions=reconciliation_decisions,
+                now=now,
+            )
             persist_fact_candidates(
                 db,
                 story_id=story_id,
@@ -2489,7 +2520,14 @@ class StreetStoryLiveAdapter:
             if research.get("content_identity_changed"):
                 research["content_identity_changed"] = False
             research["draft_needs_refresh"] = False
+            research["draft_stale_reason"] = None
             research["draft_composed_by"] = "mira_live"
+            current_fact_ids = eligible_selected_fact_ids(db, story_id)
+            research["draft_fact_revisions"] = fact_revision_bundle(
+                db,
+                story_id,
+                current_fact_ids,
+            )
             db.execute("UPDATE stories SET research_json=? WHERE id=?", (canonical(research), story_id))
             history = json.loads(editor["history_json"] or "[]")
             if not isinstance(history, list):
@@ -2763,7 +2801,34 @@ class StreetStoryLiveAdapter:
             if research.get("draft_needs_refresh"):
                 raise InvalidStateError(
                     "publication_text_stale",
-                    "Выбор фактов или концепция изменились; Мире нужно обновить текст публикации.",
+                    "Выбор фактов, evidence или концепция изменились; Мире нужно обновить текст публикации.",
+                )
+            selected_ids = eligible_selected_fact_ids(db, story_id)
+            draft_revision_issues = revision_bundle_issues(
+                db,
+                story_id,
+                research.get("draft_fact_revisions"),
+                expected_fact_ids=selected_ids,
+            )
+            if draft_revision_issues:
+                raise InvalidStateError(
+                    "publication_text_stale",
+                    "Evidence revisions used by the publication text changed; refresh the draft.",
+                )
+            visual_revision_issues = revision_bundle_issues(
+                db,
+                story_id,
+                visual.get("fact_revision_bundle"),
+                expected_fact_ids=[
+                    str(item.get("fact_id") or "")
+                    for item in (visual.get("selected_facts") or [])
+                    if isinstance(item, dict) and str(item.get("fact_id") or "")
+                ],
+            )
+            if visual_revision_issues:
+                raise InvalidStateError(
+                    "visual_not_ready",
+                    "Evidence revisions used by the visual changed; regenerate the visual.",
                 )
             asset_ref = str(story["vibepublish_asset_ref"] or "")
             visual_revision = str(visual.get("content_revision") or "")
