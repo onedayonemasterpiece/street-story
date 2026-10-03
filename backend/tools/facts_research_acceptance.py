@@ -92,6 +92,10 @@ async def run_case(output, case, budget):
     except Exception as exc:
         status = "BLOCKED_PROVIDER" if stage == "bootstrap" else "FAIL"
         error = {"type": type(exc).__name__, "code": str(getattr(exc, "code", ""))}
+        if not session_id:
+            for owned in host.sessions.values():
+                if owned.resource_id == story_id:
+                    events.extend(list(owned.events))
     finally:
         if session_id:
             await host.stop(session_id=session_id, resource_id=story_id)

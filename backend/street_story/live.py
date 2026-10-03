@@ -711,12 +711,13 @@ SYSTEM_INSTRUCTION = """
 - однословный или явно обрывочный ввод не должен запускать дорогие product functions: коротко уточни намерение, не запрашивая у автора название неизвестного ему объекта;
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
-- широкий запрос на факты = 4–6 разных search_web по ключевым аспектам объекта и отдельная перепроверка важных тезисов; не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
+- широкий запрос на факты = исследование существенных аспектов объекта по coverage_goal, включая именованные элементы архитектуры. Сначала прочитай и сохрани полный материал уже найденных источников в текущем run; новый поиск нужен только для конкретного пробела. Число поисков не является целью. Не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
-- после каждого discovery_only search_web сразу save_research_facts с точными research_run_id/save_batch_id: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и точными evidence_refs из evidence_passages (или дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence. Передай точные fact_id+revision_digest и supporting_evidence_ids из get_evidence. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
+- Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
@@ -1015,7 +1016,7 @@ class StreetStoryLiveAdapter:
         if name == "get_evidence":
             return self._get_evidence(story_id, args)
         if name == "get_research_chunk":
-            return await self._get_research_chunk(session, args)
+            return self._model_result(name, await self._get_research_chunk(session, args))
         if name == "literal_begin":
             return self._literal_begin(session, args)
         if name == "literal_cancel":
@@ -1218,6 +1219,15 @@ class StreetStoryLiveAdapter:
             # Avoid charging the shared Live budget for three copies of the page.
             projected.pop("core_text", None)
             projected.pop("context_text", None)
+            manifest = projected.get("research_manifest")
+            if isinstance(manifest, dict):
+                projected["research_manifest"] = {"counts": manifest.get("counts"), "state": (manifest.get("run") or {}).get("state")}
+            checkpoint = projected.get("checkpoint")
+            if isinstance(checkpoint, dict):
+                projected["checkpoint"] = {**checkpoint, "facts": [
+                    {"claim_key": f.get("claim_key"), "text": str(f.get("text") or "")[:600], "existing_fact_id": f.get("existing_fact_id")}
+                    for f in checkpoint.get("facts", []) if isinstance(f, dict)
+                ]}
         elif name == "save_research_facts":
             projected = {
                 "research_run_id": result.get("research_run_id"),
@@ -1230,6 +1240,8 @@ class StreetStoryLiveAdapter:
                 "facts": [
                     {
                         "fact_id": fact.get("fact_id"),
+                        "revision_digest": fact.get("revision_digest"),
+                        "supporting_evidence_ids": list(fact.get("supporting_evidence_ids") or []),
                         "text": str(fact.get("text") or "")[:280],
                         "selected": bool(fact.get("selected")),
                         "source_count": len(
@@ -2377,11 +2389,11 @@ class StreetStoryLiveAdapter:
             candidate = dict(candidate) if candidate else None
         if candidate is None:
             if chunk_id:
-                raise ConflictError("live_research_chunk_unknown", "Choose a chunk belonging to this run.")
+                raise ConflictError("live_research_chunk_unknown", "Retry get_research_chunk with run_id only. Omit chunk_id to read the next chunk; never invent chunk IDs.")
             source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"]), None)
             if source is None:
                 with self.service.store.connection() as db:
-                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "finalize_fact_review"}
+                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_facts", "final_tool": "finalize_fact_review"}
             fetch = getattr(self.service.providers.gemini, "_fetch_page_documents", None)
             if not callable(fetch):
                 raise ConflictError("live_research_fetch_unavailable", "Document reader is unavailable; saved evidence is preserved.")
@@ -2596,7 +2608,7 @@ class StreetStoryLiveAdapter:
                     if not isinstance(raw, dict):
                         raise ConflictError("live_research_fact_invalid", "Each fact must be an object.")
                     quotes = raw.get("evidence_quotes")
-                    if quotes is None:
+                    if quotes is None or quotes == []:
                         supplied_refs = raw.get("evidence_refs")
                         if not isinstance(supplied_refs, list) or not supplied_refs or any(ref not in addressed for ref in supplied_refs):
                             raise ConflictError("live_research_evidence_unknown", "Use evidence_refs from this chunk's evidence_passages, or verbatim evidence_quotes.")
@@ -3141,6 +3153,10 @@ class StreetStoryLiveAdapter:
                     story_id,
                 ),
             )
+            for fact in normalized:
+                assertion = db.execute("SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?", (story_id, fact["fact_id"])).fetchone()
+                fact["revision_digest"] = assertion["revision_digest"] if assertion else None
+                fact["supporting_evidence_ids"] = [row["evidence_id"] for row in db.execute("SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (story_id, fact["fact_id"]))]
             result = {
                 "research_run_id": run_id,
                 "save_batch_id": save_batch_id,
@@ -3344,7 +3360,7 @@ class StreetStoryLiveAdapter:
             ]
             raise ConflictError(
                 "live_fact_review_stale",
-                "Fact revisions changed or the reviewed inventory is incomplete: "
+                "Call get_facts and get_evidence, then retry with their EXACT IDs/digests. Never invent them. Reviewed inventory is stale or incomplete: "
                 + json.dumps(issues[:20], ensure_ascii=False),
             )
 

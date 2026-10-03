@@ -206,3 +206,16 @@ async def test_addressed_passages_and_pending_chunk_complete_guard(tmp_path):
     partial = adapter._finalize_fact_review(session, "partial", review_args(adapter, session.resource_id, run_id, coverage=False))
     assert partial["eligible_count"] == 1 and not partial["complete"]
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_review_rejects_another_assertions_evidence(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter._get_research_chunk(session, {"run_id": run_id})
+    await adapter._save_research_facts(session, "save-all", findings(chunk, QUOTES))
+    args = review_args(adapter, session.resource_id, run_id)
+    args["reviewed_assertions"][0]["supporting_evidence_ids"] = args["reviewed_assertions"][1]["supporting_evidence_ids"]
+    with pytest.raises(ConflictError, match="exact assertion scope"):
+        adapter._finalize_fact_review(session, "wrong-evidence", args)
+    assert all(f["eligibility"] == "unreviewed" for f in adapter._get_facts(session.resource_id, {"eligibility": "all"})["facts"])
+    await reader.search_http.aclose()

@@ -34,8 +34,7 @@ Retained task evidence:
 `/home/dev/artifacts/street-story/20261003T210444Z-facts-research-finish`.
 No credentials copied; isolated fixture stores do not clear user cache.
 
-Local tests: full backend **460 passed** in **15.61 s** before the final addressed
-passage negative case; Ruff passed. Final counts are recorded below at delivery.
+Local tests: full backend **462 passed** in **14.14 s** before the final routing correction; Ruff passed. Final counts are recorded below at delivery.
 `backend/tests/test_facts_research_finish.py` verifies the full controlled fallback
 through evidence/review/selection/draft, no-claim receipt, stable replay, partial
 coverage, invalid quote rejection, rollback of late review failure, and three
@@ -62,6 +61,17 @@ invalid rewritten quotes, eventually saved the first chunk, then reviewed too
 early. Completed coverage was already reported false; the harness exited nonzero.
 Correction: addressable literal passages and rejecting claimed complete coverage
 while chunks remain. Later bounded runs are recorded below.
+
+Intermediate targeted run: BLOCKED_PROVIDER at tool-response budget after
+181.47 s, three atomic figure assertions saved but unreviewed,
+RESOURCE_TOKEN_BUDGET requested 40,119 units. Initial targeted run requested
+35,418 units. Initial holdout: FAIL after 180.26 s: saved claims, then invented
+review digests were rejected. Another holdout followed six discovery searches
+and saved nothing (180.49 s, FAIL). These are distinct observed failures.
+Corrections: exact digest/evidence IDs in save receipts, explicit read/retry
+guidance, research by coverage instead of a mandatory 4–6-search quota, compact
+manifest/checkpoint, and applying the model projection on the actual chunk read
+tool route (read tools return before the general mutation projection).
 
 ## DoD
 
