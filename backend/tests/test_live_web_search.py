@@ -80,6 +80,10 @@ async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
         models.append(model)
         payload = {
             "summary": "Search summary",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+            "continuation_needed": False,
+            "continuation_reason": "",
             "official_source_urls": [],
             "facts": [{
                 "claim_key": "test-fact",
@@ -1032,6 +1036,10 @@ async def test_incomplete_cached_evidence_falls_through_to_web_discovery(tmp_pat
             return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
         payload = {
             "summary": "Fresh grounded result.",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+            "continuation_needed": False,
+            "continuation_reason": "",
             "official_source_urls": [],
             "facts": [{
                 "claim_key": "left",
@@ -1206,6 +1214,10 @@ async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_
             )
         payload = {
             "summary": "Grounded facts",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+            "continuation_needed": False,
+            "continuation_reason": "",
             "official_source_urls": [source_url],
             "facts": [
                 {
@@ -1244,7 +1256,208 @@ async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_
         "confidence_defaulted_count": 1,
         "rejected": {"no_bound_evidence": 1},
         "evidence_binding_status": "bound",
+        "native_continuation_batches": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_native_search_continues_fact_extraction_without_second_google_search(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://museum.example/royal-gate"
+
+    executor = PassingSearchExecutor()
+    client.web_search_routes = [("gemini-test", "test", None, executor)]
+
+    first_support = {
+        "kind": "google_grounding",
+        "source_url": source_url,
+        "text": "Слева изображён Оттокар II.",
+    }
+    second_support = {
+        "kind": "google_grounding",
+        "source_url": source_url,
+        "text": "В центре изображён Фридрих I.",
+    }
+    first_ref = client._support_evidence_ref(source_url, first_support)
+    second_ref = client._support_evidence_ref(source_url, second_support)
+    operations = []
+
+    async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        del key, timeout, model, quota
+        operations.append(operation)
+        schema = getattr(config, "response_json_schema", None)
+        if operation == "web_search":
+            payload = {
+                "summary": "First batch",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+                "official_source_urls": [],
+                "facts": [{
+                    "claim_key": "left",
+                    "text": "Слева изображён Оттокар II.",
+                    "confidence": .96,
+                    "source_urls": [source_url],
+                }],
+                "continuation_needed": True,
+                "continuation_reason": "В grounding остались отдельные факты.",
+            }
+            web = SimpleNamespace(uri=source_url, title="Museum")
+            chunk = SimpleNamespace(web=web)
+            supports = [
+                SimpleNamespace(
+                    segment=SimpleNamespace(text=first_support["text"]),
+                    grounding_chunk_indices=[0],
+                ),
+                SimpleNamespace(
+                    segment=SimpleNamespace(text=second_support["text"]),
+                    grounding_chunk_indices=[0],
+                ),
+            ]
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+                candidates=[SimpleNamespace(
+                    grounding_metadata=SimpleNamespace(
+                        grounding_chunks=[chunk],
+                        grounding_supports=supports,
+                    )
+                )],
+            )
+        if schema == client.EVIDENCE_BINDING_SCHEMA:
+            return SimpleNamespace(
+                text=json.dumps({
+                    "bindings": [{
+                        "fact_index": 0,
+                        "evidence_refs": [first_ref],
+                    }],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        assert schema == client.NATIVE_CONTINUATION_SCHEMA
+        prompt = str(contents[0])
+        assert first_ref in prompt and second_ref in prompt
+        assert "Слева изображён Оттокар II." in prompt
+        return SimpleNamespace(
+            text=json.dumps({
+                "facts": [{
+                    "claim_key": "center",
+                    "text": "В центре изображён Фридрих I.",
+                    "confidence": .95,
+                    "source_urls": [source_url],
+                    "evidence_refs": [second_ref],
+                }],
+                "continuation_needed": False,
+                "continuation_reason": "",
+            }, ensure_ascii=False),
+            candidates=[],
+        )
+
+    client._generate = generate
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {"coverage_goal": "Кто изображён слева и в центре?"},
+    )
+
+    assert executor.calls == 1
+    assert operations == ["web_search", "grounded_research", "grounded_research"]
+    assert [fact["text"] for fact in result.payload["facts"]] == [
+        "Слева изображён Оттокар II.",
+        "В центре изображён Фридрих I.",
+    ]
+    assert result.payload["extraction_complete"] is True
+    assert result.payload["continuation_reason"] == ""
+    audit = result.payload["extraction_audit"]
+    assert audit["native_continuation_batches"] == 1
+    assert audit["accepted_fact_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_native_search_marks_stalled_continuation_incomplete(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://museum.example/royal-gate"
+    executor = PassingSearchExecutor()
+    client.web_search_routes = [("gemini-test", "test", None, executor)]
+
+    support = {
+        "kind": "google_grounding",
+        "source_url": source_url,
+        "text": "Слева изображён Оттокар II.",
+    }
+    evidence_ref = client._support_evidence_ref(source_url, support)
+
+    async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        del key, timeout, contents, model, quota
+        schema = getattr(config, "response_json_schema", None)
+        if operation == "web_search":
+            payload = {
+                "summary": "Needs continuation",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+                "official_source_urls": [],
+                "facts": [{
+                    "claim_key": "left",
+                    "text": "Слева изображён Оттокар II.",
+                    "confidence": .96,
+                    "source_urls": [source_url],
+                }],
+                "continuation_needed": True,
+                "continuation_reason": "Есть ещё факты.",
+            }
+            web = SimpleNamespace(uri=source_url, title="Museum")
+            chunk = SimpleNamespace(web=web)
+            ground = SimpleNamespace(
+                segment=SimpleNamespace(text=support["text"]),
+                grounding_chunk_indices=[0],
+            )
+            return SimpleNamespace(
+                text=json.dumps(payload, ensure_ascii=False),
+                candidates=[SimpleNamespace(
+                    grounding_metadata=SimpleNamespace(
+                        grounding_chunks=[chunk],
+                        grounding_supports=[ground],
+                    )
+                )],
+            )
+        if schema == client.EVIDENCE_BINDING_SCHEMA:
+            return SimpleNamespace(
+                text=json.dumps({
+                    "bindings": [{
+                        "fact_index": 0,
+                        "evidence_refs": [evidence_ref],
+                    }],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        assert schema == client.NATIVE_CONTINUATION_SCHEMA
+        return SimpleNamespace(
+            text=json.dumps({
+                "facts": [],
+                "continuation_needed": True,
+                "continuation_reason": "Модель считает, что факты остались, но не вернула новый batch.",
+            }, ensure_ascii=False),
+            candidates=[],
+        )
+
+    client._generate = generate
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {"coverage_goal": "Собери все факты о фасаде."},
+    )
+
+    assert executor.calls == 1
+    assert result.payload["extraction_complete"] is False
+    assert result.payload["extraction_audit"]["native_continuation_batches"] == 1
+    assert result.payload["extraction_audit"]["rejected"]["native_continuation_stalled"] == 1
+    assert len(result.payload["facts"]) == 1
 
 
 @pytest.mark.asyncio
@@ -1293,6 +1506,10 @@ async def test_native_grounded_fact_binds_only_specific_support_on_same_url(tmp_
 
         payload = {
             "summary": "Grounded fact.",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+            "continuation_needed": False,
+            "continuation_reason": "",
             "official_source_urls": [],
             "facts": [{
                 "claim_key": "left-sculpture",
@@ -1358,6 +1575,10 @@ async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp
         wiki = "https://ru.wikipedia.org/wiki/Object"
         payload = {
             "summary": "Sources found",
+            "coverage_satisfied": True,
+            "missing_aspects": [],
+            "continuation_needed": False,
+            "continuation_reason": "",
             "official_source_urls": [official, wiki],
             "facts": [{"claim_key": "opened-2000", "text": "Открыт в 2000 году.", "confidence": 0.95, "source_urls": [official]}],
         }

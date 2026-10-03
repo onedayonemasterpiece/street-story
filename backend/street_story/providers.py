@@ -497,6 +497,40 @@ class GeminiClient:
         "required": ["summary", "official_source_urls", "facts"],
     }
 
+    NATIVE_WEB_SEARCH_SCHEMA = {
+        "type": "object",
+        "properties": {
+            **WEB_SEARCH_SCHEMA["properties"],
+            "coverage_satisfied": {"type": "boolean"},
+            "missing_aspects": {"type": "array", "items": {"type": "string"}},
+            "continuation_needed": {"type": "boolean"},
+            "continuation_reason": {"type": "string"},
+        },
+        "required": [
+            "summary", "official_source_urls", "facts",
+            "coverage_satisfied", "missing_aspects",
+            "continuation_needed", "continuation_reason",
+        ],
+    }
+
+    NATIVE_CONTINUATION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "facts": {
+                "type": "array",
+                "items": {
+                    **WEB_SEARCH_SCHEMA["properties"]["facts"]["items"],
+                    "required": [
+                        "claim_key", "text", "confidence", "source_urls", "evidence_refs",
+                    ],
+                },
+            },
+            "continuation_needed": {"type": "boolean"},
+            "continuation_reason": {"type": "string"},
+        },
+        "required": ["facts", "continuation_needed", "continuation_reason"],
+    }
+
     CHUNK_EXTRACTION_SCHEMA = {
         "type": "object",
         "properties": {
@@ -2529,7 +2563,12 @@ class GeminiClient:
             "семантическую идентичность смысла, не зависящую от перефразирования. Если новый найденный тезис семантически "
             "совпадает с known_facts, укажи его точный fact_id в existing_fact_id; иначе existing_fact_id оставь пустым. "
             "Не выдумывай existing_fact_id. Для новых тезисов используй устойчивый claim_key. Самые важные факты "
-            "ставь первыми; сведения официального источника имеют приоритет. Если Current topic context содержит "
+            "ставь первыми; сведения официального источника имеют приоритет. За один ответ верни не более 32 facts; "
+            "отдельно оцени coverage_goal по текущему grounding: coverage_satisfied=true только если evidence действительно "
+            "закрывает существенные аспекты запроса; иначе false и перечисли конкретные missing_aspects. Независимо от этого, "
+            "если в текущем grounding evidence остаются дополнительные содержательные атомарные facts, обязательно поставь "
+            "continuation_needed=true и кратко объясни continuation_reason. continuation_needed=false допустим только когда "
+            "текущий grounding evidence исчерпан. Если Current topic context содержит "
             "previously_considered_poi_facts, не повторяй их без явной просьбы пользователя повторить или перепроверить. "
             "Cached POI evidence ниже уже было получено ранее и может поддерживать новый аспект без повторного открытия страницы. "
             "Если оно не закрывает coverage_goal, ищи новые evidence; старый URL не запрещён, если он снова релевантен новому пробелу. "
@@ -2552,7 +2591,7 @@ class GeminiClient:
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             response_mime_type="application/json",
-            response_json_schema=self.WEB_SEARCH_SCHEMA,
+            response_json_schema=self.NATIVE_WEB_SEARCH_SCHEMA,
         )
 
         async def call(key, timeout, *, model=None, quota=None):
@@ -2573,6 +2612,11 @@ class GeminiClient:
                     or not isinstance(payload.get("official_source_urls"), list)
                     or any(not isinstance(url, str) for url in payload["official_source_urls"])
                     or not isinstance(payload.get("facts"), list)
+                    or not isinstance(payload.get("coverage_satisfied"), bool)
+                    or not isinstance(payload.get("missing_aspects"), list)
+                    or any(not isinstance(value, str) for value in payload["missing_aspects"])
+                    or not isinstance(payload.get("continuation_needed"), bool)
+                    or not isinstance(payload.get("continuation_reason"), str)
                 ):
                     raise ValueError
             except (ValueError, TypeError):
@@ -2746,12 +2790,209 @@ class GeminiClient:
                 }
                 normalized_facts.append(fact)
 
+            native_continuation_batches = 0
+            extraction_complete = not bool(payload.get("continuation_needed"))
+            continuation_reason = str(payload.get("continuation_reason") or "").strip()
+            if payload.get("continuation_needed"):
+                continuation_config = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_json_schema=self.NATIVE_CONTINUATION_SCHEMA,
+                )
+                evidence_payload = [
+                    {
+                        "source_url": str(source.get("url") or "").rstrip("/"),
+                        "title": str(source.get("title") or "")[:240],
+                        "passages": [
+                            {
+                                "evidence_ref": str(support.get("evidence_ref") or ""),
+                                "text": str(support.get("text") or "")[:600],
+                            }
+                            for support in (source.get("supports") or [])
+                            if isinstance(support, dict)
+                            and str(support.get("evidence_ref") or "").strip()
+                            and str(support.get("text") or "").strip()
+                        ],
+                    }
+                    for source in available_sources
+                    if isinstance(source, dict)
+                ]
+                seen_outputs = {
+                    hashlib.sha256(
+                        json.dumps(
+                            {
+                                "claim_key": str(fact.get("claim_key") or ""),
+                                "text": str(fact.get("text") or ""),
+                                "evidence_refs": sorted(str(ref) for ref in (fact.get("evidence_refs") or [])),
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    for fact in normalized_facts
+                }
+                already_returned = [
+                    {
+                        "claim_key": str(fact.get("claim_key") or "")[:300],
+                        "text": str(fact.get("text") or "")[:500],
+                    }
+                    for fact in normalized_facts
+                ]
+
+                max_native_continuation_batches = 6
+                for batch_index in range(max_native_continuation_batches):
+                    continuation_prompt = (
+                        "Ты внутренний LLM-экстрактор Street Story. Google Search уже выполнен; нового поиска НЕ делай. "
+                        "Ниже дан полный набор grounding passages текущего search-call с opaque evidence_ref. "
+                        "Верни до 32 НОВЫХ атомарных проверяемых facts, которых ещё нет в Already returned facts. "
+                        "Для каждого fact обязательно укажи source_urls и evidence_refs только из Evidence. "
+                        "URL без конкретного evidence_ref не является доказательством. "
+                        "Если после текущего ответа в Evidence остаются ещё содержательные не возвращённые facts, "
+                        "continuation_needed=true; иначе false. Не превращай отсутствие ответа в факт. "
+                        "Не делай semantic dedup с внешними знаниями; не используй знания вне Evidence.\n\n"
+                        "Coverage goal: " + str(topic_context.get("coverage_goal") or query)[:1600] + "\n"
+                        "Search query: " + query[:1000] + "\n"
+                        "Continuation batch index: " + str(batch_index) + "\n"
+                        "Already returned facts: " + json.dumps(already_returned, ensure_ascii=False) + "\n"
+                        "Evidence: " + json.dumps(evidence_payload, ensure_ascii=False)
+                    )
+                    try:
+                        continuation_response = await self._generate(
+                            key,
+                            timeout,
+                            [continuation_prompt],
+                            continuation_config,
+                            operation="grounded_research",
+                            model=model,
+                            quota=quota,
+                        )
+                        continuation_payload = json.loads(continuation_response.text or "{}")
+                        if (
+                            not isinstance(continuation_payload, dict)
+                            or not isinstance(continuation_payload.get("facts"), list)
+                            or not isinstance(continuation_payload.get("continuation_needed"), bool)
+                            or not isinstance(continuation_payload.get("continuation_reason"), str)
+                        ):
+                            raise ValueError("malformed_native_continuation")
+                    except (
+                        GeminiUnavailable,
+                        PermanentProviderError,
+                        MalformedProviderResponse,
+                        ValueError,
+                        TypeError,
+                        json.JSONDecodeError,
+                    ) as exc:
+                        extraction_complete = False
+                        continuation_reason = type(exc).__name__
+                        extraction_audit["rejected"]["native_continuation_error"] = (
+                            int(extraction_audit["rejected"].get("native_continuation_error") or 0) + 1
+                        )
+                        break
+
+                    new_batch: list[dict[str, Any]] = []
+                    for raw in continuation_payload.get("facts") or []:
+                        if not isinstance(raw, dict):
+                            reject("continuation_invalid_shape")
+                            continue
+                        fact_text = " ".join(str(raw.get("text") or "").split()).strip()
+                        if not fact_text:
+                            reject("continuation_empty_text")
+                            continue
+                        if len(fact_text) > 1200:
+                            reject("continuation_text_over_safety_bound")
+                            continue
+                        claim_key = " ".join(str(raw.get("claim_key") or "").split()).strip().casefold()
+                        if not claim_key or len(claim_key) > 300:
+                            claim_key = (
+                                "exact-text:"
+                                + hashlib.sha256(fact_text.casefold().encode("utf-8")).hexdigest()[:24]
+                            )
+                            extraction_audit["claim_key_fallback_count"] += 1
+                        try:
+                            confidence = float(raw.get("confidence", 0.0))
+                            if not math.isfinite(confidence):
+                                raise ValueError
+                        except (TypeError, ValueError):
+                            confidence = 0.0
+                            extraction_audit["confidence_defaulted_count"] += 1
+
+                        refs: list[str] = []
+                        source_urls: list[str] = []
+                        for raw_ref in raw.get("evidence_refs") or []:
+                            evidence_ref = str(raw_ref or "").strip()
+                            bound = support_by_ref.get(evidence_ref)
+                            if bound is None or evidence_ref in refs:
+                                continue
+                            refs.append(evidence_ref)
+                            source_url = str(bound["source_url"])
+                            if source_url and source_url not in source_urls:
+                                source_urls.append(source_url)
+                        if not refs:
+                            reject("continuation_no_bound_evidence")
+                            continue
+
+                        fact = {
+                            "claim_key": claim_key,
+                            "text": fact_text,
+                            "confidence": max(0.0, min(1.0, confidence)),
+                            "source_urls": source_urls,
+                            "evidence_refs": refs,
+                        }
+                        existing_fact_id = str(raw.get("existing_fact_id") or "").strip()
+                        if existing_fact_id:
+                            fact["existing_fact_id"] = existing_fact_id[:200]
+                        fingerprint = hashlib.sha256(
+                            json.dumps(
+                                {
+                                    "claim_key": claim_key,
+                                    "text": fact_text,
+                                    "evidence_refs": sorted(refs),
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        if fingerprint in seen_outputs:
+                            reject("continuation_exact_duplicate")
+                            continue
+                        seen_outputs.add(fingerprint)
+                        new_batch.append(fact)
+                        already_returned.append({
+                            "claim_key": claim_key[:300],
+                            "text": fact_text[:500],
+                        })
+
+                    normalized_facts.extend(new_batch)
+                    native_continuation_batches += 1
+                    continuation_needed = bool(continuation_payload.get("continuation_needed"))
+                    continuation_reason = str(
+                        continuation_payload.get("continuation_reason") or ""
+                    ).strip()
+                    if not continuation_needed:
+                        extraction_complete = True
+                        break
+                    if not new_batch:
+                        extraction_complete = False
+                        continuation_reason = continuation_reason or "continuation_stalled"
+                        extraction_audit["rejected"]["native_continuation_stalled"] = (
+                            int(extraction_audit["rejected"].get("native_continuation_stalled") or 0) + 1
+                        )
+                        break
+                    if batch_index + 1 >= max_native_continuation_batches:
+                        extraction_complete = False
+                        continuation_reason = continuation_reason or "continuation_limit"
+                        extraction_audit["rejected"]["native_continuation_limit"] = (
+                            int(extraction_audit["rejected"].get("native_continuation_limit") or 0) + 1
+                        )
+
             extraction_audit["accepted_fact_count"] = len(normalized_facts)
             extraction_audit["evidence_binding_status"] = binding_status
-            if len(raw_facts) > 32:
-                extraction_audit["rejected"]["over_batch_limit"] = len(raw_facts) - 32
+            extraction_audit["native_continuation_batches"] = native_continuation_batches
             payload["facts"] = normalized_facts
             payload["extraction_audit"] = extraction_audit
+            payload["extraction_complete"] = extraction_complete
+            payload["continuation_reason"] = continuation_reason
 
             blocked_official_hosts = {
                 "wikipedia.org", "wikimedia.org", "openstreetmap.org", "google.com",
