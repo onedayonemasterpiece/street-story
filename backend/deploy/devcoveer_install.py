@@ -267,30 +267,6 @@ def materialize_release(sha: str, tree_sha: str) -> Path:
     return release
 
 
-def _pip_driver() -> str:
-    candidates = [
-        Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python"),
-        Path("/home/dev/.local/opt/vibepublish/bin/python"),
-    ]
-    system_python = shutil.which("python3")
-    if system_python:
-        candidates.append(Path(system_python))
-    for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        result = subprocess.run(
-            [str(candidate), "-m", "pip", "--version"],
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode == 0:
-            return str(candidate)
-    raise DeployError("no installed pip driver is available for the Python 3.12 runtime")
-
-
 def _python_312_runtime() -> str:
     candidates = [BRIDGE_PYTHON]
     system_python = shutil.which("python3.12")
@@ -316,7 +292,7 @@ def _python_312_runtime() -> str:
 
 
 
-def install_ai_resource_control(target_python: Path, driver: str) -> None:
+def install_ai_resource_control(target_python: Path) -> None:
     repo = AI_RESOURCE_CONTROL_REPO
     if not (repo / ".git").is_dir():
         raise DeployError("private ai-resource-control checkout is unavailable")
@@ -348,7 +324,7 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
         archive.unlink(missing_ok=True)
         run(
             [
-                driver,
+                str(target_python),
                 "-m",
                 "pip",
                 "wheel",
@@ -368,11 +344,9 @@ def install_ai_resource_control(target_python: Path, driver: str) -> None:
             raise DeployError("private ai-resource-control wheel was not produced")
         run(
             [
-                driver,
+                str(target_python),
                 "-m",
                 "pip",
-                "--python",
-                str(target_python),
                 "install",
                 "--disable-pip-version-check",
                 "--no-deps",
@@ -399,14 +373,21 @@ def ensure_venv(release: Path) -> Path:
     if not target_python.is_file():
         raise DeployError("Python 3.12 venv was not created")
 
-    driver = _pip_driver()
+    pip_probe = subprocess.run(
+        [str(target_python), "-m", "pip", "--version"],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    if pip_probe.returncode != 0:
+        run([str(target_python), "-m", "ensurepip", "--upgrade"], timeout=180)
     run(
         [
-            driver,
+            str(target_python),
             "-m",
             "pip",
-            "--python",
-            str(target_python),
             "install",
             "--disable-pip-version-check",
             "-r",
@@ -414,7 +395,7 @@ def ensure_venv(release: Path) -> Path:
         ],
         timeout=900,
     )
-    install_ai_resource_control(target_python, driver)
+    install_ai_resource_control(target_python)
     run(
         [
             str(target_python),

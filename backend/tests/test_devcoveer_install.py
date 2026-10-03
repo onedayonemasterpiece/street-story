@@ -385,10 +385,53 @@ def test_private_resource_commit_peel_is_literal(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(module, "run", fake_run)
 
     with pytest.raises(StopAfterPeel):
-        module.install_ai_resource_control(tmp_path / "target-python", "driver-python")
+        module.install_ai_resource_control(tmp_path / "target-python")
 
     peel = next(argv for argv in calls if "cat-file" in argv)
     assert peel[-1] == module.AI_RESOURCE_CONTROL_RELEASE_SHA + "^{commit}"
+
+
+def test_ensure_venv_uses_only_release_python_for_pip(monkeypatch, tmp_path) -> None:
+    module = _load_installer()
+    release = tmp_path / "release"
+    requirements = release / "source/backend/requirements.txt"
+    requirements.parent.mkdir(parents=True)
+    requirements.write_text("fastapi>=0.115,<1\n")
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(module, "_python_312_runtime", lambda: "/fixture/python3.12")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda argv, **kwargs: SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(module, "install_ai_resource_control", lambda target: calls.append(["ai", str(target)]))
+
+    def fake_run(argv, **kwargs):
+        del kwargs
+        calls.append([str(value) for value in argv])
+        if argv[:3] == ["/fixture/python3.12", "-m", "venv"]:
+            target = Path(argv[-1]) / "bin/python"
+            target.parent.mkdir(parents=True)
+            target.write_text("")
+        return ""
+
+    monkeypatch.setattr(module, "run", fake_run)
+
+    venv = module.ensure_venv(release)
+    target = str(venv / "bin/python")
+    assert [target, "-m", "ensurepip", "--upgrade"] in calls
+    assert [
+        target,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "-r",
+        str(requirements),
+    ] in calls
+    assert ["ai", target] in calls
+    assert all(str(module.VIBE_PY) not in call for call in calls)
 
 
 def test_live_resource_preflight_is_read_only_and_central(monkeypatch, tmp_path) -> None:
