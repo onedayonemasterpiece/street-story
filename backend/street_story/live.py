@@ -511,7 +511,11 @@ class StreetStoryLiveAdapter:
             begin_turn(session)
         text = message.get("text")
         if isinstance(text, str) and text.strip() and len(text) <= 4000:
-            begin_turn(session, text.strip(), origin="text")
+            clean = text.strip()
+            # Persist accepted author input before the provider sees it. Text input
+            # is not guaranteed to be echoed back as provider input_transcript.
+            self._persist_live_message(session, "user", clean)
+            begin_turn(session, clean, origin="text")
 
     def _finalize_live_message(self, session) -> None:
         active = session.state.get("live_message")

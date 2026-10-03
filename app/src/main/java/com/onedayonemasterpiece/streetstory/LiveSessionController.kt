@@ -485,6 +485,7 @@ class LiveSessionController(context: Context) {
         val value = text.trim()
         if (!state.active || value.isEmpty()) return
         inputOpen = false
+        userTranscriptIndex = mergeMessage(LiveRole.USER, value.take(4000), -1)
         update(state.copy(inputActive = false))
         waitStage = "provider"
         waitStarted = SystemClock.elapsedRealtime()
