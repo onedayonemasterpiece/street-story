@@ -1213,6 +1213,11 @@ class StreetStoryLiveAdapter:
                 "fact_conflicts": list(result.get("fact_conflicts") or [])[:6],
                 "story": projected.get("story"),
             }
+        elif name == "get_research_chunk":
+            # Passages already contain every core character needed for extraction.
+            # Avoid charging the shared Live budget for three copies of the page.
+            projected.pop("core_text", None)
+            projected.pop("context_text", None)
         elif name == "save_research_facts":
             projected = {
                 "research_run_id": result.get("research_run_id"),
@@ -2401,6 +2406,8 @@ class StreetStoryLiveAdapter:
             "ordinal": candidate["ordinal"], "core_start": candidate["core_start"], "core_end": candidate["core_end"],
             "core_text": core, "context_text": candidate["chunk_text"],
             "evidence_passages": self._core_passages(candidate["chunk_id"], core),
+            "context_before": candidate["normalized_text"][candidate["context_start"]:candidate["core_start"]],
+            "context_after": candidate["normalized_text"][candidate["core_end"]:candidate["context_end"]],
             "batch_id": batch_id, "batch_index": batch_index, "expected_story_revision": snapshot_revision,
             "checkpoint": checkpoint, "next_tool": "save_research_facts",
         }

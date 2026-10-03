@@ -101,6 +101,10 @@ async def run_case(output, case, budget):
     with svc.store.connection() as db:
         runs = [run_manifest(db, r["run_id"]) for r in db.execute("SELECT run_id FROM research_runs WHERE story_id=?", (story_id,))]
     eligible = [f for f in inventory if f.get("eligibility") == "eligible"]
+    budget_denials = [e for e in events if e.get("type") == "resource_budget" and e.get("status") == "denied"]
+    if budget_denials and stage == "research":
+        status, stage = "BLOCKED_PROVIDER", "tool_response_budget"
+        error = {"type": "ResourceBudget", "code": budget_denials[-1].get("code")}
     # Gold exists only in the evaluator; prompts above contain no expected names.
     groups = [["Отакар", "Оттокар", "Оттокар"], ["Фридрих I"], ["Альбрехт"]] if case != "holdout" else [["1657"], ["Бойен"], ["Астер"]]
     ids = [next((f["fact_id"] for f in eligible if any(alias in f["text"] for alias in group)), None) for group in groups]
