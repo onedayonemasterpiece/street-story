@@ -462,6 +462,68 @@ async def test_fallback_filters_already_processed_exact_urls_when_fresh_sources_
     assert [item["url"] for item in result.grounding_sources] == ["https://fresh.example/page"]
 
 @pytest.mark.asyncio
+async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://museum.example/royal-gate"
+
+    class OneShotExecutor:
+        async def execute(self, operation, call):
+            assert operation == "web_search"
+            return await call("key-a", 10)
+
+    client.web_search_routes = [
+        ("gemini-test", "test", None, OneShotExecutor()),
+    ]
+
+    async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        payload = {
+            "summary": "Grounded facts",
+            "official_source_urls": [source_url],
+            "facts": [
+                {
+                    "claim_key": "",
+                    "text": "Слева изображён Оттокар II.",
+                    "confidence": "not-a-number",
+                    "source_urls": [source_url],
+                },
+                {
+                    "claim_key": "unsupported",
+                    "text": "Этот факт ссылается на URL, которого не было в grounding.",
+                    "confidence": .9,
+                    "source_urls": ["https://invented.example/nope"],
+                },
+            ],
+        }
+        web = SimpleNamespace(uri=source_url, title="Museum")
+        chunk = SimpleNamespace(web=web)
+        support = SimpleNamespace(
+            segment=SimpleNamespace(text="Слева изображён Оттокар II."),
+            grounding_chunk_indices=[0],
+        )
+        metadata = SimpleNamespace(grounding_chunks=[chunk], grounding_supports=[support])
+        candidate = SimpleNamespace(grounding_metadata=metadata)
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[candidate])
+
+    client._generate = generate
+    result = await client.search_web("скульптуры Королевских ворот", {"coverage_goal": "Кто изображён слева?"})
+    assert [fact["text"] for fact in result.payload["facts"]] == ["Слева изображён Оттокар II."]
+    assert result.payload["facts"][0]["claim_key"].startswith("exact-text:")
+    audit = result.payload["extraction_audit"]
+    assert audit == {
+        "raw_fact_count": 2,
+        "accepted_fact_count": 1,
+        "claim_key_fallback_count": 1,
+        "confidence_defaulted_count": 1,
+        "rejected": {"no_grounded_source": 1},
+    }
+
+
+@pytest.mark.asyncio
 async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp_path):
     settings = replace(
         config(tmp_path),
