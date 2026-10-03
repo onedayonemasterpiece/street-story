@@ -19,11 +19,11 @@ from .config import Settings
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
 from .fact_conflicts import (
-    analyze_fact_conflicts,
     conflict_rows,
     conflict_scan_items,
     normalize_model_conflict_records,
     persist_fact_conflicts,
+    record_fact_review_scan,
     resolve_fact_conflict,
 )
 from .fact_ledger import (
@@ -54,7 +54,11 @@ from .live_author_intent import (
 )
 from .research_runs import (
     begin_research_run,
+    chunk_checkpoint,
+    mark_chunk,
     manifest_complete,
+    record_chunk_batch,
+    register_discovered_source,
     run_manifest,
     set_run_state,
 )
@@ -377,6 +381,14 @@ FUNCTIONS = [
         ["fact_ids"],
     ),
     _tool_schema(
+        "get_research_chunk",
+        "Read a document chunk of the SAME research run before facts exist. Omit chunk_id for the next unfinished "
+        "chunk; source_url must be a discovered source of this run. Uses the guarded fetch pipeline. Returns frozen "
+        "source version, exact core/context, batch_id and expected_story_revision. Resume does not repeat completed chunks.",
+        {"run_id": {"type": "string"}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}},
+        ["run_id"],
+    ),
+    _tool_schema(
         "resolve_place",
         "Resolve the photographed place before factual research. Uses the source photo plus GPS when available, OSM and nearby Wikipedia candidates, and visual identity. This does not publish or rewrite the post.",
         {
@@ -426,6 +438,19 @@ FUNCTIONS = [
         "For each fact choose only the exact evidence_refs whose passages support that fact; a source URL by itself is not evidence. "
         "The server validates refs and preserves only the selected passages without inferring fact meaning.",
         {
+            "run_id": {
+                "type": "string",
+                "description": "Exact research_run_id returned by search_web. Required when more than one discovery run could be current.",
+            },
+            "batch_id": {
+                "type": "string",
+                "description": "Exact save_batch_id returned by search_web. Guards replay and cross-run writes.",
+            },
+            "chunk_id": {"type": "string"},
+            "batch_index": {"type": "integer"},
+            "expected_story_revision": {"type": "integer"},
+            "continuation_needed": {"type": "boolean"},
+            "inventory_reviewed": {"type": "boolean", "description": "True only after Mira read the whole existing inventory and chose equivalence IDs herself."},
             "facts": {
                 "type": "array",
                 "items": {
@@ -434,6 +459,7 @@ FUNCTIONS = [
                         "claim_key": {"type": "string"},
                         "existing_fact_id": {"type": "string"},
                         "text": {"type": "string"},
+                        "evidence_quotes": {"type": "array", "items": {"type": "string"}, "description": "For chunk batches: exact passages copied from core text. Leave source_refs/evidence_refs empty; server binds validated quotes."},
                         "confidence": {"type": "number"},
                         "selected": {"type": "boolean"},
                         "source_refs": {"type": "array", "items": {"type": "string"}},
@@ -489,6 +515,73 @@ FUNCTIONS = [
             },
         },
         ["conflicts"],
+    ),
+    _tool_schema(
+        "finalize_fact_review",
+        "Finalize Mira's semantic review for one exact research run and exact assertion revisions. "
+        "Conflicts may be an empty array when Mira reviewed the full bundle and found none. "
+        "The server validates revisions/references and computes eligibility; it never invents semantic conflicts.",
+        {
+            "run_id": {"type": "string"},
+            "reviewed_assertions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fact_id": {"type": "string"},
+                        "revision_digest": {"type": "string"},
+                        "supporting_evidence_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["fact_id", "revision_digest", "supporting_evidence_ids"],
+                },
+            },
+            "conflicts": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "left_fact_id": {"type": "string"},
+                        "right_fact_id": {"type": "string"},
+                        "relation": {
+                            "type": "string",
+                            "enum": [
+                                "contradiction",
+                                "scope_difference",
+                                "temporal_sequence",
+                                "source_disagreement",
+                                "uncertain",
+                            ],
+                        },
+                        "resolution": {
+                            "type": "string",
+                            "enum": ["prefer_left", "prefer_right", "both_valid", "unresolved"],
+                        },
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": [
+                        "left_fact_id",
+                        "right_fact_id",
+                        "relation",
+                        "resolution",
+                        "confidence",
+                        "rationale",
+                    ],
+                },
+            },
+            "coverage_complete": {"type": "boolean"},
+            "missing_aspects": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        [
+            "run_id",
+            "reviewed_assertions",
+            "conflicts",
+            "coverage_complete",
+            "missing_aspects",
+        ],
     ),
     _tool_schema(
         "resolve_fact_conflict",
@@ -621,13 +714,15 @@ SYSTEM_INSTRUCTION = """
 - широкий запрос на факты = 4–6 разных search_web по ключевым аспектам объекта и отдельная перепроверка важных тезисов; не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
-- после каждого discovery_only search_web сразу save_research_facts: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- после каждого discovery_only search_web сразу save_research_facts с точными research_run_id/save_batch_id: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и точными evidence_refs из evidence_passages (или дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
+- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence. Передай точные fact_id+revision_digest и supporting_evidence_ids из get_evidence. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
 - source_count/domain_count и URL сами по себе не доказывают тезис. Для важных сравнений и любого арбитража вызывай get_evidence по точным fact_id и при необходимости читай все страницы до has_more=false. Сравнивай exact span_text, source_version_id, chunk_id и контекст источника; не выбирай победителя по числу ссылок;
 - количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
-- после появления новых facts сама сравни их с текущими evidence-backed facts. Если видишь реальное противоречие/расхождение, зарегистрируй его через record_fact_conflicts; если противоречия нет, ничего не регистрируй. fact_conflicts — внутренний журнал. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web; когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict, иначе оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
+- после появления новых facts сама сравни их с текущими evidence-backed facts. record_fact_conflicts/resolve_fact_conflict остаются для точечного журнала и дополнительного арбитража, но не заменяют finalize_fact_review. В финальном review передай весь найденный набор конфликтов и решение по каждому; unresolved допустим и оставляет спорные факты withheld. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
 - когда доказательств уже достаточно для публикации, сама сформируй редакционную концепцию через set_concept (если автор её ещё не задал), при необходимости явно скорректируй выбор фактов через select_facts, затем подготовь или обнови публикационный текст через edit_text. Текст — не список фактов: обычно 2–5 коротких связных абзацев с ясным заходом, развитием и завершением; используй только выбранные evidence-backed facts и авторский контекст, не добавляй неподтверждённые сведения;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
@@ -785,6 +880,13 @@ class StreetStoryLiveAdapter:
                 recent_model.append(text)
             self._persist_live_message(session, "assistant", text)
 
+        if kind in {"error", "closed"}:
+            session.state["research_cancelled"] = True
+            run_id = session.state.get("research_run_id")
+            if run_id:
+                with self.service.store.tx() as db:
+                    db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? WHERE run_id=? AND state NOT IN ('completed','cancelled')",
+                               ("live_" + kind + "_resume_required", self.service.store.now(), run_id))
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
 
@@ -889,6 +991,14 @@ class StreetStoryLiveAdapter:
         self._send_visual_snapshot(session)
         self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
 
+    def on_stopped(self, session) -> None:
+        session.state["research_cancelled"] = True
+        run_id = session.state.get("research_run_id")
+        if run_id:
+            with self.service.store.tx() as db:
+                db.execute("UPDATE research_runs SET state='partial',status_detail='live_stopped_resume_required',updated_at=? "
+                           "WHERE run_id=? AND state NOT IN ('completed','cancelled')", (self.service.store.now(), run_id))
+
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         name = str(call.get("name") or "")
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
@@ -904,6 +1014,8 @@ class StreetStoryLiveAdapter:
             return self._get_facts(story_id, args)
         if name == "get_evidence":
             return self._get_evidence(story_id, args)
+        if name == "get_research_chunk":
+            return await self._get_research_chunk(session, args)
         if name == "literal_begin":
             return self._literal_begin(session, args)
         if name == "literal_cancel":
@@ -949,6 +1061,8 @@ class StreetStoryLiveAdapter:
             result = await self._save_research_facts(session, command_id, args)
         elif name == "record_fact_conflicts":
             result = self._record_fact_conflicts(session, command_id, args)
+        elif name == "finalize_fact_review":
+            result = self._finalize_fact_review(session, command_id, args)
         elif name == "resolve_fact_conflict":
             result = self._resolve_fact_conflict(session, command_id, args)
         elif name == "select_facts":
@@ -1028,6 +1142,7 @@ class StreetStoryLiveAdapter:
                     compact_sources.append(
                         {
                             "source_ref": source.get("source_ref"),
+                            "url": str(source.get("url") or "")[:1000],
                             "title": str(source.get("title") or "")[:140],
                             "supports": supports[:2],
                         }
@@ -1059,6 +1174,8 @@ class StreetStoryLiveAdapter:
                 )
             projected = {
                 "query": str(result.get("query") or "")[:400],
+                "research_run_id": result.get("research_run_id"),
+                "save_batch_id": result.get("save_batch_id"),
                 "summary": str(result.get("summary") or "")[:480],
                 "search_provider": result.get("search_provider"),
                 "discovery_only": discovery_only,
@@ -1068,15 +1185,26 @@ class StreetStoryLiveAdapter:
                 "missing_aspects": list(result.get("missing_aspects") or [])[:20],
                 "extraction_complete": result.get("extraction_complete"),
                 "continuation_reason": result.get("continuation_reason"),
+                "review_required": bool(result.get("review_required")),
                 "continuation_required": bool(
-                    discovery_only
-                    and result.get("semantic_status") == "live_model_required"
+                    (
+                        discovery_only
+                        and result.get("semantic_status") == "live_model_required"
+                    )
+                    or (
+                        not discovery_only
+                        and result.get("review_required")
+                    )
                 ),
                 "next_tool": (
                     "save_research_facts"
                     if discovery_only
                     and result.get("semantic_status") == "live_model_required"
-                    else None
+                    else (
+                        "finalize_fact_review"
+                        if not discovery_only and result.get("review_required")
+                        else None
+                    )
                 ),
                 "extraction_audit": result.get("extraction_audit"),
                 "source_count": len([source for source in (result.get("sources") or []) if isinstance(source, dict)]),
@@ -1087,6 +1215,13 @@ class StreetStoryLiveAdapter:
             }
         elif name == "save_research_facts":
             projected = {
+                "research_run_id": result.get("research_run_id"),
+                "payload_saved": bool(result.get("payload_saved")),
+                "chunk_id": result.get("chunk_id"),
+                "save_batch_id": result.get("save_batch_id"),
+                "review_required": bool(result.get("review_required")),
+                "continuation_required": bool(result.get("continuation_required")),
+                "next_tool": result.get("next_tool"),
                 "facts": [
                     {
                         "fact_id": fact.get("fact_id"),
@@ -1160,6 +1295,19 @@ class StreetStoryLiveAdapter:
             projected["fact_reconciliation"] = result.get(
                 "fact_reconciliation"
             )
+        elif name == "finalize_fact_review":
+            projected = {
+                "research_run_id": result.get("research_run_id"),
+                "complete": bool(result.get("complete")),
+                "coverage_complete": bool(result.get("coverage_complete")),
+                "missing_aspects": list(result.get("missing_aspects") or [])[:40],
+                "reviewed_assertion_count": int(result.get("reviewed_assertion_count") or 0),
+                "eligible_count": int(result.get("eligible_count") or 0),
+                "withheld_count": int(result.get("withheld_count") or 0),
+                "unreviewed_count": int(result.get("unreviewed_count") or 0),
+                "conflict_ids": list(result.get("conflict_ids") or [])[:40],
+                "story": projected.get("story"),
+            }
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])
         logging.getLogger("uvicorn.error").info(
@@ -1204,6 +1352,7 @@ class StreetStoryLiveAdapter:
                 )
             ]
             fact_conflict_state = conflict_rows(db, story_id, limit=20)
+            latest_run = db.execute("SELECT run_id,state,goal,status_detail,identity_generation FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)).fetchone()
             confirmation = db.execute(
                 "SELECT * FROM live_publication_confirmations WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
                 (story_id,),
@@ -1224,6 +1373,7 @@ class StreetStoryLiveAdapter:
             "jobs": jobs,
             "confirmation": latest_confirmation,
             "fact_conflicts": fact_conflict_state,
+            "research_run": dict(latest_run) if latest_run else None,
         }
 
     def _get_facts(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1412,6 +1562,7 @@ class StreetStoryLiveAdapter:
                 for item in state.get("fact_conflicts", [])[:12]
             ],
             "source_count": story.get("source_count", 0),
+            "research_run": state.get("research_run"),
             "publication_concept": story.get("publication_concept"),
             "publication": story.get("publication"),
             "visual": {
@@ -1689,6 +1840,7 @@ class StreetStoryLiveAdapter:
 
         with self.service.store.connection() as db:
             story = dict(self.service._story_row(db, story_id))
+            snapshot_story_revision = int(story.get("revision") or 0)
             research = json.loads(story.get("research_json") or "{}")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
             if identity.get("status") not in {"match", "owner_confirmed"}:
@@ -1733,6 +1885,10 @@ class StreetStoryLiveAdapter:
 
         run_id = "research_" + hashlib.sha256(
             f"{story_id}:{command_id}:search".encode("utf-8")
+        ).hexdigest()[:24]
+        session.state["research_run_id"] = run_id
+        save_batch_id = "livebatch_" + hashlib.sha256(
+            f"{run_id}:discovery-save".encode("utf-8")
         ).hexdigest()[:24]
         expected_identity_generation = int(research.get("identity_generation") or 0)
         with self.service.store.tx() as db:
@@ -1985,35 +2141,43 @@ class StreetStoryLiveAdapter:
         with self.service.store.connection() as db:
             current_story = dict(self.service._story_row(db, story_id))
             current_research = json.loads(current_story.get("research_json") or "{}")
-        if int(current_research.get("identity_generation") or 0) != expected_identity_generation:
+        if (
+            int(current_story.get("revision") or 0) != snapshot_story_revision
+            or int(current_research.get("identity_generation") or 0)
+            != expected_identity_generation
+        ):
             with self.service.store.tx() as db:
                 set_run_state(
                     db,
                     run_id,
                     "cancelled",
-                    detail="identity_generation_changed",
+                    detail="story_or_identity_changed_after_model_await",
                     now=self.service.store.now(),
                     completed=True,
                 )
             raise ConflictError(
                 "research_result_stale",
-                "Object identity changed while research was running; stale result was not applied.",
+                "Story or object identity changed while research was running; stale result was not applied.",
             )
 
-        detected_conflicts = await analyze_fact_conflicts(
-            self.service,
-            story_id,
-            str(identity.get("candidate_id") or "") or None,
-            [*normalized, *all_story_facts, *poi_history],
-            context={
-                "place_name": story.get("place_name"),
-                "source": "live_search",
-                "query": query[:500],
-            },
-        )
+        # Live Mira owns the semantic review after facts are durable. Do not call
+        # the same helper detector again here when that helper may be the failed
+        # dependency that caused the Live fallback.
+        detected_conflicts: list[dict[str, Any]] = []
 
         with self.service.store.tx() as db:
             story_row = self.service._story_row(db, story_id)
+            self._research_run_guard(db, session, run_id)
+            commit_research = json.loads(story_row["research_json"] or "{}")
+            if (
+                int(story_row["revision"] or 0) != snapshot_story_revision
+                or int(commit_research.get("identity_generation") or 0)
+                != expected_identity_generation
+            ):
+                raise ConflictError(
+                    "research_result_stale",
+                    "Story or object identity changed before research commit; stale result was not applied.",
+                )
             now = self.service.store.now()
             persist_fact_relation_events(
                 db,
@@ -2029,7 +2193,7 @@ class StreetStoryLiveAdapter:
                 poi_key=str(identity.get("candidate_id") or "") or None,
                 facts=normalized,
                 run_id=run_id,
-                batch_id=command_id,
+                batch_id=save_batch_id,
                 model_name=str(session.model),
                 prompt_version="live-search-ledger-v1",
                 now=now,
@@ -2039,41 +2203,28 @@ class StreetStoryLiveAdapter:
                 "SELECT COUNT(*) FROM facts WHERE story_id=?",
                 (story_id,),
             ).fetchone()[0]
-            manifest_before = run_manifest(db, run_id)
-            coverage_satisfied = bool(grounded.payload.get("coverage_satisfied"))
-            extraction_complete = grounded.payload.get("extraction_complete") is not False
-            reconciliation_complete = reconciliation_meta.get("status") in {"not_needed", "complete"}
-            manifest_is_complete = manifest_complete(manifest_before)
-            research_complete = (
-                coverage_satisfied
-                and extraction_complete
-                and manifest_is_complete
-                and reconciliation_complete
+            review_fact_count = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM facts WHERE story_id=? AND evidence_supported=1",
+                    (story_id,),
+                ).fetchone()[0]
             )
+            review_required = review_fact_count > 0
             set_run_state(
                 db,
                 run_id,
-                "completed" if research_complete else "partial",
+                "extracting" if discovery_only else "verifying",
                 detail=(
-                    "coverage_manifest_and_reconciliation_complete"
-                    if research_complete
-                    else (
-                        "coverage_incomplete"
-                        if not coverage_satisfied
-                        else (
-                            "fact_extraction_incomplete"
-                            if not extraction_complete
-                            else (
-                                "source_or_chunk_manifest_incomplete"
-                                if not manifest_is_complete
-                                else "fact_reconciliation_incomplete"
-                            )
-                        )
-                    )
+                    "awaiting_live_fact_save"
+                    if discovery_only
+                    else "awaiting_live_semantic_review"
                 ),
                 now=self.service.store.now(),
-                completed=True,
+                completed=False,
             )
+            for source in grounding_sources:
+                if not db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? AND url=?", (run_id, source["url"])).fetchone():
+                    register_discovered_source(db, run_id=run_id, url=source["url"], title=str(source.get("title") or ""), status="snippet_only", now=now)
             research_manifest = run_manifest(db, run_id)
 
             research = json.loads(story_row["research_json"] or "{}")
@@ -2104,6 +2255,8 @@ class StreetStoryLiveAdapter:
                     "query": query,
                     "coverage_goal": coverage_goal,
                     "research_run_id": run_id,
+                    "save_batch_id": save_batch_id,
+                    "review_required": review_required,
                     "summary": str(grounded.payload.get("summary") or "")[:2000],
                     "source_urls": [source["url"] for source in grounding_sources[:20]],
                     "source_refs": [
@@ -2133,6 +2286,8 @@ class StreetStoryLiveAdapter:
                 "query": query,
                 "coverage_goal": coverage_goal,
                 "research_run_id": run_id,
+                "save_batch_id": save_batch_id,
+                "review_required": review_required,
                 "research_manifest": research_manifest,
                 "summary": str(grounded.payload.get("summary") or "")[:2000],
                 "search_provider": search_provider,
@@ -2153,8 +2308,8 @@ class StreetStoryLiveAdapter:
             self._store_command(db, story_id, command_id, "search_web", args, result)
             self._emit_research_progress(
                 session,
-                stage="extracting" if discovery_only else "facts",
-                active=discovery_only,
+                stage="extracting" if discovery_only else "review",
+                active=bool(discovery_only or review_required),
                 query=query,
                 source_count=len(all_sources),
                 fact_count=int(fact_count),
@@ -2169,6 +2324,87 @@ class StreetStoryLiveAdapter:
             )
             return result
 
+    def _research_run_guard(self, db, session, run_id: str):
+        story = self.service._story_row(db, session.resource_id)
+        run = db.execute("SELECT * FROM research_runs WHERE run_id=? AND story_id=?", (run_id, session.resource_id)).fetchone()
+        research = json.loads(story["research_json"] or "{}")
+        if run is None:
+            raise ConflictError("live_research_run_unknown", "Research run does not belong to this story.")
+        if getattr(session, "closed", False) or session.state.get("research_cancelled") or str(run["state"]) in {"cancelled", "failed", "completed"}:
+            raise ConflictError("live_research_run_terminal", "Research is no longer writable in this session.")
+        if int(research.get("identity_generation") or 0) != int(run["identity_generation"] or 0):
+            raise ConflictError("live_research_run_stale", "Object identity changed.")
+        return story, run
+
+    @staticmethod
+    def _core_passages(chunk_id, core):
+        """Address literal paragraphs; this makes no semantic fact decisions."""
+        passages, cursor = [], 0
+        for line in core.splitlines(keepends=True):
+            for start in range(0, len(line), 1600):
+                raw = line[start:start + 1600]
+                text = raw.strip()
+                if text:
+                    offset = cursor + start + len(raw) - len(raw.lstrip())
+                    ref = "evref_" + hashlib.sha256(f"{chunk_id}:{offset}:{text}".encode()).hexdigest()[:24]
+                    passages.append({"evidence_ref": ref, "text": text})
+            cursor += len(line)
+        return passages
+
+    async def _get_research_chunk(self, session, args):
+        run_id = _bounded_text(args.get("run_id"), 160, required=True)
+        session.state["research_run_id"] = run_id
+        source_url = str(args.get("source_url") or "").rstrip("/")
+        chunk_id = str(args.get("chunk_id") or "")
+        with self.service.store.connection() as db:
+            story, run = self._research_run_guard(db, session, run_id)
+            snapshot_revision = int(story["revision"] or 0)
+            sources = [dict(row) for row in db.execute("SELECT * FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url", (run_id,))]
+            if source_url and not any(row["url"] == source_url for row in sources):
+                raise ConflictError("live_research_source_unknown", "Choose a source URL discovered in this run.")
+            candidate = db.execute(
+                "SELECT c.*,v.normalized_text,v.final_url,v.requested_url FROM research_chunk_runs r "
+                "JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id "
+                "WHERE r.run_id=? AND (?='' OR r.chunk_id=?) AND (?='' OR v.requested_url=?) "
+                "AND (?<>'' OR r.status NOT IN ('extracted','no_claims')) ORDER BY c.source_version_id,c.ordinal LIMIT 1",
+                (run_id, chunk_id, chunk_id, source_url, source_url, chunk_id),
+            ).fetchone()
+            candidate = dict(candidate) if candidate else None
+        if candidate is None:
+            if chunk_id:
+                raise ConflictError("live_research_chunk_unknown", "Choose a chunk belonging to this run.")
+            source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"]), None)
+            if source is None:
+                with self.service.store.connection() as db:
+                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "finalize_fact_review"}
+            fetch = getattr(self.service.providers.gemini, "_fetch_page_documents", None)
+            if not callable(fetch):
+                raise ConflictError("live_research_fetch_unavailable", "Document reader is unavailable; saved evidence is preserved.")
+            self._emit_research_progress(session, stage="extracting", active=True, query=str(run["goal"]), source_count=len(sources), fact_count=0)
+            documents = await fetch([source["url"]], {"research_run_id": run_id, "research_sources": sources})
+            with self.service.store.tx() as db:
+                current, _ = self._research_run_guard(db, session, run_id)
+                if int(current["revision"] or 0) != snapshot_revision:
+                    raise ConflictError("live_research_run_stale", "Story changed while reading evidence.")
+            if not documents:
+                return {"research_run_id": run_id, "partial": True, "reason": "source_fetch_failed", "next_tool": "get_research_chunk"}
+            return await self._get_research_chunk(session, {**args, "source_url": source["url"]})
+        with self.service.store.connection() as db:
+            checkpoint = chunk_checkpoint(db, run_id, candidate["chunk_id"])
+        batch_index = int(checkpoint["next_batch_index"])
+        batch_id = "batch_" + hashlib.sha256(f"{run_id}:{candidate['chunk_id']}:{batch_index}".encode()).hexdigest()[:24]
+        core = candidate["normalized_text"][candidate["core_start"]:candidate["core_end"]]
+        return {
+            "research_run_id": run_id, "source_url": candidate["requested_url"],
+            "source_ref": _search_source_ref(candidate["requested_url"]),
+            "source_version_id": candidate["source_version_id"], "chunk_id": candidate["chunk_id"],
+            "ordinal": candidate["ordinal"], "core_start": candidate["core_start"], "core_end": candidate["core_end"],
+            "core_text": core, "context_text": candidate["chunk_text"],
+            "evidence_passages": self._core_passages(candidate["chunk_id"], core),
+            "batch_id": batch_id, "batch_index": batch_index, "expected_story_revision": snapshot_revision,
+            "checkpoint": checkpoint, "next_tool": "save_research_facts",
+        }
+
     async def _save_research_facts(
         self,
         session,
@@ -2177,7 +2413,16 @@ class StreetStoryLiveAdapter:
     ) -> dict[str, Any]:
         story_id = session.resource_id
         raw_facts = args.get("facts")
-        if not isinstance(raw_facts, list) or not 1 <= len(raw_facts) <= 32:
+        explicit_batch_id = str(args.get("batch_id") or "")
+        if explicit_batch_id:
+            replay = self._command_replay(story_id, explicit_batch_id, "save_research_facts", args)
+            if replay is not None:
+                return replay
+        chunk_id = str(args.get("chunk_id") or "")
+        chunk_row = None
+        batch_index = 0
+        continuation_needed = args.get("continuation_needed") is True
+        if not isinstance(raw_facts, list) or not (0 if chunk_id else 1) <= len(raw_facts) <= 32:
             raise ConflictError(
                 "live_research_facts_invalid",
                 "Provide between 1 and 32 facts from the latest search evidence",
@@ -2188,6 +2433,8 @@ class StreetStoryLiveAdapter:
         with self.service.store.connection() as db:
             story = self.service._story_row(db, story_id)
             snapshot_revision = int(story["revision"] or 0)
+            if chunk_id and args.get("expected_story_revision") != snapshot_revision:
+                raise ConflictError("live_research_save_stale", "Provide the exact story revision from get_research_chunk.")
             research = json.loads(story["research_json"] or "{}")
             snapshot_identity_generation = int(research.get("identity_generation") or 0)
             identity = (
@@ -2202,22 +2449,90 @@ class StreetStoryLiveAdapter:
                 )
 
             history = research.get("live_web_searches")
-            if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
+            if not isinstance(history, list) or not history:
                 raise InvalidStateError(
                     "live_search_required",
                     "Сначала выполните search_web в этой теме.",
                 )
-            latest_search = dict(history[-1])
+            requested_run_id = str(args.get("run_id") or "").strip()
+            discovery_candidates = [
+                (index, dict(item))
+                for index, item in enumerate(history)
+                if isinstance(item, dict)
+                and (bool(item.get("discovery_only")) or bool(chunk_id))
+                and (
+                    not requested_run_id
+                    or str(item.get("research_run_id") or "").strip()
+                    == requested_run_id
+                )
+            ]
+            if requested_run_id:
+                if len(discovery_candidates) != 1:
+                    raise ConflictError(
+                        "live_research_run_unknown",
+                        "The requested discovery research run is not current in this story.",
+                    )
+            else:
+                pending = [
+                    pair
+                    for pair in discovery_candidates
+                    if not pair[1].get("mira_saved_fact_ids")
+                ]
+                if len(pending) != 1:
+                    raise ConflictError(
+                        "live_research_run_ambiguous",
+                        "Provide the exact research_run_id returned by search_web.",
+                    )
+                discovery_candidates = pending
+            history_index, latest_search = discovery_candidates[0]
             snapshot_search_run_id = str(
                 latest_search.get("research_run_id") or ""
             ).strip()
-            run_id = snapshot_search_run_id or (
-                "research_"
+            if not snapshot_search_run_id:
+                raise ConflictError(
+                    "live_research_run_missing",
+                    "Discovery search did not provide a durable research run id.",
+                )
+            run_id = snapshot_search_run_id
+            expected_save_batch_id = str(
+                latest_search.get("save_batch_id") or ""
+            ).strip() or (
+                "livebatch_"
                 + hashlib.sha256(
-                    f"{story_id}:{command_id}:discovery-save".encode("utf-8")
+                    f"{run_id}:discovery-save".encode("utf-8")
                 ).hexdigest()[:24]
             )
-            if not latest_search.get("discovery_only"):
+            self._research_run_guard(db, session, run_id)
+            if chunk_id:
+                chunk_row = db.execute(
+                    "SELECT c.*,v.normalized_text,v.requested_url FROM research_chunk_runs r "
+                    "JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id "
+                    "WHERE r.run_id=? AND r.chunk_id=?", (run_id, chunk_id),
+                ).fetchone()
+                if chunk_row is None:
+                    raise ConflictError("live_research_chunk_unknown", "Chunk is outside this run.")
+                try:
+                    batch_index = int(args.get("batch_index"))
+                except (TypeError, ValueError):
+                    raise ConflictError("live_research_batch_invalid", "Exact batch index is required.") from None
+                checkpoint = chunk_checkpoint(db, run_id, chunk_id)
+                expected_save_batch_id = "batch_" + hashlib.sha256(f"{run_id}:{chunk_id}:{batch_index}".encode()).hexdigest()[:24]
+                # A batch owns its receipt across different provider call IDs.
+                prior = self._command_replay(story_id, expected_save_batch_id, "save_research_facts", args)
+                if prior is not None:
+                    return prior
+                if checkpoint["terminal"] or batch_index != checkpoint["next_batch_index"]:
+                    raise ConflictError("live_research_batch_stale", "Use the next batch returned by get_research_chunk.")
+                if not args.get("batch_id"):
+                    raise ConflictError("live_research_batch_required", "Exact batch ID is required for page findings.")
+            requested_batch_id = str(args.get("batch_id") or "").strip()
+            if requested_batch_id and requested_batch_id != expected_save_batch_id:
+                raise ConflictError(
+                    "live_research_batch_mismatch",
+                    "save_research_facts batch_id does not belong to this research run.",
+                )
+            save_batch_id = requested_batch_id or expected_save_batch_id
+            if not latest_search.get("discovery_only") and not args.get("chunk_id"):
                 raise ConflictError(
                     "live_research_facts_not_discovery",
                     "save_research_facts is only for the discovery-only search fallback",
@@ -2263,6 +2578,41 @@ class StreetStoryLiveAdapter:
                                 source_ref,
                                 support,
                             )
+
+            if chunk_row is not None:
+                url = str(chunk_row["requested_url"]).rstrip("/")
+                source_ref = _search_source_ref(url)
+                core = chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]]
+                addressed = {p["evidence_ref"]: p["text"] for p in self._core_passages(chunk_id, core)}
+                quoted_facts = []
+                for raw in raw_facts:
+                    if not isinstance(raw, dict):
+                        raise ConflictError("live_research_fact_invalid", "Each fact must be an object.")
+                    quotes = raw.get("evidence_quotes")
+                    if quotes is None:
+                        supplied_refs = raw.get("evidence_refs")
+                        if not isinstance(supplied_refs, list) or not supplied_refs or any(ref not in addressed for ref in supplied_refs):
+                            raise ConflictError("live_research_evidence_unknown", "Use evidence_refs from this chunk's evidence_passages, or verbatim evidence_quotes.")
+                        quotes = [addressed[ref] for ref in supplied_refs]
+                    if not isinstance(quotes, list) or not 1 <= len(quotes) <= 8:
+                        raise ConflictError("live_research_quotes_required", "Each page fact requires exact core passages.")
+                    refs = []
+                    supports = []
+                    for value in quotes:
+                        quote = str(value or "")
+                        offset = core.find(quote)
+                        if not quote.strip() or len(quote) > 1600 or offset < 0:
+                            raise ConflictError("live_research_quote_invalid", "Quote is not a verbatim passage of this frozen core.")
+                        evidence_ref = "evref_" + hashlib.sha256(f"{chunk_id}:{offset}:{quote}".encode()).hexdigest()[:24]
+                        support = {"kind": "verified_page_span", "source_url": url, "source_version_id": chunk_row["source_version_id"],
+                                   "chunk_id": chunk_id, "evidence_ref": evidence_ref, "text": quote,
+                                   "span_start": chunk_row["core_start"] + offset, "span_end": chunk_row["core_start"] + offset + len(quote)}
+                        refs.append(evidence_ref)
+                        supports.append(support)
+                        evidence_map[evidence_ref] = (source_ref, support)
+                    source_map.setdefault(source_ref, {"url": url, "source_ref": source_ref, "type": "web", "supports": []})["supports"].extend(supports)
+                    quoted_facts.append({**raw, "source_refs": [source_ref], "evidence_refs": refs})
+                raw_facts = quoted_facts
 
             known_facts = [
                 {
@@ -2430,7 +2780,7 @@ class StreetStoryLiveAdapter:
             "reconciled_match_count": 0,
             "rejected": {},
         }
-        if not normalized_candidates:
+        if not normalized_candidates and not chunk_id:
             raise ConflictError(
                 "live_research_facts_empty",
                 "No valid facts were supplied",
@@ -2477,6 +2827,7 @@ class StreetStoryLiveAdapter:
             normalized_candidates
             and known_facts
             and callable(reconciler)
+            and args.get("inventory_reviewed") is not True
         ):
             try:
                 reconciliation = await reconciler(
@@ -2536,6 +2887,8 @@ class StreetStoryLiveAdapter:
                     "status": "unavailable",
                     "error_type": type(exc).__name__,
                 }
+        elif normalized_candidates and known_facts and args.get("inventory_reviewed") is True:
+            reconciliation_meta["status"] = "mira_live_inventory_review"
         elif normalized_candidates and known_facts:
             reconciliation_meta["status"] = (
                 "compatibility_unavailable"
@@ -2583,7 +2936,7 @@ class StreetStoryLiveAdapter:
         normalized = merge_model_fact_inventory(
             reconciled_candidates
         )
-        if not normalized:
+        if not normalized and not chunk_id:
             raise ConflictError(
                 "live_research_facts_empty",
                 "No valid facts were supplied",
@@ -2610,16 +2963,25 @@ class StreetStoryLiveAdapter:
             current_history = current_research.get(
                 "live_web_searches"
             )
-            current_latest = (
-                dict(current_history[-1])
-                if isinstance(current_history, list)
-                and current_history
-                and isinstance(current_history[-1], dict)
-                else {}
-            )
+            current_match = [
+                (index, dict(item))
+                for index, item in enumerate(current_history or [])
+                if isinstance(item, dict)
+                and str(item.get("research_run_id") or "").strip()
+                == snapshot_search_run_id
+            ]
+            if len(current_match) != 1:
+                raise ConflictError(
+                    "live_research_save_stale",
+                    "Research run changed while semantic reconciliation was running.",
+                )
+            current_history_index, current_latest = current_match[0]
             current_search_run_id = str(
                 current_latest.get("research_run_id") or ""
             ).strip()
+            current_batch_id = str(
+                current_latest.get("save_batch_id") or ""
+            ).strip() or expected_save_batch_id
             if (
                 int(current_story["revision"] or 0)
                 != snapshot_revision
@@ -2632,13 +2994,23 @@ class StreetStoryLiveAdapter:
                 != snapshot_identity_generation
                 or current_search_run_id
                 != snapshot_search_run_id
+                or (not chunk_id and current_batch_id != save_batch_id)
             ):
                 raise ConflictError(
                     "live_research_save_stale",
                     "Story, identity or research result changed while semantic reconciliation was running",
                 )
 
+            commit_run = db.execute(
+                "SELECT state,identity_generation FROM research_runs WHERE run_id=? AND story_id=?",
+                (run_id, story_id),
+            ).fetchone()
+            if commit_run is None or str(commit_run["state"]) in {"cancelled", "failed", "completed"}:
+                raise ConflictError("live_research_run_terminal", "Research is no longer writable.")
+
+            self._research_run_guard(db, session, run_id)
             history = current_history
+            history_index = current_history_index
             latest_search = current_latest
             research = current_research
             story = current_story
@@ -2653,13 +3025,24 @@ class StreetStoryLiveAdapter:
                 ),
                 facts=normalized,
                 run_id=run_id,
-                batch_id=command_id,
+                batch_id=save_batch_id,
                 model_name=str(session.model),
                 prompt_version=(
                     "live-discovery-save-ledger-v2"
                 ),
                 now=now,
             )
+            if chunk_id:
+                record_chunk_batch(db, run_id=run_id, chunk_id=chunk_id, batch_index=batch_index,
+                    status="continuation" if continuation_needed else "completed", raw_fact_count=len(raw_facts),
+                    accepted_fact_count=len(normalized), continuation_needed=continuation_needed,
+                    continuation_reason="mira_live_remaining_findings" if continuation_needed else "",
+                    model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
+                    payload={"facts": normalized, "no_claims": not normalized, "official_source_urls": []})
+                mark_chunk(db, run_id=run_id, chunk_id=chunk_id,
+                    status="deferred" if continuation_needed else "extracted" if normalized else "no_claims",
+                    observation_count=len(chunk_checkpoint(db, run_id, chunk_id)["facts"]),
+                    model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now)
             if reconciliation_decisions:
                 persist_fact_relation_events(
                     db,
@@ -2732,8 +3115,16 @@ class StreetStoryLiveAdapter:
             latest_search["fact_reconciliation"] = (
                 reconciliation_meta
             )
-            history[-1] = latest_search
+            history[history_index] = latest_search
             research["live_web_searches"] = history[-12:]
+            set_run_state(
+                db,
+                run_id,
+                "verifying",
+                detail="awaiting_live_semantic_review",
+                now=now,
+                completed=False,
+            )
             db.execute(
                 "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,"
                 "revision=revision+1,updated_at=? WHERE id=?",
@@ -2744,6 +3135,13 @@ class StreetStoryLiveAdapter:
                 ),
             )
             result = {
+                "research_run_id": run_id,
+                "save_batch_id": save_batch_id,
+                "review_required": True,
+                "continuation_required": True,
+                "next_tool": "get_research_chunk" if chunk_id else "finalize_fact_review",
+                "chunk_id": chunk_id or None,
+                "payload_saved": True,
                 "facts": normalized,
                 "selected_fact_ids": selected_ids,
                 "save_research_audit": save_audit,
@@ -2764,6 +3162,8 @@ class StreetStoryLiveAdapter:
                 args,
                 result,
             )
+            if command_id != save_batch_id:
+                self._store_command(db, story_id, save_batch_id, "save_research_facts", args, result)
             all_research_sources = [
                 source
                 for source in (
@@ -2793,14 +3193,391 @@ class StreetStoryLiveAdapter:
         )
         self._emit_research_progress(
             session,
-            stage="facts",
-            active=False,
+            stage="review",
+            active=True,
             query=str(latest_search.get("query") or ""),
             source_count=len(all_research_sources),
             fact_count=int(fact_count),
             sources=all_research_sources,
         )
         return result
+
+    def _finalize_fact_review(
+        self,
+        session,
+        command_id: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        story_id = session.resource_id
+        run_id = _bounded_text(args.get("run_id"), 160, required=True)
+        raw_reviewed = args.get("reviewed_assertions")
+        raw_conflicts = args.get("conflicts")
+        raw_missing = args.get("missing_aspects")
+        if not isinstance(raw_reviewed, list) or len(raw_reviewed) > 240:
+            raise ConflictError(
+                "live_fact_review_bundle_invalid",
+                "reviewed_assertions must be a bounded array of exact fact revisions",
+            )
+        if not isinstance(raw_conflicts, list) or len(raw_conflicts) > 80:
+            raise ConflictError(
+                "live_fact_review_conflicts_invalid",
+                "conflicts must be an array; an empty array is valid after a full review",
+            )
+        if not isinstance(raw_missing, list) or len(raw_missing) > 40:
+            raise ConflictError(
+                "live_fact_review_coverage_invalid",
+                "missing_aspects must be a bounded array",
+            )
+        coverage_complete = args.get("coverage_complete")
+        if not isinstance(coverage_complete, bool):
+            raise ConflictError(
+                "live_fact_review_coverage_invalid",
+                "coverage_complete must be boolean",
+            )
+        missing_aspects = [
+            _bounded_text(value, 500, required=True)
+            for value in raw_missing
+        ]
+
+        supplied_bundle: dict[str, str] = {}
+        supporting_ids: dict[str, list[str]] = {}
+        for item in raw_reviewed:
+            if not isinstance(item, dict):
+                raise ConflictError(
+                    "live_fact_review_bundle_invalid",
+                    "Every reviewed assertion must include fact_id and revision_digest",
+                )
+            fact_id = _bounded_text(item.get("fact_id"), 160, required=True)
+            revision_digest = _bounded_text(
+                item.get("revision_digest"),
+                200,
+                required=True,
+            )
+            if fact_id in supplied_bundle:
+                raise ConflictError(
+                    "live_fact_review_bundle_invalid",
+                    "reviewed_assertions contains a duplicate fact_id",
+                )
+            supplied_bundle[fact_id] = revision_digest
+            raw_evidence = item.get("supporting_evidence_ids")
+            if not isinstance(raw_evidence, list) or not 1 <= len(raw_evidence) <= 32:
+                raise ConflictError("live_fact_review_evidence_required", "Each reviewed assertion needs exact supporting evidence IDs from get_evidence.")
+            supporting_ids[fact_id] = [_bounded_text(value, 160, required=True) for value in raw_evidence]
+
+        with self.service.store.connection() as db:
+            run = db.execute(
+                "SELECT * FROM research_runs WHERE run_id=? AND story_id=?",
+                (run_id, story_id),
+            ).fetchone()
+            if run is None:
+                raise ConflictError(
+                    "live_research_run_unknown",
+                    "Research run does not belong to the current story.",
+                )
+            if str(run["state"]) in {"cancelled", "failed"}:
+                raise ConflictError(
+                    "live_research_run_terminal",
+                    "Cancelled or failed research cannot be finalized.",
+                )
+            story = self.service._story_row(db, story_id)
+            snapshot_revision = int(story["revision"] or 0)
+            research = json.loads(story["research_json"] or "{}")
+            identity_generation = int(
+                research.get("identity_generation") or 0
+            )
+            if identity_generation != int(run["identity_generation"] or 0):
+                raise ConflictError(
+                    "live_fact_review_stale",
+                    "Object identity changed; this research review is stale.",
+                )
+            current_bundle = {
+                str(row["assertion_id"]): str(row["revision_digest"] or "")
+                for row in db.execute(
+                    "SELECT a.assertion_id,a.revision_digest FROM fact_assertions a "
+                    "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+                    "WHERE a.story_id=? AND f.evidence_supported=1 "
+                    "ORDER BY a.assertion_id",
+                    (story_id,),
+                )
+            }
+            current_items = [
+                {
+                    "fact_id": row["fact_id"],
+                    "claim_key": "",
+                    "text": str(row["text"]),
+                    "confidence": float(row["confidence"]),
+                    "evidence_supported": bool(row["evidence_supported"]),
+                    "selected": bool(row["selected"]),
+                    "sources": json.loads(row["sources_json"]),
+                }
+                for row in db.execute(
+                    "SELECT * FROM facts WHERE story_id=? "
+                    "AND evidence_supported=1 ORDER BY rowid",
+                    (story_id,),
+                )
+            ]
+            identity = (
+                research.get("visual_identity")
+                if isinstance(research.get("visual_identity"), dict)
+                else {}
+            )
+
+        if supplied_bundle != current_bundle:
+            changed = sorted(
+                set(supplied_bundle) | set(current_bundle)
+            )
+            issues = [
+                {
+                    "fact_id": fact_id,
+                    "expected_revision": supplied_bundle.get(fact_id),
+                    "actual_revision": current_bundle.get(fact_id),
+                }
+                for fact_id in changed
+                if supplied_bundle.get(fact_id) != current_bundle.get(fact_id)
+            ]
+            raise ConflictError(
+                "live_fact_review_stale",
+                "Fact revisions changed or the reviewed inventory is incomplete: "
+                + json.dumps(issues[:20], ensure_ascii=False),
+            )
+
+        model_items = conflict_scan_items(current_items)
+        normalized_input = []
+        for item in raw_conflicts:
+            if not isinstance(item, dict):
+                raise ConflictError(
+                    "live_fact_review_conflicts_invalid",
+                    "Each conflict must be an object",
+                )
+            normalized_input.append(
+                {
+                    **item,
+                    "suggested_resolution": item.get("resolution"),
+                }
+            )
+        records = normalize_model_conflict_records(
+            model_items,
+            {"conflicts": normalized_input},
+        )
+        if len(records) != len(raw_conflicts):
+            raise ConflictError(
+                "live_fact_review_conflicts_invalid",
+                "Conflicts must reference distinct facts from the exact reviewed bundle",
+            )
+
+        with self.service.store.tx() as db:
+            run = db.execute(
+                "SELECT * FROM research_runs WHERE run_id=? AND story_id=?",
+                (run_id, story_id),
+            ).fetchone()
+            if coverage_complete:
+                pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
+                if pending:
+                    raise ConflictError("live_research_chunks_incomplete", "Read and save ALL remaining chunks via get_research_chunk before claiming complete coverage. Or explicitly return partial coverage with missing_aspects.")
+            story = self.service._story_row(db, story_id)
+            research = json.loads(story["research_json"] or "{}")
+            if (
+                run is None
+                or str(run["state"]) in {"cancelled", "failed"}
+                or int(story["revision"] or 0) != snapshot_revision
+                or int(research.get("identity_generation") or 0)
+                != int(run["identity_generation"] or 0)
+            ):
+                raise ConflictError(
+                    "live_fact_review_stale",
+                    "Research identity changed before review commit.",
+                )
+            current_after = {
+                str(row["assertion_id"]): str(row["revision_digest"] or "")
+                for row in db.execute(
+                    "SELECT a.assertion_id,a.revision_digest FROM fact_assertions a "
+                    "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+                    "WHERE a.story_id=? AND f.evidence_supported=1 "
+                    "ORDER BY a.assertion_id",
+                    (story_id,),
+                )
+            }
+            if current_after != current_bundle:
+                raise ConflictError(
+                    "live_fact_review_stale",
+                    "Fact revisions changed before review commit.",
+                )
+            for fact_id, evidence_ids in supporting_ids.items():
+                valid_ids = {str(row["evidence_id"]) for row in db.execute(
+                    "SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o "
+                    "ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'",
+                    (story_id, fact_id),
+                )}
+                if not set(evidence_ids).issubset(valid_ids):
+                    raise ConflictError("live_fact_review_evidence_invalid", "Evidence does not support this exact assertion scope.")
+            poi_key = str(identity.get("candidate_id") or "") or None
+            if records:
+                persist_fact_conflicts(
+                    self.service,
+                    story_id,
+                    poi_key,
+                    records,
+                    detector="mira_live_review",
+                    connection=db,
+                )
+                for record in records:
+                    resolve_fact_conflict(
+                        self.service,
+                        story_id,
+                        str(record["conflict_id"]),
+                        str(record["suggested_resolution"]),
+                        str(record["detector_rationale"] or "Mira semantic review"),
+                        float(record["detector_confidence"]),
+                        arbitrated_by="mira_live_review",
+                        connection=db,
+                    )
+
+            conflict_ids = [
+                str(record["conflict_id"])
+                for record in records
+            ]
+            record_fact_review_scan(
+                self.service,
+                story_id,
+                poi_key,
+                detector="mira_live_review",
+                connection=db,
+                run_id=run_id,
+                revision_bundle=current_bundle,
+                conflict_ids=conflict_ids,
+                # The exact assertion bundle was reviewed even when the broader
+                # research goal still has missing aspects. Keep those independent.
+                coverage_complete=True,
+                missing_aspects=missing_aspects,
+            )
+
+            self._research_run_guard(db, session, run_id)
+            now = self.service.store.now()
+            refresh_review_status(db, story_id, now)
+            manifest = run_manifest(db, run_id)
+            complete = bool(
+                coverage_complete
+                and not missing_aspects
+                and manifest_complete(manifest)
+            )
+            set_run_state(
+                db,
+                run_id,
+                "completed" if complete else "partial",
+                detail=(
+                    "live_review_complete"
+                    if complete
+                    else "live_review_partial"
+                ),
+                now=now,
+                completed=complete,
+            )
+            eligible_count = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM fact_assertions "
+                    "WHERE story_id=? AND eligibility='eligible'",
+                    (story_id,),
+                ).fetchone()[0]
+            )
+            withheld_count = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM fact_assertions "
+                    "WHERE story_id=? AND eligibility='withheld'",
+                    (story_id,),
+                ).fetchone()[0]
+            )
+            unreviewed_count = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM fact_assertions "
+                    "WHERE story_id=? AND eligibility='unreviewed'",
+                    (story_id,),
+                ).fetchone()[0]
+            )
+            history = (
+                list(research.get("live_web_searches"))
+                if isinstance(research.get("live_web_searches"), list)
+                else []
+            )
+            for index, item in enumerate(history):
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("research_run_id") or "") == run_id
+                ):
+                    history[index] = {
+                        **item,
+                        "review_complete": complete,
+                        "review_coverage_complete": coverage_complete,
+                        "review_missing_aspects": missing_aspects,
+                        "review_conflict_ids": conflict_ids,
+                    }
+            research["live_web_searches"] = history[-12:]
+            research["fact_review"] = {
+                "run_id": run_id,
+                "complete": complete,
+                "coverage_complete": coverage_complete,
+                "missing_aspects": missing_aspects,
+                "conflict_ids": conflict_ids,
+                "reviewed_assertion_count": len(current_bundle),
+                "eligible_count": eligible_count,
+                "withheld_count": withheld_count,
+                "unreviewed_count": unreviewed_count,
+            }
+            db.execute(
+                "UPDATE stories SET research_json=?,revision=revision+1,updated_at=? "
+                "WHERE id=?",
+                (canonical(research), now, story_id),
+            )
+            result = {
+                "research_run_id": run_id,
+                "complete": complete,
+                "coverage_complete": coverage_complete,
+                "missing_aspects": missing_aspects,
+                "reviewed_assertion_count": len(current_bundle),
+                "conflict_ids": conflict_ids,
+                "eligible_count": eligible_count,
+                "withheld_count": withheld_count,
+                "unreviewed_count": unreviewed_count,
+                "research_manifest": manifest,
+                "story": self.service._story_repr(
+                    db,
+                    self.service._story_row(db, story_id),
+                ),
+            }
+            self._store_command(
+                db,
+                story_id,
+                command_id,
+                "finalize_fact_review",
+                args,
+                result,
+            )
+
+        record_live_diagnostic(self.service, story_id, session.id, "backend", "fact_review_committed", {
+            "run_id": run_id, "complete": complete, "eligible_count": eligible_count,
+            "withheld_count": withheld_count, "unreviewed_count": unreviewed_count,
+        })
+        logger.info("street_story_fact_review_committed %s", canonical({
+            "story_id": story_id, "session_id": session.id, "run_id": run_id,
+            "model": "mira_live_review", "complete": complete,
+            "eligible_count": eligible_count, "withheld_count": withheld_count,
+        }))
+        self._emit_research_progress(
+            session,
+            stage="facts",
+            active=False,
+            query="",
+            source_count=int(
+                result["story"].get("source_count") or 0
+            ),
+            fact_count=(
+                int(result["eligible_count"])
+                + int(result["withheld_count"])
+                + int(result["unreviewed_count"])
+            ),
+            sources=[],
+        )
+        return result
+
 
     def _record_fact_conflicts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         story_id = session.resource_id
@@ -3002,6 +3779,9 @@ class StreetStoryLiveAdapter:
                     "live_text_revision_conflict",
                     f"Expected text revision {expected}, current is {current_revision}",
                 )
+            issues = selected_eligibility_issues(db, story_id)
+            if issues:
+                raise ConflictError("fact_review_required", "Review selected facts before composing a draft: " + canonical(issues[:12]))
             current_text = str(story["draft_text"] or "")
             literals = self._literal_spans(editor["literal_json"])
             if not allow_literals:

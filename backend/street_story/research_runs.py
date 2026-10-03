@@ -340,6 +340,7 @@ def record_chunk_batch(
     prompt_version: str,
     now: float,
     error_code: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     if status not in {"completed", "continuation", "failed", "deferred"}:
         raise ValueError("research_chunk_batch_state_invalid")
@@ -348,17 +349,31 @@ def record_chunk_batch(
         f"{run_id}:{chunk_id}:{int(batch_index)}",
         24,
     )
+    payload_json = canonical(payload) if payload is not None else ""
+    payload_sha256 = (
+        hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        if payload_json
+        else ""
+    )
+    existing = db.execute("SELECT payload_sha256 FROM research_chunk_batches WHERE batch_id=?", (batch_id,)).fetchone()
+    if existing and existing["payload_sha256"] and payload_sha256 and existing["payload_sha256"] != payload_sha256:
+        raise ValueError("research_chunk_batch_replay_payload_mismatch")
     db.execute(
         "INSERT INTO research_chunk_batches("
         "batch_id,run_id,chunk_id,batch_index,status,raw_fact_count,accepted_fact_count,"
-        "continuation_needed,continuation_reason,error_code,model_name,prompt_version,created_at"
-        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "continuation_needed,continuation_reason,error_code,model_name,prompt_version,"
+        "payload_json,payload_sha256,created_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(run_id,chunk_id,batch_index) DO UPDATE SET "
         "status=excluded.status,raw_fact_count=excluded.raw_fact_count,"
         "accepted_fact_count=excluded.accepted_fact_count,"
         "continuation_needed=excluded.continuation_needed,"
         "continuation_reason=excluded.continuation_reason,error_code=excluded.error_code,"
-        "model_name=excluded.model_name,prompt_version=excluded.prompt_version",
+        "model_name=excluded.model_name,prompt_version=excluded.prompt_version,"
+        "payload_json=CASE WHEN excluded.payload_json<>'' THEN excluded.payload_json "
+        "ELSE research_chunk_batches.payload_json END,"
+        "payload_sha256=CASE WHEN excluded.payload_sha256<>'' THEN excluded.payload_sha256 "
+        "ELSE research_chunk_batches.payload_sha256 END",
         (
             batch_id,
             run_id,
@@ -372,10 +387,129 @@ def record_chunk_batch(
             str(error_code or "")[:120] or None,
             str(model_name or "")[:120],
             str(prompt_version or "")[:120],
+            payload_json,
+            payload_sha256,
             now,
         ),
     )
     return batch_id
+
+
+
+def saved_run_document(db, run_id: str, url: str) -> dict[str, Any] | None:
+    """Read the frozen version already attached to this run, without refetching."""
+    row = db.execute(
+        "SELECT v.*,s.title FROM research_run_sources s JOIN source_versions v "
+        "ON v.source_version_id=s.source_version_id WHERE s.run_id=? AND s.url=?",
+        (run_id, str(url).rstrip("/")),
+    ).fetchone()
+    if row is None:
+        return None
+    document = dict(row)
+    document["requested_url"] = str(url).rstrip("/")
+    document["redirect_chain"] = json.loads(document.pop("redirect_chain_json") or "[]")
+    document["chunks"] = [dict(item) for item in db.execute(
+        "SELECT *,chunk_text AS text FROM source_chunks WHERE source_version_id=? ORDER BY ordinal",
+        (document["source_version_id"],),
+    )]
+    return document
+
+
+def chunk_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
+    chunk = db.execute(
+        "SELECT status,observation_count,error_code FROM research_chunk_runs "
+        "WHERE run_id=? AND chunk_id=?",
+        (run_id, chunk_id),
+    ).fetchone()
+    if chunk is None:
+        raise KeyError("research_chunk_not_found")
+
+    rows = list(
+        db.execute(
+            "SELECT batch_index,status,raw_fact_count,accepted_fact_count,"
+            "continuation_needed,continuation_reason,error_code,payload_json,payload_sha256 "
+            "FROM research_chunk_batches WHERE run_id=? AND chunk_id=? "
+            "ORDER BY batch_index",
+            (run_id, chunk_id),
+        )
+    )
+    facts: list[dict[str, Any]] = []
+    official_urls: list[str] = []
+    next_batch_index = 0
+    continuation_batches = 0
+    payload_missing = False
+    raw_fact_count = 0
+    accepted_fact_count = 0
+    resumable_deferred_batches: list[int] = []
+
+    for row in rows:
+        raw_fact_count += int(row["raw_fact_count"] or 0)
+        accepted_fact_count += int(row["accepted_fact_count"] or 0)
+        status = str(row["status"])
+        if status == "continuation":
+            continuation_batches += 1
+        payload_json = str(row["payload_json"] or "")
+        payload: dict[str, Any] | None = None
+        if payload_json:
+            expected = str(row["payload_sha256"] or "")
+            actual = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+            if expected and expected != actual:
+                raise ValueError("research_chunk_batch_payload_digest_mismatch")
+            try:
+                decoded = json.loads(payload_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError("research_chunk_batch_payload_invalid") from exc
+            if not isinstance(decoded, dict):
+                raise ValueError("research_chunk_batch_payload_invalid")
+            payload = decoded
+            for fact in payload.get("facts") or []:
+                if isinstance(fact, dict):
+                    facts.append(dict(fact))
+            for url in payload.get("official_source_urls") or []:
+                clean = str(url or "").rstrip("/")
+                if clean.startswith("https://") and clean not in official_urls:
+                    official_urls.append(clean)
+
+        batch_index = int(row["batch_index"])
+        if status in {"completed", "continuation"}:
+            if payload is None:
+                payload_missing = True
+                next_batch_index = batch_index
+                break
+            next_batch_index = batch_index + 1
+        elif status == "deferred" and payload is not None:
+            # A bounded invocation ended after accepting this payload. Resume
+            # from the next batch and turn the old row into continuation.
+            next_batch_index = batch_index + 1
+            resumable_deferred_batches.append(batch_index)
+        elif status in {"failed", "deferred"}:
+            # Retry only a batch that produced no durable accepted payload.
+            next_batch_index = batch_index
+            break
+
+    terminal = str(chunk["status"]) in {"extracted", "no_claims"}
+    if terminal and rows:
+        terminal_payload_ok = all(
+            bool(str(row["payload_json"] or ""))
+            for row in rows
+            if str(row["status"]) in {"completed", "continuation"}
+        )
+        payload_missing = payload_missing or not terminal_payload_ok
+    elif terminal and not rows:
+        payload_missing = True
+
+    return {
+        "status": str(chunk["status"]),
+        "terminal": terminal and not payload_missing,
+        "facts": facts,
+        "official_source_urls": official_urls,
+        "next_batch_index": next_batch_index,
+        "continuation_batches": continuation_batches,
+        "payload_missing": payload_missing,
+        "raw_fact_count": raw_fact_count,
+        "accepted_fact_count": accepted_fact_count,
+        "resumable_deferred_batches": resumable_deferred_batches,
+    }
 
 
 def mark_chunk(
@@ -423,8 +557,11 @@ def run_manifest(db, run_id: str) -> dict[str, Any]:
         (run_id,),
     )]
     batches = [dict(row) for row in db.execute(
-        "SELECT * FROM research_chunk_batches "
-        "WHERE run_id=? ORDER BY chunk_id,batch_index",
+        "SELECT batch_id,run_id,chunk_id,batch_index,status,raw_fact_count,"
+        "accepted_fact_count,continuation_needed,continuation_reason,error_code,"
+        "model_name,prompt_version,payload_sha256,"
+        "CASE WHEN payload_json<>'' THEN 1 ELSE 0 END AS payload_saved,created_at "
+        "FROM research_chunk_batches WHERE run_id=? ORDER BY chunk_id,batch_index",
         (run_id,),
     )]
     counts = {
@@ -446,6 +583,16 @@ def run_manifest(db, run_id: str) -> dict[str, Any]:
         "chunk_batches_continuation": sum(item["status"] == "continuation" for item in batches),
         "chunk_batches_failed": sum(item["status"] == "failed" for item in batches),
         "chunk_batches_deferred": sum(item["status"] == "deferred" for item in batches),
+        "chunk_batches_payload_missing": sum(
+            item["status"] in {"completed", "continuation"}
+            and not bool(item["payload_saved"])
+            for item in batches
+        ),
+        "terminal_chunks_payload_missing": sum(
+            item["status"] in {"extracted", "no_claims"}
+            and not chunk_checkpoint(db, run_id, item["chunk_id"])["terminal"]
+            for item in chunks
+        ),
     }
     return {
         "run": dict(run),
@@ -467,5 +614,7 @@ def manifest_complete(manifest: dict[str, Any]) -> bool:
         and int(counts.get("chunks_needs_context") or 0) == 0
         and int(counts.get("chunk_batches_failed") or 0) == 0
         and int(counts.get("chunk_batches_deferred") or 0) == 0
+        and int(counts.get("chunk_batches_payload_missing") or 0) == 0
+        and int(counts.get("terminal_chunks_payload_missing") or 0) == 0
         and int(counts.get("chunks_completed") or 0) == int(counts.get("chunks_planned") or 0)
     )

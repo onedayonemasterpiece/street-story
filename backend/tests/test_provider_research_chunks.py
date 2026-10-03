@@ -659,3 +659,194 @@ async def test_continuation_limit_marks_chunk_deferred_instead_of_silent_success
     assert manifest["chunks"][0]["status"] == "deferred"
     assert manifest["chunks"][0]["error_code"] == "continuation_limit"
     assert manifest_complete(manifest) is False
+
+
+@pytest.mark.asyncio
+async def test_chunk_checkpoint_resumes_next_batch_and_reuses_terminal_payload(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    now = store.now()
+    with store.tx() as db:
+        run_id = begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:resume",
+            goal="Сохранить первый пакет и продолжить тот же chunk.",
+            expected_story_revision=0,
+            identity_generation=0,
+            run_id="run-checkpoint-resume",
+            now=now,
+        )
+
+    url = "https://history.example/checkpoint-resume"
+    quote_a = "ФАКТ A: первый durable пакет."
+    quote_b = "ФАКТ B: второй пакет после resume."
+    filler = "Нейтральный исторический контекст документа. " * 8
+    html = (
+        "<html><body><main><p>"
+        + quote_a
+        + " "
+        + quote_b
+        + " " + filler + "</p></main></body></html>"
+    )
+    client = GeminiClient(settings(tmp_path), store)
+    client.search_http = PageHTTP(url, html)
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], ResearchExecutor())]
+
+    phase = {"value": 1}
+    chunk_calls: list[tuple[int, int]] = []
+
+    async def coverage_review(
+        api_key,
+        timeout,
+        *,
+        coverage_goal,
+        facts,
+        sources,
+        model=None,
+        quota=None,
+        allow_page_reads,
+    ):
+        has_both = {fact.get("text") for fact in facts} >= {quote_a, quote_b}
+        return {
+            "coverage_satisfied": has_both,
+            "coverage_items": [],
+            "missing_aspects": [] if has_both else ["second_batch"],
+            "summary": "Checkpoint resume.",
+            "read_source_urls": [url] if allow_page_reads and not has_both else [],
+        }
+
+    async def generate(
+        key,
+        timeout,
+        contents,
+        config=None,
+        *,
+        operation="grounded_research",
+        model=None,
+        quota=None,
+    ):
+        prompt = str(contents[0])
+        if "Передан один chunk документа" in prompt:
+            batch_index = int(
+                prompt.partition("Continuation batch index: ")[2].splitlines()[0]
+            )
+            chunk_calls.append((phase["value"], batch_index))
+            chunk_id = prompt.partition("Chunk id: ")[2].splitlines()[0]
+            source_url = prompt.partition("Source URL: ")[2].splitlines()[0]
+            if phase["value"] == 1 and batch_index == 1:
+                raise GeminiUnavailable(None, "simulated second batch timeout")
+            if phase["value"] >= 2 and batch_index == 0:
+                raise AssertionError("durable batch 0 must not be extracted again")
+            quote = quote_a if batch_index == 0 else quote_b
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "facts": [{
+                            "claim_key": f"checkpoint-{batch_index}",
+                            "existing_fact_id": "",
+                            "text": quote,
+                            "confidence": .96,
+                            "source_urls": [source_url],
+                            "evidence_spans": [{
+                                "source_url": source_url,
+                                "chunk_id": chunk_id,
+                                "quote": quote,
+                            }],
+                        }],
+                        "needs_context": False,
+                        "context_reason": "",
+                        "continuation_needed": batch_index == 0,
+                        "continuation_reason": (
+                            "Есть второй пакет." if batch_index == 0 else ""
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                candidates=[],
+            )
+        return SimpleNamespace(
+            text=json.dumps(
+                {
+                    "summary": "Нужно прочитать страницу.",
+                    "official_source_urls": [],
+                    "facts": [],
+                    "coverage_satisfied": False,
+                    "read_source_urls": [url],
+                },
+                ensure_ascii=False,
+            ),
+            candidates=[],
+        )
+
+    client._generate = generate
+    client._review_coverage_contract = coverage_review
+    discovery = GroundedResearch(
+        payload={
+            "summary": "Discovery",
+            "official_source_urls": [],
+            "facts": [],
+            "search_provider": "duckduckgo_html_fallback",
+        },
+        grounding_sources=[{
+            "type": "web_search",
+            "title": "Checkpoint",
+            "url": url,
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": url,
+                "text": "Страница содержит два факта.",
+            }],
+        }],
+    )
+    context = {
+        "research_run_id": run_id,
+        "coverage_goal": "Извлечь оба факта.",
+        "known_facts": [],
+        "previously_considered_poi_facts": [],
+        "previously_processed_sources": [],
+    }
+
+    first = await client._semantic_complete_discovery(
+        "checkpoint resume",
+        context,
+        discovery,
+    )
+    with store.connection() as db:
+        first_manifest = run_manifest(db, run_id)
+    assert first_manifest["counts"]["chunk_batches_total"] == 2
+    assert first_manifest["chunk_batches"][0]["payload_saved"] == 1
+    assert first_manifest["chunk_batches"][0]["accepted_fact_count"] == 1
+    assert first_manifest["chunk_batches"][1]["status"] == "failed"
+    assert [fact["text"] for fact in first.payload["facts"]] == [quote_a]
+
+    phase["value"] = 2
+    second = await client._semantic_complete_discovery(
+        "checkpoint resume",
+        context,
+        discovery,
+    )
+    assert [fact["text"] for fact in second.payload["facts"]] == [quote_a, quote_b]
+    assert chunk_calls == [(1, 0), (1, 1), (2, 1)]
+    with store.connection() as db:
+        second_manifest = run_manifest(db, run_id)
+    assert second_manifest["counts"]["chunk_batches_total"] == 2
+    assert second_manifest["counts"]["chunk_batches_failed"] == 0
+    assert second_manifest["counts"]["chunk_batches_payload_missing"] == 0
+    assert second_manifest["chunks"][0]["status"] == "extracted"
+    assert second_manifest["chunks"][0]["observation_count"] == 2
+    assert manifest_complete(second_manifest) is True
+
+    phase["value"] = 3
+    third = await client._semantic_complete_discovery(
+        "checkpoint resume",
+        context,
+        discovery,
+    )
+    assert [fact["text"] for fact in third.payload["facts"]] == [quote_a, quote_b]
+    assert chunk_calls == [(1, 0), (1, 1), (2, 1)]
+    with store.connection() as db:
+        third_manifest = run_manifest(db, run_id)
+    assert third_manifest["counts"]["chunk_batches_total"] == 2
+    assert third_manifest["chunks"][0]["status"] == "extracted"

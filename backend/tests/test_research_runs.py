@@ -89,6 +89,10 @@ def test_manifest_records_all_chunks_and_terminal_states(tmp_path):
         )
         assert len(doc["chunks"]) > 6
         for item in doc["chunks"]:
+            record_chunk_batch(db, run_id=run_id, chunk_id=item["chunk_id"], batch_index=0,
+                               status="completed", raw_fact_count=0, accepted_fact_count=0,
+                               continuation_needed=False, continuation_reason="", model_name="test-model",
+                               prompt_version="chunk-v1", now=now, payload={"facts": [], "no_claims": True})
             mark_chunk(
                 db,
                 run_id=run_id,
