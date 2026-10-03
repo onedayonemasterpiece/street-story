@@ -1131,8 +1131,27 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             for item in (saved.get("payload", {}).get("facts", []) or [])
             if isinstance(item, dict)
         ]
-        reconciliation_matches: dict[int, str] = {}
-        reconciliation_decisions: list[dict[str, Any]] = []
+        previous_ids = {
+            str(item.get("fact_id") or "")
+            for item in previous
+            if str(item.get("fact_id") or "")
+        }
+        reconciliation_matches: dict[int, str] = {
+            index: str(item.get("existing_fact_id") or "")
+            for index, item in enumerate(incoming)
+            if str(item.get("existing_fact_id") or "") in previous_ids
+        }
+        reconciliation_decisions: list[dict[str, Any]] = [
+            {
+                "incoming_index": index,
+                "relation": "equivalent",
+                "existing_fact_id": fact_id,
+                "rationale": "Upstream extraction explicitly referenced this durable fact ID.",
+                "model_name": "upstream_existing_fact_id",
+                "prompt_version": "fact-identity-reconciliation-v1",
+            }
+            for index, fact_id in sorted(reconciliation_matches.items())
+        ]
         reconciliation_meta: dict[str, Any] = {
             "status": "not_needed",
             "pages_reviewed": 0,
@@ -1143,11 +1162,6 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         if incoming and previous and callable(reconciler):
             try:
                 reconciliation = await reconciler(incoming, previous)
-                previous_ids = {
-                    str(item.get("fact_id") or "")
-                    for item in previous
-                    if str(item.get("fact_id") or "")
-                }
                 reconciliation_matches = {
                     int(index): str(fact_id)
                     for index, fact_id in (reconciliation.get("matches") or {}).items()
@@ -1345,6 +1359,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 )
                 return
             now = self.store.now()
+            persist_fact_relation_events(
+                db,
+                story_id=story_id,
+                run_id=run_id,
+                incoming_facts=incoming,
+                decisions=reconciliation_decisions,
+                now=now,
+            )
             persist_fact_candidates(
                 db,
                 story_id=story_id,
