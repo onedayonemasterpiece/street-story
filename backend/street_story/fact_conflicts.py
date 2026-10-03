@@ -105,8 +105,15 @@ def _pair_id(left: dict[str, Any], right: dict[str, Any]) -> str:
     return "conflict_" + hashlib.sha256("|".join(identities).encode("utf-8")).hexdigest()[:20]
 
 
-def conflict_scan_items(items: list[dict[str, Any]], max_items: int = 80) -> list[dict[str, Any]]:
-    """Bound model input without making semantic pair-selection decisions."""
+def conflict_scan_items(
+    items: list[dict[str, Any]],
+    max_items: int | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize/deduplicate model input without semantic filtering.
+
+    max_items is only for explicit compatibility helpers. The main detector
+    receives the complete inventory and performs bounded model batching itself.
+    """
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in items:
@@ -115,7 +122,7 @@ def conflict_scan_items(items: list[dict[str, Any]], max_items: int = 80) -> lis
             continue
         seen.add(snapshot["fact_id"])
         result.append(snapshot)
-        if len(result) >= max_items:
+        if max_items is not None and len(result) >= max_items:
             break
     return result
 
@@ -143,7 +150,7 @@ def normalize_model_conflict_records(
         return []
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in raw[:40]:
+    for item in raw:
         if not isinstance(item, dict):
             continue
         left = by_id.get(str(item.get("left_fact_id") or ""))
@@ -243,6 +250,7 @@ def _record_conflict_scan(
     status: str,
     pair_count: int,
     detected_count: int,
+    coverage_complete: bool = False,
     error_type: str | None = None,
 ) -> None:
     now = service.store.now()
@@ -252,8 +260,9 @@ def _record_conflict_scan(
         db.execute(
             """
             INSERT INTO fact_conflict_scans(
-              story_id,poi_key,detector,status,pair_count,detected_count,error_type,created_at
-            ) VALUES(?,?,?,?,?,?,?,?)
+              story_id,poi_key,detector,status,pair_count,detected_count,
+              coverage_complete,error_type,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
             """,
             (
                 story_id,
@@ -262,6 +271,7 @@ def _record_conflict_scan(
                 status[:40],
                 max(0, int(pair_count)),
                 max(0, int(detected_count)),
+                int(bool(coverage_complete)),
                 str(error_type or "")[:120] or None,
                 now,
             ),
@@ -275,6 +285,7 @@ def _record_conflict_scan(
             "status": status[:40],
             "pair_count": max(0, int(pair_count)),
             "detected_count": max(0, int(detected_count)),
+            "coverage_complete": bool(coverage_complete),
             "error_type": str(error_type or "")[:120] or None,
             "detector": detector[:120],
         },
@@ -507,6 +518,7 @@ async def analyze_fact_conflicts(
             status="no_candidates",
             pair_count=0,
             detected_count=0,
+            coverage_complete=True,
         )
         return []
     detector_fn = getattr(service.providers.gemini, "detect_fact_conflicts", None)
@@ -522,7 +534,15 @@ async def analyze_fact_conflicts(
         )
         return []
     try:
-        records = await detector_fn(model_items, context or {})
+        detector_result = await detector_fn(model_items, context or {})
+        if isinstance(detector_result, dict):
+            records = list(detector_result.get("records") or [])
+            coverage_complete = detector_result.get("coverage_complete") is True
+        else:
+            records = list(detector_result or [])
+            # Compatibility providers predate paginated/full scans. They can only
+            # be considered complete while the historical bounded set fits.
+            coverage_complete = len(model_items) <= 80
     except (GeminiUnavailable, MalformedProviderResponse, PermanentProviderError, RetryableProviderError) as exc:
         _record_conflict_scan(
             service,
@@ -555,6 +575,7 @@ async def analyze_fact_conflicts(
         status="ok",
         pair_count=pair_count,
         detected_count=len(records),
+        coverage_complete=coverage_complete,
     )
     return persist_fact_conflicts(
         service,

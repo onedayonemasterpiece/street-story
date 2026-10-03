@@ -237,17 +237,17 @@ def test_selected_fact_is_fail_closed_until_successful_review_scan(tmp_path):
         set_owner_selection(db, story_id, [fact_id], store.now())
         assert selected_eligibility_issues(db, story_id)[0]["reason"] == "fact_not_eligible"
         db.execute(
-            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,error_type,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (story_id, "wiki:403645", "test", "detector_unavailable", 0, 0, "quota", store.now()),
+            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,coverage_complete,error_type,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (story_id, "wiki:403645", "test", "detector_unavailable", 0, 0, 0, "quota", store.now()),
         )
         refresh_review_status(db, story_id, store.now())
         assert selected_eligibility_issues(db, story_id)
 
         db.execute(
-            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,error_type,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (story_id, "wiki:403645", "test", "no_candidates", 0, 0, None, store.now() + 1),
+            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,coverage_complete,error_type,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (story_id, "wiki:403645", "test", "no_candidates", 0, 0, 1, None, store.now() + 1),
         )
         refresh_review_status(db, story_id, store.now() + 1)
         assert selected_eligibility_issues(db, story_id) == []
@@ -347,11 +347,48 @@ def test_successful_bounded_review_never_marks_over_eighty_inventory_fully_eligi
     with store.tx() as db:
         set_owner_selection(db, story_id, [ids[-1]], store.now())
         db.execute(
-            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,error_type,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (story_id, "wiki:403645", "test", "ok", 3160, 0, None, store.now()),
+            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,coverage_complete,error_type,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (story_id, "wiki:403645", "test", "ok", 3160, 0, 0, None, store.now()),
         )
         refresh_review_status(db, story_id, store.now())
         issue = selected_eligibility_issues(db, story_id)
         assert issue and issue[0]["fact_id"] == ids[-1]
         assert issue[0]["eligibility"] == "unreviewed"
+
+
+def test_complete_review_can_mark_over_eighty_inventory_eligible(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    initial = [
+        fact(
+            f"claim-complete-{index}",
+            f"Проверяемый полный факт номер {index}.",
+            f"https://complete{index}.example/page",
+            f"Evidence complete {index}.",
+        )
+        for index in range(81)
+    ]
+    ids = persist(store, story_id, initial, "run-complete-review", "batch-1")
+    with store.tx() as db:
+        set_owner_selection(db, story_id, [ids[-1]], store.now())
+        db.execute(
+            "INSERT INTO fact_conflict_scans("
+            "story_id,poi_key,detector,status,pair_count,detected_count,"
+            "coverage_complete,error_type,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                story_id,
+                "wiki:403645",
+                "test",
+                "ok",
+                3240,
+                0,
+                1,
+                None,
+                store.now(),
+            ),
+        )
+        refresh_review_status(db, story_id, store.now())
+        assert selected_eligibility_issues(db, story_id) == []
+        assert eligible_selected_fact_ids(db, story_id) == [ids[-1]]

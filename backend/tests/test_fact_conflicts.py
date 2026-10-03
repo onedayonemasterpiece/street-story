@@ -363,7 +363,10 @@ async def test_model_detector_output_is_bounded_to_known_pairs():
         _generate=generate,
         research_routes=[("gemini-test", object(), object(), PassingExecutor())],
     )
-    records = await GeminiClient.detect_fact_conflicts(fake, model_items, {"place_name": "Test"})
+    result = await GeminiClient.detect_fact_conflicts(fake, model_items, {"place_name": "Test"})
+    records = result["records"]
+    assert result["coverage_complete"] is True
+    assert result["batch_count"] == 1
     assert len(records) == 1
     assert records[0]["conflict_id"] == expected_id
     assert records[0]["relation"] == "contradiction"
