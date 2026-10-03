@@ -1011,6 +1011,17 @@ class StreetStoryLiveAdapter:
         session.state["research_tool_busy"] = True
         try:
             return await self._execute_tool(session, call)
+        except ConflictError as exc:
+            if call.get("name") in {"get_review_packet", "finalize_fact_review"} and exc.code in {
+                "live_review_decisions_invalid", "live_review_canonical_invalid", "live_fact_review_evidence_invalid", "live_review_packet_unknown",
+            }:
+                attempts = int(session.state.get("invalid_review_attempts") or 0) + 1
+                session.state["invalid_review_attempts"] = attempts
+                if attempts >= 3:
+                    self._pause_research(session, "invalid_review_contract_budget_exhausted")
+                    self._emit_research_progress(session, stage="partial", active=False, query="", source_count=0, fact_count=0)
+                    raise ConflictError("live_research_partial", "Review paused after three invalid references/verdicts. Saved facts and packet decisions remain; resume the same run in a new Live session.") from exc
+            raise
         finally:
             session.state["research_tool_busy"] = False
             session.state["research_provider_tool_pending"] = False
@@ -2535,7 +2546,17 @@ class StreetStoryLiveAdapter:
             "checkpoint": checkpoint, "next_tool": "save_research_facts",
         }
         passages = result["evidence_passages"]
-        offset = max(0, int(args.get("passage_cursor") or session.state.get("research_page_cursor", {}).get(candidate["chunk_id"], 0)))
+        seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
+        recipe = {key: result[key] for key in ("chunk_id", "batch_id", "batch_index", "expected_story_revision")}
+        recipe["run_id"] = run_id
+        session.state.setdefault("research_chunk_receipts", {})[candidate["chunk_id"]] = recipe
+        if "passage_cursor" not in args and len(seen) == len(passages):
+            return {**result, "core_text": "", "context_text": "", "evidence_passages": [], "context_before": "", "context_after": "",
+                    "checkpoint": {"next_batch_index": batch_index, "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3]},
+                    "ready_to_save": True, "has_more_passages": False, "next_passage_cursor": None,
+                    "next_tool": "save_research_facts", "next_args": recipe,
+                    "instruction": "ALL passages of this core have been read. Save findings using next_args, or explicitly save facts=[] if no new claim. This checkpoint is required before review. Do not reread this core."}
+        offset = max(0, int(args["passage_cursor"])) if "passage_cursor" in args else next((p["passage_id"] for p in passages if p["passage_id"] not in seen), 0)
         if offset >= len(passages) and passages:
             raise ConflictError("live_research_cursor_invalid", "passage_cursor is a passage number, not core_start/core_end. Use exact next_passage_cursor or call with run_id only to resume the pending core.")
         result["evidence_passages"] = []

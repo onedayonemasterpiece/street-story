@@ -102,3 +102,19 @@ async def test_unchanged_semantic_decisions_reused_without_claiming_cross_covera
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'relations', 'args': {**args, 'decisions': [], 'relations_complete': True}})
     assert result['complete'] and result['eligible_count'] == 3
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_equivalence_requires_explicit_support_and_supported_canonical(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save', 'args': findings(chunk, QUOTES)})
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    args = {'packet_ref': packet['packet_ref'], 'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
+    # Reflexive equivalence cannot silently become a positive support verdict.
+    with pytest.raises(ConflictError):
+        await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'eq-only', 'args': {**args, 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'equivalent', 'equivalent_to': 0}]}})
+    decisions = [{'fact': n, 'evidence': [0], 'verdict': 'supported', 'equivalent_to': 1 if n in [0, 1] else 2} for n in range(3)]
+    result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'explicit-support', 'args': {**args, 'decisions': decisions}})
+    assert result['complete'] and result['eligible_count'] == 2 and result['withheld_count'] == 1
+    await reader.search_http.aclose()

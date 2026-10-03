@@ -57,6 +57,14 @@ def read(adapter, session, args):
             pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
             unfetched = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (run_id,)).fetchone()[0]
             if (pending or unfetched) and args.get('allow_partial_review') is not True:
+                for chunk_id, receipt in session.state.get('research_chunk_receipts', {}).items():
+                    active = db.execute("SELECT r.status,c.core_start,c.core_end,v.normalized_text FROM research_chunk_runs r JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id WHERE r.run_id=? AND r.chunk_id=?", (run_id, chunk_id)).fetchone()
+                    if active and active['status'] not in {'extracted', 'no_claims'}:
+                        core = active['normalized_text'][active['core_start']:active['core_end']]
+                        if len(session.state.get('research_passages_seen', {}).get(chunk_id, set())) == len(adapter._core_passages(chunk_id, core)):
+                            return {'run_id': run_id, 'review_available': False, 'pending_chunks': pending,
+                                    'next_tool': 'save_research_facts', 'next_args': receipt,
+                                    'instruction': 'This core is read but not checkpointed. Save its findings or explicit facts=[] using next_args before review; do not reread it.'}
                 return {'run_id': run_id, 'review_available': False, 'pending_chunks': pending,
                         'next_tool': 'get_research_chunk', 'next_args': {'run_id': run_id},
                         'instruction': 'Finish remaining source cores before full review. Call get_research_chunk with run_id ONLY: omit prior chunk_id and passage_cursor so the server selects the next unfinished core.'}
@@ -76,13 +84,20 @@ def read(adapter, session, args):
                 for number, decision in json.loads(prior['decisions_json']).items():
                     old_item = old['items'][int(number)]
                     fact_id = old_item['id']
-                    if fact_id not in indexes or old['bundle'].get(fact_id) != exact[fact_id] or decision.get('equivalent_to') is not None:
+                    if fact_id not in indexes or old['bundle'].get(fact_id) != exact[fact_id]:
                         continue
                     f = indexes[fact_id]
                     current_evs = {ev['id']: (e, ev['sha']) for e, ev in enumerate(items[f]['evidence'])}
                     chosen = [old_item['evidence'][e] for e in decision['evidence']]
                     if all(ev['id'] in current_evs and current_evs[ev['id']][1] == ev['sha'] for ev in chosen):
-                        reused[str(f)] = {**decision, 'fact': f, 'evidence': [current_evs[ev['id']][0] for ev in chosen]}
+                        cached = {**decision, 'fact': f, 'evidence': [current_evs[ev['id']][0] for ev in chosen]}
+                        if decision.get('equivalent_to') is not None:
+                            canonical_id = old['items'][decision['equivalent_to']]['id']
+                            if canonical_id in indexes and old['bundle'].get(canonical_id) == exact[canonical_id]:
+                                cached['equivalent_to'] = indexes[canonical_id]
+                            else:
+                                cached.pop('equivalent_to', None)
+                        reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
             payload = {'bundle': exact, 'items': items}
             db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
@@ -103,6 +118,11 @@ def read(adapter, session, args):
             'next_cursor': None, 'has_more': False, 'next_tool': 'finalize_fact_review'}
     while cursor < len(slices):
         candidate = {**page, 'items': [*page['items'], slices[cursor]], 'next_cursor': cursor + 1, 'has_more': cursor + 1 < len(slices)}
+        if candidate['has_more']:
+            candidate.update({'next_tool': 'get_review_packet', 'next_args': {'packet_ref': ref, 'cursor': cursor + 1}})
+        else:
+            candidate.pop('next_args', None)
+            candidate['next_tool'] = 'finalize_fact_review'
         if response_units('get_review_packet', candidate) > PAGE_UNITS:
             if not page['items']:
                 raise ConflictError('live_review_item_oversize', 'Assertion text exceeds a bounded review operation; all data preserved.')
@@ -138,6 +158,9 @@ def prepare(adapter, session, args):
             evs = payload['items'][decision['fact']]['evidence']
             if not isinstance(refs, list) or not refs or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
                 raise ConflictError('live_fact_review_evidence_invalid', 'Use evidence numbers scoped to this assertion.')
+            decision = dict(decision)
+            if decision.get('equivalent_to') == decision['fact']:
+                decision.pop('equivalent_to')  # Identity addressing adds no relation or support.
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:
                 raise ConflictError('live_review_decision_replay_mismatch', 'A saved semantic decision cannot be overwritten.')

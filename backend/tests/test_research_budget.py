@@ -40,7 +40,8 @@ async def test_production_chunk_pages_and_pending_tail(tmp_path):
     assert seen == session.state['research_passages_seen'][page['chunk_id']]
     control = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
     assert control['review_available'] is False
-    assert control['next_args'] == {'run_id': run_id}
+    assert control['next_args']['run_id'] == run_id
+    assert control['next_tool'] == 'save_research_facts'
     with svc.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM live_review_packets').fetchone()[0] == 0
     from street_story.service import ConflictError
