@@ -711,7 +711,11 @@ class StreetStoryService:
                 source_objects[url.rstrip("/")] = {"type": "wikipedia", "title": str(page.get("title", url)), "url": url}
         for source in grounded.grounding_sources:
             source_objects[source["url"].rstrip("/")] = source
-        incoming = grounded.payload.get("facts", [])[:20]
+        incoming = [
+            item
+            for item in (grounded.payload.get("facts", []) or [])
+            if isinstance(item, dict)
+        ]
         normalized: list[dict[str, Any]] = []
         for item in incoming:
             text = str(item.get("text", "")).strip()

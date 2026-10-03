@@ -357,7 +357,7 @@ def persist_fact_candidates(
         ).fetchone()
 
         if current_assertion is None:
-            owner_selected = 0
+            owner_selected = int(bool(item.get("selected")) and bool(sources))
             display_text = text
             if legacy_fact is not None:
                 owner_selected = int(bool(legacy_fact["selected"]))
