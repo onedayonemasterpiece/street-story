@@ -235,14 +235,21 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             set_owner_selection(db, story_id, selected_ids, self.store.now())
             research = json.loads(story["research_json"] or "{}")
             decisions = {
-                row["fact_id"]: bool(row["selected"])
-                for row in db.execute("SELECT fact_id,selected FROM facts WHERE story_id=?", (story_id,))
+                row["fact_id"]: bool(row["owner_selected"])
+                for row in db.execute(
+                    "SELECT assertion_id AS fact_id,owner_selected FROM fact_assertions "
+                    "WHERE story_id=? ORDER BY rowid",
+                    (story_id,),
+                )
             }
             research["claim_decisions"] = decisions
             selected_text = [
                 str(row["text"])
                 for row in db.execute(
-                    "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    "SELECT f.text FROM facts f JOIN fact_assertions a "
+                    "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                    "WHERE f.story_id=? AND a.owner_selected=1 AND a.eligibility='eligible' "
+                    "AND f.evidence_supported=1 ORDER BY f.rowid",
                     (story_id,),
                 )
             ]
@@ -255,7 +262,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             supported_selected = [
                 row["fact_id"]
                 for row in db.execute(
-                    "SELECT fact_id FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    "SELECT a.assertion_id AS fact_id FROM fact_assertions a "
+                    "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+                    "WHERE a.story_id=? AND a.owner_selected=1 AND f.evidence_supported=1 "
+                    "ORDER BY f.rowid",
                     (story_id,),
                 )
             ]
