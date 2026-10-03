@@ -1821,7 +1821,7 @@ def test_search_projection_exposes_live_semantic_fallback_contract():
     assert projected["coverage_satisfied"] is False
     assert projected["missing_aspects"] == ["semantic_model_temporarily_unavailable"]
     assert projected["continuation_required"] is True
-    assert projected["next_tool"] == "save_research_facts"
+    assert projected["next_tool"] == "get_research_chunk"
     assert projected["sources"] == [{
         "source_ref": "source_royal_gate",
         "evidence": [{
@@ -1879,7 +1879,7 @@ async def test_live_fallback_zero_conflict_review_completes_same_run(tmp_path):
             "args": {"query": "история ворот"},
         },
     )
-    assert search_result["next_tool"] == "save_research_facts"
+    assert search_result["next_tool"] == "get_research_chunk"
     run_id = search_result["research_run_id"]
     batch_id = search_result["save_batch_id"]
     source_ref = search_result["sources"][0]["source_ref"]

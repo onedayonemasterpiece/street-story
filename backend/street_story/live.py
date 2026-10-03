@@ -884,12 +884,7 @@ class StreetStoryLiveAdapter:
             self._persist_live_message(session, "assistant", text)
 
         if kind in {"error", "closed"}:
-            session.state["research_cancelled"] = True
-            run_id = session.state.get("research_run_id")
-            if run_id:
-                with self.service.store.tx() as db:
-                    db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? WHERE run_id=? AND state NOT IN ('completed','cancelled','partial','failed')",
-                               ("live_" + kind + "_resume_required", self.service.store.now(), run_id))
+            self._pause_research(session, "live_" + kind + "_resume_required")
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
 
@@ -994,13 +989,19 @@ class StreetStoryLiveAdapter:
         self._send_visual_snapshot(session)
         self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
 
-    def on_stopped(self, session) -> None:
+    def _pause_research(self, session, reason):
         session.state["research_cancelled"] = True
-        run_id = session.state.get("research_run_id")
-        if run_id:
+        owned = set(session.state.get("research_run_ids") or [])
+        if session.state.get("research_run_id"):
+            owned.add(session.state["research_run_id"])
+        if owned:
             with self.service.store.tx() as db:
-                db.execute("UPDATE research_runs SET state='partial',status_detail='live_stopped_resume_required',updated_at=? "
-                           "WHERE run_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (self.service.store.now(), run_id))
+                for run_id in owned:
+                    db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? "
+                               "WHERE run_id=? AND story_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (reason, self.service.store.now(), run_id, session.resource_id))
+
+    def on_stopped(self, session) -> None:
+        self._pause_research(session, "live_stopped_resume_required")
 
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         name = str(call.get("name") or "")
@@ -1087,6 +1088,7 @@ class StreetStoryLiveAdapter:
                         raise ConflictError("live_research_partial", "Research paused after three invalid evidence batches. Saved findings remain durable. Resume this run in a new Live session using numeric passage_ids.") from None
                 raise
             session.state.setdefault("research_invalid_batches", {}).pop(str(result.get("research_run_id") or ""), None)
+            session.state["research_discovery_without_save"] = 0
         elif name == "record_fact_conflicts":
             result = self._record_fact_conflicts(session, command_id, args)
         elif name == "finalize_fact_review":
@@ -1225,7 +1227,7 @@ class StreetStoryLiveAdapter:
                     )
                 ),
                 "next_tool": (
-                    "save_research_facts"
+                    "get_research_chunk"
                     if discovery_only
                     and result.get("semantic_status") == "live_model_required"
                     else (
@@ -1933,7 +1935,15 @@ class StreetStoryLiveAdapter:
         run_id = "research_" + hashlib.sha256(
             f"{story_id}:{command_id}:search".encode("utf-8")
         ).hexdigest()[:24]
+        calls_without_save = int(session.state.get("research_discovery_without_save") or 0)
+        if calls_without_save >= 3:
+            self._pause_research(session, "discovery_without_checkpoint_budget_exhausted")
+            self._emit_research_progress(session, stage="partial", active=False, query="", source_count=0, fact_count=len(all_story_facts))
+            record_live_diagnostic(self.service, story_id, session.id, "backend", "research_partial", {"reason": "discovery_without_checkpoint_budget_exhausted", "attempts": calls_without_save})
+            raise ConflictError("live_research_partial", "Discovery paused after three searches without a saved document batch. Resume a discovered run in a new Live session with get_research_chunk; saved findings are preserved.")
+        session.state["research_discovery_without_save"] = calls_without_save + 1
         session.state["research_run_id"] = run_id
+        session.state.setdefault("research_run_ids", []).append(run_id)
         save_batch_id = "livebatch_" + hashlib.sha256(
             f"{run_id}:discovery-save".encode("utf-8")
         ).hexdigest()[:24]
@@ -2434,7 +2444,13 @@ class StreetStoryLiveAdapter:
                 if int(current["revision"] or 0) != snapshot_revision:
                     raise ConflictError("live_research_run_stale", "Story changed while reading evidence.")
             if not documents:
-                return {"research_run_id": run_id, "partial": True, "reason": "source_fetch_failed", "next_tool": "get_research_chunk"}
+                with self.service.store.tx() as db:
+                    self._research_run_guard(db, session, run_id)
+                    set_run_state(db, run_id, "partial", detail="source_fetch_failed_resume_required", now=self.service.store.now(), completed=False)
+                    saved_count = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
+                session.state["research_cancelled"] = True
+                self._emit_research_progress(session, stage="partial", active=False, query="", source_count=len(sources), fact_count=saved_count)
+                return {"research_run_id": run_id, "partial": True, "reason": "source_fetch_failed", "next_tool": None, "resume_tool": "get_research_chunk", "saved_fact_count": saved_count}
             return await self._get_research_chunk(session, {**args, "source_url": source["url"]})
         with self.service.store.connection() as db:
             checkpoint = chunk_checkpoint(db, run_id, candidate["chunk_id"])

@@ -286,3 +286,41 @@ async def test_actual_task_cancellation_preserves_first_batch_for_resume(tmp_pat
         assert run_manifest(db, run_id)["counts"]["chunk_batches_total"] == 2
         assert db.execute("SELECT COUNT(*) FROM fact_observations WHERE story_id=?", (session.resource_id,)).fetchone()[0] == 3
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_document_fetch_hands_back_control_and_can_resume(tmp_path):
+    from types import SimpleNamespace
+    svc, adapter, session, events, run_id, _, reader = await fallback(tmp_path)
+    original = svc.providers.gemini._fetch_page_documents
+
+    async def failed(*args):
+        return []
+
+    svc.providers.gemini._fetch_page_documents = failed
+    partial = await adapter.execute_tool(session, {"name": "get_research_chunk", "args": {"run_id": run_id}})
+    assert partial["partial"] and partial["next_tool"] is None
+    assert events[-1]["state"]["active"] is False
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)["run"]["state"] == "partial"
+    svc.providers.gemini._fetch_page_documents = original
+    resumed = SimpleNamespace(id="live_fetch_resume", resource_id=session.resource_id, model="gemini-3.8-live", state={})
+    chunk = await adapter._get_research_chunk(resumed, {"run_id": run_id})
+    await adapter._save_research_facts(resumed, "recovered", findings(chunk, QUOTES))
+    assert adapter._finalize_fact_review(resumed, "review", review_args(adapter, session.resource_id, run_id))["complete"]
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_discovery_without_checkpoint_is_bounded_and_all_owned_runs_pause(tmp_path):
+    svc, adapter, session, events, _, _, reader = await fallback(tmp_path)
+    for index in range(2):
+        await adapter.execute_tool(session, {"name": "search_web", "id": "search-" + str(index), "args": {"query": "Another aspect " + str(index)}})
+    with pytest.raises(ConflictError) as stopped:
+        await adapter.execute_tool(session, {"name": "search_web", "id": "search-over-budget", "args": {"query": "No repeated discovery without checkpoint"}})
+    assert stopped.value.code == "live_research_partial"
+    assert events[-1]["state"]["active"] is False
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=?", (session.resource_id,)).fetchone()[0] == 3
+        assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=? AND state<>'partial'", (session.resource_id,)).fetchone()[0] == 0
+    await reader.search_http.aclose()
