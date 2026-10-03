@@ -112,7 +112,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 return self._story_repr(db, story)
 
             selected_ids = [str(value) for value in body.get("selected_fact_ids", [])]
-            from .fact_ledger import eligibility_issues_for_ids
+            from .fact_ledger import eligibility_issues_for_ids, fact_revision_bundle
             issues = eligibility_issues_for_ids(db, story_id, selected_ids)
             if issues:
                 raise InvalidStateError(
@@ -123,6 +123,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 row["fact_id"]: row
                 for row in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))
             }
+            revisions = fact_revision_bundle(db, story_id, selected_ids)
+            if len(revisions) != len(set(selected_ids)):
+                raise ConflictError(
+                    "visual_fact_revision_missing",
+                    "One or more selected facts have no durable revision.",
+                )
             selected_facts: list[dict[str, Any]] = []
             for fact_id in selected_ids:
                 row = facts.get(fact_id)
@@ -134,6 +140,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     {
                         "fact_id": fact_id,
                         "text": row["text"],
+                        "revision_digest": revisions[fact_id],
                         "sources": json.loads(row["sources_json"]),
                     }
                 )
@@ -153,9 +160,14 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "input_revision": research.get("input_revision"),
                 "visual_identity": research.get("visual_identity"),
                 "selected_facts": [
-                    {"fact_id": item["fact_id"], "text": item["text"]}
+                    {
+                        "fact_id": item["fact_id"],
+                        "text": item["text"],
+                        "revision_digest": item["revision_digest"],
+                    }
                     for item in selected_facts
                 ],
+                "fact_revision_bundle": revisions,
                 "publication_concept": str(research.get("publication_concept") or "")[:1200],
                 "visual_instruction": str(body.get("visual_instruction") or "").strip()[:600],
                 "prompt_version": self.PROMPT_VERSION,

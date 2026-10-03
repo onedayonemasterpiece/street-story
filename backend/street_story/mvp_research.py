@@ -12,7 +12,15 @@ from urllib.parse import urlparse
 from .errors import MalformedProviderResponse
 from .camera_hints import reference_order, model_camera_hints
 from .fact_conflicts import analyze_fact_conflicts
-from .fact_ledger import candidate_assertion_id, persist_fact_candidates, refresh_review_status, set_owner_selection
+from .fact_ledger import (
+    candidate_assertion_id,
+    fact_revision_bundle,
+    persist_fact_candidates,
+    persist_fact_relation_events,
+    refresh_review_status,
+    revision_bundle_issues,
+    set_owner_selection,
+)
 from .model_facts import merge_model_fact_inventory, normalized_claim_key, validated_model_fact_text
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
@@ -880,13 +888,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             previous = [
                 {
                     "fact_id": row["fact_id"],
+                    "claim_key": str(row["semantic_key"] or ""),
                     "text": row["text"],
                     "confidence": float(row["confidence"]),
                     "evidence_supported": bool(row["evidence_supported"]),
                     "selected": bool(row["selected"]),
                     "sources": json.loads(row["sources_json"]),
                 }
-                for row in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,))
+                for row in db.execute(
+                    "SELECT f.*,a.semantic_key FROM facts f "
+                    "LEFT JOIN fact_assertions a "
+                    "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                    "WHERE f.story_id=? ORDER BY f.rowid",
+                    (story_id,),
+                )
             ]
 
         if live_transcript:
@@ -1111,7 +1126,63 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "excerpt": str(previous_known.get("excerpt") or ""),
                 }
 
-        incoming = saved.get("payload", {}).get("facts", [])
+        incoming = [
+            item
+            for item in (saved.get("payload", {}).get("facts", []) or [])
+            if isinstance(item, dict)
+        ]
+        reconciliation_matches: dict[int, str] = {}
+        reconciliation_decisions: list[dict[str, Any]] = []
+        reconciliation_meta: dict[str, Any] = {
+            "status": "not_needed",
+            "pages_reviewed": 0,
+            "existing_fact_count": len(previous),
+            "incoming_fact_count": len(incoming),
+        }
+        reconciler = getattr(self.providers.gemini, "reconcile_fact_identities", None)
+        if incoming and previous and callable(reconciler):
+            try:
+                reconciliation = await reconciler(incoming, previous)
+                previous_ids = {
+                    str(item.get("fact_id") or "")
+                    for item in previous
+                    if str(item.get("fact_id") or "")
+                }
+                reconciliation_matches = {
+                    int(index): str(fact_id)
+                    for index, fact_id in (reconciliation.get("matches") or {}).items()
+                    if str(fact_id) in previous_ids
+                }
+                reconciliation_decisions = [
+                    dict(item)
+                    for item in (reconciliation.get("decisions") or [])
+                    if isinstance(item, dict)
+                ]
+                reconciliation_meta = {
+                    "status": "complete" if reconciliation.get("complete") is True else "partial",
+                    "pages_reviewed": int(reconciliation.get("pages_reviewed") or 0),
+                    "existing_fact_count": int(
+                        reconciliation.get("existing_fact_count") or len(previous)
+                    ),
+                    "incoming_fact_count": int(
+                        reconciliation.get("incoming_fact_count") or len(incoming)
+                    ),
+                    "matched_count": len(reconciliation_matches),
+                    "unmatched_count": int(reconciliation.get("unmatched_count") or 0),
+                }
+            except (
+                GeminiUnavailable,
+                MalformedProviderResponse,
+                PermanentProviderError,
+            ) as exc:
+                reconciliation_meta = {
+                    **reconciliation_meta,
+                    "status": "unavailable",
+                    "error_type": type(exc).__name__,
+                }
+        elif incoming and previous:
+            reconciliation_meta["status"] = "compatibility_unavailable"
+
         is_refinement = bool(prior.get("input_revision"))
         old_decisions = {
             row["fact_id"]: bool(row["selected"])
@@ -1121,17 +1192,22 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         previous_fact_ids = set(old_decisions)
         normalized: list[dict[str, Any]] = []
         seen_claims: set[str] = set()
-        for item in incoming:
+        for item_index, item in enumerate(incoming):
             text = validated_model_fact_text(item.get("text"))
             if text is None:
                 continue
             claim_key = normalized_claim_key(item.get("claim_key"))
             if claim_key is None:
                 claim_key = "exact-text:" + hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:24]
-            existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+            provided_existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+            existing_fact_id = reconciliation_matches.get(item_index) or (
+                provided_existing_fact_id
+                if provided_existing_fact_id in previous_fact_ids
+                else ""
+            )
             fact_id = (
                 existing_fact_id
-                if existing_fact_id in previous_fact_ids
+                if existing_fact_id
                 else candidate_assertion_id(claim_key, text)
             )
             if fact_id in seen_claims:
@@ -1297,6 +1373,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 research_run_id=run_id,
             )
             all_fact_rows = list(db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
+            draft_fact_ids = [
+                str(item.get("fact_id") or "")
+                for item in selected_for_draft
+                if str(item.get("fact_id") or "")
+            ]
+            draft_fact_revisions = fact_revision_bundle(db, story_id, draft_fact_ids)
             source_urls = {
                 source["url"]
                 for row in all_fact_rows
@@ -1318,11 +1400,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "publication_concept": publication_concept[:1200] or None,
                 "draft_composed_by": "gemini_model",
                 "draft_needs_refresh": False,
+                "draft_stale_reason": None,
+                "draft_fact_revisions": draft_fact_revisions,
                 "image_notes": image_notes,
                 "poi_key": str(identity.get("candidate_id") or "") or None,
                 "research_run_id": run_id,
                 "prior_poi_fact_count": len(poi_history),
                 "claim_decisions": {row["fact_id"]: bool(row["selected"]) for row in all_fact_rows},
+                "fact_reconciliation": reconciliation_meta,
             }
             set_run_state(
                 db,
@@ -1380,15 +1465,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 and str(scan["status"]) in {"ok", "no_candidates"}
                 and int(scan["coverage_complete"] or 0) == 1
             )
-            complete = manifest_complete(manifest) and review_ok
+            reconciliation_complete = reconciliation_meta.get("status") in {"not_needed", "complete"}
+            complete = manifest_complete(manifest) and review_ok and reconciliation_complete
             set_run_state(
                 db,
                 run_id,
                 "completed" if complete else "partial",
                 detail=(
-                    "manifest_and_review_complete"
+                    "manifest_review_and_reconciliation_complete"
                     if complete
-                    else "manifest_or_semantic_review_incomplete"
+                    else (
+                        "fact_reconciliation_incomplete"
+                        if not reconciliation_complete
+                        else "manifest_or_semantic_review_incomplete"
+                    )
                 ),
                 now=now,
                 completed=True,
@@ -1486,7 +1576,34 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "fact_review_required",
                     "Selected facts still need semantic review or arbitration before publication.",
                 )
+            selected_ids = eligible_selected_fact_ids(db, story_id)
             research = json.loads(story["research_json"] or "{}")
+            if revision_bundle_issues(
+                db,
+                story_id,
+                research.get("draft_fact_revisions"),
+                expected_fact_ids=selected_ids,
+            ):
+                raise ConflictError(
+                    "publication_text_stale",
+                    "Evidence revisions used by the publication text changed; refresh the draft.",
+                )
+            visual = json.loads(story["visual_context_json"] or "{}")
+            visual_fact_ids = [
+                str(item.get("fact_id") or "")
+                for item in (visual.get("selected_facts") or [])
+                if isinstance(item, dict) and str(item.get("fact_id") or "")
+            ]
+            if revision_bundle_issues(
+                db,
+                story_id,
+                visual.get("fact_revision_bundle"),
+                expected_fact_ids=visual_fact_ids,
+            ):
+                raise ConflictError(
+                    "visual_not_ready",
+                    "Evidence revisions used by the visual changed; regenerate the visual.",
+                )
             if research.get("content_identity_changed"):
                 raise ConflictError("identity_content_review_required", "После смены объекта нужно проверить и обновить текст публикации.")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
@@ -1524,6 +1641,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "ordered_voice_ids": voice_ids,
                     "input_revision": research.get("input_revision"),
                     "selected_fact_ids": eligible_selected_fact_ids(db, story_id),
+                    "fact_revision_bundle": fact_revision_bundle(
+                        db,
+                        story_id,
+                        eligible_selected_fact_ids(db, story_id),
+                    ),
                     "prompt_version": visual.get("prompt_version"),
                     "prompt_sha256": visual.get("prompt_sha256"),
                     "visual_content_revision": visual.get("content_revision"),
