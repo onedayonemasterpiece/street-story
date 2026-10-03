@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from pydantic import SecretStr
 
 from street_story.db import Store
 from street_story.gemini import GeminiUnavailable
-from street_story.providers import GeminiClient
+from street_story.providers import GeminiClient, GroundedResearch
 from street_story.research_runs import begin_research_run, manifest_complete, run_manifest
 from test_backend import config
 
@@ -53,6 +54,87 @@ class PassingResearchExecutor:
         assert operation == "grounded_research"
         self.calls += 1
         return await call("key-a", 5.0)
+
+
+@pytest.mark.asyncio
+async def test_native_search_phase_timeout_falls_back_without_serial_key_stall(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    client.NATIVE_WEB_SEARCH_PHASE_SECONDS = 0.02
+
+    class HangingExecutor:
+        def __init__(self):
+            self.calls = 0
+            self.started_at = None
+            self.cancelled_at = None
+
+        async def execute(self, operation, call):
+            assert operation == "web_search"
+            self.calls += 1
+            self.started_at = asyncio.get_running_loop().time()
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                self.cancelled_at = asyncio.get_running_loop().time()
+                raise
+            raise AssertionError("native phase deadline should cancel this executor")
+
+    first = HangingExecutor()
+    second = HangingExecutor()
+    routes = client.web_search_routes[:2]
+    client.web_search_routes = [
+        (routes[0][0], routes[0][1], routes[0][2], first),
+        (routes[1][0], routes[1][1], routes[1][2], second),
+    ]
+
+    public_calls = 0
+    async def public_search(query, excluded_urls=None):
+        nonlocal public_calls
+        public_calls += 1
+        return GroundedResearch(
+            payload={
+                "summary": "Public evidence.",
+                "official_source_urls": [],
+                "facts": [],
+                "search_provider": "duckduckgo_html_fallback",
+            },
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "Public source",
+                "url": "https://public.example/source",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": "https://public.example/source",
+                    "text": "Exact public evidence passage.",
+                }],
+            }],
+        )
+
+    async def no_semantic_completion(query, topic_context, discovery, *, timeout_seconds):
+        return None
+
+    client._public_web_search = public_search
+    client._semantic_complete_discovery_best_effort = no_semantic_completion
+
+    started = asyncio.get_running_loop().time()
+    result = await client.search_web("Royal Gates facts", {})
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 1.5
+    assert first.calls == 1
+    assert first.started_at is not None and first.cancelled_at is not None
+    assert first.cancelled_at - first.started_at < .25
+    assert second.calls == 0
+    assert public_calls == 1
+    assert result.payload["native_search_status"] == "timeout"
+    assert result.payload["semantic_status"] == "live_model_required"
+    assert result.payload["coverage_satisfied"] is False
+    assert result.payload["missing_aspects"] == ["semantic_model_temporarily_unavailable"]
+    assert result.grounding_sources[0]["supports"][0]["text"] == "Exact public evidence passage."
 
 
 @pytest.mark.asyncio
@@ -1026,6 +1108,69 @@ async def test_coverage_reviewer_does_not_treat_unordered_names_as_positional_ma
     assert len(result["coverage_items"]) == 3
     assert all(item["satisfied"] is False for item in result["coverage_items"])
     assert result["read_source_urls"] == [source_url]
+
+
+@pytest.mark.asyncio
+async def test_slow_cached_semantic_preflight_falls_through_to_discovery(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    client.SEMANTIC_CACHE_PREFLIGHT_SECONDS = .01
+    client.SEMANTIC_DISCOVERY_COMPLETION_SECONDS = .01
+
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    client.search_http = FakeSearchHTTP(
+        """
+        <div class="result">
+          <a class="result__a" href="https://fresh.example/royal-gate">Fresh source</a>
+          <a class="result__snippet">Слева изображён Отакар II.</a>
+        </div>
+        """
+    )
+
+    semantic_calls = 0
+
+    async def slow_semantic(query, topic_context, discovery):
+        nonlocal semantic_calls
+        semantic_calls += 1
+        await asyncio.sleep(.2)
+        raise AssertionError("bounded best-effort semantic call should have timed out")
+
+    client._semantic_complete_discovery = slow_semantic
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {
+            "coverage_goal": "Кто изображён слева?",
+            "previously_processed_sources": [{
+                "url": "https://cached.example/royal-gate",
+                "title": "Cached",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": "https://cached.example/royal-gate",
+                    "text": "На фасаде есть три фигуры.",
+                }],
+            }],
+        },
+    )
+
+    assert semantic_calls == 2
+    assert [executor.calls for executor in failures] == [1 for _ in failures]
+    assert client.search_http.calls
+    assert result.payload["search_provider"] == "duckduckgo_html_fallback"
+    assert result.payload["semantic_status"] == "live_model_required"
+    assert result.payload["coverage_satisfied"] is False
+    assert result.payload["facts"] == []
+    assert any(
+        source["url"] == "https://fresh.example/royal-gate"
+        for source in result.grounding_sources
+    )
 
 
 @pytest.mark.asyncio

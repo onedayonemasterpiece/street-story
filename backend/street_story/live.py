@@ -422,8 +422,9 @@ FUNCTIONS = [
         "save_research_facts",
         "Persist Mira's semantic extraction from the most recent search_web discovery evidence. "
         "Use only when search_web returned discovery-only sources/snippets without durable facts. "
-        "Every source_ref must be copied exactly from a source object in that latest search result. "
-        "The server maps refs to canonical URLs/snippets and validates them without inferring fact meaning.",
+        "Every source_ref and evidence_ref must be copied exactly from the latest discovery-only search result. "
+        "For each fact choose only the exact evidence_refs whose passages support that fact; a source URL by itself is not evidence. "
+        "The server validates refs and preserves only the selected passages without inferring fact meaning.",
         {
             "facts": {
                 "type": "array",
@@ -436,8 +437,12 @@ FUNCTIONS = [
                         "confidence": {"type": "number"},
                         "selected": {"type": "boolean"},
                         "source_refs": {"type": "array", "items": {"type": "string"}},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["claim_key", "text", "confidence", "selected", "source_refs"],
+                    "required": [
+                        "claim_key", "text", "confidence", "selected",
+                        "source_refs", "evidence_refs",
+                    ],
                 },
             },
         },
@@ -616,7 +621,7 @@ SYSTEM_INSTRUCTION = """
 - широкий запрос на факты = 4–6 разных search_web по ключевым аспектам объекта и отдельная перепроверка важных тезисов; не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
-- после каждого discovery_only search_web сразу save_research_facts: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и добавь к нему все подтверждающие source_ref текущей выдачи. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- после каждого discovery_only search_web сразу save_research_facts: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
@@ -1099,16 +1104,26 @@ class StreetStoryLiveAdapter:
                 source_ref = str(source.get("source_ref") or "").strip()
                 if not source_ref:
                     continue
-                snippets = []
-                for support in (source.get("supports") or [])[:2]:
+                evidence = []
+                seen_evidence: set[str] = set()
+                for support in (source.get("supports") or [])[:6]:
                     if not isinstance(support, dict):
                         continue
                     snippet = str(support.get("text") or "").strip()
-                    if snippet and snippet not in snippets:
-                        snippets.append(snippet[:600])
+                    evidence_ref = str(support.get("evidence_ref") or "").strip()
+                    if (
+                        snippet
+                        and evidence_ref
+                        and evidence_ref not in seen_evidence
+                    ):
+                        evidence.append({
+                            "evidence_ref": evidence_ref,
+                            "text": snippet[:600],
+                        })
+                        seen_evidence.add(evidence_ref)
                 compact_sources.append({
                     "source_ref": source_ref,
-                    "snippets": snippets,
+                    "evidence": evidence,
                 })
             projected["sources"] = compact_sources
             projected.pop("fact_conflicts", None)
@@ -1778,6 +1793,26 @@ class StreetStoryLiveAdapter:
             projected = dict(source)
             if discovery_only:
                 projected["source_ref"] = _search_source_ref(url)
+                evidence_ref_fn = getattr(
+                    self.service.providers.gemini,
+                    "_support_evidence_ref",
+                    None,
+                )
+                projected_supports: list[dict[str, Any]] = []
+                for raw_support in projected.get("supports") or []:
+                    if not isinstance(raw_support, dict):
+                        continue
+                    support_text = str(raw_support.get("text") or "").strip()
+                    if not support_text:
+                        continue
+                    support = dict(raw_support)
+                    support["source_url"] = str(
+                        support.get("source_url") or url
+                    ).rstrip("/")
+                    if not str(support.get("evidence_ref") or "").strip() and callable(evidence_ref_fn):
+                        support["evidence_ref"] = evidence_ref_fn(url, support)
+                    projected_supports.append(support)
+                projected["supports"] = projected_supports
             grounding_sources.append(projected)
 
         source_objects = {
@@ -2140,6 +2175,7 @@ class StreetStoryLiveAdapter:
                 if re.fullmatch(r"websrc_[0-9a-f]{20}", str(ref))
             }
             source_map: dict[str, dict[str, Any]] = {}
+            evidence_map: dict[str, tuple[str, dict[str, Any]]] = {}
             for source in research.get("grounding_sources") or []:
                 if not isinstance(source, dict):
                     continue
@@ -2160,7 +2196,11 @@ class StreetStoryLiveAdapter:
                     and str(support.get("source_url") or "").rstrip("/") == url
                 ]
                 if valid_supports:
-                    source_map[source_ref] = {**source, "supports": valid_supports[:4]}
+                    source_map[source_ref] = {**source, "supports": valid_supports}
+                    for support in valid_supports:
+                        evidence_ref = str(support.get("evidence_ref") or "").strip()
+                        if re.fullmatch(r"evref_[0-9a-f]{24}", evidence_ref):
+                            evidence_map[evidence_ref] = (source_ref, support)
 
             known_facts = [
                 {
@@ -2219,6 +2259,37 @@ class StreetStoryLiveAdapter:
                         )
                     if source_ref not in refs:
                         refs.append(source_ref)
+
+                raw_evidence_refs = item.get("evidence_refs")
+                if not isinstance(raw_evidence_refs, list) or not raw_evidence_refs:
+                    raise ConflictError(
+                        "live_research_fact_evidence_required",
+                        "Each saved fact needs exact evidence_refs from the latest search",
+                    )
+                selected_supports: dict[str, list[dict[str, Any]]] = {}
+                selected_evidence_refs: list[str] = []
+                for raw_evidence_ref in raw_evidence_refs[:24]:
+                    evidence_ref = str(raw_evidence_ref or "").strip()
+                    bound = evidence_map.get(evidence_ref)
+                    if bound is None:
+                        raise ConflictError(
+                            "live_research_fact_evidence_unknown",
+                            "A fact referenced an evidence_ref that was not returned by the latest search",
+                        )
+                    source_ref, support = bound
+                    if source_ref not in refs:
+                        raise ConflictError(
+                            "live_research_fact_evidence_source_mismatch",
+                            "Every evidence_ref must belong to one of the fact's source_refs",
+                        )
+                    if evidence_ref not in selected_evidence_refs:
+                        selected_evidence_refs.append(evidence_ref)
+                        selected_supports.setdefault(source_ref, []).append(support)
+                if any(source_ref not in selected_supports for source_ref in refs):
+                    raise ConflictError(
+                        "live_research_fact_source_without_evidence",
+                        "Every fact source_ref must have at least one selected evidence_ref",
+                    )
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
                 fact_id = existing_fact_id if existing_fact_id in known_by_id else candidate_assertion_id(claim_key, text)
                 selected = bool(item.get("selected")) and prior_decisions.get(fact_id, True)
@@ -2231,7 +2302,14 @@ class StreetStoryLiveAdapter:
                         "confidence": confidence,
                         "evidence_supported": True,
                         "selected": selected,
-                        "sources": [source_map[source_ref] for source_ref in refs],
+                        "evidence_refs": selected_evidence_refs,
+                        "sources": [
+                            {
+                                **source_map[source_ref],
+                                "supports": selected_supports[source_ref],
+                            }
+                            for source_ref in refs
+                        ],
                     }
                 )
 

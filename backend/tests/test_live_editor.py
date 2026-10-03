@@ -714,6 +714,8 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
     story_id = session.resource_id
     mark_identity_ready(svc, story_id)
 
+    evidence_ref = "evref_" + "a" * 24
+
     async def fallback_search(query, topic_context):
         return GroundedResearch(
             payload={
@@ -729,6 +731,7 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
                     "kind": "search_snippet",
                     "source_url": "https://archive.example/gate",
                     "text": "В 1843 году началось строительство нынешних ворот.",
+                    "evidence_ref": evidence_ref,
                 }],
             }],
         )
@@ -746,6 +749,10 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
     assert search_result["facts"] == []
     source_ref = search_result["sources"][0]["source_ref"]
     assert source_ref.startswith("websrc_")
+    assert search_result["sources"][0]["evidence"] == [{
+        "evidence_ref": evidence_ref,
+        "text": "В 1843 году началось строительство нынешних ворот.",
+    }]
 
     saved = await adapter.execute_tool(
         session,
@@ -759,6 +766,7 @@ async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_pat
                     "confidence": 0.82,
                     "selected": True,
                     "source_refs": [source_ref],
+                    "evidence_refs": [evidence_ref],
                 }],
             },
         },
@@ -783,6 +791,9 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
     story_id = session.resource_id
     mark_identity_ready(svc, story_id)
 
+    evidence_a = "evref_" + "b" * 24
+    evidence_b = "evref_" + "c" * 24
+
     async def fallback_search(query, topic_context):
         return GroundedResearch(
             payload={"summary": "Discovery only", "facts": [], "search_provider": "duckduckgo_html_fallback"},
@@ -791,13 +802,23 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
                     "type": "web_search",
                     "title": "Source A",
                     "url": "https://a.example/gate",
-                    "supports": [{"kind": "search_snippet", "source_url": "https://a.example/gate", "text": "Ворота строились в 1843–1850 годах."}],
+                    "supports": [{
+                        "kind": "search_snippet",
+                        "source_url": "https://a.example/gate",
+                        "text": "Ворота строились в 1843–1850 годах.",
+                        "evidence_ref": evidence_a,
+                    }],
                 },
                 {
                     "type": "web_search",
                     "title": "Source B",
                     "url": "https://b.example/gate",
-                    "supports": [{"kind": "search_snippet", "source_url": "https://b.example/gate", "text": "Строительство ворот продолжалось с 1843 по 1850 год."}],
+                    "supports": [{
+                        "kind": "search_snippet",
+                        "source_url": "https://b.example/gate",
+                        "text": "Строительство ворот продолжалось с 1843 по 1850 год.",
+                        "evidence_ref": evidence_b,
+                    }],
                 },
             ],
         )
@@ -808,6 +829,8 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
         {"name": "search_web", "id": "search-corroboration", "args": {"query": "годы строительства ворот"}},
     )
     refs = [item["source_ref"] for item in search_result["sources"]]
+    evidence_refs = [item["evidence"][0]["evidence_ref"] for item in search_result["sources"]]
+    assert evidence_refs == [evidence_a, evidence_b]
     saved = await adapter.execute_tool(
         session,
         {
@@ -821,6 +844,7 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
                         "confidence": 0.9,
                         "selected": True,
                         "source_refs": [refs[0]],
+                        "evidence_refs": [evidence_refs[0]],
                     },
                     {
                         "claim_key": "gate-construction-period",
@@ -828,6 +852,7 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
                         "confidence": 0.95,
                         "selected": True,
                         "source_refs": [refs[1]],
+                        "evidence_refs": [evidence_refs[1]],
                     },
                 ],
             },
@@ -838,6 +863,98 @@ async def test_live_discovery_merges_multiple_sources_for_same_model_fact_identi
     current = svc.story(story_id)
     assert len(current["facts"]) == 1
     assert len(current["facts"][0]["sources"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_live_discovery_fallback_persists_only_selected_passage_from_same_source(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    source_url = "https://archive.example/royal-gate"
+    relevant_ref = "evref_" + "d" * 24
+    irrelevant_ref = "evref_" + "e" * 24
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Discovery only",
+                "facts": [],
+                "search_provider": "duckduckgo_html_fallback",
+            },
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "Archive",
+                "url": source_url,
+                "supports": [
+                    {
+                        "kind": "search_snippet",
+                        "source_url": source_url,
+                        "text": "Слева изображён Оттокар II.",
+                        "evidence_ref": relevant_ref,
+                    },
+                    {
+                        "kind": "search_snippet",
+                        "source_url": source_url,
+                        "text": "Музей работает со среды по воскресенье.",
+                        "evidence_ref": irrelevant_ref,
+                    },
+                ],
+            }],
+        )
+
+    svc.providers.gemini.search_web = fallback_search
+    search_result = await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-specific-passage",
+            "args": {
+                "query": "кто изображён слева",
+                "coverage_goal": "Кто изображён слева?",
+            },
+        },
+    )
+    source = search_result["sources"][0]
+    assert [item["evidence_ref"] for item in source["evidence"]] == [
+        relevant_ref,
+        irrelevant_ref,
+    ]
+
+    await adapter.execute_tool(
+        session,
+        {
+            "name": "save_research_facts",
+            "id": "save-specific-passage",
+            "args": {
+                "facts": [{
+                    "claim_key": "left-sculpture",
+                    "text": "Слева изображён Оттокар II.",
+                    "confidence": .97,
+                    "selected": True,
+                    "source_refs": [source["source_ref"]],
+                    "evidence_refs": [relevant_ref],
+                }],
+            },
+        },
+    )
+
+    current = svc.story(story_id)
+    assert len(current["facts"]) == 1
+    supports = current["facts"][0]["sources"][0]["supports"]
+    assert [item["text"] for item in supports] == [
+        "Слева изображён Оттокар II.",
+    ]
+    with svc.store.connection() as db:
+        spans = [
+            row["span_text"]
+            for row in db.execute(
+                "SELECT e.span_text FROM fact_evidence_spans e "
+                "JOIN fact_observations o ON o.observation_id=e.observation_id "
+                "WHERE o.story_id=? ORDER BY e.rowid",
+                (story_id,),
+            )
+        ]
+    assert spans == ["Слева изображён Оттокар II."]
 
 
 @pytest.mark.asyncio
