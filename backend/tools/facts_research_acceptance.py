@@ -128,7 +128,7 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
     try:
         receipt = await host.start(resource_id=story_id, actor=None, model="gemini-3.8-live")
         session_id = receipt["session_id"]
-        owned_adapter = host.sessions[session_id].adapter
+        owned_adapter = host.adapter
         execute = owned_adapter.execute_tool
         async def traced(session, call):
             entry = {"name": call.get("name"), "args": call.get("args")}
