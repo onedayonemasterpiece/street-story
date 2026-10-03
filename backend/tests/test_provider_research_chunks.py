@@ -9,6 +9,7 @@ from pydantic import SecretStr
 
 from street_story.config import Settings
 from street_story.db import Store
+from street_story.gemini import GeminiUnavailable
 from street_story.providers import GeminiClient, GroundedResearch
 from street_story.research_runs import begin_research_run, manifest_complete, run_manifest
 
@@ -138,9 +139,11 @@ async def test_chunked_page_extraction_preserves_pass_one_and_tail_fact_with_exa
                     }],
                     "needs_context":False,
                     "context_reason":"",
+                    "continuation_needed":False,
+                    "continuation_reason":"",
                 }
             else:
-                payload={"facts":[],"needs_context":False,"context_reason":""}
+                payload={"facts":[],"needs_context":False,"context_reason":"","continuation_needed":False,"continuation_reason":""}
             return SimpleNamespace(text=json.dumps(payload,ensure_ascii=False),candidates=[])
 
         snippet_ref=client._support_evidence_ref(
@@ -228,3 +231,382 @@ async def test_chunked_page_extraction_preserves_pass_one_and_tail_fact_with_exa
     assert manifest["counts"]["chunks_completed"]==result.payload["page_chunk_count"]
     assert manifest_complete(manifest) is True
     assert len(call_log)==result.payload["page_chunk_count"]+2
+
+
+@pytest.mark.asyncio
+async def test_dense_chunk_continues_until_all_facts_are_extracted(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    now = store.now()
+    with store.tx() as db:
+        run_id = begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:dense",
+            goal="Извлечь все сорок фактов",
+            expected_story_revision=0,
+            identity_generation=0,
+            run_id="run-dense-continuation",
+            now=now,
+        )
+
+    url = "https://history.example/dense"
+    quotes = [f"ФАКТ {index:02d}: значение {index}." for index in range(40)]
+    html = "<html><body><main><p>" + " ".join(quotes) + "</p></main></body></html>"
+
+    client = GeminiClient(settings(tmp_path), store)
+    client.search_http = PageHTTP(url, html)
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], ResearchExecutor())]
+
+    chunk_calls = []
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        prompt = str(contents[0])
+        if prompt.startswith("Ты проверяешь полноту"):
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": True,
+                    "summary": "Все сорок фактов извлечены.",
+                    "missing_aspects": [],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        if "Передан один chunk документа" in prompt:
+            batch_index = int(prompt.split("Continuation batch index: ", 1)[1].split("\n", 1)[0])
+            chunk_id = prompt.split("Chunk id: ", 1)[1].split("\n", 1)[0]
+            source_url = prompt.split("Source URL: ", 1)[1].split("\n", 1)[0]
+            chunk_calls.append(batch_index)
+            if batch_index == 0:
+                indexes = range(32)
+                continuation_needed = True
+                continuation_reason = "В core остаются ещё восемь атомарных фактов."
+            else:
+                assert "ФАКТ 31: значение 31." in prompt
+                indexes = range(32, 40)
+                continuation_needed = False
+                continuation_reason = ""
+            facts = [{
+                "claim_key": f"dense-{index}",
+                "existing_fact_id": "",
+                "text": quotes[index],
+                "confidence": .95,
+                "source_urls": [source_url],
+                "evidence_spans": [{
+                    "source_url": source_url,
+                    "chunk_id": chunk_id,
+                    "quote": quotes[index],
+                }],
+            } for index in indexes]
+            return SimpleNamespace(
+                text=json.dumps({
+                    "facts": facts,
+                    "needs_context": False,
+                    "context_reason": "",
+                    "continuation_needed": continuation_needed,
+                    "continuation_reason": continuation_reason,
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        return SimpleNamespace(
+            text=json.dumps({
+                "summary": "Нужно прочитать страницу.",
+                "official_source_urls": [],
+                "facts": [],
+                "coverage_satisfied": False,
+                "read_source_urls": [url],
+            }, ensure_ascii=False),
+            candidates=[],
+        )
+
+    client._generate = generate
+    discovery = GroundedResearch(
+        payload={
+            "summary": "Discovery",
+            "official_source_urls": [],
+            "facts": [],
+            "search_provider": "duckduckgo_html_fallback",
+        },
+        grounding_sources=[{
+            "type": "web_search",
+            "title": "Dense",
+            "url": url,
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": url,
+                "text": "Страница содержит подробный перечень фактов.",
+            }],
+        }],
+    )
+
+    result = await client._semantic_complete_discovery(
+        "dense facts",
+        {
+            "research_run_id": run_id,
+            "coverage_goal": "Извлечь все сорок фактов.",
+            "known_facts": [],
+            "previously_considered_poi_facts": [],
+            "previously_processed_sources": [],
+        },
+        discovery,
+    )
+
+    assert chunk_calls == [0, 1]
+    assert len(result.payload["facts"]) == 40
+    assert result.payload["page_fact_count"] == 40
+    assert result.payload["page_continuation_batches"] == 1
+    assert result.payload["page_chunk_deferred"] == 0
+    assert {fact["text"] for fact in result.payload["facts"]} == set(quotes)
+
+    with store.connection() as db:
+        manifest = run_manifest(db, run_id)
+    assert manifest["counts"]["chunk_batches_total"] == 2
+    assert manifest["counts"]["chunk_batches_continuation"] == 1
+    assert manifest["counts"]["chunk_batches_failed"] == 0
+    assert manifest["counts"]["chunk_batches_deferred"] == 0
+    assert manifest["counts"]["chunks_completed"] == 1
+    assert manifest["chunk_batches"][0]["accepted_fact_count"] == 32
+    assert manifest["chunk_batches"][1]["accepted_fact_count"] == 8
+    assert manifest_complete(manifest) is True
+
+
+@pytest.mark.asyncio
+async def test_failed_continuation_preserves_prior_batch_facts_and_marks_run_partial(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    now = store.now()
+    with store.tx() as db:
+        run_id = begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:partial",
+            goal="Не потерять первый пакет",
+            expected_story_revision=0,
+            identity_generation=0,
+            run_id="run-continuation-failure",
+            now=now,
+        )
+
+    url = "https://history.example/partial-continuation"
+    quote = "ФАКТ A: подтверждённый первый пакет."
+    html = f"<html><body><main><p>{quote}</p><p>" + ("Дополнительный текст. " * 30) + "</p></main></body></html>"
+
+    client = GeminiClient(settings(tmp_path), store)
+    client.search_http = PageHTTP(url, html)
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], ResearchExecutor())]
+
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        prompt = str(contents[0])
+        if prompt.startswith("Ты проверяешь полноту"):
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": False,
+                    "summary": "Продолжение не завершилось.",
+                    "missing_aspects": ["continuation_failed"],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        if "Передан один chunk документа" in prompt:
+            batch_index = int(prompt.split("Continuation batch index: ", 1)[1].split("\n", 1)[0])
+            if batch_index == 1:
+                raise GeminiUnavailable(None, "continuation batch unavailable")
+            chunk_id = prompt.split("Chunk id: ", 1)[1].split("\n", 1)[0]
+            source_url = prompt.split("Source URL: ", 1)[1].split("\n", 1)[0]
+            return SimpleNamespace(
+                text=json.dumps({
+                    "facts": [{
+                        "claim_key": "fact-a",
+                        "existing_fact_id": "",
+                        "text": quote,
+                        "confidence": .95,
+                        "source_urls": [source_url],
+                        "evidence_spans": [{
+                            "source_url": source_url,
+                            "chunk_id": chunk_id,
+                            "quote": quote,
+                        }],
+                    }],
+                    "needs_context": False,
+                    "context_reason": "",
+                    "continuation_needed": True,
+                    "continuation_reason": "Есть ещё факты.",
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        return SimpleNamespace(
+            text=json.dumps({
+                "summary": "Нужно прочитать страницу.",
+                "official_source_urls": [],
+                "facts": [],
+                "coverage_satisfied": False,
+                "read_source_urls": [url],
+            }, ensure_ascii=False),
+            candidates=[],
+        )
+
+    client._generate = generate
+    discovery = GroundedResearch(
+        payload={
+            "summary": "Discovery",
+            "official_source_urls": [],
+            "facts": [],
+            "search_provider": "duckduckgo_html_fallback",
+        },
+        grounding_sources=[{
+            "type": "web_search",
+            "title": "Partial",
+            "url": url,
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": url,
+                "text": "Страница содержит несколько фактов.",
+            }],
+        }],
+    )
+
+    result = await client._semantic_complete_discovery(
+        "partial continuation",
+        {
+            "research_run_id": run_id,
+            "coverage_goal": "Извлечь все факты.",
+            "known_facts": [],
+            "previously_considered_poi_facts": [],
+            "previously_processed_sources": [],
+        },
+        discovery,
+    )
+
+    assert [fact["text"] for fact in result.payload["facts"]] == [quote]
+    assert result.payload["page_chunk_failures"] == 1
+    assert result.payload["page_continuation_batches"] == 1
+
+    with store.connection() as db:
+        manifest = run_manifest(db, run_id)
+    assert manifest["counts"]["chunk_batches_total"] == 2
+    assert manifest["counts"]["chunk_batches_continuation"] == 1
+    assert manifest["counts"]["chunk_batches_failed"] == 1
+    assert manifest["chunks"][0]["status"] == "failed"
+    assert manifest["chunks"][0]["observation_count"] == 1
+    assert manifest_complete(manifest) is False
+
+
+@pytest.mark.asyncio
+async def test_continuation_limit_marks_chunk_deferred_instead_of_silent_success(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    now = store.now()
+    with store.tx() as db:
+        run_id = begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:limit",
+            goal="Проверить continuation limit",
+            expected_story_revision=0,
+            identity_generation=0,
+            run_id="run-continuation-limit",
+            now=now,
+        )
+
+    url = "https://history.example/continuation-limit"
+    quotes = [f"ЛИМИТ ФАКТ {index}." for index in range(6)]
+    html = "<html><body><main><p>" + " ".join(quotes) + "</p></main></body></html>"
+
+    client = GeminiClient(settings(tmp_path), store)
+    client.search_http = PageHTTP(url, html)
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], ResearchExecutor())]
+
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        prompt = str(contents[0])
+        if prompt.startswith("Ты проверяешь полноту"):
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": False,
+                    "summary": "Continuation budget exhausted.",
+                    "missing_aspects": ["continuation_limit"],
+                }),
+                candidates=[],
+            )
+        if "Передан один chunk документа" in prompt:
+            batch_index = int(
+                prompt.partition("Continuation batch index: ")[2].splitlines()[0]
+            )
+            chunk_id = prompt.partition("Chunk id: ")[2].splitlines()[0]
+            source_url = prompt.partition("Source URL: ")[2].splitlines()[0]
+            quote = quotes[batch_index]
+            return SimpleNamespace(
+                text=json.dumps({
+                    "facts": [{
+                        "claim_key": f"limit-{batch_index}",
+                        "existing_fact_id": "",
+                        "text": quote,
+                        "confidence": .9,
+                        "source_urls": [source_url],
+                        "evidence_spans": [{
+                            "source_url": source_url,
+                            "chunk_id": chunk_id,
+                            "quote": quote,
+                        }],
+                    }],
+                    "needs_context": False,
+                    "context_reason": "",
+                    "continuation_needed": True,
+                    "continuation_reason": "Модель заявляет, что факты ещё остались.",
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        return SimpleNamespace(
+            text=json.dumps({
+                "summary": "Нужно прочитать страницу.",
+                "official_source_urls": [],
+                "facts": [],
+                "coverage_satisfied": False,
+                "read_source_urls": [url],
+            }),
+            candidates=[],
+        )
+
+    client._generate = generate
+    discovery = GroundedResearch(
+        payload={
+            "summary": "Discovery",
+            "official_source_urls": [],
+            "facts": [],
+            "search_provider": "duckduckgo_html_fallback",
+        },
+        grounding_sources=[{
+            "type": "web_search",
+            "title": "Limit",
+            "url": url,
+            "supports": [{
+                "kind": "search_snippet",
+                "source_url": url,
+                "text": "Страница содержит плотный набор фактов.",
+            }],
+        }],
+    )
+
+    result = await client._semantic_complete_discovery(
+        "continuation limit",
+        {
+            "research_run_id": run_id,
+            "coverage_goal": "Извлечь весь плотный набор.",
+            "known_facts": [],
+            "previously_considered_poi_facts": [],
+            "previously_processed_sources": [],
+        },
+        discovery,
+    )
+
+    assert len(result.payload["facts"]) == 6
+    assert result.payload["page_continuation_batches"] == 5
+    assert result.payload["page_chunk_deferred"] == 1
+
+    with store.connection() as db:
+        manifest = run_manifest(db, run_id)
+    assert manifest["counts"]["chunk_batches_total"] == 6
+    assert manifest["counts"]["chunk_batches_continuation"] == 5
+    assert manifest["counts"]["chunk_batches_deferred"] == 1
+    assert manifest["chunks"][0]["status"] == "deferred"
+    assert manifest["chunks"][0]["error_code"] == "continuation_limit"
+    assert manifest_complete(manifest) is False

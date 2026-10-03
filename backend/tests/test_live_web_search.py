@@ -551,6 +551,8 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
                     ],
                     "needs_context": False,
                     "context_reason": "",
+                    "continuation_needed": False,
+                    "continuation_reason": "",
                 }
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
 
@@ -693,12 +695,16 @@ async def test_long_page_tail_fact_is_extracted_and_all_chunks_are_accounted_for
                 }],
                 "needs_context": False,
                 "context_reason": "",
+                "continuation_needed": False,
+                "continuation_reason": "",
             }
         else:
             payload = {
                 "facts": [],
                 "needs_context": False,
                 "context_reason": "",
+                "continuation_needed": False,
+                "continuation_reason": "",
             }
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
 
@@ -807,6 +813,8 @@ async def test_chunk_fact_with_non_verbatim_quote_is_rejected_fail_closed(tmp_pa
                 }],
                 "needs_context": False,
                 "context_reason": "",
+                "continuation_needed": False,
+                "continuation_reason": "",
             }
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
 

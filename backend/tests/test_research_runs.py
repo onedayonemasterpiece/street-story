@@ -4,6 +4,7 @@ from street_story.research_runs import (
     manifest_complete,
     mark_chunk,
     persist_source_version,
+    record_chunk_batch,
     plan_text_chunks,
     register_discovered_source,
     run_manifest,
@@ -219,4 +220,86 @@ def test_deferred_source_keeps_manifest_partial(tmp_path):
         manifest = run_manifest(db, "run-deferred-source")
     assert manifest["counts"]["sources_pending"] == 1
     assert manifest["sources"][0]["error_code"] == "source_batch_limit"
+    assert manifest_complete(manifest) is False
+
+
+def test_chunk_batch_manifest_tracks_continuation_and_deferred_terminal_state(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    now = store.now()
+    with store.tx() as db:
+        run_id = begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:403645",
+            goal="dense chunk",
+            expected_story_revision=0,
+            identity_generation=0,
+            run_id="run-chunk-continuation",
+            now=now,
+        )
+        doc = persist_source_version(
+            db,
+            run_id=run_id,
+            requested_url="https://example.org/dense",
+            final_url="https://example.org/dense",
+            title="Dense",
+            content_type="text/html",
+            http_status=200,
+            redirect_chain=[],
+            normalized_text="Dense facts. " * 500,
+            read_status="complete",
+            now=now,
+            target_chars=10000,
+            overlap_chars=100,
+        )
+        chunk_id = doc["chunks"][0]["chunk_id"]
+        record_chunk_batch(
+            db,
+            run_id=run_id,
+            chunk_id=chunk_id,
+            batch_index=0,
+            status="continuation",
+            raw_fact_count=32,
+            accepted_fact_count=32,
+            continuation_needed=True,
+            continuation_reason="More atomic facts remain in the same core span.",
+            model_name="test-model",
+            prompt_version="chunk-cont-v1",
+            now=now,
+        )
+        record_chunk_batch(
+            db,
+            run_id=run_id,
+            chunk_id=chunk_id,
+            batch_index=1,
+            status="deferred",
+            raw_fact_count=32,
+            accepted_fact_count=30,
+            continuation_needed=True,
+            continuation_reason="Continuation budget exhausted.",
+            error_code="continuation_limit",
+            model_name="test-model",
+            prompt_version="chunk-cont-v1",
+            now=now,
+        )
+        mark_chunk(
+            db,
+            run_id=run_id,
+            chunk_id=chunk_id,
+            status="deferred",
+            observation_count=62,
+            model_name="test-model",
+            prompt_version="chunk-cont-v1",
+            error_code="continuation_limit",
+            now=now,
+        )
+
+    with store.connection() as db:
+        manifest = run_manifest(db, "run-chunk-continuation")
+    assert manifest["counts"]["chunk_batches_total"] == 2
+    assert manifest["counts"]["chunk_batches_continuation"] == 1
+    assert manifest["counts"]["chunk_batches_deferred"] == 1
+    assert manifest["chunk_batches"][0]["batch_index"] == 0
+    assert manifest["chunk_batches"][1]["error_code"] == "continuation_limit"
     assert manifest_complete(manifest) is False
