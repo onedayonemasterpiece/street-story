@@ -325,6 +325,59 @@ def persist_source_version(
     }
 
 
+def record_chunk_batch(
+    db,
+    *,
+    run_id: str,
+    chunk_id: str,
+    batch_index: int,
+    status: str,
+    raw_fact_count: int,
+    accepted_fact_count: int,
+    continuation_needed: bool,
+    continuation_reason: str,
+    model_name: str,
+    prompt_version: str,
+    now: float,
+    error_code: str | None = None,
+) -> str:
+    if status not in {"completed", "continuation", "failed", "deferred"}:
+        raise ValueError("research_chunk_batch_state_invalid")
+    batch_id = _digest(
+        "chunkbatch_",
+        f"{run_id}:{chunk_id}:{int(batch_index)}",
+        24,
+    )
+    db.execute(
+        "INSERT INTO research_chunk_batches("
+        "batch_id,run_id,chunk_id,batch_index,status,raw_fact_count,accepted_fact_count,"
+        "continuation_needed,continuation_reason,error_code,model_name,prompt_version,created_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(run_id,chunk_id,batch_index) DO UPDATE SET "
+        "status=excluded.status,raw_fact_count=excluded.raw_fact_count,"
+        "accepted_fact_count=excluded.accepted_fact_count,"
+        "continuation_needed=excluded.continuation_needed,"
+        "continuation_reason=excluded.continuation_reason,error_code=excluded.error_code,"
+        "model_name=excluded.model_name,prompt_version=excluded.prompt_version",
+        (
+            batch_id,
+            run_id,
+            chunk_id,
+            max(0, int(batch_index)),
+            status,
+            max(0, int(raw_fact_count)),
+            max(0, int(accepted_fact_count)),
+            int(bool(continuation_needed)),
+            str(continuation_reason or "")[:1000],
+            str(error_code or "")[:120] or None,
+            str(model_name or "")[:120],
+            str(prompt_version or "")[:120],
+            now,
+        ),
+    )
+    return batch_id
+
+
 def mark_chunk(
     db,
     *,
@@ -369,6 +422,11 @@ def run_manifest(db, run_id: str) -> dict[str, Any]:
         "WHERE r.run_id=? ORDER BY c.source_version_id,c.ordinal",
         (run_id,),
     )]
+    batches = [dict(row) for row in db.execute(
+        "SELECT * FROM research_chunk_batches "
+        "WHERE run_id=? ORDER BY chunk_id,batch_index",
+        (run_id,),
+    )]
     counts = {
         "sources_discovered": len(sources),
         "sources_fetched": sum(item["status"] == "fetched" for item in sources),
@@ -384,8 +442,18 @@ def run_manifest(db, run_id: str) -> dict[str, Any]:
         "chunks_needs_context": sum(item["status"] == "needs_context" for item in chunks),
         "chunks_failed": sum(item["status"] == "failed" for item in chunks),
         "chunks_deferred": sum(item["status"] == "deferred" for item in chunks),
+        "chunk_batches_total": len(batches),
+        "chunk_batches_continuation": sum(item["status"] == "continuation" for item in batches),
+        "chunk_batches_failed": sum(item["status"] == "failed" for item in batches),
+        "chunk_batches_deferred": sum(item["status"] == "deferred" for item in batches),
     }
-    return {"run": dict(run), "sources": sources, "chunks": chunks, "counts": counts}
+    return {
+        "run": dict(run),
+        "sources": sources,
+        "chunks": chunks,
+        "chunk_batches": batches,
+        "counts": counts,
+    }
 
 
 def manifest_complete(manifest: dict[str, Any]) -> bool:
@@ -397,5 +465,7 @@ def manifest_complete(manifest: dict[str, Any]) -> bool:
         and int(counts.get("chunks_failed") or 0) == 0
         and int(counts.get("chunks_deferred") or 0) == 0
         and int(counts.get("chunks_needs_context") or 0) == 0
+        and int(counts.get("chunk_batches_failed") or 0) == 0
+        and int(counts.get("chunk_batches_deferred") or 0) == 0
         and int(counts.get("chunks_completed") or 0) == int(counts.get("chunks_planned") or 0)
     )

@@ -18,6 +18,7 @@ from .fact_conflicts import conflict_scan_items, normalize_model_conflict_record
 from .research_runs import (
     mark_chunk,
     persist_source_version,
+    record_chunk_batch,
     register_discovered_source,
 )
 
@@ -510,8 +511,13 @@ class GeminiClient:
             },
             "needs_context": {"type": "boolean"},
             "context_reason": {"type": "string"},
+            "continuation_needed": {"type": "boolean"},
+            "continuation_reason": {"type": "string"},
         },
-        "required": ["facts", "needs_context", "context_reason"],
+        "required": [
+            "facts", "needs_context", "context_reason",
+            "continuation_needed", "continuation_reason",
+        ],
     }
 
     COVERAGE_REVIEW_SCHEMA = {
@@ -1553,7 +1559,11 @@ class GeminiClient:
             source_url: str,
             source_version_id: str,
             chunk: dict[str, Any],
+            *,
+            continuation_index: int = 0,
+            already_returned: list[dict[str, str]] | None = None,
         ) -> str:
+            prior = already_returned or []
             return (
                 "Ты внутренний LLM-экстрактор Street Story. Передан один chunk документа. "
                 "Извлекай атомарные проверяемые facts ТОЛЬКО когда утверждение поддерживается текстом секции [core]. "
@@ -1562,6 +1572,11 @@ class GeminiClient:
                 "Не используй знания вне chunk. Не превращай отсутствие ответа в факт. "
                 "Если core оборван так, что смысл нельзя надёжно определить даже с context, needs_context=true. "
                 "Если core понятен, needs_context=false, даже когда в нём нет релевантных facts. "
+                "За один ответ верни не более 32 НОВЫХ атомарных facts. Если после этого в том же core остаются "
+                "ещё содержательные не возвращённые facts, continuation_needed=true и кратко объясни это в "
+                "continuation_reason. continuation_needed=false ставь только когда текущий core исчерпан. "
+                "Если needs_context=true, continuation_needed=false: это отдельное terminal-состояние. "
+                "На continuation-проходе не повторяй тезисы из Already returned facts. "
                 "Для каждого факта source_urls должен содержать только переданный source_url. "
                 "Для каждого fact обязательно верни evidence_spans с exact chunk_id и короткой дословной quote, "
                 "скопированной из chunk. Не пересказывай quote и не ссылайся на другой chunk. "
@@ -1572,7 +1587,10 @@ class GeminiClient:
                 + "Source version: " + source_version_id + "\n"
                 + "Chunk id: " + str(chunk.get("chunk_id") or "") + "\n"
                 + "Chunk ordinal: " + str(chunk.get("ordinal")) + "\n"
-                + "Chunk text:\n" + str(chunk.get("text") or "")
+                + "Continuation batch index: " + str(max(0, int(continuation_index))) + "\n"
+                + "Already returned facts from this exact chunk: "
+                + json.dumps(prior, ensure_ascii=False)
+                + "\nChunk text:\n" + str(chunk.get("text") or "")
                 + "\nKnown facts (dedup references only): "
                 + json.dumps(known_facts[:40], ensure_ascii=False)
             )
@@ -1609,6 +1627,8 @@ class GeminiClient:
             semantic_completion = "gemini_research"
             page_chunk_failures = 0
             page_chunk_needs_context = 0
+            page_chunk_deferred = 0
+            page_continuation_batches = 0
             page_chunk_count = 0
             page_fact_count = 0
             if selected_urls:
@@ -1667,29 +1687,6 @@ class GeminiClient:
                                         now=self.store.now(),
                                     )
                             try:
-                                response = await self._generate(
-                                    key,
-                                    timeout,
-                                    [
-                                        build_chunk_prompt(
-                                            requested_url,
-                                            document["source_version_id"],
-                                            chunk,
-                                        )
-                                    ],
-                                    chunk_config,
-                                    operation="grounded_research",
-                                    model=model,
-                                    quota=quota,
-                                )
-                                chunk_payload = json.loads(response.text or "{}")
-                                if (
-                                    not isinstance(chunk_payload, dict)
-                                    or not isinstance(chunk_payload.get("facts"), list)
-                                    or not isinstance(chunk_payload.get("needs_context"), bool)
-                                    or not isinstance(chunk_payload.get("context_reason"), str)
-                                ):
-                                    raise ValueError("malformed_chunk_extraction")
                                 normalized_text = str(document.get("normalized_text") or "")
                                 core_start = int(chunk["core_start"])
                                 core_end = int(chunk["core_end"])
@@ -1701,70 +1698,239 @@ class GeminiClient:
                                         "core_text": normalized_text[core_start:core_end],
                                     }
                                 }
-                                chunk_facts, chunk_official, chunk_audit = normalize_payload(
-                                    {
-                                        **chunk_payload,
-                                        "official_source_urls": [],
-                                    },
-                                    evidence_chunks=evidence_chunks,
-                                )
-                                for fact in chunk_facts:
-                                    refs: list[str] = []
-                                    for span in fact.get("evidence_spans") or []:
-                                        chunk_id = str(span.get("chunk_id") or "")
-                                        if chunk_id and chunk_id not in refs:
-                                            refs.append(chunk_id)
-                                        support = {
-                                            "kind": "verified_page_span",
-                                            "source_url": span["source_url"],
-                                            "source_version_id": span["source_version_id"],
-                                            "evidence_ref": chunk_id,
-                                            "chunk_id": chunk_id,
-                                            "text": span["quote"],
-                                            "span_start": span["span_start"],
-                                            "span_end": span["span_end"],
-                                        }
-                                        if not any(
-                                            isinstance(item, dict)
-                                            and str(item.get("chunk_id") or "") == chunk_id
-                                            and str(item.get("text") or "") == span["quote"]
-                                            for item in supports
+
+                                chunk_facts_total: list[dict[str, Any]] = []
+                                seen_exact_outputs: set[str] = set()
+                                already_returned: list[dict[str, str]] = []
+                                terminal_status: str | None = None
+                                terminal_error: str | None = None
+                                max_continuation_batches = 6
+
+                                for batch_index in range(max_continuation_batches):
+                                    try:
+                                        response = await self._generate(
+                                            key,
+                                            timeout,
+                                            [
+                                                build_chunk_prompt(
+                                                    requested_url,
+                                                    document["source_version_id"],
+                                                    chunk,
+                                                    continuation_index=batch_index,
+                                                    already_returned=already_returned,
+                                                )
+                                            ],
+                                            chunk_config,
+                                            operation="grounded_research",
+                                            model=model,
+                                            quota=quota,
+                                        )
+                                        chunk_payload = json.loads(response.text or "{}")
+                                        if (
+                                            not isinstance(chunk_payload, dict)
+                                            or not isinstance(chunk_payload.get("facts"), list)
+                                            or not isinstance(chunk_payload.get("needs_context"), bool)
+                                            or not isinstance(chunk_payload.get("context_reason"), str)
+                                            or not isinstance(chunk_payload.get("continuation_needed"), bool)
+                                            or not isinstance(chunk_payload.get("continuation_reason"), str)
                                         ):
-                                            supports.append(support)
-                                    fact["evidence_refs"] = refs
-                                page_facts.extend(chunk_facts)
-                                for url in chunk_official:
-                                    if url not in page_official:
-                                        page_official.append(url)
-                                for field in (
-                                    "raw_fact_count",
-                                    "accepted_fact_count",
-                                    "claim_key_fallback_count",
-                                    "confidence_defaulted_count",
-                                ):
-                                    aggregate_audit[field] += int(chunk_audit.get(field) or 0)
-                                for reason, count in (chunk_audit.get("rejected") or {}).items():
-                                    aggregate_audit["rejected"][reason] = (
-                                        int(aggregate_audit["rejected"].get(reason) or 0)
-                                        + int(count or 0)
+                                            raise ValueError("malformed_chunk_extraction")
+                                        if (
+                                            chunk_payload["needs_context"]
+                                            and chunk_payload["continuation_needed"]
+                                        ):
+                                            raise ValueError("chunk_context_continuation_conflict")
+
+                                        batch_facts, chunk_official, chunk_audit = normalize_payload(
+                                            {
+                                                **chunk_payload,
+                                                "official_source_urls": [],
+                                            },
+                                            evidence_chunks=evidence_chunks,
+                                        )
+                                    except (
+                                        GeminiUnavailable,
+                                        PermanentProviderError,
+                                        MalformedProviderResponse,
+                                        ValueError,
+                                        TypeError,
+                                        json.JSONDecodeError,
+                                    ) as batch_exc:
+                                        page_chunk_failures += 1
+                                        terminal_status = "failed"
+                                        terminal_error = type(batch_exc).__name__
+                                        if run_id:
+                                            with self.store.tx() as db:
+                                                record_chunk_batch(
+                                                    db,
+                                                    run_id=run_id,
+                                                    chunk_id=chunk["chunk_id"],
+                                                    batch_index=batch_index,
+                                                    status="failed",
+                                                    raw_fact_count=0,
+                                                    accepted_fact_count=0,
+                                                    continuation_needed=False,
+                                                    continuation_reason="",
+                                                    model_name=str(model or ""),
+                                                    prompt_version="page-chunk-extraction-v2",
+                                                    error_code=terminal_error,
+                                                    now=self.store.now(),
+                                                )
+                                        break
+
+                                    new_batch_facts: list[dict[str, Any]] = []
+                                    duplicate_count = 0
+                                    for fact in batch_facts:
+                                        exact_payload = {
+                                            "claim_key": str(fact.get("claim_key") or ""),
+                                            "text": str(fact.get("text") or ""),
+                                            "evidence_spans": fact.get("evidence_spans") or [],
+                                        }
+                                        exact_fingerprint = hashlib.sha256(
+                                            json.dumps(
+                                                exact_payload,
+                                                ensure_ascii=False,
+                                                sort_keys=True,
+                                                separators=(",", ":"),
+                                            ).encode("utf-8")
+                                        ).hexdigest()
+                                        if exact_fingerprint in seen_exact_outputs:
+                                            duplicate_count += 1
+                                            continue
+                                        seen_exact_outputs.add(exact_fingerprint)
+
+                                        refs: list[str] = []
+                                        for span in fact.get("evidence_spans") or []:
+                                            span_chunk_id = str(span.get("chunk_id") or "")
+                                            if span_chunk_id and span_chunk_id not in refs:
+                                                refs.append(span_chunk_id)
+                                            support = {
+                                                "kind": "verified_page_span",
+                                                "source_url": span["source_url"],
+                                                "source_version_id": span["source_version_id"],
+                                                "evidence_ref": span_chunk_id,
+                                                "chunk_id": span_chunk_id,
+                                                "text": span["quote"],
+                                                "span_start": span["span_start"],
+                                                "span_end": span["span_end"],
+                                            }
+                                            if not any(
+                                                isinstance(item, dict)
+                                                and str(item.get("chunk_id") or "") == span_chunk_id
+                                                and str(item.get("text") or "") == span["quote"]
+                                                for item in supports
+                                            ):
+                                                supports.append(support)
+                                        fact["evidence_refs"] = refs
+                                        new_batch_facts.append(fact)
+                                        already_returned.append({
+                                            "claim_key": str(fact.get("claim_key") or "")[:300],
+                                            "text": str(fact.get("text") or "")[:1200],
+                                        })
+
+                                    chunk_facts_total.extend(new_batch_facts)
+                                    for url in chunk_official:
+                                        if url not in page_official:
+                                            page_official.append(url)
+
+                                    for field in (
+                                        "raw_fact_count",
+                                        "claim_key_fallback_count",
+                                        "confidence_defaulted_count",
+                                    ):
+                                        aggregate_audit[field] += int(chunk_audit.get(field) or 0)
+                                    aggregate_audit["accepted_fact_count"] += len(new_batch_facts)
+                                    for reason, count in (chunk_audit.get("rejected") or {}).items():
+                                        aggregate_audit["rejected"][reason] = (
+                                            int(aggregate_audit["rejected"].get(reason) or 0)
+                                            + int(count or 0)
+                                        )
+                                    if duplicate_count:
+                                        aggregate_audit["rejected"]["continuation_exact_duplicate"] = (
+                                            int(
+                                                aggregate_audit["rejected"].get(
+                                                    "continuation_exact_duplicate"
+                                                )
+                                                or 0
+                                            )
+                                            + duplicate_count
+                                        )
+
+                                    continuation_needed = bool(
+                                        chunk_payload["continuation_needed"]
                                     )
-                                if chunk_payload["needs_context"]:
-                                    status = "needs_context"
-                                    page_chunk_needs_context += 1
-                                elif chunk_facts:
-                                    status = "extracted"
-                                else:
-                                    status = "no_claims"
+                                    continuation_reason = str(
+                                        chunk_payload.get("continuation_reason") or ""
+                                    ).strip()
+
+                                    batch_status = "completed"
+                                    batch_error = None
+                                    if chunk_payload["needs_context"]:
+                                        terminal_status = "needs_context"
+                                        page_chunk_needs_context += 1
+                                    elif continuation_needed:
+                                        if not new_batch_facts:
+                                            batch_status = "deferred"
+                                            batch_error = "continuation_stalled"
+                                            terminal_status = "deferred"
+                                            terminal_error = batch_error
+                                            page_chunk_deferred += 1
+                                        elif batch_index + 1 >= max_continuation_batches:
+                                            batch_status = "deferred"
+                                            batch_error = "continuation_limit"
+                                            terminal_status = "deferred"
+                                            terminal_error = batch_error
+                                            page_chunk_deferred += 1
+                                        else:
+                                            batch_status = "continuation"
+                                            page_continuation_batches += 1
+                                    else:
+                                        terminal_status = (
+                                            "extracted"
+                                            if chunk_facts_total
+                                            else "no_claims"
+                                        )
+
+                                    if run_id:
+                                        with self.store.tx() as db:
+                                            record_chunk_batch(
+                                                db,
+                                                run_id=run_id,
+                                                chunk_id=chunk["chunk_id"],
+                                                batch_index=batch_index,
+                                                status=batch_status,
+                                                raw_fact_count=len(
+                                                    chunk_payload.get("facts") or []
+                                                ),
+                                                accepted_fact_count=len(new_batch_facts),
+                                                continuation_needed=continuation_needed,
+                                                continuation_reason=continuation_reason,
+                                                model_name=str(model or ""),
+                                                prompt_version="page-chunk-extraction-v2",
+                                                error_code=batch_error,
+                                                now=self.store.now(),
+                                            )
+
+                                    if terminal_status is not None:
+                                        break
+
+                                if terminal_status is None:
+                                    terminal_status = "deferred"
+                                    terminal_error = "continuation_unresolved"
+                                    page_chunk_deferred += 1
+
+                                page_facts.extend(chunk_facts_total)
                                 if run_id:
                                     with self.store.tx() as db:
                                         mark_chunk(
                                             db,
                                             run_id=run_id,
                                             chunk_id=chunk["chunk_id"],
-                                            status=status,
-                                            observation_count=len(chunk_facts),
+                                            status=terminal_status,
+                                            observation_count=len(chunk_facts_total),
                                             model_name=str(model or ""),
-                                            prompt_version="page-chunk-extraction-v1",
+                                            prompt_version="page-chunk-extraction-v2",
+                                            error_code=terminal_error,
                                             now=self.store.now(),
                                         )
                             except (
@@ -1877,6 +2043,8 @@ class GeminiClient:
                     "page_chunk_count": page_chunk_count,
                     "page_chunk_failures": page_chunk_failures,
                     "page_chunk_needs_context": page_chunk_needs_context,
+                    "page_chunk_deferred": page_chunk_deferred,
+                    "page_continuation_batches": page_continuation_batches,
                     "page_fact_count": page_fact_count,
                     "extraction_audit": extraction_audit,
                 },

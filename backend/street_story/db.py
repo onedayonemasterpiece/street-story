@@ -351,6 +351,25 @@ CREATE TABLE IF NOT EXISTS research_chunk_runs(
 );
 CREATE INDEX IF NOT EXISTS idx_research_chunk_runs_state
  ON research_chunk_runs(run_id,status,updated_at);
+
+CREATE TABLE IF NOT EXISTS research_chunk_batches(
+  batch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES research_runs(run_id) ON DELETE CASCADE,
+  chunk_id TEXT NOT NULL REFERENCES source_chunks(chunk_id) ON DELETE CASCADE,
+  batch_index INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('completed','continuation','failed','deferred')),
+  raw_fact_count INTEGER NOT NULL DEFAULT 0,
+  accepted_fact_count INTEGER NOT NULL DEFAULT 0,
+  continuation_needed INTEGER NOT NULL DEFAULT 0,
+  continuation_reason TEXT NOT NULL DEFAULT '',
+  error_code TEXT,
+  model_name TEXT NOT NULL DEFAULT '',
+  prompt_version TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  UNIQUE(run_id,chunk_id,batch_index)
+);
+CREATE INDEX IF NOT EXISTS idx_research_chunk_batches_run_chunk
+ ON research_chunk_batches(run_id,chunk_id,batch_index);
 """
 
 

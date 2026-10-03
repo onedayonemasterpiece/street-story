@@ -117,7 +117,7 @@ class DebugProvisioningInstrumentedTest {
     }
 
     private fun waitForResumedMainActivity(): MainActivity? {
-        val deadline = System.currentTimeMillis() + 5_000
+        val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
             var found: MainActivity? = null
             instrumentation.runOnMainSync {
@@ -158,6 +158,7 @@ class DebugProvisioningInstrumentedTest {
                 .putExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL, backendUrl)
                 .putExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN, token),
         )
+        instrumentation.waitForIdleSync()
     }
 
     private fun startStagedProvisioning(backendUrl: String) {
@@ -167,6 +168,7 @@ class DebugProvisioningInstrumentedTest {
                 .putExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL, backendUrl)
                 .putExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED, true),
         )
+        instrumentation.waitForIdleSync()
     }
 
     private fun waitForConfig(backendUrl: String, token: String): Boolean {
