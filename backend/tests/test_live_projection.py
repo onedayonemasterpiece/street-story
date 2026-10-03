@@ -78,6 +78,7 @@ def test_discovery_search_projection_keeps_refs_and_evidence_without_url_duplica
                 "kind": "search_snippet",
                 "source_url": f"https://example{i}.org/very/long/source/path",
                 "text": ("Evidence sentence about the gate. " * 8).strip(),
+                "evidence_ref": "evref_" + f"{i:024x}",
             }],
         }
         for i in range(10)
@@ -98,7 +99,8 @@ def test_discovery_search_projection_keeps_refs_and_evidence_without_url_duplica
     assert full == original
     assert len(projected["sources"]) == 10
     assert projected["sources"][0]["source_ref"].startswith("websrc_")
-    assert projected["sources"][0]["snippets"]
+    assert projected["sources"][0]["evidence"]
+    assert projected["sources"][0]["evidence"][0]["evidence_ref"].startswith("evref_")
     assert "url" not in projected["sources"][0]
     assert "fact_conflicts" not in projected
     assert "draft_text" not in projected["story"]
