@@ -431,7 +431,7 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
 
 
 @pytest.mark.asyncio
-async def test_fallback_filters_already_processed_exact_urls_when_fresh_sources_exist(tmp_path):
+async def test_fallback_keeps_processed_urls_available_for_new_coverage_gaps(tmp_path):
     settings = replace(
         config(tmp_path),
         gemini_api_key=SecretStr("key-a"),
@@ -457,9 +457,86 @@ async def test_fallback_filters_already_processed_exact_urls_when_fresh_sources_
     )
     result = await client.search_web(
         "new angle",
-        {"previously_processed_sources": [{"url": "https://old.example/page"}]},
+        {
+            "previously_processed_sources": [{
+                "url": "https://old.example/page",
+                "title": "Old",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": "https://old.example/page",
+                    "text": "Cached old evidence.",
+                }],
+            }],
+        },
     )
-    assert [item["url"] for item in result.grounding_sources] == ["https://fresh.example/page"]
+    assert {item["url"] for item in result.grounding_sources} == {
+        "https://old.example/page",
+        "https://fresh.example/page",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cached_poi_evidence_can_answer_new_coverage_without_reopening_page(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://old.example/royal-gate"
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+    client.search_http = FakeSearchHTTP(
+        f"""<div class="result"><a class="result__a" href="{source_url}">Old</a>
+        <a class="result__snippet">Фасад Королевских ворот.</a></div>"""
+    )
+
+    calls = 0
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        nonlocal calls
+        calls += 1
+        prompt = str(contents[0])
+        assert "Отакар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
+        payload = {
+            "summary": "Cached evidence answers who is depicted.",
+            "official_source_urls": [],
+            "facts": [
+                {"claim_key": "left", "existing_fact_id": "", "text": "Слева изображён Отакар II.", "confidence": .95, "source_urls": [source_url]},
+                {"claim_key": "center", "existing_fact_id": "", "text": "В центре изображён Фридрих I.", "confidence": .95, "source_urls": [source_url]},
+                {"claim_key": "right", "existing_fact_id": "", "text": "Справа изображён Альбрехт I.", "confidence": .95, "source_urls": [source_url]},
+            ],
+            "coverage_satisfied": True,
+            "read_source_urls": [],
+        }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {
+            "coverage_goal": "Кто изображён слева, в центре и справа?",
+            "previously_processed_sources": [{
+                "url": source_url,
+                "title": "Saved evidence",
+                "supports": [{
+                    "kind": "page_excerpt",
+                    "source_url": source_url,
+                    "text": "Слева направо: Отакар II, Фридрих I и Альбрехт I.",
+                }],
+            }],
+        },
+    )
+    assert calls == 1
+    assert len(result.payload["facts"]) == 3
+    assert all(fact["source_urls"] == [source_url] for fact in result.payload["facts"])
+    assert any(source.get("cached") for source in result.grounding_sources if source["url"] == source_url)
+
 
 @pytest.mark.asyncio
 async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_path):

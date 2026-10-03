@@ -619,6 +619,93 @@ class GeminiClient:
             raise GeminiUnavailable(min(retry_at), "all_transcription_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
+    @staticmethod
+    def _cached_evidence_sources(topic_context: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        for item in topic_context.get("previously_processed_sources") or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").rstrip("/")
+            if not url.startswith("https://"):
+                continue
+            supports = []
+            for support in item.get("supports") or []:
+                if not isinstance(support, dict):
+                    continue
+                text = str(support.get("text") or "").strip()
+                source_url = str(support.get("source_url") or url).rstrip("/")
+                if not text or source_url != url:
+                    continue
+                supports.append({
+                    "kind": str(support.get("kind") or "cached_evidence")[:80],
+                    "source_url": url,
+                    "text": text[:9000] if support.get("kind") == "page_excerpt" else text[:600],
+                })
+                if len(supports) >= 5:
+                    break
+            if not supports:
+                continue
+            sources.append({
+                "type": str(item.get("type") or "poi_memory"),
+                "title": str(item.get("title") or url)[:300],
+                "url": url,
+                "supports": supports,
+                "cached": True,
+            })
+            if len(sources) >= max(1, min(int(limit), 24)):
+                break
+        return sources
+
+    @staticmethod
+    def _merge_evidence_sources(
+        primary: list[dict[str, Any]],
+        cached: list[dict[str, Any]],
+        limit: int = 24,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for source in [*primary, *cached]:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").rstrip("/")
+            if not url.startswith("https://"):
+                continue
+            current = merged.get(url)
+            if current is None:
+                current = {**source, "url": url}
+                if not current.get("supports"):
+                    current.pop("supports", None)
+                merged[url] = current
+                order.append(url)
+            elif source.get("title") and not current.get("title"):
+                current["title"] = source.get("title")
+            if source.get("cached"):
+                current["cached"] = True
+            support_map = {
+                (
+                    str(item.get("kind") or ""),
+                    str(item.get("source_url") or "").rstrip("/"),
+                    str(item.get("text") or ""),
+                ): item
+                for item in current.get("supports") or []
+                if isinstance(item, dict)
+            }
+            for support in source.get("supports") or []:
+                if not isinstance(support, dict):
+                    continue
+                key = (
+                    str(support.get("kind") or ""),
+                    str(support.get("source_url") or "").rstrip("/"),
+                    str(support.get("text") or ""),
+                )
+                if key[2]:
+                    support_map[key] = support
+            if support_map:
+                current["supports"] = list(support_map.values())[:6]
+            else:
+                current.pop("supports", None)
+        return [merged[url] for url in order[: max(1, min(int(limit), 32))]]
+
     async def _public_web_search(
         self,
         query: str,
@@ -663,28 +750,14 @@ class GeminiClient:
             if not results:
                 raise RetryableProviderError("public_web_search_no_https_results")
 
-            excluded = {str(url).rstrip("/") for url in (excluded_urls or set()) if str(url).startswith("https://")}
-            if excluded:
-                fresh = [
-                    item for item in results
-                    if str(item.get("url") or "").rstrip("/") not in excluded
-                ]
-                if fresh:
-                    results = fresh
-                else:
-                    return GroundedResearch(
-                        payload={
-                            "summary": (
-                                f"По запросу найдено {len(results)} результатов, но все эти URL уже были обработаны "
-                                "для этого POI. Нужен другой поисковый аспект или запрос."
-                            ),
-                            "official_source_urls": [],
-                            "facts": [],
-                            "search_provider": "duckduckgo_html_fallback",
-                            "processed_sources_filtered": len(results),
-                        },
-                        grounding_sources=[],
-                    )
+            # Previously processed URLs are intentionally not filtered here:
+            # a new coverage goal may require a different fact or page section.
+            # Cached supports are supplied separately to the semantic model.
+            _processed = {
+                str(url).rstrip("/")
+                for url in (excluded_urls or set())
+                if str(url).startswith("https://")
+            }
 
             facts: list[dict[str, Any]] = []
             sources = [
@@ -836,7 +909,7 @@ class GeminiClient:
 
         allowed_urls: dict[str, str] = {}
         source_by_url: dict[str, dict[str, Any]] = {}
-        for source in discovery.grounding_sources[:12]:
+        for source in discovery.grounding_sources[:24]:
             if not isinstance(source, dict):
                 continue
             url = str(source.get("url") or "").strip()
@@ -984,6 +1057,8 @@ class GeminiClient:
                 "Извлеки до 32 содержательных атомарных проверяемых фактов. Один fact.text = один тезис. "
                 "Если один абзац содержит несколько независимо проверяемых утверждений, разнеси их на отдельные facts; "
                 "не склеивай перечень людей/дат/ролей в один факт, когда каждый элемент имеет самостоятельный смысл. "
+                "Фраза о том, что источник не содержит нужной информации, НЕ является фактом об объекте: в таком случае "
+                "не создавай meta-факт, а оставь facts пустым или извлеки только реально поддержанные сведения. "
                 "Для каждого факта дай устойчивый claim_key. Если тезис семантически совпадает с known_facts, обязательно "
                 "верни exact fact_id в existing_fact_id. Для source_urls перечисли ВСЕ URL из evidence, которые реально "
                 "поддерживают тезис. Нельзя цитировать URL вне evidence. Не сочиняй публикацию. previously_processed_sources "
@@ -1290,11 +1365,23 @@ class GeminiClient:
             "Не выдумывай existing_fact_id. Для новых тезисов используй устойчивый claim_key. Самые важные факты "
             "ставь первыми; сведения официального источника имеют приоритет. Если Current topic context содержит "
             "previously_considered_poi_facts, не повторяй их без явной просьбы пользователя повторить или перепроверить. "
-            "previously_processed_sources содержит уже обработанные URL этого POI: без задачи перепроверки не трать поиск на "
-            "повторный обход тех же страниц, ищи новые аспекты и независимые источники. Для каждого факта "
-            "укажи только source_urls, которые реально видел в grounding. Не пиши публикацию и не предлагай редактуру.\n\n"
+            "Cached POI evidence ниже уже было получено ранее и может поддерживать новый аспект без повторного открытия страницы. "
+            "Если оно не закрывает coverage_goal, ищи новые evidence; старый URL не запрещён, если он снова релевантен новому пробелу. "
+            "Фраза о том, что источник не содержит нужной информации, НЕ является фактом об объекте и не должна попадать в facts. "
+            "Для каждого факта укажи только source_urls из текущего grounding или Cached POI evidence. "
+            "Не пиши публикацию и не предлагай редактуру.\n\n"
+            "Coverage goal: " + str(topic_context.get("coverage_goal") or query)[:1600] + "\n"
             "Search query: " + query[:1000] + "\n"
-            "Current topic context: " + json.dumps(topic_context, ensure_ascii=False)[:12000]
+            "Cached POI evidence: " + json.dumps(self._cached_evidence_sources(topic_context), ensure_ascii=False) + "\n"
+            "Compact topic context: " + json.dumps(
+                {
+                    "place_name": topic_context.get("place_name"),
+                    "known_facts": list(topic_context.get("known_facts") or [])[:40],
+                    "previously_considered_poi_facts": list(topic_context.get("previously_considered_poi_facts") or [])[:20],
+                    "visual_identity": topic_context.get("visual_identity"),
+                },
+                ensure_ascii=False,
+            )
         )
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -1356,7 +1443,22 @@ class GeminiClient:
                                     "text": text[:600],
                                 })
             unique_sources = list({source["url"]: source for source in sources}.values())
-            seen = {source["url"].rstrip("/") for source in unique_sources}
+            current_sources = [
+                {
+                    **source,
+                    **(
+                        {"supports": supports_by_url.get(source["url"], [])[:4]}
+                        if supports_by_url.get(source["url"])
+                        else {}
+                    ),
+                }
+                for source in unique_sources
+            ]
+            available_sources = self._merge_evidence_sources(
+                current_sources,
+                self._cached_evidence_sources(topic_context),
+            )
+            seen = {source["url"].rstrip("/") for source in available_sources}
 
             raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
             extraction_audit = {
@@ -1438,14 +1540,13 @@ class GeminiClient:
             decorated = [
                 {
                     **source,
-                    "type": "official" if source["url"].rstrip("/") in official_set else source["type"],
-                    **(
-                        {"supports": supports_by_url.get(source["url"], [])[:4]}
-                        if supports_by_url.get(source["url"])
-                        else {}
+                    "type": (
+                        "official"
+                        if source["url"].rstrip("/") in official_set
+                        else str(source.get("type") or "web")
                     ),
                 }
-                for source in unique_sources
+                for source in available_sources
             ]
             return GroundedResearch(payload=payload, grounding_sources=decorated)
 
@@ -1464,17 +1565,25 @@ class GeminiClient:
                 if str(exc) == "gemini:unsupported_model":
                     continue
                 raise
-        excluded_urls = {
+        processed_urls = {
             str(item.get("url") or "").rstrip("/")
             for item in (topic_context.get("previously_processed_sources") or [])
             if isinstance(item, dict) and str(item.get("url") or "").startswith("https://")
         }
         try:
-            discovery = await self._public_web_search(query, excluded_urls=excluded_urls)
+            discovery = await self._public_web_search(query, excluded_urls=processed_urls)
         except RetryableProviderError:
             if retry_at:
                 raise GeminiUnavailable(min(retry_at), "all_web_search_models_and_public_search_unavailable")
             raise
+        cached_sources = self._cached_evidence_sources(topic_context)
+        discovery = GroundedResearch(
+            payload={**discovery.payload, "cached_source_count": len(cached_sources)},
+            grounding_sources=self._merge_evidence_sources(
+                discovery.grounding_sources,
+                cached_sources,
+            ),
+        )
         try:
             return await self._semantic_complete_discovery(query, topic_context, discovery)
         except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse):
