@@ -14,7 +14,7 @@ from street_story.config import Settings
 from street_story.live import FUNCTIONS, StreetStoryLiveAdapter, ensure_live_schema, live_history
 from street_story.mvp_location import MvpLocationStreetStoryService
 from street_story.providers import GroundedResearch
-from street_story.service import ConflictError, ProviderBundle
+from street_story.service import ConflictError, ProviderBundle, canonical
 
 
 def test_live_interaction_is_pinned_to_manual_activity_release() -> None:
@@ -895,6 +895,43 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
             },
         )
     assert stale.value.code == "publication_confirmation_stale"
+
+def test_legacy_live_history_backfill_recovers_transcripts_and_skips_known_noise(tmp_path):
+    svc, _adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    with svc.store.tx() as db:
+        db.execute("DELETE FROM live_messages WHERE story_id=?", (story_id,))
+        now = svc.store.now()
+        rows = [
+            ("input_transcript", {"role": "user", "text": "Мира, привет."}, now),
+            ("turn_complete", {}, now + .1),
+            ("output_transcript", {"role": "assistant", "text": "Привет! На"}, now + .2),
+            ("output_transcript", {"role": "assistant", "text": "фото ворота."}, now + .3),
+            ("turn_complete", {}, now + .4),
+            ("suspected_noise_turn", {"turn_serial": 2}, now + .5),
+            ("input_transcript", {"role": "user", "text": "¿Qué?"}, now + .51),
+            ("input_transcript", {"role": "user", "text": "Найди ещё фактов."}, now + .6),
+        ]
+        for event_type, payload, created_at in rows:
+            db.execute(
+                "INSERT INTO live_diagnostics(story_id,session_id,source,event_type,payload_json,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (story_id, session.id, "provider", event_type, canonical(payload), created_at),
+            )
+
+    ensure_live_schema(svc)
+    history = svc.story(story_id)["live_messages"]
+    assert [(item["role"], item["text"]) for item in history] == [
+        ("user", "Мира, привет."),
+        ("assistant", "Привет! На фото ворота."),
+        ("user", "Найди ещё фактов."),
+    ]
+    assert all("¿Qué?" not in item["text"] for item in history)
+
+    # Idempotent: repeated schema/bootstrap calls never duplicate recovered chat.
+    ensure_live_schema(svc)
+    assert len(svc.story(story_id)["live_messages"]) == 3
+
 
 def test_live_text_input_is_durable_before_provider_echo(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
