@@ -2190,16 +2190,6 @@ class GeminiClient:
                             now=self.store.now(),
                         )
             seen = {source["url"].rstrip("/") for source in available_sources}
-            supported_seen = {
-                str(source.get("url") or "").rstrip("/")
-                for source in available_sources
-                if any(
-                    isinstance(support, dict)
-                    and str(support.get("text") or "").strip()
-                    for support in (source.get("supports") or [])
-                )
-            }
-
             raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
             extraction_audit = {
                 "raw_fact_count": len(raw_facts),
