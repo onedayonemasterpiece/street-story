@@ -5,7 +5,10 @@ data class MicrophoneReading(
     val level: Int,
     val warning: String? = null,
     val playbackSuppressed: Boolean = false,
-)
+    val researchSuppressed: Boolean = false,
+) {
+    val inputSuppressed: Boolean get() = playbackSuppressed || researchSuppressed
+}
 
 internal class LiveMicrophoneHealth {
     fun observe(
@@ -14,9 +17,13 @@ internal class LiveMicrophoneHealth {
         systemMuted: Boolean = false,
         clientSilenced: Boolean = false,
         playbackSuppressed: Boolean = false,
+        researchSuppressed: Boolean = false,
     ): MicrophoneReading {
         @Suppress("UNUSED_VARIABLE")
         val observedAt = nowMs
+        if (researchSuppressed) {
+            return MicrophoneReading(0, researchSuppressed = true)
+        }
         if (playbackSuppressed) {
             return MicrophoneReading(0, playbackSuppressed = true)
         }

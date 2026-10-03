@@ -92,6 +92,7 @@ class LiveSessionController(context: Context) {
     private val playbackDrain = PlaybackDrainTracker()
     private val playbackOutstanding = AtomicBoolean(false)
     private val duplexGate = LiveDuplexGate()
+    private val inputFocusGate = LiveInputFocusGate()
     private val playbackSuppressionReported = AtomicBoolean(false)
     private val receivedPcm = AtomicLong(0)
     private val outputAudioChunks = AtomicLong(0)
@@ -165,7 +166,7 @@ class LiveSessionController(context: Context) {
         "event_polling" to false,
     )
 
-    fun shouldSuppressMicrophoneInput(): Boolean {
+    fun microphoneInputSuppression(): LiveInputSuppression {
         val now = SystemClock.elapsedRealtime()
         val hardwarePending = audioTrack?.let { track ->
             runCatching { playbackDrain.pending(track.playbackHeadPosition) > 0 }.getOrDefault(false)
@@ -175,16 +176,47 @@ class LiveSessionController(context: Context) {
             duplexGate.onPlaybackDrained(now)
             diagnostic("playback_drained", mapOf("hardware_queue_empty" to true, "received_pcm_bytes" to receivedPcm.get()))
         }
-        val suppressed = state.active && duplexGate.shouldSuppress(now, if (outputPending) 1 else 0)
-        if (suppressed && playbackSuppressionReported.compareAndSet(false, true)) {
+        val playbackSuppressed = state.active && duplexGate.shouldSuppress(now, if (outputPending) 1 else 0)
+        if (playbackSuppressed && playbackSuppressionReported.compareAndSet(false, true)) {
             diagnostic(
                 "input_suppressed_playback",
                 mapOf("pending_playback_bytes" to pendingPlayback.get()),
             )
-        } else if (!suppressed && playbackSuppressionReported.compareAndSet(true, false)) {
+        } else if (!playbackSuppressed && playbackSuppressionReported.compareAndSet(true, false)) {
             diagnostic("input_resumed_after_playback")
         }
-        return suppressed
+        return inputFocusGate.snapshot(playbackSuppressed)
+    }
+
+    fun shouldSuppressMicrophoneInput(): Boolean = microphoneInputSuppression().active
+
+    private fun setResearchInputFocus(active: Boolean, stage: String): LiveInputSuppression {
+        val wasActive = inputFocusGate.isResearchActive()
+        val next = inputFocusGate.setResearchActive(active)
+        if (wasActive == active) return next
+
+        var closeSpeech = false
+        synchronized(this) {
+            if (active && inputOpen) {
+                inputOpen = false
+                closeSpeech = true
+            }
+        }
+        if (closeSpeech) {
+            socket?.endSpeech()
+            diagnostic("speech_closed_for_research", mapOf("stage" to stage, "input_epoch" to next.epoch))
+        }
+        diagnostic(
+            if (active) "research_input_suppressed" else "research_input_resumed",
+            mapOf("stage" to stage, "input_epoch" to next.epoch),
+        )
+        return next
+    }
+
+    private fun researchStatus(progress: LiveResearchProgress?): String = when (progress?.stage) {
+        "searching" -> "Ищу источники…"
+        "extracting" -> "Извлекаю и сверяю факты…"
+        else -> if (progress?.active == true) "Обрабатываю факты…" else "Факты обновлены"
     }
 
     fun diagnostic(event: String, fields: Map<String, Any?> = emptyMap()) {
@@ -291,6 +323,7 @@ class LiveSessionController(context: Context) {
                 receivedPcm.set(0)
                 outputAudioChunks.set(0)
                 duplexGate.reset()
+                inputFocusGate.reset()
                 playbackSuppressionReported.set(false)
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
@@ -454,11 +487,15 @@ class LiveSessionController(context: Context) {
 
     fun submitPcm(samples: ShortArray) {
         if (!state.active || state.connecting) return
-        if (shouldSuppressMicrophoneInput()) {
+        val suppression = microphoneInputSuppression()
+        if (suppression.active) {
             if (inputOpen) {
                 inputOpen = false
                 socket?.endSpeech()
-                diagnostic("speech_closed_for_playback")
+                diagnostic(
+                    if (suppression.reason == "research") "speech_closed_for_research" else "speech_closed_for_playback",
+                    mapOf("input_epoch" to suppression.epoch),
+                )
             }
             return
         }
@@ -502,9 +539,17 @@ class LiveSessionController(context: Context) {
             playbackGeneration.incrementAndGet()
             serverStoryId = null; sessionId = null; socket = null
             inputOpen = false; waitStarted = 0
-            duplexGate.reset(); playbackSuppressionReported.set(false)
+            duplexGate.reset(); inputFocusGate.reset(); playbackSuppressionReported.set(false)
             userTranscriptIndex = -1; assistantTranscriptIndex = -1
-            update(state.copy(active = false, connecting = false, status = "Микрофон выключен", inputActive = false, error = null))
+            update(state.copy(
+                active = false,
+                connecting = false,
+                status = "Микрофон выключен",
+                inputActive = false,
+                microphone = null,
+                researchProgress = null,
+                error = null,
+            ))
             prior
         }
         // Never call transport callbacks while holding the controller state lock.
@@ -552,7 +597,8 @@ class LiveSessionController(context: Context) {
                 waitStarted = 0
                 userTranscriptIndex = -1
                 assistantTranscriptIndex = -1
-                updateForGeneration(gen, state.copy(status = "Слушаю", inputActive = false, completedTurns = state.completedTurns + 1, error = null))
+                val status = if (inputFocusGate.isResearchActive()) researchStatus(state.researchProgress) else "Слушаю"
+                updateForGeneration(gen, state.copy(status = status, inputActive = false, completedTurns = state.completedTurns + 1, error = null))
                 persistMessages()
                 SyncScheduler.enqueue(app)
             }
@@ -580,14 +626,31 @@ class LiveSessionController(context: Context) {
                     batchSourceCount = payload?.get("batch_source_count")?.asInt ?: 0,
                     sources = sourceRows,
                 )
-                val label = when (progress.stage) {
-                    "searching" -> "Ищу источники…"
-                    "extracting" -> "Извлекаю и сверяю факты…"
-                    else -> if (progress.active) "Обрабатываю факты…" else "Факты обновлены"
-                }
-                updateForGeneration(gen, state.copy(status = label, researchProgress = progress, error = null))
+                setResearchInputFocus(progress.active, progress.stage)
+                updateForGeneration(
+                    gen,
+                    state.copy(
+                        status = researchStatus(progress),
+                        inputActive = if (progress.active) false else state.inputActive,
+                        microphone = if (progress.active) MicrophoneReading(0, researchSuppressed = true) else null,
+                        researchProgress = progress,
+                        error = null,
+                    ),
+                )
             }
-            "literal_mode" -> updateForGeneration(gen, state.copy(literalMode = event.active == true, status = if (event.active == true) "Дословная диктовка" else "Слушаю"))
+            "literal_mode" -> updateForGeneration(
+                gen,
+                state.copy(
+                    literalMode = event.active == true,
+                    status = if (event.active == true) {
+                        "Дословная диктовка"
+                    } else if (inputFocusGate.isResearchActive()) {
+                        researchStatus(state.researchProgress)
+                    } else {
+                        "Слушаю"
+                    },
+                ),
+            )
             "product_state" -> {
                 SyncScheduler.enqueue(app)
                 val product = event.state?.takeIf { it.isJsonObject }?.asJsonObject
@@ -597,8 +660,23 @@ class LiveSessionController(context: Context) {
             "tool_result" -> {
                 SyncScheduler.enqueue(app)
                 waitStage = "provider"
-                updateForGeneration(gen, state.copy(status = if (event.status == "error") "Действие не выполнено" else "Обновляю результат…",
-                    lastChange = if (event.status == "error") event.code ?: "Ошибка действия" else state.lastChange))
+                if (event.status == "error" && inputFocusGate.isResearchActive()) {
+                    setResearchInputFocus(false, "tool_error")
+                }
+                updateForGeneration(
+                    gen,
+                    state.copy(
+                        status = if (event.status == "error") "Действие не выполнено" else "Обновляю результат…",
+                        inputActive = false,
+                        microphone = if (inputFocusGate.isResearchActive()) state.microphone else null,
+                        researchProgress = if (event.status == "error") {
+                            state.researchProgress?.copy(active = false, stage = "error")
+                        } else {
+                            state.researchProgress
+                        },
+                        lastChange = if (event.status == "error") event.code ?: "Ошибка действия" else state.lastChange,
+                    ),
+                )
             }
             "publication_confirmation" -> {
                 val id = event.confirmationId.orEmpty()
@@ -618,7 +696,11 @@ class LiveSessionController(context: Context) {
                 playbackGeneration.incrementAndGet()
                 stopPlayback()
                 diagnostic("assistant_interrupted", mapOf("received_pcm_bytes" to receivedPcm.get()))
-                updateForGeneration(gen, state.copy(status = "Слышу вас", inputActive = true))
+                if (inputFocusGate.isResearchActive()) {
+                    updateForGeneration(gen, state.copy(status = researchStatus(state.researchProgress), inputActive = false))
+                } else {
+                    updateForGeneration(gen, state.copy(status = "Слышу вас", inputActive = true))
+                }
             }
             "error" -> {
                 diagnostic("provider_error", mapOf("code" to (event.code ?: "LIVE_PROVIDER_ERROR")))
@@ -713,10 +795,18 @@ class LiveSessionController(context: Context) {
             val prior = Triple(serverStoryId, sessionId, socket)
             serverStoryId = null; sessionId = null; socket = null
             waitStarted = 0; inputOpen = false
-            duplexGate.reset(); playbackSuppressionReported.set(false)
+            duplexGate.reset(); inputFocusGate.reset(); playbackSuppressionReported.set(false)
             userTranscriptIndex = -1; assistantTranscriptIndex = -1
             // Keep already received PCM; only explicit user Stop flushes playback.
-            update(state.copy(active = false, connecting = false, status = "Live остановлен", inputActive = false, error = message))
+            update(state.copy(
+                active = false,
+                connecting = false,
+                status = "Live остановлен",
+                inputActive = false,
+                microphone = null,
+                researchProgress = null,
+                error = message,
+            ))
             persistMessages()
             prior
         }
