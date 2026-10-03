@@ -194,6 +194,7 @@ CREATE TABLE IF NOT EXISTS fact_conflict_scans(
  status TEXT NOT NULL,
  pair_count INTEGER NOT NULL,
  detected_count INTEGER NOT NULL,
+ coverage_complete INTEGER NOT NULL DEFAULT 0,
  error_type TEXT,
  created_at REAL NOT NULL
 );
@@ -653,6 +654,12 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(RELIABILITY_SCHEMA)
             db.executescript(POI_SCHEMA)
+            scan_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_conflict_scans)")}
+            if "coverage_complete" not in scan_columns:
+                db.execute(
+                    "ALTER TABLE fact_conflict_scans "
+                    "ADD COLUMN coverage_complete INTEGER NOT NULL DEFAULT 0"
+                )
             evidence_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_evidence_spans)")}
             for name, sql_type in (
                 ("chunk_id", "TEXT"),

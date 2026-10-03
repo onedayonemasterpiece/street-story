@@ -16,6 +16,8 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
+from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
+from .gemini import GeminiUnavailable
 from .fact_conflicts import (
     analyze_fact_conflicts,
     conflict_rows,
@@ -1655,19 +1657,30 @@ class StreetStoryLiveAdapter:
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
                 )
-            known_facts = [
+            all_story_facts = [
                 {
                     "fact_id": row["fact_id"],
-                    "text": str(row["text"])[:400],
+                    "claim_key": str(row["semantic_key"] or ""),
+                    "text": str(row["text"]),
                     "confidence": float(row["confidence"]),
                     "evidence_supported": bool(row["evidence_supported"]),
                     "selected": bool(row["selected"]),
                     "sources": json.loads(row["sources_json"]),
                 }
                 for row in db.execute(
-                    "SELECT * FROM facts WHERE story_id=? ORDER BY rowid LIMIT 80",
+                    "SELECT f.*,a.semantic_key FROM facts f "
+                    "LEFT JOIN fact_assertions a "
+                    "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                    "WHERE f.story_id=? ORDER BY f.rowid",
                     (story_id,),
                 )
+            ]
+            known_facts = [
+                {
+                    **item,
+                    "text": str(item["text"])[:400],
+                }
+                for item in all_story_facts[:80]
             ]
             from .poi_memory import prior_facts, processed_sources
             poi_history = prior_facts(db, identity, story_id)
@@ -1725,7 +1738,7 @@ class StreetStoryLiveAdapter:
             active=True,
             query=query,
             source_count=len(prior_progress_sources),
-            fact_count=len(known_facts),
+            fact_count=len(all_story_facts),
             sources=prior_progress_sources,
         )
         try:
@@ -1770,16 +1783,54 @@ class StreetStoryLiveAdapter:
         }
         prior_decisions = {
             str(item.get("fact_id") or ""): bool(item.get("selected"))
-            for item in known_facts
+            for item in all_story_facts
             if str(item.get("fact_id") or "").strip()
         }
         known_by_id = {
             str(item.get("fact_id") or ""): item
-            for item in known_facts
+            for item in all_story_facts
             if str(item.get("fact_id") or "").strip()
         }
+
+        raw_grounded_facts = [
+            item for item in (grounded.payload.get("facts") or [])
+            if isinstance(item, dict)
+        ]
+        reconciliation_matches: dict[int, str] = {}
+        reconciliation_meta: dict[str, Any] = {
+            "status": "not_needed",
+            "pages_reviewed": 0,
+            "existing_fact_count": len(all_story_facts),
+            "incoming_fact_count": len(raw_grounded_facts),
+        }
+        reconciler = getattr(self.service.providers.gemini, "reconcile_fact_identities", None)
+        if raw_grounded_facts and all_story_facts and callable(reconciler):
+            try:
+                reconciliation = await reconciler(raw_grounded_facts, all_story_facts)
+                reconciliation_matches = {
+                    int(index): str(fact_id)
+                    for index, fact_id in (reconciliation.get("matches") or {}).items()
+                    if str(fact_id) in known_by_id
+                }
+                reconciliation_meta = {
+                    "status": "complete" if reconciliation.get("complete") is True else "partial",
+                    "pages_reviewed": int(reconciliation.get("pages_reviewed") or 0),
+                    "existing_fact_count": int(reconciliation.get("existing_fact_count") or len(all_story_facts)),
+                    "incoming_fact_count": int(reconciliation.get("incoming_fact_count") or len(raw_grounded_facts)),
+                    "matched_count": len(reconciliation_matches),
+                    "unmatched_count": int(reconciliation.get("unmatched_count") or 0),
+                }
+            except (GeminiUnavailable, MalformedProviderResponse, PermanentProviderError, RetryableProviderError) as exc:
+                reconciliation_meta = {
+                    **reconciliation_meta,
+                    "status": "unavailable",
+                    "error_type": type(exc).__name__,
+                }
+        elif raw_grounded_facts and all_story_facts:
+            reconciliation_meta["status"] = "compatibility_unavailable"
+
         normalized: list[dict[str, Any]] = []
-        for item in (grounded.payload.get("facts") or []):
+        for item_index, item in enumerate(raw_grounded_facts):
             if not isinstance(item, dict):
                 continue
             text = validated_model_fact_text(item.get("text"))
@@ -1824,10 +1875,15 @@ class StreetStoryLiveAdapter:
                 confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
             except (TypeError, ValueError):
                 confidence = 0.0
-            existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+            provided_existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+            existing_fact_id = reconciliation_matches.get(item_index) or (
+                provided_existing_fact_id
+                if provided_existing_fact_id in known_by_id
+                else ""
+            )
             fact_id = (
                 existing_fact_id
-                if existing_fact_id in known_by_id
+                if existing_fact_id
                 else candidate_assertion_id(claim_key, text)
             )
             normalized.append(
@@ -1865,7 +1921,7 @@ class StreetStoryLiveAdapter:
             self.service,
             story_id,
             str(identity.get("candidate_id") or "") or None,
-            [*normalized, *known_facts, *poi_history],
+            [*normalized, *all_story_facts, *poi_history],
             context={
                 "place_name": story.get("place_name"),
                 "source": "live_search",
@@ -1894,18 +1950,28 @@ class StreetStoryLiveAdapter:
             ).fetchone()[0]
             manifest_before = run_manifest(db, run_id)
             coverage_satisfied = bool(grounded.payload.get("coverage_satisfied"))
-            research_complete = coverage_satisfied and manifest_complete(manifest_before)
+            reconciliation_complete = reconciliation_meta.get("status") in {"not_needed", "complete"}
+            manifest_is_complete = manifest_complete(manifest_before)
+            research_complete = (
+                coverage_satisfied
+                and manifest_is_complete
+                and reconciliation_complete
+            )
             set_run_state(
                 db,
                 run_id,
                 "completed" if research_complete else "partial",
                 detail=(
-                    "coverage_satisfied_and_manifest_complete"
+                    "coverage_manifest_and_reconciliation_complete"
                     if research_complete
                     else (
                         "coverage_incomplete"
                         if not coverage_satisfied
-                        else "source_or_chunk_manifest_incomplete"
+                        else (
+                            "source_or_chunk_manifest_incomplete"
+                            if not manifest_is_complete
+                            else "fact_reconciliation_incomplete"
+                        )
                     )
                 ),
                 now=self.service.store.now(),
@@ -1954,6 +2020,7 @@ class StreetStoryLiveAdapter:
                     "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
                     "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
                     "extraction_audit": grounded.payload.get("extraction_audit"),
+                    "fact_reconciliation": reconciliation_meta,
                 }
             )
             research["grounding_sources"] = list(all_sources.values())[:80]
@@ -1974,6 +2041,7 @@ class StreetStoryLiveAdapter:
                 "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
                 "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
                 "extraction_audit": grounded.payload.get("extraction_audit"),
+                "fact_reconciliation": reconciliation_meta,
                 "facts": normalized,
                 "sources": grounding_sources[:20],
                 "fact_conflicts": detected_conflicts[:12],
@@ -2224,7 +2292,7 @@ class StreetStoryLiveAdapter:
                     "sources": json.loads(row["sources_json"]),
                 }
                 for row in db.execute(
-                    "SELECT * FROM facts WHERE story_id=? AND evidence_supported=1 ORDER BY rowid LIMIT 80",
+                    "SELECT * FROM facts WHERE story_id=? AND evidence_supported=1 ORDER BY rowid",
                     (story_id,),
                 )
             ]

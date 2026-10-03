@@ -420,6 +420,28 @@ class _ReadablePageParser(HTMLParser):
 
 
 class GeminiClient:
+    FACT_IDENTITY_RECONCILIATION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "matches": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "incoming_index": {"type": "integer"},
+                        "equivalent": {"type": "boolean"},
+                        "existing_fact_id": {"type": "string"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": [
+                        "incoming_index", "equivalent", "existing_fact_id", "rationale",
+                    ],
+                },
+            },
+        },
+        "required": ["matches"],
+    }
+
     FACT_CONFLICT_SCHEMA = {
         "type": "object",
         "properties": {
@@ -1879,72 +1901,308 @@ class GeminiClient:
             raise GeminiUnavailable(min(retry_at), "all_discovery_fact_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
+    async def reconcile_fact_identities(
+        self,
+        incoming_facts: list[dict[str, Any]],
+        existing_facts: list[dict[str, Any]],
+        *,
+        page_size: int = 40,
+    ) -> dict[str, Any]:
+        """Semantically map incoming claims onto the complete durable inventory.
+
+        Code only pages and validates IDs. The configured model decides whether
+        two statements express the same factual proposition. Different values,
+        dates, people, positions, scopes or temporal stages must stay distinct.
+        """
+        from google.genai import types
+
+        incoming: list[dict[str, Any]] = []
+        for index, item in enumerate(incoming_facts):
+            if not isinstance(item, dict):
+                continue
+            text = " ".join(str(item.get("text") or "").split()).strip()
+            if not text or len(text) > 1200:
+                continue
+            incoming.append({
+                "incoming_index": index,
+                "claim_key": str(item.get("claim_key") or "")[:300],
+                "text": text,
+                "existing_fact_id": str(item.get("existing_fact_id") or "")[:200],
+            })
+
+        existing: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for item in existing_facts:
+            if not isinstance(item, dict):
+                continue
+            fact_id = str(item.get("fact_id") or "").strip()
+            text = " ".join(str(item.get("text") or "").split()).strip()
+            if not fact_id or fact_id in seen_ids or not text:
+                continue
+            seen_ids.add(fact_id)
+            existing.append({
+                "fact_id": fact_id,
+                "claim_key": str(item.get("claim_key") or "")[:300],
+                "text": text[:1200],
+            })
+
+        explicit = {
+            int(item["incoming_index"]): str(item["existing_fact_id"])
+            for item in incoming
+            if str(item.get("existing_fact_id") or "") in seen_ids
+        }
+        unresolved = {
+            int(item["incoming_index"])
+            for item in incoming
+            if int(item["incoming_index"]) not in explicit
+        }
+        matches = dict(explicit)
+        if not unresolved or not existing:
+            return {
+                "matches": matches,
+                "pages_reviewed": 0,
+                "existing_fact_count": len(existing),
+                "incoming_fact_count": len(incoming),
+                "complete": True,
+            }
+
+        size = max(10, min(int(page_size), 50))
+        pages_reviewed = 0
+        for start in range(0, len(existing), size):
+            if not unresolved:
+                break
+            page = existing[start:start + size]
+            page_ids = {item["fact_id"] for item in page}
+            current_incoming = [
+                item
+                for item in incoming
+                if int(item["incoming_index"]) in unresolved
+            ]
+            prompt = (
+                "Ты внутренний LLM-reconciler фактов Street Story. Сопоставь новые утверждения только с "
+                "фактами на ТЕКУЩЕЙ странице durable inventory. equivalent=true только если это один и тот же "
+                "проверяемый фактический тезис, допускающий обычное перефразирование. Общий объект/тема недостаточны. "
+                "Разные даты, числа, люди, позиции слева/справа, этапы времени, область или значение — НЕ эквивалентны. "
+                "Не решай, какой факт истиннее, и не объединяй противоречия: это отдельный arbitration layer. "
+                "Для каждого incoming_index верни одну строку. При отсутствии эквивалента equivalent=false и "
+                "existing_fact_id=''. При equivalent=true existing_fact_id обязан быть exact ID из этой страницы.\n\n"
+                "Incoming: " + json.dumps(current_incoming, ensure_ascii=False)
+                + "\nExisting page: " + json.dumps(page, ensure_ascii=False)
+            )
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=self.FACT_IDENTITY_RECONCILIATION_SCHEMA,
+            )
+
+            async def call(key, timeout, *, model=None, quota=None):
+                response = await self._generate(
+                    key,
+                    timeout,
+                    [prompt],
+                    config,
+                    operation="grounded_research",
+                    model=model,
+                    quota=quota,
+                )
+                try:
+                    payload = json.loads(response.text or "{}")
+                    rows = payload.get("matches")
+                    if not isinstance(rows, list):
+                        raise ValueError
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raise MalformedProviderResponse("gemini:malformed_fact_reconciliation") from None
+                return rows
+
+            rows = None
+            retry_at: list[float] = []
+            for model, _pool, quota, executor in self.research_routes:
+                async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                    return await call(key, timeout, model=_model, quota=_quota)
+                try:
+                    rows = await executor.execute("grounded_research", routed_call)
+                    break
+                except GeminiUnavailable as exc:
+                    if exc.retry_at is not None:
+                        retry_at.append(exc.retry_at)
+                    continue
+                except PermanentProviderError as exc:
+                    if str(exc) == "gemini:unsupported_model":
+                        continue
+                    raise
+            if rows is None:
+                if retry_at:
+                    raise GeminiUnavailable(min(retry_at), "all_fact_reconciliation_models_unavailable")
+                raise PermanentProviderError("gemini:unsupported_model")
+
+            pages_reviewed += 1
+            for row in rows:
+                if not isinstance(row, dict) or row.get("equivalent") is not True:
+                    continue
+                try:
+                    incoming_index = int(row.get("incoming_index"))
+                except (TypeError, ValueError):
+                    continue
+                existing_fact_id = str(row.get("existing_fact_id") or "").strip()
+                if incoming_index not in unresolved or existing_fact_id not in page_ids:
+                    continue
+                matches[incoming_index] = existing_fact_id
+                unresolved.discard(incoming_index)
+
+        return {
+            "matches": matches,
+            "pages_reviewed": pages_reviewed,
+            "existing_fact_count": len(existing),
+            "incoming_fact_count": len(incoming),
+            "complete": True,
+            "unmatched_count": len(unresolved),
+        }
+
+
     async def detect_fact_conflicts(
         self,
         items: list[dict[str, Any]],
         context: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Let the model select and classify actual conflicts across the bounded fact set."""
-        model_items = conflict_scan_items(items)
+    ) -> dict[str, Any]:
+        """Exhaustively scan the durable fact inventory using bounded LLM batches.
+
+        Code only partitions the inventory and validates returned IDs. The model
+        decides whether any pair is actually contradictory or meaningfully
+        divergent. Cross-block batches ensure facts beyond the first page are not
+        semantically invisible.
+        """
+        model_items = conflict_scan_items(items, max_items=None)
         if len(model_items) < 2:
-            return []
+            return {
+                "records": [],
+                "coverage_complete": True,
+                "batch_count": 0,
+                "fact_count": len(model_items),
+            }
         from google.genai import types
 
-        prompt = (
-            "Ты внутренний арбитр фактов Street Story. Перед тобой ограниченный набор уже извлечённых "
-            "моделью утверждений об одном POI. Самостоятельно найди только те пары, между которыми есть "
-            "смысловое противоречие или важное расхождение; сервер НЕ отбирал пары по словам, датам или типам. "
-            "Ссылайся только на существующие fact_id из входа через left_fact_id/right_fact_id. "
-            "relation: contradiction — одновременно истинными в одном смысле быть не могут; "
-            "scope_difference — различаются объект/период/область; temporal_sequence — разные этапы времени; "
-            "source_disagreement — источники расходятся и нужна дополнительная проверка; uncertain — данных мало. "
-            "Не возвращай эквивалентные или просто разные совместимые факты. suggested_resolution: prefer_left, "
-            "prefer_right, both_valid или unresolved. Количество сайтов НЕ является голосованием за истину. "
-            "Учитывай происхождение, период, первичность, supports и Regional Knowledge evidence. "
-            "Если доказательств недостаточно — unresolved. Не выдумывай факты, ссылки или идентификаторы.\n\n"
-            "Context: " + json.dumps(context or {}, ensure_ascii=False)[:4000] + "\n"
-            "Facts: " + json.dumps(model_items, ensure_ascii=False)[:48000]
-        )
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=GeminiClient.FACT_CONFLICT_SCHEMA,
-        )
+        block_size = 24
+        blocks = [
+            model_items[start:start + block_size]
+            for start in range(0, len(model_items), block_size)
+        ]
+        accumulated: dict[str, dict[str, Any]] = {}
+        batch_count = 0
 
-        async def call(key, timeout, *, model=None, quota=None):
-            response = await self._generate(
-                key,
-                timeout,
-                [prompt],
-                config,
-                operation="grounded_research",
-                model=model,
-                quota=quota,
+        async def detect_batch(
+            batch: list[dict[str, Any]],
+            *,
+            group_a_ids: set[str],
+            group_b_ids: set[str] | None,
+        ) -> list[dict[str, Any]]:
+            cross_instruction = (
+                "Это cross-block проход. Возвращай ТОЛЬКО пары, где один fact_id из Group A, "
+                "а второй из Group B; пары внутри одной группы уже проверяются отдельно.\n"
+                f"Group A IDs: {json.dumps(sorted(group_a_ids), ensure_ascii=False)}\n"
+                f"Group B IDs: {json.dumps(sorted(group_b_ids or set()), ensure_ascii=False)}\n"
+                if group_b_ids is not None
+                else
+                "Это within-block проход: проверь все пары внутри переданного блока.\n"
             )
-            try:
-                payload = json.loads(response.text or "{}")
-                if not isinstance(payload, dict) or not isinstance(payload.get("conflicts"), list):
-                    raise ValueError
-            except (TypeError, ValueError, json.JSONDecodeError):
-                raise MalformedProviderResponse("gemini:malformed_fact_conflicts") from None
-            return normalize_model_conflict_records(model_items, payload)
+            prompt = (
+                "Ты внутренний арбитр фактов Street Story. Перед тобой bounded batch из полного durable inventory "
+                "одного POI. Самостоятельно найди только пары со смысловым противоречием или важным расхождением; "
+                "сервер НЕ отбирал пары по словам, датам или типам. "
+                + cross_instruction
+                + "Ссылайся только на существующие fact_id из входа через left_fact_id/right_fact_id. "
+                "relation: contradiction — одновременно истинными в одном смысле быть не могут; "
+                "scope_difference — различаются объект/период/область; temporal_sequence — разные этапы времени; "
+                "source_disagreement — источники расходятся и нужна дополнительная проверка; uncertain — данных мало. "
+                "Не возвращай эквивалентные или просто разные совместимые факты. suggested_resolution: prefer_left, "
+                "prefer_right, both_valid или unresolved. Количество сайтов НЕ является голосованием за истину. "
+                "Учитывай происхождение, период, первичность, supports и Regional Knowledge evidence. "
+                "Если доказательств недостаточно — unresolved. Не выдумывай факты, ссылки или идентификаторы.\n\n"
+                "Context: " + json.dumps(context or {}, ensure_ascii=False)[:4000] + "\n"
+                "Facts: " + json.dumps(batch, ensure_ascii=False)
+            )
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=GeminiClient.FACT_CONFLICT_SCHEMA,
+            )
 
-        retry_at: list[float] = []
-        for model, _pool, quota, executor in self.research_routes:
-            async def routed_call(key, timeout, *, _model=model, _quota=quota):
-                return await call(key, timeout, model=_model, quota=_quota)
-            try:
-                return await executor.execute("grounded_research", routed_call)
-            except GeminiUnavailable as exc:
-                if exc.retry_at is not None:
-                    retry_at.append(exc.retry_at)
-                continue
-            except PermanentProviderError as exc:
-                if str(exc) == "gemini:unsupported_model":
+            async def call(key, timeout, *, model=None, quota=None):
+                response = await self._generate(
+                    key,
+                    timeout,
+                    [prompt],
+                    config,
+                    operation="grounded_research",
+                    model=model,
+                    quota=quota,
+                )
+                try:
+                    payload = json.loads(response.text or "{}")
+                    if not isinstance(payload, dict) or not isinstance(payload.get("conflicts"), list):
+                        raise ValueError
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    raise MalformedProviderResponse("gemini:malformed_fact_conflicts") from None
+                records = normalize_model_conflict_records(batch, payload)
+                if group_b_ids is None:
+                    return records
+                filtered: list[dict[str, Any]] = []
+                for record in records:
+                    left = str(record.get("left_fact_id") or "")
+                    right = str(record.get("right_fact_id") or "")
+                    cross = (
+                        (left in group_a_ids and right in group_b_ids)
+                        or (right in group_a_ids and left in group_b_ids)
+                    )
+                    if cross:
+                        filtered.append(record)
+                return filtered
+
+            retry_at: list[float] = []
+            for model, _pool, quota, executor in self.research_routes:
+                async def routed_call(key, timeout, *, _model=model, _quota=quota):
+                    return await call(key, timeout, model=_model, quota=_quota)
+                try:
+                    return await executor.execute("grounded_research", routed_call)
+                except GeminiUnavailable as exc:
+                    if exc.retry_at is not None:
+                        retry_at.append(exc.retry_at)
                     continue
-                raise
-        if retry_at:
-            raise GeminiUnavailable(min(retry_at), "all_fact_conflict_models_unavailable")
-        raise PermanentProviderError("gemini:unsupported_model")
+                except PermanentProviderError as exc:
+                    if str(exc) == "gemini:unsupported_model":
+                        continue
+                    raise
+            if retry_at:
+                raise GeminiUnavailable(min(retry_at), "all_fact_conflict_models_unavailable")
+            raise PermanentProviderError("gemini:unsupported_model")
+
+        for left_index, left_block in enumerate(blocks):
+            left_ids = {str(item["fact_id"]) for item in left_block}
+            records = await detect_batch(
+                left_block,
+                group_a_ids=left_ids,
+                group_b_ids=None,
+            )
+            batch_count += 1
+            for record in records:
+                accumulated[str(record["conflict_id"])] = record
+
+            for right_index in range(left_index + 1, len(blocks)):
+                right_block = blocks[right_index]
+                right_ids = {str(item["fact_id"]) for item in right_block}
+                records = await detect_batch(
+                    [*left_block, *right_block],
+                    group_a_ids=left_ids,
+                    group_b_ids=right_ids,
+                )
+                batch_count += 1
+                for record in records:
+                    accumulated[str(record["conflict_id"])] = record
+
+        return {
+            "records": list(accumulated.values()),
+            "coverage_complete": True,
+            "batch_count": batch_count,
+            "fact_count": len(model_items),
+        }
+
 
     async def compose_publication(
         self,
@@ -1972,7 +2230,7 @@ class GeminiClient:
                     "place_name": place_name,
                     "publication_concept": concept,
                     "author_note": author_note,
-                    "facts": facts[:20],
+                    "facts": facts,
                 },
                 ensure_ascii=False,
             )

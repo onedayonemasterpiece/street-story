@@ -487,22 +487,15 @@ def set_owner_selection(db, story_id: str, selected_ids: list[str], now: float) 
 def refresh_review_status(db, story_id: str, now: float) -> None:
     backfill_legacy_fact_ledger(db, now)
     scan = db.execute(
-        "SELECT status FROM fact_conflict_scans WHERE story_id=? ORDER BY id DESC LIMIT 1",
+        "SELECT status,coverage_complete FROM fact_conflict_scans "
+        "WHERE story_id=? ORDER BY id DESC LIMIT 1",
         (story_id,),
     ).fetchone()
     scan_status = str(scan["status"]) if scan else ""
-    assertion_count = int(
-        db.execute(
-            "SELECT COUNT(*) FROM fact_assertions WHERE story_id=?",
-            (story_id,),
-        ).fetchone()[0]
-    )
-    # The current detector intentionally bounds one semantic review batch to 80
-    # assertions. Never turn a successful bounded scan into a claim that an
-    # unreviewed tail was checked.
-    fully_covered = (
-        (scan_status == "no_candidates" and assertion_count <= 1)
-        or (scan_status == "ok" and assertion_count <= 80)
+    fully_covered = bool(
+        scan
+        and scan_status in {"ok", "no_candidates"}
+        and int(scan["coverage_complete"] or 0) == 1
     )
     default_review = "eligible" if fully_covered else "unreviewed"
     default_eligibility = "eligible" if fully_covered else "unreviewed"

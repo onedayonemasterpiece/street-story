@@ -1087,6 +1087,70 @@ def test_merge_evidence_sources_preserves_all_passages_for_same_url(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fact_identity_reconciliation_scans_complete_inventory_pages(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], PassingResearchExecutor())]
+
+    existing = [
+        {
+            "fact_id": f"fact-{index}",
+            "claim_key": f"old-{index}",
+            "text": (
+                "Королевские ворота были открыты для посетителей после реставрации."
+                if index == 84
+                else f"Другой проверяемый факт номер {index}."
+            ),
+        }
+        for index in range(85)
+    ]
+    incoming = [{
+        "claim_key": "reopened-after-restoration",
+        "text": "После реставрации Королевские ворота снова открыли для посетителей.",
+    }]
+
+    calls = 0
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        nonlocal calls
+        calls += 1
+        prompt = str(contents[0])
+        if calls < 3:
+            payload = {
+                "matches": [{
+                    "incoming_index": 0,
+                    "equivalent": False,
+                    "existing_fact_id": "",
+                    "rationale": "На этой странице эквивалентного тезиса нет.",
+                }],
+            }
+        else:
+            assert "fact-84" in prompt
+            payload = {
+                "matches": [{
+                    "incoming_index": 0,
+                    "equivalent": True,
+                    "existing_fact_id": "fact-84",
+                    "rationale": "Это один и тот же тезис об открытии после реставрации.",
+                }],
+            }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.reconcile_fact_identities(incoming, existing, page_size=40)
+
+    assert calls == 3
+    assert result["pages_reviewed"] == 3
+    assert result["existing_fact_count"] == 85
+    assert result["matches"] == {0: "fact-84"}
+    assert result["unmatched_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_path):
     settings = replace(
         config(tmp_path),
