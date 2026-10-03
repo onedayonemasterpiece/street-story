@@ -89,8 +89,16 @@ class FakeGemini:
                     }
                 ],
             },
-            "grounding_sources": [],
-            "grounding_supports": [],
+            "grounding_sources": [{
+                "type": "wikipedia",
+                "title": "Бранденбургские ворота",
+                "url": WIKI_URL,
+            }],
+            "grounding_supports": [{
+                "kind": "google_grounding",
+                "source_url": WIKI_URL,
+                "text": "Бранденбургские ворота находятся в Калининграде.",
+            }],
         }
 
     async def compose_publication(self, *, place_name, concept, author_note, facts):
@@ -215,6 +223,11 @@ async def test_no_gps_uses_explicit_owner_voice_place_not_device_location(tmp_pa
     assert provenance["query"] == "Бранденбургские ворота, Калининград"
     assert result["visual_identity"]["status"] == "match"
     assert result["source_count"] == 1
+    supported = [fact for fact in result["facts"] if fact["evidence_supported"]]
+    assert len(supported) == 1
+    support = supported[0]["sources"][0]["supports"][0]
+    assert support["kind"] in {"google_grounding", "wikipedia_extract"}
+    assert "Бранденбургские ворота находятся в Калининграде" in support["text"]
     with service.store.connection() as db:
         row = db.execute("SELECT latitude,longitude FROM stories WHERE id=?", (story["id"],)).fetchone()
         assert abs(row["latitude"] - 54.697111) < 1e-6

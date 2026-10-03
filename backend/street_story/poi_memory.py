@@ -4,6 +4,7 @@ import hashlib
 import json
 from typing import Any
 
+from .fact_ledger import merge_source_payloads
 from .model_facts import normalized_claim_key
 
 
@@ -124,6 +125,98 @@ def ensure_poi_identity(
     return poi_id
 
 
+def _research_observation_id(
+    poi_key_value: str,
+    assertion_id: str,
+    text: str,
+    sources: list[dict[str, Any]],
+    research_run_id: str | None,
+    query: str,
+) -> str:
+    payload = json.dumps(
+        {
+            "poi_key": poi_key_value,
+            "assertion_id": assertion_id,
+            "text": text,
+            "sources": merge_source_payloads(sources),
+            "research_run_id": str(research_run_id or ""),
+            "query": str(query or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "poiobs_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def backfill_legacy_research_memory(db, now: float) -> int:
+    """One-way compatibility backfill from the lossy claim-key table.
+
+    Legacy rows remain readable for rollback/forensics, but all current reads and
+    writes use assertion identity so same-key/different-value claims coexist.
+    """
+    rows = list(db.execute(
+        "SELECT poi_key,claim_key,fact_id,text,confidence,sources_json,created_at,updated_at "
+        "FROM poi_research_facts ORDER BY created_at,poi_key,claim_key"
+    ))
+    inserted = 0
+    for row in rows:
+        assertion_id = str(row["fact_id"] or "").strip()
+        text = str(row["text"] or "").strip()
+        if not assertion_id or not text:
+            continue
+        sources = [
+            source
+            for source in json.loads(row["sources_json"] or "[]")
+            if isinstance(source, dict)
+        ]
+        db.execute(
+            "INSERT OR IGNORE INTO poi_research_assertions("
+            "poi_key,assertion_id,semantic_key,text,confidence,sources_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (
+                str(row["poi_key"]),
+                assertion_id,
+                normalized_claim_key(row["claim_key"]),
+                text,
+                float(row["confidence"]),
+                json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
+                float(row["created_at"]),
+                float(row["updated_at"]),
+            ),
+        )
+        observation_id = _research_observation_id(
+            str(row["poi_key"]),
+            assertion_id,
+            text,
+            sources,
+            "legacy-migration",
+            "legacy-poi-research-facts",
+        )
+        before = db.total_changes
+        db.execute(
+            "INSERT OR IGNORE INTO poi_research_observations("
+            "observation_id,poi_key,assertion_id,semantic_key,text,confidence,sources_json,"
+            "research_run_id,query,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                observation_id,
+                str(row["poi_key"]),
+                assertion_id,
+                normalized_claim_key(row["claim_key"]),
+                text,
+                float(row["confidence"]),
+                json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
+                "legacy-migration",
+                "legacy-poi-research-facts",
+                float(row["created_at"] or now),
+            ),
+        )
+        if db.total_changes > before:
+            inserted += 1
+    return inserted
+
+
 def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> int:
     """Hydrate a new topic from durable POI knowledge before another web search."""
     if db.execute("SELECT 1 FROM facts WHERE story_id=? LIMIT 1", (story_id,)).fetchone():
@@ -169,18 +262,18 @@ def _research_memory_facts(db, identity: dict[str, Any], limit: int) -> list[dic
     key = poi_key(identity)
     if not key:
         return []
-    rows = db.execute(
-        "SELECT fact_id,claim_key,text,confidence,sources_json,updated_at "
-        "FROM poi_research_facts WHERE poi_key=? ORDER BY updated_at DESC LIMIT ?",
+    rows = list(db.execute(
+        "SELECT assertion_id,semantic_key,text,confidence,sources_json,updated_at "
+        "FROM poi_research_assertions WHERE poi_key=? ORDER BY updated_at DESC LIMIT ?",
         (key, max(1, int(limit))),
-    )
+    ))
     return [
         {
-            "fact_id": str(row["fact_id"]),
-            "claim_key": str(row["claim_key"]),
+            "fact_id": str(row["assertion_id"]),
+            "claim_key": str(row["semantic_key"] or ""),
             "text": str(row["text"]),
             "confidence": float(row["confidence"]),
-            "evidence_supported": True,
+            "evidence_supported": bool(json.loads(row["sources_json"] or "[]")),
             "selected": False,
             "sources": json.loads(row["sources_json"] or "[]"),
             "origin": "poi_research",
@@ -217,95 +310,183 @@ def persist_research_memory(
     sources: list[dict[str, Any]],
     query: str,
     now: float,
+    research_run_id: str | None = None,
 ) -> None:
     key = poi_key(identity)
     if not key:
         return
     ensure_poi_identity(db, identity, now=now)
     source_by_url: dict[str, dict[str, Any]] = {}
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        url = str(source.get("url") or "").rstrip("/")
+
+    def add_source(raw: dict[str, Any]) -> None:
+        if not isinstance(raw, dict):
+            return
+        url = str(raw.get("url") or "").rstrip("/")
         if not url.startswith("https://"):
-            continue
-        source_by_url[url] = source
+            return
+        prior = source_by_url.get(url)
+        source_by_url[url] = (
+            merge_source_payloads([prior], [raw])[0]
+            if prior is not None
+            else merge_source_payloads([raw])[0]
+        )
+
+    for source in sources:
+        add_source(source)
     for fact in facts:
         if not isinstance(fact, dict):
             continue
         for source in fact.get("sources") or []:
-            if not isinstance(source, dict):
-                continue
-            url = str(source.get("url") or "").rstrip("/")
-            if url.startswith("https://"):
-                source_by_url[url] = source
+            add_source(source)
 
     for url, source in source_by_url.items():
-        supports = [
+        new_supports = [
             item for item in (source.get("supports") or [])
             if isinstance(item, dict) and str(item.get("text") or "").strip()
-        ][:6]
+        ]
+        current_source = db.execute(
+            "SELECT title,supports_json,first_seen_at FROM poi_research_sources "
+            "WHERE poi_key=? AND url=?",
+            (key, url),
+        ).fetchone()
+        old_supports = (
+            json.loads(current_source["supports_json"] or "[]")
+            if current_source else []
+        )
+        merged_source = merge_source_payloads(
+            [{
+                "url": url,
+                "title": str(current_source["title"]) if current_source else "",
+                "supports": old_supports,
+            }],
+            [{
+                **source,
+                "url": url,
+                "supports": new_supports,
+            }],
+        )[0]
+        merged_supports = [
+            item for item in (merged_source.get("supports") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ]
+        first_seen = float(current_source["first_seen_at"]) if current_source else now
         db.execute(
             "INSERT INTO poi_research_sources(poi_key,url,title,supports_json,last_query,first_seen_at,last_seen_at) "
             "VALUES(?,?,?,?,?,?,?) "
             "ON CONFLICT(poi_key,url) DO UPDATE SET "
-            "title=excluded.title,supports_json=CASE WHEN excluded.supports_json<>'[]' THEN excluded.supports_json ELSE poi_research_sources.supports_json END,"
+            "title=excluded.title,supports_json=excluded.supports_json,"
             "last_query=excluded.last_query,last_seen_at=excluded.last_seen_at",
             (
                 key,
                 url,
-                str(source.get("title") or url)[:300],
-                json.dumps(supports, ensure_ascii=False, separators=(",", ":")),
+                str(merged_source.get("title") or url)[:300],
+                json.dumps(merged_supports, ensure_ascii=False, separators=(",", ":")),
                 str(query or "")[:1000],
-                now,
+                first_seen,
                 now,
             ),
         )
 
     for fact in facts:
-        if not isinstance(fact, dict) or not fact.get("evidence_supported", bool(fact.get("sources"))):
+        if not isinstance(fact, dict):
             continue
         claim_key = normalized_claim_key(fact.get("claim_key"))
-        fact_id = str(fact.get("fact_id") or "").strip()
+        assertion_id = str(fact.get("fact_id") or "").strip()
         text = str(fact.get("text") or "").strip()
-        if not claim_key or not fact_id or not text:
+        fact_sources = [
+            source for source in (fact.get("sources") or [])
+            if isinstance(source, dict)
+            and str(source.get("url") or "").startswith("https://")
+            and any(
+                isinstance(support, dict)
+                and str(support.get("text") or "").strip()
+                for support in (source.get("supports") or [])
+            )
+        ]
+        if not assertion_id or not text or not fact_sources:
             continue
-        current = db.execute(
-            "SELECT sources_json,created_at FROM poi_research_facts WHERE poi_key=? AND claim_key=?",
-            (key, claim_key),
-        ).fetchone()
-        merged: dict[str, dict[str, Any]] = {}
-        if current:
-            for source in json.loads(current["sources_json"] or "[]"):
-                if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
-                    merged[str(source["url"]).rstrip("/")] = source
-        for source in fact.get("sources") or []:
-            if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
-                merged[str(source["url"]).rstrip("/")] = source
-        if not merged:
-            continue
-        created_at = float(current["created_at"]) if current else now
         try:
             confidence = max(0.0, min(1.0, float(fact.get("confidence") or 0.0)))
         except (TypeError, ValueError):
             confidence = 0.0
+
+        current = db.execute(
+            "SELECT semantic_key,text,confidence,sources_json,created_at "
+            "FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?",
+            (key, assertion_id),
+        ).fetchone()
+        prior_sources = (
+            json.loads(current["sources_json"] or "[]")
+            if current else []
+        )
+        merged_sources = merge_source_payloads(prior_sources, fact_sources)
+        created_at = float(current["created_at"]) if current else now
+
+        observation_id = _research_observation_id(
+            key,
+            assertion_id,
+            text,
+            fact_sources,
+            research_run_id,
+            query,
+        )
         db.execute(
-            "INSERT INTO poi_research_facts(poi_key,claim_key,fact_id,text,confidence,sources_json,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(poi_key,claim_key) DO UPDATE SET "
-            "fact_id=excluded.fact_id,text=excluded.text,confidence=MAX(poi_research_facts.confidence,excluded.confidence),"
+            "INSERT OR IGNORE INTO poi_research_observations("
+            "observation_id,poi_key,assertion_id,semantic_key,text,confidence,sources_json,"
+            "research_run_id,query,created_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                observation_id,
+                key,
+                assertion_id,
+                claim_key,
+                text[:1200],
+                confidence,
+                json.dumps(fact_sources, ensure_ascii=False, separators=(",", ":")),
+                str(research_run_id or "")[:120] or None,
+                str(query or "")[:1000],
+                now,
+            ),
+        )
+        db.execute(
+            "INSERT INTO poi_research_assertions("
+            "poi_key,assertion_id,semantic_key,text,confidence,sources_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(poi_key,assertion_id) DO UPDATE SET "
+            "semantic_key=COALESCE(excluded.semantic_key,poi_research_assertions.semantic_key),"
+            "text=excluded.text,"
+            "confidence=MAX(poi_research_assertions.confidence,excluded.confidence),"
             "sources_json=excluded.sources_json,updated_at=excluded.updated_at",
             (
                 key,
+                assertion_id,
                 claim_key,
-                fact_id,
                 text[:1200],
                 confidence,
-                json.dumps(list(merged.values()), ensure_ascii=False, separators=(",", ":")),
+                json.dumps(merged_sources, ensure_ascii=False, separators=(",", ":")),
                 created_at,
                 now,
             ),
         )
+
+        # Compatibility snapshot only. Never update by semantic key: this table
+        # is intentionally lossy and no longer authoritative.
+        if claim_key:
+            db.execute(
+                "INSERT OR IGNORE INTO poi_research_facts("
+                "poi_key,claim_key,fact_id,text,confidence,sources_json,created_at,updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    key,
+                    claim_key,
+                    assertion_id,
+                    text[:1200],
+                    confidence,
+                    json.dumps(merged_sources, ensure_ascii=False, separators=(",", ":")),
+                    created_at,
+                    now,
+                ),
+            )
 
 def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int) -> list[dict[str, Any]]:
     aliases = _identity_alias_values(identity)

@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from street_story.db import Store
 from street_story.gemini import GeminiUnavailable
 from street_story.providers import GeminiClient
+from street_story.research_runs import begin_research_run, manifest_complete, run_manifest
 from test_backend import config
 
 
@@ -281,6 +282,69 @@ class RoutingSearchHTTP:
         return httpx.Response(404, text="not found", headers={"content-type": "text/plain"}, request=request)
 
 
+@pytest.mark.asyncio
+async def test_page_fetch_persists_full_chunk_manifest_beyond_old_9k_limit(tmp_path):
+    settings = config(tmp_path)
+    store = Store(tmp_path / "street-story.sqlite3")
+    story_id = "story-long-page"
+    now = store.now()
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stories("
+            "id,client_story_id,photo_sha256,photo_mime_type,photo_path,voice_protocol,state,"
+            "research_json,visual_context_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,'{}','{}',?,?)",
+            (
+                story_id,
+                "client-long-page",
+                "a" * 64,
+                "image/jpeg",
+                "/tmp/no-photo.jpg",
+                "voice-chunks-v2",
+                "identity_ready",
+                now,
+                now,
+            ),
+        )
+        run_id = begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:403645",
+            goal="Найти факт в хвосте длинной статьи",
+            expected_story_revision=0,
+            identity_generation=0,
+            run_id="run-long-page",
+            now=now,
+        )
+
+    url = "https://history.example/long"
+    head = "<p>" + ("Исторический контекст. " * 900) + "</p>"
+    tail = "<p>ХВОСТОВОЙ ФАКТ: справа изображён герцог Альбрехт I.</p>"
+    client = GeminiClient(settings, store)
+    client.search_http = RoutingSearchHTTP("", {url: f"<html><body><main>{head}{tail}</main></body></html>"})
+    docs = await client._fetch_page_documents(
+        [url],
+        {
+            "research_run_id": run_id,
+            "research_sources": [{"url": url, "title": "Long history"}],
+        },
+    )
+
+    assert url in docs
+    doc = docs[url]
+    assert doc["char_count"] > 9_000
+    assert len(doc["chunks"]) > 1
+    assert "ХВОСТОВОЙ ФАКТ" in doc["normalized_text"]
+    assert any(
+        "ХВОСТОВОЙ ФАКТ" in chunk["text"]
+        for chunk in doc["chunks"]
+    )
+    with store.connection() as db:
+        manifest = run_manifest(db, run_id)
+    assert manifest["counts"]["chunks_planned"] == len(doc["chunks"])
+    assert manifest["sources"][0]["source_version_id"] == doc["source_version_id"]
+
+
 def test_page_text_is_chunked_with_bounded_overlap():
     text = "\n".join([
         "Первый абзац " + "А" * 1800,
@@ -394,22 +458,63 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
             payload = {
                 "summary": "Сниппет не называет персонажей.",
                 "official_source_urls": [],
-                "facts": [],
+                "facts": [{
+                    "claim_key": "royal-gate-facade-has-three-figures",
+                    "existing_fact_id": "",
+                    "text": "На фасаде находятся три исторические фигуры.",
+                    "confidence": .9,
+                    "source_urls": [page_url],
+                }],
                 "coverage_satisfied": False,
                 "read_source_urls": [page_url, "https://invented.example/blocked"],
             }
         else:
             prompt = str(contents[0])
-            assert "Оттокар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
-            payload = {
-                "summary": "Страница прямо называет три фигуры.",
-                "official_source_urls": [],
-                "facts": [
-                    {"claim_key": "royal-gate-sculpture-left", "existing_fact_id": "", "text": "Слева на фасаде изображён Оттокар II.", "confidence": .98, "source_urls": [page_url]},
-                    {"claim_key": "royal-gate-sculpture-center", "existing_fact_id": "", "text": "В центре на фасаде изображён Фридрих I.", "confidence": .98, "source_urls": [page_url]},
-                    {"claim_key": "royal-gate-sculpture-right", "existing_fact_id": "", "text": "Справа на фасаде изображён Альбрехт I.", "confidence": .98, "source_urls": [page_url]},
-                ],
-            }
+            if "Ты проверяешь полноту уже извлечённых facts" in prompt:
+                assert "Оттокар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
+                payload = {
+                    "coverage_satisfied": True,
+                    "summary": "Цель закрыта тремя отдельными фигурами.",
+                    "missing_aspects": [],
+                }
+            else:
+                assert "Оттокар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
+                assert "Передан один chunk документа" in prompt
+                chunk_id = prompt.split("Chunk id: ", 1)[1].splitlines()[0].strip()
+                quote = (
+                    "Слева изображён чешский король Оттокар II, в центре — прусский король Фридрих I, "
+                    "справа — герцог Пруссии Альбрехт I."
+                )
+                payload = {
+                    "facts": [
+                        {
+                            "claim_key": "royal-gate-sculpture-left",
+                            "existing_fact_id": "",
+                            "text": "Слева на фасаде изображён Оттокар II.",
+                            "confidence": .98,
+                            "source_urls": [page_url],
+                            "evidence_spans": [{"source_url": page_url, "chunk_id": chunk_id, "quote": quote}],
+                        },
+                        {
+                            "claim_key": "royal-gate-sculpture-center",
+                            "existing_fact_id": "",
+                            "text": "В центре на фасаде изображён Фридрих I.",
+                            "confidence": .98,
+                            "source_urls": [page_url],
+                            "evidence_spans": [{"source_url": page_url, "chunk_id": chunk_id, "quote": quote}],
+                        },
+                        {
+                            "claim_key": "royal-gate-sculpture-right",
+                            "existing_fact_id": "",
+                            "text": "Справа на фасаде изображён Альбрехт I.",
+                            "confidence": .98,
+                            "source_urls": [page_url],
+                            "evidence_spans": [{"source_url": page_url, "chunk_id": chunk_id, "quote": quote}],
+                        },
+                    ],
+                    "needs_context": False,
+                    "context_reason": "",
+                }
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
 
     client._generate = generate
@@ -418,16 +523,266 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
         {"place_name": "Королевские ворота"},
     )
 
-    assert calls == 2
-    assert result.payload["semantic_completion"] == "gemini_research_page_evidence"
+    assert calls == 3
+    assert result.payload["semantic_completion"] == "gemini_research_page_chunks"
+    assert result.payload["coverage_satisfied"] is True
+    assert result.payload["page_chunk_count"] == 1
+    assert result.payload["page_chunk_failures"] == 0
     assert {fact["text"] for fact in result.payload["facts"]} == {
+        "На фасаде находятся три исторические фигуры.",
         "Слева на фасаде изображён Оттокар II.",
         "В центре на фасаде изображён Фридрих I.",
         "Справа на фасаде изображён Альбрехт I.",
     }
+    page_facts = [
+        fact for fact in result.payload["facts"]
+        if str(fact["text"]).startswith(("Слева", "В центре", "Справа"))
+    ]
+    assert all(len(fact.get("evidence_refs") or []) == 1 for fact in page_facts)
     source = next(item for item in result.grounding_sources if item["url"] == page_url)
-    assert any(item.get("kind") == "page_excerpt" and "Оттокар II" in item.get("text", "") for item in source["supports"])
+    assert any(
+        item.get("kind") == "verified_page_span"
+        and item.get("source_version_id")
+        and item.get("evidence_ref")
+        and "Оттокар II" in item.get("text", "")
+        for item in source["supports"]
+    )
     assert all(call[0] != "https://invented.example/blocked" for call in client.search_http.calls)
+
+
+@pytest.mark.asyncio
+async def test_long_page_tail_fact_is_extracted_and_all_chunks_are_accounted_for(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+        gemini_model="gemini-3.1-flash-lite",
+        gemini_fallback_model="gemini-3.5-flash-lite",
+    )
+    store = Store(tmp_path / "street-story.sqlite3")
+    now = store.now()
+    story_id = "story_long_page"
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stories("
+            "id,client_story_id,photo_sha256,photo_mime_type,photo_path,voice_protocol,state,"
+            "research_json,visual_context_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,'{}','{}',?,?)",
+            (
+                story_id,
+                "client-long-page",
+                "a" * 64,
+                "image/jpeg",
+                "/tmp/no-photo.jpg",
+                "voice-chunks-v2",
+                "identity_ready",
+                now,
+                now,
+            ),
+        )
+        begin_research_run(
+            db,
+            story_id=story_id,
+            poi_key="wiki:403645",
+            goal="Найти автора горельефов",
+            expected_story_revision=1,
+            identity_generation=0,
+            run_id="run-long-page",
+            now=now,
+        )
+
+    client = GeminiClient(settings, store)
+    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+
+    page_url = "https://history.example/very-long-royal-gate"
+    head = "".join(
+        f"<p>Нейтральный абзац {index}. История городской среды без ответа на вопрос.</p>"
+        for index in range(700)
+    )
+    tail = (
+        "<p>ХВОСТОВОЙ ФАКТ: автором горельефов Королевских ворот "
+        "был скульптор Вильгельм Людвиг Штюрмер.</p>"
+    )
+    client.search_http = RoutingSearchHTTP(
+        f"""
+        <div class="result">
+          <a class="result__a" href="{page_url}">Long Royal Gate page</a>
+          <a class="result__snippet">Большая историческая статья; автор горельефов указан внутри.</a>
+        </div>
+        """,
+        {page_url: f"<html><body><main>{head}{tail}</main></body></html>"},
+    )
+
+    calls = 0
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        nonlocal calls
+        calls += 1
+        prompt = str(contents[0])
+        if calls == 1:
+            payload = {
+                "summary": "Сниппет недостаточен.",
+                "official_source_urls": [],
+                "facts": [],
+                "coverage_satisfied": False,
+                "read_source_urls": [page_url],
+            }
+        elif "Ты проверяешь полноту уже извлечённых facts" in prompt:
+            payload = {
+                "coverage_satisfied": "Вильгельм Людвиг Штюрмер" in prompt,
+                "summary": "Coverage review.",
+                "missing_aspects": [] if "Вильгельм Людвиг Штюрмер" in prompt else ["автор горельефов"],
+            }
+        elif "ХВОСТОВОЙ ФАКТ" in prompt and "[core]" in prompt:
+            chunk_id = prompt.split("Chunk id: ", 1)[1].splitlines()[0].strip()
+            quote = (
+                "ХВОСТОВОЙ ФАКТ: автором горельефов Королевских ворот "
+                "был скульптор Вильгельм Людвиг Штюрмер."
+            )
+            payload = {
+                "facts": [{
+                    "claim_key": "royal-gate-reliefs-author",
+                    "existing_fact_id": "",
+                    "text": "Автором горельефов Королевских ворот был Вильгельм Людвиг Штюрмер.",
+                    "confidence": .99,
+                    "source_urls": [page_url],
+                    "evidence_spans": [{"source_url": page_url, "chunk_id": chunk_id, "quote": quote}],
+                }],
+                "needs_context": False,
+                "context_reason": "",
+            }
+        else:
+            payload = {
+                "facts": [],
+                "needs_context": False,
+                "context_reason": "",
+            }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.search_web(
+        "кто автор горельефов Королевских ворот",
+        {
+            "place_name": "Королевские ворота",
+            "coverage_goal": "Кто автор горельефов Королевских ворот?",
+            "research_run_id": "run-long-page",
+        },
+    )
+
+    assert calls > 3
+    assert result.payload["page_chunk_count"] > 2
+    assert result.payload["page_chunk_failures"] == 0
+    fact = next(
+        item for item in result.payload["facts"]
+        if "Вильгельм Людвиг Штюрмер" in item["text"]
+    )
+    assert len(fact["evidence_refs"]) == 1
+    source = next(item for item in result.grounding_sources if item["url"] == page_url)
+    tail_support = next(
+        support for support in source["supports"]
+        if "ХВОСТОВОЙ ФАКТ" in support.get("text", "")
+    )
+    assert tail_support["evidence_ref"] == fact["evidence_refs"][0]
+    assert tail_support["source_version_id"]
+
+    with store.connection() as db:
+        manifest = run_manifest(db, "run-long-page")
+    assert manifest["counts"]["sources_fetched"] == 1
+    assert manifest["counts"]["chunks_planned"] == result.payload["page_chunk_count"]
+    assert manifest["counts"]["chunks_completed"] == result.payload["page_chunk_count"]
+    assert manifest_complete(manifest) is True
+
+
+@pytest.mark.asyncio
+async def test_chunk_fact_with_non_verbatim_quote_is_rejected_fail_closed(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+        gemini_model="gemini-3.1-flash-lite",
+        gemini_fallback_model="gemini-3.5-flash-lite",
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+
+    page_url = "https://history.example/architect"
+    client.search_http = RoutingSearchHTTP(
+        f"""
+        <div class="result">
+          <a class="result__a" href="{page_url}">Architect page</a>
+          <a class="result__snippet">Архитектор указан на странице.</a>
+        </div>
+        """,
+        {
+            page_url: (
+                "<html><body><p>Архитектором проекта был Фридрих Штюлер. "
+                "Документ также подробно описывает историю строительства и реставрации здания.</p></body></html>"
+            )
+        },
+    )
+
+    calls = 0
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        nonlocal calls
+        calls += 1
+        prompt = str(contents[0])
+        if calls == 1:
+            payload = {
+                "summary": "Нужно прочитать страницу.",
+                "official_source_urls": [],
+                "facts": [],
+                "coverage_satisfied": False,
+                "read_source_urls": [page_url],
+            }
+        elif "Ты проверяешь полноту уже извлечённых facts" in prompt:
+            payload = {
+                "coverage_satisfied": False,
+                "summary": "Valid evidence is still missing.",
+                "missing_aspects": ["архитектор"],
+            }
+        else:
+            chunk_id = prompt.split("Chunk id: ", 1)[1].splitlines()[0].strip()
+            payload = {
+                "facts": [{
+                    "claim_key": "architect",
+                    "existing_fact_id": "",
+                    "text": "Архитектором проекта был Пётр Петров.",
+                    "confidence": .99,
+                    "source_urls": [page_url],
+                    "evidence_spans": [{
+                        "source_url": page_url,
+                        "chunk_id": chunk_id,
+                        "quote": "Архитектором проекта был Пётр Петров.",
+                    }],
+                }],
+                "needs_context": False,
+                "context_reason": "",
+            }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.search_web(
+        "кто архитектор",
+        {"coverage_goal": "Кто архитектор проекта?"},
+    )
+    assert result.payload["facts"] == []
+    assert result.payload["page_chunk_failures"] == 0
+    assert result.payload["extraction_audit"]["rejected"]["no_verified_span"] == 1
+    source = next(item for item in result.grounding_sources if item["url"] == page_url)
+    assert not any(item.get("kind") == "verified_page_span" for item in source.get("supports") or [])
 
 
 @pytest.mark.asyncio
@@ -633,6 +988,25 @@ async def test_incomplete_cached_evidence_falls_through_to_web_discovery(tmp_pat
     assert result.payload["facts"][0]["source_urls"] == [web_url]
 
 
+def test_merge_evidence_sources_preserves_all_passages_for_same_url(tmp_path):
+    client = GeminiClient(config(tmp_path), Store(tmp_path / "street-story.sqlite3"))
+    url = "https://example.org/many-passages"
+    primary = [{
+        "type": "web",
+        "title": "Many",
+        "url": url,
+        "supports": [
+            {"kind": "google_grounding", "source_url": url, "text": f"passage-{index}"}
+            for index in range(8)
+        ],
+    }]
+    merged = client._merge_evidence_sources(primary, [])
+    assert len(merged) == 1
+    assert [item["text"] for item in merged[0]["supports"]] == [
+        f"passage-{index}" for index in range(8)
+    ]
+
+
 @pytest.mark.asyncio
 async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_path):
     settings = replace(
@@ -691,7 +1065,7 @@ async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_
         "accepted_fact_count": 1,
         "claim_key_fallback_count": 1,
         "confidence_defaulted_count": 1,
-        "rejected": {"no_grounded_source": 1},
+        "rejected": {"no_support_passage": 1},
     }
 
 

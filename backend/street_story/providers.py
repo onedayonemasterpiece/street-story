@@ -8,13 +8,18 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 import httpx
 
 from .config import Settings, reveal
 from .db import Store
 from .fact_conflicts import conflict_scan_items, normalize_model_conflict_records
+from .research_runs import (
+    mark_chunk,
+    persist_source_version,
+    register_discovered_source,
+)
 
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
@@ -361,7 +366,11 @@ class _DuckDuckGoResultParser(HTMLParser):
 class _ReadablePageParser(HTMLParser):
     """Extract bounded human-readable page text without script/style payloads."""
 
-    BLOCK_TAGS = frozenset({"p", "div", "article", "main", "section", "li", "br", "h1", "h2", "h3", "h4", "h5", "h6"})
+    BLOCK_TAGS = frozenset({
+        "p", "div", "article", "main", "section", "li", "br",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "table", "caption", "tr", "th", "td", "figcaption", "dt", "dd",
+    })
     SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "canvas", "template"})
 
     def __init__(self, limit: int = 12_000):
@@ -370,6 +379,7 @@ class _ReadablePageParser(HTMLParser):
         self.parts: list[str] = []
         self.size = 0
         self.skip_depth = 0
+        self.truncated = False
 
     def handle_starttag(self, tag: str, attrs) -> None:
         tag = tag.lower()
@@ -388,12 +398,18 @@ class _ReadablePageParser(HTMLParser):
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        if self.skip_depth or self.size >= self.limit:
+        if self.skip_depth:
             return
         text = " ".join(str(data or "").split())
         if not text:
             return
-        text = text[: self.limit - self.size]
+        if self.size >= self.limit:
+            self.truncated = True
+            return
+        remaining = self.limit - self.size
+        if len(text) > remaining:
+            text = text[:remaining]
+            self.truncated = True
         self.parts.append(text)
         self.parts.append(" ")
         self.size += len(text) + 1
@@ -440,9 +456,49 @@ class GeminiClient:
                 "text": {"type": "string"},
                 "confidence": {"type": "number"},
                 "source_urls": {"type": "array", "items": {"type": "string"}},
+                "evidence_spans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_url": {"type": "string"},
+                            "chunk_id": {"type": "string"},
+                            "quote": {"type": "string"},
+                        },
+                        "required": ["source_url", "chunk_id", "quote"],
+                    },
+                },
             }, "required": ["claim_key", "text", "confidence", "source_urls"]}},
         },
         "required": ["summary", "official_source_urls", "facts"],
+    }
+
+    CHUNK_EXTRACTION_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "facts": {
+                "type": "array",
+                "items": {
+                    **WEB_SEARCH_SCHEMA["properties"]["facts"]["items"],
+                    "required": [
+                        "claim_key", "text", "confidence", "source_urls", "evidence_spans",
+                    ],
+                },
+            },
+            "needs_context": {"type": "boolean"},
+            "context_reason": {"type": "string"},
+        },
+        "required": ["facts", "needs_context", "context_reason"],
+    }
+
+    COVERAGE_REVIEW_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "coverage_satisfied": {"type": "boolean"},
+            "summary": {"type": "string"},
+            "missing_aspects": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["coverage_satisfied", "summary", "missing_aspects"],
     }
 
     DISCOVERY_COVERAGE_SCHEMA = {
@@ -487,6 +543,7 @@ class GeminiClient:
         self.settings = settings
         self.search_http: httpx.AsyncClient | None = None
         shared_store = store or Store(settings.data_dir / "street-story.sqlite3")
+        self.store = shared_store
         policy = GeminiPolicy(
             call_timeout=settings.gemini_call_timeout_seconds,
             attempt_timeout=settings.gemini_attempt_timeout_seconds,
@@ -660,7 +717,7 @@ class GeminiClient:
     def _merge_evidence_sources(
         primary: list[dict[str, Any]],
         cached: list[dict[str, Any]],
-        limit: int = 24,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         merged: dict[str, dict[str, Any]] = {}
         order: list[str] = []
@@ -701,10 +758,12 @@ class GeminiClient:
                 if key[2]:
                     support_map[key] = support
             if support_map:
-                current["supports"] = list(support_map.values())[:6]
+                current["supports"] = list(support_map.values())
             else:
                 current.pop("supports", None)
-        return [merged[url] for url in order[: max(1, min(int(limit), 32))]]
+        if limit is None:
+            return [merged[url] for url in order]
+        return [merged[url] for url in order[: max(1, int(limit))]]
 
     async def _public_web_search(
         self,
@@ -819,78 +878,186 @@ class GeminiClient:
 
     @staticmethod
     def _chunk_page_text(text: str, target: int = 2200, overlap: int = 180) -> list[str]:
-        compact_lines = [" ".join(line.split()) for line in str(text or "").splitlines()]
-        paragraphs = [line for line in compact_lines if line]
-        chunks: list[str] = []
-        current = ""
-        for paragraph in paragraphs:
-            candidate = (current + "\n" + paragraph).strip() if current else paragraph
-            if len(candidate) <= target:
-                current = candidate
-                continue
-            if current:
-                chunks.append(current)
-                tail = current[-overlap:] if overlap > 0 else ""
-                current = (tail + "\n" + paragraph).strip()
-            else:
-                for start in range(0, len(paragraph), max(1, target - overlap)):
-                    part = paragraph[start:start + target].strip()
-                    if part:
-                        chunks.append(part)
-                current = ""
-        if current:
-            chunks.append(current)
-        return chunks[:6]
+        from .research_runs import plan_text_chunks
+        return [
+            str(item["text"])
+            for item in plan_text_chunks(
+                str(text or ""),
+                target_chars=target,
+                overlap_chars=overlap,
+            )
+        ]
 
-    async def _fetch_page_excerpts(self, urls: list[str]) -> dict[str, str]:
+    async def _fetch_page_documents(
+        self,
+        urls: list[str],
+        topic_context: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
         selected: list[str] = []
         for raw in urls:
             url = str(raw or "").rstrip("/")
             if url in selected or not self._safe_page_url(url):
                 continue
             selected.append(url)
-            if len(selected) >= 2:
+            if len(selected) >= 4:
                 break
         if not selected:
             return {}
 
+        run_id = str(topic_context.get("research_run_id") or "").strip()
+        source_titles = {
+            str(item.get("url") or "").rstrip("/"): str(item.get("title") or "")
+            for item in (topic_context.get("research_sources") or [])
+            if isinstance(item, dict)
+        }
         own = self.search_http is None
         client = self.search_http or httpx.AsyncClient(
-            timeout=6,
+            timeout=8,
             follow_redirects=False,
             headers={"User-Agent": "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"},
         )
-        excerpts: dict[str, str] = {}
+        documents: dict[str, dict[str, Any]] = {}
         try:
-            for url in selected:
-                try:
-                    response = await client.get(
-                        url,
-                        headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.8"},
-                    )
-                    if response.status_code != 200:
-                        continue
-                    content = response.content
-                    if not content or len(content) > 768_000:
-                        continue
-                    content_type = str(response.headers.get("content-type") or "").casefold()
-                    if content_type and not any(kind in content_type for kind in ("text/html", "application/xhtml+xml", "text/plain")):
-                        continue
-                    parser = _ReadablePageParser(limit=9_000)
-                    parser.feed(response.text[:600_000])
-                    excerpt = parser.finish()
-                    if len(excerpt) >= 80:
-                        chunks = self._chunk_page_text(excerpt)
-                        excerpts[url] = "\n\n".join(
-                            f"[page_chunk {index + 1}/{len(chunks)}]\n{chunk}"
-                            for index, chunk in enumerate(chunks)
+            for requested_url in selected:
+                now = self.store.now()
+                if run_id:
+                    with self.store.tx() as db:
+                        register_discovered_source(
+                            db,
+                            run_id=run_id,
+                            url=requested_url,
+                            title=source_titles.get(requested_url) or requested_url,
+                            status="fetching",
+                            now=now,
                         )
-                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, ValueError, UnicodeError):
+                current_url = requested_url
+                redirect_chain: list[str] = []
+                response = None
+                error_code = None
+                try:
+                    for _ in range(4):
+                        response = await client.get(
+                            current_url,
+                            headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.8"},
+                        )
+                        if 300 <= response.status_code < 400:
+                            location = str(response.headers.get("location") or "").strip()
+                            if not location:
+                                error_code = "redirect_missing_location"
+                                response = None
+                                break
+                            next_url = urljoin(current_url, location).rstrip("/")
+                            if not self._safe_page_url(next_url):
+                                error_code = "redirect_target_rejected"
+                                response = None
+                                break
+                            redirect_chain.append(next_url)
+                            current_url = next_url
+                            continue
+                        break
+                    else:
+                        error_code = "redirect_limit_exceeded"
+                        response = None
+
+                    if response is None:
+                        raise ValueError(error_code or "page_fetch_failed")
+                    if response.status_code != 200:
+                        error_code = f"http_{response.status_code}"
+                        raise ValueError(error_code)
+                    content_type = str(response.headers.get("content-type") or "").casefold()
+                    if content_type and not any(
+                        kind in content_type
+                        for kind in ("text/html", "application/xhtml+xml", "text/plain")
+                    ):
+                        error_code = "unsupported_content_type"
+                        raise ValueError(error_code)
+
+                    raw_bytes = response.content
+                    if not raw_bytes:
+                        error_code = "empty_body"
+                        raise ValueError(error_code)
+                    body_limited = len(raw_bytes) > 768_000
+
+                    parser = _ReadablePageParser(limit=120_000)
+                    parser.feed(response.text)
+                    normalized_text = parser.finish()
+                    if len(normalized_text) < 80:
+                        error_code = "page_text_too_short"
+                        raise ValueError(error_code)
+
+                    read_status = (
+                        "partial_body_limit"
+                        if body_limited
+                        else "partial_text_limit"
+                        if parser.truncated
+                        else "complete"
+                    )
+                    if run_id:
+                        with self.store.tx() as db:
+                            persisted = persist_source_version(
+                                db,
+                                run_id=run_id,
+                                requested_url=requested_url,
+                                final_url=current_url,
+                                title=source_titles.get(requested_url) or source_titles.get(current_url) or current_url,
+                                content_type=content_type,
+                                http_status=response.status_code,
+                                redirect_chain=redirect_chain,
+                                normalized_text=normalized_text,
+                                read_status=read_status,
+                                now=self.store.now(),
+                            )
+                    else:
+                        content_sha = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+                        source_version_id = "srcv_" + hashlib.sha256(
+                            f"{current_url}\n{content_sha}\n{content_type}".encode("utf-8")
+                        ).hexdigest()[:24]
+                        from .research_runs import plan_text_chunks
+                        chunks = plan_text_chunks(normalized_text)
+                        persisted = {
+                            "document_id": "doc_" + hashlib.sha256(current_url.encode("utf-8")).hexdigest()[:24],
+                            "source_version_id": source_version_id,
+                            "content_sha256": content_sha,
+                            "read_status": read_status,
+                            "char_count": len(normalized_text),
+                            "chunks": [
+                                {
+                                    **item,
+                                    "chunk_id": "chunk_" + hashlib.sha256(
+                                        f"{source_version_id}:{item['core_start']}:{item['core_end']}".encode("utf-8")
+                                    ).hexdigest()[:24],
+                                }
+                                for item in chunks
+                            ],
+                        }
+
+                    documents[requested_url] = {
+                        **persisted,
+                        "requested_url": requested_url,
+                        "final_url": current_url,
+                        "title": source_titles.get(requested_url) or source_titles.get(current_url) or current_url,
+                        "content_type": content_type,
+                        "normalized_text": normalized_text,
+                        "redirect_chain": redirect_chain,
+                    }
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, ValueError, UnicodeError) as exc:
+                    error_code = error_code or type(exc).__name__
+                    if run_id:
+                        with self.store.tx() as db:
+                            register_discovered_source(
+                                db,
+                                run_id=run_id,
+                                url=requested_url,
+                                title=source_titles.get(requested_url) or requested_url,
+                                status="failed",
+                                error_code=error_code,
+                                now=self.store.now(),
+                            )
                     continue
         finally:
             if own:
                 await client.aclose()
-        return excerpts
+        return documents
 
     async def _semantic_complete_discovery(
         self,
@@ -907,20 +1074,50 @@ class GeminiClient:
         """
         from google.genai import types
 
+        valid_sources = [
+            source
+            for source in discovery.grounding_sources
+            if isinstance(source, dict)
+            and str(source.get("url") or "").startswith("https://")
+        ]
+        active_sources = valid_sources[:24]
+        deferred_sources = valid_sources[24:]
+
         allowed_urls: dict[str, str] = {}
         source_by_url: dict[str, dict[str, Any]] = {}
-        for source in discovery.grounding_sources[:24]:
-            if not isinstance(source, dict):
-                continue
+        for source in active_sources:
             url = str(source.get("url") or "").strip()
-            if not url.startswith("https://"):
-                continue
             canonical_url = url.rstrip("/")
             allowed_urls[canonical_url] = url
             source_by_url[canonical_url] = dict(source)
 
         if not allowed_urls:
             return discovery
+
+        run_id = str(topic_context.get("research_run_id") or "").strip()
+        if run_id:
+            with self.store.tx() as db:
+                for source in active_sources:
+                    url = str(source.get("url") or "").rstrip("/")
+                    register_discovered_source(
+                        db,
+                        run_id=run_id,
+                        url=url,
+                        title=str(source.get("title") or url),
+                        status="snippet_only",
+                        now=self.store.now(),
+                    )
+                for source in deferred_sources:
+                    url = str(source.get("url") or "").rstrip("/")
+                    register_discovered_source(
+                        db,
+                        run_id=run_id,
+                        url=url,
+                        title=str(source.get("title") or url),
+                        status="deferred",
+                        error_code="source_batch_limit",
+                        now=self.store.now(),
+                    )
 
         known_facts = []
         for item in topic_context.get("known_facts") or []:
@@ -945,6 +1142,15 @@ class GeminiClient:
             for item in (topic_context.get("previously_processed_sources") or [])[:80]
             if isinstance(item, dict) and str(item.get("url") or "").startswith("https://")
         ]
+        supporting_urls = {
+            canonical_url
+            for canonical_url, source in source_by_url.items()
+            if any(
+                isinstance(support, dict)
+                and str(support.get("text") or "").strip()
+                for support in (source.get("supports") or [])
+            )
+        }
 
         def evidence_rows(with_pages: dict[str, str] | None = None) -> list[dict[str, Any]]:
             pages = with_pages or {}
@@ -968,7 +1174,11 @@ class GeminiClient:
                 rows.append(row)
             return rows
 
-        def normalize_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+        def normalize_payload(
+            payload: dict[str, Any],
+            *,
+            evidence_chunks: dict[str, dict[str, Any]] | None = None,
+        ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
             raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
             audit = {
                 "raw_fact_count": len(raw_facts),
@@ -983,7 +1193,7 @@ class GeminiClient:
                 rejected[reason] = int(rejected.get(reason, 0)) + 1
 
             normalized_facts: list[dict[str, Any]] = []
-            for item in raw_facts[:32]:
+            for item in raw_facts:
                 if not isinstance(item, dict):
                     reject("invalid_shape")
                     continue
@@ -1016,6 +1226,45 @@ class GeminiClient:
                 if not source_urls:
                     reject("no_grounded_source")
                     continue
+                if evidence_chunks is None:
+                    source_urls = [
+                        url for url in source_urls
+                        if str(url).rstrip("/") in supporting_urls
+                    ]
+                    if not source_urls:
+                        reject("no_support_passage")
+                        continue
+
+                evidence_spans: list[dict[str, Any]] = []
+                if evidence_chunks is not None:
+                    for raw_span in item.get("evidence_spans") or []:
+                        if not isinstance(raw_span, dict):
+                            continue
+                        chunk_id = str(raw_span.get("chunk_id") or "").strip()
+                        quote = str(raw_span.get("quote") or "").strip()
+                        raw_source_url = str(raw_span.get("source_url") or "").rstrip("/")
+                        chunk = evidence_chunks.get(chunk_id)
+                        if chunk is None or not quote or len(quote) > 1600:
+                            continue
+                        exact_url = allowed_urls.get(raw_source_url)
+                        if exact_url is None or exact_url.rstrip("/") != str(chunk.get("source_url") or "").rstrip("/"):
+                            continue
+                        core_text = str(chunk.get("core_text") or "")
+                        relative_start = core_text.find(quote)
+                        if relative_start < 0:
+                            continue
+                        base_offset = int(chunk.get("core_start") or 0)
+                        evidence_spans.append({
+                            "source_url": exact_url,
+                            "source_version_id": str(chunk.get("source_version_id") or ""),
+                            "chunk_id": chunk_id,
+                            "quote": quote,
+                            "span_start": base_offset + relative_start,
+                            "span_end": base_offset + relative_start + len(quote),
+                        })
+                    if not evidence_spans:
+                        reject("no_verified_span")
+                        continue
 
                 fact = {
                     "claim_key": claim_key,
@@ -1023,15 +1272,14 @@ class GeminiClient:
                     "confidence": max(0.0, min(1.0, confidence)),
                     "source_urls": source_urls[:12],
                 }
+                if evidence_spans:
+                    fact["evidence_spans"] = evidence_spans
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
                 if existing_fact_id:
                     fact["existing_fact_id"] = existing_fact_id[:200]
                 normalized_facts.append(fact)
 
             audit["accepted_fact_count"] = len(normalized_facts)
-            if len(raw_facts) > 32:
-                audit["rejected"]["over_batch_limit"] = len(raw_facts) - 32
-
             official_urls: list[str] = []
             for raw_url in payload.get("official_source_urls") or []:
                 exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
@@ -1085,10 +1333,38 @@ class GeminiClient:
             response_mime_type="application/json",
             response_json_schema=self.DISCOVERY_COVERAGE_SCHEMA,
         )
-        final_config = types.GenerateContentConfig(
+        chunk_config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_json_schema=self.DISCOVERY_COVERAGE_SCHEMA,
+            response_json_schema=self.CHUNK_EXTRACTION_SCHEMA,
         )
+
+        def build_chunk_prompt(
+            source_url: str,
+            source_version_id: str,
+            chunk: dict[str, Any],
+        ) -> str:
+            return (
+                "Ты внутренний LLM-экстрактор Street Story. Передан один chunk документа. "
+                "Извлекай атомарные проверяемые facts ТОЛЬКО когда утверждение поддерживается текстом секции [core]. "
+                "[context_before] и [context_after] разрешено использовать только для разрешения ссылок, имён и границ; "
+                "не создавай факт, если его содержательная опора находится только в context. "
+                "Не используй знания вне chunk. Не превращай отсутствие ответа в факт. "
+                "Если core оборван так, что смысл нельзя надёжно определить даже с context, needs_context=true. "
+                "Если core понятен, needs_context=false, даже когда в нём нет релевантных facts. "
+                "Для каждого факта source_urls должен содержать только переданный source_url. "
+                "Для каждого fact обязательно верни evidence_spans с exact chunk_id и короткой дословной quote, "
+                "скопированной из chunk. Не пересказывай quote и не ссылайся на другой chunk. "
+                "Если факт семантически совпадает с known_facts, верни exact existing_fact_id; иначе оставь его пустым.\n\n"
+                + "Coverage goal: " + coverage_goal + "\n"
+                + "Retrieval query: " + query[:1000] + "\n"
+                + "Source URL: " + source_url + "\n"
+                + "Source version: " + source_version_id + "\n"
+                + "Chunk id: " + str(chunk.get("chunk_id") or "") + "\n"
+                + "Chunk ordinal: " + str(chunk.get("ordinal")) + "\n"
+                + "Chunk text:\n" + str(chunk.get("text") or "")
+                + "\nKnown facts (dedup references only): "
+                + json.dumps(known_facts[:40], ensure_ascii=False)
+            )
 
         async def call(key, timeout, *, model=None, quota=None):
             first = await self._generate(
@@ -1120,47 +1396,259 @@ class GeminiClient:
 
             sources_for_result = [dict(source) for source in discovery.grounding_sources]
             semantic_completion = "gemini_research"
+            page_chunk_failures = 0
+            page_chunk_needs_context = 0
+            page_chunk_count = 0
+            page_fact_count = 0
             if selected_urls:
-                excerpts = await self._fetch_page_excerpts(selected_urls)
-                if excerpts:
-                    for source in sources_for_result:
-                        if not isinstance(source, dict):
-                            continue
-                        canonical = str(source.get("url") or "").rstrip("/")
-                        excerpt = excerpts.get(canonical)
-                        if not excerpt:
-                            continue
+                documents = await self._fetch_page_documents(
+                    selected_urls,
+                    {
+                        **topic_context,
+                        "research_sources": discovery.grounding_sources,
+                    },
+                )
+                if documents:
+                    source_result_by_url = {
+                        str(source.get("url") or "").rstrip("/"): source
+                        for source in sources_for_result
+                        if isinstance(source, dict)
+                    }
+                    page_facts: list[dict[str, Any]] = []
+                    page_official: list[str] = []
+                    aggregate_audit = {
+                        "raw_fact_count": int(extraction_audit.get("raw_fact_count") or 0),
+                        "accepted_fact_count": int(extraction_audit.get("accepted_fact_count") or 0),
+                        "claim_key_fallback_count": int(extraction_audit.get("claim_key_fallback_count") or 0),
+                        "confidence_defaulted_count": int(extraction_audit.get("confidence_defaulted_count") or 0),
+                        "rejected": dict(extraction_audit.get("rejected") or {}),
+                    }
+                    run_id = str(topic_context.get("research_run_id") or "").strip()
+                    for requested_url, document in documents.items():
+                        source = source_result_by_url.get(requested_url.rstrip("/"))
+                        if source is None:
+                            source = {
+                                "type": "web",
+                                "title": str(document.get("title") or requested_url),
+                                "url": requested_url,
+                            }
+                            sources_for_result.append(source)
+                            source_result_by_url[requested_url.rstrip("/")] = source
+                        source["source_version_id"] = document["source_version_id"]
+                        source["read_status"] = document["read_status"]
+                        source["final_url"] = document["final_url"]
                         supports = [
                             item for item in (source.get("supports") or [])
                             if isinstance(item, dict)
                         ]
-                        supports.append({
-                            "kind": "page_excerpt",
-                            "source_url": str(source.get("url") or ""),
-                            "text": excerpt[:9_000],
-                        })
-                        source["supports"] = supports[:5]
+                        for chunk in document.get("chunks") or []:
+                            page_chunk_count += 1
+                            if run_id:
+                                with self.store.tx() as db:
+                                    mark_chunk(
+                                        db,
+                                        run_id=run_id,
+                                        chunk_id=chunk["chunk_id"],
+                                        status="extracting",
+                                        observation_count=0,
+                                        model_name=str(model or ""),
+                                        prompt_version="page-chunk-extraction-v1",
+                                        now=self.store.now(),
+                                    )
+                            try:
+                                response = await self._generate(
+                                    key,
+                                    timeout,
+                                    [
+                                        build_chunk_prompt(
+                                            requested_url,
+                                            document["source_version_id"],
+                                            chunk,
+                                        )
+                                    ],
+                                    chunk_config,
+                                    operation="grounded_research",
+                                    model=model,
+                                    quota=quota,
+                                )
+                                chunk_payload = json.loads(response.text or "{}")
+                                if (
+                                    not isinstance(chunk_payload, dict)
+                                    or not isinstance(chunk_payload.get("facts"), list)
+                                    or not isinstance(chunk_payload.get("needs_context"), bool)
+                                    or not isinstance(chunk_payload.get("context_reason"), str)
+                                ):
+                                    raise ValueError("malformed_chunk_extraction")
+                                normalized_text = str(document.get("normalized_text") or "")
+                                core_start = int(chunk["core_start"])
+                                core_end = int(chunk["core_end"])
+                                evidence_chunks = {
+                                    str(chunk["chunk_id"]): {
+                                        "source_url": requested_url,
+                                        "source_version_id": document["source_version_id"],
+                                        "core_start": core_start,
+                                        "core_text": normalized_text[core_start:core_end],
+                                    }
+                                }
+                                chunk_facts, chunk_official, chunk_audit = normalize_payload(
+                                    {
+                                        **chunk_payload,
+                                        "official_source_urls": [],
+                                    },
+                                    evidence_chunks=evidence_chunks,
+                                )
+                                for fact in chunk_facts:
+                                    refs: list[str] = []
+                                    for span in fact.get("evidence_spans") or []:
+                                        chunk_id = str(span.get("chunk_id") or "")
+                                        if chunk_id and chunk_id not in refs:
+                                            refs.append(chunk_id)
+                                        support = {
+                                            "kind": "verified_page_span",
+                                            "source_url": span["source_url"],
+                                            "source_version_id": span["source_version_id"],
+                                            "evidence_ref": chunk_id,
+                                            "chunk_id": chunk_id,
+                                            "text": span["quote"],
+                                            "span_start": span["span_start"],
+                                            "span_end": span["span_end"],
+                                        }
+                                        if not any(
+                                            isinstance(item, dict)
+                                            and str(item.get("chunk_id") or "") == chunk_id
+                                            and str(item.get("text") or "") == span["quote"]
+                                            for item in supports
+                                        ):
+                                            supports.append(support)
+                                    fact["evidence_refs"] = refs
+                                page_facts.extend(chunk_facts)
+                                for url in chunk_official:
+                                    if url not in page_official:
+                                        page_official.append(url)
+                                for field in (
+                                    "raw_fact_count",
+                                    "accepted_fact_count",
+                                    "claim_key_fallback_count",
+                                    "confidence_defaulted_count",
+                                ):
+                                    aggregate_audit[field] += int(chunk_audit.get(field) or 0)
+                                for reason, count in (chunk_audit.get("rejected") or {}).items():
+                                    aggregate_audit["rejected"][reason] = (
+                                        int(aggregate_audit["rejected"].get(reason) or 0)
+                                        + int(count or 0)
+                                    )
+                                if chunk_payload["needs_context"]:
+                                    status = "needs_context"
+                                    page_chunk_needs_context += 1
+                                elif chunk_facts:
+                                    status = "extracted"
+                                else:
+                                    status = "no_claims"
+                                if run_id:
+                                    with self.store.tx() as db:
+                                        mark_chunk(
+                                            db,
+                                            run_id=run_id,
+                                            chunk_id=chunk["chunk_id"],
+                                            status=status,
+                                            observation_count=len(chunk_facts),
+                                            model_name=str(model or ""),
+                                            prompt_version="page-chunk-extraction-v1",
+                                            now=self.store.now(),
+                                        )
+                            except (
+                                GeminiUnavailable,
+                                PermanentProviderError,
+                                MalformedProviderResponse,
+                                ValueError,
+                                TypeError,
+                                json.JSONDecodeError,
+                            ) as exc:
+                                page_chunk_failures += 1
+                                if run_id:
+                                    with self.store.tx() as db:
+                                        mark_chunk(
+                                            db,
+                                            run_id=run_id,
+                                            chunk_id=chunk["chunk_id"],
+                                            status="failed",
+                                            observation_count=0,
+                                            model_name=str(model or ""),
+                                            prompt_version="page-chunk-extraction-v1",
+                                            error_code=type(exc).__name__,
+                                            now=self.store.now(),
+                                        )
+                                continue
+                        source["supports"] = supports
+
+                    if page_facts:
+                        normalized_facts = [*normalized_facts, *page_facts]
+                        page_fact_count = len(page_facts)
+                    for url in page_official:
+                        if url not in official_urls:
+                            official_urls.append(url)
+                    extraction_audit = aggregate_audit
+                    semantic_completion = "gemini_research_page_chunks"
+
+                    coverage_config_final = types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_json_schema=self.COVERAGE_REVIEW_SCHEMA,
+                    )
+                    coverage_prompt = (
+                        "Ты проверяешь полноту уже извлечённых facts относительно coverage goal. "
+                        "Не добавляй новых фактов и не используй внешние знания. "
+                        "coverage_satisfied=true только если facts прямо отвечают на цель. "
+                        "missing_aspects перечисляет конкретные пробелы.\n\n"
+                        + "Coverage goal: " + coverage_goal
+                        + "\nFacts: "
+                        + json.dumps(
+                            [
+                                {
+                                    "claim_key": fact.get("claim_key"),
+                                    "text": fact.get("text"),
+                                    "source_urls": fact.get("source_urls"),
+                                }
+                                for fact in normalized_facts
+                            ],
+                            ensure_ascii=False,
+                        )
+                    )
                     try:
-                        second = await self._generate(
+                        coverage_response = await self._generate(
                             key,
                             timeout,
-                            [build_prompt(evidence_rows(excerpts), page_pass=True)],
-                            final_config,
+                            [coverage_prompt],
+                            coverage_config_final,
                             operation="grounded_research",
                             model=model,
                             quota=quota,
                         )
-                        second_payload = json.loads(second.text or "{}")
-                        if isinstance(second_payload, dict):
-                            second_facts, second_official, second_audit = normalize_payload(second_payload)
-                            if second_facts:
-                                normalized_facts = second_facts
-                                official_urls = second_official
-                                extraction_audit = second_audit
-                                payload = second_payload
-                                semantic_completion = "gemini_research_page_evidence"
-                    except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse, ValueError, TypeError, json.JSONDecodeError):
-                        pass
+                        coverage_payload = json.loads(coverage_response.text or "{}")
+                        if not isinstance(coverage_payload, dict):
+                            raise ValueError("coverage_payload_shape")
+                        payload = {
+                            **payload,
+                            "coverage_satisfied": bool(coverage_payload.get("coverage_satisfied")),
+                            "summary": str(coverage_payload.get("summary") or payload.get("summary") or "")[:1200],
+                            "missing_aspects": [
+                                str(value)[:300]
+                                for value in (coverage_payload.get("missing_aspects") or [])[:20]
+                                if str(value).strip()
+                            ],
+                        }
+                    except (
+                        GeminiUnavailable,
+                        PermanentProviderError,
+                        MalformedProviderResponse,
+                        ValueError,
+                        TypeError,
+                        json.JSONDecodeError,
+                    ):
+                        payload = {
+                            **payload,
+                            "coverage_satisfied": False,
+                            "missing_aspects": ["coverage_review_unavailable"],
+                        }
 
             return GroundedResearch(
                 payload={
@@ -1170,6 +1658,15 @@ class GeminiClient:
                     "search_provider": str(discovery.payload.get("search_provider") or "duckduckgo_html_fallback"),
                     "semantic_completion": semantic_completion,
                     "coverage_satisfied": bool(payload.get("coverage_satisfied")),
+                    "missing_aspects": [
+                        str(value)[:300]
+                        for value in (payload.get("missing_aspects") or [])[:20]
+                        if str(value).strip()
+                    ],
+                    "page_chunk_count": page_chunk_count,
+                    "page_chunk_failures": page_chunk_failures,
+                    "page_chunk_needs_context": page_chunk_needs_context,
+                    "page_fact_count": page_fact_count,
                     "extraction_audit": extraction_audit,
                 },
                 grounding_sources=sources_for_result,
@@ -1477,7 +1974,7 @@ class GeminiClient:
                 {
                     **source,
                     **(
-                        {"supports": supports_by_url.get(source["url"], [])[:4]}
+                        {"supports": supports_by_url.get(source["url"], [])}
                         if supports_by_url.get(source["url"])
                         else {}
                     ),
@@ -1488,7 +1985,31 @@ class GeminiClient:
                 current_sources,
                 self._cached_evidence_sources(topic_context),
             )
+            run_id = str(topic_context.get("research_run_id") or "").strip()
+            if run_id:
+                with self.store.tx() as db:
+                    for source in available_sources:
+                        url = str(source.get("url") or "").rstrip("/")
+                        if not url.startswith("https://"):
+                            continue
+                        register_discovered_source(
+                            db,
+                            run_id=run_id,
+                            url=url,
+                            title=str(source.get("title") or url),
+                            status="snippet_only",
+                            now=self.store.now(),
+                        )
             seen = {source["url"].rstrip("/") for source in available_sources}
+            supported_seen = {
+                str(source.get("url") or "").rstrip("/")
+                for source in available_sources
+                if any(
+                    isinstance(support, dict)
+                    and str(support.get("text") or "").strip()
+                    for support in (source.get("supports") or [])
+                )
+            }
 
             raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
             extraction_audit = {
@@ -1504,7 +2025,7 @@ class GeminiClient:
                 rejected[reason] = int(rejected.get(reason, 0)) + 1
 
             normalized_facts: list[dict[str, Any]] = []
-            for item in raw_facts[:32]:
+            for item in raw_facts:
                 if not isinstance(item, dict):
                     reject("invalid_shape")
                     continue
@@ -1532,10 +2053,14 @@ class GeminiClient:
                 valid_urls: list[str] = []
                 for raw_url in item.get("source_urls") or []:
                     normalized_url = str(raw_url or "").rstrip("/")
-                    if normalized_url in seen and normalized_url not in valid_urls:
+                    if (
+                        normalized_url in seen
+                        and normalized_url in supported_seen
+                        and normalized_url not in valid_urls
+                    ):
                         valid_urls.append(normalized_url)
                 if not valid_urls:
-                    reject("no_grounded_source")
+                    reject("no_support_passage")
                     continue
 
                 fact = {
