@@ -708,7 +708,19 @@ class StreetStoryService:
         for page in wikipedia:
             url = str(page.get("url", ""))
             if url.startswith("https://"):
-                source_objects[url.rstrip("/")] = {"type": "wikipedia", "title": str(page.get("title", url)), "url": url}
+                source = {
+                    "type": "wikipedia",
+                    "title": str(page.get("title", url)),
+                    "url": url,
+                }
+                extract = str(page.get("extract") or "").strip()
+                if extract:
+                    source["supports"] = [{
+                        "kind": "wikipedia_extract",
+                        "source_url": url.rstrip("/"),
+                        "text": extract[:9000],
+                    }]
+                source_objects[url.rstrip("/")] = source
         for source in grounded.grounding_sources:
             source_objects[source["url"].rstrip("/")] = source
         incoming = [
