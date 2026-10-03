@@ -227,6 +227,32 @@ CREATE TABLE IF NOT EXISTS poi_aliases(
 CREATE INDEX IF NOT EXISTS idx_poi_aliases_poi
  ON poi_aliases(poi_id,namespace);
 
+CREATE TABLE IF NOT EXISTS poi_research_facts(
+  poi_key TEXT NOT NULL,
+  claim_key TEXT NOT NULL,
+  fact_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  sources_json TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(poi_key,claim_key)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_research_facts_recent
+ ON poi_research_facts(poi_key,updated_at DESC);
+CREATE TABLE IF NOT EXISTS poi_research_sources(
+  poi_key TEXT NOT NULL,
+  url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  supports_json TEXT NOT NULL,
+  last_query TEXT NOT NULL,
+  first_seen_at REAL NOT NULL,
+  last_seen_at REAL NOT NULL,
+  PRIMARY KEY(poi_key,url)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_research_sources_recent
+ ON poi_research_sources(poi_key,last_seen_at DESC);
+
 CREATE TABLE IF NOT EXISTS poi_external_events(
   event_id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,

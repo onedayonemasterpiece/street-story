@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 from dataclasses import dataclass
@@ -357,6 +358,51 @@ class _DuckDuckGoResultParser(HTMLParser):
         return list(self.results)
 
 
+class _ReadablePageParser(HTMLParser):
+    """Extract bounded human-readable page text without script/style payloads."""
+
+    BLOCK_TAGS = frozenset({"p", "div", "article", "main", "section", "li", "br", "h1", "h2", "h3", "h4", "h5", "h6"})
+    SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "canvas", "template"})
+
+    def __init__(self, limit: int = 12_000):
+        super().__init__(convert_charrefs=True)
+        self.limit = max(1_000, int(limit))
+        self.parts: list[str] = []
+        self.size = 0
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS:
+            self.skip_depth += 1
+            return
+        if not self.skip_depth and tag in self.BLOCK_TAGS and self.parts and self.parts[-1] != "\n":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self.SKIP_TAGS:
+            self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if not self.skip_depth and tag in self.BLOCK_TAGS and self.parts and self.parts[-1] != "\n":
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth or self.size >= self.limit:
+            return
+        text = " ".join(str(data or "").split())
+        if not text:
+            return
+        text = text[: self.limit - self.size]
+        self.parts.append(text)
+        self.parts.append(" ")
+        self.size += len(text) + 1
+
+    def finish(self) -> str:
+        lines = [" ".join(line.split()) for line in "".join(self.parts).splitlines()]
+        return "\n".join(line for line in lines if line).strip()[: self.limit]
+
+
 class GeminiClient:
     FACT_CONFLICT_SCHEMA = {
         "type": "object",
@@ -397,6 +443,21 @@ class GeminiClient:
             }, "required": ["claim_key", "text", "confidence", "source_urls"]}},
         },
         "required": ["summary", "official_source_urls", "facts"],
+    }
+
+    DISCOVERY_COVERAGE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "official_source_urls": {"type": "array", "items": {"type": "string"}},
+            "facts": WEB_SEARCH_SCHEMA["properties"]["facts"],
+            "coverage_satisfied": {"type": "boolean"},
+            "read_source_urls": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": [
+            "summary", "official_source_urls", "facts",
+            "coverage_satisfied", "read_source_urls",
+        ],
     }
 
     COMPOSE_SCHEMA = {
@@ -558,7 +619,11 @@ class GeminiClient:
             raise GeminiUnavailable(min(retry_at), "all_transcription_models_unavailable")
         raise PermanentProviderError("gemini:unsupported_model")
 
-    async def _public_web_search(self, query: str) -> GroundedResearch:
+    async def _public_web_search(
+        self,
+        query: str,
+        excluded_urls: set[str] | None = None,
+    ) -> GroundedResearch:
         """Emergency independent web discovery after Google-grounding exhaustion.
 
         The result snippets are discovery evidence, not model-generated facts. They
@@ -597,6 +662,29 @@ class GeminiClient:
             ]
             if not results:
                 raise RetryableProviderError("public_web_search_no_https_results")
+
+            excluded = {str(url).rstrip("/") for url in (excluded_urls or set()) if str(url).startswith("https://")}
+            if excluded:
+                fresh = [
+                    item for item in results
+                    if str(item.get("url") or "").rstrip("/") not in excluded
+                ]
+                if fresh:
+                    results = fresh
+                else:
+                    return GroundedResearch(
+                        payload={
+                            "summary": (
+                                f"По запросу найдено {len(results)} результатов, но все эти URL уже были обработаны "
+                                "для этого POI. Нужен другой поисковый аспект или запрос."
+                            ),
+                            "official_source_urls": [],
+                            "facts": [],
+                            "search_provider": "duckduckgo_html_fallback",
+                            "processed_sources_filtered": len(results),
+                        },
+                        grounding_sources=[],
+                    )
 
             facts: list[dict[str, Any]] = []
             sources = [
@@ -639,48 +727,97 @@ class GeminiClient:
             if own:
                 await client.aclose()
 
+    @staticmethod
+    def _safe_page_url(url: str) -> bool:
+        try:
+            parsed = urlparse(str(url or ""))
+            if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                return False
+            host = parsed.hostname.strip(".").casefold()
+            if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
+                return False
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                return True
+            return bool(address.is_global)
+        except (TypeError, ValueError):
+            return False
+
+    async def _fetch_page_excerpts(self, urls: list[str]) -> dict[str, str]:
+        selected: list[str] = []
+        for raw in urls:
+            url = str(raw or "").rstrip("/")
+            if url in selected or not self._safe_page_url(url):
+                continue
+            selected.append(url)
+            if len(selected) >= 2:
+                break
+        if not selected:
+            return {}
+
+        own = self.search_http is None
+        client = self.search_http or httpx.AsyncClient(
+            timeout=6,
+            follow_redirects=False,
+            headers={"User-Agent": "StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)"},
+        )
+        excerpts: dict[str, str] = {}
+        try:
+            for url in selected:
+                try:
+                    response = await client.get(
+                        url,
+                        headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.8"},
+                    )
+                    if response.status_code != 200:
+                        continue
+                    content = response.content
+                    if not content or len(content) > 768_000:
+                        continue
+                    content_type = str(response.headers.get("content-type") or "").casefold()
+                    if content_type and not any(kind in content_type for kind in ("text/html", "application/xhtml+xml", "text/plain")):
+                        continue
+                    parser = _ReadablePageParser(limit=9_000)
+                    parser.feed(response.text[:600_000])
+                    excerpt = parser.finish()
+                    if len(excerpt) >= 80:
+                        excerpts[url] = excerpt
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, ValueError, UnicodeError):
+                    continue
+        finally:
+            if own:
+                await client.aclose()
+        return excerpts
+
     async def _semantic_complete_discovery(
         self,
         query: str,
         topic_context: dict[str, Any],
         discovery: GroundedResearch,
     ) -> GroundedResearch:
-        """Use a configured model to turn bounded discovery snippets into durable fact semantics.
+        """Use a configured model to turn search evidence into durable fact semantics.
 
-        Search discovery and semantic extraction remain separate concerns. The
-        search provider supplies exact source URLs/snippets; the model decides
-        atomic facts, semantic identity and evidence aggregation. Deterministic
-        code only validates that every cited URL came from the supplied evidence.
+        The model owns semantic extraction and decides whether snippets answer the
+        actual query. If not, it may select at most two already-discovered HTTPS
+        sources for bounded page reading. Code only validates URLs, fetches bounded
+        text, and re-runs the same model over that evidence.
         """
         from google.genai import types
 
-        evidence: list[dict[str, Any]] = []
         allowed_urls: dict[str, str] = {}
+        source_by_url: dict[str, dict[str, Any]] = {}
         for source in discovery.grounding_sources[:12]:
             if not isinstance(source, dict):
                 continue
             url = str(source.get("url") or "").strip()
             if not url.startswith("https://"):
                 continue
-            snippets: list[str] = []
-            for support in source.get("supports") or []:
-                if not isinstance(support, dict):
-                    continue
-                text = str(support.get("text") or "").strip()
-                if text and text not in snippets:
-                    snippets.append(text[:600])
-            if not snippets:
-                continue
             canonical_url = url.rstrip("/")
             allowed_urls[canonical_url] = url
-            evidence.append(
-                {
-                    "source_url": url,
-                    "title": str(source.get("title") or url)[:220],
-                    "snippets": snippets[:3],
-                }
-            )
-        if not evidence:
+            source_by_url[canonical_url] = dict(source)
+
+        if not allowed_urls:
             return discovery
 
         known_facts = []
@@ -688,75 +825,55 @@ class GeminiClient:
             if not isinstance(item, dict):
                 continue
             fact_id = str(item.get("fact_id") or "").strip()
-            text = str(item.get("text") or "").strip()
-            if fact_id and text:
-                known_facts.append({"fact_id": fact_id, "text": text[:360]})
+            fact_text = str(item.get("text") or "").strip()
+            if fact_id and fact_text:
+                known_facts.append({"fact_id": fact_id, "text": fact_text[:360]})
 
         prior_poi = []
         for item in topic_context.get("previously_considered_poi_facts") or []:
             if not isinstance(item, dict):
                 continue
             fact_id = str(item.get("fact_id") or item.get("claim_id") or "").strip()
-            text = str(item.get("text") or item.get("claim_text") or "").strip()
-            if text:
-                prior_poi.append({"fact_id": fact_id or None, "text": text[:360]})
+            fact_text = str(item.get("text") or item.get("claim_text") or "").strip()
+            if fact_text:
+                prior_poi.append({"fact_id": fact_id or None, "text": fact_text[:360]})
 
-        prompt = (
-            "Ты внутренний LLM-экстрактор фактов Street Story. Перед тобой результаты независимого веб-поиска: "
-            "точные source_url и короткие snippets. Не используй знания вне этого evidence. Извлеки до 20 содержательных "
-            "атомарных проверяемых фактов; не ограничивайся 2–4 самыми заметными, если snippets поддерживают больше. "
-            "Один fact.text = один тезис. Для каждого факта дай устойчивый claim_key. Если тезис семантически совпадает "
-            "с known_facts, обязательно верни его exact fact_id в existing_fact_id; не создавай дубль из-за перефразирования. "
-            "Для source_urls перечисли ВСЕ URL из evidence, которые действительно поддерживают тот же тезис: если два или "
-            "больше источника подтверждают дату/событие/персону, объедини их в одном факте. Нельзя цитировать URL, которого "
-            "нет во входном evidence. Заголовок сам по себе не доказательство; опирайся на snippets. Не сочиняй публикацию. "
-            "official_source_urls заполняй только URL из evidence, которые по самому evidence явно являются источником "
-            "владельца/музея/учреждения/муниципалитета; иначе оставь пустым.\n\n"
-            + json.dumps(
-                {
-                    "query": query[:1000],
-                    "place_name": str(topic_context.get("place_name") or "")[:300],
-                    "known_facts": known_facts[:80],
-                    "previously_considered_poi_facts": prior_poi[:30],
-                    "evidence": evidence,
-                },
-                ensure_ascii=False,
-            )[:24000]
-        )
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_json_schema=self.WEB_SEARCH_SCHEMA,
-        )
+        processed_sources = [
+            str(item.get("url") or "").rstrip("/")
+            for item in (topic_context.get("previously_processed_sources") or [])[:80]
+            if isinstance(item, dict) and str(item.get("url") or "").startswith("https://")
+        ]
 
-        async def call(key, timeout, *, model=None, quota=None):
-            response = await self._generate(
-                key,
-                timeout,
-                [prompt],
-                config,
-                operation="grounded_research",
-                model=model,
-                quota=quota,
-            )
-            try:
-                payload = json.loads(response.text or "{}")
-                if (
-                    not isinstance(payload, dict)
-                    or not isinstance(payload.get("summary"), str)
-                    or not isinstance(payload.get("official_source_urls"), list)
-                    or not isinstance(payload.get("facts"), list)
-                ):
-                    raise ValueError
-            except (ValueError, TypeError, json.JSONDecodeError):
-                raise MalformedProviderResponse("gemini:malformed_discovery_facts") from None
+        def evidence_rows(with_pages: dict[str, str] | None = None) -> list[dict[str, Any]]:
+            pages = with_pages or {}
+            rows: list[dict[str, Any]] = []
+            for canonical_url, exact_url in allowed_urls.items():
+                source = source_by_url[canonical_url]
+                snippets: list[str] = []
+                for support in source.get("supports") or []:
+                    if not isinstance(support, dict):
+                        continue
+                    support_text = str(support.get("text") or "").strip()
+                    if support_text and support_text not in snippets:
+                        snippets.append(support_text[:600])
+                row = {
+                    "source_url": exact_url,
+                    "title": str(source.get("title") or exact_url)[:220],
+                    "snippets": snippets[:3],
+                }
+                if canonical_url in pages:
+                    row["page_excerpt"] = pages[canonical_url][:9_000]
+                rows.append(row)
+            return rows
 
+        def normalize_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
             normalized_facts: list[dict[str, Any]] = []
             for item in payload.get("facts", [])[:20]:
                 if not isinstance(item, dict):
                     continue
                 claim_key = str(item.get("claim_key") or "").strip()
-                text = str(item.get("text") or "").strip()
-                if not claim_key or not text or len(text) > 500:
+                fact_text = str(item.get("text") or "").strip()
+                if not claim_key or not fact_text or len(fact_text) > 500:
                     continue
                 try:
                     confidence = float(item.get("confidence", 0.0))
@@ -766,15 +883,14 @@ class GeminiClient:
                     continue
                 source_urls: list[str] = []
                 for raw_url in item.get("source_urls") or []:
-                    normalized = str(raw_url or "").rstrip("/")
-                    exact = allowed_urls.get(normalized)
+                    exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
                     if exact and exact not in source_urls:
                         source_urls.append(exact)
                 if not source_urls:
                     continue
                 fact = {
                     "claim_key": claim_key[:300],
-                    "text": text,
+                    "text": fact_text,
                     "confidence": max(0.0, min(1.0, confidence)),
                     "source_urls": source_urls[:12],
                 }
@@ -788,16 +904,128 @@ class GeminiClient:
                 exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
                 if exact and exact not in official_urls:
                     official_urls.append(exact)
+            return normalized_facts, official_urls[:12]
+
+        def build_prompt(evidence: list[dict[str, Any]], *, page_pass: bool) -> str:
+            coverage_rule = (
+                "Это второй проход: page_excerpt — bounded текст выбранных страниц. Извлеки ответ на исходный query "
+                "только из evidence; не проси читать страницы повторно. "
+                if page_pass else
+                "Отдельно оцени, отвечает ли snippets прямо на главный смысл query. Если запрос о конкретных фигурах, "
+                "именах, надписях, деталях или авторах, простого упоминания объекта недостаточно: coverage_satisfied=true "
+                "только когда evidence содержит конкретный ответ. Если ответа не хватает, coverage_satisfied=false и "
+                "выбери в read_source_urls максимум 2 URL из evidence, страницы которых вероятнее всего закроют пробел. "
+            )
+            return (
+                "Ты внутренний LLM-экстрактор фактов Street Story. Search discovery и semantic extraction разделены. "
+                "Не используй знания вне переданного evidence. " + coverage_rule +
+                "Извлеки до 20 содержательных атомарных проверяемых фактов. Один fact.text = один тезис. "
+                "Для каждого факта дай устойчивый claim_key. Если тезис семантически совпадает с known_facts, обязательно "
+                "верни exact fact_id в existing_fact_id. Для source_urls перечисли ВСЕ URL из evidence, которые реально "
+                "поддерживают тезис. Нельзя цитировать URL вне evidence. Не сочиняй публикацию. previously_processed_sources "
+                "— уже обработанные URL этого POI: они даны как coverage context, не как автоматическое доказательство.\n\n"
+                + json.dumps(
+                    {
+                        "query": query[:1000],
+                        "place_name": str(topic_context.get("place_name") or "")[:300],
+                        "known_facts": known_facts[:80],
+                        "previously_considered_poi_facts": prior_poi[:30],
+                        "previously_processed_sources": processed_sources,
+                        "evidence": evidence,
+                    },
+                    ensure_ascii=False,
+                )[:36_000]
+            )
+
+        coverage_config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.DISCOVERY_COVERAGE_SCHEMA,
+        )
+        final_config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.WEB_SEARCH_SCHEMA,
+        )
+
+        async def call(key, timeout, *, model=None, quota=None):
+            first = await self._generate(
+                key,
+                timeout,
+                [build_prompt(evidence_rows(), page_pass=False)],
+                coverage_config,
+                operation="grounded_research",
+                model=model,
+                quota=quota,
+            )
+            try:
+                payload = json.loads(first.text or "{}")
+                if not isinstance(payload, dict):
+                    raise ValueError
+            except (ValueError, TypeError, json.JSONDecodeError):
+                raise MalformedProviderResponse("gemini:malformed_discovery_facts") from None
+
+            normalized_facts, official_urls = normalize_payload(payload)
+            selected_urls: list[str] = []
+            if payload.get("coverage_satisfied") is False:
+                for raw_url in payload.get("read_source_urls") or []:
+                    canonical = str(raw_url or "").rstrip("/")
+                    exact = allowed_urls.get(canonical)
+                    if exact and exact not in selected_urls:
+                        selected_urls.append(exact)
+                    if len(selected_urls) >= 2:
+                        break
+
+            sources_for_result = [dict(source) for source in discovery.grounding_sources]
+            semantic_completion = "gemini_research"
+            if selected_urls:
+                excerpts = await self._fetch_page_excerpts(selected_urls)
+                if excerpts:
+                    for source in sources_for_result:
+                        if not isinstance(source, dict):
+                            continue
+                        canonical = str(source.get("url") or "").rstrip("/")
+                        excerpt = excerpts.get(canonical)
+                        if not excerpt:
+                            continue
+                        supports = [
+                            item for item in (source.get("supports") or [])
+                            if isinstance(item, dict)
+                        ]
+                        supports.append({
+                            "kind": "page_excerpt",
+                            "source_url": str(source.get("url") or ""),
+                            "text": excerpt[:9_000],
+                        })
+                        source["supports"] = supports[:5]
+                    try:
+                        second = await self._generate(
+                            key,
+                            timeout,
+                            [build_prompt(evidence_rows(excerpts), page_pass=True)],
+                            final_config,
+                            operation="grounded_research",
+                            model=model,
+                            quota=quota,
+                        )
+                        second_payload = json.loads(second.text or "{}")
+                        if isinstance(second_payload, dict):
+                            second_facts, second_official = normalize_payload(second_payload)
+                            if second_facts:
+                                normalized_facts = second_facts
+                                official_urls = second_official
+                                payload = second_payload
+                                semantic_completion = "gemini_research_page_evidence"
+                    except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse, ValueError, TypeError, json.JSONDecodeError):
+                        pass
 
             return GroundedResearch(
                 payload={
                     "summary": str(payload.get("summary") or "")[:1200],
-                    "official_source_urls": official_urls[:12],
+                    "official_source_urls": official_urls,
                     "facts": normalized_facts,
                     "search_provider": "duckduckgo_html_fallback",
-                    "semantic_completion": "gemini_research",
+                    "semantic_completion": semantic_completion,
                 },
-                grounding_sources=discovery.grounding_sources,
+                grounding_sources=sources_for_result,
             )
 
         retry_at: list[float] = []
@@ -988,8 +1216,9 @@ class GeminiClient:
             "совпадает с known_facts, укажи его точный fact_id в existing_fact_id; иначе existing_fact_id оставь пустым. "
             "Не выдумывай existing_fact_id. Для новых тезисов используй устойчивый claim_key. Самые важные факты "
             "ставь первыми; сведения официального источника имеют приоритет. Если Current topic context содержит "
-            "previously_considered_poi_facts, не повторяй их "
-            "без явной просьбы пользователя повторить или перепроверить: ищи новую фактологию. Для каждого факта "
+            "previously_considered_poi_facts, не повторяй их без явной просьбы пользователя повторить или перепроверить. "
+            "previously_processed_sources содержит уже обработанные URL этого POI: без задачи перепроверки не трать поиск на "
+            "повторный обход тех же страниц, ищи новые аспекты и независимые источники. Для каждого факта "
             "укажи только source_urls, которые реально видел в grounding. Не пиши публикацию и не предлагай редактуру.\n\n"
             "Search query: " + query[:1000] + "\n"
             "Current topic context: " + json.dumps(topic_context, ensure_ascii=False)[:12000]
@@ -1110,8 +1339,13 @@ class GeminiClient:
                 if str(exc) == "gemini:unsupported_model":
                     continue
                 raise
+        excluded_urls = {
+            str(item.get("url") or "").rstrip("/")
+            for item in (topic_context.get("previously_processed_sources") or [])
+            if isinstance(item, dict) and str(item.get("url") or "").startswith("https://")
+        }
         try:
-            discovery = await self._public_web_search(query)
+            discovery = await self._public_web_search(query, excluded_urls=excluded_urls)
         except RetryableProviderError:
             if retry_at:
                 raise GeminiUnavailable(min(retry_at), "all_web_search_models_and_public_search_unavailable")

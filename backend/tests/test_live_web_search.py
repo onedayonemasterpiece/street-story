@@ -263,6 +263,137 @@ async def test_web_search_semantically_completes_discovery_snippets_with_researc
     assert len(result.grounding_sources) == 2
 
 
+
+
+class RoutingSearchHTTP:
+    def __init__(self, search_html: str, pages: dict[str, str]):
+        self.search_html = search_html
+        self.pages = pages
+        self.calls = []
+
+    async def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        request = httpx.Request("GET", url)
+        if "duckduckgo.com" in url:
+            return httpx.Response(200, text=self.search_html, headers={"content-type": "text/html"}, request=request)
+        if url in self.pages:
+            return httpx.Response(200, text=self.pages[url], headers={"content-type": "text/html; charset=utf-8"}, request=request)
+        return httpx.Response(404, text="not found", headers={"content-type": "text/plain"}, request=request)
+
+
+@pytest.mark.asyncio
+async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_detail_query(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+        gemini_model="gemini-3.1-flash-lite",
+        gemini_fallback_model="gemini-3.5-flash-lite",
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+
+    page_url = "https://history.example/royal-gate"
+    client.search_http = RoutingSearchHTTP(
+        f"""
+        <div class="result">
+          <a class="result__a" href="{page_url}">Royal Gate facade</a>
+          <a class="result__snippet">На фасаде находятся три исторические скульптуры; подробнее на странице.</a>
+        </div>
+        """,
+        {
+            page_url: """
+              <html><body><main>
+              <h1>Скульптуры Королевских ворот</h1>
+              <p>Слева изображён чешский король Оттокар II, в центре — прусский король Фридрих I,
+              справа — герцог Пруссии Альбрехт I.</p>
+              </main><script>ignore me</script></body></html>
+            """,
+        },
+    )
+
+    calls = 0
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            payload = {
+                "summary": "Сниппет не называет персонажей.",
+                "official_source_urls": [],
+                "facts": [],
+                "coverage_satisfied": False,
+                "read_source_urls": [page_url, "https://invented.example/blocked"],
+            }
+        else:
+            prompt = str(contents[0])
+            assert "Оттокар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
+            payload = {
+                "summary": "Страница прямо называет три фигуры.",
+                "official_source_urls": [],
+                "facts": [
+                    {"claim_key": "royal-gate-sculpture-left", "existing_fact_id": "", "text": "Слева на фасаде изображён Оттокар II.", "confidence": .98, "source_urls": [page_url]},
+                    {"claim_key": "royal-gate-sculpture-center", "existing_fact_id": "", "text": "В центре на фасаде изображён Фридрих I.", "confidence": .98, "source_urls": [page_url]},
+                    {"claim_key": "royal-gate-sculpture-right", "existing_fact_id": "", "text": "Справа на фасаде изображён Альбрехт I.", "confidence": .98, "source_urls": [page_url]},
+                ],
+            }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.search_web(
+        "скульптуры на Королевских воротах Калининград описание",
+        {"place_name": "Королевские ворота"},
+    )
+
+    assert calls == 2
+    assert result.payload["semantic_completion"] == "gemini_research_page_evidence"
+    assert {fact["text"] for fact in result.payload["facts"]} == {
+        "Слева на фасаде изображён Оттокар II.",
+        "В центре на фасаде изображён Фридрих I.",
+        "Справа на фасаде изображён Альбрехт I.",
+    }
+    source = next(item for item in result.grounding_sources if item["url"] == page_url)
+    assert any(item.get("kind") == "page_excerpt" and "Оттокар II" in item.get("text", "") for item in source["supports"])
+    assert all(call[0] != "https://invented.example/blocked" for call in client.search_http.calls)
+
+
+@pytest.mark.asyncio
+async def test_fallback_filters_already_processed_exact_urls_when_fresh_sources_exist(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    client.research_routes = [
+        (route[0], route[1], route[2], FailingResearchExecutor())
+        for route in client.research_routes
+    ]
+    client.search_http = FakeSearchHTTP(
+        """
+        <div class="result"><a class="result__a" href="https://old.example/page">Old</a>
+        <a class="result__snippet">Old evidence.</a></div>
+        <div class="result"><a class="result__a" href="https://fresh.example/page">Fresh</a>
+        <a class="result__snippet">Fresh evidence.</a></div>
+        """
+    )
+    result = await client.search_web(
+        "new angle",
+        {"previously_processed_sources": [{"url": "https://old.example/page"}]},
+    )
+    assert [item["url"] for item in result.grounding_sources] == ["https://fresh.example/page"]
+
 @pytest.mark.asyncio
 async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp_path):
     settings = replace(
