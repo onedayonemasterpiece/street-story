@@ -982,7 +982,7 @@ class StreetStoryLiveAdapter:
 
     def _continue_pending_research(self, session):
         run_id = str(session.state.get("research_run_id") or "")
-        if not run_id or getattr(session, "closed", False) or any(session.state.get(key) for key in (
+        if not run_id or getattr(session, "closed", False) or getattr(session, "awaiting_audio", False) or any(session.state.get(key) for key in (
             "research_cancelled", "research_tool_busy", "research_provider_tool_pending",
             "research_author_interrupted", "research_continuation_queued",
         )):

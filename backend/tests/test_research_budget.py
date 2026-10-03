@@ -104,6 +104,10 @@ async def test_pending_operation_continues_same_lease_bounded_and_author_stop_wi
     await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'saved', 'args': findings(chunk, QUOTES[:1], continuation=True)})
     written = []
     adapter.write = lambda owned, message: written.append((owned.id, message))
+    session.awaiting_audio = True  # Shared host: intermediate boundary after tool response.
+    adapter.on_event(session, {'type': 'turn_complete'})
+    assert not written
+    session.awaiting_audio = False  # Actual model response/playback arrived.
     adapter.on_event(session, {'type': 'turn_complete'})
     assert len(written) == 1 and written[0][0] == session.id
     assert run_id in written[0][1]['text'] and 'get_research_chunk' in written[0][1]['text']
