@@ -10,6 +10,7 @@ import pytest
 from street_story.config import Settings
 from street_story.errors import MalformedProviderResponse
 from street_story.mvp_research import MvpResearchMixin, MvpResearchStreetStoryService
+from street_story.providers import GeminiClient
 from street_story.service import ConflictError, ProviderBundle
 
 
@@ -315,6 +316,106 @@ class _DirectGemini:
 
 class _ResearchProbe(MvpResearchMixin):
     pass
+
+
+class _BindingDirectGemini(GeminiClient):
+    def __init__(self):
+        self.executor = _DirectExecutor()
+        self.calls = []
+        self.source_url = "https://museum.example/royal-gate"
+        self.relevant = {
+            "kind": "google_grounding",
+            "source_url": self.source_url,
+            "text": "Слева изображён Оттокар II.",
+        }
+        self.irrelevant = {
+            "kind": "google_grounding",
+            "source_url": self.source_url,
+            "text": "Музей работает со среды по воскресенье.",
+        }
+
+    async def _generate(
+        self,
+        api_key,
+        timeout,
+        contents,
+        config=None,
+        *,
+        operation="grounded_research",
+        model=None,
+        quota=None,
+    ):
+        self.calls.append((operation, contents, config))
+        schema = getattr(config, "response_json_schema", None)
+        if schema == self.EVIDENCE_BINDING_SCHEMA:
+            relevant_ref = self._support_evidence_ref(self.source_url, self.relevant)
+            return SimpleNamespace(
+                text=json.dumps({
+                    "bindings": [{
+                        "fact_index": 0,
+                        "evidence_refs": [relevant_ref],
+                    }],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+
+        payload = {
+            "summary": "Проверено",
+            "author_note": "",
+            "official_source_urls": [],
+            "facts": [{
+                "claim_key": "left-sculpture",
+                "existing_fact_id": "",
+                "text": "Слева изображён Оттокар II.",
+                "confidence": .97,
+                "source_urls": [self.source_url],
+            }],
+        }
+        web = SimpleNamespace(uri=self.source_url, title="Museum")
+        chunk = SimpleNamespace(web=web)
+        supports = [
+            SimpleNamespace(
+                segment=SimpleNamespace(text=self.relevant["text"]),
+                grounding_chunk_indices=[0],
+            ),
+            SimpleNamespace(
+                segment=SimpleNamespace(text=self.irrelevant["text"]),
+                grounding_chunk_indices=[0],
+            ),
+        ]
+        return SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+            candidates=[SimpleNamespace(
+                grounding_metadata=SimpleNamespace(
+                    grounding_chunks=[chunk],
+                    grounding_supports=supports,
+                )
+            )],
+        )
+
+
+@pytest.mark.asyncio
+async def test_grounded_research_binds_fact_to_specific_passage_not_whole_url(tmp_path):
+    gemini = _BindingDirectGemini()
+    probe = _ResearchProbe()
+    probe.providers = SimpleNamespace(gemini=gemini)
+
+    result = await probe._research_claims(
+        {"photo_path": str(tmp_path / "unused.jpg"), "photo_mime_type": "image/jpeg"},
+        "Найди, кто изображён слева.",
+        {"status": "match", "candidate_id": "wiki:1", "candidate_name": "Королевские ворота"},
+        [],
+    )
+
+    assert len(gemini.calls) == 2
+    fact = result["payload"]["facts"][0]
+    relevant_ref = gemini._support_evidence_ref(gemini.source_url, gemini.relevant)
+    irrelevant_ref = gemini._support_evidence_ref(gemini.source_url, gemini.irrelevant)
+    assert result["payload"]["evidence_binding_status"] == "bound"
+    assert fact["source_urls"] == [gemini.source_url]
+    assert fact["evidence_refs"] == [relevant_ref]
+    supports = result["grounding_supports"]
+    assert {item["evidence_ref"] for item in supports} == {relevant_ref, irrelevant_ref}
 
 
 @pytest.mark.asyncio

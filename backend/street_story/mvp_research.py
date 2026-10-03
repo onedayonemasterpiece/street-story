@@ -561,6 +561,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         previous: list[dict[str, Any]],
         poi_history: list[dict[str, Any]] | None = None,
         processed_source_history: list[dict[str, Any]] | None = None,
+        wikipedia_evidence: list[dict[str, Any]] | None = None,
         research_run_id: str | None = None,
     ) -> dict[str, Any]:
         custom = getattr(self.providers.gemini, "research_v2", None)
@@ -600,6 +601,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "previous_claims_and_owner_decisions": previous,
                     "previously_considered_poi_facts": (poi_history or [])[:60],
                     "previously_processed_sources": (processed_source_history or [])[:80],
+                    "wikipedia_evidence": [
+                        {
+                            "title": str(page.get("title") or "")[:240],
+                            "url": _norm_url(page.get("url")),
+                            "extract": str(page.get("extract") or "")[:4000],
+                        }
+                        for page in (wikipedia_evidence or [])[:12]
+                        if _norm_url(page.get("url")) and str(page.get("extract") or "").strip()
+                    ],
                 },
                 ensure_ascii=False,
             )
@@ -667,6 +677,162 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             unique_chunks = {item["url"]: item for item in chunks if item["url"]}
             if not unique_chunks or not supports:
                 raise MalformedProviderResponse("gemini:missing_search_grounding")
+
+            candidate_facts = [
+                {
+                    "claim_key": str(item.get("claim_key") or ""),
+                    "text": str(item.get("text") or ""),
+                    "source_urls": [
+                        _norm_url(url)
+                        for url in (item.get("source_urls") or [])
+                        if _norm_url(url)
+                    ],
+                }
+                for item in payload.get("facts") or []
+                if isinstance(item, dict)
+            ]
+            binding_sources: list[dict[str, Any]] = []
+            bindings: dict[int, list[str]] = {}
+            support_by_ref: dict[str, dict[str, Any]] = {}
+            binding_status = "no_facts"
+
+            binder = getattr(gemini, "_bind_facts_to_evidence", None)
+            support_ref = getattr(gemini, "_support_evidence_ref", None)
+            merge_evidence = getattr(gemini, "_merge_evidence_sources", None)
+
+            if candidate_facts and callable(binder) and callable(support_ref) and callable(merge_evidence):
+                google_sources: list[dict[str, Any]] = []
+                for item in unique_chunks.values():
+                    url = item["url"]
+                    source_supports = [
+                        {
+                            **support,
+                            "evidence_ref": support_ref(url, support),
+                        }
+                        for support in supports
+                        if _norm_url(support.get("source_url")) == url
+                        and str(support.get("text") or "").strip()
+                    ]
+                    google_sources.append({
+                        **item,
+                        "supports": source_supports,
+                    })
+
+                wiki_sources: list[dict[str, Any]] = []
+                for page in wikipedia_evidence or []:
+                    url = _norm_url(page.get("url"))
+                    extract = str(page.get("extract") or "").strip()
+                    if not url or not extract:
+                        continue
+                    support = {
+                        "kind": "wikipedia_extract",
+                        "source_url": url,
+                        "text": extract[:9000],
+                    }
+                    support["evidence_ref"] = support_ref(url, support)
+                    wiki_sources.append({
+                        "type": "wikipedia",
+                        "title": str(page.get("title") or url),
+                        "url": url,
+                        "supports": [support],
+                    })
+
+                binding_sources = merge_evidence(google_sources, wiki_sources)
+                try:
+                    bindings = await binder(
+                        api_key,
+                        timeout,
+                        candidate_facts,
+                        binding_sources,
+                        model=None,
+                        quota=None,
+                    )
+                    binding_status = "bound"
+                except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse):
+                    bindings = {}
+                    binding_status = "unavailable"
+
+                for source in binding_sources:
+                    url = _norm_url(source.get("url"))
+                    for support in source.get("supports") or []:
+                        if not isinstance(support, dict):
+                            continue
+                        evidence_ref = str(support.get("evidence_ref") or "").strip()
+                        if evidence_ref:
+                            support_by_ref[evidence_ref] = {
+                                "source_url": url,
+                                "support": support,
+                            }
+            elif candidate_facts:
+                binding_status = "compatibility_unavailable"
+                binding_sources = [
+                    {**item, "supports": [
+                        support
+                        for support in supports
+                        if _norm_url(support.get("source_url")) == item["url"]
+                        and str(support.get("text") or "").strip()
+                    ]}
+                    for item in unique_chunks.values()
+                ]
+            else:
+                binding_sources = [
+                    {**item, "supports": [
+                        support
+                        for support in supports
+                        if _norm_url(support.get("source_url")) == item["url"]
+                        and str(support.get("text") or "").strip()
+                    ]}
+                    for item in unique_chunks.values()
+                ]
+
+            bound_facts: list[dict[str, Any]] = []
+            for index, item in enumerate(payload.get("facts") or []):
+                if not isinstance(item, dict):
+                    continue
+                if binding_status == "bound":
+                    refs = [
+                        ref
+                        for ref in bindings.get(index, [])
+                        if ref in support_by_ref
+                    ]
+                    bound_urls: list[str] = []
+                    for evidence_ref in refs:
+                        url = str(support_by_ref[evidence_ref]["source_url"] or "")
+                        if url and url not in bound_urls:
+                            bound_urls.append(url)
+                    bound_facts.append({
+                        **item,
+                        "source_urls": bound_urls,
+                        "evidence_refs": refs,
+                    })
+                elif binding_status == "unavailable":
+                    bound_facts.append({
+                        **item,
+                        "source_urls": [],
+                        "evidence_refs": [],
+                    })
+                else:
+                    bound_facts.append(dict(item))
+            payload["facts"] = bound_facts
+            payload["evidence_binding_status"] = binding_status
+
+            supports = [
+                {
+                    **support,
+                    "source_url": _norm_url(support.get("source_url")),
+                    **(
+                        {"evidence_ref": str(support.get("evidence_ref") or "")}
+                        if str(support.get("evidence_ref") or "").strip()
+                        else {}
+                    ),
+                }
+                for source in binding_sources
+                for support in (source.get("supports") or [])
+                if isinstance(support, dict)
+                and _norm_url(support.get("source_url"))
+                and str(support.get("text") or "").strip()
+            ]
+
             blocked_official_hosts = {
                 "wikipedia.org", "wikimedia.org", "openstreetmap.org", "google.com",
             }
@@ -680,8 +846,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             payload["official_source_urls"] = official_urls
             official_set = set(official_urls)
             grounding = [
-                {**item, "type": "official" if item["url"] in official_set else item["type"]}
-                for item in unique_chunks.values()
+                {
+                    **item,
+                    "type": (
+                        "official"
+                        if _norm_url(item.get("url")) in official_set
+                        else str(item.get("type") or "web")
+                    ),
+                }
+                for item in binding_sources
             ]
             return {
                 "payload": payload,
@@ -860,6 +1033,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 previous,
                 poi_history,
                 processed_source_history,
+                wikipedia_evidence=wikipedia,
                 research_run_id=run_id,
             )
             self.store.checkpoint_put(job["id"], "grounded_research_v3", saved)
@@ -913,6 +1087,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             url = _norm_url(support.get("source_url"))
             if url:
                 grounding_by_url.setdefault(url, []).append(support)
+        binding_status = str(saved.get("payload", {}).get("evidence_binding_status") or "")
+        binding_enforced = binding_status in {"bound", "unavailable"}
 
         known: dict[str, dict[str, Any]] = {}
         for page in wikipedia:
@@ -962,25 +1138,39 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 continue
             seen_claims.add(fact_id)
             sources: list[dict[str, Any]] = []
+            evidence_refs = {
+                str(value).strip()
+                for value in (item.get("evidence_refs") or [])
+                if str(value).strip()
+            }
             for raw_url in item.get("source_urls", []) or []:
                 url = _norm_url(raw_url)
                 source = known.get(url)
                 if not source:
                     continue
-                supports = [
-                    support
-                    for support in grounding_by_url.get(url, [])
-                    if isinstance(support, dict)
-                    and str(support.get("text") or "").strip()
-                ]
-                if not supports:
-                    excerpt = str(source.get("excerpt") or "").strip()
-                    if excerpt:
-                        supports = [{
-                            "kind": "wikipedia_extract",
-                            "source_url": url,
-                            "text": excerpt,
-                        }]
+                if binding_enforced:
+                    supports = [
+                        support
+                        for support in grounding_by_url.get(url, [])
+                        if isinstance(support, dict)
+                        and str(support.get("evidence_ref") or "") in evidence_refs
+                        and str(support.get("text") or "").strip()
+                    ]
+                else:
+                    supports = [
+                        support
+                        for support in grounding_by_url.get(url, [])
+                        if isinstance(support, dict)
+                        and str(support.get("text") or "").strip()
+                    ]
+                    if not supports:
+                        excerpt = str(source.get("excerpt") or "").strip()
+                        if excerpt:
+                            supports = [{
+                                "kind": "wikipedia_extract",
+                                "source_url": url,
+                                "text": excerpt,
+                            }]
                 if not supports:
                     continue
                 sources.append(
