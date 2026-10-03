@@ -188,11 +188,21 @@ class StreetStoryService:
         return {"ok": True, "story_id": story_id}
 
     def _story_repr(self, db, row) -> dict[str, Any]:
-        facts = [{
-            "fact_id": fact["fact_id"], "text": fact["text"], "confidence": fact["confidence"],
-            "evidence_supported": bool(fact["evidence_supported"]), "selected": bool(fact["selected"]),
-            "sources": json.loads(fact["sources_json"]),
-        } for fact in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (row["id"],))]
+        from .fact_ledger import assertion_state, backfill_legacy_fact_ledger
+        backfill_legacy_fact_ledger(db, self.store.now())
+        assertion_rows = assertion_state(db, row["id"])
+        facts = []
+        for fact in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (row["id"],)):
+            assertion = assertion_rows.get(str(fact["fact_id"]), {})
+            facts.append({
+                "fact_id": fact["fact_id"], "text": fact["text"], "confidence": fact["confidence"],
+                "evidence_supported": bool(fact["evidence_supported"]), "selected": bool(fact["selected"]),
+                "owner_selected": bool(assertion.get("owner_selected", fact["selected"])),
+                "review_status": str(assertion.get("review_status") or "unreviewed"),
+                "eligibility": str(assertion.get("eligibility") or "unreviewed"),
+                "revision_digest": str(assertion.get("revision_digest") or ""),
+                "sources": json.loads(fact["sources_json"]),
+            })
         error = None
         if row["error_code"] or row["error_message"]:
             error = {"code": row["error_code"] or "backend_error", "message": row["error_message"] or "Backend error"}
@@ -384,9 +394,8 @@ class StreetStoryService:
             unknown = selected_ids - valid
             if unknown:
                 raise ConflictError("fact_id_unknown", f"Unknown fact ids: {sorted(unknown)}")
-            for row in facts:
-                selected = row["fact_id"] in selected_ids and bool(row["evidence_supported"])
-                db.execute("UPDATE facts SET selected=? WHERE story_id=? AND fact_id=?", (int(selected), story_id, row["fact_id"]))
+            from .fact_ledger import set_owner_selection
+            set_owner_selection(db, story_id, list(selected_ids), self.store.now())
             return self._story_repr(db, self._story_row(db, story_id))
 
     def mutate_refinement(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -406,9 +415,8 @@ class StreetStoryService:
                 unknown = selected_ids - valid
                 if unknown:
                     raise ConflictError("fact_id_unknown", f"Unknown fact ids: {sorted(unknown)}")
-                for row in facts:
-                    selected = row["fact_id"] in selected_ids and bool(row["evidence_supported"])
-                    db.execute("UPDATE facts SET selected=? WHERE story_id=? AND fact_id=?", (int(selected), story_id, row["fact_id"]))
+                from .fact_ledger import set_owner_selection
+                set_owner_selection(db, story_id, list(selected_ids), self.store.now())
             self._enqueue_job(db, story_id, "refinement", f"refinement:{session_id}", {"voice_session_id": session_id})
             now = self.store.now()
             db.execute("UPDATE stories SET state='researching',revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? WHERE id=?", (now, story_id))
@@ -421,6 +429,13 @@ class StreetStoryService:
             if self._idem(db, key, "visual", req_digest, "story", story_id):
                 return self._story_repr(db, story)
             selected = [str(x) for x in body.get("selected_fact_ids", [])]
+            from .fact_ledger import eligibility_issues_for_ids
+            issues = eligibility_issues_for_ids(db, story_id, selected)
+            if issues:
+                raise InvalidStateError(
+                    "fact_review_required",
+                    "Requested facts still need semantic review before visual generation.",
+                )
             facts = {r["fact_id"]: r for r in db.execute("SELECT * FROM facts WHERE story_id=?", (story_id,))}
             for fact_id in selected:
                 if fact_id not in facts or not facts[fact_id]["evidence_supported"]:
@@ -481,6 +496,13 @@ class StreetStoryService:
             raise ConflictError("publish_time_too_soon", "Choose a publication time at least two minutes from now; native scheduling needs delivery lead time")
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
+            from .fact_ledger import selected_eligibility_issues
+            issues = selected_eligibility_issues(db, story_id)
+            if issues:
+                raise InvalidStateError(
+                    "fact_review_required",
+                    "Selected facts still need semantic review or arbitration before publication.",
+                )
             existing = db.execute("SELECT * FROM publish_intents WHERE request_key=?", (key,)).fetchone()
             replay = self._idem(db, key, "publish", req_digest, "publish_intent", existing["id"] if existing else "pending")
             if existing:
@@ -701,19 +723,24 @@ class StreetStoryService:
                 if candidate and candidate not in sources:
                     sources.append(candidate)
             normalized.append({
-                "fact_id": stable_fact_id(text), "text": text,
+                "claim_key": item.get("claim_key"),
+                "text": text,
                 "confidence": max(0.0, min(1.0, float(item.get("confidence", 0.0)))),
-                "evidence_supported": bool(sources), "sources": sources,
+                "evidence_supported": bool(sources), "selected": bool(sources), "sources": sources,
             })
         with self.store.tx() as db:
-            old_selected = {r["fact_id"]: bool(r["selected"]) for r in db.execute("SELECT fact_id,selected FROM facts WHERE story_id=?", (story_id,))}
-            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
-            for fact in normalized:
-                selected = fact["evidence_supported"] and old_selected.get(fact["fact_id"], True)
-                db.execute(
-                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) VALUES(?,?,?,?,?,?,?)",
-                    (story_id, fact["fact_id"], fact["text"], fact["confidence"], int(fact["evidence_supported"]), int(selected), canonical(fact["sources"])),
-                )
+            from .fact_ledger import persist_fact_candidates
+            persist_fact_candidates(
+                db,
+                story_id=story_id,
+                poi_key=None,
+                facts=normalized,
+                run_id=str(job["id"]),
+                batch_id="legacy-grounded-research",
+                model_name="legacy-research-model",
+                prompt_version="legacy-research-ledger-v1",
+                now=self.store.now(),
+            )
             reverse = osm.get("reverse", {})
             place_name = str(grounded.payload.get("place_name") or (reverse.get("namedetails") or {}).get("name") or reverse.get("display_name") or "").strip() or None
             research = {

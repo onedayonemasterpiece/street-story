@@ -24,9 +24,17 @@ from .fact_conflicts import (
     persist_fact_conflicts,
     resolve_fact_conflict,
 )
+from .fact_ledger import (
+    candidate_assertion_id,
+    eligibility_issues_for_ids,
+    eligible_selected_fact_ids,
+    persist_fact_candidates,
+    refresh_review_status,
+    selected_eligibility_issues,
+    set_owner_selection,
+)
 from .model_facts import (
     merge_model_fact_inventory,
-    model_fact_id,
     normalized_claim_key,
     validated_model_fact_text,
 )
@@ -1560,11 +1568,12 @@ class StreetStoryLiveAdapter:
             fact_id = (
                 existing_fact_id
                 if existing_fact_id in known_by_id
-                else model_fact_id(claim_key, text)
+                else candidate_assertion_id(claim_key, text)
             )
             normalized.append(
                 {
                     "fact_id": fact_id,
+                    "existing_fact_id": existing_fact_id or None,
                     "claim_key": claim_key,
                     "text": text,
                     "confidence": confidence,
@@ -1574,7 +1583,6 @@ class StreetStoryLiveAdapter:
                 }
             )
 
-        inventory = merge_model_fact_inventory([*known_facts, *normalized])
         detected_conflicts = await analyze_fact_conflicts(
             self.service,
             story_id,
@@ -1589,21 +1597,23 @@ class StreetStoryLiveAdapter:
 
         with self.service.store.tx() as db:
             story_row = self.service._story_row(db, story_id)
-            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
-            for fact in inventory:
-                db.execute(
-                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (
-                        story_id,
-                        fact["fact_id"],
-                        fact["text"],
-                        fact["confidence"],
-                        int(fact["evidence_supported"]),
-                        int(fact["selected"] and fact["evidence_supported"]),
-                        canonical(fact["sources"]),
-                    ),
-                )
+            now = self.service.store.now()
+            persist_fact_candidates(
+                db,
+                story_id=story_id,
+                poi_key=str(identity.get("candidate_id") or "") or None,
+                facts=normalized,
+                run_id="live:" + str(session.id),
+                batch_id=command_id,
+                model_name=str(session.model),
+                prompt_version="live-search-ledger-v1",
+                now=now,
+            )
+            refresh_review_status(db, story_id, now)
+            fact_count = db.execute(
+                "SELECT COUNT(*) FROM facts WHERE story_id=?",
+                (story_id,),
+            ).fetchone()[0]
 
             research = json.loads(story_row["research_json"] or "{}")
             prior_sources = research.get("grounding_sources")
@@ -1670,7 +1680,7 @@ class StreetStoryLiveAdapter:
                 active=discovery_only,
                 query=query,
                 source_count=len(all_sources),
-                fact_count=len(inventory),
+                fact_count=int(fact_count),
                 sources=list(all_sources.values()),
                 batch_source_count=len(grounding_sources),
             )
@@ -1785,11 +1795,12 @@ class StreetStoryLiveAdapter:
                     if source_ref not in refs:
                         refs.append(source_ref)
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
-                fact_id = existing_fact_id if existing_fact_id in known_by_id else model_fact_id(claim_key, text)
+                fact_id = existing_fact_id if existing_fact_id in known_by_id else candidate_assertion_id(claim_key, text)
                 selected = bool(item.get("selected")) and prior_decisions.get(fact_id, True)
                 normalized_candidates.append(
                     {
                         "fact_id": fact_id,
+                        "existing_fact_id": existing_fact_id or None,
                         "claim_key": claim_key,
                         "text": text,
                         "confidence": confidence,
@@ -1803,7 +1814,18 @@ class StreetStoryLiveAdapter:
             if not normalized:
                 raise ConflictError("live_research_facts_empty", "No valid facts were supplied")
 
-            inventory = merge_model_fact_inventory([*known_facts, *normalized])
+            now = self.service.store.now()
+            persist_fact_candidates(
+                db,
+                story_id=story_id,
+                poi_key=str(identity.get("candidate_id") or "") or None,
+                facts=normalized,
+                run_id="live:" + str(session.id),
+                batch_id=command_id,
+                model_name=str(session.model),
+                prompt_version="live-discovery-save-ledger-v1",
+                now=now,
+            )
             from .poi_memory import persist_research_memory
             persist_research_memory(
                 db,
@@ -1811,23 +1833,12 @@ class StreetStoryLiveAdapter:
                 normalized,
                 list(source_map.values()),
                 str(latest_search.get("query") or ""),
-                self.service.store.now(),
+                now,
             )
-            db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
-            for fact in inventory:
-                db.execute(
-                    "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
-                    "VALUES(?,?,?,?,?,?,?)",
-                    (
-                        story_id,
-                        fact["fact_id"],
-                        fact["text"],
-                        fact["confidence"],
-                        int(fact["evidence_supported"]),
-                        int(fact["selected"] and fact["evidence_supported"]),
-                        canonical(fact["sources"]),
-                    ),
-                )
+            fact_count = db.execute(
+                "SELECT COUNT(*) FROM facts WHERE story_id=?",
+                (story_id,),
+            ).fetchone()[0]
 
             selected_ids = [
                 row["fact_id"]
@@ -1876,7 +1887,7 @@ class StreetStoryLiveAdapter:
                 active=False,
                 query=str(latest_search.get("query") or ""),
                 source_count=len(all_research_sources),
-                fact_count=len(inventory),
+                fact_count=int(fact_count),
                 sources=all_research_sources,
             )
             return result
@@ -1925,6 +1936,7 @@ class StreetStoryLiveAdapter:
             "recorded_count": len(records),
         }
         with self.service.store.tx() as db:
+            refresh_review_status(db, story_id, self.service.store.now())
             self._store_command(db, story_id, command_id, "record_fact_conflicts", args, result)
         return result
 
@@ -1983,12 +1995,7 @@ class StreetStoryLiveAdapter:
             unknown = set(ids) - set(facts)
             if unknown:
                 raise ConflictError("fact_id_unknown", f"Unknown fact ids: {sorted(unknown)}")
-            for row in facts.values():
-                selected = row["fact_id"] in ids and bool(row["evidence_supported"])
-                db.execute(
-                    "UPDATE facts SET selected=? WHERE story_id=? AND fact_id=?",
-                    (int(selected), story_id, row["fact_id"]),
-                )
+            set_owner_selection(db, story_id, ids, self.service.store.now())
             research = json.loads(story["research_json"] or "{}")
             research["claim_decisions"] = {
                 row["fact_id"]: bool(row["selected"])
@@ -1997,7 +2004,10 @@ class StreetStoryLiveAdapter:
             selected_text = [
                 str(row["text"])
                 for row in db.execute(
-                    "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    "SELECT f.text FROM facts f JOIN fact_assertions a "
+                    "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                    "WHERE f.story_id=? AND a.owner_selected=1 AND a.eligibility='eligible' "
+                    "AND f.evidence_supported=1 ORDER BY f.rowid",
                     (story_id,),
                 )
             ]
@@ -2012,7 +2022,8 @@ class StreetStoryLiveAdapter:
                 "selected_fact_ids": [
                     row["fact_id"]
                     for row in db.execute(
-                        "SELECT fact_id FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                        "SELECT assertion_id AS fact_id FROM fact_assertions "
+                        "WHERE story_id=? AND owner_selected=1 ORDER BY rowid",
                         (story_id,),
                     )
                 ],
@@ -2283,15 +2294,22 @@ class StreetStoryLiveAdapter:
         supplied = args.get("fact_ids")
         if supplied is None:
             with self.service.store.connection() as db:
-                ids = [
-                    row["fact_id"]
-                    for row in db.execute(
-                        "SELECT fact_id FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
-                        (story_id,),
+                issues = selected_eligibility_issues(db, story_id)
+                if issues:
+                    raise InvalidStateError(
+                        "fact_review_required",
+                        "Selected facts still need semantic review before final visual generation.",
                     )
-                ]
+                ids = eligible_selected_fact_ids(db, story_id)
         else:
             ids = [str(v) for v in supplied]
+            with self.service.store.connection() as db:
+                issues = eligibility_issues_for_ids(db, story_id, ids)
+                if issues:
+                    raise InvalidStateError(
+                        "fact_review_required",
+                        "Requested facts still need semantic review before final visual generation.",
+                    )
         body = {"selected_fact_ids": ids, "visual_instruction": instruction}
         key = "ss-live-visual-" + hashlib.sha256(f"{story_id}:{command_id}".encode()).hexdigest()[:48]
         story = self.service.mutate_visual(story_id, key, body)
@@ -2316,6 +2334,12 @@ class StreetStoryLiveAdapter:
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
+                )
+            issues = selected_eligibility_issues(db, story_id)
+            if issues:
+                raise InvalidStateError(
+                    "fact_review_required",
+                    "Selected facts still need semantic review or arbitration before publication.",
                 )
         destinations = [str(v).strip() for v in args.get("destinations", []) if str(v).strip()]
         if not destinations or len(destinations) > 8:
@@ -2419,6 +2443,12 @@ class StreetStoryLiveAdapter:
             story = self.service._story_row(db, story_id)
             editor = db.execute("SELECT * FROM live_editor_state WHERE story_id=?", (story_id,)).fetchone()
             visual = json.loads(story["visual_context_json"] or "{}")
+            issues = selected_eligibility_issues(db, story_id)
+            if issues:
+                raise ConflictError(
+                    "publication_confirmation_stale",
+                    "Fact eligibility changed after publication confirmation was prepared",
+                )
             if (
                 not editor
                 or int(editor["text_revision"]) != int(confirmation["text_revision"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .fact_ledger import selected_eligibility_issues, set_owner_selection
 from .mvp_research import MvpResearchStreetStoryService
 from .service import canonical
 
@@ -57,6 +58,7 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
                 return
 
             current_decisions: dict[str, bool] = {}
+            selected_ids: list[str] = []
             selection_changed = False
             for row in db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)):
                 supported = bool(row["evidence_supported"])
@@ -65,11 +67,10 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
                     selected = False
                 if selected != bool(row["selected"]):
                     selection_changed = True
-                    db.execute(
-                        "UPDATE facts SET selected=? WHERE story_id=? AND fact_id=?",
-                        (int(selected), story_id, row["fact_id"]),
-                    )
                 current_decisions[str(row["fact_id"])] = selected
+                if selected:
+                    selected_ids.append(str(row["fact_id"]))
+            set_owner_selection(db, story_id, selected_ids, self.store.now())
 
             merged_decisions = dict(prior_decisions)
             merged_decisions.update(current_decisions)
@@ -77,7 +78,10 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
             selected_text = [
                 str(row["text"])
                 for row in db.execute(
-                    "SELECT text FROM facts WHERE story_id=? AND selected=1 AND evidence_supported=1 ORDER BY rowid",
+                    "SELECT f.text FROM facts f JOIN fact_assertions a "
+                    "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                    "WHERE f.story_id=? AND a.owner_selected=1 AND a.eligibility='eligible' "
+                    "AND f.evidence_supported=1 ORDER BY f.rowid",
                     (story_id,),
                 )
             ]
@@ -93,6 +97,7 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
         with self.store.connection() as db:
             story = self._story_row(db, job["story_id"])
             prior = json.loads(story["research_json"] or "{}")
+            prior_draft = str(story["draft_text"] or "")
             decisions = prior.get("claim_decisions")
             prior_decisions = (
                 {str(key): bool(value) for key, value in decisions.items()}
@@ -101,6 +106,22 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
             )
         await super()._run_research(job)
         self._enforce_claim_support_and_decisions(job["story_id"], prior_decisions)
+        with self.store.tx() as db:
+            issues = selected_eligibility_issues(db, job["story_id"])
+            if issues:
+                story = self._story_row(db, job["story_id"])
+                research = json.loads(story["research_json"] or "{}")
+                research["draft_needs_refresh"] = True
+                research["draft_withheld_reason"] = "fact_review_required"
+                db.execute(
+                    "UPDATE stories SET draft_text=?,research_json=?,state='review',updated_at=? WHERE id=?",
+                    (
+                        prior_draft or None,
+                        canonical(research),
+                        self.store.now(),
+                        job["story_id"],
+                    ),
+                )
 
     def _story_repr(self, db, row) -> dict[str, Any]:
         result = super()._story_repr(db, row)

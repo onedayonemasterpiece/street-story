@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.config import Settings
+from street_story.fact_ledger import persist_fact_candidates, set_owner_selection
 from street_story.live import FUNCTIONS, StreetStoryLiveAdapter, ensure_live_schema, live_history
 from street_story.mvp_location import MvpLocationStreetStoryService
 from street_story.providers import GroundedResearch
@@ -829,6 +830,60 @@ async def test_live_fact_selection_does_not_overwrite_edited_draft(tmp_path):
         session, {"name": "select_facts", "id": "facts-1", "args": {"fact_ids": ["f1"]}}
     )
     assert result["story"]["draft_text"] == "Авторский текст"
+
+
+@pytest.mark.asyncio
+async def test_publication_is_blocked_when_owner_selected_fact_is_unreviewed(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    fact = {
+        "claim_key": "architect",
+        "text": "Архитектором был Штюлер.",
+        "confidence": .9,
+        "selected": True,
+        "sources": [{
+            "type": "web",
+            "title": "Evidence",
+            "url": "https://example.org/gate",
+            "supports": [{
+                "kind": "page_excerpt",
+                "source_url": "https://example.org/gate",
+                "text": "Архитектор — Штюлер.",
+            }],
+        }],
+    }
+    with svc.store.tx() as db:
+        fact_id = persist_fact_candidates(
+            db,
+            story_id=story_id,
+            poi_key="wiki:77",
+            facts=[fact],
+            run_id="test-run",
+            batch_id="test-batch",
+            model_name="test-model",
+            prompt_version="test-v1",
+            now=svc.store.now(),
+        )[0]
+        set_owner_selection(db, story_id, [fact_id], svc.store.now())
+
+    scheduled_for = (
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds")
+    with pytest.raises(Exception) as blocked:
+        await adapter.execute_tool(
+            session,
+            {
+                "name": "prepare_publication",
+                "id": "prepare-unreviewed",
+                "args": {
+                    "destinations": ["street_story_e2e_test"],
+                    "scheduled_for": scheduled_for,
+                    "timezone": "Europe/Kaliningrad",
+                },
+            },
+        )
+    assert getattr(blocked.value, "code", None) == "fact_review_required"
 
 
 @pytest.mark.asyncio
