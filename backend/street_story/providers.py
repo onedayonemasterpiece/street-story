@@ -456,6 +456,7 @@ class GeminiClient:
                 "text": {"type": "string"},
                 "confidence": {"type": "number"},
                 "source_urls": {"type": "array", "items": {"type": "string"}},
+                "evidence_refs": {"type": "array", "items": {"type": "string"}},
                 "evidence_spans": {
                     "type": "array",
                     "items": {
@@ -506,7 +507,15 @@ class GeminiClient:
         "properties": {
             "summary": {"type": "string"},
             "official_source_urls": {"type": "array", "items": {"type": "string"}},
-            "facts": WEB_SEARCH_SCHEMA["properties"]["facts"],
+            "facts": {
+                "type": "array",
+                "items": {
+                    **WEB_SEARCH_SCHEMA["properties"]["facts"]["items"],
+                    "required": [
+                        "claim_key", "text", "confidence", "source_urls", "evidence_refs",
+                    ],
+                },
+            },
             "coverage_satisfied": {"type": "boolean"},
             "read_source_urls": {"type": "array", "items": {"type": "string"}},
         },
@@ -514,6 +523,24 @@ class GeminiClient:
             "summary", "official_source_urls", "facts",
             "coverage_satisfied", "read_source_urls",
         ],
+    }
+
+    EVIDENCE_BINDING_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "bindings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fact_index": {"type": "integer"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["fact_index", "evidence_refs"],
+                },
+            },
+        },
+        "required": ["bindings"],
     }
 
     COMPOSE_SCHEMA = {
@@ -714,6 +741,143 @@ class GeminiClient:
         return sources
 
     @staticmethod
+    def _support_evidence_ref(source_url: str, support: dict[str, Any]) -> str:
+        existing = str(support.get("evidence_ref") or "").strip()
+        if existing:
+            return existing
+        payload = "\n".join([
+            str(source_url or "").rstrip("/"),
+            str(support.get("kind") or "support"),
+            str(support.get("source_version_id") or ""),
+            str(support.get("chunk_id") or ""),
+            str(support.get("text") or "").strip(),
+        ])
+        return "evref_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+    @classmethod
+    def _with_support_evidence_refs(cls, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for raw in sources:
+            if not isinstance(raw, dict):
+                continue
+            source = dict(raw)
+            url = str(source.get("url") or "").rstrip("/")
+            supports: list[dict[str, Any]] = []
+            for raw_support in source.get("supports") or []:
+                if not isinstance(raw_support, dict):
+                    continue
+                text = str(raw_support.get("text") or "").strip()
+                if not text:
+                    continue
+                support = dict(raw_support)
+                support["source_url"] = str(support.get("source_url") or url).rstrip("/")
+                support["text"] = text
+                support["evidence_ref"] = cls._support_evidence_ref(url, support)
+                supports.append(support)
+            if supports:
+                source["supports"] = supports
+            else:
+                source.pop("supports", None)
+            result.append(source)
+        return result
+
+    async def _bind_facts_to_evidence(
+        self,
+        key: str,
+        timeout: float,
+        candidate_facts: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        *,
+        model: str | None,
+        quota: str | None,
+    ) -> dict[int, list[str]]:
+        from google.genai import types
+
+        evidence: list[dict[str, str]] = []
+        valid_refs: set[str] = set()
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").rstrip("/")
+            for support in source.get("supports") or []:
+                if not isinstance(support, dict):
+                    continue
+                evidence_ref = str(support.get("evidence_ref") or "").strip()
+                text = str(support.get("text") or "").strip()
+                if not evidence_ref or not text or evidence_ref in valid_refs:
+                    continue
+                valid_refs.add(evidence_ref)
+                evidence.append({
+                    "evidence_ref": evidence_ref,
+                    "source_url": url,
+                    "kind": str(support.get("kind") or "support")[:80],
+                    "text": text[:1200],
+                })
+        if not candidate_facts or not evidence:
+            return {}
+
+        prompt = (
+            "Ты внутренний LLM-арбитр evidence Street Story. Для каждого candidate fact выбери только те "
+            "evidence_ref, passage которых прямо поддерживает именно этот тезис. URL, домен, количество источников "
+            "или общая тематическая близость сами по себе недостаточны. Не используй внешние знания. "
+            "Если ни один passage не подтверждает fact, верни для него пустой evidence_refs. "
+            "Один passage можно связать с несколькими атомарными facts, если он действительно подтверждает каждый. "
+            "Верни binding для каждого fact_index.\n\nCandidate facts: "
+            + json.dumps(
+                [
+                    {
+                        "fact_index": index,
+                        "text": str(fact.get("text") or ""),
+                        "claim_key": str(fact.get("claim_key") or ""),
+                        "source_urls_hint": list(fact.get("source_urls") or []),
+                    }
+                    for index, fact in enumerate(candidate_facts)
+                ],
+                ensure_ascii=False,
+            )
+            + "\nEvidence passages: "
+            + json.dumps(evidence, ensure_ascii=False)
+        )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.EVIDENCE_BINDING_SCHEMA,
+        )
+        response = await self._generate(
+            key,
+            timeout,
+            [prompt],
+            config,
+            operation="grounded_research",
+            model=model,
+            quota=quota,
+        )
+        try:
+            payload = json.loads(response.text or "{}")
+            bindings = payload.get("bindings")
+            if not isinstance(bindings, list):
+                raise ValueError
+        except (ValueError, TypeError, json.JSONDecodeError):
+            raise MalformedProviderResponse("gemini:malformed_evidence_binding") from None
+
+        result: dict[int, list[str]] = {}
+        for item in bindings:
+            if not isinstance(item, dict):
+                continue
+            try:
+                fact_index = int(item.get("fact_index"))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= fact_index < len(candidate_facts)):
+                continue
+            refs: list[str] = []
+            for raw_ref in item.get("evidence_refs") or []:
+                evidence_ref = str(raw_ref or "").strip()
+                if evidence_ref in valid_refs and evidence_ref not in refs:
+                    refs.append(evidence_ref)
+            result[fact_index] = refs
+        return result
+
+    @staticmethod
     def _merge_evidence_sources(
         primary: list[dict[str, Any]],
         cached: list[dict[str, Any]],
@@ -761,9 +925,11 @@ class GeminiClient:
                 current["supports"] = list(support_map.values())
             else:
                 current.pop("supports", None)
+        values = [merged[url] for url in order]
+        values = GeminiClient._with_support_evidence_refs(values)
         if limit is None:
-            return [merged[url] for url in order]
-        return [merged[url] for url in order[: max(1, int(limit))]]
+            return values
+        return values[: max(1, int(limit))]
 
     async def _public_web_search(
         self,
@@ -1080,8 +1246,9 @@ class GeminiClient:
             if isinstance(source, dict)
             and str(source.get("url") or "").startswith("https://")
         ]
-        active_sources = valid_sources[:24]
-        deferred_sources = valid_sources[24:]
+        referenced_sources = self._with_support_evidence_refs(valid_sources)
+        active_sources = referenced_sources[:24]
+        deferred_sources = referenced_sources[24:]
 
         allowed_urls: dict[str, str] = {}
         source_by_url: dict[str, dict[str, Any]] = {}
@@ -1142,32 +1309,43 @@ class GeminiClient:
             for item in (topic_context.get("previously_processed_sources") or [])[:80]
             if isinstance(item, dict) and str(item.get("url") or "").startswith("https://")
         ]
-        supporting_urls = {
-            canonical_url
-            for canonical_url, source in source_by_url.items()
-            if any(
-                isinstance(support, dict)
-                and str(support.get("text") or "").strip()
-                for support in (source.get("supports") or [])
-            )
-        }
+        support_by_ref: dict[str, dict[str, Any]] = {}
+        for canonical_url, source in source_by_url.items():
+            exact_url = allowed_urls[canonical_url]
+            for support in source.get("supports") or []:
+                if not isinstance(support, dict):
+                    continue
+                evidence_ref = str(support.get("evidence_ref") or "").strip()
+                support_text = str(support.get("text") or "").strip()
+                if evidence_ref and support_text:
+                    support_by_ref[evidence_ref] = {
+                        "source_url": exact_url,
+                        "text": support_text,
+                        "support": support,
+                    }
 
         def evidence_rows(with_pages: dict[str, str] | None = None) -> list[dict[str, Any]]:
             pages = with_pages or {}
             rows: list[dict[str, Any]] = []
             for canonical_url, exact_url in allowed_urls.items():
                 source = source_by_url[canonical_url]
-                snippets: list[str] = []
+                snippets: list[dict[str, str]] = []
+                seen_refs: set[str] = set()
                 for support in source.get("supports") or []:
                     if not isinstance(support, dict):
                         continue
                     support_text = str(support.get("text") or "").strip()
-                    if support_text and support_text not in snippets:
-                        snippets.append(support_text[:600])
+                    evidence_ref = str(support.get("evidence_ref") or "").strip()
+                    if support_text and evidence_ref and evidence_ref not in seen_refs:
+                        snippets.append({
+                            "evidence_ref": evidence_ref,
+                            "text": support_text[:600],
+                        })
+                        seen_refs.add(evidence_ref)
                 row = {
                     "source_url": exact_url,
                     "title": str(source.get("title") or exact_url)[:220],
-                    "snippets": snippets[:3],
+                    "snippets": snippets,
                 }
                 if canonical_url in pages:
                     row["page_excerpt"] = pages[canonical_url][:9_000]
@@ -1219,20 +1397,27 @@ class GeminiClient:
                     audit["confidence_defaulted_count"] += 1
 
                 source_urls: list[str] = []
-                for raw_url in item.get("source_urls") or []:
-                    exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
-                    if exact and exact not in source_urls:
-                        source_urls.append(exact)
-                if not source_urls:
-                    reject("no_grounded_source")
-                    continue
+                evidence_refs: list[str] = []
                 if evidence_chunks is None:
-                    source_urls = [
-                        url for url in source_urls
-                        if str(url).rstrip("/") in supporting_urls
-                    ]
+                    for raw_ref in item.get("evidence_refs") or []:
+                        evidence_ref = str(raw_ref or "").strip()
+                        bound = support_by_ref.get(evidence_ref)
+                        if bound is None or evidence_ref in evidence_refs:
+                            continue
+                        evidence_refs.append(evidence_ref)
+                        exact_url = str(bound["source_url"])
+                        if exact_url not in source_urls:
+                            source_urls.append(exact_url)
+                    if not evidence_refs:
+                        reject("no_bound_evidence")
+                        continue
+                else:
+                    for raw_url in item.get("source_urls") or []:
+                        exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
+                        if exact and exact not in source_urls:
+                            source_urls.append(exact)
                     if not source_urls:
-                        reject("no_support_passage")
+                        reject("no_grounded_source")
                         continue
 
                 evidence_spans: list[dict[str, Any]] = []
@@ -1272,6 +1457,8 @@ class GeminiClient:
                     "confidence": max(0.0, min(1.0, confidence)),
                     "source_urls": source_urls[:12],
                 }
+                if evidence_refs:
+                    fact["evidence_refs"] = evidence_refs
                 if evidence_spans:
                     fact["evidence_spans"] = evidence_spans
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
@@ -1308,8 +1495,10 @@ class GeminiClient:
                 "Фраза о том, что источник не содержит нужной информации, НЕ является фактом об объекте: в таком случае "
                 "не создавай meta-факт, а оставь facts пустым или извлеки только реально поддержанные сведения. "
                 "Для каждого факта дай устойчивый claim_key. Если тезис семантически совпадает с known_facts, обязательно "
-                "верни exact fact_id в existing_fact_id. Для source_urls перечисли ВСЕ URL из evidence, которые реально "
-                "поддерживают тезис. Нельзя цитировать URL вне evidence. Не сочиняй публикацию. previously_processed_sources "
+                "верни exact fact_id в existing_fact_id. В snippet-pass для КАЖДОГО факта обязательно перечисли в "
+                "evidence_refs только те opaque evidence_ref из snippets, которые прямо поддерживают именно этот тезис; "
+                "source_urls должны соответствовать выбранным evidence_refs. URL без конкретного evidence_ref доказательством "
+                "не является. Нельзя цитировать URL/ref вне evidence. Не сочиняй публикацию. previously_processed_sources "
                 "— уже обработанные URL этого POI: они даны как coverage context, не как автоматическое доказательство.\n\n"
                 + "Coverage goal: "
                 + coverage_goal
@@ -1394,7 +1583,7 @@ class GeminiClient:
                     if len(selected_urls) >= 2:
                         break
 
-            sources_for_result = [dict(source) for source in discovery.grounding_sources]
+            sources_for_result = [dict(source) for source in referenced_sources]
             semantic_completion = "gemini_research"
             page_chunk_failures = 0
             page_chunk_needs_context = 0
@@ -2001,16 +2190,6 @@ class GeminiClient:
                             now=self.store.now(),
                         )
             seen = {source["url"].rstrip("/") for source in available_sources}
-            supported_seen = {
-                str(source.get("url") or "").rstrip("/")
-                for source in available_sources
-                if any(
-                    isinstance(support, dict)
-                    and str(support.get("text") or "").strip()
-                    for support in (source.get("supports") or [])
-                )
-            }
-
             raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
             extraction_audit = {
                 "raw_fact_count": len(raw_facts),
@@ -2024,7 +2203,7 @@ class GeminiClient:
                 rejected = extraction_audit["rejected"]
                 rejected[reason] = int(rejected.get(reason, 0)) + 1
 
-            normalized_facts: list[dict[str, Any]] = []
+            candidate_facts: list[dict[str, Any]] = []
             for item in raw_facts:
                 if not isinstance(item, dict):
                     reject("invalid_shape")
@@ -2050,31 +2229,75 @@ class GeminiClient:
                     confidence = 0.0
                     extraction_audit["confidence_defaulted_count"] += 1
 
-                valid_urls: list[str] = []
+                source_hints: list[str] = []
                 for raw_url in item.get("source_urls") or []:
                     normalized_url = str(raw_url or "").rstrip("/")
-                    if (
-                        normalized_url in seen
-                        and normalized_url in supported_seen
-                        and normalized_url not in valid_urls
-                    ):
-                        valid_urls.append(normalized_url)
-                if not valid_urls:
-                    reject("no_support_passage")
-                    continue
+                    if normalized_url in seen and normalized_url not in source_hints:
+                        source_hints.append(normalized_url)
 
-                fact = {
+                candidate = {
                     "claim_key": claim_key,
                     "text": fact_text,
                     "confidence": max(0.0, min(1.0, confidence)),
-                    "source_urls": valid_urls[:12],
+                    "source_urls": source_hints,
                 }
                 existing_fact_id = str(item.get("existing_fact_id") or "").strip()
                 if existing_fact_id:
-                    fact["existing_fact_id"] = existing_fact_id[:200]
+                    candidate["existing_fact_id"] = existing_fact_id[:200]
+                candidate_facts.append(candidate)
+
+            support_by_ref: dict[str, dict[str, Any]] = {}
+            for source in available_sources:
+                if not isinstance(source, dict):
+                    continue
+                url = str(source.get("url") or "").rstrip("/")
+                for support in source.get("supports") or []:
+                    if not isinstance(support, dict):
+                        continue
+                    evidence_ref = str(support.get("evidence_ref") or "").strip()
+                    if evidence_ref:
+                        support_by_ref[evidence_ref] = {
+                            "source_url": url,
+                            "support": support,
+                        }
+
+            try:
+                bindings = await self._bind_facts_to_evidence(
+                    key,
+                    timeout,
+                    candidate_facts,
+                    available_sources,
+                    model=model,
+                    quota=quota,
+                )
+                binding_status = "bound"
+            except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse):
+                bindings = {}
+                binding_status = "unavailable"
+
+            normalized_facts: list[dict[str, Any]] = []
+            for index, candidate in enumerate(candidate_facts):
+                refs = [
+                    ref for ref in bindings.get(index, [])
+                    if ref in support_by_ref
+                ]
+                if not refs:
+                    reject("no_bound_evidence")
+                    continue
+                source_urls: list[str] = []
+                for evidence_ref in refs:
+                    url = str(support_by_ref[evidence_ref]["source_url"])
+                    if url and url not in source_urls:
+                        source_urls.append(url)
+                fact = {
+                    **candidate,
+                    "source_urls": source_urls,
+                    "evidence_refs": refs,
+                }
                 normalized_facts.append(fact)
 
             extraction_audit["accepted_fact_count"] = len(normalized_facts)
+            extraction_audit["evidence_binding_status"] = binding_status
             if len(raw_facts) > 32:
                 extraction_audit["rejected"]["over_batch_limit"] = len(raw_facts) - 32
             payload["facts"] = normalized_facts

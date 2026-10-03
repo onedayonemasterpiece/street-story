@@ -163,28 +163,15 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
     assert [executor.calls for executor in failures] == [1, 1]
     assert result.payload["search_provider"] == "duckduckgo_html_fallback"
     assert result.payload["facts"] == []
-    assert result.grounding_sources == [
-        {
-            "type": "web_search",
-            "title": "Official source",
-            "url": "https://example.com/official",
-            "supports": [{
-                "kind": "search_snippet",
-                "source_url": "https://example.com/official",
-                "text": "The gate was rebuilt in 1843.",
-            }],
-        },
-        {
-            "type": "web_search",
-            "title": "Archive",
-            "url": "https://example.org/archive",
-            "supports": [{
-                "kind": "search_snippet",
-                "source_url": "https://example.org/archive",
-                "text": "Historical archive entry.",
-            }],
-        },
+    assert [(source["title"], source["url"]) for source in result.grounding_sources] == [
+        ("Official source", "https://example.com/official"),
+        ("Archive", "https://example.org/archive"),
     ]
+    assert [source["supports"][0]["text"] for source in result.grounding_sources] == [
+        "The gate was rebuilt in 1843.",
+        "Historical archive entry.",
+    ]
+    assert all(source["supports"][0]["evidence_ref"].startswith("evref_") for source in result.grounding_sources)
     assert all(source["url"].startswith("https://") for source in result.grounding_sources)
     assert "Legacy HTTP" not in result.payload["summary"]
     assert len(client.search_http.calls) == 1
@@ -225,6 +212,22 @@ async def test_web_search_semantically_completes_discovery_snippets_with_researc
 
     async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
         assert operation == "grounded_research"
+        ref_one = client._support_evidence_ref(
+            "https://one.example/gate",
+            {
+                "kind": "search_snippet",
+                "source_url": "https://one.example/gate",
+                "text": "The current gate was built from 1843 to 1850.",
+            },
+        )
+        ref_two = client._support_evidence_ref(
+            "https://two.example/archive",
+            {
+                "kind": "search_snippet",
+                "source_url": "https://two.example/archive",
+                "text": "Construction of the current gate lasted from 1843 until 1850.",
+            },
+        )
         payload = {
             "summary": "Two snippets corroborate the construction period.",
             "official_source_urls": [],
@@ -238,6 +241,7 @@ async def test_web_search_semantically_completes_discovery_snippets_with_researc
                     "https://two.example/archive",
                     "https://invented.example/not-allowed",
                 ],
+                "evidence_refs": [ref_one, ref_two],
             }],
         }
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
@@ -262,8 +266,12 @@ async def test_web_search_semantically_completes_discovery_snippets_with_researc
         "https://two.example/archive",
     ]
     assert len(result.grounding_sources) == 2
-
-
+    refs = {
+        support["evidence_ref"]
+        for source in result.grounding_sources
+        for support in source.get("supports") or []
+    }
+    assert set(fact["evidence_refs"]) <= refs
 
 
 class RoutingSearchHTTP:
@@ -379,18 +387,38 @@ async def test_discovery_fact_metadata_is_fail_soft_but_evidence_is_fail_closed(
     source_url = "https://history.example/gate"
     client.search_http = FakeSearchHTTP(
         f"""<div class="result"><a class="result__a" href="{source_url}">History</a>
-        <a class="result__snippet">Три фигуры находятся на фасаде.</a></div>"""
+        <a class="result__snippet">Слева изображён Оттокар II.</a></div>"""
     )
 
     async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        valid_ref = client._support_evidence_ref(
+            source_url,
+            {
+                "kind": "search_snippet",
+                "source_url": source_url,
+                "text": "Слева изображён Оттокар II.",
+            },
+        )
         payload = {
             "summary": "metadata repair",
             "official_source_urls": [],
             "coverage_satisfied": True,
             "read_source_urls": [],
             "facts": [
-                {"claim_key": "", "text": "Слева изображён Оттокар II.", "confidence": "bad", "source_urls": [source_url]},
-                {"claim_key": "invalid-source", "text": "Этот факт не имеет найденного evidence.", "confidence": .9, "source_urls": ["https://invented.example/nope"]},
+                {
+                    "claim_key": "",
+                    "text": "Слева изображён Оттокар II.",
+                    "confidence": "bad",
+                    "source_urls": [source_url],
+                    "evidence_refs": [valid_ref],
+                },
+                {
+                    "claim_key": "invalid-source",
+                    "text": "Этот факт не имеет найденного evidence.",
+                    "confidence": .9,
+                    "source_urls": ["https://invented.example/nope"],
+                    "evidence_refs": ["evref_invented"],
+                },
             ],
         }
         return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
@@ -409,7 +437,7 @@ async def test_discovery_fact_metadata_is_fail_soft_but_evidence_is_fail_closed(
     assert audit["accepted_fact_count"] == 1
     assert audit["claim_key_fallback_count"] == 1
     assert audit["confidence_defaulted_count"] == 1
-    assert audit["rejected"]["no_grounded_source"] == 1
+    assert audit["rejected"]["no_bound_evidence"] == 1
 
 
 @pytest.mark.asyncio
@@ -455,6 +483,14 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
         nonlocal calls
         calls += 1
         if calls == 1:
+            snippet_ref = client._support_evidence_ref(
+                page_url,
+                {
+                    "kind": "search_snippet",
+                    "source_url": page_url,
+                    "text": "На фасаде находятся три исторические скульптуры; подробнее на странице.",
+                },
+            )
             payload = {
                 "summary": "Сниппет не называет персонажей.",
                 "official_source_urls": [],
@@ -464,6 +500,7 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
                     "text": "На фасаде находятся три исторические фигуры.",
                     "confidence": .9,
                     "source_urls": [page_url],
+                    "evidence_refs": [snippet_ref],
                 }],
                 "coverage_satisfied": False,
                 "read_source_urls": [page_url, "https://invented.example/blocked"],
@@ -858,13 +895,30 @@ async def test_cached_poi_evidence_can_answer_new_coverage_without_reopening_pag
         calls += 1
         prompt = str(contents[0])
         assert "Отакар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
+        cached_ref = client._support_evidence_ref(
+            source_url,
+            {
+                "kind": "page_excerpt",
+                "source_url": source_url,
+                "text": "Слева направо: Отакар II, Фридрих I и Альбрехт I.",
+            },
+        )
         payload = {
             "summary": "Cached evidence answers who is depicted.",
             "official_source_urls": [],
             "facts": [
-                {"claim_key": "left", "existing_fact_id": "", "text": "Слева изображён Отакар II.", "confidence": .95, "source_urls": [source_url]},
-                {"claim_key": "center", "existing_fact_id": "", "text": "В центре изображён Фридрих I.", "confidence": .95, "source_urls": [source_url]},
-                {"claim_key": "right", "existing_fact_id": "", "text": "Справа изображён Альбрехт I.", "confidence": .95, "source_urls": [source_url]},
+                {
+                    "claim_key": "left", "existing_fact_id": "", "text": "Слева изображён Отакар II.",
+                    "confidence": .95, "source_urls": [source_url], "evidence_refs": [cached_ref],
+                },
+                {
+                    "claim_key": "center", "existing_fact_id": "", "text": "В центре изображён Фридрих I.",
+                    "confidence": .95, "source_urls": [source_url], "evidence_refs": [cached_ref],
+                },
+                {
+                    "claim_key": "right", "existing_fact_id": "", "text": "Справа изображён Альбрехт I.",
+                    "confidence": .95, "source_urls": [source_url], "evidence_refs": [cached_ref],
+                },
             ],
             "coverage_satisfied": True,
             "read_source_urls": [],
@@ -928,7 +982,31 @@ async def test_incomplete_cached_evidence_falls_through_to_web_discovery(tmp_pat
     async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
         nonlocal generate_calls
         generate_calls += 1
+        prompt = str(contents[0])
+        if "LLM-арбитр evidence Street Story" in prompt:
+            bound_ref = client._support_evidence_ref(
+                web_url,
+                {
+                    "kind": "google_grounding",
+                    "source_url": web_url,
+                    "text": "Слева изображён Отакар II.",
+                },
+            )
+            return SimpleNamespace(
+                text=json.dumps({
+                    "bindings": [{"fact_index": 0, "evidence_refs": [bound_ref]}],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
         if operation == "grounded_research":
+            cached_ref = client._support_evidence_ref(
+                source_url,
+                {
+                    "kind": "search_snippet",
+                    "source_url": source_url,
+                    "text": "Отакар II, Фридрих I и Альбрехт I.",
+                },
+            )
             payload = {
                 "summary": "Cached evidence gives names but not positions.",
                 "official_source_urls": [],
@@ -938,6 +1016,7 @@ async def test_incomplete_cached_evidence_falls_through_to_web_discovery(tmp_pat
                     "text": "На фасаде изображены Отакар II, Фридрих I и Альбрехт I.",
                     "confidence": .9,
                     "source_urls": [source_url],
+                    "evidence_refs": [cached_ref],
                 }],
                 "coverage_satisfied": False,
                 "read_source_urls": [],
@@ -1027,6 +1106,24 @@ async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_
     ]
 
     async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        if operation == "grounded_research":
+            bound_ref = client._support_evidence_ref(
+                source_url,
+                {
+                    "kind": "google_grounding",
+                    "source_url": source_url,
+                    "text": "Слева изображён Оттокар II.",
+                },
+            )
+            return SimpleNamespace(
+                text=json.dumps({
+                    "bindings": [
+                        {"fact_index": 0, "evidence_refs": [bound_ref]},
+                        {"fact_index": 1, "evidence_refs": []},
+                    ],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
         payload = {
             "summary": "Grounded facts",
             "official_source_urls": [source_url],
@@ -1065,8 +1162,104 @@ async def test_grounded_search_is_fail_soft_per_fact_and_reports_rejections(tmp_
         "accepted_fact_count": 1,
         "claim_key_fallback_count": 1,
         "confidence_defaulted_count": 1,
-        "rejected": {"no_support_passage": 1},
+        "rejected": {"no_bound_evidence": 1},
+        "evidence_binding_status": "bound",
     }
+
+
+@pytest.mark.asyncio
+async def test_native_grounded_fact_binds_only_specific_support_on_same_url(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://museum.example/royal-gate"
+
+    class OneShotExecutor:
+        async def execute(self, operation, call):
+            assert operation == "web_search"
+            return await call("key-a", 10)
+
+    client.web_search_routes = [("gemini-test", "test", None, OneShotExecutor())]
+
+    relevant = {
+        "kind": "google_grounding",
+        "source_url": source_url,
+        "text": "Слева изображён Оттокар II.",
+    }
+    irrelevant = {
+        "kind": "google_grounding",
+        "source_url": source_url,
+        "text": "Музей работает со среды по воскресенье.",
+    }
+    relevant_ref = client._support_evidence_ref(source_url, relevant)
+    irrelevant_ref = client._support_evidence_ref(source_url, irrelevant)
+
+    async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        if operation == "grounded_research":
+            prompt = str(contents[0])
+            assert relevant_ref in prompt and irrelevant_ref in prompt
+            return SimpleNamespace(
+                text=json.dumps({
+                    "bindings": [{
+                        "fact_index": 0,
+                        "evidence_refs": [relevant_ref],
+                    }],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+
+        payload = {
+            "summary": "Grounded fact.",
+            "official_source_urls": [],
+            "facts": [{
+                "claim_key": "left-sculpture",
+                "text": "Слева изображён Оттокар II.",
+                "confidence": .97,
+                "source_urls": [source_url],
+            }],
+        }
+        web = SimpleNamespace(uri=source_url, title="Museum")
+        chunks = [SimpleNamespace(web=web)]
+        supports = [
+            SimpleNamespace(
+                segment=SimpleNamespace(text=relevant["text"]),
+                grounding_chunk_indices=[0],
+            ),
+            SimpleNamespace(
+                segment=SimpleNamespace(text=irrelevant["text"]),
+                grounding_chunk_indices=[0],
+            ),
+        ]
+        return SimpleNamespace(
+            text=json.dumps(payload, ensure_ascii=False),
+            candidates=[SimpleNamespace(
+                grounding_metadata=SimpleNamespace(
+                    grounding_chunks=chunks,
+                    grounding_supports=supports,
+                )
+            )],
+        )
+
+    client._generate = generate
+    result = await client.search_web(
+        "кто изображён слева на Королевских воротах",
+        {"coverage_goal": "Кто изображён слева?"},
+    )
+
+    assert len(result.payload["facts"]) == 1
+    fact = result.payload["facts"][0]
+    assert fact["evidence_refs"] == [relevant_ref]
+    source = next(item for item in result.grounding_sources if item["url"] == source_url)
+    assert {item["evidence_ref"] for item in source["supports"]} == {
+        relevant_ref,
+        irrelevant_ref,
+    }
+    # Durable provider output retains all passages; the fact binds only the one
+    # the semantic model selected.
+    assert irrelevant_ref not in fact["evidence_refs"]
 
 
 @pytest.mark.asyncio
