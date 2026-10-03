@@ -1981,10 +1981,12 @@ class StreetStoryLiveAdapter:
             ).fetchone()[0]
             manifest_before = run_manifest(db, run_id)
             coverage_satisfied = bool(grounded.payload.get("coverage_satisfied"))
+            extraction_complete = grounded.payload.get("extraction_complete") is not False
             reconciliation_complete = reconciliation_meta.get("status") in {"not_needed", "complete"}
             manifest_is_complete = manifest_complete(manifest_before)
             research_complete = (
                 coverage_satisfied
+                and extraction_complete
                 and manifest_is_complete
                 and reconciliation_complete
             )
@@ -1999,9 +2001,13 @@ class StreetStoryLiveAdapter:
                         "coverage_incomplete"
                         if not coverage_satisfied
                         else (
-                            "source_or_chunk_manifest_incomplete"
-                            if not manifest_is_complete
-                            else "fact_reconciliation_incomplete"
+                            "fact_extraction_incomplete"
+                            if not extraction_complete
+                            else (
+                                "source_or_chunk_manifest_incomplete"
+                                if not manifest_is_complete
+                                else "fact_reconciliation_incomplete"
+                            )
                         )
                     )
                 ),
@@ -2050,6 +2056,8 @@ class StreetStoryLiveAdapter:
                     "semantic_completion": semantic_completion or None,
                     "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
                     "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
+                    "extraction_complete": grounded.payload.get("extraction_complete") is not False,
+                    "continuation_reason": str(grounded.payload.get("continuation_reason") or "")[:500],
                     "extraction_audit": grounded.payload.get("extraction_audit"),
                     "fact_reconciliation": reconciliation_meta,
                 }
@@ -2071,6 +2079,8 @@ class StreetStoryLiveAdapter:
                 "semantic_completion": semantic_completion or None,
                 "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
                 "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
+                "extraction_complete": grounded.payload.get("extraction_complete") is not False,
+                "continuation_reason": str(grounded.payload.get("continuation_reason") or "")[:500],
                 "extraction_audit": grounded.payload.get("extraction_audit"),
                 "fact_reconciliation": reconciliation_meta,
                 "facts": normalized,
