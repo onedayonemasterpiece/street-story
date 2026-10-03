@@ -104,24 +104,72 @@ async def test_chunked_page_extraction_preserves_pass_one_and_tail_fact_with_exa
     client.research_routes=[(route[0],route[1],route[2],ResearchExecutor())]
 
     call_log=[]
+    last_chunk_id=None
     async def generate(key,timeout,contents,config=None,*,operation="grounded_research",model=None,quota=None):
+        nonlocal last_chunk_id
         assert operation=="grounded_research"
         prompt=str(contents[0])
         call_log.append(prompt)
         if prompt.startswith("Ты проверяешь полноту"):
-            return SimpleNamespace(
-                text=json.dumps(
-                    {
-                        "coverage_satisfied":True,
-                        "summary":"Оба аспекта покрыты.",
-                        "missing_aspects":[],
-                    },
-                    ensure_ascii=False,
-                ),
-                candidates=[],
+            snippet_ref=client._support_evidence_ref(
+                url,
+                {
+                    "kind":"search_snippet",
+                    "source_url":url,
+                    "text":"Королевские ворота — исторический памятник; подробности на странице.",
+                },
             )
+            if tail_text not in prompt:
+                payload={
+                    "coverage_satisfied":False,
+                    "summary":"Вводный факт закрыт, правая фигура ещё не установлена.",
+                    "missing_aspects":["Кто изображён справа."],
+                    "coverage_items":[
+                        {
+                            "requirement":"Подтвердить вводный факт.",
+                            "satisfied":True,
+                            "fact_indices":[0],
+                            "evidence_refs":[snippet_ref],
+                            "rationale":"Snippet прямо поддерживает вводный факт.",
+                        },
+                        {
+                            "requirement":"Установить, кто изображён справа.",
+                            "satisfied":False,
+                            "fact_indices":[],
+                            "evidence_refs":[],
+                            "rationale":"В snippet нет имени правой фигуры.",
+                        },
+                    ],
+                    "read_source_urls":[url],
+                }
+            else:
+                assert last_chunk_id
+                payload={
+                    "coverage_satisfied":True,
+                    "summary":"Оба аспекта покрыты.",
+                    "missing_aspects":[],
+                    "coverage_items":[
+                        {
+                            "requirement":"Подтвердить вводный факт.",
+                            "satisfied":True,
+                            "fact_indices":[0],
+                            "evidence_refs":[snippet_ref],
+                            "rationale":"Snippet прямо поддерживает вводный факт.",
+                        },
+                        {
+                            "requirement":"Установить, кто изображён справа.",
+                            "satisfied":True,
+                            "fact_indices":[1],
+                            "evidence_refs":[last_chunk_id],
+                            "rationale":"Tail chunk прямо называет правую фигуру.",
+                        },
+                    ],
+                    "read_source_urls":[],
+                }
+            return SimpleNamespace(text=json.dumps(payload,ensure_ascii=False),candidates=[])
         if "Передан один chunk документа" in prompt:
             chunk_id=prompt.split("Chunk id: ",1)[1].split("\n",1)[0]
+            last_chunk_id=chunk_id
             source_url=prompt.split("Source URL: ",1)[1].split("\n",1)[0]
             if tail_text in prompt:
                 payload={
@@ -230,7 +278,8 @@ async def test_chunked_page_extraction_preserves_pass_one_and_tail_fact_with_exa
     assert manifest["counts"]["chunks_planned"]==result.payload["page_chunk_count"]
     assert manifest["counts"]["chunks_completed"]==result.payload["page_chunk_count"]
     assert manifest_complete(manifest) is True
-    assert len(call_log)==result.payload["page_chunk_count"]+2
+    # extractor + pre-page coverage review + one call per chunk + post-page coverage review
+    assert len(call_log)==result.payload["page_chunk_count"]+3
 
 
 @pytest.mark.asyncio
