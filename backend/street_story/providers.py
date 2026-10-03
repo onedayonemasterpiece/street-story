@@ -497,12 +497,30 @@ class GeminiClient:
         "required": ["summary", "official_source_urls", "facts"],
     }
 
+    COVERAGE_ITEM_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "requirement": {"type": "string"},
+            "satisfied": {"type": "boolean"},
+            "fact_indices": {"type": "array", "items": {"type": "integer"}},
+            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+            "rationale": {"type": "string"},
+        },
+        "required": [
+            "requirement", "satisfied", "fact_indices", "evidence_refs", "rationale",
+        ],
+    }
+
     NATIVE_WEB_SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
             **WEB_SEARCH_SCHEMA["properties"],
             "coverage_satisfied": {"type": "boolean"},
             "missing_aspects": {"type": "array", "items": {"type": "string"}},
+            "coverage_items": {
+                "type": "array",
+                "items": COVERAGE_ITEM_SCHEMA,
+            },
             "continuation_needed": {"type": "boolean"},
             "continuation_reason": {"type": "string"},
         },
@@ -560,8 +578,16 @@ class GeminiClient:
             "coverage_satisfied": {"type": "boolean"},
             "summary": {"type": "string"},
             "missing_aspects": {"type": "array", "items": {"type": "string"}},
+            "coverage_items": {
+                "type": "array",
+                "items": COVERAGE_ITEM_SCHEMA,
+            },
+            "read_source_urls": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["coverage_satisfied", "summary", "missing_aspects"],
+        "required": [
+            "coverage_satisfied", "summary", "missing_aspects",
+            "coverage_items", "read_source_urls",
+        ],
     }
 
     DISCOVERY_COVERAGE_SCHEMA = {
@@ -579,6 +605,11 @@ class GeminiClient:
                 },
             },
             "coverage_satisfied": {"type": "boolean"},
+            "missing_aspects": {"type": "array", "items": {"type": "string"}},
+            "coverage_items": {
+                "type": "array",
+                "items": COVERAGE_ITEM_SCHEMA,
+            },
             "read_source_urls": {"type": "array", "items": {"type": "string"}},
         },
         "required": [
@@ -1287,6 +1318,219 @@ class GeminiClient:
                 await client.aclose()
         return documents
 
+    @staticmethod
+    def _validate_coverage_contract(
+        payload: dict[str, Any],
+        facts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        raw_items = payload.get("coverage_items")
+        items: list[dict[str, Any]] = []
+        missing: list[str] = []
+
+        if isinstance(raw_items, list):
+            for raw in raw_items[:40]:
+                if not isinstance(raw, dict):
+                    continue
+                requirement = " ".join(str(raw.get("requirement") or "").split()).strip()[:500]
+                if not requirement:
+                    continue
+
+                raw_indices = raw.get("fact_indices") if isinstance(raw.get("fact_indices"), list) else []
+                indices: list[int] = []
+                invalid_index = False
+                for value in raw_indices:
+                    if not isinstance(value, int) or isinstance(value, bool):
+                        invalid_index = True
+                        continue
+                    if value < 0 or value >= len(facts):
+                        invalid_index = True
+                        continue
+                    if value not in indices:
+                        indices.append(value)
+
+                raw_refs = raw.get("evidence_refs") if isinstance(raw.get("evidence_refs"), list) else []
+                refs = list(dict.fromkeys(
+                    str(value).strip()
+                    for value in raw_refs
+                    if str(value).strip()
+                ))[:40]
+
+                referenced = [facts[index] for index in indices]
+                proof_ok = bool(referenced) and not invalid_index
+                allowed_refs: set[str] = set()
+                for fact in referenced:
+                    fact_refs = {
+                        str(value).strip()
+                        for value in (fact.get("evidence_refs") or [])
+                        if str(value).strip()
+                    }
+                    spans = [
+                        span
+                        for span in (fact.get("evidence_spans") or [])
+                        if isinstance(span, dict)
+                        and str(span.get("quote") or span.get("text") or "").strip()
+                    ]
+                    allowed_refs.update(fact_refs)
+                    if fact_refs:
+                        if not any(ref in fact_refs for ref in refs):
+                            proof_ok = False
+                    elif not spans:
+                        proof_ok = False
+
+                if any(ref not in allowed_refs for ref in refs):
+                    proof_ok = False
+
+                model_satisfied = raw.get("satisfied") is True
+                satisfied = bool(model_satisfied and proof_ok)
+                item = {
+                    "requirement": requirement,
+                    "satisfied": satisfied,
+                    "fact_indices": indices,
+                    "evidence_refs": [ref for ref in refs if ref in allowed_refs],
+                    "rationale": str(raw.get("rationale") or "")[:800],
+                }
+                items.append(item)
+                if not satisfied and requirement not in missing:
+                    missing.append(requirement)
+
+        for value in payload.get("missing_aspects") or []:
+            aspect = " ".join(str(value or "").split()).strip()[:500]
+            if aspect and aspect not in missing:
+                missing.append(aspect)
+
+        coverage_satisfied = bool(items) and all(item["satisfied"] for item in items)
+        return {
+            "coverage_satisfied": coverage_satisfied,
+            "coverage_items": items,
+            "missing_aspects": missing,
+            "summary": str(payload.get("summary") or "")[:1200],
+        }
+
+    async def _review_coverage_contract(
+        self,
+        api_key: str,
+        timeout: float,
+        *,
+        coverage_goal: str,
+        facts: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        model: str | None,
+        quota,
+        allow_page_reads: bool,
+    ) -> dict[str, Any]:
+        from google.genai import types
+
+        review_facts = []
+        for index, fact in enumerate(facts):
+            if not isinstance(fact, dict):
+                continue
+            review_facts.append({
+                "fact_index": index,
+                "claim_key": str(fact.get("claim_key") or "")[:300],
+                "text": str(fact.get("text") or "")[:1200],
+                "source_urls": [
+                    str(url)
+                    for url in (fact.get("source_urls") or [])
+                    if str(url).startswith("https://")
+                ][:12],
+                "evidence_refs": [
+                    str(ref)
+                    for ref in (fact.get("evidence_refs") or [])
+                    if str(ref).strip()
+                ][:40],
+                "evidence_spans": [
+                    {
+                        "source_url": str(span.get("source_url") or ""),
+                        "chunk_id": str(span.get("chunk_id") or ""),
+                        "quote": str(span.get("quote") or span.get("text") or "")[:1200],
+                    }
+                    for span in (fact.get("evidence_spans") or [])
+                    if isinstance(span, dict)
+                    and str(span.get("quote") or span.get("text") or "").strip()
+                ][:12],
+            })
+
+        evidence = []
+        allowed_urls: set[str] = set()
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").rstrip("/")
+            if not url.startswith("https://"):
+                continue
+            allowed_urls.add(url)
+            passages = [
+                {
+                    "evidence_ref": str(support.get("evidence_ref") or ""),
+                    "text": str(support.get("text") or "")[:1200],
+                }
+                for support in (source.get("supports") or [])
+                if isinstance(support, dict)
+                and str(support.get("text") or "").strip()
+            ]
+            evidence.append({
+                "source_url": url,
+                "title": str(source.get("title") or url)[:240],
+                "passages": passages[:20],
+            })
+
+        prompt = (
+            "Ты проверяешь полноту уже извлечённых facts относительно coverage goal. "
+            "Ты независимый LLM-reviewer Street Story. "
+            "Не извлекай новые факты и не используй внешние знания. Работай только с Coverage goal, "
+            "уже evidence-backed Facts и Evidence. Сначала декомпозируй Coverage goal на минимальные "
+            "независимо проверяемые requirements. Если цель явно просит несколько позиций, ролей, людей, "
+            "подписей, дат или иных отдельных элементов, создай отдельный coverage_item для каждого явно "
+            "запрошенного элемента; не склеивай их в один пункт. Например, неупорядоченный список людей "
+            "НЕ доказывает, кто расположен слева, в центре или справа. "
+            "Для каждого requirement укажи fact_indices, которые прямо отвечают именно на него. "
+            "Если fact опирается на evidence_refs, перечисли соответствующие refs; URL сам по себе не доказательство. "
+            "Fact с exact evidence_spans может подтверждать requirement через fact_index без evidence_ref. "
+            "satisfied=true только если указанные facts прямо отвечают requirement и их evidence поддерживает ответ. "
+            "Если хотя бы один requirement не закрыт, coverage_satisfied=false. "
+            + (
+                "Для незакрытых requirements выбери максимум 2 read_source_urls только из Evidence — страницы, "
+                "которые разумнее всего дочитать для закрытия пробела. "
+                if allow_page_reads
+                else
+                "read_source_urls оставь пустым: этот review не запускает дополнительное чтение страниц. "
+            )
+            + "\n\nCoverage goal: " + str(coverage_goal or "")[:1600]
+            + "\nFacts: " + json.dumps(review_facts, ensure_ascii=False)
+            + "\nEvidence: " + json.dumps(evidence, ensure_ascii=False)
+        )
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=self.COVERAGE_REVIEW_SCHEMA,
+        )
+        response = await self._generate(
+            api_key,
+            timeout,
+            [prompt],
+            config,
+            operation="grounded_research",
+            model=model,
+            quota=quota,
+        )
+        try:
+            raw = json.loads(response.text or "{}")
+            if not isinstance(raw, dict):
+                raise ValueError
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise MalformedProviderResponse("gemini:malformed_coverage_review") from None
+
+        validated = self._validate_coverage_contract(raw, facts)
+        read_urls: list[str] = []
+        if allow_page_reads and not validated["coverage_satisfied"]:
+            for value in raw.get("read_source_urls") or []:
+                url = str(value or "").rstrip("/")
+                if url in allowed_urls and url not in read_urls:
+                    read_urls.append(url)
+                if len(read_urls) >= 2:
+                    break
+        validated["read_source_urls"] = read_urls
+        return validated
+
     async def _semantic_complete_discovery(
         self,
         query: str,
@@ -1556,6 +1800,8 @@ class GeminiClient:
                 "не склеивай перечень людей/дат/ролей в один факт, когда каждый элемент имеет самостоятельный смысл. "
                 "Фраза о том, что источник не содержит нужной информации, НЕ является фактом об объекте: в таком случае "
                 "не создавай meta-факт, а оставь facts пустым или извлеки только реально поддержанные сведения. "
+                "Предварительно разложи coverage_goal на минимальные независимо проверяемые coverage_items; "
+                "если явно запрошено несколько позиций/ролей/элементов, не объединяй их в один coverage_item. "
                 "Для каждого факта дай устойчивый claim_key. Если тезис семантически совпадает с known_facts, обязательно "
                 "верни exact fact_id в existing_fact_id. В snippet-pass для КАЖДОГО факта обязательно перечисли в "
                 "evidence_refs только те opaque evidence_ref из snippets, которые прямо поддерживают именно этот тезис; "
@@ -1647,6 +1893,45 @@ class GeminiClient:
                 raise MalformedProviderResponse("gemini:malformed_discovery_facts") from None
 
             normalized_facts, official_urls, extraction_audit = normalize_payload(payload)
+            preliminary_read_urls = [
+                str(value or "").rstrip("/")
+                for value in (payload.get("read_source_urls") or [])
+                if str(value or "").rstrip("/") in allowed_urls
+            ][:2]
+            try:
+                coverage_review = await self._review_coverage_contract(
+                    key,
+                    timeout,
+                    coverage_goal=coverage_goal,
+                    facts=normalized_facts,
+                    sources=referenced_sources,
+                    model=model,
+                    quota=quota,
+                    allow_page_reads=True,
+                )
+                if (
+                    not coverage_review.get("coverage_satisfied")
+                    and not coverage_review.get("read_source_urls")
+                    and preliminary_read_urls
+                ):
+                    coverage_review["read_source_urls"] = preliminary_read_urls
+                payload = {**payload, **coverage_review}
+            except (
+                GeminiUnavailable,
+                PermanentProviderError,
+                MalformedProviderResponse,
+                ValueError,
+                TypeError,
+                json.JSONDecodeError,
+            ):
+                payload = {
+                    **payload,
+                    "coverage_satisfied": False,
+                    "coverage_items": [],
+                    "missing_aspects": ["coverage_review_unavailable"],
+                    "read_source_urls": [],
+                }
+
             selected_urls: list[str] = []
             if payload.get("coverage_satisfied") is False:
                 for raw_url in payload.get("read_source_urls") or []:
@@ -2001,52 +2286,18 @@ class GeminiClient:
                     extraction_audit = aggregate_audit
                     semantic_completion = "gemini_research_page_chunks"
 
-                    coverage_config_final = types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_json_schema=self.COVERAGE_REVIEW_SCHEMA,
-                    )
-                    coverage_prompt = (
-                        "Ты проверяешь полноту уже извлечённых facts относительно coverage goal. "
-                        "Не добавляй новых фактов и не используй внешние знания. "
-                        "coverage_satisfied=true только если facts прямо отвечают на цель. "
-                        "missing_aspects перечисляет конкретные пробелы.\n\n"
-                        + "Coverage goal: " + coverage_goal
-                        + "\nFacts: "
-                        + json.dumps(
-                            [
-                                {
-                                    "claim_key": fact.get("claim_key"),
-                                    "text": fact.get("text"),
-                                    "source_urls": fact.get("source_urls"),
-                                }
-                                for fact in normalized_facts
-                            ],
-                            ensure_ascii=False,
-                        )
-                    )
                     try:
-                        coverage_response = await self._generate(
+                        coverage_review = await self._review_coverage_contract(
                             key,
                             timeout,
-                            [coverage_prompt],
-                            coverage_config_final,
-                            operation="grounded_research",
+                            coverage_goal=coverage_goal,
+                            facts=normalized_facts,
+                            sources=sources_for_result,
                             model=model,
                             quota=quota,
+                            allow_page_reads=False,
                         )
-                        coverage_payload = json.loads(coverage_response.text or "{}")
-                        if not isinstance(coverage_payload, dict):
-                            raise ValueError("coverage_payload_shape")
-                        payload = {
-                            **payload,
-                            "coverage_satisfied": bool(coverage_payload.get("coverage_satisfied")),
-                            "summary": str(coverage_payload.get("summary") or payload.get("summary") or "")[:1200],
-                            "missing_aspects": [
-                                str(value)[:300]
-                                for value in (coverage_payload.get("missing_aspects") or [])[:20]
-                                if str(value).strip()
-                            ],
-                        }
+                        payload = {**payload, **coverage_review}
                     except (
                         GeminiUnavailable,
                         PermanentProviderError,
@@ -2058,7 +2309,9 @@ class GeminiClient:
                         payload = {
                             **payload,
                             "coverage_satisfied": False,
+                            "coverage_items": [],
                             "missing_aspects": ["coverage_review_unavailable"],
+                            "read_source_urls": [],
                         }
 
             return GroundedResearch(
@@ -2069,6 +2322,11 @@ class GeminiClient:
                     "search_provider": str(discovery.payload.get("search_provider") or "duckduckgo_html_fallback"),
                     "semantic_completion": semantic_completion,
                     "coverage_satisfied": bool(payload.get("coverage_satisfied")),
+                    "coverage_items": [
+                        item
+                        for item in (payload.get("coverage_items") or [])[:40]
+                        if isinstance(item, dict)
+                    ],
                     "missing_aspects": [
                         str(value)[:300]
                         for value in (payload.get("missing_aspects") or [])[:20]
@@ -2564,8 +2822,10 @@ class GeminiClient:
             "совпадает с known_facts, укажи его точный fact_id в existing_fact_id; иначе existing_fact_id оставь пустым. "
             "Не выдумывай existing_fact_id. Для новых тезисов используй устойчивый claim_key. Самые важные факты "
             "ставь первыми; сведения официального источника имеют приоритет. За один ответ верни не более 32 facts; "
-            "отдельно оцени coverage_goal по текущему grounding: coverage_satisfied=true только если evidence действительно "
-            "закрывает существенные аспекты запроса; иначе false и перечисли конкретные missing_aspects. Независимо от этого, "
+            "предварительно разложи coverage_goal на минимальные независимо проверяемые coverage_items; если явно запрошено "
+            "несколько позиций, ролей, людей или иных отдельных элементов, каждый должен быть отдельным coverage_item. "
+            "coverage_satisfied=true только если evidence действительно закрывает все coverage_items; иначе false и перечисли "
+            "конкретные missing_aspects. Независимо от этого, "
             "если в текущем grounding evidence остаются дополнительные содержательные атомарные facts, обязательно поставь "
             "continuation_needed=true и кратко объясни continuation_reason. continuation_needed=false допустим только когда "
             "текущий grounding evidence исчерпан. Если Current topic context содержит "
@@ -2993,6 +3253,32 @@ class GeminiClient:
             payload["extraction_audit"] = extraction_audit
             payload["extraction_complete"] = extraction_complete
             payload["continuation_reason"] = continuation_reason
+            try:
+                coverage_review = await self._review_coverage_contract(
+                    key,
+                    timeout,
+                    coverage_goal=str(topic_context.get("coverage_goal") or query)[:1600],
+                    facts=normalized_facts,
+                    sources=available_sources,
+                    model=model,
+                    quota=quota,
+                    allow_page_reads=False,
+                )
+                payload = {**payload, **coverage_review}
+            except (
+                GeminiUnavailable,
+                PermanentProviderError,
+                MalformedProviderResponse,
+                ValueError,
+                TypeError,
+                json.JSONDecodeError,
+            ):
+                payload = {
+                    **payload,
+                    "coverage_satisfied": False,
+                    "coverage_items": [],
+                    "missing_aspects": ["coverage_review_unavailable"],
+                }
 
             blocked_official_hosts = {
                 "wikipedia.org", "wikimedia.org", "openstreetmap.org", "google.com",

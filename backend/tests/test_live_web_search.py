@@ -76,6 +76,23 @@ async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
     models = []
 
     async def generate(key, timeout, contents, config=None, *, operation="web_search", model=None, quota=None):
+        if operation == "grounded_research":
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": False,
+                    "summary": "Search summary",
+                    "missing_aspects": ["test query"],
+                    "coverage_items": [{
+                        "requirement": "Ответить на test query.",
+                        "satisfied": False,
+                        "fact_indices": [],
+                        "evidence_refs": [],
+                        "rationale": "В grounding нет конкретного supporting passage.",
+                    }],
+                    "read_source_urls": [],
+                }),
+                candidates=[],
+            )
         assert operation == "web_search"
         models.append(model)
         payload = {
@@ -483,8 +500,9 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
     )
 
     calls = 0
+    last_chunk_id = None
     async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
-        nonlocal calls
+        nonlocal calls, last_chunk_id
         calls += 1
         if calls == 1:
             snippet_ref = client._support_evidence_ref(
@@ -512,16 +530,65 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
         else:
             prompt = str(contents[0])
             if "Ты проверяешь полноту уже извлечённых facts" in prompt:
-                assert "Оттокар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
-                payload = {
-                    "coverage_satisfied": True,
-                    "summary": "Цель закрыта тремя отдельными фигурами.",
-                    "missing_aspects": [],
-                }
+                if "Оттокар II" not in prompt:
+                    payload = {
+                        "coverage_satisfied": False,
+                        "summary": "Сниппет не называет персонажей.",
+                        "missing_aspects": ["Кто изображён на трёх фигурах."],
+                        "coverage_items": [{
+                            "requirement": "Установить, кто изображён на фигурах.",
+                            "satisfied": False,
+                            "fact_indices": [0],
+                            "evidence_refs": [
+                                client._support_evidence_ref(
+                                    page_url,
+                                    {
+                                        "kind": "search_snippet",
+                                        "source_url": page_url,
+                                        "text": "На фасаде находятся три исторические скульптуры; подробнее на странице.",
+                                    },
+                                )
+                            ],
+                            "rationale": "Факт подтверждает наличие фигур, но не называет людей.",
+                        }],
+                        "read_source_urls": [page_url],
+                    }
+                else:
+                    assert last_chunk_id
+                    payload = {
+                        "coverage_satisfied": True,
+                        "summary": "Цель закрыта тремя отдельными фигурами.",
+                        "missing_aspects": [],
+                        "coverage_items": [
+                            {
+                                "requirement": "Кто изображён слева.",
+                                "satisfied": True,
+                                "fact_indices": [1],
+                                "evidence_refs": [last_chunk_id],
+                                "rationale": "Отдельный позиционный факт.",
+                            },
+                            {
+                                "requirement": "Кто изображён в центре.",
+                                "satisfied": True,
+                                "fact_indices": [2],
+                                "evidence_refs": [last_chunk_id],
+                                "rationale": "Отдельный позиционный факт.",
+                            },
+                            {
+                                "requirement": "Кто изображён справа.",
+                                "satisfied": True,
+                                "fact_indices": [3],
+                                "evidence_refs": [last_chunk_id],
+                                "rationale": "Отдельный позиционный факт.",
+                            },
+                        ],
+                        "read_source_urls": [],
+                    }
             else:
                 assert "Оттокар II" in prompt and "Фридрих I" in prompt and "Альбрехт I" in prompt
                 assert "Передан один chunk документа" in prompt
                 chunk_id = prompt.split("Chunk id: ", 1)[1].splitlines()[0].strip()
+                last_chunk_id = chunk_id
                 quote = (
                     "Слева изображён чешский король Оттокар II, в центре — прусский король Фридрих I, "
                     "справа — герцог Пруссии Альбрехт I."
@@ -566,7 +633,7 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
         {"place_name": "Королевские ворота"},
     )
 
-    assert calls == 3
+    assert calls == 4
     assert result.payload["semantic_completion"] == "gemini_research_page_chunks"
     assert result.payload["coverage_satisfied"] is True
     assert result.payload["page_chunk_count"] == 1
@@ -880,6 +947,88 @@ async def test_fallback_keeps_processed_urls_available_for_new_coverage_gaps(tmp
 
 
 @pytest.mark.asyncio
+async def test_coverage_reviewer_does_not_treat_unordered_names_as_positional_mapping(tmp_path):
+    client = GeminiClient(config(tmp_path), Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://example.org/facade"
+    support = {
+        "kind": "page_excerpt",
+        "source_url": source_url,
+        "text": "На фасаде изображены персонажи A, B и C.",
+    }
+    evidence_ref = client._support_evidence_ref(source_url, support)
+    facts = [{
+        "claim_key": "three-figures",
+        "text": "На фасаде изображены персонажи A, B и C.",
+        "confidence": .95,
+        "source_urls": [source_url],
+        "evidence_refs": [evidence_ref],
+    }]
+    sources = [{
+        "type": "web",
+        "title": "Facade",
+        "url": source_url,
+        "supports": [{**support, "evidence_ref": evidence_ref}],
+    }]
+
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        prompt = str(contents[0])
+        assert "неупорядоченный список людей" in prompt
+        assert "слева" in prompt and "в центре" in prompt and "справа" in prompt
+        return SimpleNamespace(
+            text=json.dumps({
+                "coverage_satisfied": False,
+                "summary": "Имена известны, позиции не доказаны.",
+                "missing_aspects": [
+                    "Кто находится слева.",
+                    "Кто находится в центре.",
+                    "Кто находится справа.",
+                ],
+                "coverage_items": [
+                    {
+                        "requirement": "Установить, кто находится слева.",
+                        "satisfied": False,
+                        "fact_indices": [0],
+                        "evidence_refs": [evidence_ref],
+                        "rationale": "Общий список не задаёт позицию слева.",
+                    },
+                    {
+                        "requirement": "Установить, кто находится в центре.",
+                        "satisfied": False,
+                        "fact_indices": [0],
+                        "evidence_refs": [evidence_ref],
+                        "rationale": "Общий список не задаёт центральную позицию.",
+                    },
+                    {
+                        "requirement": "Установить, кто находится справа.",
+                        "satisfied": False,
+                        "fact_indices": [0],
+                        "evidence_refs": [evidence_ref],
+                        "rationale": "Общий список не задаёт позицию справа.",
+                    },
+                ],
+                "read_source_urls": [source_url],
+            }, ensure_ascii=False),
+            candidates=[],
+        )
+
+    client._generate = generate
+    result = await client._review_coverage_contract(
+        "key-a",
+        5.0,
+        coverage_goal="Установить, кто находится слева, в центре и справа.",
+        facts=facts,
+        sources=sources,
+        model="gemini-test",
+        quota=None,
+        allow_page_reads=True,
+    )
+    assert result["coverage_satisfied"] is False
+    assert len(result["coverage_items"]) == 3
+    assert all(item["satisfied"] is False for item in result["coverage_items"])
+    assert result["read_source_urls"] == [source_url]
+
+
+@pytest.mark.asyncio
 async def test_cached_poi_evidence_can_answer_new_coverage_without_reopening_page(tmp_path):
     settings = replace(
         config(tmp_path),
@@ -915,6 +1064,39 @@ async def test_cached_poi_evidence_can_answer_new_coverage_without_reopening_pag
                 "text": "Слева направо: Отакар II, Фридрих I и Альбрехт I.",
             },
         )
+        if "Ты проверяешь полноту уже извлечённых facts" in prompt:
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": True,
+                    "summary": "Три позиции доказаны.",
+                    "missing_aspects": [],
+                    "coverage_items": [
+                        {
+                            "requirement": "Кто изображён слева.",
+                            "satisfied": True,
+                            "fact_indices": [0],
+                            "evidence_refs": [cached_ref],
+                            "rationale": "Позиция слева указана явно.",
+                        },
+                        {
+                            "requirement": "Кто изображён в центре.",
+                            "satisfied": True,
+                            "fact_indices": [1],
+                            "evidence_refs": [cached_ref],
+                            "rationale": "Позиция в центре указана явно.",
+                        },
+                        {
+                            "requirement": "Кто изображён справа.",
+                            "satisfied": True,
+                            "fact_indices": [2],
+                            "evidence_refs": [cached_ref],
+                            "rationale": "Позиция справа указана явно.",
+                        },
+                    ],
+                    "read_source_urls": [],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
         payload = {
             "summary": "Cached evidence answers who is depicted.",
             "official_source_urls": [],
@@ -953,7 +1135,7 @@ async def test_cached_poi_evidence_can_answer_new_coverage_without_reopening_pag
             }],
         },
     )
-    assert calls == 1
+    assert calls == 2
     assert [executor.calls for executor in failures] == [0 for _ in failures]
     assert client.search_http.calls == []
     assert result.payload["search_provider"] == "poi_cache"
@@ -1337,6 +1519,32 @@ async def test_native_search_continues_fact_extraction_without_second_google_sea
                 }, ensure_ascii=False),
                 candidates=[],
             )
+        if schema == client.COVERAGE_REVIEW_SCHEMA:
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": True,
+                    "summary": "Левая и центральная фигуры закрыты.",
+                    "missing_aspects": [],
+                    "coverage_items": [
+                        {
+                            "requirement": "Кто изображён слева.",
+                            "satisfied": True,
+                            "fact_indices": [0],
+                            "evidence_refs": [first_ref],
+                            "rationale": "Левый факт доказан.",
+                        },
+                        {
+                            "requirement": "Кто изображён в центре.",
+                            "satisfied": True,
+                            "fact_indices": [1],
+                            "evidence_refs": [second_ref],
+                            "rationale": "Центральный факт доказан.",
+                        },
+                    ],
+                    "read_source_urls": [],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
         assert schema == client.NATIVE_CONTINUATION_SCHEMA
         prompt = str(contents[0])
         assert first_ref in prompt and second_ref in prompt
@@ -1363,7 +1571,7 @@ async def test_native_search_continues_fact_extraction_without_second_google_sea
     )
 
     assert executor.calls == 1
-    assert operations == ["web_search", "grounded_research", "grounded_research"]
+    assert operations == ["web_search", "grounded_research", "grounded_research", "grounded_research"]
     assert [fact["text"] for fact in result.payload["facts"]] == [
         "Слева изображён Оттокар II.",
         "В центре изображён Фридрих I.",
@@ -1434,6 +1642,23 @@ async def test_native_search_marks_stalled_continuation_incomplete(tmp_path):
                         "fact_index": 0,
                         "evidence_refs": [evidence_ref],
                     }],
+                }, ensure_ascii=False),
+                candidates=[],
+            )
+        if schema == client.COVERAGE_REVIEW_SCHEMA:
+            return SimpleNamespace(
+                text=json.dumps({
+                    "coverage_satisfied": False,
+                    "summary": "Один факт не закрывает весь фасад.",
+                    "missing_aspects": ["Остальные факты о фасаде."],
+                    "coverage_items": [{
+                        "requirement": "Собрать все запрошенные факты о фасаде.",
+                        "satisfied": False,
+                        "fact_indices": [0],
+                        "evidence_refs": [evidence_ref],
+                        "rationale": "Есть только один факт при незавершённой extraction.",
+                    }],
+                    "read_source_urls": [],
                 }, ensure_ascii=False),
                 candidates=[],
             )
