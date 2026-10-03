@@ -3377,10 +3377,26 @@ class GeminiClient:
         }
         try:
             discovery = await self._public_web_search(query, excluded_urls=processed_urls)
-        except RetryableProviderError:
-            if retry_at:
-                raise GeminiUnavailable(min(retry_at), "all_web_search_models_and_public_search_unavailable")
-            raise
+        except RetryableProviderError as exc:
+            if cached_sources:
+                discovery = GroundedResearch(
+                    payload={
+                        "summary": "Public discovery is temporarily unavailable; using persisted POI evidence.",
+                        "official_source_urls": [],
+                        "facts": [],
+                        "search_provider": "poi_cache_fallback",
+                        "public_search_status": "unavailable",
+                        "public_search_error": type(exc).__name__,
+                    },
+                    grounding_sources=cached_sources,
+                )
+            elif retry_at:
+                raise GeminiUnavailable(
+                    min(retry_at),
+                    "all_web_search_models_and_public_search_unavailable",
+                )
+            else:
+                raise
         discovery = GroundedResearch(
             payload={
                 **discovery.payload,

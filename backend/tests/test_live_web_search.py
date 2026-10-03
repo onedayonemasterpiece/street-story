@@ -10,6 +10,7 @@ import pytest
 from pydantic import SecretStr
 
 from street_story.db import Store
+from street_story.errors import RetryableProviderError
 from street_story.gemini import GeminiUnavailable
 from street_story.providers import GeminiClient, GroundedResearch
 from street_story.research_runs import begin_research_run, manifest_complete, run_manifest
@@ -1977,3 +1978,60 @@ async def test_web_search_marks_only_grounded_non_aggregator_official_source(tmp
     assert result.grounding_sources[0]["type"] == "official"
     assert result.grounding_sources[0]["supports"][0]["text"] == "Открыт в 2000 году."
     assert result.grounding_sources[1]["type"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_public_discovery_outage_returns_cached_evidence_for_live_semantics(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+
+    async def semantic_unavailable(query, topic_context, discovery, *, timeout_seconds):
+        return None
+
+    public_calls = 0
+
+    async def public_unavailable(query, excluded_urls=None):
+        nonlocal public_calls
+        public_calls += 1
+        raise RetryableProviderError("public_search_temporarily_unavailable")
+
+    client._semantic_complete_discovery_best_effort = semantic_unavailable
+    client._public_web_search = public_unavailable
+
+    cached_url = "https://cached.example/royal-gate"
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {
+            "coverage_goal": "Кто изображён слева, в центре и справа?",
+            "previously_processed_sources": [{
+                "url": cached_url,
+                "title": "Cached Royal Gate",
+                "supports": [{
+                    "kind": "page_excerpt",
+                    "source_url": cached_url,
+                    "text": "Слева направо изображены Отакар II, Фридрих I и Альбрехт I.",
+                }],
+            }],
+        },
+    )
+
+    assert [executor.calls for executor in failures] == [1 for _ in failures]
+    assert public_calls == 1
+    assert result.payload["search_provider"] == "poi_cache_fallback"
+    assert result.payload["public_search_status"] == "unavailable"
+    assert result.payload["semantic_status"] == "live_model_required"
+    assert result.payload["coverage_satisfied"] is False
+    assert result.payload["missing_aspects"] == ["semantic_model_temporarily_unavailable"]
+    assert len(result.grounding_sources) == 1
+    assert result.grounding_sources[0]["url"] == cached_url
+    assert result.grounding_sources[0]["supports"][0]["text"].startswith("Слева направо")
