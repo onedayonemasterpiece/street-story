@@ -521,7 +521,7 @@ FUNCTIONS = [
         ["conflicts"],
     ),
     _tool_schema("get_review_packet", "Read a frozen semantic review packet. Follow cursor until has_more=false. Local fact/evidence numbers replace long hashes. Compare support, negation, roles, equivalence and conflicts across all pages.",
-        {"run_id": {"type": "string"}, "packet_ref": {"type": "string"}, "cursor": {"type": "integer"}}),
+        {"run_id": {"type": "string"}, "packet_ref": {"type": "string"}, "cursor": {"type": "integer"}, "allow_partial_review": {"type": "boolean", "description": "Explicitly request partial coverage review with missing_aspects; otherwise finish all cores first."}}),
     _tool_schema(
         "finalize_fact_review",
         "Commit semantic decisions for a frozen packet returned by get_review_packet. Never use a batch ID as packet_ref. Read all packet pages, use exact ZERO-BASED fact/evidence numbers, explicitly assess support/negation/roles/equivalence and compare relations across pages. Does not publish.",
@@ -988,7 +988,7 @@ class StreetStoryLiveAdapter:
             packet = review_packets.read(self, session, args)
             session.state["research_run_id"] = packet["run_id"]
             session.state.setdefault("research_run_ids", []).append(packet["run_id"])
-            self._emit_research_progress(session, stage="review", active=True, query="", source_count=0, fact_count=packet["total_facts"])
+            self._emit_research_progress(session, stage="review" if packet.get("review_available", True) else "extracting", active=True, query="", source_count=0, fact_count=packet.get("total_facts", 0))
             return packet
         if name == "get_evidence":
             # Live reads are paginated by the existing cursor contract so one
@@ -1100,6 +1100,9 @@ class StreetStoryLiveAdapter:
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
         projected = self._model_result(name, result)
+        if name == "save_research_facts":
+            projected["next_args"] = {"run_id": result.get("research_run_id")}
+            projected["instruction"] = "Continue get_research_chunk with run_id ONLY; omit old chunk_id and passage_cursor. The server skips completed cores. Full review becomes available after all cores are saved."
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
             projected.update({"facts_page_required": True, "read_tool": "get_facts", "saved_fact_count": len(result.get("facts") or [])})
@@ -2470,6 +2473,8 @@ class StreetStoryLiveAdapter:
             return await self._get_research_chunk(session, {**args, "source_url": source["url"]})
         with self.service.store.connection() as db:
             checkpoint = chunk_checkpoint(db, run_id, candidate["chunk_id"])
+            if checkpoint["terminal"]:
+                raise ConflictError("live_research_chunk_completed", "This core is already saved. Call get_research_chunk with run_id ONLY: omit chunk_id and passage_cursor to read the next unfinished core.")
         batch_index = int(checkpoint["next_batch_index"])
         batch_id = "batch_" + hashlib.sha256(f"{run_id}:{candidate['chunk_id']}:{batch_index}".encode()).hexdigest()[:24]
         core = candidate["normalized_text"][candidate["core_start"]:candidate["core_end"]]
@@ -2487,6 +2492,8 @@ class StreetStoryLiveAdapter:
         }
         passages = result["evidence_passages"]
         offset = max(0, int(args.get("passage_cursor") or session.state.get("research_page_cursor", {}).get(candidate["chunk_id"], 0)))
+        if offset >= len(passages) and passages:
+            raise ConflictError("live_research_cursor_invalid", "passage_cursor is a passage number, not core_start/core_end. Use exact next_passage_cursor or call with run_id only to resume the pending core.")
         result["evidence_passages"] = []
         if offset < len(passages):
             start = passages[offset]["core_offset"]

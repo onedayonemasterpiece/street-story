@@ -54,6 +54,12 @@ def read(adapter, session, args):
         if not ref:
             run_id = str(args.get('run_id') or '')
             story, run = adapter._research_run_guard(db, session, run_id)
+            pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
+            unfetched = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (run_id,)).fetchone()[0]
+            if (pending or unfetched) and args.get('allow_partial_review') is not True:
+                return {'run_id': run_id, 'review_available': False, 'pending_chunks': pending,
+                        'next_tool': 'get_research_chunk', 'next_args': {'run_id': run_id},
+                        'instruction': 'Finish remaining source cores before full review. Call get_research_chunk with run_id ONLY: omit prior chunk_id and passage_cursor so the server selects the next unfinished core.'}
             exact = bundle(db, session.resource_id)
             items = []
             for fact_id in exact:
