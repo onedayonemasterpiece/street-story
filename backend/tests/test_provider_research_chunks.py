@@ -143,6 +143,14 @@ async def test_chunked_page_extraction_preserves_pass_one_and_tail_fact_with_exa
                 payload={"facts":[],"needs_context":False,"context_reason":""}
             return SimpleNamespace(text=json.dumps(payload,ensure_ascii=False),candidates=[])
 
+        snippet_ref=client._support_evidence_ref(
+            url,
+            {
+                "kind":"search_snippet",
+                "source_url":url,
+                "text":"Королевские ворота — исторический памятник; подробности на странице.",
+            },
+        )
         return SimpleNamespace(
             text=json.dumps(
                 {
@@ -154,6 +162,7 @@ async def test_chunked_page_extraction_preserves_pass_one_and_tail_fact_with_exa
                         "text":"Королевские ворота являются историческим памятником.",
                         "confidence":.8,
                         "source_urls":[url],
+                        "evidence_refs":[snippet_ref],
                     }],
                     "coverage_satisfied":False,
                     "read_source_urls":[url],
