@@ -1087,7 +1087,7 @@ class GeminiClient:
         )
         final_config = types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_json_schema=self.WEB_SEARCH_SCHEMA,
+            response_json_schema=self.DISCOVERY_COVERAGE_SCHEMA,
         )
 
         async def call(key, timeout, *, model=None, quota=None):
@@ -1167,8 +1167,9 @@ class GeminiClient:
                     "summary": str(payload.get("summary") or "")[:1200],
                     "official_source_urls": official_urls,
                     "facts": normalized_facts,
-                    "search_provider": "duckduckgo_html_fallback",
+                    "search_provider": str(discovery.payload.get("search_provider") or "duckduckgo_html_fallback"),
                     "semantic_completion": semantic_completion,
+                    "coverage_satisfied": bool(payload.get("coverage_satisfied")),
                     "extraction_audit": extraction_audit,
                 },
                 grounding_sources=sources_for_result,
@@ -1348,6 +1349,35 @@ class GeminiClient:
         query = str(query or "").strip()
         if not query:
             raise ValueError("web search query is required")
+
+        cached_sources = self._cached_evidence_sources(topic_context)
+        if cached_sources:
+            cached_discovery = GroundedResearch(
+                payload={
+                    "summary": "Previously persisted POI evidence.",
+                    "official_source_urls": [],
+                    "facts": [],
+                    "search_provider": "poi_cache",
+                    "cached_source_count": len(cached_sources),
+                },
+                grounding_sources=cached_sources,
+            )
+            try:
+                cached_result = await self._semantic_complete_discovery(
+                    query,
+                    topic_context,
+                    cached_discovery,
+                )
+                if (
+                    cached_result.payload.get("coverage_satisfied") is True
+                    and bool(cached_result.payload.get("facts"))
+                ):
+                    cached_result.payload["cache_only"] = True
+                    return cached_result
+            except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse):
+                # Cache evaluation must never make web discovery less available.
+                pass
+
         prompt = (
             "Ты внутренний поисковый инструмент Street Story, а не собеседник. "
             "Используй Google Search grounding только для запроса пользователя. "
@@ -1576,7 +1606,6 @@ class GeminiClient:
             if retry_at:
                 raise GeminiUnavailable(min(retry_at), "all_web_search_models_and_public_search_unavailable")
             raise
-        cached_sources = self._cached_evidence_sources(topic_context)
         discovery = GroundedResearch(
             payload={**discovery.payload, "cached_source_count": len(cached_sources)},
             grounding_sources=self._merge_evidence_sources(
