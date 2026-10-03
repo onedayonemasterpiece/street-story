@@ -696,3 +696,50 @@ def test_fact_revision_change_marks_frozen_draft_and_visual_stale(tmp_path):
     assert row["vibepublish_asset_ref"] is None
     assert row["processed_image_url"] is None
     assert row["state"] == "needs_review"
+
+
+def test_new_assertion_initial_selection_stays_in_sync_and_model_cannot_overwrite_owner_choice(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    story_id = create_story(store)
+    first = fact(
+        "architect",
+        "Архитектором был Штюлер.",
+        "https://a.example/page",
+        "Архитектор — Штюлер.",
+    )
+    first["selected"] = True
+    fact_id = persist(store, story_id, [first], "run-1", "batch-1")[0]
+
+    with store.connection() as db:
+        projection = db.execute(
+            "SELECT selected FROM facts WHERE story_id=? AND fact_id=?",
+            (story_id, fact_id),
+        ).fetchone()
+        assertion = db.execute(
+            "SELECT owner_selected FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()
+    assert projection["selected"] == 1
+    assert assertion["owner_selected"] == 1
+
+    second = fact(
+        "architect",
+        "Архитектором был Штюлер.",
+        "https://b.example/page",
+        "Новый источник подтверждает Штюлера.",
+        existing_fact_id=fact_id,
+    )
+    second["selected"] = False
+    persist(store, story_id, [second], "run-2", "batch-2")
+
+    with store.connection() as db:
+        projection = db.execute(
+            "SELECT selected FROM facts WHERE story_id=? AND fact_id=?",
+            (story_id, fact_id),
+        ).fetchone()
+        assertion = db.execute(
+            "SELECT owner_selected FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, fact_id),
+        ).fetchone()
+    assert projection["selected"] == 1
+    assert assertion["owner_selected"] == 1
