@@ -896,6 +896,16 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
         )
     assert stale.value.code == "publication_confirmation_stale"
 
+def test_live_text_input_is_durable_before_provider_echo(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    adapter.input(session, {"text": "Сохрани эту реплику до ответа модели."})
+
+    story = svc.story(session.resource_id)
+    assert [(item["role"], item["text"]) for item in story["live_messages"]] == [
+        ("user", "Сохрани эту реплику до ответа модели."),
+    ]
+
+
 def test_live_transcripts_are_retained_as_bounded_diagnostics(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     adapter.on_event(session, {"type": "input_transcript", "text": "Покажи, что ты видишь на фотографии."})
