@@ -138,12 +138,31 @@ def _evidence_rows(observation_id: str, sources: list[dict[str, Any]]) -> list[d
                 or source.get("source_version_id")
                 or fallback_source_version_id
             ).strip()
-            span_digest = hashlib.sha256(
-                (source_version_id + "\n" + kind + "\n" + support_url + "\n" + text).encode("utf-8")
+            passage_digest = hashlib.sha256(
+                (
+                    source_version_id
+                    + "\n" + kind
+                    + "\n" + support_url
+                    + "\n" + str(support.get("chunk_id") or "")
+                    + "\n" + str(
+                        support.get("span_start")
+                        if support.get("span_start") is not None
+                        else ""
+                    )
+                    + "\n" + str(
+                        support.get("span_end")
+                        if support.get("span_end") is not None
+                        else ""
+                    )
+                    + "\n" + text
+                ).encode("utf-8")
+            ).hexdigest()
+            edge_digest = hashlib.sha256(
+                (observation_id + "\n" + passage_digest).encode("utf-8")
             ).hexdigest()
             rows.append(
                 {
-                    "evidence_id": "evidence_" + span_digest[:24],
+                    "evidence_id": "evidence_" + edge_digest[:24],
                     "observation_id": observation_id,
                     "source_url": url,
                     "source_version_id": source_version_id,
@@ -357,7 +376,7 @@ def persist_fact_candidates(
         ).fetchone()
 
         if current_assertion is None:
-            owner_selected = int(bool(item.get("selected")) and bool(sources))
+            owner_selected = int(bool(item.get("selected")) and bool(evidence_rows))
             display_text = text
             if legacy_fact is not None:
                 owner_selected = int(bool(legacy_fact["selected"]))
@@ -431,8 +450,8 @@ def persist_fact_candidates(
                     assertion_id,
                     text,
                     max(0.0, min(1.0, float(item.get("confidence") or 0.0))),
-                    int(bool(sources)),
-                    int(bool(item.get("selected")) and bool(sources)),
+                    int(bool(evidence_rows)),
+                    int(bool(item.get("selected")) and bool(evidence_rows)),
                     _canonical(sources),
                 ),
             )
@@ -444,7 +463,7 @@ def persist_fact_candidates(
                 "WHERE story_id=? AND fact_id=?",
                 (
                     max(float(legacy_fact["confidence"]), max(0.0, min(1.0, float(item.get("confidence") or 0.0)))),
-                    int(bool(legacy_fact["evidence_supported"]) or bool(merged_sources)),
+                    int(bool(legacy_fact["evidence_supported"]) or bool(evidence_rows)),
                     _canonical(merged_sources),
                     story_id,
                     assertion_id,
@@ -567,6 +586,111 @@ def backfill_legacy_fact_ledger(db, now: float) -> int:
         _recompute_assertion_digest(db, row["story_id"], row["fact_id"])
         count += 1
     return count
+
+
+def repair_missing_evidence_edges(db, now: float) -> dict[str, int]:
+    """Repair legacy passage-PK collisions without inventing evidence."""
+    repaired = 0
+    downgraded = 0
+    affected: set[tuple[str, str]] = set()
+    rows = list(db.execute(
+        "SELECT o.observation_id,o.story_id,o.assertion_id,f.sources_json "
+        "FROM fact_observations o "
+        "LEFT JOIN facts f ON f.story_id=o.story_id AND f.fact_id=o.assertion_id "
+        "WHERE o.status='accepted' "
+        "AND NOT EXISTS("
+        "SELECT 1 FROM fact_evidence_spans e WHERE e.observation_id=o.observation_id"
+        ")"
+    ))
+    for row in rows:
+        observation_id = str(row["observation_id"])
+        story_id = str(row["story_id"])
+        assertion_id = str(row["assertion_id"])
+        try:
+            sources = json.loads(row["sources_json"] or "[]")
+        except (TypeError, ValueError):
+            sources = []
+
+        inserted = 0
+        for evidence in _evidence_rows(observation_id, sources):
+            exact = db.execute(
+                "SELECT 1 FROM fact_evidence_spans "
+                "WHERE source_url=? AND source_version_id=? AND support_kind=? "
+                "AND span_sha256=? "
+                "AND COALESCE(chunk_id,'')=COALESCE(?,'') "
+                "AND COALESCE(span_start,-1)=COALESCE(?,-1) "
+                "AND COALESCE(span_end,-1)=COALESCE(?,-1) LIMIT 1",
+                (
+                    evidence["source_url"],
+                    evidence["source_version_id"],
+                    evidence["support_kind"],
+                    evidence["span_sha256"],
+                    evidence["chunk_id"],
+                    evidence["span_start"],
+                    evidence["span_end"],
+                ),
+            ).fetchone()
+            if not exact:
+                continue
+            before = db.total_changes
+            db.execute(
+                "INSERT OR IGNORE INTO fact_evidence_spans("
+                "evidence_id,observation_id,source_url,source_version_id,support_kind,"
+                "span_text,span_sha256,chunk_id,span_start,span_end,relation,created_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    evidence["evidence_id"],
+                    evidence["observation_id"],
+                    evidence["source_url"],
+                    evidence["source_version_id"],
+                    evidence["support_kind"],
+                    evidence["span_text"],
+                    evidence["span_sha256"],
+                    evidence["chunk_id"],
+                    evidence["span_start"],
+                    evidence["span_end"],
+                    evidence["relation"],
+                    now,
+                ),
+            )
+            if db.total_changes > before:
+                inserted += 1
+
+        affected.add((story_id, assertion_id))
+        if inserted:
+            repaired += inserted
+        else:
+            db.execute(
+                "UPDATE fact_observations SET status='candidate',"
+                "structural_error='evidence_edge_missing' WHERE observation_id=?",
+                (observation_id,),
+            )
+            downgraded += 1
+
+    for story_id, assertion_id in affected:
+        has_evidence = bool(db.execute(
+            "SELECT 1 FROM fact_evidence_spans e "
+            "JOIN fact_observations o ON o.observation_id=e.observation_id "
+            "WHERE o.story_id=? AND o.assertion_id=? LIMIT 1",
+            (story_id, assertion_id),
+        ).fetchone())
+        db.execute(
+            "UPDATE facts SET evidence_supported=? WHERE story_id=? AND fact_id=?",
+            (int(has_evidence), story_id, assertion_id),
+        )
+        if not has_evidence:
+            db.execute(
+                "UPDATE fact_assertions "
+                "SET review_status='withheld',eligibility='withheld',updated_at=? "
+                "WHERE story_id=? AND assertion_id=?",
+                (now, story_id, assertion_id),
+            )
+        _recompute_assertion_digest(db, story_id, assertion_id)
+
+    return {
+        "repaired_edges": repaired,
+        "downgraded_observations": downgraded,
+    }
 
 
 def set_owner_selection(db, story_id: str, selected_ids: list[str], now: float) -> None:
