@@ -35,6 +35,8 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     assert configuration["manual_activity_detection"] is True
     assert configuration["application_search_function"] == "search_web"
     assert configuration["media_resolution"] == "MEDIA_RESOLUTION_MEDIUM"
+    assert configuration["voice"] == "Aoede"
+    assert "один стабильный голосовой образ Миры" in configuration["system_instruction"]
     assert any(item["name"] == "search_web" for item in configuration["functions"])
     from live_interaction.provider import setup_config
 
@@ -211,6 +213,7 @@ def make_service(tmp_path: Path):
     session = SimpleNamespace(
         id="live_1234567890abcdef",
         resource_id=story["id"],
+        model="gemini-3.8-live",
         state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None},
     )
     return svc, adapter, session, events
@@ -942,3 +945,14 @@ def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):
     visual = [event for event in events if event.get("type") == "visual_context"][-1]
     assert visual["status"] == "ready"
     assert (visual["width"], visual["height"]) == (40, 80)
+    with svc.store.connection() as db:
+        row = db.execute(
+            "SELECT payload_json FROM live_diagnostics WHERE story_id=? AND session_id=? AND event_type='voice_profile' ORDER BY id DESC LIMIT 1",
+            (session.resource_id, session.id),
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row["payload_json"]) == {
+        "model": "gemini-3.8-live",
+        "phase": "started",
+        "voice": "Aoede",
+    }
