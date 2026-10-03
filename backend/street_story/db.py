@@ -249,6 +249,9 @@ CREATE TABLE IF NOT EXISTS fact_evidence_spans(
   support_kind TEXT NOT NULL,
   span_text TEXT NOT NULL,
   span_sha256 TEXT NOT NULL,
+  chunk_id TEXT,
+  span_start INTEGER,
+  span_end INTEGER,
   relation TEXT NOT NULL CHECK(relation IN ('supports','contradicts','partial')),
   created_at REAL NOT NULL
 );
@@ -256,6 +259,97 @@ CREATE INDEX IF NOT EXISTS idx_fact_evidence_observation
  ON fact_evidence_spans(observation_id,source_version_id);
 CREATE INDEX IF NOT EXISTS idx_fact_evidence_source_version
  ON fact_evidence_spans(source_version_id,evidence_id);
+
+CREATE TABLE IF NOT EXISTS research_runs(
+  run_id TEXT PRIMARY KEY,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  poi_key TEXT,
+  goal TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN (
+    'planned','discovering','fetching','extracting','reconciling','verifying',
+    'completed','partial','failed','cancelled'
+  )),
+  status_detail TEXT NOT NULL DEFAULT '',
+  expected_story_revision INTEGER NOT NULL,
+  identity_generation INTEGER NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  completed_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_research_runs_story_time
+ ON research_runs(story_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS source_documents(
+  document_id TEXT PRIMARY KEY,
+  canonical_url TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_versions(
+  source_version_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES source_documents(document_id) ON DELETE CASCADE,
+  requested_url TEXT NOT NULL,
+  final_url TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  http_status INTEGER NOT NULL,
+  redirect_chain_json TEXT NOT NULL,
+  normalized_text TEXT NOT NULL,
+  read_status TEXT NOT NULL,
+  char_count INTEGER NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_versions_document_time
+ ON source_versions(document_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS source_chunks(
+  chunk_id TEXT PRIMARY KEY,
+  source_version_id TEXT NOT NULL REFERENCES source_versions(source_version_id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  core_start INTEGER NOT NULL,
+  core_end INTEGER NOT NULL,
+  context_start INTEGER NOT NULL,
+  context_end INTEGER NOT NULL,
+  chunk_text TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  UNIQUE(source_version_id,ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_source_chunks_version_ordinal
+ ON source_chunks(source_version_id,ordinal);
+
+CREATE TABLE IF NOT EXISTS research_run_sources(
+  run_id TEXT NOT NULL REFERENCES research_runs(run_id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'discovered','snippet_only','fetching','fetched','partial','failed','deferred'
+  )),
+  source_version_id TEXT REFERENCES source_versions(source_version_id),
+  error_code TEXT,
+  discovered_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(run_id,url)
+);
+CREATE INDEX IF NOT EXISTS idx_research_run_sources_state
+ ON research_run_sources(run_id,status,updated_at);
+
+CREATE TABLE IF NOT EXISTS research_chunk_runs(
+  run_id TEXT NOT NULL REFERENCES research_runs(run_id) ON DELETE CASCADE,
+  chunk_id TEXT NOT NULL REFERENCES source_chunks(chunk_id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK(status IN (
+    'planned','extracting','extracted','no_claims','needs_context','failed','deferred','cancelled'
+  )),
+  observation_count INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  model_name TEXT NOT NULL DEFAULT '',
+  prompt_version TEXT NOT NULL DEFAULT '',
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(run_id,chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_research_chunk_runs_state
+ ON research_chunk_runs(run_id,status,updated_at);
 """
 
 
@@ -295,6 +389,38 @@ CREATE TABLE IF NOT EXISTS poi_research_facts(
 );
 CREATE INDEX IF NOT EXISTS idx_poi_research_facts_recent
  ON poi_research_facts(poi_key,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS poi_research_assertions(
+  poi_key TEXT NOT NULL,
+  assertion_id TEXT NOT NULL,
+  semantic_key TEXT,
+  text TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  sources_json TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY(poi_key,assertion_id)
+);
+CREATE INDEX IF NOT EXISTS idx_poi_research_assertions_semantic
+ ON poi_research_assertions(poi_key,semantic_key,updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_poi_research_assertions_recent
+ ON poi_research_assertions(poi_key,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS poi_research_observations(
+  observation_id TEXT PRIMARY KEY,
+  poi_key TEXT NOT NULL,
+  assertion_id TEXT NOT NULL,
+  semantic_key TEXT,
+  text TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  sources_json TEXT NOT NULL,
+  research_run_id TEXT,
+  query TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_poi_research_observations_assertion
+ ON poi_research_observations(poi_key,assertion_id,created_at DESC);
+
 CREATE TABLE IF NOT EXISTS poi_research_sources(
   poi_key TEXT NOT NULL,
   url TEXT NOT NULL,
@@ -527,8 +653,18 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(RELIABILITY_SCHEMA)
             db.executescript(POI_SCHEMA)
+            evidence_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_evidence_spans)")}
+            for name, sql_type in (
+                ("chunk_id", "TEXT"),
+                ("span_start", "INTEGER"),
+                ("span_end", "INTEGER"),
+            ):
+                if name not in evidence_columns:
+                    db.execute(f"ALTER TABLE fact_evidence_spans ADD COLUMN {name} {sql_type}")
             from .fact_ledger import backfill_legacy_fact_ledger
             backfill_legacy_fact_ledger(db, self.now())
+            from .poi_memory import backfill_legacy_research_memory
+            backfill_legacy_research_memory(db, self.now())
 
     def connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=ScopedConnection)

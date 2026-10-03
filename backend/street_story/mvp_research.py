@@ -21,6 +21,13 @@ from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
 from .poi_memory import persist_research_memory, prior_facts, processed_sources
 from .providers import PermanentProviderError
+from .research_runs import (
+    begin_research_run,
+    manifest_complete,
+    register_discovered_source,
+    run_manifest,
+    set_run_state,
+)
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
 
 
@@ -554,6 +561,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         previous: list[dict[str, Any]],
         poi_history: list[dict[str, Any]] | None = None,
         processed_source_history: list[dict[str, Any]] | None = None,
+        research_run_id: str | None = None,
     ) -> dict[str, Any]:
         custom = getattr(self.providers.gemini, "research_v2", None)
         if callable(custom):
@@ -679,6 +687,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "payload": payload,
                 "grounding_sources": grounding,
                 "grounding_supports": supports,
+                "research_run_id": research_run_id,
             }
 
         return await gemini.executor.execute("grounded_research", call)
@@ -811,6 +820,34 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 )
             return
 
+        expected_story_revision = int(story.get("revision") or 0)
+        expected_identity_generation = int(prior.get("identity_generation") or 0)
+        run_id = "research_" + hashlib.sha256(
+            f"{job['id']}:{input_revision}".encode("utf-8")
+        ).hexdigest()[:24]
+        with self.store.tx() as db:
+            begin_research_run(
+                db,
+                story_id=story_id,
+                poi_key=str(identity.get("candidate_id") or "") or None,
+                goal=(
+                    str(prior.get("publication_concept") or "").strip()
+                    or transcript[:1600]
+                    or "source-backed research"
+                ),
+                expected_story_revision=expected_story_revision,
+                identity_generation=expected_identity_generation,
+                run_id=run_id,
+                now=self.store.now(),
+            )
+            set_run_state(
+                db,
+                run_id,
+                "discovering",
+                detail="automatic_research",
+                now=self.store.now(),
+            )
+
         with self.store.connection() as db:
             poi_history = prior_facts(db, identity, story_id)
             processed_source_history = processed_sources(db, identity)
@@ -823,8 +860,51 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 previous,
                 poi_history,
                 processed_source_history,
+                research_run_id=run_id,
             )
             self.store.checkpoint_put(job["id"], "grounded_research_v3", saved)
+
+        grounding_sources = saved.get("grounding_sources", [])
+        with self.store.tx() as db:
+            for source in grounding_sources:
+                if not isinstance(source, dict):
+                    continue
+                url = _norm_url(source.get("url"))
+                if not url:
+                    continue
+                register_discovered_source(
+                    db,
+                    run_id=run_id,
+                    url=url,
+                    title=str(source.get("title") or url),
+                    status="snippet_only",
+                    now=self.store.now(),
+                )
+            set_run_state(
+                db,
+                run_id,
+                "reconciling",
+                detail="grounding_received",
+                now=self.store.now(),
+            )
+
+        with self.store.connection() as db:
+            current = dict(self._story_row(db, story_id))
+            current_research = json.loads(current.get("research_json") or "{}")
+        if (
+            int(current.get("revision") or 0) != expected_story_revision
+            or int(current_research.get("identity_generation") or 0) != expected_identity_generation
+        ):
+            with self.store.tx() as db:
+                set_run_state(
+                    db,
+                    run_id,
+                    "cancelled",
+                    detail="story_revision_or_identity_changed",
+                    now=self.store.now(),
+                    completed=True,
+                )
+            return
 
         grounding_sources = saved.get("grounding_sources", [])
         grounding_supports = saved.get("grounding_supports", [])
@@ -847,13 +927,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         for source in grounding_sources:
             url = _norm_url(source.get("url"))
             if url:
+                previous_known = known.get(url) or {}
                 known[url] = {
-                    "type": str(source.get("type") or "web"),
-                    "title": str(source.get("title") or url),
+                    "type": str(source.get("type") or previous_known.get("type") or "web"),
+                    "title": str(source.get("title") or previous_known.get("title") or url),
                     "url": url,
+                    "excerpt": str(previous_known.get("excerpt") or ""),
                 }
 
-        incoming = saved.get("payload", {}).get("facts", [])[:32]
+        incoming = saved.get("payload", {}).get("facts", [])
         is_refinement = bool(prior.get("input_revision"))
         old_decisions = {
             row["fact_id"]: bool(row["selected"])
@@ -885,7 +967,22 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 source = known.get(url)
                 if not source:
                     continue
-                supports = list(grounding_by_url.get(url, []))
+                supports = [
+                    support
+                    for support in grounding_by_url.get(url, [])
+                    if isinstance(support, dict)
+                    and str(support.get("text") or "").strip()
+                ]
+                if not supports:
+                    excerpt = str(source.get("excerpt") or "").strip()
+                    if excerpt:
+                        supports = [{
+                            "kind": "wikipedia_extract",
+                            "source_url": url,
+                            "text": excerpt,
+                        }]
+                if not supports:
+                    continue
                 sources.append(
                     {
                         "type": source["type"],
@@ -966,8 +1063,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             image_notes = f"{place_name}:\n{image_notes}"
 
         with self.store.tx() as db:
-            latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
-            if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
+            current_row = dict(self._story_row(db, story_id))
+            latest = json.loads(current_row["research_json"] or "{}")
+            if (
+                int(current_row.get("revision") or 0) != expected_story_revision
+                or int(latest.get("identity_generation") or 0) != expected_identity_generation
+            ):
+                set_run_state(
+                    db,
+                    run_id,
+                    "cancelled",
+                    detail="story_revision_or_identity_changed_before_commit",
+                    now=self.store.now(),
+                    completed=True,
+                )
                 return
             now = self.store.now()
             persist_fact_candidates(
@@ -975,7 +1084,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 story_id=story_id,
                 poi_key=str(identity.get("candidate_id") or "") or None,
                 facts=normalized,
-                run_id=str(job["id"]),
+                run_id=run_id,
                 batch_id="grounded_research_v3",
                 model_name="configured_research_model",
                 prompt_version="automatic-research-ledger-v1",
@@ -995,6 +1104,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 ],
                 "automatic_identity_research",
                 self.store.now(),
+                research_run_id=run_id,
             )
             all_fact_rows = list(db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
             source_urls = {
@@ -1020,9 +1130,17 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "draft_needs_refresh": False,
                 "image_notes": image_notes,
                 "poi_key": str(identity.get("candidate_id") or "") or None,
+                "research_run_id": run_id,
                 "prior_poi_fact_count": len(poi_history),
                 "claim_decisions": {row["fact_id"]: bool(row["selected"]) for row in all_fact_rows},
             }
+            set_run_state(
+                db,
+                run_id,
+                "verifying",
+                detail="facts_persisted",
+                now=self.store.now(),
+            )
             db.execute(
                 "UPDATE stories SET state='review',place_name=?,summary=?,draft_text=?,research_json=?,"
                 "error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
@@ -1059,7 +1177,27 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             },
         )
         with self.store.tx() as db:
-            refresh_review_status(db, story_id, self.store.now())
+            now = self.store.now()
+            refresh_review_status(db, story_id, now)
+            manifest = run_manifest(db, run_id)
+            scan = db.execute(
+                "SELECT status FROM fact_conflict_scans WHERE story_id=? ORDER BY id DESC LIMIT 1",
+                (story_id,),
+            ).fetchone()
+            review_ok = bool(scan and str(scan["status"]) in {"ok", "no_candidates"})
+            complete = manifest_complete(manifest) and review_ok
+            set_run_state(
+                db,
+                run_id,
+                "completed" if complete else "partial",
+                detail=(
+                    "manifest_and_review_complete"
+                    if complete
+                    else "manifest_or_semantic_review_incomplete"
+                ),
+                now=now,
+                completed=True,
+            )
 
     def _story_repr(self, db, row) -> dict[str, Any]:
         result = super()._story_repr(db, row)
