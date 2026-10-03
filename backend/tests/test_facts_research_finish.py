@@ -219,3 +219,70 @@ async def test_review_rejects_another_assertions_evidence(tmp_path):
         adapter._finalize_fact_review(session, "wrong-evidence", args)
     assert all(f["eligibility"] == "unreviewed" for f in adapter._get_facts(session.resource_id, {"eligibility": "all"})["facts"])
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_numeric_passages_and_bounded_invalid_batch_resume(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {"name": "get_research_chunk", "args": {"run_id": run_id}})
+    args = findings(chunk, QUOTES[:1], continuation=True)
+    args["facts"][0].pop("evidence_quotes")
+    args["facts"][0]["passage_ids"] = [chunk["evidence_passages"][0]["passage_id"]]
+    saved = await adapter.execute_tool(session, {"name": "save_research_facts", "id": "numeric", "args": args})
+    assert saved["payload_saved"] and saved["facts"][0]["revision_digest"]
+    chunk = await adapter.execute_tool(session, {"name": "get_research_chunk", "args": {"run_id": run_id}})
+    bad = findings(chunk, QUOTES[1:])
+    for f in bad["facts"]:
+        f.pop("evidence_quotes")
+        f["passage_ids"] = [999]
+    for index in range(3):
+        with pytest.raises(ConflictError) as failure:
+            await adapter.execute_tool(session, {"name": "save_research_facts", "id": "bad-" + str(index), "args": bad})
+    assert failure.value.code == "live_research_partial"
+    adapter.on_stopped(session)
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)["run"]["state"] == "partial"
+        assert run_manifest(db, run_id)["run"]["status_detail"] == "invalid_batch_budget_exhausted"
+        assert run_manifest(db, run_id)["counts"]["chunk_batches_total"] == 1
+    # A new Live session resumes the frozen cursor and existing payload.
+    from types import SimpleNamespace
+    resumed = SimpleNamespace(id="live_resumed", resource_id=session.resource_id, state={})
+    chunk = await adapter._get_research_chunk(resumed, {"run_id": run_id})
+    assert chunk["batch_index"] == 1 and len(chunk["checkpoint"]["facts"]) == 1
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_actual_task_cancellation_preserves_first_batch_for_resume(tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter._get_research_chunk(session, {"run_id": run_id})
+    await adapter._save_research_facts(session, "first", findings(chunk, QUOTES[:1], continuation=True))
+    chunk = await adapter._get_research_chunk(session, {"run_id": run_id})
+    entered = asyncio.Event()
+
+    async def blocked(*args):
+        entered.set()
+        await asyncio.Event().wait()
+
+    svc.providers.gemini.reconcile_fact_identities = blocked
+    args = findings(chunk, QUOTES[1:])
+    args["inventory_reviewed"] = False
+    task = asyncio.create_task(adapter._save_research_facts(session, "interrupted", args))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    adapter.on_stopped(session)
+    resumed = SimpleNamespace(id="live_after_cancel", resource_id=session.resource_id, model="gemini-3.8-live", state={})
+    next_chunk = await adapter._get_research_chunk(resumed, {"run_id": run_id})
+    assert next_chunk["batch_index"] == 1 and next_chunk["source_version_id"] == chunk["source_version_id"]
+    assert len(next_chunk["checkpoint"]["facts"]) == 1
+    await adapter._save_research_facts(resumed, "resumed", findings(next_chunk, QUOTES[1:]))
+    final = adapter._finalize_fact_review(resumed, "review", review_args(adapter, session.resource_id, run_id))
+    assert final["complete"] and final["eligible_count"] == 3
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)["counts"]["chunk_batches_total"] == 2
+        assert db.execute("SELECT COUNT(*) FROM fact_observations WHERE story_id=?", (session.resource_id,)).fetchone()[0] == 3
+    await reader.search_http.aclose()

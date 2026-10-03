@@ -71,7 +71,7 @@ async def run_case(output, case, budget):
         receipt = await host.start(resource_id=story_id, actor=None, model="gemini-3.8-live")
         session_id = receipt["session_id"]
         stage = "research"
-        await host.input(session_id=session_id, resource_id=story_id, message={"text": prompt + " Используй один search_web, затем прочитай ВСЕ chunks через get_research_chunk и сохрани batches с точными evidence_refs из evidence_passages. Изучи get_facts inventory; equivalence решай самостоятельно с inventory_reviewed=true. После чтения всех chunks изучи get_facts и get_evidence, выполни finalize_fact_review с точными revision_digest и supporting_evidence_ids. Не ограничивайся snippets. Не задавай дополнительных вопросов."})
+        await host.input(session_id=session_id, resource_id=story_id, message={"text": prompt + " Используй один search_web, затем прочитай ВСЕ chunks через get_research_chunk и сохрани batches с короткими числовыми passage_ids из evidence_passages, source_refs=[] и evidence_refs=[]. Изучи get_facts inventory; equivalence решай самостоятельно с inventory_reviewed=true. После чтения всех chunks изучи get_facts и get_evidence, выполни finalize_fact_review с точными revision_digest и supporting_evidence_ids. Не ограничивайся snippets. Не задавай дополнительных вопросов."})
         deadline = started + budget
         while time.monotonic() < deadline:
             page = host.events(session_id=session_id, resource_id=story_id, after=cursor)

@@ -464,6 +464,7 @@ FUNCTIONS = [
                         "selected": {"type": "boolean"},
                         "source_refs": {"type": "array", "items": {"type": "string"}},
                         "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "passage_ids": {"type": "array", "items": {"type": "integer"}, "description": "For chunk batches, choose numeric passage_id from evidence_passages. Prefer these to copying long evidence_ref hashes. Leave evidence_refs/source_refs empty when using passage_ids."},
                     },
                     "required": [
                         "claim_key", "text", "confidence", "selected",
@@ -715,7 +716,7 @@ SYSTEM_INSTRUCTION = """
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
 - после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
-- если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и точными evidence_refs из evidence_passages (или дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
+- если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence постранично до has_more=false. Передай точные fact_id+revision_digest и supporting_evidence_ids из get_evidence. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
@@ -887,7 +888,7 @@ class StreetStoryLiveAdapter:
             run_id = session.state.get("research_run_id")
             if run_id:
                 with self.service.store.tx() as db:
-                    db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? WHERE run_id=? AND state NOT IN ('completed','cancelled')",
+                    db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? WHERE run_id=? AND state NOT IN ('completed','cancelled','partial','failed')",
                                ("live_" + kind + "_resume_required", self.service.store.now(), run_id))
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
@@ -999,7 +1000,7 @@ class StreetStoryLiveAdapter:
         if run_id:
             with self.service.store.tx() as db:
                 db.execute("UPDATE research_runs SET state='partial',status_detail='live_stopped_resume_required',updated_at=? "
-                           "WHERE run_id=? AND state NOT IN ('completed','cancelled')", (self.service.store.now(), run_id))
+                           "WHERE run_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (self.service.store.now(), run_id))
 
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         name = str(call.get("name") or "")
@@ -1066,7 +1067,26 @@ class StreetStoryLiveAdapter:
         elif name == "search_web":
             result = await self._search_web(session, command_id, args)
         elif name == "save_research_facts":
-            result = await self._save_research_facts(session, command_id, args)
+            try:
+                result = await self._save_research_facts(session, command_id, args)
+            except ConflictError as exc:
+                invalid_codes = {"live_research_evidence_unknown", "live_research_passage_unknown", "live_research_quote_invalid", "live_research_quotes_required"}
+                if exc.code in invalid_codes:
+                    run_id = str(args.get("run_id") or session.state.get("research_run_id") or "")
+                    failures = session.state.setdefault("research_invalid_batches", {})
+                    failures[run_id] = failures.get(run_id, 0) + 1
+                    if failures[run_id] >= 3:
+                        with self.service.store.tx() as db:
+                            self._research_run_guard(db, session, run_id)
+                            set_run_state(db, run_id, "partial", detail="invalid_batch_budget_exhausted", now=self.service.store.now(), completed=False)
+                            saved_count = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (story_id,)).fetchone()[0]
+                            source_count = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=?", (run_id,)).fetchone()[0]
+                        session.state["research_cancelled"] = True
+                        self._emit_research_progress(session, stage="partial", active=False, query="", source_count=source_count, fact_count=saved_count)
+                        record_live_diagnostic(self.service, story_id, session.id, "backend", "research_partial", {"run_id": run_id, "reason": "invalid_batch_budget_exhausted", "attempts": failures[run_id]})
+                        raise ConflictError("live_research_partial", "Research paused after three invalid evidence batches. Saved findings remain durable. Resume this run in a new Live session using numeric passage_ids.") from None
+                raise
+            session.state.setdefault("research_invalid_batches", {}).pop(str(result.get("research_run_id") or ""), None)
         elif name == "record_fact_conflicts":
             result = self._record_fact_conflicts(session, command_id, args)
         elif name == "finalize_fact_review":
@@ -1308,6 +1328,9 @@ class StreetStoryLiveAdapter:
             projected["facts"] = [
                 {
                     "fact_id": str(fact.get("fact_id") or ""),
+                    "text": str(fact.get("text") or "")[:280],
+                    "revision_digest": fact.get("revision_digest"),
+                    "supporting_evidence_ids": list(fact.get("supporting_evidence_ids") or []),
                     "source_count": len(fact.get("sources") or []),
                 }
                 for fact in (result.get("facts") or [])[:32]
@@ -2371,7 +2394,7 @@ class StreetStoryLiveAdapter:
                 if text:
                     offset = cursor + start + len(raw) - len(raw.lstrip())
                     ref = "evref_" + hashlib.sha256(f"{chunk_id}:{offset}:{text}".encode()).hexdigest()[:24]
-                    passages.append({"evidence_ref": ref, "text": text})
+                    passages.append({"passage_id": len(passages), "evidence_ref": ref, "text": text})
             cursor += len(line)
         return passages
 
@@ -2610,15 +2633,22 @@ class StreetStoryLiveAdapter:
                 source_ref = _search_source_ref(url)
                 core = chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]]
                 addressed = {p["evidence_ref"]: p["text"] for p in self._core_passages(chunk_id, core)}
+                numbered = {p["passage_id"]: p["text"] for p in self._core_passages(chunk_id, core)}
                 quoted_facts = []
                 for raw in raw_facts:
                     if not isinstance(raw, dict):
                         raise ConflictError("live_research_fact_invalid", "Each fact must be an object.")
                     quotes = raw.get("evidence_quotes")
                     if quotes is None or quotes == []:
+                        passage_ids = raw.get("passage_ids")
+                        if passage_ids is not None:
+                            if not isinstance(passage_ids, list) or not 1 <= len(passage_ids) <= 8 or any(type(pid) is not int or pid not in numbered for pid in passage_ids):
+                                raise ConflictError("live_research_passage_unknown", "Choose numeric passage_ids from this frozen chunk.")
+                            quotes = [numbered[pid] for pid in passage_ids]
+                    if quotes is None or quotes == []:
                         supplied_refs = raw.get("evidence_refs")
                         if not isinstance(supplied_refs, list) or not supplied_refs or any(ref not in addressed for ref in supplied_refs):
-                            raise ConflictError("live_research_evidence_unknown", "Use evidence_refs from this chunk's evidence_passages, or verbatim evidence_quotes.")
+                            raise ConflictError("live_research_evidence_unknown", "Prefer numeric passage_ids from this chunk's evidence_passages, or use exact evidence_refs/verbatim evidence_quotes.")
                         quotes = [addressed[ref] for ref in supplied_refs]
                     if not isinstance(quotes, list) or not 1 <= len(quotes) <= 8:
                         raise ConflictError("live_research_quotes_required", "Each page fact requires exact core passages.")

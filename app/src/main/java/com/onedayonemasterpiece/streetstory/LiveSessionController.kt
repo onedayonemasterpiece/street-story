@@ -217,6 +217,7 @@ class LiveSessionController(context: Context) {
         "searching" -> "Ищу источники…"
         "extracting" -> "Извлекаю и сверяю факты…"
         "review" -> "Проверяю факты…"
+        "partial" -> "Исследование приостановлено"
         else -> if (progress?.active == true) "Обрабатываю факты…" else "Факты обновлены"
     }
 
