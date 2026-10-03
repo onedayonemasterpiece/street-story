@@ -646,7 +646,7 @@ class MainActivity : Activity() {
         }
 
         chatStatus?.apply {
-            val microphone = state.microphone?.takeIf { state.active && !it.playbackSuppressed }
+            val microphone = state.microphone?.takeIf { state.active && !it.inputSuppressed }
             val label = microphone?.warning ?: state.status
             val meter = microphone?.let { "  " + "●".repeat(it.level) + "○".repeat(4 - it.level) }.orEmpty()
             text = if (state.error.isNullOrBlank()) "• $label$meter" else "⚠ ${state.error}"

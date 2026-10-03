@@ -23,6 +23,16 @@ class LiveMicrophoneHealthTest {
         assertNull(health.observe(90_000, 0.0).warning)
     }
 
+    @Test fun researchFocusHidesMeterWithoutInventingMicrophoneFailure() {
+        val health = LiveMicrophoneHealth()
+        val research = health.observe(10_000, 1500.0, researchSuppressed = true)
+        assertTrue(research.researchSuppressed)
+        assertTrue(research.inputSuppressed)
+        assertFalse(research.playbackSuppressed)
+        assertEquals(0, research.level)
+        assertNull(research.warning)
+    }
+
     @Test fun systemMuteAndClientSilencingRemainActionable() {
         val health = LiveMicrophoneHealth()
         assertNotNull(health.observe(0, 1000.0, systemMuted = true).warning)

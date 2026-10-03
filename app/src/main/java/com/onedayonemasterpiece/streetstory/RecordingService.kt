@@ -139,7 +139,8 @@ class RecordingService : Service() {
         val admission=if(live!=null)LiveSpeechAdmission() else null
         val microphoneHealth = LiveMicrophoneHealth()
         var meterSamples=0L;var meterSquares=0.0;var lastMeterAt=android.os.SystemClock.elapsedRealtime()
-        var wasPlaybackSuppressed=false
+        var wasInputSuppressed=false
+        var lastInputEpoch=-1
         var speechEpisodes=0
         val detector=EfficientVad(true,interactive=live!=null);val latch=SpeechLatch(if(live!=null)1 else LIVE_ATTACK_FRAMES,HANGOVER_FRAMES);val preRoll=ArrayDeque<FramePacket>();var writer:M4aChunkWriter?=null;var persisted=store.persistedDuration(id);var activity=CaptureActivity.AUTO_SILENCE;var lastActivity:String?=null;var lastRuntime=-1L;var lastStore=-1L;var silenceStart:Long?=null;val frame=ShortArray(EfficientVad.FRAME_SAMPLES)
         var signalSamples=0L;var signalSquares=0.0;var signalPeak=0;var lastSignalAt=android.os.SystemClock.elapsedRealtime()
@@ -147,7 +148,8 @@ class RecordingService : Service() {
             recorder.startRecording();check(recorder.recordingState==AudioRecord.RECORDSTATE_RECORDING)
             while(captureRequested){
                 if(!readFrame(recorder,frame))continue
-                val suppressForPlayback=live?.shouldSuppressMicrophoneInput()==true
+                val inputSuppression=live?.microphoneInputSuppression() ?: LiveInputSuppression(false)
+                val suppressLiveInput=inputSuppression.active
                 frame.forEach { sample ->
                     val value=sample.toInt()
                     val square=value.toDouble()*value
@@ -161,7 +163,9 @@ class RecordingService : Service() {
                     val silenced=runCatching{recorder.activeRecordingConfiguration?.isClientSilenced==true}.getOrDefault(false)
                     live.observeMicrophone(initial.storyId, microphoneHealth.observe(
                         signalAt,kotlin.math.sqrt(meterSquares/meterSamples.coerceAtLeast(1)),
-                        muted,silenced,suppressForPlayback,
+                        muted,silenced,
+                        playbackSuppressed=inputSuppression.reason=="playback",
+                        researchSuppressed=inputSuppression.reason=="research",
                     ))
                 }
                 if(signalAt-lastMeterAt>=250){
@@ -177,21 +181,35 @@ class RecordingService : Service() {
                         "system_muted" to runCatching{audioManager.isMicrophoneMute}.getOrDefault(false),
                         "client_silenced" to capture?.isClientSilenced,
                         "route_type" to runCatching{recorder.routedDevice?.type}.getOrNull(),
-                        "playback_suppressed" to suppressForPlayback,
+                        "input_suppressed" to suppressLiveInput,
+                        "input_suppression_reason" to inputSuppression.reason,
                     ) + (admission?.metrics() ?: emptyMap()))
                     lastSignalAt=signalAt;signalSamples=0;signalSquares=0.0;signalPeak=0
                 }
                 val wallEnd=(System.currentTimeMillis()-sessionStart).coerceAtLeast(0)
                 val wallStart=(wallEnd-EfficientVad.FRAME_MS).coerceAtLeast(0)
                 val wasActive=latch.active
-                if(wasPlaybackSuppressed&&!suppressForPlayback){
+                if(lastInputEpoch>=0&&inputSuppression.epoch!=lastInputEpoch){
                     detector.resetAfterPlayback()
+                    latch.reset()
+                    preRoll.clear()
                     admission?.resetEvidence()
-                    live?.diagnostic("vad_reset_after_playback",mapOf("native_reset" to true))
+                    live?.diagnostic(
+                        "input_epoch_changed",
+                        mapOf("input_epoch" to inputSuppression.epoch,"reason" to inputSuppression.reason),
+                    )
                 }
-                wasPlaybackSuppressed=suppressForPlayback
+                lastInputEpoch=inputSuppression.epoch
+                if(wasInputSuppressed&&!suppressLiveInput){
+                    detector.resetAfterPlayback()
+                    latch.reset()
+                    preRoll.clear()
+                    admission?.resetEvidence()
+                    live?.diagnostic("vad_reset_after_input_suppression",mapOf("native_reset" to true))
+                }
+                wasInputSuppressed=suppressLiveInput
                 if(detector.isUnavailable)throw IllegalStateException("LIVE_VAD_UNAVAILABLE")
-                val active=if(suppressForPlayback){
+                val active=if(suppressLiveInput){
                     if(wasActive)live?.endSpeech()
                     latch.reset()
                     preRoll.clear()
@@ -212,8 +230,8 @@ class RecordingService : Service() {
                     activity=if(detector.isFailOpen)CaptureActivity.FALLBACK_CONTINUOUS else CaptureActivity.VOICE
                     if((writer?.durationMs?:0)>=M4aChunkWriter.TARGET_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
                 }else{
-                    if(wasActive&&!suppressForPlayback){live?.endSpeech();admission?.resetEvidence()}
-                    if(!suppressForPlayback)pushPreRoll(preRoll,frame,wallStart,wallEnd)
+                    if(wasActive&&!suppressLiveInput){live?.endSpeech();admission?.resetEvidence()}
+                    if(!suppressLiveInput)pushPreRoll(preRoll,frame,wallStart,wallEnd)
                     if(silenceStart==null)silenceStart=wallStart;activity=CaptureActivity.AUTO_SILENCE;val silenceMs=wallEnd-(silenceStart?:wallEnd);if(silenceMs>=LONG_SILENCE_CLOSE_MS&&(writer?.durationMs?:0)>=MIN_DURABLE_SEGMENT_MS){persisted=persist(writer?.close(),persisted);writer=null}
                 }
                 val recorded=persisted+(writer?.durationMs?:0);val skipped=(wallEnd-manualPauseMs-recorded).coerceAtLeast(0);val changed=activity!=lastActivity
