@@ -155,7 +155,7 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
             (
                 story_id,
                 fact_id,
-                text[:500],
+                text[:1200],
                 confidence,
                 int(selected),
                 json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
@@ -299,7 +299,7 @@ def persist_research_memory(
                 key,
                 claim_key,
                 fact_id,
-                text[:500],
+                text[:1200],
                 confidence,
                 json.dumps(list(merged.values()), ensure_ascii=False, separators=(",", ":")),
                 created_at,

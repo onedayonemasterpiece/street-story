@@ -570,7 +570,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         prompt = (
             "Ты исследователь Street Story. Идентичность объекта уже определена отдельным visual step; исследуй ИМЕННО этот объект. "
             "Используй Google Search grounding напрямую. Возвращай только проверяемые исторические/городские ФАКТЫ. "
-            "Каждый facts[].text — один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, "
+            "Верни до 32 facts. Каждый facts[].text — один атомарный тезис, обычно до 500 знаков: дата, человек, архитектор, событие, функция, "
             "реконструкция, посещение или другой конкретный факт. Не пиши вместо факта описание источника, вводные "
             "вроде «сайт сообщает», URL или несколько разных утверждений в одном пункте. Самые важные факты ставь первыми. "
             "claim_key — короткая стабильная семантическая идентичность утверждения, не зависящая от перефразирования. "
@@ -625,19 +625,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     or not isinstance(payload.get("facts"), list)
                 ):
                     raise ValueError
-                for fact in payload["facts"]:
-                    if (
-                        not isinstance(fact, dict)
-                        or not isinstance(fact.get("claim_key"), str)
-                        or (
-                            "existing_fact_id" in fact
-                            and not isinstance(fact.get("existing_fact_id"), str)
-                        )
-                        or not isinstance(fact.get("text"), str)
-                        or not isinstance(fact.get("source_urls"), list)
-                        or not math.isfinite(float(fact.get("confidence", 0.0)))
-                    ):
-                        raise ValueError
+                # Per-fact semantic metadata is normalized fail-soft below. A single
+                # malformed claim_key/confidence must not invalidate the whole model response.
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_grounded_research") from None
 
@@ -868,7 +857,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "url": url,
                 }
 
-        incoming = saved.get("payload", {}).get("facts", [])[:20]
+        incoming = saved.get("payload", {}).get("facts", [])[:32]
         is_refinement = bool(prior.get("input_revision"))
         old_decisions = {
             row["fact_id"]: bool(row["selected"])
@@ -880,9 +869,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         seen_claims: set[str] = set()
         for item in incoming:
             text = validated_model_fact_text(item.get("text"))
-            claim_key = normalized_claim_key(item.get("claim_key"))
-            if text is None or claim_key is None:
+            if text is None:
                 continue
+            claim_key = normalized_claim_key(item.get("claim_key"))
+            if claim_key is None:
+                claim_key = "exact-text:" + hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:24]
             existing_fact_id = str(item.get("existing_fact_id") or "").strip()
             fact_id = (
                 existing_fact_id
@@ -910,12 +901,18 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             evidence_supported = bool(sources)
             default_selected = evidence_supported and (not is_refinement)
             selected = evidence_supported and old_decisions.get(fact_id, default_selected)
+            try:
+                confidence = float(item.get("confidence", 0.0))
+                if not math.isfinite(confidence):
+                    raise ValueError
+            except (TypeError, ValueError):
+                confidence = 0.0
             normalized.append(
                 {
                     "fact_id": fact_id,
                     "claim_key": claim_key,
                     "text": text,
-                    "confidence": max(0.0, min(1.0, float(item.get("confidence", 0.0)))),
+                    "confidence": max(0.0, min(1.0, confidence)),
                     "evidence_supported": evidence_supported,
                     "selected": selected,
                     "sources": sources,

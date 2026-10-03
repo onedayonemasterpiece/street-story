@@ -744,6 +744,31 @@ class GeminiClient:
         except (TypeError, ValueError):
             return False
 
+    @staticmethod
+    def _chunk_page_text(text: str, target: int = 2200, overlap: int = 180) -> list[str]:
+        compact_lines = [" ".join(line.split()) for line in str(text or "").splitlines()]
+        paragraphs = [line for line in compact_lines if line]
+        chunks: list[str] = []
+        current = ""
+        for paragraph in paragraphs:
+            candidate = (current + "\n" + paragraph).strip() if current else paragraph
+            if len(candidate) <= target:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+                tail = current[-overlap:] if overlap > 0 else ""
+                current = (tail + "\n" + paragraph).strip()
+            else:
+                for start in range(0, len(paragraph), max(1, target - overlap)):
+                    part = paragraph[start:start + target].strip()
+                    if part:
+                        chunks.append(part)
+                current = ""
+        if current:
+            chunks.append(current)
+        return chunks[:6]
+
     async def _fetch_page_excerpts(self, urls: list[str]) -> dict[str, str]:
         selected: list[str] = []
         for raw in urls:
@@ -782,7 +807,11 @@ class GeminiClient:
                     parser.feed(response.text[:600_000])
                     excerpt = parser.finish()
                     if len(excerpt) >= 80:
-                        excerpts[url] = excerpt
+                        chunks = self._chunk_page_text(excerpt)
+                        excerpts[url] = "\n\n".join(
+                            f"[page_chunk {index + 1}/{len(chunks)}]\n{chunk}"
+                            for index, chunk in enumerate(chunks)
+                        )
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, ValueError, UnicodeError):
                     continue
         finally:
@@ -866,30 +895,57 @@ class GeminiClient:
                 rows.append(row)
             return rows
 
-        def normalize_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+        def normalize_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+            raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
+            audit = {
+                "raw_fact_count": len(raw_facts),
+                "accepted_fact_count": 0,
+                "claim_key_fallback_count": 0,
+                "confidence_defaulted_count": 0,
+                "rejected": {},
+            }
+
+            def reject(reason: str) -> None:
+                rejected = audit["rejected"]
+                rejected[reason] = int(rejected.get(reason, 0)) + 1
+
             normalized_facts: list[dict[str, Any]] = []
-            for item in payload.get("facts", [])[:20]:
+            for item in raw_facts[:32]:
                 if not isinstance(item, dict):
+                    reject("invalid_shape")
                     continue
-                claim_key = str(item.get("claim_key") or "").strip()
-                fact_text = str(item.get("text") or "").strip()
-                if not claim_key or not fact_text or len(fact_text) > 500:
+                fact_text = " ".join(str(item.get("text") or "").split()).strip()
+                if not fact_text:
+                    reject("empty_text")
                     continue
+                if len(fact_text) > 1200:
+                    reject("text_over_safety_bound")
+                    continue
+
+                claim_key = " ".join(str(item.get("claim_key") or "").split()).strip().casefold()
+                if not claim_key or len(claim_key) > 300:
+                    claim_key = "exact-text:" + hashlib.sha256(fact_text.casefold().encode("utf-8")).hexdigest()[:24]
+                    audit["claim_key_fallback_count"] += 1
+
                 try:
                     confidence = float(item.get("confidence", 0.0))
+                    if not math.isfinite(confidence):
+                        raise ValueError
                 except (TypeError, ValueError):
-                    continue
-                if not math.isfinite(confidence):
-                    continue
+                    confidence = 0.0
+                    audit["confidence_defaulted_count"] += 1
+
                 source_urls: list[str] = []
                 for raw_url in item.get("source_urls") or []:
                     exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
                     if exact and exact not in source_urls:
                         source_urls.append(exact)
                 if not source_urls:
+                    reject("no_grounded_source")
                     continue
+
                 fact = {
-                    "claim_key": claim_key[:300],
+                    "claim_key": claim_key,
                     "text": fact_text,
                     "confidence": max(0.0, min(1.0, confidence)),
                     "source_urls": source_urls[:12],
@@ -899,12 +955,18 @@ class GeminiClient:
                     fact["existing_fact_id"] = existing_fact_id[:200]
                 normalized_facts.append(fact)
 
+            audit["accepted_fact_count"] = len(normalized_facts)
+            if len(raw_facts) > 32:
+                audit["rejected"]["over_batch_limit"] = len(raw_facts) - 32
+
             official_urls: list[str] = []
             for raw_url in payload.get("official_source_urls") or []:
                 exact = allowed_urls.get(str(raw_url or "").rstrip("/"))
                 if exact and exact not in official_urls:
                     official_urls.append(exact)
-            return normalized_facts, official_urls[:12]
+            return normalized_facts, official_urls[:12], audit
+
+        coverage_goal = str(topic_context.get("coverage_goal") or query).strip()[:1600]
 
         def build_prompt(evidence: list[dict[str, Any]], *, page_pass: bool) -> str:
             coverage_rule = (
@@ -919,22 +981,29 @@ class GeminiClient:
             return (
                 "Ты внутренний LLM-экстрактор фактов Street Story. Search discovery и semantic extraction разделены. "
                 "Не используй знания вне переданного evidence. " + coverage_rule +
-                "Извлеки до 20 содержательных атомарных проверяемых фактов. Один fact.text = один тезис. "
+                "Извлеки до 32 содержательных атомарных проверяемых фактов. Один fact.text = один тезис. "
+                "Если один абзац содержит несколько независимо проверяемых утверждений, разнеси их на отдельные facts; "
+                "не склеивай перечень людей/дат/ролей в один факт, когда каждый элемент имеет самостоятельный смысл. "
                 "Для каждого факта дай устойчивый claim_key. Если тезис семантически совпадает с known_facts, обязательно "
                 "верни exact fact_id в existing_fact_id. Для source_urls перечисли ВСЕ URL из evidence, которые реально "
                 "поддерживают тезис. Нельзя цитировать URL вне evidence. Не сочиняй публикацию. previously_processed_sources "
                 "— уже обработанные URL этого POI: они даны как coverage context, не как автоматическое доказательство.\n\n"
+                + "Coverage goal: "
+                + coverage_goal
+                + "\nRetrieval query: "
+                + query[:1000]
+                + "\nEvidence (authoritative for extraction): "
+                + json.dumps(evidence, ensure_ascii=False)
+                + "\nCompact prior context (for dedup only, never evidence): "
                 + json.dumps(
                     {
-                        "query": query[:1000],
                         "place_name": str(topic_context.get("place_name") or "")[:300],
-                        "known_facts": known_facts[:80],
-                        "previously_considered_poi_facts": prior_poi[:30],
-                        "previously_processed_sources": processed_sources,
-                        "evidence": evidence,
+                        "known_facts": known_facts[:40],
+                        "previously_considered_poi_facts": prior_poi[:20],
+                        "previously_processed_sources": processed_sources[:40],
                     },
                     ensure_ascii=False,
-                )[:36_000]
+                )
             )
 
         coverage_config = types.GenerateContentConfig(
@@ -963,7 +1032,7 @@ class GeminiClient:
             except (ValueError, TypeError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_discovery_facts") from None
 
-            normalized_facts, official_urls = normalize_payload(payload)
+            normalized_facts, official_urls, extraction_audit = normalize_payload(payload)
             selected_urls: list[str] = []
             if payload.get("coverage_satisfied") is False:
                 for raw_url in payload.get("read_source_urls") or []:
@@ -1008,10 +1077,11 @@ class GeminiClient:
                         )
                         second_payload = json.loads(second.text or "{}")
                         if isinstance(second_payload, dict):
-                            second_facts, second_official = normalize_payload(second_payload)
+                            second_facts, second_official, second_audit = normalize_payload(second_payload)
                             if second_facts:
                                 normalized_facts = second_facts
                                 official_urls = second_official
+                                extraction_audit = second_audit
                                 payload = second_payload
                                 semantic_completion = "gemini_research_page_evidence"
                     except (GeminiUnavailable, PermanentProviderError, MalformedProviderResponse, ValueError, TypeError, json.JSONDecodeError):
@@ -1024,6 +1094,7 @@ class GeminiClient:
                     "facts": normalized_facts,
                     "search_provider": "duckduckgo_html_fallback",
                     "semantic_completion": semantic_completion,
+                    "extraction_audit": extraction_audit,
                 },
                 grounding_sources=sources_for_result,
             )

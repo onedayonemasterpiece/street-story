@@ -281,6 +281,73 @@ class RoutingSearchHTTP:
         return httpx.Response(404, text="not found", headers={"content-type": "text/plain"}, request=request)
 
 
+def test_page_text_is_chunked_with_bounded_overlap():
+    text = "\n".join([
+        "Первый абзац " + "А" * 1800,
+        "Второй абзац " + "Б" * 1800,
+        "Третий абзац " + "В" * 1800,
+    ])
+    chunks = GeminiClient._chunk_page_text(text, target=2200, overlap=180)
+    assert 2 <= len(chunks) <= 4
+    assert all(len(chunk) <= 2400 for chunk in chunks)
+    assert "Первый абзац" in chunks[0]
+    assert "Третий абзац" in chunks[-1]
+
+
+@pytest.mark.asyncio
+async def test_discovery_fact_metadata_is_fail_soft_but_evidence_is_fail_closed(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+        gemini_model="gemini-3.1-flash-lite",
+        gemini_fallback_model="gemini-3.5-flash-lite",
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    client.web_search_routes = [
+        (route[0], route[1], route[2], executor)
+        for route, executor in zip(client.web_search_routes, failures, strict=True)
+    ]
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+    source_url = "https://history.example/gate"
+    client.search_http = FakeSearchHTTP(
+        f"""<div class="result"><a class="result__a" href="{source_url}">History</a>
+        <a class="result__snippet">Три фигуры находятся на фасаде.</a></div>"""
+    )
+
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        payload = {
+            "summary": "metadata repair",
+            "official_source_urls": [],
+            "coverage_satisfied": True,
+            "read_source_urls": [],
+            "facts": [
+                {"claim_key": "", "text": "Слева изображён Оттокар II.", "confidence": "bad", "source_urls": [source_url]},
+                {"claim_key": "invalid-source", "text": "Этот факт не имеет найденного evidence.", "confidence": .9, "source_urls": ["https://invented.example/nope"]},
+            ],
+        }
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+
+    client._generate = generate
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {"coverage_goal": "Кто изображён слева, в центре и справа?"},
+    )
+    assert len(result.payload["facts"]) == 1
+    accepted = result.payload["facts"][0]
+    assert accepted["text"] == "Слева изображён Оттокар II."
+    assert accepted["claim_key"].startswith("exact-text:")
+    audit = result.payload["extraction_audit"]
+    assert audit["raw_fact_count"] == 2
+    assert audit["accepted_fact_count"] == 1
+    assert audit["claim_key_fallback_count"] == 1
+    assert audit["confidence_defaulted_count"] == 1
+    assert audit["rejected"]["no_grounded_source"] == 1
+
+
 @pytest.mark.asyncio
 async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_detail_query(tmp_path):
     settings = replace(
