@@ -1527,3 +1527,46 @@ def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):
         "phase": "started",
         "voice": "Aoede",
     }
+
+
+def test_search_projection_exposes_live_semantic_fallback_contract():
+    result = {
+        "query": "скульптуры Королевских ворот",
+        "summary": "Discovery evidence is available.",
+        "search_provider": "poi_cache_fallback",
+        "discovery_only": True,
+        "semantic_completion": None,
+        "semantic_status": "live_model_required",
+        "coverage_satisfied": False,
+        "missing_aspects": ["semantic_model_temporarily_unavailable"],
+        "extraction_complete": False,
+        "continuation_reason": "semantic_model_temporarily_unavailable",
+        "facts": [],
+        "sources": [{
+            "source_ref": "source_royal_gate",
+            "title": "Cached Royal Gate",
+            "url": "https://cached.example/royal-gate",
+            "supports": [{
+                "kind": "page_excerpt",
+                "source_url": "https://cached.example/royal-gate",
+                "evidence_ref": "evref_royal_gate",
+                "text": "Слева направо изображены Отакар II, Фридрих I и Альбрехт I.",
+            }],
+        }],
+        "story": {"id": "story_projection", "state": "identity_ready", "revision": 3},
+    }
+
+    projected = StreetStoryLiveAdapter._model_result("search_web", result)
+
+    assert projected["semantic_status"] == "live_model_required"
+    assert projected["coverage_satisfied"] is False
+    assert projected["missing_aspects"] == ["semantic_model_temporarily_unavailable"]
+    assert projected["continuation_required"] is True
+    assert projected["next_tool"] == "save_research_facts"
+    assert projected["sources"] == [{
+        "source_ref": "source_royal_gate",
+        "evidence": [{
+            "evidence_ref": "evref_royal_gate",
+            "text": "Слева направо изображены Отакар II, Фридрих I и Альбрехт I.",
+        }],
+    }]

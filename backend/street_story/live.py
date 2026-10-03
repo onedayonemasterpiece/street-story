@@ -1063,6 +1063,21 @@ class StreetStoryLiveAdapter:
                 "search_provider": result.get("search_provider"),
                 "discovery_only": discovery_only,
                 "semantic_completion": result.get("semantic_completion"),
+                "semantic_status": result.get("semantic_status"),
+                "coverage_satisfied": bool(result.get("coverage_satisfied")),
+                "missing_aspects": list(result.get("missing_aspects") or [])[:20],
+                "extraction_complete": result.get("extraction_complete"),
+                "continuation_reason": result.get("continuation_reason"),
+                "continuation_required": bool(
+                    discovery_only
+                    and result.get("semantic_status") == "live_model_required"
+                ),
+                "next_tool": (
+                    "save_research_facts"
+                    if discovery_only
+                    and result.get("semantic_status") == "live_model_required"
+                    else None
+                ),
                 "extraction_audit": result.get("extraction_audit"),
                 "source_count": len([source for source in (result.get("sources") or []) if isinstance(source, dict)]),
                 "facts": compact_facts[:32],
@@ -1782,7 +1797,11 @@ class StreetStoryLiveAdapter:
             )
         search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
         semantic_completion = str(grounded.payload.get("semantic_completion") or "").strip()
-        discovery_only = search_provider == "duckduckgo_html_fallback" and not semantic_completion
+        semantic_status = str(grounded.payload.get("semantic_status") or "").strip()
+        discovery_only = (
+            search_provider in {"duckduckgo_html_fallback", "poi_cache_fallback"}
+            and not semantic_completion
+        )
         grounding_sources: list[dict[str, Any]] = []
         for source in grounded.grounding_sources:
             if not isinstance(source, dict):
@@ -2089,6 +2108,7 @@ class StreetStoryLiveAdapter:
                     "search_provider": search_provider,
                     "discovery_only": discovery_only,
                     "semantic_completion": semantic_completion or None,
+                    "semantic_status": semantic_status or None,
                     "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
                     "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
                     "extraction_complete": grounded.payload.get("extraction_complete") is not False,
@@ -2112,6 +2132,7 @@ class StreetStoryLiveAdapter:
                 "search_provider": search_provider,
                 "discovery_only": discovery_only,
                 "semantic_completion": semantic_completion or None,
+                "semantic_status": semantic_status or None,
                 "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
                 "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
                 "extraction_complete": grounded.payload.get("extraction_complete") is not False,
