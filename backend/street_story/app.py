@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
-from .live import create_live_host, record_live_diagnostic
+from .live import create_live_host, live_history, record_live_diagnostic
 from .live_socket import install_live_socket_routes, start_live_socket
 from .runtime import RuntimeStreetStoryService
 from live_interaction import LiveError
@@ -179,7 +179,13 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.post("/v1/stories/{story_id}/live-sessions", dependencies=[Depends(auth)])
     async def start_live(story_id: str, request: Request):
-        return await start_live_socket(live_host, story_id, request)
+        service.story(story_id)
+        return await start_live_socket(
+            live_host,
+            story_id,
+            request,
+            history=live_history(service, story_id),
+        )
 
     install_live_socket_routes(app, live_host, auth)
 

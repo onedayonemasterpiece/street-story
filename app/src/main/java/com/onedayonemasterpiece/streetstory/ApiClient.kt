@@ -52,6 +52,7 @@ class StoryWire {
     var facts: ArrayList<FactWire> = arrayListOf()
     var destinations: ArrayList<DestinationWire> = arrayListOf()
     @SerializedName("voice_messages") var voiceMessages: ArrayList<VoiceMessageWire> = arrayListOf()
+    @SerializedName("live_messages") var liveMessages: ArrayList<LiveMessageWire> = arrayListOf()
     @SerializedName("visual_identity") var visualIdentity: VisualIdentityWire? = null
     var sources: ArrayList<SourceWire> = arrayListOf()
     @SerializedName("source_count") var sourceCount: Int = 0
@@ -66,6 +67,14 @@ class VoiceMessageWire {
     @SerializedName("display_text") var displayText: String? = null
     @SerializedName("started_at") var startedAt: String? = null
     @SerializedName("ended_at") var endedAt: String? = null
+}
+
+class LiveMessageWire {
+    @SerializedName("message_id") var messageId: String = ""
+    @SerializedName("session_id") var sessionId: String = ""
+    var role: String = ""
+    var text: String = ""
+    var final: Boolean = false
 }
 
 class FactWire {

@@ -100,6 +100,37 @@ def ensure_live_schema(service: StreetStoryService) -> None:
         db.executescript(LIVE_SCHEMA)
 
 
+def _merge_live_transcript(current: str, fragment: str) -> str:
+    current = str(current or "").strip()
+    fragment = str(fragment or "").strip()
+    if not current:
+        return fragment
+    if not fragment:
+        return current
+    if fragment.startswith(current):
+        return fragment
+    if current.endswith(fragment):
+        return current
+    overlap = min(len(current), len(fragment))
+    while overlap >= 3 and current[-overlap:] != fragment[:overlap]:
+        overlap -= 1
+    return (current + fragment[overlap:]) if overlap >= 3 else f"{current} {fragment}"
+
+
+def live_history(service: StreetStoryService, story_id: str, limit: int = 8) -> list[dict[str, str]]:
+    with service.store.connection() as db:
+        rows = list(db.execute(
+            "SELECT role,text FROM live_messages WHERE story_id=? AND text<>'' ORDER BY id DESC LIMIT ?",
+            (story_id, max(1, min(int(limit), 20))),
+        ))
+    rows.reverse()
+    return [
+        {"role": "model" if str(row["role"]) == "assistant" else "user", "text": str(row["text"])[:700]}
+        for row in rows
+        if str(row["role"]) in {"user", "assistant"} and str(row["text"]).strip()
+    ]
+
+
 def _diagnostic_value(value: Any, depth: int = 0) -> Any:
     if depth > 3:
         return None
@@ -453,6 +484,8 @@ class StreetStoryLiveAdapter:
                 "recent_user": deque(maxlen=24),
                 "recent_model": deque(maxlen=16),
                 "literal": None,
+                "live_message_seq": 0,
+                "live_message": None,
             },
             "context": self._compact_context(state),
             "configuration": {
@@ -479,6 +512,59 @@ class StreetStoryLiveAdapter:
         if isinstance(text, str) and text.strip() and len(text) <= 4000:
             begin_turn(session, text.strip(), origin="text")
 
+    def _finalize_live_message(self, session) -> None:
+        active = session.state.get("live_message")
+        if not isinstance(active, dict) or not active.get("key"):
+            session.state["live_message"] = None
+            return
+        with self.service.store.tx() as db:
+            db.execute(
+                "UPDATE live_messages SET final=1,updated_at=? WHERE story_id=? AND message_key=?",
+                (self.service.store.now(), session.resource_id, str(active["key"])),
+            )
+        session.state["live_message"] = None
+
+    def _persist_live_message(self, session, role: str, fragment: str) -> None:
+        if role not in {"user", "assistant"}:
+            return
+        fragment = str(fragment or "").strip()
+        if not fragment:
+            return
+        active = session.state.get("live_message")
+        now = self.service.store.now()
+        with self.service.store.tx() as db:
+            if isinstance(active, dict) and active.get("key") and active.get("role") == role:
+                row = db.execute(
+                    "SELECT text FROM live_messages WHERE story_id=? AND message_key=?",
+                    (session.resource_id, str(active["key"])),
+                ).fetchone()
+                if row:
+                    merged = _merge_live_transcript(str(row["text"]), fragment)[:8000]
+                    db.execute(
+                        "UPDATE live_messages SET text=?,updated_at=? WHERE story_id=? AND message_key=?",
+                        (merged, now, session.resource_id, str(active["key"])),
+                    )
+                    return
+            if isinstance(active, dict) and active.get("key"):
+                db.execute(
+                    "UPDATE live_messages SET final=1,updated_at=? WHERE story_id=? AND message_key=?",
+                    (now, session.resource_id, str(active["key"])),
+                )
+            seq = int(session.state.get("live_message_seq") or 0) + 1
+            key = f"{session.id}:{seq}:{role}"
+            db.execute(
+                "INSERT INTO live_messages(story_id,session_id,message_key,role,text,final,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,0,?,?)",
+                (session.resource_id, session.id, key, role, fragment[:8000], now, now),
+            )
+            db.execute(
+                "DELETE FROM live_messages WHERE story_id=? AND id NOT IN "
+                "(SELECT id FROM live_messages WHERE story_id=? ORDER BY id DESC LIMIT 200)",
+                (session.resource_id, session.resource_id),
+            )
+        session.state["live_message_seq"] = seq
+        session.state["live_message"] = {"key": key, "role": role}
+
     def on_event(self, session, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "unknown")
         text = str(event.get("text") or "").strip()
@@ -504,6 +590,7 @@ class StreetStoryLiveAdapter:
                 recent: deque[str] = session.state["recent_user"]
                 if not recent or recent[-1] != text:
                     recent.append(text)
+                self._persist_live_message(session, "user", text)
                 literal = session.state.get("literal")
                 if isinstance(literal, dict):
                     buf: list[str] = literal.setdefault("buffer", [])
@@ -514,6 +601,10 @@ class StreetStoryLiveAdapter:
             recent_model: deque[str] = session.state["recent_model"]
             if not recent_model or recent_model[-1] != text:
                 recent_model.append(text)
+            self._persist_live_message(session, "assistant", text)
+
+        if kind in {"turn_complete", "interrupted", "error", "closed"}:
+            self._finalize_live_message(session)
 
         if kind in {"input_transcript", "output_transcript"} and text:
             role = "user" if kind == "input_transcript" else "assistant"

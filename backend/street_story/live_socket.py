@@ -15,7 +15,7 @@ from live_interaction.socket_transport import SOCKET_PROTOCOL, same_origin, serv
 ACTOR = {"subject": "street-story-device", "tenant_id": "street-story"}
 
 
-async def start_live_socket(host, story_id: str, request: Request) -> dict[str, Any]:
+async def start_live_socket(host, story_id: str, request: Request, *, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
     raw = bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
@@ -29,7 +29,12 @@ async def start_live_socket(host, story_id: str, request: Request) -> dict[str, 
         raise HTTPException(status_code=400, detail="Unsupported Live bootstrap fields")
     if body.get("transport", "wss") != "wss":
         raise HTTPException(status_code=400, detail="Unsupported Live transport")
-    started = await host.start(resource_id=story_id, actor=ACTOR, attempt_id=body.get("attempt_id"))
+    started = await host.start(
+        resource_id=story_id,
+        actor=ACTOR,
+        attempt_id=body.get("attempt_id"),
+        history=history or [],
+    )
     return {
         **started,
         "socket_url": f"/v1/stories/{story_id}/live-sessions/{started['session_id']}/socket",

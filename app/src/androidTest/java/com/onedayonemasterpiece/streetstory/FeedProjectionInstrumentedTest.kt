@@ -43,6 +43,30 @@ class FeedProjectionInstrumentedTest {
     }
 
     @Test
+    fun liveConversationProjectionPersistsAcrossStoreRestart() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        context.deleteDatabase("street-story-feed.db")
+        val first = LiveMessageWire().apply {
+            messageId = "msg-1"; sessionId = "live-a"; role = LiveRole.USER
+            text = "Кто изображён на скульптурах?"; final = true
+        }
+        val second = LiveMessageWire().apply {
+            messageId = "msg-2"; sessionId = "live-a"; role = LiveRole.ASSISTANT
+            text = "Проверяю источники."; final = true
+        }
+        FeedProjectionStore(context).use { projection ->
+            projection.replaceLiveMessages("story-live-persist", listOf(first, second))
+            assertEquals(
+                listOf("Кто изображён на скульптурах?", "Проверяю источники."),
+                projection.liveMessages("story-live-persist").map { it.text },
+            )
+        }
+        FeedProjectionStore(context).use { projection ->
+            assertEquals(2, projection.liveMessages("story-live-persist").size)
+        }
+    }
+
+    @Test
     fun topicsListAndTopicDetailAreSeparateSimpleSurfaces() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
