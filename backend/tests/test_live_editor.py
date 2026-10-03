@@ -61,6 +61,8 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "resolve_place" in names
     assert "confirm_place" in names
     assert "search_web" in names
+    assert "get_facts" in names
+    assert "get_evidence" in names
     assert "save_research_facts" in names
     assert "record_fact_conflicts" in names
     assert "resolve_fact_conflict" in names
@@ -223,6 +225,249 @@ def make_service(tmp_path: Path):
         state={"recent_user": __import__("collections").deque(maxlen=24), "recent_model": __import__("collections").deque(maxlen=16), "literal": None},
     )
     return svc, adapter, session, events
+
+
+@pytest.mark.asyncio
+async def test_live_get_facts_paginates_beyond_compact_topic_snapshot(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    with svc.store.tx() as db:
+        for index in range(85):
+            persist_fact_candidates(
+                db,
+                story_id=session.resource_id,
+                poi_key="wiki:77",
+                facts=[{
+                    "claim_key": f"fact-{index}",
+                    "text": f"Проверяемый факт номер {index}.",
+                    "confidence": .9,
+                    "selected": False,
+                    "sources": [{
+                        "type": "web",
+                        "title": f"Source {index}",
+                        "url": f"https://example.org/{index}",
+                        "supports": [{
+                            "kind": "page_excerpt",
+                            "source_url": f"https://example.org/{index}",
+                            "text": f"Evidence {index}.",
+                        }],
+                    }],
+                }],
+                run_id="test-pagination",
+                batch_id=f"batch-{index}",
+                model_name="test-model",
+                prompt_version="test-v1",
+                now=svc.store.now(),
+            )
+
+    compact = await adapter.execute_tool(session, {"name": "read_topic", "args": {}})
+    assert len(compact["facts"]) == 48
+
+    first = await adapter.execute_tool(
+        session,
+        {"name": "get_facts", "args": {"limit": 50}},
+    )
+    assert len(first["facts"]) == 50
+    assert first["has_more"] is True
+    assert first["next_cursor"] is not None
+
+    second = await adapter.execute_tool(
+        session,
+        {"name": "get_facts", "args": {"cursor": first["next_cursor"], "limit": 50}},
+    )
+    assert len(second["facts"]) == 35
+    assert second["has_more"] is False
+    assert second["next_cursor"] is None
+    texts = [item["text"] for item in first["facts"] + second["facts"]]
+    assert texts[0] == "Проверяемый факт номер 0."
+    assert texts[-1] == "Проверяемый факт номер 84."
+
+
+@pytest.mark.asyncio
+async def test_live_get_evidence_returns_every_exact_span_with_cursor(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    source_url = "https://example.org/royal-gate"
+    with svc.store.tx() as db:
+        fact_id = persist_fact_candidates(
+            db,
+            story_id=session.resource_id,
+            poi_key="wiki:77",
+            facts=[{
+                "claim_key": "royal-gate-sculptures",
+                "text": "На фасаде Королевских ворот находятся три исторические фигуры.",
+                "confidence": .95,
+                "selected": False,
+                "sources": [{
+                    "type": "web",
+                    "title": "Royal Gate",
+                    "url": source_url,
+                    "source_version_id": "srcv_test_version",
+                    "supports": [{
+                        "kind": "verified_page_span",
+                        "source_url": source_url,
+                        "source_version_id": "srcv_test_version",
+                        "chunk_id": "chunk_0",
+                        "text": "passage-0",
+                        "span_start": 0,
+                        "span_end": 9,
+                    }],
+                }],
+            }],
+            run_id="research-evidence",
+            batch_id="batch-0",
+            model_name="test-model",
+            prompt_version="test-v1",
+            now=svc.store.now(),
+        )[0]
+        for index in range(1, 8):
+            persist_fact_candidates(
+                db,
+                story_id=session.resource_id,
+                poi_key="wiki:77",
+                facts=[{
+                    "existing_fact_id": fact_id,
+                    "claim_key": "royal-gate-sculptures",
+                    "text": "На фасаде Королевских ворот находятся три исторические фигуры.",
+                    "confidence": .95,
+                    "selected": False,
+                    "sources": [{
+                        "type": "web",
+                        "title": "Royal Gate",
+                        "url": source_url,
+                        "source_version_id": "srcv_test_version",
+                        "supports": [{
+                            "kind": "verified_page_span",
+                            "source_url": source_url,
+                            "source_version_id": "srcv_test_version",
+                            "chunk_id": f"chunk_{index}",
+                            "text": f"passage-{index}",
+                            "span_start": index * 10,
+                            "span_end": index * 10 + 9,
+                        }],
+                    }],
+                }],
+                run_id="research-evidence",
+                batch_id=f"batch-{index}",
+                model_name="test-model",
+                prompt_version="test-v1",
+                now=svc.store.now(),
+            )
+
+    first = await adapter.execute_tool(
+        session,
+        {"name": "get_evidence", "args": {"fact_ids": [fact_id], "limit": 3}},
+    )
+    second = await adapter.execute_tool(
+        session,
+        {
+            "name": "get_evidence",
+            "args": {
+                "fact_ids": [fact_id],
+                "cursor": first["next_cursor"],
+                "limit": 3,
+            },
+        },
+    )
+    third = await adapter.execute_tool(
+        session,
+        {
+            "name": "get_evidence",
+            "args": {
+                "fact_ids": [fact_id],
+                "cursor": second["next_cursor"],
+                "limit": 3,
+            },
+        },
+    )
+    evidence = first["evidence"] + second["evidence"] + third["evidence"]
+    assert len(evidence) == 8
+    assert first["has_more"] is True and second["has_more"] is True
+    assert third["has_more"] is False
+    assert [item["span_text"] for item in evidence] == [f"passage-{index}" for index in range(8)]
+    assert [item["chunk_id"] for item in evidence] == [f"chunk_{index}" for index in range(8)]
+    assert all(item["source_version_id"] == "srcv_test_version" for item in evidence)
+    assert evidence[-1]["span_start"] == 70
+    assert evidence[-1]["span_end"] == 79
+
+
+@pytest.mark.asyncio
+async def test_live_search_persists_only_fact_bound_evidence_passages(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    mark_identity_ready(svc, session.resource_id)
+    source_url = "https://example.org/royal-gate"
+    relevant_ref = "evref_relevant"
+    irrelevant_ref = "evref_irrelevant"
+
+    async def bound_search(_query, _topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Bound evidence.",
+                "coverage_satisfied": True,
+                "facts": [{
+                    "claim_key": "left-sculpture",
+                    "text": "Слева изображён Оттокар II.",
+                    "confidence": .97,
+                    "source_urls": [source_url],
+                    "evidence_refs": [relevant_ref],
+                }],
+            },
+            grounding_sources=[{
+                "type": "web",
+                "title": "Royal Gate",
+                "url": source_url,
+                "supports": [
+                    {
+                        "kind": "google_grounding",
+                        "source_url": source_url,
+                        "text": "Слева изображён Оттокар II.",
+                        "evidence_ref": relevant_ref,
+                    },
+                    {
+                        "kind": "google_grounding",
+                        "source_url": source_url,
+                        "text": "Музей работает со среды по воскресенье.",
+                        "evidence_ref": irrelevant_ref,
+                    },
+                ],
+            }],
+        )
+
+    svc.providers.gemini.search_web = bound_search
+    result = await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-bound-evidence",
+            "args": {
+                "query": "кто изображён слева",
+                "coverage_goal": "Кто изображён слева?",
+            },
+        },
+    )
+
+    assert len(result["facts"]) == 1
+    fact = result["facts"][0]
+    story = svc.story(session.resource_id)
+    stored = next(item for item in story["facts"] if item["fact_id"] == fact["fact_id"])
+    assert stored["sources"][0]["supports"] == [{
+        "kind": "google_grounding",
+        "source_url": source_url,
+        "text": "Слева изображён Оттокар II.",
+        "evidence_ref": relevant_ref,
+    }]
+    assert [item["text"] for item in stored["sources"][0]["supports"]] == [
+        "Слева изображён Оттокар II.",
+    ]
+    with svc.store.connection() as db:
+        spans = [
+            row["span_text"]
+            for row in db.execute(
+                "SELECT e.span_text FROM fact_evidence_spans e "
+                "JOIN fact_observations o ON o.observation_id=e.observation_id "
+                "WHERE o.story_id=? AND o.assertion_id=? ORDER BY e.rowid",
+                (session.resource_id, fact["fact_id"]),
+            )
+        ]
+    assert spans == ["Слева изображён Оттокар II."]
 
 
 @pytest.mark.asyncio

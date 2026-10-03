@@ -330,6 +330,48 @@ FUNCTIONS = [
         "Read the current authoritative Street Story topic, facts, visual and publication state. No mutation.",
     ),
     _tool_schema(
+        "get_facts",
+        "Read the durable fact inventory page by page when read_topic's compact projection is not enough. "
+        "Use this before semantic deduplication, contradiction review or arbitration that may involve facts outside the snapshot.",
+        {
+            "cursor": {
+                "type": "integer",
+                "description": "Opaque server cursor from the previous page. Omit for the first page.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Page size from 1 to 50. Defaults to 30.",
+            },
+            "selected_only": {"type": "boolean"},
+            "eligibility": {
+                "type": "string",
+                "enum": ["all", "unreviewed", "eligible", "withheld"],
+            },
+        },
+    ),
+    _tool_schema(
+        "get_evidence",
+        "Read exact durable evidence spans for one or more facts. Returns source URL/version, chunk ID, offsets, "
+        "support kind and verbatim span text. Use it for evidence comparison and conflict arbitration instead of relying "
+        "on source counts or compact summaries.",
+        {
+            "fact_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "One to 20 exact fact IDs from get_facts/read_topic.",
+            },
+            "cursor": {
+                "type": "integer",
+                "description": "Opaque server cursor from the previous page. Omit for the first page.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Page size from 1 to 50. Defaults to 30.",
+            },
+        },
+        ["fact_ids"],
+    ),
+    _tool_schema(
         "resolve_place",
         "Resolve the photographed place before factual research. Uses the source photo plus GPS when available, OSM and nearby Wikipedia candidates, and visual identity. This does not publish or rewrite the post.",
         {
@@ -572,6 +614,8 @@ SYSTEM_INSTRUCTION = """
 - после каждого discovery_only search_web сразу save_research_facts: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и добавь к нему все подтверждающие source_ref текущей выдачи. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
+- read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
+- source_count/domain_count и URL сами по себе не доказывают тезис. Для важных сравнений и любого арбитража вызывай get_evidence по точным fact_id и при необходимости читай все страницы до has_more=false. Сравнивай exact span_text, source_version_id, chunk_id и контекст источника; не выбирай победителя по числу ссылок;
 - количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
 - после появления новых facts сама сравни их с текущими evidence-backed facts. Если видишь реальное противоречие/расхождение, зарегистрируй его через record_fact_conflicts; если противоречия нет, ничего не регистрируй. fact_conflicts — внутренний журнал. Если конфликт unresolved и важен для рассказа, сначала добери доказательства через search_web; когда доказательств достаточно, зафиксируй решение через resolve_fact_conflict, иначе оставь unresolved. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
 - когда доказательств уже достаточно для публикации, сама сформируй редакционную концепцию через set_concept (если автор её ещё не задал), при необходимости явно скорректируй выбор фактов через select_facts, затем подготовь или обнови публикационный текст через edit_text. Текст — не список фактов: обычно 2–5 коротких связных абзацев с ясным заходом, развитием и завершением; используй только выбранные evidence-backed facts и авторский контекст, не добавляй неподтверждённые сведения;
@@ -846,6 +890,10 @@ class StreetStoryLiveAdapter:
             compact = self._compact_context(result)
             self.emit(session, {"type": "product_state", "state": compact})
             return compact
+        if name == "get_facts":
+            return self._get_facts(story_id, args)
+        if name == "get_evidence":
+            return self._get_evidence(story_id, args)
         if name == "literal_begin":
             return self._literal_begin(session, args)
         if name == "literal_cancel":
@@ -1135,6 +1183,141 @@ class StreetStoryLiveAdapter:
             "jobs": jobs,
             "confirmation": latest_confirmation,
             "fact_conflicts": fact_conflict_state,
+        }
+
+    def _get_facts(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            cursor = max(0, int(args.get("cursor") or 0))
+            limit = max(1, min(int(args.get("limit") or 30), 50))
+        except (TypeError, ValueError):
+            raise ConflictError("live_pagination_invalid", "cursor and limit must be integers") from None
+        selected_only = bool(args.get("selected_only"))
+        eligibility = str(args.get("eligibility") or "all").strip()
+        if eligibility not in {"all", "unreviewed", "eligible", "withheld"}:
+            raise ConflictError("live_fact_filter_invalid", "Unsupported eligibility filter")
+
+        where = ["f.story_id=?", "f.rowid>?"]
+        params: list[Any] = [story_id, cursor]
+        if selected_only:
+            where.append("a.owner_selected=1")
+        if eligibility != "all":
+            where.append("a.eligibility=?")
+            params.append(eligibility)
+
+        sql = (
+            "SELECT f.rowid AS cursor_value,f.fact_id,f.text,f.confidence,f.evidence_supported,"
+            "a.owner_selected,a.review_status,a.eligibility,a.revision_digest,"
+            "(SELECT COUNT(*) FROM fact_observations o "
+            " WHERE o.story_id=f.story_id AND o.assertion_id=f.fact_id) AS observation_count,"
+            "(SELECT COUNT(*) FROM fact_evidence_spans e JOIN fact_observations o2 "
+            " ON o2.observation_id=e.observation_id "
+            " WHERE o2.story_id=f.story_id AND o2.assertion_id=f.fact_id) AS evidence_span_count "
+            "FROM facts f JOIN fact_assertions a "
+            "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+            "WHERE " + " AND ".join(where) + " ORDER BY f.rowid LIMIT ?"
+        )
+        with self.service.store.connection() as db:
+            rows = list(db.execute(sql, (*params, limit + 1)))
+        page = rows[:limit]
+        has_more = len(rows) > limit
+        return {
+            "facts": [
+                {
+                    "fact_id": str(row["fact_id"]),
+                    "text": str(row["text"]),
+                    "confidence": float(row["confidence"]),
+                    "evidence_supported": bool(row["evidence_supported"]),
+                    "owner_selected": bool(row["owner_selected"]),
+                    "review_status": str(row["review_status"]),
+                    "eligibility": str(row["eligibility"]),
+                    "revision_digest": str(row["revision_digest"] or ""),
+                    "observation_count": int(row["observation_count"] or 0),
+                    "evidence_span_count": int(row["evidence_span_count"] or 0),
+                }
+                for row in page
+            ],
+            "next_cursor": int(page[-1]["cursor_value"]) if has_more and page else None,
+            "has_more": has_more,
+        }
+
+    def _get_evidence(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        raw_ids = args.get("fact_ids")
+        if not isinstance(raw_ids, list):
+            raise ConflictError("live_fact_ids_required", "fact_ids must be an array")
+        fact_ids = list(dict.fromkeys(str(value).strip() for value in raw_ids if str(value).strip()))
+        if not fact_ids or len(fact_ids) > 20:
+            raise ConflictError("live_fact_ids_invalid", "Provide between 1 and 20 fact IDs")
+        try:
+            cursor = max(0, int(args.get("cursor") or 0))
+            limit = max(1, min(int(args.get("limit") or 30), 50))
+        except (TypeError, ValueError):
+            raise ConflictError("live_pagination_invalid", "cursor and limit must be integers") from None
+
+        placeholders = ",".join("?" for _ in fact_ids)
+        sql = (
+            "SELECT e.rowid AS cursor_value,o.assertion_id AS fact_id,o.observation_id,o.run_id,o.batch_id,"
+            "o.model_name,o.prompt_version,o.created_at AS observation_created_at,"
+            "e.evidence_id,e.source_url,e.source_version_id,e.support_kind,e.span_text,e.span_sha256,"
+            "e.chunk_id,e.span_start,e.span_end,e.relation,e.created_at AS evidence_created_at,"
+            "sv.final_url,sv.content_sha256,sv.read_status,sv.char_count "
+            "FROM fact_evidence_spans e "
+            "JOIN fact_observations o ON o.observation_id=e.observation_id "
+            "LEFT JOIN source_versions sv ON sv.source_version_id=e.source_version_id "
+            f"WHERE o.story_id=? AND o.assertion_id IN ({placeholders}) AND e.rowid>? "
+            "ORDER BY e.rowid LIMIT ?"
+        )
+        with self.service.store.connection() as db:
+            known = {
+                str(row["assertion_id"])
+                for row in db.execute(
+                    f"SELECT assertion_id FROM fact_assertions WHERE story_id=? AND assertion_id IN ({placeholders})",
+                    (story_id, *fact_ids),
+                )
+            }
+            unknown = [fact_id for fact_id in fact_ids if fact_id not in known]
+            if unknown:
+                raise ConflictError(
+                    "live_fact_id_unknown",
+                    "Unknown fact IDs: " + ", ".join(unknown[:5]),
+                )
+            rows = list(db.execute(sql, (story_id, *fact_ids, cursor, limit + 1)))
+
+        page = rows[:limit]
+        has_more = len(rows) > limit
+        return {
+            "evidence": [
+                {
+                    "fact_id": str(row["fact_id"]),
+                    "observation_id": str(row["observation_id"]),
+                    "research_run_id": str(row["run_id"]),
+                    "batch_id": str(row["batch_id"]),
+                    "model_name": str(row["model_name"]),
+                    "prompt_version": str(row["prompt_version"]),
+                    "evidence_id": str(row["evidence_id"]),
+                    "source_url": str(row["source_url"]),
+                    "source_version_id": str(row["source_version_id"]),
+                    "support_kind": str(row["support_kind"]),
+                    "span_text": str(row["span_text"]),
+                    "span_sha256": str(row["span_sha256"]),
+                    "chunk_id": str(row["chunk_id"] or "") or None,
+                    "span_start": row["span_start"],
+                    "span_end": row["span_end"],
+                    "relation": str(row["relation"]),
+                    "source_version": (
+                        {
+                            "final_url": str(row["final_url"]),
+                            "content_sha256": str(row["content_sha256"]),
+                            "read_status": str(row["read_status"]),
+                            "char_count": int(row["char_count"]),
+                        }
+                        if row["final_url"] is not None
+                        else None
+                    ),
+                }
+                for row in page
+            ],
+            "next_cursor": int(page[-1]["cursor_value"]) if has_more and page else None,
+            "has_more": has_more,
         }
 
     @staticmethod
