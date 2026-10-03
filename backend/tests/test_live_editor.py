@@ -128,6 +128,11 @@ class FakeGemini:
                     "type": "web",
                     "title": "Brandenburg source",
                     "url": "https://example.com/brandenburg",
+                    "supports": [{
+                        "kind": "google_grounding",
+                        "source_url": "https://example.com/brandenburg",
+                        "text": "Бранденбургские ворота находятся в Калининграде.",
+                    }],
                 }
             ],
         )

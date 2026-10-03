@@ -47,6 +47,12 @@ from .live_author_intent import (
     observe_transcript,
     suspected_noise_turn,
 )
+from .research_runs import (
+    begin_research_run,
+    manifest_complete,
+    run_manifest,
+    set_run_state,
+)
 from .service import ConflictError, InvalidStateError, StreetStoryService, canonical, digest
 
 
@@ -1490,6 +1496,29 @@ class StreetStoryLiveAdapter:
             ]
             known_facts = merge_model_fact_inventory([*reusable_poi, *known_facts])
 
+        run_id = "research_" + hashlib.sha256(
+            f"{story_id}:{command_id}:search".encode("utf-8")
+        ).hexdigest()[:24]
+        expected_identity_generation = int(research.get("identity_generation") or 0)
+        with self.service.store.tx() as db:
+            begin_research_run(
+                db,
+                story_id=story_id,
+                poi_key=str(identity.get("candidate_id") or "") or None,
+                goal=coverage_goal,
+                expected_story_revision=int(story.get("revision") or 0),
+                identity_generation=expected_identity_generation,
+                run_id=run_id,
+                now=self.service.store.now(),
+            )
+            set_run_state(
+                db,
+                run_id,
+                "discovering",
+                detail=query[:500],
+                now=self.service.store.now(),
+            )
+
         topic_context = {
             "place_name": story.get("place_name"),
             "latitude": story.get("latitude"),
@@ -1500,6 +1529,7 @@ class StreetStoryLiveAdapter:
             "previously_considered_poi_facts": poi_history[:60],
             "previously_processed_sources": processed_source_history[:80],
             "coverage_goal": coverage_goal,
+            "research_run_id": run_id,
             "visual_identity": identity,
         }
         prior_progress_sources = [
@@ -1515,7 +1545,27 @@ class StreetStoryLiveAdapter:
             fact_count=len(known_facts),
             sources=prior_progress_sources,
         )
-        grounded = await self.service.providers.gemini.search_web(query, topic_context)
+        try:
+            grounded = await self.service.providers.gemini.search_web(query, topic_context)
+        except Exception as exc:
+            with self.service.store.tx() as db:
+                set_run_state(
+                    db,
+                    run_id,
+                    "failed",
+                    detail=type(exc).__name__,
+                    now=self.service.store.now(),
+                    completed=True,
+                )
+            raise
+        with self.service.store.tx() as db:
+            set_run_state(
+                db,
+                run_id,
+                "reconciling",
+                detail="provider_result_received",
+                now=self.service.store.now(),
+            )
         search_provider = str(grounded.payload.get("search_provider") or "google_grounding")
         semantic_completion = str(grounded.payload.get("semantic_completion") or "").strip()
         discovery_only = search_provider == "duckduckgo_html_fallback" and not semantic_completion
@@ -1546,7 +1596,7 @@ class StreetStoryLiveAdapter:
             if str(item.get("fact_id") or "").strip()
         }
         normalized: list[dict[str, Any]] = []
-        for item in (grounded.payload.get("facts") or [])[:32]:
+        for item in (grounded.payload.get("facts") or []):
             if not isinstance(item, dict):
                 continue
             text = validated_model_fact_text(item.get("text"))
@@ -1556,10 +1606,37 @@ class StreetStoryLiveAdapter:
             if claim_key is None:
                 claim_key = "exact-text:" + hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:24]
             sources: list[dict[str, Any]] = []
+            evidence_refs = {
+                str(value)
+                for value in (item.get("evidence_refs") or [])
+                if str(value).strip()
+            }
             for raw_url in item.get("source_urls", []) or []:
                 candidate = source_objects.get(str(raw_url).rstrip("/"))
-                if candidate and candidate not in sources:
-                    sources.append(candidate)
+                if not candidate:
+                    continue
+                projected = dict(candidate)
+                candidate_supports = [
+                    support
+                    for support in (candidate.get("supports") or [])
+                    if isinstance(support, dict)
+                    and str(support.get("text") or "").strip()
+                ]
+                if evidence_refs:
+                    supports = [
+                        support
+                        for support in candidate_supports
+                        if str(support.get("evidence_ref") or "") in evidence_refs
+                    ]
+                    if not supports:
+                        continue
+                    projected["supports"] = supports
+                elif candidate_supports:
+                    projected["supports"] = candidate_supports
+                else:
+                    continue
+                if projected not in sources:
+                    sources.append(projected)
             try:
                 confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
             except (TypeError, ValueError):
@@ -1583,6 +1660,24 @@ class StreetStoryLiveAdapter:
                 }
             )
 
+        with self.service.store.connection() as db:
+            current_story = dict(self.service._story_row(db, story_id))
+            current_research = json.loads(current_story.get("research_json") or "{}")
+        if int(current_research.get("identity_generation") or 0) != expected_identity_generation:
+            with self.service.store.tx() as db:
+                set_run_state(
+                    db,
+                    run_id,
+                    "cancelled",
+                    detail="identity_generation_changed",
+                    now=self.service.store.now(),
+                    completed=True,
+                )
+            raise ConflictError(
+                "research_result_stale",
+                "Object identity changed while research was running; stale result was not applied.",
+            )
+
         detected_conflicts = await analyze_fact_conflicts(
             self.service,
             story_id,
@@ -1603,7 +1698,7 @@ class StreetStoryLiveAdapter:
                 story_id=story_id,
                 poi_key=str(identity.get("candidate_id") or "") or None,
                 facts=normalized,
-                run_id="live:" + str(session.id),
+                run_id=run_id,
                 batch_id=command_id,
                 model_name=str(session.model),
                 prompt_version="live-search-ledger-v1",
@@ -1614,6 +1709,26 @@ class StreetStoryLiveAdapter:
                 "SELECT COUNT(*) FROM facts WHERE story_id=?",
                 (story_id,),
             ).fetchone()[0]
+            manifest_before = run_manifest(db, run_id)
+            coverage_satisfied = bool(grounded.payload.get("coverage_satisfied"))
+            research_complete = coverage_satisfied and manifest_complete(manifest_before)
+            set_run_state(
+                db,
+                run_id,
+                "completed" if research_complete else "partial",
+                detail=(
+                    "coverage_satisfied_and_manifest_complete"
+                    if research_complete
+                    else (
+                        "coverage_incomplete"
+                        if not coverage_satisfied
+                        else "source_or_chunk_manifest_incomplete"
+                    )
+                ),
+                now=self.service.store.now(),
+                completed=True,
+            )
+            research_manifest = run_manifest(db, run_id)
 
             research = json.loads(story_row["research_json"] or "{}")
             prior_sources = research.get("grounding_sources")
@@ -1633,6 +1748,7 @@ class StreetStoryLiveAdapter:
                 grounding_sources,
                 query,
                 self.service.store.now(),
+                research_run_id=run_id,
             )
 
             history = research.get("live_web_searches")
@@ -1641,6 +1757,7 @@ class StreetStoryLiveAdapter:
                 {
                     "query": query,
                     "coverage_goal": coverage_goal,
+                    "research_run_id": run_id,
                     "summary": str(grounded.payload.get("summary") or "")[:2000],
                     "source_urls": [source["url"] for source in grounding_sources[:20]],
                     "source_refs": [
@@ -1651,6 +1768,8 @@ class StreetStoryLiveAdapter:
                     "search_provider": search_provider,
                     "discovery_only": discovery_only,
                     "semantic_completion": semantic_completion or None,
+                    "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
+                    "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
                     "extraction_audit": grounded.payload.get("extraction_audit"),
                 }
             )
@@ -1663,10 +1782,14 @@ class StreetStoryLiveAdapter:
             result = {
                 "query": query,
                 "coverage_goal": coverage_goal,
+                "research_run_id": run_id,
+                "research_manifest": research_manifest,
                 "summary": str(grounded.payload.get("summary") or "")[:2000],
                 "search_provider": search_provider,
                 "discovery_only": discovery_only,
                 "semantic_completion": semantic_completion or None,
+                "coverage_satisfied": bool(grounded.payload.get("coverage_satisfied")),
+                "missing_aspects": list(grounded.payload.get("missing_aspects") or [])[:20],
                 "extraction_audit": grounded.payload.get("extraction_audit"),
                 "facts": normalized,
                 "sources": grounding_sources[:20],
@@ -1709,6 +1832,11 @@ class StreetStoryLiveAdapter:
             if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
                 raise InvalidStateError("live_search_required", "Сначала выполните search_web в этой теме.")
             latest_search = dict(history[-1])
+            run_id = str(latest_search.get("research_run_id") or "").strip() or (
+                "research_" + hashlib.sha256(
+                    f"{story_id}:{command_id}:discovery-save".encode("utf-8")
+                ).hexdigest()[:24]
+            )
             if not latest_search.get("discovery_only"):
                 raise ConflictError(
                     "live_research_facts_not_discovery",
@@ -1820,7 +1948,7 @@ class StreetStoryLiveAdapter:
                 story_id=story_id,
                 poi_key=str(identity.get("candidate_id") or "") or None,
                 facts=normalized,
-                run_id="live:" + str(session.id),
+                run_id=run_id,
                 batch_id=command_id,
                 model_name=str(session.model),
                 prompt_version="live-discovery-save-ledger-v1",
@@ -1834,6 +1962,7 @@ class StreetStoryLiveAdapter:
                 list(source_map.values()),
                 str(latest_search.get("query") or ""),
                 now,
+                research_run_id=run_id,
             )
             fact_count = db.execute(
                 "SELECT COUNT(*) FROM facts WHERE story_id=?",

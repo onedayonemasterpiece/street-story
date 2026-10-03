@@ -85,6 +85,11 @@ class FakeGemini:
             if self.research_calls == 1
             else "У центральной площади Калининграда расположен Дом Советов."
         )
+        existing_fact_id = (
+            str(previous[0].get("fact_id") or "")
+            if self.research_calls > 1 and previous
+            else ""
+        )
         return {
             "payload": {
                 "summary": "Проверено по источникам",
@@ -92,6 +97,7 @@ class FakeGemini:
                 "facts": [
                     {
                         "claim_key": "dom-sovetov-location-central-square",
+                        "existing_fact_id": existing_fact_id,
                         "text": text,
                         "confidence": 0.9,
                         "source_urls": [WIKI_URL],
@@ -104,8 +110,16 @@ class FakeGemini:
                     },
                 ],
             },
-            "grounding_sources": [],
-            "grounding_supports": [],
+            "grounding_sources": [{
+                "type": "wikipedia",
+                "title": "Дом Советов",
+                "url": WIKI_URL,
+            }],
+            "grounding_supports": [{
+                "kind": "google_grounding",
+                "source_url": WIKI_URL,
+                "text": "Дом Советов расположен у центральной площади Калининграда.",
+            }],
         }
 
     async def compose_publication(self, *, place_name, concept, author_note, facts):
@@ -327,6 +341,41 @@ async def test_grounded_research_avoids_search_plus_response_schema_on_flash_lit
 
 
 @pytest.mark.asyncio
+async def test_research_job_cancels_stale_result_after_story_revision_changes(tmp_path):
+    svc, gemini, story = service(tmp_path)
+    add_voice(svc, story["id"], "voice-1")
+    svc.mutate_facts(story["id"], "research-stale", {"action": "research"})
+
+    original_research = gemini.research_v2
+
+    async def stale_research(photo_path, photo_mime, transcript, identity, previous):
+        result = await original_research(photo_path, photo_mime, transcript, identity, previous)
+        with svc.store.tx() as db:
+            db.execute(
+                "UPDATE stories SET state='voice_ready',revision=revision+1,updated_at=? WHERE id=?",
+                (svc.store.now(), story["id"]),
+            )
+        return result
+
+    gemini.research_v2 = stale_research
+    assert await svc.run_once() is True
+
+    current = svc.story(story["id"])
+    assert current["state"] == "voice_ready"
+    assert current["facts"] == []
+    assert current["draft_text"] is None
+    with svc.store.connection() as db:
+        run = db.execute(
+            "SELECT state,status_detail FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
+            (story["id"],),
+        ).fetchone()
+    assert dict(run) == {
+        "state": "cancelled",
+        "status_detail": "story_revision_or_identity_changed",
+    }
+
+
+@pytest.mark.asyncio
 async def test_three_voice_messages_are_ordered_and_research_is_explicit(tmp_path):
     svc, gemini, story = service(tmp_path)
     for session_id in ("voice-1", "voice-2", "voice-3"):
@@ -356,7 +405,11 @@ async def test_three_voice_messages_are_ordered_and_research_is_explicit(tmp_pat
     assert len(supported) == 1
     assert len(unsupported) == 1
     assert supported[0]["sources"][0]["url"] == WIKI_URL
-    assert supported[0]["sources"][0]["supports"] == []
+    assert supported[0]["sources"][0]["supports"] == [{
+        "kind": "google_grounding",
+        "source_url": WIKI_URL,
+        "text": "Дом Советов расположен у центральной площади Калининграда.",
+    }]
     assert unsupported[0]["selected"] is False
     assert unsupported[0]["text"] not in (result["draft_text"] or "")
     assert "\n\n" in (result["draft_text"] or "")

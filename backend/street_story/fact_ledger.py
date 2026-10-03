@@ -97,12 +97,10 @@ def merge_source_payloads(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _source_version_id(source: dict[str, Any]) -> str:
-    """Version the exact evidence payload we actually observed.
-
-    This is deliberately not a claim that we archived the full remote document.
-    A later source-manifest layer can point this evidence version to a complete
-    document snapshot while preserving these IDs.
-    """
+    """Return the durable fetched document version when available."""
+    durable = str(source.get("source_version_id") or "").strip()
+    if durable:
+        return durable
     payload = {
         "url": str(source.get("url") or "").rstrip("/"),
         "type": str(source.get("type") or ""),
@@ -126,7 +124,7 @@ def _evidence_rows(observation_id: str, sources: list[dict[str, Any]]) -> list[d
         if not isinstance(source, dict):
             continue
         url = str(source.get("url") or "").rstrip("/")
-        source_version_id = _source_version_id(source)
+        fallback_source_version_id = _source_version_id(source)
         for support in source.get("supports") or []:
             if not isinstance(support, dict):
                 continue
@@ -135,6 +133,11 @@ def _evidence_rows(observation_id: str, sources: list[dict[str, Any]]) -> list[d
                 continue
             kind = str(support.get("kind") or "support")[:80]
             support_url = str(support.get("source_url") or url).rstrip("/")
+            source_version_id = str(
+                support.get("source_version_id")
+                or source.get("source_version_id")
+                or fallback_source_version_id
+            ).strip()
             span_digest = hashlib.sha256(
                 (source_version_id + "\n" + kind + "\n" + support_url + "\n" + text).encode("utf-8")
             ).hexdigest()
@@ -147,6 +150,9 @@ def _evidence_rows(observation_id: str, sources: list[dict[str, Any]]) -> list[d
                     "support_kind": kind,
                     "span_text": text,
                     "span_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    "chunk_id": str(support.get("chunk_id") or "") or None,
+                    "span_start": support.get("span_start"),
+                    "span_end": support.get("span_end"),
                     "relation": "supports",
                 }
             )
@@ -195,7 +201,7 @@ def _recompute_assertion_digest(db, story_id: str, assertion_id: str) -> str:
     )
     evidence = list(
         db.execute(
-            "SELECT e.evidence_id,e.source_version_id,e.span_sha256,e.relation "
+            "SELECT e.evidence_id,e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256,e.relation "
             "FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
             "WHERE o.story_id=? AND o.assertion_id=? ORDER BY e.evidence_id",
             (story_id, assertion_id),
@@ -309,8 +315,8 @@ def persist_fact_candidates(
             db.execute(
                 "INSERT OR IGNORE INTO fact_evidence_spans("
                 "evidence_id,observation_id,source_url,source_version_id,support_kind,"
-                "span_text,span_sha256,relation,created_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?)",
+                "span_text,span_sha256,chunk_id,span_start,span_end,relation,created_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     evidence["evidence_id"],
                     evidence["observation_id"],
@@ -319,6 +325,9 @@ def persist_fact_candidates(
                     evidence["support_kind"],
                     evidence["span_text"],
                     evidence["span_sha256"],
+                    evidence["chunk_id"],
+                    evidence["span_start"],
+                    evidence["span_end"],
                     evidence["relation"],
                     now,
                 ),
@@ -362,6 +371,11 @@ def persist_fact_candidates(
             previous_digest = str(row["revision_digest"] or "")
         new_digest = _recompute_assertion_digest(db, story_id, assertion_id)
         if previous_digest and previous_digest != new_digest:
+            db.execute(
+                "UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed',updated_at=? "
+                "WHERE story_id=? AND assertion_id=?",
+                (now, story_id, assertion_id),
+            )
             db.execute(
                 "UPDATE fact_conflicts SET final_resolution=NULL,final_fact_id=NULL,"
                 "arbitration_reason=NULL,arbitration_confidence=NULL,arbitrated_by=NULL,last_seen_at=? "
@@ -429,8 +443,8 @@ def backfill_legacy_fact_ledger(db, now: float) -> int:
             db.execute(
                 "INSERT OR IGNORE INTO fact_evidence_spans("
                 "evidence_id,observation_id,source_url,source_version_id,support_kind,"
-                "span_text,span_sha256,relation,created_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?)",
+                "span_text,span_sha256,chunk_id,span_start,span_end,relation,created_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     evidence["evidence_id"],
                     evidence["observation_id"],
@@ -439,6 +453,9 @@ def backfill_legacy_fact_ledger(db, now: float) -> int:
                     evidence["support_kind"],
                     evidence["span_text"],
                     evidence["span_sha256"],
+                    evidence["chunk_id"],
+                    evidence["span_start"],
+                    evidence["span_end"],
                     evidence["relation"],
                     now,
                 ),
