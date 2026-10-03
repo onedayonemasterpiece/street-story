@@ -1371,10 +1371,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             refresh_review_status(db, story_id, now)
             manifest = run_manifest(db, run_id)
             scan = db.execute(
-                "SELECT status FROM fact_conflict_scans WHERE story_id=? ORDER BY id DESC LIMIT 1",
+                "SELECT status,coverage_complete FROM fact_conflict_scans "
+                "WHERE story_id=? ORDER BY id DESC LIMIT 1",
                 (story_id,),
             ).fetchone()
-            review_ok = bool(scan and str(scan["status"]) in {"ok", "no_candidates"})
+            review_ok = bool(
+                scan
+                and str(scan["status"]) in {"ok", "no_candidates"}
+                and int(scan["coverage_complete"] or 0) == 1
+            )
             complete = manifest_complete(manifest) and review_ok
             set_run_state(
                 db,
