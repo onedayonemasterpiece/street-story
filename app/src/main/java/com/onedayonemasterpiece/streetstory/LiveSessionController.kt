@@ -166,7 +166,7 @@ class LiveSessionController(context: Context) {
         "event_polling" to false,
     )
 
-    fun microphoneInputSuppression(): LiveInputSuppression {
+    internal fun microphoneInputSuppression(): LiveInputSuppression {
         val now = SystemClock.elapsedRealtime()
         val hardwarePending = audioTrack?.let { track ->
             runCatching { playbackDrain.pending(track.playbackHeadPosition) > 0 }.getOrDefault(false)
