@@ -533,9 +533,104 @@ async def test_cached_poi_evidence_can_answer_new_coverage_without_reopening_pag
         },
     )
     assert calls == 1
+    assert [executor.calls for executor in failures] == [0 for _ in failures]
+    assert client.search_http.calls == []
+    assert result.payload["search_provider"] == "poi_cache"
+    assert result.payload["cache_only"] is True
+    assert result.payload["coverage_satisfied"] is True
     assert len(result.payload["facts"]) == 3
     assert all(fact["source_urls"] == [source_url] for fact in result.payload["facts"])
     assert any(source.get("cached") for source in result.grounding_sources if source["url"] == source_url)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_cached_evidence_falls_through_to_web_discovery(tmp_path):
+    settings = replace(
+        config(tmp_path),
+        gemini_api_key=SecretStr("key-a"),
+        gemini_api_keys=(SecretStr("key-a"),),
+    )
+    client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
+    source_url = "https://cached.example/royal-gate"
+    web_url = "https://fresh.example/royal-gate"
+
+    class OneShotWeb:
+        def __init__(self):
+            self.calls = 0
+        async def execute(self, operation, call):
+            assert operation == "web_search"
+            self.calls += 1
+            return await call("key-a", 10)
+
+    web = OneShotWeb()
+    client.web_search_routes = [("gemini-test", "test", None, web)]
+
+    semantic = PassingResearchExecutor()
+    route = client.research_routes[0]
+    client.research_routes = [(route[0], route[1], route[2], semantic)]
+
+    generate_calls = 0
+    async def generate(key, timeout, contents, config=None, *, operation="grounded_research", model=None, quota=None):
+        nonlocal generate_calls
+        generate_calls += 1
+        if operation == "grounded_research":
+            payload = {
+                "summary": "Cached evidence gives names but not positions.",
+                "official_source_urls": [],
+                "facts": [{
+                    "claim_key": "three-names",
+                    "existing_fact_id": "",
+                    "text": "На фасаде изображены Отакар II, Фридрих I и Альбрехт I.",
+                    "confidence": .9,
+                    "source_urls": [source_url],
+                }],
+                "coverage_satisfied": False,
+                "read_source_urls": [],
+            }
+            return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[])
+        payload = {
+            "summary": "Fresh grounded result.",
+            "official_source_urls": [],
+            "facts": [{
+                "claim_key": "left",
+                "existing_fact_id": "",
+                "text": "Слева изображён Отакар II.",
+                "confidence": .95,
+                "source_urls": [web_url],
+            }],
+        }
+        chunk = SimpleNamespace(web=SimpleNamespace(uri=web_url, title="Fresh"))
+        support = SimpleNamespace(
+            segment=SimpleNamespace(text="Слева изображён Отакар II."),
+            grounding_chunk_indices=[0],
+        )
+        candidate = SimpleNamespace(
+            grounding_metadata=SimpleNamespace(
+                grounding_chunks=[chunk],
+                grounding_supports=[support],
+            )
+        )
+        return SimpleNamespace(text=json.dumps(payload, ensure_ascii=False), candidates=[candidate])
+
+    client._generate = generate
+    result = await client.search_web(
+        "скульптуры Королевских ворот",
+        {
+            "coverage_goal": "Кто изображён слева, в центре и справа?",
+            "previously_processed_sources": [{
+                "url": source_url,
+                "title": "Cached",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": source_url,
+                    "text": "Отакар II, Фридрих I и Альбрехт I.",
+                }],
+            }],
+        },
+    )
+    assert web.calls == 1
+    assert generate_calls >= 2
+    assert result.payload["facts"][0]["source_urls"] == [web_url]
 
 
 @pytest.mark.asyncio
