@@ -1279,10 +1279,12 @@ class GeminiClient:
             "Сначала обязательно попробуй найти официальный источник объекта или организации, если он существует: "
             "сайт владельца, музея, учреждения, муниципалитета или оператора. Wikipedia, СМИ, агрегатор и "
             "туристический каталог официальным источником не являются. Верни реально найденные официальные URL "
-            "в official_source_urls. Верни до 20 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
-            "один атомарный тезис до 160 знаков: дата, человек, архитектор, событие, функция, реконструкция, "
+            "в official_source_urls. Верни до 32 проверяемых ФАКТОВ, а не список источников. Каждый fact.text — "
+            "один атомарный тезис, обычно до 500 знаков: дата, человек, архитектор, событие, функция, реконструкция, "
             "посещение или другой конкретный факт. Без вводных вроде «источник сообщает», без URL и без нескольких "
-            "разных утверждений в одном пункте. Для каждого факта обязательно задай claim_key — короткую устойчивую "
+            "разных утверждений в одном пункте. Если evidence содержит несколько независимо проверяемых людей, дат, "
+            "ролей, подписей или деталей, разнеси их в отдельные facts вместо одного перечня. Для каждого факта задай "
+            "claim_key — короткую устойчивую "
             "семантическую идентичность смысла, не зависящую от перефразирования. Если новый найденный тезис семантически "
             "совпадает с known_facts, укажи его точный fact_id в existing_fact_id; иначе existing_fact_id оставь пустым. "
             "Не выдумывай existing_fact_id. Для новых тезисов используй устойчивый claim_key. Самые важные факты "
@@ -1320,20 +1322,6 @@ class GeminiClient:
                     or not isinstance(payload.get("facts"), list)
                 ):
                     raise ValueError
-                for fact in payload["facts"]:
-                    if (
-                        not isinstance(fact, dict)
-                        or not isinstance(fact.get("claim_key"), str)
-                        or (
-                            fact.get("existing_fact_id") is not None
-                            and not isinstance(fact.get("existing_fact_id"), str)
-                        )
-                        or not isinstance(fact.get("text"), str)
-                        or not isinstance(fact.get("source_urls"), list)
-                        or any(not isinstance(url, str) for url in fact["source_urls"])
-                        or not math.isfinite(float(fact.get("confidence", 0)))
-                    ):
-                        raise ValueError
             except (ValueError, TypeError):
                 raise MalformedProviderResponse("gemini:malformed_web_search") from None
 
@@ -1369,6 +1357,72 @@ class GeminiClient:
                                 })
             unique_sources = list({source["url"]: source for source in sources}.values())
             seen = {source["url"].rstrip("/") for source in unique_sources}
+
+            raw_facts = payload.get("facts") if isinstance(payload.get("facts"), list) else []
+            extraction_audit = {
+                "raw_fact_count": len(raw_facts),
+                "accepted_fact_count": 0,
+                "claim_key_fallback_count": 0,
+                "confidence_defaulted_count": 0,
+                "rejected": {},
+            }
+
+            def reject(reason: str) -> None:
+                rejected = extraction_audit["rejected"]
+                rejected[reason] = int(rejected.get(reason, 0)) + 1
+
+            normalized_facts: list[dict[str, Any]] = []
+            for item in raw_facts[:32]:
+                if not isinstance(item, dict):
+                    reject("invalid_shape")
+                    continue
+                fact_text = " ".join(str(item.get("text") or "").split()).strip()
+                if not fact_text:
+                    reject("empty_text")
+                    continue
+                if len(fact_text) > 1200:
+                    reject("text_over_safety_bound")
+                    continue
+
+                claim_key = " ".join(str(item.get("claim_key") or "").split()).strip().casefold()
+                if not claim_key or len(claim_key) > 300:
+                    claim_key = "exact-text:" + hashlib.sha256(fact_text.casefold().encode("utf-8")).hexdigest()[:24]
+                    extraction_audit["claim_key_fallback_count"] += 1
+
+                try:
+                    confidence = float(item.get("confidence", 0.0))
+                    if not math.isfinite(confidence):
+                        raise ValueError
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                    extraction_audit["confidence_defaulted_count"] += 1
+
+                valid_urls: list[str] = []
+                for raw_url in item.get("source_urls") or []:
+                    normalized_url = str(raw_url or "").rstrip("/")
+                    if normalized_url in seen and normalized_url not in valid_urls:
+                        valid_urls.append(normalized_url)
+                if not valid_urls:
+                    reject("no_grounded_source")
+                    continue
+
+                fact = {
+                    "claim_key": claim_key,
+                    "text": fact_text,
+                    "confidence": max(0.0, min(1.0, confidence)),
+                    "source_urls": valid_urls[:12],
+                }
+                existing_fact_id = str(item.get("existing_fact_id") or "").strip()
+                if existing_fact_id:
+                    fact["existing_fact_id"] = existing_fact_id[:200]
+                normalized_facts.append(fact)
+
+            extraction_audit["accepted_fact_count"] = len(normalized_facts)
+            if len(raw_facts) > 32:
+                extraction_audit["rejected"]["over_batch_limit"] = len(raw_facts) - 32
+            payload["facts"] = normalized_facts
+            payload["extraction_audit"] = extraction_audit
+
             blocked_official_hosts = {
                 "wikipedia.org", "wikimedia.org", "openstreetmap.org", "google.com",
             }
