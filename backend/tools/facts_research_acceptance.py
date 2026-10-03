@@ -123,10 +123,24 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
     svc.providers.gemini.reconcile_fact_identities = unavailable
     host = create_live_host(svc, svc.settings)
     events, started, session_id, cursor = [], time.monotonic(), "", 0
+    tool_trace = []
     status, stage, error = "FAIL", "bootstrap", None
     try:
         receipt = await host.start(resource_id=story_id, actor=None, model="gemini-3.8-live")
         session_id = receipt["session_id"]
+        owned_adapter = host.sessions[session_id].adapter
+        execute = owned_adapter.execute_tool
+        async def traced(session, call):
+            entry = {"name": call.get("name"), "args": call.get("args")}
+            tool_trace.append(entry)
+            try:
+                reply = await execute(session, call)
+                entry["response"] = reply
+                return reply
+            except Exception as exc:
+                entry["error"] = getattr(exc, "code", type(exc).__name__)
+                raise
+        owned_adapter.execute_tool = traced
         stage = "research"
         if guided:
             prompt += " Прочитай все chunks и страницы, сохрани атомарные batches, затем get_review_packet и явный review по коротким refs."
@@ -178,10 +192,11 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
     ids = []
     gold_ok = False  # Strings/names alone cannot establish subject, role or support.
     if status == "FAIL":
-        status = "REVIEW_REQUIRED" if state_ok and eligible else "FAIL_SEMANTIC"
+        contract_failures = [e for e in events if e.get("type") == "tool_result" and e.get("status") == "error"]
+        status = "REVIEW_REQUIRED" if state_ok and eligible else "FAIL_CONTRACT" if contract_failures else "FAIL_SEMANTIC"
     # PCM is discarded; keep bounded state/tool evidence, never credentials/audio.
     clean_events = [{k: v for k, v in e.items() if k not in {"data", "audio", "audio_base64"}} for e in events if e.get("type") != "audio"]
-    result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "real_retrieval" if real_retrieval else "controlled_licensed_snapshot", "prompt_mode": "guided_diagnostic" if guided else "ordinary_request", "semantic_review": "pending_manual_gold_assessment", "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "dependencies": {name: importlib.metadata.version(name) for name in ("ai-resource-control", "live-interaction")}, "corpus_sha256": hashlib.sha256(body.encode()).hexdigest(), "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "error": error}
+    result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "real_retrieval" if real_retrieval else "controlled_licensed_snapshot", "prompt_mode": "guided_diagnostic" if guided else "ordinary_request", "semantic_review": "pending_manual_gold_assessment", "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "dependencies": {name: importlib.metadata.version(name) for name in ("ai-resource-control", "live-interaction")}, "corpus_sha256": hashlib.sha256(body.encode()).hexdigest(), "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "tool_trace": tool_trace, "error": error}
     (case_dir / "acceptance.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({k: result[k] for k in ["case", "status", "stage", "elapsed_seconds", "eligible_count", "gold_ok", "error"]}, ensure_ascii=False), flush=True)
     return status

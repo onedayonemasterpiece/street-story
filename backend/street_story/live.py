@@ -9,6 +9,7 @@ import math
 import os
 import re
 import uuid
+from urllib.parse import unquote
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -385,7 +386,7 @@ FUNCTIONS = [
     _tool_schema(
         "get_research_chunk",
         "Read a document chunk of the SAME research run before facts exist. Omit chunk_id for the next unfinished "
-        "chunk; source_url must be a discovered source of this run. Uses the guarded fetch pipeline. Returns frozen "
+        "chunk; omit source_url for the next source too. Only pass source_url to explicitly choose a discovered URL. Uses the guarded fetch pipeline. Returns frozen "
         "source version, exact core/context, batch_id and expected_story_revision. Resume does not repeat completed chunks.",
         {"run_id": {"type": "string"}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}, "passage_cursor": {"type": "integer", "description": "Follow next_passage_cursor before completing this chunk; unseen pages remain pending."}},
         ["run_id"],
@@ -569,8 +570,6 @@ FUNCTIONS = [
                         "rationale": {"type": "string"},
                     },
                     "required": [
-                        "left_fact_id",
-                        "right_fact_id",
                         "relation",
                         "resolution",
                         "confidence",
@@ -1026,7 +1025,11 @@ class StreetStoryLiveAdapter:
         if name == "get_facts":
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
-            return review_packets.read(self, session, args)
+            packet = review_packets.read(self, session, args)
+            session.state["research_run_id"] = packet["run_id"]
+            session.state.setdefault("research_run_ids", []).append(packet["run_id"])
+            self._emit_research_progress(session, stage="review", active=True, query="", source_count=0, fact_count=packet["total_facts"])
+            return packet
         if name == "get_evidence":
             # Live reads are paginated by the existing cursor contract so one
             # verbose evidence reply cannot exceed the shared token budget.
@@ -2441,8 +2444,12 @@ class StreetStoryLiveAdapter:
             story, run = self._research_run_guard(db, session, run_id)
             snapshot_revision = int(story["revision"] or 0)
             sources = [dict(row) for row in db.execute("SELECT * FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url", (run_id,))]
-            if source_url and not any(row["url"] == source_url for row in sources):
-                raise ConflictError("live_research_source_unknown", "Choose a source URL discovered in this run.")
+            if source_url:
+                matching = next((row["url"] for row in sources if unquote(row["url"]) == unquote(source_url)), None)
+                if matching is None:
+                    raise ConflictError("live_research_source_unknown", "Retry get_research_chunk with the SAME run_id only. OMIT source_url and chunk_id: the server chooses the next discovered document. Do not repeat search_web.")
+                source_url = matching  # Fetch only the stored discovered URL.
+
             candidate = db.execute(
                 "SELECT c.*,v.normalized_text,v.final_url,v.requested_url FROM research_chunk_runs r "
                 "JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id "
