@@ -244,7 +244,11 @@ FUNCTIONS = [
         {
             "query": {
                 "type": "string",
-                "description": "Concise internet-search question derived from the author's current request.",
+                "description": "Concise internet-search query. It may be optimized for retrieval.",
+            },
+            "coverage_goal": {
+                "type": "string",
+                "description": "What the evidence must actually answer. Preserve important user constraints such as left/center/right positions, exact names, authorship, dates or inscriptions even if the search query is shorter.",
             },
         },
         ["query"],
@@ -445,6 +449,7 @@ SYSTEM_INSTRUCTION = """
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
 - широкий запрос на факты = 4–6 разных search_web по ключевым аспектам объекта и отдельная перепроверка важных тезисов; не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
+- у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
 - после каждого discovery_only search_web сразу save_research_facts: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и добавь к нему все подтверждающие source_ref текущей выдачи. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
@@ -882,8 +887,9 @@ class StreetStoryLiveAdapter:
                 "search_provider": result.get("search_provider"),
                 "discovery_only": discovery_only,
                 "semantic_completion": result.get("semantic_completion"),
+                "extraction_audit": result.get("extraction_audit"),
                 "source_count": len([source for source in (result.get("sources") or []) if isinstance(source, dict)]),
-                "facts": compact_facts[:20],
+                "facts": compact_facts[:32],
                 "sources": compact_sources[:12],
                 "fact_conflicts": list(result.get("fact_conflicts") or [])[:6],
                 "story": projected.get("story"),
@@ -1023,7 +1029,7 @@ class StreetStoryLiveAdapter:
                 "selected": bool(item.get("selected")),
                 "evidence_supported": bool(item.get("evidence_supported")),
             }
-            for item in story.get("facts", [])[:20]
+            for item in story.get("facts", [])[:48]
         ]
         visual = story.get("visual") if isinstance(story.get("visual"), dict) else {}
         identity = story.get("visual_identity") if isinstance(story.get("visual_identity"), dict) else {}
@@ -1336,6 +1342,7 @@ class StreetStoryLiveAdapter:
 
     async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         query = _bounded_text(args.get("query"), 1000, required=True)
+        coverage_goal = _bounded_text(args.get("coverage_goal") or query, 1600, required=True)
         story_id = session.resource_id
 
         with self.service.store.connection() as db:
@@ -1380,6 +1387,7 @@ class StreetStoryLiveAdapter:
             "known_facts": known_facts,
             "previously_considered_poi_facts": poi_history[:60],
             "previously_processed_sources": processed_source_history[:80],
+            "coverage_goal": coverage_goal,
             "visual_identity": identity,
         }
         prior_progress_sources = [
@@ -1426,13 +1434,15 @@ class StreetStoryLiveAdapter:
             if str(item.get("fact_id") or "").strip()
         }
         normalized: list[dict[str, Any]] = []
-        for item in (grounded.payload.get("facts") or [])[:20]:
+        for item in (grounded.payload.get("facts") or [])[:32]:
             if not isinstance(item, dict):
                 continue
             text = validated_model_fact_text(item.get("text"))
-            claim_key = normalized_claim_key(item.get("claim_key"))
-            if text is None or claim_key is None:
+            if text is None:
                 continue
+            claim_key = normalized_claim_key(item.get("claim_key"))
+            if claim_key is None:
+                claim_key = "exact-text:" + hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:24]
             sources: list[dict[str, Any]] = []
             for raw_url in item.get("source_urls", []) or []:
                 candidate = source_objects.get(str(raw_url).rstrip("/"))
@@ -1516,6 +1526,7 @@ class StreetStoryLiveAdapter:
             history.append(
                 {
                     "query": query,
+                    "coverage_goal": coverage_goal,
                     "summary": str(grounded.payload.get("summary") or "")[:2000],
                     "source_urls": [source["url"] for source in grounding_sources[:20]],
                     "source_refs": [
@@ -1526,6 +1537,7 @@ class StreetStoryLiveAdapter:
                     "search_provider": search_provider,
                     "discovery_only": discovery_only,
                     "semantic_completion": semantic_completion or None,
+                    "extraction_audit": grounded.payload.get("extraction_audit"),
                 }
             )
             research["grounding_sources"] = list(all_sources.values())[:80]
@@ -1536,10 +1548,12 @@ class StreetStoryLiveAdapter:
             )
             result = {
                 "query": query,
+                "coverage_goal": coverage_goal,
                 "summary": str(grounded.payload.get("summary") or "")[:2000],
                 "search_provider": search_provider,
                 "discovery_only": discovery_only,
                 "semantic_completion": semantic_completion or None,
+                "extraction_audit": grounded.payload.get("extraction_audit"),
                 "facts": normalized,
                 "sources": grounding_sources[:20],
                 "fact_conflicts": detected_conflicts[:12],
@@ -1639,9 +1653,11 @@ class StreetStoryLiveAdapter:
                 if not isinstance(item, dict):
                     raise ConflictError("live_research_fact_invalid", "Each fact must be an object")
                 text = validated_model_fact_text(item.get("text"))
+                if text is None:
+                    raise ConflictError("live_research_fact_invalid", "Fact text is required and must stay within the safety bound")
                 claim_key = normalized_claim_key(item.get("claim_key"))
-                if text is None or claim_key is None:
-                    raise ConflictError("live_research_fact_invalid", "Fact text and claim_key are required")
+                if claim_key is None:
+                    claim_key = "exact-text:" + hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:24]
                 try:
                     confidence = float(item.get("confidence"))
                 except (TypeError, ValueError):

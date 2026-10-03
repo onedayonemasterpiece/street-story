@@ -15,7 +15,7 @@ from typing import Any
 _SPACE = re.compile(r"\s+")
 
 
-def validated_model_fact_text(raw: Any, maximum: int = 500) -> str | None:
+def validated_model_fact_text(raw: Any, maximum: int = 1200) -> str | None:
     text = _SPACE.sub(" ", str(raw or "")).strip()
     if not text or len(text) > maximum:
         return None
