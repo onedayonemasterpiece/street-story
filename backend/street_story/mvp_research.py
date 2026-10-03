@@ -18,7 +18,7 @@ from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
 from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
-from .poi_memory import prior_facts
+from .poi_memory import persist_research_memory, prior_facts, processed_sources
 from .providers import PermanentProviderError
 from .service import ConflictError, InvalidStateError, NotFoundError, canonical, digest
 
@@ -557,6 +557,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         identity: dict[str, Any],
         previous: list[dict[str, Any]],
         poi_history: list[dict[str, Any]] | None = None,
+        processed_source_history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         custom = getattr(self.providers.gemini, "research_v2", None)
         if callable(custom):
@@ -581,7 +582,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             "источника имеют приоритет; для каждого факта source_urls перечисляй только реально поддерживающие его источники. "
             "previously_considered_poi_facts — факты об этом же объекте из предыдущих тем и, когда доступно, из Regional Knowledge/POI: "
             "используй их как модельный контекст для смыслового сопоставления и поиска противоречий; не считай их автоматически истинными "
-            "и не повторяй в новой публикации без причины. Если пользователь не просит повторить/обновить, ищи новую фактологию. "
+            "и не повторяй в новой публикации без причины. previously_processed_sources — уже обработанные URL и запросы: не трать поиск "
+            "на повторный обход тех же страниц без явной задачи перепроверки/конфликта; ищи пробелы, новые аспекты и независимое подтверждение. "
+            "Если пользователь не просит повторить/обновить, ищи новую фактологию. "
             "Не считай собственный ответ источником и не выдумывай цитаты. author_note может содержать только субъективное впечатление "
             "пользователя из voice context, без добавленных исторических сведений. "
             "Верни только один JSON-объект без Markdown и комментариев строго такой формы: "
@@ -592,6 +595,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     "voice_context": transcript,
                     "previous_claims_and_owner_decisions": previous,
                     "previously_considered_poi_facts": (poi_history or [])[:60],
+                    "previously_processed_sources": (processed_source_history or [])[:80],
                 },
                 ensure_ascii=False,
             )
@@ -824,9 +828,17 @@ class MvpResearchMixin(IdentityLifecycleMixin):
 
         with self.store.connection() as db:
             poi_history = prior_facts(db, identity, story_id)
+            processed_source_history = processed_sources(db, identity)
         saved = self.store.checkpoint_get(job["id"], "grounded_research_v3")
         if saved is None:
-            saved = await self._research_claims(story, transcript, identity, previous, poi_history)
+            saved = await self._research_claims(
+                story,
+                transcript,
+                identity,
+                previous,
+                poi_history,
+                processed_source_history,
+            )
             self.store.checkpoint_put(job["id"], "grounded_research_v3", saved)
 
         grounding_sources = saved.get("grounding_sources", [])
@@ -910,7 +922,13 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 }
             )
 
+        reusable_poi = [
+            {**item, "selected": False}
+            for item in poi_history
+            if item.get("origin") == "poi_research"
+        ]
         inventory = merge_model_fact_inventory([
+            *reusable_poi,
             *[
                 {
                     **item,
@@ -975,6 +993,21 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                         canonical(fact["sources"]),
                     ),
                 )
+            persist_research_memory(
+                db,
+                identity,
+                normalized,
+                [
+                    {
+                        **source,
+                        "supports": grounding_by_url.get(_norm_url(source.get("url")), []),
+                    }
+                    for source in grounding_sources
+                    if isinstance(source, dict)
+                ],
+                "automatic_identity_research",
+                self.store.now(),
+            )
             all_fact_rows = list(db.execute("SELECT * FROM facts WHERE story_id=? ORDER BY rowid", (story_id,)))
             source_urls = {
                 source["url"]

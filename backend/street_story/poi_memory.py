@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .model_facts import normalized_claim_key
+
 
 def poi_key(identity: dict[str, Any]) -> str | None:
     value = str(identity.get("candidate_id") or "").strip()
@@ -37,6 +39,149 @@ def _identity_alias_values(identity: dict[str, Any]) -> list[str]:
                 values.append(value)
     return values
 
+
+
+
+def _research_memory_facts(db, identity: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    key = poi_key(identity)
+    if not key:
+        return []
+    rows = db.execute(
+        "SELECT fact_id,claim_key,text,confidence,sources_json,updated_at "
+        "FROM poi_research_facts WHERE poi_key=? ORDER BY updated_at DESC LIMIT ?",
+        (key, max(1, int(limit))),
+    )
+    return [
+        {
+            "fact_id": str(row["fact_id"]),
+            "claim_key": str(row["claim_key"]),
+            "text": str(row["text"]),
+            "confidence": float(row["confidence"]),
+            "evidence_supported": True,
+            "selected": False,
+            "sources": json.loads(row["sources_json"] or "[]"),
+            "origin": "poi_research",
+        }
+        for row in rows
+    ]
+
+
+def processed_sources(db, identity: dict[str, Any], limit: int = 80) -> list[dict[str, Any]]:
+    key = poi_key(identity)
+    if not key:
+        return []
+    rows = db.execute(
+        "SELECT url,title,last_query,supports_json,last_seen_at "
+        "FROM poi_research_sources WHERE poi_key=? ORDER BY last_seen_at DESC LIMIT ?",
+        (key, max(1, min(int(limit), 200))),
+    )
+    return [
+        {
+            "url": str(row["url"]),
+            "title": str(row["title"]),
+            "last_query": str(row["last_query"]),
+            "supports": json.loads(row["supports_json"] or "[]"),
+            "last_seen_at": row["last_seen_at"],
+        }
+        for row in rows
+    ]
+
+
+def persist_research_memory(
+    db,
+    identity: dict[str, Any],
+    facts: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    query: str,
+    now: float,
+) -> None:
+    key = poi_key(identity)
+    if not key:
+        return
+    source_by_url: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        url = str(source.get("url") or "").rstrip("/")
+        if not url.startswith("https://"):
+            continue
+        source_by_url[url] = source
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        for source in fact.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").rstrip("/")
+            if url.startswith("https://"):
+                source_by_url[url] = source
+
+    for url, source in source_by_url.items():
+        supports = [
+            item for item in (source.get("supports") or [])
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        ][:6]
+        db.execute(
+            "INSERT INTO poi_research_sources(poi_key,url,title,supports_json,last_query,first_seen_at,last_seen_at) "
+            "VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(poi_key,url) DO UPDATE SET "
+            "title=excluded.title,supports_json=CASE WHEN excluded.supports_json<>'[]' THEN excluded.supports_json ELSE poi_research_sources.supports_json END,"
+            "last_query=excluded.last_query,last_seen_at=excluded.last_seen_at",
+            (
+                key,
+                url,
+                str(source.get("title") or url)[:300],
+                json.dumps(supports, ensure_ascii=False, separators=(",", ":")),
+                str(query or "")[:1000],
+                now,
+                now,
+            ),
+        )
+
+    for fact in facts:
+        if not isinstance(fact, dict) or not fact.get("evidence_supported", bool(fact.get("sources"))):
+            continue
+        claim_key = normalized_claim_key(fact.get("claim_key"))
+        fact_id = str(fact.get("fact_id") or "").strip()
+        text = str(fact.get("text") or "").strip()
+        if not claim_key or not fact_id or not text:
+            continue
+        current = db.execute(
+            "SELECT sources_json,created_at FROM poi_research_facts WHERE poi_key=? AND claim_key=?",
+            (key, claim_key),
+        ).fetchone()
+        merged: dict[str, dict[str, Any]] = {}
+        if current:
+            for source in json.loads(current["sources_json"] or "[]"):
+                if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
+                    merged[str(source["url"]).rstrip("/")] = source
+        for source in fact.get("sources") or []:
+            if isinstance(source, dict) and str(source.get("url") or "").startswith("https://"):
+                merged[str(source["url"]).rstrip("/")] = source
+        if not merged:
+            continue
+        created_at = float(current["created_at"]) if current else now
+        try:
+            confidence = max(0.0, min(1.0, float(fact.get("confidence") or 0.0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        db.execute(
+            "INSERT INTO poi_research_facts(poi_key,claim_key,fact_id,text,confidence,sources_json,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(poi_key,claim_key) DO UPDATE SET "
+            "fact_id=excluded.fact_id,text=excluded.text,confidence=MAX(poi_research_facts.confidence,excluded.confidence),"
+            "sources_json=excluded.sources_json,updated_at=excluded.updated_at",
+            (
+                key,
+                claim_key,
+                fact_id,
+                text[:500],
+                confidence,
+                json.dumps(list(merged.values()), ensure_ascii=False, separators=(",", ":")),
+                created_at,
+                now,
+            ),
+        )
 
 def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int) -> list[dict[str, Any]]:
     aliases = _identity_alias_values(identity)
@@ -110,6 +255,14 @@ def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) ->
         return []
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
+
+    for item in _research_memory_facts(db, identity, limit):
+        if item["fact_id"] in seen:
+            continue
+        seen.add(item["fact_id"])
+        result.append(item)
+        if len(result) >= limit:
+            return result
 
     rows = db.execute(
         "SELECT f.fact_id,f.text,f.confidence,f.evidence_supported,f.selected,f.sources_json,s.updated_at "

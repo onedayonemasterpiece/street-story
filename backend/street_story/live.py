@@ -414,6 +414,7 @@ SYSTEM_INSTRUCTION = """
 - факты не выдумывать. resolve_place сопоставляет исходное фото с ближайшими объектами вокруг точки съёмки и OSM/Wikipedia/Wikimedia-контекстом;
 - пока visual_identity не match/owner_confirmed, не вызывай search_web, generate_visual для финального материала или prepare_publication;
 - широкий запрос на факты = 4–6 разных search_web по ключевым аспектам объекта и отдельная перепроверка важных тезисов; не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
+- visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
 - после каждого discovery_only search_web сразу save_research_facts: сохрани все поддержанные атомарные тезисы; совпавший смысл привяжи exact existing_fact_id и добавь к нему все подтверждающие source_ref текущей выдачи. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
@@ -1253,8 +1254,15 @@ class StreetStoryLiveAdapter:
                     (story_id,),
                 )
             ]
-            from .poi_memory import prior_facts
+            from .poi_memory import prior_facts, processed_sources
             poi_history = prior_facts(db, identity, story_id)
+            processed_source_history = processed_sources(db, identity)
+            reusable_poi = [
+                {**item, "selected": False}
+                for item in poi_history
+                if item.get("origin") == "poi_research"
+            ]
+            known_facts = merge_model_fact_inventory([*reusable_poi, *known_facts])
 
         topic_context = {
             "place_name": story.get("place_name"),
@@ -1264,6 +1272,7 @@ class StreetStoryLiveAdapter:
             "recent_author_context": self._recent_transcript(session, "")[:6000],
             "known_facts": known_facts,
             "previously_considered_poi_facts": poi_history[:60],
+            "previously_processed_sources": processed_source_history[:80],
             "visual_identity": identity,
         }
         prior_progress_sources = [
@@ -1384,6 +1393,16 @@ class StreetStoryLiveAdapter:
                         all_sources[str(source["url"]).rstrip("/")] = source
             for source in grounding_sources:
                 all_sources[str(source["url"]).rstrip("/")] = source
+
+            from .poi_memory import persist_research_memory
+            persist_research_memory(
+                db,
+                identity,
+                normalized,
+                grounding_sources,
+                query,
+                self.service.store.now(),
+            )
 
             history = research.get("live_web_searches")
             history = list(history) if isinstance(history, list) else []
@@ -1558,6 +1577,15 @@ class StreetStoryLiveAdapter:
                 raise ConflictError("live_research_facts_empty", "No valid facts were supplied")
 
             inventory = merge_model_fact_inventory([*known_facts, *normalized])
+            from .poi_memory import persist_research_memory
+            persist_research_memory(
+                db,
+                identity,
+                normalized,
+                list(source_map.values()),
+                str(latest_search.get("query") or ""),
+                self.service.store.now(),
+            )
             db.execute("DELETE FROM facts WHERE story_id=?", (story_id,))
             for fact in inventory:
                 db.execute(
