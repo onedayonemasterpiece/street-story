@@ -1799,8 +1799,22 @@ class StreetStoryLiveAdapter:
             item for item in (grounded.payload.get("facts") or [])
             if isinstance(item, dict)
         ]
-        reconciliation_matches: dict[int, str] = {}
-        reconciliation_decisions: list[dict[str, Any]] = []
+        reconciliation_matches: dict[int, str] = {
+            index: str(item.get("existing_fact_id") or "")
+            for index, item in enumerate(raw_grounded_facts)
+            if str(item.get("existing_fact_id") or "") in known_by_id
+        }
+        reconciliation_decisions: list[dict[str, Any]] = [
+            {
+                "incoming_index": index,
+                "relation": "equivalent",
+                "existing_fact_id": fact_id,
+                "rationale": "Upstream extraction explicitly referenced this durable fact ID.",
+                "model_name": "upstream_existing_fact_id",
+                "prompt_version": "fact-identity-reconciliation-v1",
+            }
+            for index, fact_id in sorted(reconciliation_matches.items())
+        ]
         reconciliation_meta: dict[str, Any] = {
             "status": "not_needed",
             "pages_reviewed": 0,
@@ -1941,6 +1955,14 @@ class StreetStoryLiveAdapter:
         with self.service.store.tx() as db:
             story_row = self.service._story_row(db, story_id)
             now = self.service.store.now()
+            persist_fact_relation_events(
+                db,
+                story_id=story_id,
+                run_id=run_id,
+                incoming_facts=raw_grounded_facts,
+                decisions=reconciliation_decisions,
+                now=now,
+            )
             persist_fact_candidates(
                 db,
                 story_id=story_id,

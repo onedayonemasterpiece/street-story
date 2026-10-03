@@ -618,6 +618,97 @@ async def test_live_semanticized_discovery_persists_facts_without_second_tool_ca
 
 
 @pytest.mark.asyncio
+async def test_live_search_persists_explicit_relation_decision_before_new_observation(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+
+    with svc.store.tx() as db:
+        existing_id = persist_fact_candidates(
+            db,
+            story_id=story_id,
+            poi_key="wiki:77",
+            facts=[{
+                "claim_key": "construction-period",
+                "text": "Королевские ворота строились в 1843–1850 годах.",
+                "confidence": .9,
+                "selected": False,
+                "sources": [{
+                    "type": "web",
+                    "title": "Old",
+                    "url": "https://old.example/gate",
+                    "supports": [{
+                        "kind": "page_excerpt",
+                        "source_url": "https://old.example/gate",
+                        "text": "Строительство шло с 1843 по 1850 год.",
+                    }],
+                }],
+            }],
+            run_id="existing-run",
+            batch_id="existing-batch",
+            model_name="test-model",
+            prompt_version="test-v1",
+            now=svc.store.now(),
+        )[0]
+        old_revision = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, existing_id),
+        ).fetchone()["revision_digest"]
+
+    async def semantic_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Same fact with new evidence",
+                "facts": [{
+                    "claim_key": "construction-period-rephrased",
+                    "existing_fact_id": existing_id,
+                    "text": "Строительство Королевских ворот продолжалось с 1843 по 1850 год.",
+                    "confidence": .96,
+                    "source_urls": ["https://new.example/gate"],
+                }],
+                "coverage_satisfied": True,
+                "official_source_urls": [],
+                "semantic_completion": "test",
+            },
+            grounding_sources=[{
+                "type": "web",
+                "title": "New",
+                "url": "https://new.example/gate",
+                "supports": [{
+                    "kind": "page_excerpt",
+                    "source_url": "https://new.example/gate",
+                    "text": "Новые ворота строились в 1843–1850 годах.",
+                }],
+            }],
+        )
+
+    svc.providers.gemini.search_web = semantic_search
+    await adapter.execute_tool(
+        session,
+        {"name": "search_web", "id": "relation-live", "args": {"query": "годы строительства"}},
+    )
+
+    with svc.store.connection() as db:
+        event = db.execute(
+            "SELECT relation,existing_fact_id,existing_revision_digest,model_name,prompt_version "
+            "FROM fact_relation_events WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
+            (story_id,),
+        ).fetchone()
+        current_revision = db.execute(
+            "SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?",
+            (story_id, existing_id),
+        ).fetchone()["revision_digest"]
+    assert dict(event) == {
+        "relation": "equivalent",
+        "existing_fact_id": existing_id,
+        "existing_revision_digest": old_revision,
+        "model_name": "upstream_existing_fact_id",
+        "prompt_version": "fact-identity-reconciliation-v1",
+    }
+    assert current_revision != old_revision
+
+
+@pytest.mark.asyncio
 async def test_live_discovery_fallback_is_semantically_completed_by_mira(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     story_id = session.resource_id
