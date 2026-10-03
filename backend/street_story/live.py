@@ -16,6 +16,8 @@ from typing import Any
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
+from .research_budget import PAGE_UNITS, response_units, bounded_inventory
+from . import review_packets
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
 from .fact_conflicts import (
@@ -68,7 +70,7 @@ from .service import ConflictError, InvalidStateError, StreetStoryService, canon
 logger = logging.getLogger("street_story.live")
 
 
-LIVE_SCHEMA = r"""
+LIVE_SCHEMA = review_packets.SCHEMA + r"""
 CREATE TABLE IF NOT EXISTS live_editor_state(
   story_id TEXT PRIMARY KEY REFERENCES stories(id) ON DELETE CASCADE,
   text_revision INTEGER NOT NULL DEFAULT 0,
@@ -385,7 +387,7 @@ FUNCTIONS = [
         "Read a document chunk of the SAME research run before facts exist. Omit chunk_id for the next unfinished "
         "chunk; source_url must be a discovered source of this run. Uses the guarded fetch pipeline. Returns frozen "
         "source version, exact core/context, batch_id and expected_story_revision. Resume does not repeat completed chunks.",
-        {"run_id": {"type": "string"}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}},
+        {"run_id": {"type": "string"}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}, "passage_cursor": {"type": "integer", "description": "Follow next_passage_cursor before completing this chunk; unseen pages remain pending."}},
         ["run_id"],
     ),
     _tool_schema(
@@ -517,12 +519,17 @@ FUNCTIONS = [
         },
         ["conflicts"],
     ),
+    _tool_schema("get_review_packet", "Read a frozen semantic review packet. Follow cursor until has_more=false. Local fact/evidence numbers replace long hashes. Compare support, negation, roles, equivalence and conflicts across all pages.",
+        {"run_id": {"type": "string"}, "packet_ref": {"type": "string"}, "cursor": {"type": "integer"}}),
     _tool_schema(
         "finalize_fact_review",
         "Finalize Mira's semantic review for one exact research run and exact assertion revisions. "
         "Conflicts may be an empty array when Mira reviewed the full bundle and found none. "
         "The server validates revisions/references and computes eligibility; it never invents semantic conflicts.",
         {
+            "packet_ref": {"type": "string"},
+            "decisions": {"type": "array", "items": {"type": "object", "properties": {"fact": {"type": "integer"}, "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch", "equivalent"]}, "evidence": {"type": "array", "items": {"type": "integer"}}, "equivalent_to": {"type": "integer"}}, "required": ["fact", "verdict", "evidence"]}},
+            "relations_complete": {"type": "boolean", "description": "True only after explicit equivalence/conflict comparison across ALL packet pages."},
             "run_id": {"type": "string"},
             "reviewed_assertions": {
                 "type": "array",
@@ -541,6 +548,7 @@ FUNCTIONS = [
                 "items": {
                     "type": "object",
                     "properties": {
+                        "left": {"type": "integer"}, "right": {"type": "integer"},
                         "left_fact_id": {"type": "string"},
                         "right_fact_id": {"type": "string"},
                         "relation": {
@@ -576,13 +584,7 @@ FUNCTIONS = [
                 "items": {"type": "string"},
             },
         },
-        [
-            "run_id",
-            "reviewed_assertions",
-            "conflicts",
-            "coverage_complete",
-            "missing_aspects",
-        ],
+        ["conflicts", "coverage_complete", "missing_aspects"],
     ),
     _tool_schema(
         "resolve_fact_conflict",
@@ -717,7 +719,7 @@ SYSTEM_INSTRUCTION = """
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
 - после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
-- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence постранично до has_more=false. Передай точные fact_id+revision_digest и supporting_evidence_ids из get_evidence. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
+- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Перед финализацией прочитай полный evidence-backed inventory через get_facts до has_more=false и нужные passages через get_evidence постранично до has_more=false. Получай get_review_packet по run_id и прочитай все страницы. Верни packet_ref и decisions с локальными fact/evidence номерами и явными verdict supported/not_supported/contradicted/role_mismatch; relations_complete=true только после equivalence/conflict проверки всех страниц. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - атомарность: один checkbox выбирает один самостоятельный тезис. Каждую изображённую персоналию, её роль, отдельное событие и датировку выделяй в отдельный факт; перечень нескольких людей нельзя сохранить одним фактом. Это твоя смысловая работа, не серверный split. При финальном review проверь атомарность и точность имён по passages.
@@ -850,6 +852,13 @@ class StreetStoryLiveAdapter:
         text = str(event.get("text") or "").strip()
         if kind == "input_timing":
             observe_input_timing(session, event)
+        if kind == "resource_budget" and event.get("modality") == "tool_response":
+            session.state["research_admission"] = {
+                key: event.get(key) for key in ("status", "code", "estimated_units", "requested_units", "granted_units")
+            }
+            # The shared transport owns its 95-second wait for this unsent reply.
+            # A temporary denial must not cancel a run which can still be admitted.
+            record_live_diagnostic(self.service, session.resource_id, session.id, "backend", "research_admission", session.state["research_admission"])
         if kind == "input_transcript" and text:
             suspected = observe_transcript(session, text)
             if suspected:
@@ -1015,7 +1024,9 @@ class StreetStoryLiveAdapter:
             self.emit(session, {"type": "product_state", "state": compact})
             return compact
         if name == "get_facts":
-            return self._get_facts(story_id, args)
+            return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
+        if name == "get_review_packet":
+            return review_packets.read(self, session, args)
         if name == "get_evidence":
             # Live reads are paginated by the existing cursor contract so one
             # verbose evidence reply cannot exceed the shared token budget.
@@ -1023,7 +1034,7 @@ class StreetStoryLiveAdapter:
                 page_limit = max(1, min(int(args.get("limit") or 5), 5))
             except (TypeError, ValueError):
                 raise ConflictError("live_pagination_invalid", "limit must be an integer") from None
-            return self._get_evidence(story_id, {**args, "limit": page_limit})
+            return bounded_inventory(lambda page: self._get_evidence(story_id, page), name, {**args, "limit": page_limit}, "evidence")
         if name == "get_research_chunk":
             return self._model_result(name, await self._get_research_chunk(session, args))
         if name == "literal_begin":
@@ -1092,7 +1103,11 @@ class StreetStoryLiveAdapter:
         elif name == "record_fact_conflicts":
             result = self._record_fact_conflicts(session, command_id, args)
         elif name == "finalize_fact_review":
-            result = self._finalize_fact_review(session, command_id, args)
+            if args.get("packet_ref"):
+                staged, expanded, rejected = review_packets.prepare(self, session, args)
+                result = staged if staged is not None else self._finalize_fact_review(session, command_id, expanded, packet_rejected=rejected)
+            else:
+                result = self._finalize_fact_review(session, command_id, args)
         elif name == "resolve_fact_conflict":
             result = self._resolve_fact_conflict(session, command_id, args)
         elif name == "select_facts":
@@ -1119,7 +1134,13 @@ class StreetStoryLiveAdapter:
 
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
-        return self._model_result(name, result)
+        projected = self._model_result(name, result)
+        if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
+            projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
+            projected.update({"facts_page_required": True, "read_tool": "get_facts", "saved_fact_count": len(result.get("facts") or [])})
+        if name in {"save_research_facts", "finalize_fact_review"}:
+            record_live_diagnostic(self.service, story_id, session.id, "backend", "research_reply_size", {"tool": name, "estimated_envelope_units": response_units(name, projected, command_id), "page_ceiling": PAGE_UNITS})
+        return projected
 
     @staticmethod
     def _compact_identity(identity: Any) -> dict[str, Any] | None:
@@ -1355,7 +1376,7 @@ class StreetStoryLiveAdapter:
                 "withheld_count": int(result.get("withheld_count") or 0),
                 "unreviewed_count": int(result.get("unreviewed_count") or 0),
                 "conflict_ids": list(result.get("conflict_ids") or [])[:40],
-                "story": projected.get("story"),
+                **{key: result[key] for key in ("packet_ref", "review_saved", "remaining_facts", "cross_packet_review_required") if key in result},
             }
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])
@@ -1883,6 +1904,8 @@ class StreetStoryLiveAdapter:
         })
 
     async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+        if getattr(session, "closed", False) or session.state.get("research_cancelled"):
+            raise ConflictError("live_research_partial", "This Live research phase is paused. Resume the saved run in a new Live session.")
         query = _bounded_text(args.get("query"), 1000, required=True)
         coverage_goal = _bounded_text(args.get("coverage_goal") or query, 1600, required=True)
         story_id = session.resource_id
@@ -2007,6 +2030,7 @@ class StreetStoryLiveAdapter:
                 )
             raise
         with self.service.store.tx() as db:
+            self._research_run_guard(db, session, run_id)
             set_run_state(
                 db,
                 run_id,
@@ -2398,8 +2422,8 @@ class StreetStoryLiveAdapter:
         """Address literal paragraphs; this makes no semantic fact decisions."""
         passages, cursor = [], 0
         for line in core.splitlines(keepends=True):
-            for start in range(0, len(line), 1600):
-                raw = line[start:start + 1600]
+            for start in range(0, len(line), 900):
+                raw = line[start:start + 900]
                 text = raw.strip()
                 if text:
                     offset = cursor + start + len(raw) - len(raw.lstrip())
@@ -2433,7 +2457,7 @@ class StreetStoryLiveAdapter:
             source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"]), None)
             if source is None:
                 with self.service.store.connection() as db:
-                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_facts", "final_tool": "finalize_fact_review"}
+                    return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_facts", "final_tool": "get_review_packet"}
             fetch = getattr(self.service.providers.gemini, "_fetch_page_documents", None)
             if not callable(fetch):
                 raise ConflictError("live_research_fetch_unavailable", "Document reader is unavailable; saved evidence is preserved.")
@@ -2457,7 +2481,7 @@ class StreetStoryLiveAdapter:
         batch_index = int(checkpoint["next_batch_index"])
         batch_id = "batch_" + hashlib.sha256(f"{run_id}:{candidate['chunk_id']}:{batch_index}".encode()).hexdigest()[:24]
         core = candidate["normalized_text"][candidate["core_start"]:candidate["core_end"]]
-        return {
+        result = {
             "research_run_id": run_id, "source_url": candidate["requested_url"],
             "source_ref": _search_source_ref(candidate["requested_url"]),
             "source_version_id": candidate["source_version_id"], "chunk_id": candidate["chunk_id"],
@@ -2469,6 +2493,29 @@ class StreetStoryLiveAdapter:
             "batch_id": batch_id, "batch_index": batch_index, "expected_story_revision": snapshot_revision,
             "checkpoint": checkpoint, "next_tool": "save_research_facts",
         }
+        passages = result["evidence_passages"]
+        offset = max(0, int(args.get("passage_cursor") or session.state.get("research_page_cursor", {}).get(candidate["chunk_id"], 0)))
+        result["evidence_passages"] = []
+        result["context_before"] = result["context_before"][-100:]
+        result["context_after"] = result["context_after"][:100]
+        # Saved payload remains durable; read its inventory separately instead
+        # of repeating every previously saved claim on each document page.
+        result["checkpoint"] = {"next_batch_index": checkpoint["next_batch_index"], "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3], "terminal": checkpoint["terminal"]}
+        for passage in passages[offset:]:
+            trial = {**result, "evidence_passages": [*result["evidence_passages"], passage], "has_more_passages": True, "next_passage_cursor": passage["passage_id"] + 1}
+            if response_units("get_research_chunk", self._model_result("get_research_chunk", trial)) > PAGE_UNITS:
+                break
+            result = trial
+        next_offset = offset + len(result["evidence_passages"])
+        if not result["evidence_passages"] and offset < len(passages):
+            raise ConflictError("live_research_page_oversize", "Read inventory separately; one page exceeds the ceiling.")
+        result["has_more_passages"] = next_offset < len(passages)
+        result["next_passage_cursor"] = next_offset if next_offset < len(passages) else None
+        seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
+        seen.update(p["passage_id"] for p in result["evidence_passages"])
+        session.state.setdefault("research_pending_page", {})[candidate["chunk_id"]] = next_offset if next_offset < len(passages) else 0
+        return result
+
 
     async def _save_research_facts(
         self,
@@ -2580,6 +2627,10 @@ class StreetStoryLiveAdapter:
                     batch_index = int(args.get("batch_index"))
                 except (TypeError, ValueError):
                     raise ConflictError("live_research_batch_invalid", "Exact batch index is required.") from None
+                all_passages = self._core_passages(chunk_id, chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]])
+                seen = session.state.get("research_passages_seen", {}).get(chunk_id, set())
+                if len(seen) < len(all_passages):
+                    continuation_needed = True
                 checkpoint = chunk_checkpoint(db, run_id, chunk_id)
                 expected_save_batch_id = "batch_" + hashlib.sha256(f"{run_id}:{chunk_id}:{batch_index}".encode()).hexdigest()[:24]
                 # A batch owns its receipt across different provider call IDs.
@@ -3215,7 +3266,7 @@ class StreetStoryLiveAdapter:
                 "save_batch_id": save_batch_id,
                 "review_required": True,
                 "continuation_required": True,
-                "next_tool": "get_research_chunk" if chunk_id else "finalize_fact_review",
+                "next_tool": "get_research_chunk" if chunk_id else "get_review_packet",
                 "chunk_id": chunk_id or None,
                 "payload_saved": True,
                 "facts": normalized,
@@ -3248,6 +3299,8 @@ class StreetStoryLiveAdapter:
                 if isinstance(source, dict)
             ]
 
+        if chunk_id:
+            session.state.setdefault("research_page_cursor", {})[chunk_id] = session.state.get("research_pending_page", {}).get(chunk_id, 0)
         record_live_diagnostic(
             self.service,
             story_id,
@@ -3283,13 +3336,14 @@ class StreetStoryLiveAdapter:
         session,
         command_id: str,
         args: dict[str, Any],
+        *, packet_rejected=None,
     ) -> dict[str, Any]:
         story_id = session.resource_id
         run_id = _bounded_text(args.get("run_id"), 160, required=True)
         raw_reviewed = args.get("reviewed_assertions")
         raw_conflicts = args.get("conflicts")
         raw_missing = args.get("missing_aspects")
-        if not isinstance(raw_reviewed, list) or len(raw_reviewed) > 240:
+        if not isinstance(raw_reviewed, list) or (packet_rejected is None and len(raw_reviewed) > 240):
             raise ConflictError(
                 "live_fact_review_bundle_invalid",
                 "reviewed_assertions must be a bounded array of exact fact revisions",
@@ -3486,6 +3540,10 @@ class StreetStoryLiveAdapter:
                 )}
                 if not set(evidence_ids).issubset(valid_ids):
                     raise ConflictError("live_fact_review_evidence_invalid", "Evidence does not support this exact assertion scope.")
+            if packet_rejected is not None:
+                review_packets.load(self, session, db, str(args["packet_ref"]))
+                for fact_id in packet_rejected:
+                    db.execute("UPDATE fact_assertions SET review_status='withheld',eligibility='withheld' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact_id))
             poi_key = str(identity.get("candidate_id") or "") or None
             if records:
                 persist_fact_conflicts(
@@ -3619,6 +3677,8 @@ class StreetStoryLiveAdapter:
                     self.service._story_row(db, story_id),
                 ),
             }
+            if packet_rejected is not None:
+                db.execute("UPDATE live_review_packets SET result_json=?,request_json=? WHERE packet_ref=?", (canonical(result), canonical(args["_packet_request"]), args["packet_ref"]))
             self._store_command(
                 db,
                 story_id,

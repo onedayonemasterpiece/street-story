@@ -268,18 +268,17 @@ async def test_live_get_facts_paginates_beyond_compact_topic_snapshot(tmp_path):
         session,
         {"name": "get_facts", "args": {"limit": 50}},
     )
-    assert len(first["facts"]) == 50
+    from street_story.research_budget import PAGE_UNITS, response_units
+    assert 1 <= len(first["facts"]) <= 50
     assert first["has_more"] is True
-    assert first["next_cursor"] is not None
-
-    second = await adapter.execute_tool(
-        session,
-        {"name": "get_facts", "args": {"cursor": first["next_cursor"], "limit": 50}},
-    )
-    assert len(second["facts"]) == 35
-    assert second["has_more"] is False
-    assert second["next_cursor"] is None
-    texts = [item["text"] for item in first["facts"] + second["facts"]]
+    texts = [item["text"] for item in first["facts"]]
+    page = first
+    while page["has_more"]:
+        assert response_units("get_facts", page) <= PAGE_UNITS
+        page = await adapter.execute_tool(session, {"name": "get_facts", "args": {"cursor": page["next_cursor"], "limit": 50}})
+        texts.extend(item["text"] for item in page["facts"])
+    assert page["next_cursor"] is None
+    assert len(texts) == 85
     assert texts[0] == "Проверяемый факт номер 0."
     assert texts[-1] == "Проверяемый факт номер 84."
 
@@ -1904,7 +1903,7 @@ async def test_live_fallback_zero_conflict_review_completes_same_run(tmp_path):
         },
     )
     assert saved["research_run_id"] == run_id
-    assert saved["next_tool"] == "finalize_fact_review"
+    assert saved["next_tool"] == "get_review_packet"
     assert saved["continuation_required"] is True
 
     before_review = adapter._get_facts(

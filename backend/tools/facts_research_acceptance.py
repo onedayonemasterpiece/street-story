@@ -12,6 +12,8 @@ import asyncio
 import hashlib
 import json
 import os
+import subprocess
+import importlib.metadata
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -35,7 +37,61 @@ CASES = {
 }
 
 
-async def run_case(output, case, budget):
+def classify_failure(event):
+    code = str(event.get("code") or event.get("error_code") or "")
+    if code in {"RESOURCE_TOKEN_BUDGET", "RESOURCE_CAPACITY", "RESOURCE_START_BUDGET"}:
+        return "BLOCKED_RESOURCE"
+    if code.startswith("RESOURCE_CONTROL") or code == "RESOURCE_LEDGER_MISMATCH":
+        return "BLOCKED_AUTHORITY"
+    if code.startswith("RESOURCE_"):
+        return "FAIL_CONTRACT"
+    if event.get("status_code") in {429, 503} or code in {"provider_429", "provider_503"}:
+        return "BLOCKED_PROVIDER"
+    return "FAIL_CONTRACT"
+
+
+def audit_inventory(adapter, story_id):
+    facts, spans, cursor = [], [], 0
+    while True:
+        page = adapter._get_facts(story_id, {"eligibility": "all", "limit": 50, "cursor": cursor})
+        facts.extend(page["facts"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_cursor"]
+    for start in range(0, len(facts), 20):
+        ids, cursor = [f["fact_id"] for f in facts[start:start + 20]], 0
+        while True:
+            page = adapter._get_evidence(story_id, {"fact_ids": ids, "limit": 50, "cursor": cursor})
+            spans.extend(page["evidence"])
+            if not page["has_more"]:
+                break
+            cursor = page["next_cursor"]
+    return facts, {"evidence": spans}
+
+
+def assess_gold(result, assessments):
+    """Inspectably human-reviewed predicate/value and evidence, bound to exact text.
+
+    No name substring, negation regex, or role heuristic can grant PASS here.
+    """
+    inventory = {f["fact_id"]: f for f in result["facts"] if f.get("eligibility") == "eligible"}
+    spans = {e["evidence_id"]: e for e in result["evidence"]["evidence"]}
+    approved = []
+    for assessment in assessments:
+        f = inventory.get(assessment.get("fact_id"))
+        if not f or assessment.get("supported_gold_relation") is not True:
+            return False
+        if assessment.get("text_sha256") != hashlib.sha256(f["text"].encode()).hexdigest():
+            return False
+        evidence_ids = assessment.get("evidence_ids") or []
+        if not evidence_ids or any(e not in spans or spans[e]["fact_id"] != f["fact_id"] for e in evidence_ids):
+            return False
+        approved.append((assessment.get("gold_relation"), f["fact_id"]))
+    expected = {"facade:otakar_ii", "facade:frederick_i", "facade:albert"} if result.get("case") != "holdout" else {"built:1657", "portrait:boyen", "portrait:aster"}
+    return len(approved) == 3 and {x[0] for x in approved} == expected and len({x[1] for x in approved}) == 3 and result["state_ok"]
+
+
+async def run_case(output, case, budget, guided=False, real_retrieval=False):
     name, filename, prompt = CASES[case]
     case_dir = output / (case + "-" + str(time.time_ns()))
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -55,13 +111,14 @@ async def run_case(output, case, budget):
         lambda request: httpx.Response(200, headers={"content-type": "text/html"}, text="<main>" + body.replace("\n", "<br>") + "</main>")))
 
     async def discovery(query, context):
-        return GroundedResearch(payload={"facts": [], "search_provider": "controlled_snapshot", "semantic_status": "live_model_required", "coverage_satisfied": False}, grounding_sources=[{"url": url, "title": name, "supports": [{"kind": "search_snippet", "source_url": url, "text": "Документ об объекте. Прочитайте полный сохранённый текст.", "evidence_ref": "evref_" + "1" * 24}]}])
+        return GroundedResearch(payload={"facts": [], "search_provider": "duckduckgo_html_fallback", "retrieval_mode": "controlled_snapshot", "semantic_status": "live_model_required", "coverage_satisfied": False}, grounding_sources=[{"url": url, "title": name, "supports": [{"kind": "search_snippet", "source_url": url, "text": "Документ об объекте. Прочитайте полный сохранённый текст.", "evidence_ref": "evref_" + "1" * 24}]}])
 
     async def unavailable(*args, **kwargs):
         raise GeminiUnavailable(None, "acceptance_controlled_helper_outage")
 
-    svc.providers.gemini.search_web = discovery
-    svc.providers.gemini._fetch_page_documents = reader._fetch_page_documents
+    if not real_retrieval:
+        svc.providers.gemini.search_web = discovery
+        svc.providers.gemini._fetch_page_documents = reader._fetch_page_documents
     svc.providers.gemini.detect_fact_conflicts = unavailable
     svc.providers.gemini.reconcile_fact_identities = unavailable
     host = create_live_host(svc, svc.settings)
@@ -71,14 +128,16 @@ async def run_case(output, case, budget):
         receipt = await host.start(resource_id=story_id, actor=None, model="gemini-3.8-live")
         session_id = receipt["session_id"]
         stage = "research"
-        await host.input(session_id=session_id, resource_id=story_id, message={"text": prompt + " Используй один search_web, затем прочитай ВСЕ chunks через get_research_chunk и сохрани batches с короткими числовыми passage_ids из evidence_passages, source_refs=[] и evidence_refs=[]. Изучи get_facts inventory; equivalence решай самостоятельно с inventory_reviewed=true. После чтения всех chunks изучи get_facts и get_evidence, выполни finalize_fact_review с точными revision_digest и supporting_evidence_ids. Не ограничивайся snippets. Не задавай дополнительных вопросов."})
+        if guided:
+            prompt += " Прочитай все chunks и страницы, сохрани атомарные batches, затем get_review_packet и явный review по коротким refs."
+        await host.input(session_id=session_id, resource_id=story_id, message={"text": prompt})
         deadline = started + budget
         while time.monotonic() < deadline:
             page = host.events(session_id=session_id, resource_id=story_id, after=cursor)
             cursor = page["cursor"]
             events.extend(page["events"])
             if any(e.get("type") == "error" for e in page["events"]):
-                status, stage = "BLOCKED_PROVIDER", "live_stream"
+                status, stage = classify_failure(next(e for e in page["events"] if e.get("type") == "error")), "live_stream"
                 break
             with svc.store.connection() as db:
                 terminal = db.execute("SELECT state FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)).fetchone()
@@ -86,11 +145,11 @@ async def run_case(output, case, budget):
                 stage = "terminal_state"
                 break
             if page["closed"]:
-                status, stage = "BLOCKED_PROVIDER", "live_closed"
+                status, stage = "FAIL_CONTRACT", "live_closed"
                 break
             await asyncio.sleep(.25)
     except Exception as exc:
-        status = "BLOCKED_PROVIDER" if stage == "bootstrap" else "FAIL"
+        status = classify_failure({"code": getattr(exc, "code", ""), "error_type": type(exc).__name__})
         error = {"type": type(exc).__name__, "code": str(getattr(exc, "code", ""))}
         if not session_id:
             for owned in host.sessions.values():
@@ -100,25 +159,29 @@ async def run_case(output, case, budget):
         if session_id:
             await host.stop(session_id=session_id, resource_id=story_id)
         await reader.search_http.aclose()
-    inventory = adapter._get_facts(story_id, {"eligibility": "all", "limit": 100})["facts"]
-    evidence = adapter._get_evidence(story_id, {"fact_ids": [f["fact_id"] for f in inventory][:20], "limit": 100}) if inventory else {"evidence": []}
+    inventory, evidence = audit_inventory(adapter, story_id)
     with svc.store.connection() as db:
         runs = [run_manifest(db, r["run_id"]) for r in db.execute("SELECT run_id FROM research_runs WHERE story_id=?", (story_id,))]
     eligible = [f for f in inventory if f.get("eligibility") == "eligible"]
-    budget_denials = [e for e in events if e.get("type") == "resource_budget" and e.get("status") == "denied"]
-    if budget_denials and stage == "research":
-        status, stage = "BLOCKED_PROVIDER", "tool_response_budget"
-        error = {"type": "ResourceBudget", "code": budget_denials[-1].get("code")}
-    # Gold exists only in the evaluator; prompts above contain no expected names.
-    groups = [["Отакар", "Оттокар", "Оттокар"], ["Фридрих I"], ["Альбрехт"]] if case != "holdout" else [["1657"], ["Бойен"], ["Астер"]]
-    ids = [next((f["fact_id"] for f in eligible if any(alias in f["text"] for alias in group)), None) for group in groups]
-    gold_ok = all(ids) and len(set(ids)) == 3
+    # Preserve the first causal error. A recovered denial is only incidental.
+    pending = None
+    for event in events:
+        if event.get("type") == "resource_budget" and event.get("modality") == "tool_response":
+            if event.get("status") == "denied":
+                pending = event
+            elif event.get("status") == "granted":
+                pending = None
+    if pending and stage == "research":
+        status, stage = "BLOCKED_RESOURCE", "local_admission_timeout"
+        error = {"type": "ResourceAdmission", "code": pending.get("code")}
     state_ok = bool(runs) and all(r["run"]["state"] == "completed" for r in runs)
-    if status != "BLOCKED_PROVIDER":
-        status = "PASS" if gold_ok and state_ok and evidence.get("evidence") else "FAIL"
+    ids = []
+    gold_ok = False  # Strings/names alone cannot establish subject, role or support.
+    if status == "FAIL":
+        status = "REVIEW_REQUIRED" if state_ok and eligible else "FAIL_SEMANTIC"
     # PCM is discarded; keep bounded state/tool evidence, never credentials/audio.
     clean_events = [{k: v for k, v in e.items() if k not in {"data", "audio", "audio_base64"}} for e in events if e.get("type") != "audio"]
-    result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "controlled_licensed_snapshot", "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "error": error}
+    result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "real_retrieval" if real_retrieval else "controlled_licensed_snapshot", "prompt_mode": "guided_diagnostic" if guided else "ordinary_request", "semantic_review": "pending_manual_gold_assessment", "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "dependencies": {name: importlib.metadata.version(name) for name in ("ai-resource-control", "live-interaction")}, "corpus_sha256": hashlib.sha256(body.encode()).hexdigest(), "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "error": error}
     (case_dir / "acceptance.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({k: result[k] for k in ["case", "status", "stage", "elapsed_seconds", "eligible_count", "gold_ok", "error"]}, ensure_ascii=False), flush=True)
     return status
@@ -126,18 +189,36 @@ async def run_case(output, case, budget):
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--assess-receipt", type=Path)
+    parser.add_argument("--assessment", type=Path)
     parser.add_argument("--budget", type=int, default=180)
     parser.add_argument("--case", choices=CASES)
+    parser.add_argument("--guided", action="store_true")
+    parser.add_argument("--real-retrieval", action="store_true")
     args = parser.parse_args()
-    if not args.output.is_relative_to(Path("/home/dev/artifacts")) or not (args.output / ".artifact.json").exists():
+    if args.assess_receipt:
+        if not args.assessment or not args.assess_receipt.is_relative_to(Path("/home/dev/artifacts")):
+            parser.error("assessment and managed receipt required")
+        result = json.loads(args.assess_receipt.read_text())
+        assessments = json.loads(args.assessment.read_text())
+        result["gold_ok"] = assess_gold(result, assessments)
+        result["semantic_review"] = str(args.assessment)
+        if not result["status"].startswith("BLOCKED_"):
+            result["status"] = "PASS" if result["gold_ok"] else "FAIL_SEMANTIC"
+        # The original online receipt remains immutable.
+        destination = args.assess_receipt.with_name("acceptance-assessed.json")
+        destination.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        print(json.dumps({"status": result["status"], "gold_ok": result["gold_ok"]}))
+        return 0 if result["status"] == "PASS" else 1
+    if not args.output or not args.output.is_relative_to(Path("/home/dev/artifacts")) or not (args.output / ".artifact.json").exists():
         parser.error("output must be a managed artifact directory")
     for path in [Path("/home/dev/.local/state/street-story/providers.env"), Path("/home/dev/.local/state/street-story/service.env")]:
         os.environ.update(parse_dotenv(path))
     for case in ([args.case] if args.case else CASES):
-        status = await run_case(args.output, case, args.budget)
+        status = await run_case(args.output, case, args.budget, args.guided, args.real_retrieval)
         if status != "PASS":
-            return 2 if status == "BLOCKED_PROVIDER" else 1
+            return 2 if status.startswith("BLOCKED_") else 1
     return 0
 
 

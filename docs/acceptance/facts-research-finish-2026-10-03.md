@@ -90,3 +90,71 @@ tool route (read tools return before the general mutation projection).
 
 Pending CI, exact backend revision/health, canonical signed APK version and link.
 No unrelated social or image-generation runs, and no real channel publication.
+
+
+## Budget/review unblock — 2026-10-04 (UTC+2)
+
+The prior RESOURCE_TOKEN_BUDGET receipts are reclassified as **local resource
+admission**, not Gemini outages. SDK metadata/path read from the running release:
+`ai-resource-control 0.1.11`; no private SDK source copied into this repository.
+Authority capabilities confirm `ai_resource_leases_v1` and
+`grant_spend_deadline_plus_60s`; six currently enabled Live policies have 60,000
+admission units, 90-second leases, verified_at 2026-09-24. These are conservative
+UTF-8 JSON envelope units, not provider tokens or billing. Historical policy
+changes/installed SQL body are not recorded in the receipt and remain unverified.
+No numeric policy, estimator, key binding or quota scope was changed.
+
+Saved broad receipt `broad-1791065154220252436/acceptance.json` is unchanged.
+Read-only authority grant rows and a bounded event table are retained beside it
+as `broad-grants-readonly.json` and `broad-budget-timeline.json`.
+
+| UTC event | Durable/read state | Admission / model delivery |
+|---|---|---|
+| 22:05:56 search | One source discovered | 1,041-unit response granted |
+| 22:05:58 chunk read | Frozen source, first core | 14,429 granted |
+| 22:06:03 save | First batch persisted | 1,326 granted |
+| 22:06:04 continuation read | Saved first batch remains | 15,610 denied; granted 22:07:27 after wait |
+| 22:07:28–29 evidence reads | Assertion evidence exists | 6,673 and 7,135 both granted |
+| 22:07:31–37 review attempts | Exact-version / pending-core checks reject premature review | Contract failures, not external provider failures; extra chunk/read/save cost |
+| 22:07:36 save | Two payload batches, seven unreviewed claims; only 1/2 cores complete | Save acknowledged |
+| 22:07:39–22:08:53 evidence read | Prepared response remains unsent; facts remain durable | 6,673 denied repeatedly; harness ends before next allowance |
+
+At the last denial the same lease's grants 7–17 alone hold 53,667 units until
+at least 22:08:56.976; 60,000 leaves 6,333, **340 below the requested 6,673**.
+The event reports requested=estimated (no carry). Other leases cannot increase
+this allowance; their historical aggregate is not independently reconstructed.
+This accounts for the denial under the currently confirmed policy. The first
+large denial recovered and is not the terminal blocker. Provider send absence
+follows from the installed guard ordering (before_send precedes ws.send); receipt
+does not contain raw provider payload or a per-send acknowledgement.
+
+Changes: frozen durable packets map local fact/evidence numbers to exact story,
+owner, run, identity and assertion/evidence revisions. Explicit support/negative,
+role and equivalence verdicts plus complete cross-page relation review are required.
+Negative decisions withhold assertions. Packet read alone grants nothing.
+Decisions stage in bounded operations; >240 assertions can finish through multiple
+operations without deleting inventory. Existing precise final commit remains atomic.
+Document and inventory pages use a 5,500-unit final-envelope ceiling, reserving
+room below the observed 6,333 remaining allowance. Document tail cannot become
+processed after reading one page. The authority still guards actual batches;
+fully occupied windows use the shared bounded wait, without redoing tools.
+
+Offline: **472 backend tests passed**, including the actual installed SDK estimator
+and Lease on production execute_tool replies; deny/refill causes exactly one send,
+oversize and lease expiry fail closed. Controlled packet negatives, foreign/stale
+references, replay, cross-page gate, and 241-assertion completion pass. Ruff passes.
+SDK tests use a private artifact-path link to the installed package; CI without
+that optional private dependency separately reports the SDK test as skipped.
+
+Acceptance now walks every facts/evidence page, separates BLOCKED_RESOURCE,
+BLOCKED_AUTHORITY, BLOCKED_PROVIDER, FAIL_CONTRACT and FAIL_SEMANTIC, and records
+ordinary vs guided prompts. Substring matches cannot grant PASS: three specific
+relations require manual semantic assessment bound to exact fact text and its own
+evidence IDs. The audit's negation/wrong-ruler/wrong-role counterexample fails.
+Old probes also used an incorrect controlled discovery-provider label; new frozen
+corpus probes use the production discovery fallback branch. Internet retrieval,
+fixture identity/helper outage and physical microphone remain distinct scopes.
+
+U1: measured local boundary; historical policy/other-lease details above are explicit.
+U2/U3: controlled verification passed. U4 ordinary real-model targeted, broad and
+holdout plus U5 final backend/canonical APK delivery are pending this iteration.
