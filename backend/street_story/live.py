@@ -946,7 +946,7 @@ class StreetStoryLiveAdapter:
         elif name == "search_web":
             result = await self._search_web(session, command_id, args)
         elif name == "save_research_facts":
-            result = self._save_research_facts(session, command_id, args)
+            result = await self._save_research_facts(session, command_id, args)
         elif name == "record_fact_conflicts":
             result = self._record_fact_conflicts(session, command_id, args)
         elif name == "resolve_fact_conflict":
@@ -1154,6 +1154,12 @@ class StreetStoryLiveAdapter:
                 for fact in (result.get("facts") or [])[:32]
                 if isinstance(fact, dict)
             ]
+            projected["save_research_audit"] = result.get(
+                "save_research_audit"
+            )
+            projected["fact_reconciliation"] = result.get(
+                "fact_reconciliation"
+            )
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])
         logging.getLogger("uvicorn.error").info(
@@ -2163,25 +2169,51 @@ class StreetStoryLiveAdapter:
             )
             return result
 
-    def _save_research_facts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _save_research_facts(
+        self,
+        session,
+        command_id: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
         story_id = session.resource_id
         raw_facts = args.get("facts")
         if not isinstance(raw_facts, list) or not 1 <= len(raw_facts) <= 32:
-            raise ConflictError("live_research_facts_invalid", "Provide between 1 and 32 facts from the latest search evidence")
+            raise ConflictError(
+                "live_research_facts_invalid",
+                "Provide between 1 and 32 facts from the latest search evidence",
+            )
 
-        with self.service.store.tx() as db:
+        # Phase 1 is read-only. Never hold a SQLite write transaction while the
+        # semantic reconciler is making a provider call.
+        with self.service.store.connection() as db:
             story = self.service._story_row(db, story_id)
+            snapshot_revision = int(story["revision"] or 0)
             research = json.loads(story["research_json"] or "{}")
-            identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
+            snapshot_identity_generation = int(research.get("identity_generation") or 0)
+            identity = (
+                research.get("visual_identity")
+                if isinstance(research.get("visual_identity"), dict)
+                else {}
+            )
             if identity.get("status") not in {"match", "owner_confirmed"}:
-                raise InvalidStateError("identity_required", "Сначала нужно определить объект на фотографии.")
+                raise InvalidStateError(
+                    "identity_required",
+                    "Сначала нужно определить объект на фотографии.",
+                )
 
             history = research.get("live_web_searches")
             if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
-                raise InvalidStateError("live_search_required", "Сначала выполните search_web в этой теме.")
+                raise InvalidStateError(
+                    "live_search_required",
+                    "Сначала выполните search_web в этой теме.",
+                )
             latest_search = dict(history[-1])
-            run_id = str(latest_search.get("research_run_id") or "").strip() or (
-                "research_" + hashlib.sha256(
+            snapshot_search_run_id = str(
+                latest_search.get("research_run_id") or ""
+            ).strip()
+            run_id = snapshot_search_run_id or (
+                "research_"
+                + hashlib.sha256(
                     f"{story_id}:{command_id}:discovery-save".encode("utf-8")
                 ).hexdigest()[:24]
             )
@@ -2190,6 +2222,7 @@ class StreetStoryLiveAdapter:
                     "live_research_facts_not_discovery",
                     "save_research_facts is only for the discovery-only search fallback",
                 )
+
             allowed_refs = {
                 str(ref)
                 for ref in latest_search.get("source_refs", [])
@@ -2217,11 +2250,19 @@ class StreetStoryLiveAdapter:
                     and str(support.get("source_url") or "").rstrip("/") == url
                 ]
                 if valid_supports:
-                    source_map[source_ref] = {**source, "supports": valid_supports}
+                    source_map[source_ref] = {
+                        **source,
+                        "supports": valid_supports,
+                    }
                     for support in valid_supports:
-                        evidence_ref = str(support.get("evidence_ref") or "").strip()
+                        evidence_ref = str(
+                            support.get("evidence_ref") or ""
+                        ).strip()
                         if re.fullmatch(r"evref_[0-9a-f]{24}", evidence_ref):
-                            evidence_map[evidence_ref] = (source_ref, support)
+                            evidence_map[evidence_ref] = (
+                                source_ref,
+                                support,
+                            )
 
             known_facts = [
                 {
@@ -2240,116 +2281,395 @@ class StreetStoryLiveAdapter:
                     (story_id,),
                 )
             ]
-            known_by_id = {str(item["fact_id"]): item for item in known_facts}
-            prior_decisions = {str(item["fact_id"]): bool(item["selected"]) for item in known_facts}
-            old_selected = {
-                str(item["fact_id"])
-                for item in known_facts
-                if item["selected"] and item["evidence_supported"]
-            }
 
-            normalized_candidates: list[dict[str, Any]] = []
-            for item in raw_facts:
-                if not isinstance(item, dict):
-                    raise ConflictError("live_research_fact_invalid", "Each fact must be an object")
-                text = validated_model_fact_text(item.get("text"))
-                if text is None:
-                    raise ConflictError("live_research_fact_invalid", "Fact text is required and must stay within the safety bound")
-                claim_key = normalized_claim_key(item.get("claim_key"))
-                if claim_key is None:
-                    claim_key = "exact-text:" + hashlib.sha256(text.casefold().encode("utf-8")).hexdigest()[:24]
-                try:
-                    confidence = float(item.get("confidence"))
-                except (TypeError, ValueError):
-                    raise ConflictError("live_research_fact_confidence_invalid", "Fact confidence must be between 0 and 1") from None
-                if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-                    raise ConflictError("live_research_fact_confidence_invalid", "Fact confidence must be between 0 and 1")
-                source_refs = item.get("source_refs")
-                if not isinstance(source_refs, list) or not source_refs:
-                    raise ConflictError(
-                        "live_research_fact_sources_required",
-                        "Each saved fact needs source_refs from the latest search",
-                    )
-                refs: list[str] = []
-                for raw_ref in source_refs[:8]:
-                    source_ref = str(raw_ref or "")
-                    if source_ref not in source_map:
-                        raise ConflictError(
-                            "live_research_fact_source_unknown",
-                            "A fact referenced a source_ref without evidence in the latest search result",
-                        )
-                    if source_ref not in refs:
-                        refs.append(source_ref)
+        known_by_id = {
+            str(item["fact_id"]): item
+            for item in known_facts
+        }
+        prior_decisions = {
+            str(item["fact_id"]): bool(item["selected"])
+            for item in known_facts
+        }
+        old_selected = {
+            str(item["fact_id"])
+            for item in known_facts
+            if item["selected"] and item["evidence_supported"]
+        }
 
-                raw_evidence_refs = item.get("evidence_refs")
-                if not isinstance(raw_evidence_refs, list) or not raw_evidence_refs:
-                    raise ConflictError(
-                        "live_research_fact_evidence_required",
-                        "Each saved fact needs exact evidence_refs from the latest search",
-                    )
-                selected_supports: dict[str, list[dict[str, Any]]] = {}
-                selected_evidence_refs: list[str] = []
-                for raw_evidence_ref in raw_evidence_refs[:24]:
-                    evidence_ref = str(raw_evidence_ref or "").strip()
-                    bound = evidence_map.get(evidence_ref)
-                    if bound is None:
-                        raise ConflictError(
-                            "live_research_fact_evidence_unknown",
-                            "A fact referenced an evidence_ref that was not returned by the latest search",
-                        )
-                    source_ref, support = bound
-                    if source_ref not in refs:
-                        raise ConflictError(
-                            "live_research_fact_evidence_source_mismatch",
-                            "Every evidence_ref must belong to one of the fact's source_refs",
-                        )
-                    if evidence_ref not in selected_evidence_refs:
-                        selected_evidence_refs.append(evidence_ref)
-                        selected_supports.setdefault(source_ref, []).append(support)
-                if any(source_ref not in selected_supports for source_ref in refs):
-                    raise ConflictError(
-                        "live_research_fact_source_without_evidence",
-                        "Every fact source_ref must have at least one selected evidence_ref",
-                    )
-                existing_fact_id = str(item.get("existing_fact_id") or "").strip()
-                fact_id = existing_fact_id if existing_fact_id in known_by_id else candidate_assertion_id(claim_key, text)
-                selected = bool(item.get("selected")) and prior_decisions.get(fact_id, True)
-                normalized_candidates.append(
-                    {
-                        "fact_id": fact_id,
-                        "existing_fact_id": existing_fact_id or None,
-                        "claim_key": claim_key,
-                        "text": text,
-                        "confidence": confidence,
-                        "evidence_supported": True,
-                        "selected": selected,
-                        "evidence_refs": selected_evidence_refs,
-                        "sources": [
-                            {
-                                **source_map[source_ref],
-                                "supports": selected_supports[source_ref],
-                            }
-                            for source_ref in refs
-                        ],
-                    }
+        normalized_candidates: list[dict[str, Any]] = []
+        for item in raw_facts:
+            if not isinstance(item, dict):
+                raise ConflictError(
+                    "live_research_fact_invalid",
+                    "Each fact must be an object",
+                )
+            fact_text = validated_model_fact_text(item.get("text"))
+            if fact_text is None:
+                raise ConflictError(
+                    "live_research_fact_invalid",
+                    "Fact text is required and must stay within the safety bound",
+                )
+            claim_key = normalized_claim_key(item.get("claim_key"))
+            if claim_key is None:
+                claim_key = (
+                    "exact-text:"
+                    + hashlib.sha256(
+                        fact_text.casefold().encode("utf-8")
+                    ).hexdigest()[:24]
+                )
+            try:
+                confidence = float(item.get("confidence"))
+            except (TypeError, ValueError):
+                raise ConflictError(
+                    "live_research_fact_confidence_invalid",
+                    "Fact confidence must be between 0 and 1",
+                ) from None
+            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+                raise ConflictError(
+                    "live_research_fact_confidence_invalid",
+                    "Fact confidence must be between 0 and 1",
                 )
 
-            normalized = merge_model_fact_inventory(normalized_candidates)
-            if not normalized:
-                raise ConflictError("live_research_facts_empty", "No valid facts were supplied")
+            source_refs = item.get("source_refs")
+            if not isinstance(source_refs, list) or not source_refs:
+                raise ConflictError(
+                    "live_research_fact_sources_required",
+                    "Each saved fact needs source_refs from the latest search",
+                )
+            refs: list[str] = []
+            for raw_ref in source_refs[:8]:
+                source_ref = str(raw_ref or "")
+                if source_ref not in source_map:
+                    raise ConflictError(
+                        "live_research_fact_source_unknown",
+                        "A fact referenced a source_ref without evidence in the latest search result",
+                    )
+                if source_ref not in refs:
+                    refs.append(source_ref)
 
+            raw_evidence_refs = item.get("evidence_refs")
+            if (
+                not isinstance(raw_evidence_refs, list)
+                or not raw_evidence_refs
+            ):
+                raise ConflictError(
+                    "live_research_fact_evidence_required",
+                    "Each saved fact needs exact evidence_refs from the latest search",
+                )
+            selected_supports: dict[str, list[dict[str, Any]]] = {}
+            selected_evidence_refs: list[str] = []
+            for raw_evidence_ref in raw_evidence_refs[:24]:
+                evidence_ref = str(raw_evidence_ref or "").strip()
+                bound = evidence_map.get(evidence_ref)
+                if bound is None:
+                    raise ConflictError(
+                        "live_research_fact_evidence_unknown",
+                        "A fact referenced an evidence_ref that was not returned by the latest search",
+                    )
+                source_ref, support = bound
+                if source_ref not in refs:
+                    raise ConflictError(
+                        "live_research_fact_evidence_source_mismatch",
+                        "Every evidence_ref must belong to one of the fact's source_refs",
+                    )
+                if evidence_ref not in selected_evidence_refs:
+                    selected_evidence_refs.append(evidence_ref)
+                    selected_supports.setdefault(
+                        source_ref,
+                        [],
+                    ).append(support)
+
+            if any(
+                source_ref not in selected_supports
+                for source_ref in refs
+            ):
+                raise ConflictError(
+                    "live_research_fact_source_without_evidence",
+                    "Every fact source_ref must have at least one selected evidence_ref",
+                )
+
+            explicit_existing = str(
+                item.get("existing_fact_id") or ""
+            ).strip()
+            provisional_fact_id = (
+                explicit_existing
+                if explicit_existing in known_by_id
+                else candidate_assertion_id(
+                    claim_key,
+                    fact_text,
+                )
+            )
+            normalized_candidates.append(
+                {
+                    "fact_id": provisional_fact_id,
+                    "existing_fact_id": (
+                        explicit_existing
+                        if explicit_existing in known_by_id
+                        else None
+                    ),
+                    "claim_key": claim_key,
+                    "text": fact_text,
+                    "confidence": confidence,
+                    "evidence_supported": True,
+                    "selected": bool(item.get("selected")),
+                    "evidence_refs": selected_evidence_refs,
+                    "sources": [
+                        {
+                            **source_map[source_ref],
+                            "supports": selected_supports[source_ref],
+                        }
+                        for source_ref in refs
+                    ],
+                }
+            )
+
+        save_audit: dict[str, Any] = {
+            "raw_candidate_count": len(raw_facts),
+            "structurally_valid_count": len(normalized_candidates),
+            "normalized_fact_count": 0,
+            "reconciled_match_count": 0,
+            "rejected": {},
+        }
+        if not normalized_candidates:
+            raise ConflictError(
+                "live_research_facts_empty",
+                "No valid facts were supplied",
+            )
+
+        reconciliation_matches: dict[int, str] = {
+            index: str(item.get("existing_fact_id") or "")
+            for index, item in enumerate(normalized_candidates)
+            if str(item.get("existing_fact_id") or "") in known_by_id
+        }
+        reconciliation_decisions: list[dict[str, Any]] = [
+            {
+                "incoming_index": index,
+                "relation": "equivalent",
+                "existing_fact_id": fact_id,
+                "rationale": (
+                    "Live extraction explicitly referenced this durable fact ID."
+                ),
+                "model_name": "upstream_existing_fact_id",
+                "prompt_version": "fact-identity-reconciliation-v1",
+            }
+            for index, fact_id in sorted(
+                reconciliation_matches.items()
+            )
+        ]
+        reconciliation_meta: dict[str, Any] = {
+            "status": "not_needed",
+            "pages_reviewed": 0,
+            "existing_fact_count": len(known_facts),
+            "incoming_fact_count": len(normalized_candidates),
+            "matched_count": len(reconciliation_matches),
+            "unmatched_count": (
+                len(normalized_candidates)
+                - len(reconciliation_matches)
+            ),
+        }
+
+        reconciler = getattr(
+            self.service.providers.gemini,
+            "reconcile_fact_identities",
+            None,
+        )
+        if (
+            normalized_candidates
+            and known_facts
+            and callable(reconciler)
+        ):
+            try:
+                reconciliation = await reconciler(
+                    normalized_candidates,
+                    known_facts,
+                )
+                reconciliation_matches = {
+                    int(index): str(fact_id)
+                    for index, fact_id in (
+                        reconciliation.get("matches") or {}
+                    ).items()
+                    if str(fact_id) in known_by_id
+                }
+                reconciliation_decisions = [
+                    dict(item)
+                    for item in (
+                        reconciliation.get("decisions") or []
+                    )
+                    if isinstance(item, dict)
+                ]
+                reconciliation_meta = {
+                    "status": (
+                        "complete"
+                        if reconciliation.get("complete") is True
+                        else "partial"
+                    ),
+                    "pages_reviewed": int(
+                        reconciliation.get("pages_reviewed") or 0
+                    ),
+                    "existing_fact_count": int(
+                        reconciliation.get(
+                            "existing_fact_count"
+                        )
+                        or len(known_facts)
+                    ),
+                    "incoming_fact_count": int(
+                        reconciliation.get(
+                            "incoming_fact_count"
+                        )
+                        or len(normalized_candidates)
+                    ),
+                    "matched_count": len(
+                        reconciliation_matches
+                    ),
+                    "unmatched_count": int(
+                        reconciliation.get("unmatched_count") or 0
+                    ),
+                }
+            except (
+                GeminiUnavailable,
+                MalformedProviderResponse,
+                PermanentProviderError,
+                RetryableProviderError,
+            ) as exc:
+                reconciliation_meta = {
+                    **reconciliation_meta,
+                    "status": "unavailable",
+                    "error_type": type(exc).__name__,
+                }
+        elif normalized_candidates and known_facts:
+            reconciliation_meta["status"] = (
+                "compatibility_unavailable"
+            )
+
+        reconciled_candidates: list[dict[str, Any]] = []
+        for index, candidate in enumerate(
+            normalized_candidates
+        ):
+            matched_id = reconciliation_matches.get(index)
+            if matched_id in known_by_id:
+                fact_id = str(matched_id)
+                existing_fact_id = fact_id
+            else:
+                existing_fact_id = str(
+                    candidate.get("existing_fact_id") or ""
+                ).strip()
+                if existing_fact_id not in known_by_id:
+                    existing_fact_id = ""
+                fact_id = (
+                    existing_fact_id
+                    if existing_fact_id
+                    else candidate_assertion_id(
+                        candidate.get("claim_key"),
+                        candidate.get("text"),
+                    )
+                )
+            reconciled_candidates.append(
+                {
+                    **candidate,
+                    "fact_id": fact_id,
+                    "existing_fact_id": (
+                        existing_fact_id or None
+                    ),
+                    "selected": (
+                        bool(candidate.get("selected"))
+                        and prior_decisions.get(
+                            fact_id,
+                            True,
+                        )
+                    ),
+                }
+            )
+
+        normalized = merge_model_fact_inventory(
+            reconciled_candidates
+        )
+        if not normalized:
+            raise ConflictError(
+                "live_research_facts_empty",
+                "No valid facts were supplied",
+            )
+        save_audit["normalized_fact_count"] = len(normalized)
+        save_audit["reconciled_match_count"] = len(
+            reconciliation_matches
+        )
+        save_audit["collapsed_in_batch_count"] = max(
+            0,
+            len(normalized_candidates) - len(normalized),
+        )
+
+        # Phase 2 commits only if the story/search snapshot has not changed while
+        # semantic reconciliation was in flight.
+        with self.service.store.tx() as db:
+            current_story = self.service._story_row(
+                db,
+                story_id,
+            )
+            current_research = json.loads(
+                current_story["research_json"] or "{}"
+            )
+            current_history = current_research.get(
+                "live_web_searches"
+            )
+            current_latest = (
+                dict(current_history[-1])
+                if isinstance(current_history, list)
+                and current_history
+                and isinstance(current_history[-1], dict)
+                else {}
+            )
+            current_search_run_id = str(
+                current_latest.get("research_run_id") or ""
+            ).strip()
+            if (
+                int(current_story["revision"] or 0)
+                != snapshot_revision
+                or int(
+                    current_research.get(
+                        "identity_generation"
+                    )
+                    or 0
+                )
+                != snapshot_identity_generation
+                or current_search_run_id
+                != snapshot_search_run_id
+            ):
+                raise ConflictError(
+                    "live_research_save_stale",
+                    "Story, identity or research result changed while semantic reconciliation was running",
+                )
+
+            history = current_history
+            latest_search = current_latest
+            research = current_research
+            story = current_story
             now = self.service.store.now()
+
             persist_fact_candidates(
                 db,
                 story_id=story_id,
-                poi_key=str(identity.get("candidate_id") or "") or None,
+                poi_key=(
+                    str(identity.get("candidate_id") or "")
+                    or None
+                ),
                 facts=normalized,
                 run_id=run_id,
                 batch_id=command_id,
                 model_name=str(session.model),
-                prompt_version="live-discovery-save-ledger-v1",
+                prompt_version=(
+                    "live-discovery-save-ledger-v2"
+                ),
                 now=now,
             )
+            if reconciliation_decisions:
+                persist_fact_relation_events(
+                    db,
+                    story_id=story_id,
+                    run_id=run_id,
+                    incoming_facts=normalized_candidates,
+                    decisions=reconciliation_decisions,
+                    now=now,
+                )
+
             from .poi_memory import persist_research_memory
             persist_research_memory(
                 db,
@@ -2393,39 +2713,94 @@ class StreetStoryLiveAdapter:
                     (story_id,),
                 )
             )
+
             new_selected = set(selected_ids)
             if new_selected != old_selected:
                 research["draft_needs_refresh"] = True
-                self.service._mark_visual_stale(db, story, selected_ids)
+                self.service._mark_visual_stale(
+                    db,
+                    story,
+                    selected_ids,
+                )
 
             latest_search["semantic_completion"] = "mira_live"
-            latest_search["mira_saved_fact_ids"] = [item["fact_id"] for item in normalized]
+            latest_search["mira_saved_fact_ids"] = [
+                item["fact_id"]
+                for item in normalized
+            ]
+            latest_search["save_research_audit"] = save_audit
+            latest_search["fact_reconciliation"] = (
+                reconciliation_meta
+            )
             history[-1] = latest_search
             research["live_web_searches"] = history[-12:]
             db.execute(
-                "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
-                (canonical(research), self.service.store.now(), story_id),
+                "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,"
+                "revision=revision+1,updated_at=? WHERE id=?",
+                (
+                    canonical(research),
+                    self.service.store.now(),
+                    story_id,
+                ),
             )
             result = {
                 "facts": normalized,
                 "selected_fact_ids": selected_ids,
-                "story": self.service._story_repr(db, self.service._story_row(db, story_id)),
+                "save_research_audit": save_audit,
+                "fact_reconciliation": reconciliation_meta,
+                "story": self.service._story_repr(
+                    db,
+                    self.service._story_row(
+                        db,
+                        story_id,
+                    ),
+                ),
             }
-            self._store_command(db, story_id, command_id, "save_research_facts", args, result)
+            self._store_command(
+                db,
+                story_id,
+                command_id,
+                "save_research_facts",
+                args,
+                result,
+            )
             all_research_sources = [
-                source for source in (research.get("grounding_sources") or [])
+                source
+                for source in (
+                    research.get("grounding_sources") or []
+                )
                 if isinstance(source, dict)
             ]
-            self._emit_research_progress(
-                session,
-                stage="facts",
-                active=False,
-                query=str(latest_search.get("query") or ""),
-                source_count=len(all_research_sources),
-                fact_count=int(fact_count),
-                sources=all_research_sources,
-            )
-            return result
+
+        record_live_diagnostic(
+            self.service,
+            story_id,
+            session.id,
+            "backend",
+            "fact_save_audit",
+            {
+                **save_audit,
+                "reconciliation_status": (
+                    reconciliation_meta.get("status")
+                ),
+                "pages_reviewed": int(
+                    reconciliation_meta.get(
+                        "pages_reviewed"
+                    )
+                    or 0
+                ),
+            },
+        )
+        self._emit_research_progress(
+            session,
+            stage="facts",
+            active=False,
+            query=str(latest_search.get("query") or ""),
+            source_count=len(all_research_sources),
+            fact_count=int(fact_count),
+            sources=all_research_sources,
+        )
+        return result
 
     def _record_fact_conflicts(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         story_id = session.resource_id
