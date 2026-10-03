@@ -217,13 +217,117 @@ def backfill_legacy_research_memory(db, now: float) -> int:
     return inserted
 
 
+def backfill_poi_assertion_review_state(db, now: float) -> int:
+    """Project the latest durable reviewed story decision into POI memory.
+
+    Unreviewed story states never downgrade an already reviewed POI assertion.
+    Immutable POI observations remain untouched.
+    """
+    rows = list(db.execute(
+        "SELECT poi_key,assertion_id,reviewed_at FROM poi_research_assertions "
+        "ORDER BY poi_key,assertion_id"
+    ))
+    updated = 0
+    for row in rows:
+        reviewed = db.execute(
+            "SELECT a.story_id,a.review_status,a.eligibility,a.updated_at "
+            "FROM fact_assertions a JOIN stories s ON s.id=a.story_id "
+            "WHERE a.assertion_id=? "
+            "AND json_extract(s.research_json,'$.visual_identity.candidate_id')=? "
+            "AND a.review_status<>'unreviewed' "
+            "ORDER BY a.updated_at DESC LIMIT 1",
+            (str(row["assertion_id"]), str(row["poi_key"])),
+        ).fetchone()
+        if not reviewed:
+            continue
+        reviewed_at = float(reviewed["updated_at"] or now)
+        current_reviewed_at = row["reviewed_at"]
+        if current_reviewed_at is not None and float(current_reviewed_at) >= reviewed_at:
+            continue
+        db.execute(
+            "UPDATE poi_research_assertions SET review_status=?,eligibility=?,"
+            "review_story_id=?,reviewed_at=?,updated_at=MAX(updated_at,?) "
+            "WHERE poi_key=? AND assertion_id=?",
+            (
+                str(reviewed["review_status"]),
+                str(reviewed["eligibility"]),
+                str(reviewed["story_id"]),
+                reviewed_at,
+                reviewed_at,
+                str(row["poi_key"]),
+                str(row["assertion_id"]),
+            ),
+        )
+        updated += 1
+    return updated
+
+
+def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
+    """Propagate only explicit reviewed story decisions to canonical POI memory."""
+    story = db.execute(
+        "SELECT research_json FROM stories WHERE id=?",
+        (story_id,),
+    ).fetchone()
+    if not story:
+        return 0
+    try:
+        research = json.loads(story["research_json"] or "{}")
+    except (TypeError, ValueError):
+        return 0
+    identity = research.get("visual_identity") if isinstance(research, dict) else {}
+    key = poi_key(identity if isinstance(identity, dict) else {})
+    if not key:
+        return 0
+
+    updated = 0
+    rows = list(db.execute(
+        "SELECT assertion_id,review_status,eligibility,updated_at "
+        "FROM fact_assertions WHERE story_id=? AND review_status<>'unreviewed'",
+        (story_id,),
+    ))
+    for row in rows:
+        reviewed_at = float(row["updated_at"] or now)
+        current = db.execute(
+            "SELECT reviewed_at FROM poi_research_assertions "
+            "WHERE poi_key=? AND assertion_id=?",
+            (key, str(row["assertion_id"])),
+        ).fetchone()
+        if not current:
+            continue
+        if current["reviewed_at"] is not None and float(current["reviewed_at"]) > reviewed_at:
+            continue
+        db.execute(
+            "UPDATE poi_research_assertions SET review_status=?,eligibility=?,"
+            "review_story_id=?,reviewed_at=?,updated_at=MAX(updated_at,?) "
+            "WHERE poi_key=? AND assertion_id=?",
+            (
+                str(row["review_status"]),
+                str(row["eligibility"]),
+                story_id,
+                reviewed_at,
+                reviewed_at,
+                key,
+                str(row["assertion_id"]),
+            ),
+        )
+        updated += 1
+    return updated
+
+
 def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> int:
     """Hydrate a new topic from durable POI knowledge before another web search."""
     if db.execute("SELECT 1 FROM facts WHERE story_id=? LIMIT 1", (story_id,)).fetchone():
         return 0
 
     candidates: list[dict[str, Any]] = []
-    candidates.extend(_research_memory_facts(db, identity, limit))
+    candidates.extend(
+        _research_memory_facts(
+            db,
+            identity,
+            limit,
+            include_unreviewed=False,
+        )
+    )
     remaining = max(0, limit - len(candidates))
     if remaining:
         candidates.extend(_public_regional_knowledge_facts(db, identity, remaining))
@@ -258,13 +362,28 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
     return inserted
 
 
-def _research_memory_facts(db, identity: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+def _research_memory_facts(
+    db,
+    identity: dict[str, Any],
+    limit: int,
+    *,
+    include_unreviewed: bool = True,
+) -> list[dict[str, Any]]:
     key = poi_key(identity)
     if not key:
         return []
+    if include_unreviewed:
+        where = (
+            "poi_key=? AND eligibility<>'withheld' "
+            "AND review_status<>'quarantined'"
+        )
+    else:
+        where = "poi_key=? AND eligibility='eligible'"
     rows = list(db.execute(
-        "SELECT assertion_id,semantic_key,text,confidence,sources_json,updated_at "
-        "FROM poi_research_assertions WHERE poi_key=? ORDER BY updated_at DESC LIMIT ?",
+        "SELECT assertion_id,semantic_key,text,confidence,sources_json,"
+        "review_status,eligibility,updated_at "
+        f"FROM poi_research_assertions WHERE {where} "
+        "ORDER BY updated_at DESC LIMIT ?",
         (key, max(1, int(limit))),
     ))
     return [
@@ -276,6 +395,8 @@ def _research_memory_facts(db, identity: dict[str, Any], limit: int) -> list[dic
             "evidence_supported": bool(json.loads(row["sources_json"] or "[]")),
             "selected": False,
             "sources": json.loads(row["sources_json"] or "[]"),
+            "review_status": str(row["review_status"]),
+            "eligibility": str(row["eligibility"]),
             "origin": "poi_research",
         }
         for row in rows
@@ -561,7 +682,12 @@ def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) ->
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    for item in _research_memory_facts(db, identity, limit):
+    for item in _research_memory_facts(
+        db,
+        identity,
+        limit,
+        include_unreviewed=True,
+    ):
         if item["fact_id"] in seen:
             continue
         seen.add(item["fact_id"])
@@ -572,7 +698,11 @@ def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) ->
     rows = db.execute(
         "SELECT f.fact_id,f.text,f.confidence,f.evidence_supported,f.selected,f.sources_json,s.updated_at "
         "FROM facts f JOIN stories s ON s.id=f.story_id "
+        "LEFT JOIN fact_assertions a "
+        "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
         "WHERE s.id<>? AND json_extract(s.research_json,'$.visual_identity.candidate_id')=? "
+        "AND COALESCE(a.eligibility,'unreviewed')<>'withheld' "
+        "AND COALESCE(a.review_status,'unreviewed')<>'quarantined' "
         "ORDER BY s.updated_at DESC,f.rowid LIMIT ?",
         (story_id, key, limit),
     )

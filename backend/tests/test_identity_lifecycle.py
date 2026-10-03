@@ -132,7 +132,7 @@ async def test_identity_job_is_mandatory_and_does_not_collect_facts(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_same_poi_hydrates_durable_facts_before_new_search(tmp_path):
+async def test_same_poi_hydrates_only_reviewed_eligible_facts_before_new_search(tmp_path):
     service, gemini = make_service(tmp_path)
     identity = {
         "candidate_id": "wiki:77",
@@ -169,42 +169,66 @@ async def test_same_poi_hydrates_durable_facts_before_new_search(tmp_path):
             "скульптуры тестовых ворот", service.store.now(),
         )
 
+    # Unreviewed memory is useful as research context but is not silently
+    # promoted into a new topic as an accepted fact.
     first = create(service, client="reuse-first")
     assert service.ensure_identity(first["id"])["state"] == "identifying"
     assert await service.run_once() is True
     first_ready = service.story(first["id"])
-    assert [fact["fact_id"] for fact in first_ready["facts"]] == ["claim-durable-sculptures"]
-    assert first_ready["facts"][0]["evidence_supported"] is True
-    assert first_ready["facts"][0]["selected"] is True
+    assert first_ready["facts"] == []
     assert gemini.research_calls == 0
 
-    with service.store.connection() as db:
-        research = __import__("json").loads(
-            db.execute("SELECT research_json FROM stories WHERE id=?", (first["id"],)).fetchone()[0]
+    with service.store.tx() as db:
+        db.execute(
+            "UPDATE poi_research_assertions SET review_status='eligible',eligibility='eligible',"
+            "review_story_id='review-source',reviewed_at=?,updated_at=? "
+            "WHERE poi_key='wiki:77' AND assertion_id='claim-durable-sculptures'",
+            (service.store.now(), service.store.now()),
         )
-        assert research["poi_reused_fact_count"] == 1
-        poi_id = research["poi_id"]
-        poi = db.execute("SELECT canonical_name FROM pois WHERE id=?", (poi_id,)).fetchone()
-        assert poi["canonical_name"] == "Тестовые ворота"
-        aliases = {
-            (row["namespace"], row["value"])
-            for row in db.execute("SELECT namespace,value FROM poi_aliases WHERE poi_id=?", (poi_id,))
-        }
-        assert ("street_story_candidate", "wiki:77") in aliases
-        assert ("name", "Тестовые ворота") in aliases
 
     service.delete_story(first["id"])
-    with service.store.connection() as db:
-        assert db.execute(
-            "SELECT 1 FROM poi_research_facts WHERE poi_key='wiki:77' AND fact_id='claim-durable-sculptures'"
-        ).fetchone() is not None
-
     second = create(service, client="reuse-second")
     assert service.ensure_identity(second["id"])["state"] == "identifying"
     assert await service.run_once() is True
     second_ready = service.story(second["id"])
-    assert [fact["fact_id"] for fact in second_ready["facts"]] == ["claim-durable-sculptures"]
+    assert [fact["fact_id"] for fact in second_ready["facts"]] == [
+        "claim-durable-sculptures"
+    ]
+    assert second_ready["facts"][0]["evidence_supported"] is True
+    assert second_ready["facts"][0]["selected"] is True
     assert gemini.research_calls == 0
+
+    with service.store.connection() as db:
+        research = __import__("json").loads(
+            db.execute(
+                "SELECT research_json FROM stories WHERE id=?",
+                (second["id"],),
+            ).fetchone()[0]
+        )
+        assert research["poi_reused_fact_count"] == 1
+        poi_id = research["poi_id"]
+        poi = db.execute(
+            "SELECT canonical_name FROM pois WHERE id=?",
+            (poi_id,),
+        ).fetchone()
+        assert poi["canonical_name"] == "Тестовые ворота"
+        aliases = {
+            (row["namespace"], row["value"])
+            for row in db.execute(
+                "SELECT namespace,value FROM poi_aliases WHERE poi_id=?",
+                (poi_id,),
+            )
+        }
+        assert ("street_story_candidate", "wiki:77") in aliases
+        assert ("name", "Тестовые ворота") in aliases
+
+    service.delete_story(second["id"])
+    with service.store.connection() as db:
+        assert db.execute(
+            "SELECT 1 FROM poi_research_assertions "
+            "WHERE poi_key='wiki:77' AND assertion_id='claim-durable-sculptures' "
+            "AND eligibility='eligible'"
+        ).fetchone() is not None
 
 
 @pytest.mark.asyncio

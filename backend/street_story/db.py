@@ -462,6 +462,12 @@ CREATE TABLE IF NOT EXISTS poi_research_assertions(
   text TEXT NOT NULL,
   confidence REAL NOT NULL,
   sources_json TEXT NOT NULL,
+  review_status TEXT NOT NULL DEFAULT 'unreviewed'
+    CHECK(review_status IN ('unreviewed','eligible','disputed','withheld','quarantined')),
+  eligibility TEXT NOT NULL DEFAULT 'unreviewed'
+    CHECK(eligibility IN ('unreviewed','eligible','withheld')),
+  review_story_id TEXT,
+  reviewed_at REAL,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
   PRIMARY KEY(poi_key,assertion_id)
@@ -734,8 +740,26 @@ class Store:
                     db.execute(f"ALTER TABLE fact_evidence_spans ADD COLUMN {name} {sql_type}")
             from .fact_ledger import backfill_legacy_fact_ledger
             backfill_legacy_fact_ledger(db, self.now())
-            from .poi_memory import backfill_legacy_research_memory
-            backfill_legacy_research_memory(db, self.now())
+            poi_assertion_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(poi_research_assertions)")
+            }
+            for name, sql in (
+                ("review_status", "TEXT NOT NULL DEFAULT 'unreviewed'"),
+                ("eligibility", "TEXT NOT NULL DEFAULT 'unreviewed'"),
+                ("review_story_id", "TEXT"),
+                ("reviewed_at", "REAL"),
+            ):
+                if name not in poi_assertion_columns:
+                    db.execute(
+                        f"ALTER TABLE poi_research_assertions ADD COLUMN {name} {sql}"
+                    )
+            from .poi_memory import (
+                backfill_legacy_research_memory,
+                backfill_poi_assertion_review_state,
+            )
+            now = self.now()
+            backfill_legacy_research_memory(db, now)
+            backfill_poi_assertion_review_state(db, now)
 
     def connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=ScopedConnection)

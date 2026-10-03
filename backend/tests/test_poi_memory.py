@@ -1,5 +1,11 @@
 from street_story.db import Store
-from street_story.poi_memory import persist_research_memory, poi_key, prior_facts, processed_sources
+from street_story.poi_memory import (
+    persist_research_memory,
+    poi_key,
+    prior_facts,
+    processed_sources,
+    sync_poi_review_from_story,
+)
 
 
 class FakeDB:
@@ -224,3 +230,143 @@ def test_poi_source_passages_merge_instead_of_replace(tmp_path):
     }
     assertion_sources = __import__("json").loads(assertion["sources_json"])
     assert len(assertion_sources[0]["supports"]) == 2
+
+
+def test_poi_review_sync_ignores_transient_unreviewed_and_propagates_withheld(tmp_path):
+    store = Store(tmp_path / "street-story.sqlite3")
+    identity = {"candidate_id": "wiki:review", "candidate_name": "Review Gate"}
+    source = {
+        "type": "web",
+        "title": "Evidence",
+        "url": "https://example.org/review",
+        "supports": [{
+            "kind": "verified_page_span",
+            "source_url": "https://example.org/review",
+            "text": "Verified review evidence.",
+        }],
+    }
+    fact = {
+        "fact_id": "claim-review",
+        "claim_key": "review-key",
+        "text": "Проверяемый факт.",
+        "confidence": .9,
+        "evidence_supported": True,
+        "sources": [source],
+    }
+    now = store.now()
+    story_id = "story_review_sync"
+    with store.tx() as db:
+        db.execute(
+            "INSERT INTO stories("
+            "id,client_story_id,photo_sha256,photo_mime_type,photo_path,voice_protocol,state,"
+            "research_json,visual_context_json,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,? ,?,'{}',?,?)",
+            (
+                story_id,
+                "client-review-sync",
+                "a" * 64,
+                "image/jpeg",
+                "/tmp/no-photo.jpg",
+                "voice-chunks-v2",
+                "identity_ready",
+                __import__("json").dumps({
+                    "visual_identity": {
+                        "status": "match",
+                        "candidate_id": "wiki:review",
+                        "candidate_name": "Review Gate",
+                    }
+                }),
+                now,
+                now,
+            ),
+        )
+        persist_research_memory(
+            db,
+            identity,
+            [fact],
+            [source],
+            "review test",
+            now,
+        )
+        db.execute(
+            "INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+            "VALUES(?,?,?,?,1,1,?)",
+            (
+                story_id,
+                "claim-review",
+                "Проверяемый факт.",
+                .9,
+                __import__("json").dumps([source], ensure_ascii=False),
+            ),
+        )
+        db.execute(
+            "INSERT INTO fact_assertions("
+            "story_id,assertion_id,semantic_key,display_text,owner_selected,"
+            "review_status,eligibility,revision_digest,created_at,updated_at"
+            ") VALUES(?,?,?,?,1,'eligible','eligible','digest',?,?)",
+            (
+                story_id,
+                "claim-review",
+                "review-key",
+                "Проверяемый факт.",
+                now,
+                now,
+            ),
+        )
+        assert sync_poi_review_from_story(db, story_id, now) == 1
+
+    with store.connection() as db:
+        row = db.execute(
+            "SELECT review_status,eligibility,review_story_id "
+            "FROM poi_research_assertions WHERE poi_key='wiki:review' "
+            "AND assertion_id='claim-review'"
+        ).fetchone()
+        assert dict(row) == {
+            "review_status": "eligible",
+            "eligibility": "eligible",
+            "review_story_id": story_id,
+        }
+
+    # A later transient detector outage must not downgrade canonical POI memory.
+    with store.tx() as db:
+        db.execute(
+            "UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed',updated_at=? "
+            "WHERE story_id=? AND assertion_id='claim-review'",
+            (now + 10, story_id),
+        )
+        assert sync_poi_review_from_story(db, story_id, now + 10) == 0
+
+    with store.connection() as db:
+        row = db.execute(
+            "SELECT review_status,eligibility FROM poi_research_assertions "
+            "WHERE poi_key='wiki:review' AND assertion_id='claim-review'"
+        ).fetchone()
+        assert dict(row) == {
+            "review_status": "eligible",
+            "eligibility": "eligible",
+        }
+
+    # An explicit reviewed dispute does propagate and prevents future hydration.
+    with store.tx() as db:
+        db.execute(
+            "UPDATE fact_assertions SET review_status='disputed',eligibility='withheld',updated_at=? "
+            "WHERE story_id=? AND assertion_id='claim-review'",
+            (now + 20, story_id),
+        )
+        assert sync_poi_review_from_story(db, story_id, now + 20) == 1
+
+    with store.connection() as db:
+        row = db.execute(
+            "SELECT review_status,eligibility FROM poi_research_assertions "
+            "WHERE poi_key='wiki:review' AND assertion_id='claim-review'"
+        ).fetchone()
+        assert dict(row) == {
+            "review_status": "disputed",
+            "eligibility": "withheld",
+        }
+        reused = prior_facts(
+            db,
+            {"candidate_id": "wiki:review"},
+            "different-story",
+        )
+        assert all(item["fact_id"] != "claim-review" for item in reused)
