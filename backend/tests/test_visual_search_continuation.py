@@ -206,6 +206,28 @@ def test_identity_continuation_does_not_spin_or_discard_queued_refs(tmp_path):
     adapter._continue_identity(s)
     adapter._continue_identity(s)
     assert len(writes) == 1 and 'compare_place_images' in writes[0]['text']
+    with svc.store.tx() as db:
+        current = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (story['id'],)).fetchone()[0])
+        current['identity_article_discovery'] = {'queries': {'gate': {'status': 'temporary_failure', 'retry_at': 123}}}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(current), story['id']))
+    adapter._continue_identity(s)
+    adapter._continue_identity(s)
+    assert len(writes) == 2  # A failed search must not consume the prior queue continuation.
     s.state['visual_comparison']['queue'] = []
     adapter._continue_identity(s)
-    assert len(writes) == 1
+    assert len(writes) == 2
+
+
+def test_failed_discovery_still_starts_saved_refs_before_first_comparison(tmp_path):
+    svc, adapter, story, session = prepared(tmp_path)
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidates': [{
+                'candidate_id': 'saved', 'reference_image_urls': ['https://example.com/late.jpg']}]},
+            'identity_article_discovery': {'status': 'temporary_failure'}}), story['id']))
+    writes = []
+    adapter.write = lambda session, data: writes.append(data)
+    s = session()
+    adapter._continue_identity(s)
+    adapter._continue_identity(s)
+    assert len(writes) == 1 and 'compare_place_images' in writes[0]['text']
