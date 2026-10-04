@@ -11,6 +11,7 @@
 - PR #126: https://github.com/onedayonemasterpiece/street-story/pull/126
 - branch: `chatgpt/street-story-facts-review-finalization-20261003`
 - protected requirements уже дополнены commit `c7e09a8df17b82f4a06624880f02adf93845d285`
+- обязательная ретроспектива прошлых решений: https://github.com/onedayonemasterpiece/street-story/blob/6c52c0cfaa5ada20a6864fae33bce653cece1063/docs/retrospectives/facts-live-first-retrospective-2026-10-04.md
 - существующий worktree: `street-story-poi-runtime-clean`
 
 Сначала сверяй фактический текущий HEAD/CI/runtime, потому что ветка могла продвинуться.  
@@ -23,6 +24,22 @@
 - `CORE-PRODUCT-FIRST-PARTIAL-VALUE`
 
 Эта постановка **заменяет как приоритет** прежние попытки сделать semantic-repair/review pipeline идеальным до поставки продукта.
+
+## 0.1. Не начинать с чистого листа
+
+**До любых source-изменений прочитай ретроспективу целиком.** Она является входным design history для этой задачи.
+
+Не предлагай заново уже проверенные решения без нового изменившегося условия. В частности:
+- не возвращай большие model-facing search payloads — PR #95 уже показал пользу compact projection;
+- не включай одновременно native search и application search — PR #97 уже устранил этот конфликт/расход;
+- не откатывай immutable source versions / evidence spans / durable research runs / resume / owner-selection separation;
+- не делай повторное чтение одного core нормальной стратегией — уже наблюдались 15 чтений одного core;
+- не трактуй RESOURCE_TOKEN_BUDGET автоматически как provider outage;
+- не делай repair/superseding review обязательным normal path;
+- не объявляй Live бесполезной: сохранённый targeted-run уже доказал 3 отдельных evidence-backed facts и completed run; broad доказал ненулевой объём, хотя качество требовало улучшения.
+
+Если хочешь изменить решение из раздела «удачные решения — сохранить» ретроспективы, сначала покажи **новое конкретное evidence**, которого не было в ретроспективе.
+Если встречаешь известную граблю из раздела «неудачные решения», исправляй её локально, а не строй новый параллельный pipeline.
 
 ---
 
