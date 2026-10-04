@@ -102,6 +102,7 @@ class MainActivity : Activity() {
     private var stickyConcept: TextView? = null
     private var stickyVisible = false
     private var identityProgressView: TextView? = null
+    private var lastLiveIdentityProgress: IdentityProgressWire? = null
     private var factsBlock: LinearLayout? = null
     private var conceptBlock: TextView? = null
     private var publicationEventView: TextView? = null
@@ -571,24 +572,9 @@ class MainActivity : Activity() {
             text = if (concept.isBlank()) "" else "Концепция\n$concept"
             visibility = if (concept.isBlank()) View.GONE else View.VISIBLE
         }
-        identityProgressView?.apply {
-            val progress = projection?.identityProgress
-            val lines = progress?.steps?.map { step ->
-                val mark = when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
-                "$mark ${step.label}"
-            } ?: emptyList()
-            val waiting = story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING)
-            val visibleLines = if (lines.isNotEmpty()) lines else if (waiting) listOf(
-                "… Проверяю геометки снимка",
-                "○ Ищу объекты рядом",
-                "○ Проверяю статьи и эталонные фото",
-                "○ Сравниваю видимые признаки",
-            ) else emptyList()
-            val summary = visibleLines.joinToString(10.toChar().toString()) +
-                if(progress?.finished == true) "${10.toChar()}${progress.elapsedMs / 1000} с · попыток: ${progress.attempt}" else ""
-            if(text.toString() != summary) text = summary
-            visibility = if(summary.isNotBlank()) View.VISIBLE else View.GONE
-        }
+        val liveProgress = live.snapshot().takeIf { it.storyId == id }?.identityProgress
+        renderIdentityProgress(newestIdentityProgress(projection?.identityProgress, liveProgress),
+            story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING))
         val identified = projection?.candidates?.firstOrNull { it.candidateId == projection.candidateId }
         identityLinkView?.apply {
             val accepted = projection?.identityStatus in setOf("match", "owner_confirmed")
@@ -636,6 +622,27 @@ class MainActivity : Activity() {
         applyLiveState(live.snapshot())
     }
 
+    private fun renderIdentityProgress(progress: IdentityProgressWire?, waiting: Boolean) {
+        identityProgressView?.apply {
+            val lines = progress?.steps?.map { step ->
+                val mark = if (step.key == "visual_comparison") {
+                    if (progress.visualComparisonVerified) "☑" else "☐"
+                } else when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
+                "$mark ${step.label}"
+            } ?: emptyList()
+            val visibleLines = if (lines.isNotEmpty()) lines else if (waiting) listOf(
+                "… Проверяю геометки снимка",
+                "○ Ищу объекты рядом",
+                "○ Проверяю статьи и эталонные фото",
+                "○ Сравниваю видимые признаки",
+            ) else emptyList()
+            val summary = visibleLines.joinToString(10.toChar().toString()) +
+                if(progress?.finished == true) "${10.toChar()}${progress.elapsedMs / 1000} с · попыток: ${progress.attempt}" else ""
+            if(text.toString() != summary) text = summary
+            visibility = if(summary.isNotBlank()) View.VISIBLE else View.GONE
+        }
+    }
+
     private fun applyLiveState(state: LiveUiState) {
         val id = activeStoryId ?: return
         if (state.storyId != null && state.storyId != id) {
@@ -645,6 +652,11 @@ class MainActivity : Activity() {
             return
         }
 
+        if (state.identityProgress != null && state.identityProgress !== lastLiveIdentityProgress) {
+            lastLiveIdentityProgress = state.identityProgress
+            renderIdentityProgress(newestIdentityProgress(research.get(id)?.identityProgress, state.identityProgress),
+                store.story(id)?.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING))
+        }
         chatStatus?.apply {
             val microphone = state.microphone?.takeIf { state.active && !it.inputSuppressed }
             val label = microphone?.warning ?: state.status
@@ -1154,6 +1166,7 @@ class MainActivity : Activity() {
         stickyFacts = null; stickyConcept = null; stickyVisible = false
         factsBlock = null; conceptBlock = null; publicationEventView = null
         identityProgressView = null
+        lastLiveIdentityProgress = null
         renderedMessages = emptyList()
         renderedResearchProgress = null
         stopMicPulse()

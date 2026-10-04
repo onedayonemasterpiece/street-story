@@ -14,7 +14,7 @@ def test_native_and_python_use_same_versioned_archive(tmp_path):
     raw = (ROOT / lock['archive']).read_bytes()
     assert hashlib.sha256(raw).hexdigest() == lock['sha256']
     requirements = (ROOT / 'backend/requirements.txt').read_text()
-    assert f"/v{lock['version']}.tar.gz#sha256={lock['sha256']}" in requirements
+    assert f"live-interaction=={lock['python_version']}" in requirements
     spec = importlib.util.spec_from_file_location('prepare_shared_live', ROOT / 'scripts/prepare_live_framework.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

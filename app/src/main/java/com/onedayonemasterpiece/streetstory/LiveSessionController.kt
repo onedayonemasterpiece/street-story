@@ -77,6 +77,7 @@ data class LiveUiState(
     val transport: String? = null,
     val microphone: MicrophoneReading? = null,
     val researchProgress: LiveResearchProgress? = null,
+    val identityProgress: IdentityProgressWire? = null,
 )
 
 /** Product UI/state only. Ordered PCM, WSS framing and ACKs belong to the shared SDK. */
@@ -657,7 +658,11 @@ class LiveSessionController(context: Context) {
                 SyncScheduler.enqueue(app)
                 val product = event.state?.takeIf { it.isJsonObject }?.asJsonObject
                 val last = product?.get("last_change")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
-                updateForGeneration(gen, state.copy(lastChange = last ?: state.lastChange, error = null))
+                val progress = product?.get("identity_progress")?.takeIf { it.isJsonObject }?.let {
+                    gson.fromJson(it, IdentityProgressWire::class.java)
+                }
+                updateForGeneration(gen, state.copy(lastChange = last ?: state.lastChange, error = null,
+                    identityProgress = newestIdentityProgress(state.identityProgress, progress)))
             }
             "tool_result" -> {
                 SyncScheduler.enqueue(app)

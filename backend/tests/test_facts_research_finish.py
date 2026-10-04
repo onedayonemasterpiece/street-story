@@ -721,7 +721,8 @@ async def test_sufficient_snippet_save_preserves_future_cost_and_allows_partial(
     assert (await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}}))['facts'][0]['eligibility'] == 'eligible'
     adapter._continue_pending_research(session)
     with svc.store.connection() as db:
-        assert run_manifest(db, run_id)['run']['status_detail'] == 'live_answer_partial'
+        assert run_manifest(db, run_id)['run']['status_detail'] == 'live_batches_in_progress'
+        assert session.state['research_continuation_queued'] is True
         assert db.execute('SELECT COUNT(*) FROM poi_research_observations').fetchone()[0] == 1
     await reader.search_http.aclose()
 

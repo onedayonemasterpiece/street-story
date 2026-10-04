@@ -545,6 +545,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             except (TypeError, ValueError, json.JSONDecodeError):
                 raise MalformedProviderResponse("gemini:malformed_visual_identity") from None
             considered = [x["candidate_id"] for x in reference_candidates if x.get("reference_image_urls")][:reference_limit]
+            record_identity_event(self, story['id'], 'identity_images_reviewed', {
+                'generation': story.get('_identity_generation', 0),
+                'image_sha256s': [item['model_image_sha256'] for item in reference_evidence],
+                'image_count': len(reference_images), 'comparison_model': model or self.settings.gemini_model,
+            })
             return {**payload, "_references_unavailable_ids": [cid for cid in considered if cid not in {x[0] for x in reference_images}],
                     "_references_sent": [item[0] for item in reference_images],
                     "_reference_evidence": reference_evidence,

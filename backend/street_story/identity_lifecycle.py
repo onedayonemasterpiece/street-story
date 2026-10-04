@@ -193,6 +193,9 @@ class IdentityLifecycleMixin:
                             and confidence(recovered_raw) >= confidence(raw)
                             and recovered_raw.get('_references_sent'))
                     )
+                    if recovered_raw.get('_article_media_pending'):
+                        ids = {item['candidate_id'] for item in discovered}
+                        candidates = ([item for item in candidates if item['candidate_id'] not in ids] + discovered)[:36]
                     if recovery_is_better:
                         raw = recovered_raw
                         ids = {item['candidate_id'] for item in discovered}

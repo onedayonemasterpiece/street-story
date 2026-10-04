@@ -12,6 +12,7 @@ def current_projection(previous: dict, identity: dict | None = None) -> dict:
     result['steps'] = [dict(step, label=labels.get(step.get('label'), step.get('label', '')))
                        for step in result.get('steps', []) if isinstance(step, dict)]
     if identity and identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
+        result['visual_comparison_verified'] = True
         for step in result['steps']:
             if step.get('key') == 'references':
                 step.update(label='Эталон выбранного объекта проверен', status='done')
@@ -75,6 +76,25 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         step('references', 'Эталонное фото загружено для сравнения', 'done')
     elif event == 'identity_reference_unavailable':
         step('references', 'Не все эталоны доступны; проверяю оставшиеся', 'warning')
+    elif event == 'identity_web_media_started':
+        progress['finished'] = False
+        step('web_media', 'Ищу иллюстрации в статьях на других сайтах', 'working')
+    elif event == 'identity_web_search_unavailable':
+        step('web_media', 'Поиск статей временно недоступен · проверяю другие источники', 'warning')
+    elif event == 'identity_web_media_candidates':
+        progress['article_page_count'] = int(fields.get('page_count', 0))
+        step('web_media', f"Статьи: {progress['article_page_count']} страниц · проверяю иллюстрации", 'working')
+    elif event == 'identity_images_reviewed':
+        seen = set(progress.get('reviewed_image_sha256s') or [])
+        seen.update(str(value) for value in fields.get('image_sha256s', []) if value)
+        progress['reviewed_image_sha256s'] = sorted(seen)
+        progress['images_reviewed_count'] = len(seen)
+        step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {len(seen)}", 'working')
+    elif event == 'identity_live_comparison_sent':
+        progress['finished'] = False
+        progress['visual_comparison_verified'] = False
+        count = progress.get('images_reviewed_count', 0)
+        step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'working')
     elif event == 'identity_failed':
         step('retry', f"Источник не ответил · попытка {progress.get('attempt', 1)}", 'warning')
     elif event == 'identity_owner_confirmed':
@@ -87,6 +107,9 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
             step('references', 'Эталон выбранного объекта проверен', 'done')
         if 'compare' in steps:
             steps['compare']['status'] = 'done' if matched else 'warning'
+        progress['visual_comparison_verified'] = matched
+        count = progress.get('images_reviewed_count', 0)
+        step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'done' if matched else 'warning')
         progress['finished'] = True
         progress['elapsed_ms'] = max(0, round((now - progress['started_at']) * 1000))
     else:

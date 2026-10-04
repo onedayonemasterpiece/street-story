@@ -1085,14 +1085,15 @@ class GeminiClient:
             if not results:
                 raise RetryableProviderError("public_web_search_no_https_results")
 
-            # Previously processed URLs are intentionally not filtered here:
-            # a new coverage goal may require a different fact or page section.
-            # Cached supports are supplied separately to the semantic model.
-            _processed = {
+            # Caller supplies only recently completed coverage of this exact
+            # scope. URL/snippet sightings never enter this exclusion set.
+            processed = {
                 str(url).rstrip("/")
                 for url in (excluded_urls or set())
                 if str(url).startswith("https://")
             }
+            skipped = sum(str(item['url']).rstrip('/') in processed for item in results)
+            results = [item for item in results if str(item['url']).rstrip('/') not in processed]
 
             facts: list[dict[str, Any]] = []
             sources = [
@@ -1124,6 +1125,7 @@ class GeminiClient:
                     "official_source_urls": [],
                     "facts": facts,
                     "search_provider": "duckduckgo_html_fallback",
+                    "sources_skipped_completed": skipped,
                 },
                 grounding_sources=sources,
             )
@@ -3051,14 +3053,25 @@ class GeminiClient:
         if topic_context.get('live_first') is True:
             # The existing public discovery/fetch path supplies evidence. Live
             # owns extraction; no metered semantic helper is on this path.
+            from .research_runs import extraction_scope
+            scope = extraction_scope(topic_context.get('coverage_goal') or query)
+            excluded = {
+                str(source['url']).rstrip('/')
+                for source in topic_context.get('previously_processed_sources') or []
+                if isinstance(source, dict) and source.get('url')
+                and any(item.get('completed') is True and item.get('scope') == scope
+                        and 0 <= self.store.now() - float(item.get('checked_at') or 0) <= 86400
+                        for item in source.get('extraction_coverage') or [])
+            }
+            cached_sources = [source for source in cached_sources if str(source['url']).rstrip('/') not in excluded]
             try:
-                discovery = await self._public_web_search(query)
+                discovery = await self._public_web_search(query, excluded) if excluded else await self._public_web_search(query)
             except RetryableProviderError:
                 if not cached_sources:
                     raise
                 discovery = GroundedResearch(payload={'search_provider': 'poi_cache_fallback', 'facts': []}, grounding_sources=cached_sources)
             discovery.payload.update(semantic_completion='', semantic_status='live_model_required',
-                                     coverage_satisfied=False, live_first=True)
+                                     coverage_satisfied=False, live_first=True, completed_source_exclusions=len(excluded))
             return discovery
         if cached_sources:
             cached_discovery = GroundedResearch(

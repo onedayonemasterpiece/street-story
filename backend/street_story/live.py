@@ -16,6 +16,7 @@ from typing import Any
 
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
+from .live_visual_comparison import LiveVisualComparisonMixin
 from .config import Settings
 from .research_budget import PAGE_UNITS, response_units, bounded_inventory
 from . import review_packets, research_repairs
@@ -347,6 +348,20 @@ REPAIR_FIELDS = {
 
 
 FUNCTIONS = [
+    _tool_schema('find_place_articles',
+        'Find actual article URLs for uncertain photo identity. Discovery hypotheses only, never facts or visual proof. Then compare_place_images examines the article illustrations.',
+        {'query': {'type': 'string'}}, ['query']),
+    _tool_schema('compare_place_images',
+        'Show SOURCE and the next article illustrations to this same Live model for visual comparison. After Wikipedia fails, automatically search up to 20 websites and examine their article images, including later gallery photos. Call record_place_comparison after every group.',
+        {'query': {'type': 'string', 'description': 'Object-name hypothesis or visible distinctive details; never author confirmation.'},
+         'article_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Optional actual article URLs found by your native Google Search. They are fetched as hypotheses; only decoded illustrations and your comparison prove identity.'}}),
+    _tool_schema('record_place_comparison',
+        'Record YOUR visual comparison of the SOURCE/REF snapshot just received. This is model evidence, not author consent. Match requires distinctive repeated details and confidence >=0.90. On no match continue compare_place_images.',
+        {'comparison_id': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['match', 'uncertain', 'mismatch']},
+         'candidate_id': {'type': 'string'}, 'object_name': {'type': 'string'}, 'confidence': {'type': 'number'},
+         'observations': {'type': 'array', 'items': {'type': 'string'}},
+         'alternative_candidate_ids': {'type': 'array', 'items': {'type': 'string'}}},
+        ['comparison_id', 'status', 'candidate_id', 'confidence', 'observations', 'alternative_candidate_ids']),
     _tool_schema(
         "read_topic",
         "Read the current authoritative Street Story topic, facts, visual and publication state. No mutation.",
@@ -467,6 +482,7 @@ FUNCTIONS = [
             "continuation_needed": {"type": "boolean"},
             "inventory_reviewed": {"type": "boolean", "description": "True only after Mira read the whole existing inventory and chose equivalence IDs herself."},
             "source_matches_poi": {"type": "boolean", "description": "Your semantic check that these source passages concern the confirmed object, including city/geography. Wrong-object cores must be checkpointed facts=[]; never import their claims."},
+            "source_content_valid": {"type": "boolean", "description": "False for navigation/menu/challenge/error fragments instead of readable article content. They cannot establish article completion."},
             "batch_reviewed": {"type": "boolean", "description": "True after checking this small batch against its OWN chosen passages and local duplicate/conflict context. Eligible findings can be used immediately; this is not a full-inventory review."},
             "facts": {
                 "type": "array",
@@ -702,7 +718,7 @@ _finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enum
 _finding_schema['required'] = ['source_refs', 'evidence_refs', 'existing_fact_id']
 _save_parameters = _save_declaration['parameters']
 _save_parameters['properties'] = {key: _save_parameters['properties'][key]
-                                  for key in ('run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi')}
+                                  for key in ('run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi', 'source_content_valid')}
 _save_parameters['required'] = ['facts', 'batch_reviewed', 'source_matches_poi']
 
 SYSTEM_INSTRUCTION = """
@@ -718,7 +734,7 @@ Photo and identity:
 - The topic photo is supplied as a separate visual snapshot. Describe only visible features; admit when the snapshot is unavailable. A question "что видно/что ты видишь на фото" is visual: не вызывай resolve_place/search_web just to answer it.
 - Backend identification runs automatically after photo selection. EXIF coordinates center nearby OSM/Wikipedia discovery; coordinates alone do not identify the object. visual_identity match/owner_confirmed is mandatory before factual research, final generate_visual or prepare_publication.
 - Reuse an automatic match and briefly say the object was found; do not rerun resolve_place without reason. Reuse confirmed identity from the topic.
-- For uncertain/mismatch, resolve_place checks candidates within a bounded budget. Do not replace verification by asking the owner to name the unknown object. Explain candidate matches and the specific evidence gap. A failed reference-photo fetch does not mean the owner must know the answer. Do not repeat expensive discovery without new data.
+- For uncertain/mismatch, call compare_place_images and visually compare SOURCE against each REF in this same Live session. After EVERY group call record_place_comparison so the owner sees the processed-illustration counter grow during the work. On no match continue the later gallery photos; broad article search starts automatically after Wikipedia. Stop on proved match or exhausted. If the helper search is unavailable, use native Google Search and pass article_urls; unavailable images are not visual mismatches. Do not ask the owner to name the unknown object. Different pages of one physical building are not competing objects.
 - confirm_place requires fresh voluntary explicit owner speech naming and confirming the object. Greetings, "what?", silence, your inference or tool arguments are not consent. Не проси автора подтвердить объект, который он сам пытается определить.
 - If the owner says it is the wrong object, call reject_place with current candidate_id instead of repeating confirmation.
 - Missing GPS in the supplied copy does not prove the original lacks coordinates. Explain granting geotag access and selecting the original with the topic button.
@@ -726,6 +742,7 @@ Photo and identity:
 Research and durable evidence:
 - Never invent facts. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
 - Separate retrieval query from coverage_goal. Short queries must retain all owner requirements in coverage_goal, including positions such as left/center/right. Use visible sculptures, figures, inscriptions, coats of arms and plaques as coverage hints: targeted search must answer the named detail concretely, not merely describe the building.
+- For more findings within the same scope, retain the previous exact coverage_goal. Use a different goal only for a genuinely different question or verification; explain the new missing aspect. Completed unchanged chunks in the same scope are reused. Menu/challenge fragments require source_content_valid=false and facts=[]; do not call them an article without facts.
 - discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
 - Attach only each claim's own supporting evidence refs. Semantically equivalent claims use exact existing_fact_id; enrich evidence rather than multiplying paraphrases.
 - get_research_chunk is paginated: check/save the current small page before following save receipt next_args to the next unread page. facts=[] means no useful claims on that page, not completed research. Do not skip an unread page to a new search. Do not reread saved pages.
@@ -754,7 +771,7 @@ Answer briefly and concretely in Russian.
 """.strip()
 
 
-class StreetStoryLiveAdapter:
+class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
         self.emit = emit
@@ -766,6 +783,7 @@ class StreetStoryLiveAdapter:
         # A growing story must still leave lease room for history, photo and
         # the owner's first input. The paginated inventory remains authoritative.
         context = self._compact_context(state, fact_preview_limit=8)
+        context.pop('identity_progress', None)  # UI progress is pushed; do not charge it in setup.
         # A short preview hid older facts from additional-research comparison.
         # Supply whole assertion text/IDs cheaply; proofs stay in paginated tools.
         context["facts"] = [fact for fact in context["facts"] if fact["selected"]]
@@ -821,8 +839,8 @@ class StreetStoryLiveAdapter:
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
                 "manual_activity_detection": True,
-                "search_enabled": False,
-                "application_search_function": "search_web",
+                "search_enabled": (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'},
+                "application_search_function": 'find_place_articles' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'} else 'search_web',
             },
             "response": {
                 "story_id": resource_id,
@@ -900,6 +918,13 @@ class StreetStoryLiveAdapter:
     def on_event(self, session, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "unknown")
         text = str(event.get("text") or "").strip()
+        if kind == 'grounding':
+            chunks = (event.get('metadata') or {}).get('groundingChunks') or []
+            sources = [{'url': item['web']['uri'], 'title': item['web'].get('title', '')}
+                       for item in chunks if isinstance(item, dict) and isinstance(item.get('web'), dict)
+                       and isinstance(item['web'].get('uri'), str)]
+            if sources:
+                session.state['identity_article_sources'] = sources[:20]
         if kind == "tool_call":
             session.state["research_provider_tool_pending"] = True
             session.state["research_continuation_queued"] = False
@@ -1053,6 +1078,7 @@ class StreetStoryLiveAdapter:
             {"voice": "Aoede", "model": str(session.model), "phase": "resumed"},
         )
         self._send_visual_snapshot(session)
+        self._send_pending_comparison(session)
         self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
 
     def _pause_research(self, session, reason):
@@ -1095,15 +1121,19 @@ class StreetStoryLiveAdapter:
                 (run_id,),
             ).fetchone()[0]
             facts = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
+            recipe = session.state.get('research_chunk_receipts', {}).get(session.state.get('research_current_chunk_id')) or {}
+            unread_save = bool(recipe.get('run_id') == run_id and recipe.get('batch_id') and not db.execute(
+                "SELECT 1 FROM live_commands WHERE story_id=? AND command_id=? AND tool_name='save_research_facts'",
+                (session.resource_id, recipe.get('batch_id'))).fetchone())
         if session.state.get('live_first_research'):
             with self.service.store.connection() as db:
                 progress = self._live_research_progress(db, session.resource_id, run_id)
-            if (not progress['observations'] or session.state.get('research_output_pending')) and (pending or (progress['remaining'] and progress['attempts'] < 3)):
+            if pending or (progress['remaining'] and progress['attempts'] < 3):
                 attempts = int(session.state.get("research_continuation_count") or 0)
                 if attempts < 12:
                     next_tool = (
                         "save_research_facts"
-                        if pending and session.state.get("research_current_chunk_id")
+                        if pending and unread_save
                         else "get_research_chunk"
                     )
                     session.state["research_continuation_count"] = attempts + 1
@@ -1114,15 +1144,15 @@ class StreetStoryLiveAdapter:
                             "type": "text",
                             "text": (
                                 "Server context for the author's current research request: "
-                                f"run {run_id} has unread evidence and the current answer is not authorized by a save receipt. "
+                                f"run {run_id} has unread evidence. Already saved supported findings remain usable. "
                                 "Save sufficient NEW discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Compare the known_fact_inventory; equivalent claims must reuse existing_fact_id and are not new findings. Never speak unsaved snippets as facts. Do not answer with remembered or "
                                 "search-snippet facts. Continue "
                                 f"{next_tool}. For get_research_chunk choose one competent "
                                 "source by title/provenance and copy its exact source_ref from "
                                 "the previous search result. For save_research_facts review "
                                 "the evidence already read and preserve every qualifier. "
-                                "After no_claims use get_research_chunk(run_id only) for the next source, at most three full-source attempts. Only after a supported durable save, or after the bounded sources are exhausted "
-                                "with no supported claim, say новых подтверждённых фактов не нашла."
+                                "After no_claims use get_research_chunk(run_id only) for the next source, at most three full-source attempts. "
+                                "If this work adds no new supported claim, report that honestly. Distinguish previously saved facts and added evidence from new eligible claims."
                             ),
                         },
                     )
@@ -1139,7 +1169,7 @@ class StreetStoryLiveAdapter:
                             "pending_chunks": pending,
                             "unfetched_sources": unfetched,
                             "saved_batches": saved_batches,
-                            "reason": "no_new_durable_observations",
+                            "reason": "unread_saved_source_work",
                             **progress,
                         },
                     )
@@ -1221,6 +1251,9 @@ class StreetStoryLiveAdapter:
         command_id = str(call.get("id") or "")
         story_id = session.resource_id
 
+        if name == 'find_place_articles':
+            return await self._find_place_articles(session, args)
+
         if name == "read_topic":
             result = self._topic_state(story_id)
             compact = self._compact_context(result)
@@ -1295,7 +1328,11 @@ class StreetStoryLiveAdapter:
             if replay is not None:
                 return self._model_result(name, replay)
 
-        if name == "resolve_place":
+        if name == "compare_place_images":
+            result = await self._compare_place_images(session, args)
+        elif name == "record_place_comparison":
+            result = self._record_place_comparison(session, command_id, args)
+        elif name == "resolve_place":
             result = await self._resolve_place(session, command_id, args)
         elif name == "reject_place":
             result = await self._reject_place(session, command_id, args)
@@ -1361,6 +1398,8 @@ class StreetStoryLiveAdapter:
 
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
+        if name == 'compare_place_images' and result.get('comparison_id'):
+            return result
         projected = self._model_result(name, result)
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
@@ -1457,6 +1496,8 @@ class StreetStoryLiveAdapter:
             explicit_next_tool = result.get("next_tool")
             projected = {
                 "query": str(result.get("query") or "")[:400],
+                "coverage_goal": result.get("coverage_goal"),
+                "sources_skipped_completed": result.get("sources_skipped_completed", 0),
                 "research_run_id": result.get("research_run_id"),
                 "save_batch_id": result.get("save_batch_id"),
                 "summary": str(result.get("summary") or "")[:480],
@@ -1523,6 +1564,7 @@ class StreetStoryLiveAdapter:
             projected = {
                 "research_run_id": result.get("research_run_id"),
                 "payload_saved": bool(result.get("payload_saved")),
+                "save_research_audit": result.get("save_research_audit"),
                 "chunk_id": result.get("chunk_id"),
                 "save_batch_id": result.get("save_batch_id"),
                 "review_required": bool(result.get("review_required")),
@@ -1668,7 +1710,9 @@ class StreetStoryLiveAdapter:
         return story, row
 
     def _topic_state(self, story_id: str) -> dict[str, Any]:
-        with self.service.store.connection() as db:
+        with self.service.store.tx() as db:
+            row = self.service._story_row(db, story_id)
+            self.service._hydrate_poi_memory(db, row)
             row = self.service._story_row(db, story_id)
             story = self.service._story_repr(db, row)
             story['latitude'], story['longitude'] = row['latitude'], row['longitude']
@@ -1749,7 +1793,8 @@ class StreetStoryLiveAdapter:
             "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
             "WHERE " + " AND ".join(where) + " ORDER BY f.rowid LIMIT ?"
         )
-        with self.service.store.connection() as db:
+        with self.service.store.tx() as db:
+            self.service._hydrate_poi_memory(db, self.service._story_row(db, story_id))
             rows = list(db.execute(sql, (*params, limit + 1)))
         page = rows[:limit]
         has_more = len(rows) > limit
@@ -1883,6 +1928,9 @@ class StreetStoryLiveAdapter:
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
+            "identity_progress": {key: value for key, value in (story.get('identity_progress') or {}).items()
+                if key in {'generation', 'updated_at', 'steps', 'attempt', 'finished', 'elapsed_ms',
+                           'images_reviewed_count', 'visual_comparison_verified'}},
             "facts": facts,
             "fact_count": len(inventory),
             "facts_preview_truncated": len(inventory) > fact_preview_limit,
@@ -2308,7 +2356,7 @@ class StreetStoryLiveAdapter:
             "recent_author_context": self._recent_transcript(session, "")[:6000],
             "known_facts": known_facts,
             "previously_considered_poi_facts": poi_history[:60],
-            "previously_processed_sources": processed_source_history[:80],
+            "previously_processed_sources": processed_source_history,
             "coverage_goal": coverage_goal,
             "research_run_id": run_id,
             "visual_identity": identity,
@@ -2681,6 +2729,7 @@ class StreetStoryLiveAdapter:
             result = {
                 "query": query,
                 "coverage_goal": coverage_goal,
+                "sources_skipped_completed": int(grounded.payload.get("sources_skipped_completed") or 0),
                 "research_run_id": run_id,
                 "save_batch_id": save_batch_id,
                 "review_required": review_required,
@@ -2723,10 +2772,12 @@ class StreetStoryLiveAdapter:
                 batch_source_count=len(grounding_sources),
             )
             logger.info(
-                "street_story_live_web_search story_id=%s facts=%s sources=%s",
+                "street_story_live_web_search story_id=%s run_id=%s facts=%s sources=%s skipped_completed=%s",
                 story_id,
+                run_id,
                 len(normalized),
                 len(grounding_sources),
+                int(grounded.payload.get('sources_skipped_completed') or 0),
             )
             return result
 
@@ -2798,9 +2849,12 @@ class StreetStoryLiveAdapter:
                 raise ConflictError('live_research_source_choice_required', 'Choose a competent source from the saved discovery by title/provenance and pass its exact source_ref. The server does not rank sources semantically.')
 
             candidate = db.execute(
-                "SELECT c.*,v.normalized_text,v.final_url,v.requested_url FROM research_chunk_runs r "
+                "SELECT c.*,v.normalized_text,v.final_url,"
+                "(SELECT s.url FROM research_run_sources s WHERE s.run_id=r.run_id AND s.source_version_id=c.source_version_id "
+                "ORDER BY s.url LIMIT 1) AS requested_url FROM research_chunk_runs r "
                 "JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id "
-                "WHERE r.run_id=? AND (?='' OR r.chunk_id=?) AND (?='' OR v.requested_url=?) "
+                "WHERE r.run_id=? AND (?='' OR r.chunk_id=?) AND (?='' OR EXISTS "
+                "(SELECT 1 FROM research_run_sources s WHERE s.run_id=r.run_id AND s.source_version_id=c.source_version_id AND s.url=?)) "
                 "AND (?<>'' OR r.status NOT IN ('extracted','no_claims')) ORDER BY c.source_version_id,c.ordinal LIMIT 1",
                 (run_id, chunk_id, chunk_id, source_url, source_url, chunk_id),
             ).fetchone()
@@ -2810,6 +2864,8 @@ class StreetStoryLiveAdapter:
                 raise ConflictError("live_research_chunk_unknown", "Retry get_research_chunk with run_id only. Omit chunk_id to read the next chunk; never invent chunk IDs.")
             with self.service.store.connection() as db:
                 progress = self._live_research_progress(db, session.resource_id, run_id)
+            if source_url and progress['remaining'] and any(row['url'] == source_url and row['source_version_id'] for row in sources):
+                return await self._get_research_chunk(session, {'run_id': run_id})
             bounded_stop = session.state.get('live_first_research') and progress['attempts'] >= 3
             source = None if bounded_stop else next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
             if source is None:
@@ -2874,6 +2930,7 @@ class StreetStoryLiveAdapter:
         }
         passages = result["evidence_passages"]
         seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
+        seen.update(checkpoint.get('read_passage_ids') or [])
         recipe = {key: result[key] for key in ("chunk_id", "batch_id", "batch_index", "expected_story_revision")}
         recipe["run_id"] = run_id
         session.state.setdefault("research_chunk_receipts", {})[candidate["chunk_id"]] = recipe
@@ -2962,6 +3019,8 @@ class StreetStoryLiveAdapter:
                 return replay
         if args.get('source_matches_poi') is False and raw_facts:
             raise ConflictError('live_research_identity_mismatch', 'Do not import claims from another object. Checkpoint its read core with facts=[].')
+        if args.get('source_content_valid') is False and raw_facts:
+            raise ConflictError('live_research_source_content_invalid', 'Menu/challenge/fetch fragments cannot support article claims. Save facts=[].')
         chunk_id = str(args.get("chunk_id") or "")
         chunk_row = None
         batch_index = 0
@@ -3594,6 +3653,27 @@ class StreetStoryLiveAdapter:
             research = current_research
             story = current_story
             now = self.service.store.now()
+            from .poi_memory import memory_keys
+            keys = memory_keys(db, identity)
+            placeholders = ','.join('?' for _ in keys)
+            prior_poi_ids = {str(row[0]) for row in db.execute(
+                f'SELECT assertion_id FROM poi_research_assertions WHERE poi_key IN ({placeholders})', tuple(keys))}
+            prior_poi_ids.update(str(row[0]) for row in db.execute('SELECT assertion_id FROM fact_assertions WHERE story_id=?', (story_id,)))
+            def support_keys(sources):
+                return {(str(span.get('source_url') or source.get('url') or '').rstrip('/'),
+                         str(span.get('source_version_id') or source.get('source_version_id') or ''),
+                         str(span.get('kind') or 'support'), str(span.get('text') or '').strip())
+                        for source in sources for span in source.get('supports') or []
+                        if isinstance(span, dict) and str(span.get('text') or '').strip()}
+
+            prior_supports: dict[str, set] = {}
+            for fact in normalized:
+                fact_id = fact['fact_id']
+                rows = db.execute(
+                    f'SELECT sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? '
+                    'UNION ALL SELECT sources_json FROM facts WHERE story_id=? AND fact_id=?',
+                    (*keys, fact_id, story_id, fact_id))
+                prior_supports[fact_id] = set().union(*(support_keys(json.loads(row[0])) for row in rows))
 
             persist_fact_candidates(
                 db,
@@ -3636,11 +3716,18 @@ class StreetStoryLiveAdapter:
                     accepted_fact_count=len(normalized), continuation_needed=continuation_needed,
                     continuation_reason="mira_live_remaining_findings" if continuation_needed else "",
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
-                    payload={"facts": normalized, "no_claims": not normalized, "official_source_urls": []})
+                    payload={"facts": normalized, "no_claims": not normalized, "official_source_urls": [],
+                             "source_content_valid": args.get('source_content_valid') is not False,
+                             "next_passage_cursor": session.state.get('research_pending_page', {}).get(chunk_id, 0) if continuation_needed else 0,
+                             "read_passage_ids": sorted(session.state.get('research_passages_seen', {}).get(chunk_id, set()))})
                 mark_chunk(db, run_id=run_id, chunk_id=chunk_id,
                     status="deferred" if continuation_needed else "extracted" if normalized else "no_claims",
                     observation_count=len(chunk_checkpoint(db, run_id, chunk_id)["facts"]),
-                    model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now)
+                    model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
+                    error_code='not_article_text' if args.get('source_content_valid') is False else None)
+                if args.get('source_content_valid') is False:
+                    db.execute("UPDATE research_run_sources SET status='deferred',error_code='not_article_text' WHERE run_id=? AND source_version_id=?",
+                               (run_id, chunk_row['source_version_id']))
             if reconciliation_decisions:
                 persist_fact_relation_events(
                     db,
@@ -3663,6 +3750,19 @@ class StreetStoryLiveAdapter:
             )
             if batch_verified:
                 sync_poi_review_from_story(db, story_id, now)
+            eligible_ids = {str(row[0]) for row in db.execute(
+                'SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility=\'eligible\'', (story_id,))}
+            saved_ids = {str(f['fact_id']) for f in normalized}
+            added_supports = {f['fact_id']: support_keys(f.get('sources') or []) - prior_supports[f['fact_id']]
+                              for f in normalized if f['fact_id'] in prior_poi_ids}
+            save_audit.update(new_eligible_claim_count=len((saved_ids - prior_poi_ids) & eligible_ids),
+                              evidence_to_existing_claim_count=sum(bool(spans) for spans in added_supports.values()),
+                              new_evidence_span_count=sum(len(spans) for spans in added_supports.values()),
+                              reused_fact_count=sum(not spans for spans in added_supports.values()),
+                              withheld_or_insufficient_count=len(saved_ids - eligible_ids))
+            manifest_counts = run_manifest(db, run_id)['counts']
+            save_audit.update(skipped_completed_chunks=manifest_counts['chunks_skipped_completed'],
+                              resumed_chunks=manifest_counts['chunks_resumed_partial'])
             fact_count = db.execute(
                 "SELECT COUNT(*) FROM facts WHERE story_id=?",
                 (story_id,),
