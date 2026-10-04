@@ -208,6 +208,69 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
     assert receipts[0]['status'] == 'partial' and receipts[0]['gallery_cursor'] == 12
 
 
+@pytest.mark.asyncio
+async def test_blocked_wikipedia_uses_quiet_article_reader_and_keeps_candidate_identity(tmp_path):
+    svc, _ = make_service(tmp_path)
+    page = 'https://ru.wikipedia.org/wiki/Gate'
+    calls = []
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(url):
+        calls.append(url)
+        return 'Gate', article_media.RenderedMedia([
+            {'image_url': 'https://upload.wikimedia.org/wikipedia/commons/1/12/front.jpg', 'article_url': url},
+            {'image_url': 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/rear.jpg/800px-rear.jpg', 'article_url': url},
+            {'image_url': 'https://example.com/unrelated.jpg', 'article_url': url}], 12, True)
+    receipts = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as http:
+        result = await article_media.article_candidates(svc, {'id': 'unknown'}, [
+            {'url': page, 'candidate_id': 'wiki:381537'}], set(), http=http, resolver=resolver,
+            browser=browser, receipts=receipts)
+    assert calls == [page]
+    assert result[0]['candidate_id'] == 'wiki:381537'
+    assert result[0]['discovery'] == 'wikipedia_article_media'
+    assert result[0]['reference_image_urls'] == [
+        'https://upload.wikimedia.org/wikipedia/commons/1/12/front.jpg',
+        'https://upload.wikimedia.org/wikipedia/commons/1/12/rear.jpg']
+    assert receipts[0]['status'] == 'partial' and receipts[0]['gallery_cursor'] == 12
+
+
+@pytest.mark.asyncio
+async def test_reviewed_wiki_lead_advances_to_article_queue_before_api_search(tmp_path, monkeypatch):
+    svc, adapter, story, session = prepared(tmp_path)
+    url = 'https://ru.wikipedia.org/wiki/Gate'
+    lead, rear = 'https://upload.wikimedia.org/lead.jpg', 'https://upload.wikimedia.org/rear.jpg'
+    candidate = {'candidate_id': 'wiki:381537', 'name': 'Gate', 'url': url, 'reference_image_urls': [lead]}
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': [candidate]},
+            'identity_progress': {'generation': 0, 'reviewed_image_sha256s': [lead], 'images_reviewed_count': 1}}), story['id']))
+    calls = []
+    async def articles(service, topic, sources, excluded, *, receipts):
+        calls.append(sources[0]['url'])
+        receipts.append({'status': 'partial', 'gallery_cursor': 12})
+        return [{**candidate, 'reference_image_urls': [lead, rear], 'discovery': 'wikipedia_article_media'}]
+    async def images(candidates, limit, *, story_id, evidence):
+        value = candidates[0]['reference_image_urls'][0]
+        evidence.append({'candidate_id': 'wiki:381537', 'model_image_sha256': value})
+        return [('wiki:381537', 'image/jpeg', jpeg())]
+    async def forbidden(*args):
+        pytest.fail('Broad API search must wait for the Wiki article queue')
+    monkeypatch.setattr(article_media, 'article_candidates', articles)
+    adapter._find_place_articles = forbidden
+    svc._candidate_reference_images = images
+    reply = await adapter._compare_place_images(session(), {})
+    assert reply['comparison_id'] and calls == [url]
+    _, research = svc._identity_snapshot(story['id'])
+    assert research['visual_search_operation']['sources'][url]['status'] == 'partial'
+    assert research['visual_search_operation']['sources'][url]['source']['gallery_cursor'] == 12
+    assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == 1
+    # Reconnect delivers the same unacknowledged rear frame without a count.
+    assert (await adapter._compare_place_images(session(), {}))['comparison_id']
+    assert calls == [url]
+    assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == 1
+
+
 def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
     svc, adapter, story, session = prepared(tmp_path)
     s = session()

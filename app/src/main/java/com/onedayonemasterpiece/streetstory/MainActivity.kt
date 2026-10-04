@@ -100,6 +100,7 @@ class MainActivity : Activity() {
     private var stickyTitle: TextView? = null
     private var stickyFacts: TextView? = null
     private var stickyConcept: TextView? = null
+    private var stickyComparison: TextView? = null
     private var stickyVisible = false
     private var identityProgressView: TextView? = null
     private var lastLiveIdentityProgress: IdentityProgressWire? = null
@@ -315,7 +316,7 @@ class MainActivity : Activity() {
         renderedMessages = emptyList()
         renderedResearchProgress = null
         stickyIsland = null; stickyImage = null; stickyTitle = null
-        stickyFacts = null; stickyConcept = null; stickyVisible = false
+        stickyFacts = null; stickyConcept = null; stickyComparison = null; stickyVisible = false
         factsBlock = null; conceptBlock = null; publicationEventView = null
 
         val scroll = ScrollView(this).apply {
@@ -623,6 +624,12 @@ class MainActivity : Activity() {
     }
 
     private fun renderIdentityProgress(progress: IdentityProgressWire?, waiting: Boolean) {
+        stickyComparison?.apply {
+            text = progress?.let {
+                "${if (it.visualComparisonVerified) "☑" else "☐"} Визуальное сравнение\nПросмотрено иллюстраций: ${it.imagesReviewedCount}"
+            }.orEmpty()
+            visibility = if (progress != null) View.VISIBLE else View.GONE
+        }
         identityProgressView?.apply {
             val lines = progress?.steps?.map { step ->
                 val mark = if (step.key == "visual_comparison") {
@@ -1163,7 +1170,7 @@ class MainActivity : Activity() {
         floatingImageProxy?.let { contentHost.removeView(it) }
         floatingImageProxy = null
         stickyIsland = null; stickyImage = null; stickyTitle = null
-        stickyFacts = null; stickyConcept = null; stickyVisible = false
+        stickyFacts = null; stickyConcept = null; stickyComparison = null; stickyVisible = false
         factsBlock = null; conceptBlock = null; publicationEventView = null
         identityProgressView = null
         lastLiveIdentityProgress = null
@@ -1375,6 +1382,12 @@ class MainActivity : Activity() {
             contentDescription = "sticky-object"
         }
         right.addView(stickyTitle)
+        stickyComparison = label("", 12, INK, Typeface.DEFAULT).apply {
+            setPadding(0, dp(6), 0, 0)
+            visibility = View.GONE
+            contentDescription = "sticky-visual-comparison"
+        }
+        right.addView(stickyComparison)
         stickyFacts = label("", 13, INK, Typeface.DEFAULT_BOLD).apply {
             setPadding(0, dp(7), 0, 0)
             contentDescription = "sticky-facts"

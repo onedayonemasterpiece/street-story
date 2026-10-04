@@ -182,7 +182,7 @@ class LiveVisualComparisonMixin:
                 'A visual comparison is pending. Call compare_place_images to retrieve its SOURCE/REF image '
                 'as a multimodal tool result before recording a verdict. Article titles are not visual evidence.'})
 
-    async def _compare_place_images(self, session, args):
+    async def _compare_place_images(self, session, args, *, refill=True):
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
@@ -198,9 +198,7 @@ class LiveVisualComparisonMixin:
             for candidate in identity.get('candidates', []):
                 if candidate.get('reference_image_urls') and candidate.get('discovery') != 'web_article_media':
                     from .identity_references import original_reference
-                    from .article_media import wikipedia_article_references
-                    gallery = await wikipedia_article_references(candidate)
-                    urls = list(dict.fromkeys(original_reference(url) or url for url in [*candidate['reference_image_urls'], *gallery]))
+                    urls = list(dict.fromkeys(original_reference(url) or url for url in candidate['reference_image_urls']))
                     queue.extend(self._image_entries({**candidate, 'reference_image_urls': urls}))
             state = {'generation': generation, 'photo_sha256': story['photo_sha256'],
                      'queue': queue, 'web_searched': False, 'query': str(args.get('query') or identity.get('candidate_name') or '')[:180],
@@ -221,6 +219,15 @@ class LiveVisualComparisonMixin:
         state.setdefault('searches', {})
         state['searches'].update(discovery.get('queries') or {})
         state.setdefault('fetch_failures', [])
+        # Wiki lead bytes may already have been compared by the background
+        # worker. Enumerate the actual article through the same durable HTTP /
+        # quiet-browser reader before advancing to broad API discovery.
+        from urllib.parse import urlsplit
+        for candidate in identity.get('candidates', []):
+            url = str(candidate.get('url') or '')
+            if candidate.get('reference_image_urls') and (urlsplit(url).hostname or '').endswith('.wikipedia.org'):
+                state['sources'].setdefault(url, {'source': {'url': url, 'candidate_id': candidate['candidate_id']},
+                    'status': 'pending', 'attempts': 0})
         for source in sources:
             state['sources'].setdefault(source['url'], {'source': source, 'status': 'pending', 'attempts': 0})
         if not state['queue']:
@@ -293,8 +300,12 @@ class LiveVisualComparisonMixin:
             partial = bool(state['queue']) or any(p['status'] != 'completed' for p in state['sources'].values())
             unavailable = any(r.get('status') != 'completed' for r in state['searches'].values())
             self._save_visual_queue(session, state)
-            if not state['web_searched'] and not state['sources'] and not unavailable:
-                return await self._compare_place_images(session, args)
+            if refill and not state['queue'] and any(p['status'] == 'pending' for p in state['sources'].values()):
+                # Already-reviewed lead references should not require another
+                # model decision to start reading the actual article.
+                return await self._compare_place_images(session, args, refill=False)
+            if not state['web_searched'] and state['query'] and not partial and not unavailable:
+                return await self._compare_place_images(session, args, refill=False)
             if partial or unavailable:
                 return {'partial': True, 'search_unavailable': unavailable, 'images_compared': 0,
                     'instruction': 'Queue retained. Some articles/images are unavailable or partial; continue later or supply new API-found article URLs/query. This is not exhausted or mismatch.'}
