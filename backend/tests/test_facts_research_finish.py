@@ -689,8 +689,8 @@ def test_published_live_save_schema_accepts_snippets_and_document_groups():
     assert {'run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi'} <= schema['properties'].keys()
     finding = schema['properties']['facts']['items']
     assert {'source_refs', 'evidence_refs', 'text', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason', 'passage_ids', 'claims'} <= finding['properties'].keys()
-    assert {'source_refs', 'evidence_refs'} <= set(finding['required'])
-    assert {'text', 'verdict', 'qualifiers_preserved'} <= set(finding['properties']['claims']['items']['required'])
+    assert {'source_refs', 'evidence_refs', 'existing_fact_id'} <= set(finding['required'])
+    assert {'text', 'verdict', 'qualifiers_preserved', 'existing_fact_id'} <= set(finding['properties']['claims']['items']['required'])
 
 
 @pytest.mark.asyncio
