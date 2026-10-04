@@ -2,8 +2,107 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def extraction_scope(goal: str) -> str:
+    # Scope is supplied by the model, never inferred through semantic matching.
+    return ' '.join(str(goal or '').split()).casefold()
+
+
+def source_coverage(db, poi_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Only frozen, checked chunk receipts establish completed source coverage."""
+    if not poi_keys:
+        return {}
+    placeholders = ','.join('?' for _ in poi_keys)
+    rows = db.execute(
+        f"SELECT s.*,r.goal,r.state AS run_state,v.final_url,v.read_status FROM research_run_sources s "
+        "JOIN research_runs r ON r.run_id=s.run_id JOIN source_versions v ON v.source_version_id=s.source_version_id "
+        f"WHERE r.poi_key IN ({placeholders}) ORDER BY s.updated_at DESC", tuple(poi_keys))
+    result: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        scope = extraction_scope(row['goal'])
+        urls = {str(row['url']), str(row['final_url'])}
+        chunks = list(db.execute(
+            'SELECT c.chunk_id,r.status,r.error_code,r.prompt_version FROM source_chunks c LEFT JOIN research_chunk_runs r '
+            'ON r.chunk_id=c.chunk_id AND r.run_id=? WHERE c.source_version_id=? ORDER BY c.ordinal',
+            (row['run_id'], row['source_version_id'])))
+        complete = bool(chunks) and row['run_state'] not in {'cancelled', 'failed'} and row['status'] == 'fetched' and not row['error_code'] and row['read_status'] == 'complete' and all(
+            c['status'] in {'extracted', 'no_claims'} and not c['error_code']
+            and c['prompt_version'] == 'live-chunk-findings-v1'
+            and _valid_checkpoint(db, row['run_id'], c['chunk_id']).get('terminal') for c in chunks)
+        for url in urls:
+            if (url, scope) in seen:
+                continue
+            seen.add((url, scope))
+            result.setdefault(url, []).append({
+                'scope': scope, 'source_version_id': row['source_version_id'], 'run_id': row['run_id'],
+                'completed': complete, 'checked_at': row['updated_at'],
+                'chunks_total': len(chunks), 'chunks_completed': sum(c['status'] in {'extracted', 'no_claims'} and not c['error_code'] for c in chunks),
+            })
+    return result
+
+
+def _valid_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
+    try:
+        return chunk_checkpoint(db, run_id, chunk_id)
+    except ValueError:
+        logger.warning('street_story_chunk_reuse_rejected run_id=%s chunk_id=%s reason=invalid_checkpoint', run_id, chunk_id)
+        return {}
+
+
+def reuse_chunk_checkpoint(db, run_id: str, chunk_id: str, now: float,
+                          prompt_version: str = 'live-chunk-findings-v1') -> bool:
+    """Attach an immutable checkpoint snapshot; never copy observations or review decisions."""
+    run = db.execute('SELECT poi_key,goal FROM research_runs WHERE run_id=?', (run_id,)).fetchone()
+    if not run or not run['poi_key']:
+        return False
+    from .poi_memory import memory_keys
+    keys = memory_keys(db, {'candidate_id': run['poi_key']})
+    placeholders = ','.join('?' for _ in keys)
+    donors = db.execute(
+        "SELECT c.*,r.goal FROM research_chunk_runs c JOIN research_runs r ON r.run_id=c.run_id "
+        f"WHERE c.chunk_id=? AND c.run_id<>? AND r.poi_key IN ({placeholders}) "
+        "AND c.prompt_version=? AND c.error_code IS NULL AND c.status IN ('extracted','no_claims','deferred','extracting') "
+        "AND r.state NOT IN ('cancelled','failed') "
+        "AND NOT EXISTS (SELECT 1 FROM research_run_sources s JOIN source_chunks sc "
+        "ON sc.source_version_id=s.source_version_id WHERE s.run_id=c.run_id AND sc.chunk_id=c.chunk_id "
+        "AND s.error_code='not_article_text') "
+        "ORDER BY CASE WHEN c.status IN ('extracted','no_claims') THEN 0 ELSE 1 END,c.updated_at DESC",
+        (chunk_id, run_id, *keys, prompt_version))
+    for donor in donors:
+        if extraction_scope(donor['goal']) != extraction_scope(run['goal']):
+            continue
+        checkpoint = _valid_checkpoint(db, donor['run_id'], chunk_id)
+        if not checkpoint:
+            continue
+        if checkpoint['payload_missing'] or not checkpoint['next_batch_index']:
+            continue
+        rows = list(db.execute(
+            'SELECT * FROM research_chunk_batches WHERE run_id=? AND chunk_id=? AND batch_index<? ORDER BY batch_index',
+            (donor['run_id'], chunk_id, checkpoint['next_batch_index'])))
+        if not rows or any(row['prompt_version'] != prompt_version for row in rows):
+            continue
+        for row in rows:
+            record_chunk_batch(db, run_id=run_id, chunk_id=chunk_id, batch_index=row['batch_index'],
+                status='continuation' if row['status'] == 'deferred' else row['status'],
+                raw_fact_count=row['raw_fact_count'], accepted_fact_count=row['accepted_fact_count'],
+                continuation_needed=bool(row['continuation_needed']), continuation_reason=row['continuation_reason'],
+                model_name=row['model_name'], prompt_version=row['prompt_version'], now=now,
+                payload=json.loads(row['payload_json']))
+        kind = 'skipped_completed' if checkpoint['terminal'] else 'resumed_partial'
+        db.execute('UPDATE research_chunk_runs SET status=?,observation_count=?,model_name=?,prompt_version=?,reuse_from_run_id=?,reuse_kind=? WHERE run_id=? AND chunk_id=?',
+                   (donor['status'] if checkpoint['terminal'] else 'deferred', donor['observation_count'],
+                    donor['model_name'], donor['prompt_version'], donor['run_id'], kind, run_id, chunk_id))
+        logger.info('street_story_chunk_reuse run_id=%s chunk_id=%s donor_run_id=%s reason=%s next_batch=%s',
+                    run_id, chunk_id, donor['run_id'], kind, checkpoint['next_batch_index'])
+        return True
+    return False
 
 
 RUN_STATES = {
@@ -288,12 +387,14 @@ def persist_source_version(
                 now,
             ),
         )
-        db.execute(
+        attached = db.execute(
             "INSERT OR IGNORE INTO research_chunk_runs("
             "run_id,chunk_id,status,observation_count,error_code,model_name,prompt_version,updated_at"
             ") VALUES(?,?,'planned',0,NULL,'','',?)",
             (run_id, chunk_id, now),
-        )
+        ).rowcount
+        if attached:
+            reuse_chunk_checkpoint(db, run_id, chunk_id, now)
 
     register_discovered_source(
         db,
@@ -441,6 +542,8 @@ def chunk_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
     raw_fact_count = 0
     accepted_fact_count = 0
     resumable_deferred_batches: list[int] = []
+    passage_cursor = 0
+    read_passage_ids: set[int] = set()
 
     for row in rows:
         raw_fact_count += int(row["raw_fact_count"] or 0)
@@ -462,6 +565,9 @@ def chunk_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
             if not isinstance(decoded, dict):
                 raise ValueError("research_chunk_batch_payload_invalid")
             payload = decoded
+            if type(payload.get('next_passage_cursor')) is int:
+                passage_cursor = max(0, payload['next_passage_cursor'])
+            read_passage_ids.update(value for value in payload.get('read_passage_ids') or [] if type(value) is int and value >= 0)
             for fact in payload.get("facts") or []:
                 if isinstance(fact, dict):
                     facts.append(dict(fact))
@@ -509,6 +615,8 @@ def chunk_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
         "raw_fact_count": raw_fact_count,
         "accepted_fact_count": accepted_fact_count,
         "resumable_deferred_batches": resumable_deferred_batches,
+        "passage_cursor": passage_cursor,
+        "read_passage_ids": sorted(read_passage_ids),
     }
 
 
@@ -579,6 +687,8 @@ def run_manifest(db, run_id: str) -> dict[str, Any]:
         "chunks_needs_context": sum(item["status"] == "needs_context" for item in chunks),
         "chunks_failed": sum(item["status"] == "failed" for item in chunks),
         "chunks_deferred": sum(item["status"] == "deferred" for item in chunks),
+        "chunks_skipped_completed": sum(item.get('reuse_kind') == 'skipped_completed' for item in chunks),
+        "chunks_resumed_partial": sum(item.get('reuse_kind') == 'resumed_partial' for item in chunks),
         "chunk_batches_total": len(batches),
         "chunk_batches_continuation": sum(item["status"] == "continuation" for item in batches),
         "chunk_batches_failed": sum(item["status"] == "failed" for item in batches),

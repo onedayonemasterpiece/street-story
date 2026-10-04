@@ -138,9 +138,27 @@ class StreetStoryService:
         return row
 
     def story(self, story_id: str) -> dict[str, Any]:
-        with self.store.connection() as db:
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            self._hydrate_poi_memory(db, row)
             row = self._story_row(db, story_id)
             return self._story_repr(db, row)
+
+    def _hydrate_poi_memory(self, db, row) -> int:
+        from .poi_memory import ensure_poi_identity, hydrate_story_facts, memory_keys
+        identity = json.loads(row['research_json'] or '{}').get('visual_identity') or {}
+        if identity.get('status') not in {'match', 'owner_confirmed'} or row['state'] in {'scheduling', 'scheduled', 'published'}:
+            return 0
+        keys = memory_keys(db, identity)
+        chosen = next((item for item in identity.get('candidates') or [] if item.get('candidate_id') == identity.get('candidate_id')), {})
+        bound = db.execute("SELECT 1 FROM poi_aliases WHERE namespace='street_story_candidate' AND value=?", (identity.get('candidate_id'),)).fetchone()
+        if not bound or (identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
+                         and any(alias not in keys for alias in chosen.get('alias_candidate_ids') or [])):
+            ensure_poi_identity(db, identity, latitude=row['latitude'], longitude=row['longitude'], now=self.store.now())
+        added = hydrate_story_facts(db, identity, row['id'])
+        if added:
+            db.execute('UPDATE stories SET revision=revision+1,updated_at=? WHERE id=?', (self.store.now(), row['id']))
+        return added
 
     def stories(self) -> list[dict[str, Any]]:
         with self.store.connection() as db:

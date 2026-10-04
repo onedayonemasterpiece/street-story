@@ -397,6 +397,8 @@ CREATE TABLE IF NOT EXISTS research_chunk_runs(
   error_code TEXT,
   model_name TEXT NOT NULL DEFAULT '',
   prompt_version TEXT NOT NULL DEFAULT '',
+  reuse_from_run_id TEXT,
+  reuse_kind TEXT NOT NULL DEFAULT '',
   updated_at REAL NOT NULL,
   PRIMARY KEY(run_id,chunk_id)
 );
@@ -753,6 +755,10 @@ class Store:
             batch_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(research_chunk_batches)")
             }
+            chunk_columns = {row[1] for row in db.execute('PRAGMA table_info(research_chunk_runs)')}
+            for name, sql in (("reuse_from_run_id", "TEXT"), ("reuse_kind", "TEXT NOT NULL DEFAULT ''")):
+                if name not in chunk_columns:
+                    db.execute(f'ALTER TABLE research_chunk_runs ADD COLUMN {name} {sql}')
             for name in ("payload_json", "payload_sha256"):
                 if name not in batch_columns:
                     db.execute(

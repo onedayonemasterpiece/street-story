@@ -2,10 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from .fact_ledger import merge_source_payloads
 from .model_facts import normalized_claim_key
+
+logger = logging.getLogger(__name__)
+
+
+def memory_keys(db, identity: dict[str, Any]) -> list[str]:
+    """Read exact candidate bindings in the existing registry, never name similarity."""
+    key = poi_key(identity)
+    if not key:
+        return []
+    rows = list(db.execute(
+        "SELECT value FROM poi_aliases WHERE namespace='street_story_candidate' AND poi_id IN "
+        "(SELECT poi_id FROM poi_aliases WHERE namespace='street_story_candidate' AND normalized_value=?)",
+        (_normalized_alias(key),),
+    ))
+    return list(dict.fromkeys([key, *(str(row['value']) for row in rows)]))
 
 
 def poi_key(identity: dict[str, Any]) -> str | None:
@@ -59,7 +75,7 @@ def ensure_poi_identity(
     """Bind Street Story's stable identity to the canonical POI registry.
 
     This is mechanical identity plumbing only: it does not infer semantic
-    equivalence beyond an exact existing alias/name match.
+    equivalence beyond an exact entity alias or verified discovery cluster.
     """
     key = poi_key(identity)
     name = str(identity.get("candidate_name") or "").strip()
@@ -97,9 +113,9 @@ def ensure_poi_identity(
 
     poi_id = alias_owner("street_story_candidate", key)
     if poi_id is None:
-        name_owner = alias_owner("name", name)
-        if name_owner:
-            poi_id = name_owner
+        entity_owner = alias_owner("wikidata", str(chosen.get('wikidata'))) if chosen and chosen.get('wikidata') else None
+        if entity_owner:
+            poi_id = entity_owner
         else:
             poi_id = "poi_ss_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
             db.execute(
@@ -122,6 +138,26 @@ def ensure_poi_identity(
             "INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,?,?,?,?)",
             (poi_id, namespace, value[:500], normalized[:500], ts),
         )
+    # Identity discovery already supplied this cluster's explicit membership;
+    # the visual verifier accepted the chosen cluster. Alternatives alone and
+    # equally named places cannot establish an alias.
+    if (identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
+            and chosen and chosen.get('discovery') == 'wikimedia_entity_cluster'):
+        for alias in chosen.get('alias_candidate_ids') or []:
+            alias = str(alias).strip()
+            if not alias or alias == key:
+                continue
+            owner = alias_owner('street_story_candidate', alias)
+            if owner and owner != poi_id:
+                # Bind candidate keys only. Preserve the older registry row,
+                # regional claims, named aliases and every research assertion.
+                db.execute("UPDATE poi_aliases SET poi_id=? WHERE namespace='street_story_candidate' AND normalized_value=?",
+                           (poi_id, _normalized_alias(alias)))
+            else:
+                db.execute("INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,'street_story_candidate',?,?,?)",
+                           (poi_id, alias, _normalized_alias(alias), ts))
+        logger.info('street_story_poi_alias_binding poi_id=%s candidate_id=%s aliases=%s proof=verified_identity_cluster',
+                    poi_id, key, len(chosen.get('alias_candidate_ids') or []))
     return poi_id
 
 
@@ -314,10 +350,9 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
     return updated
 
 
-def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> int:
-    """Hydrate a new topic from durable POI knowledge before another web search."""
-    if db.execute("SELECT 1 FROM facts WHERE story_id=? LIMIT 1", (story_id,)).fetchone():
-        return 0
+def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int | None = None) -> int:
+    """Add durable POI knowledge, preserving existing owner choices and draft."""
+    existing = {str(row['fact_id']) for row in db.execute('SELECT fact_id FROM facts WHERE story_id=?', (story_id,))}
 
     candidates: list[dict[str, Any]] = []
     candidates.extend(
@@ -328,8 +363,8 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
             include_unreviewed=False,
         )
     )
-    remaining = max(0, limit - len(candidates))
-    if remaining:
+    remaining = max(0, limit - len(candidates)) if limit is not None else None
+    if remaining is None or remaining:
         candidates.extend(_public_regional_knowledge_facts(db, identity, remaining))
 
     inserted = 0
@@ -338,7 +373,7 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
         fact_id = str(item.get("fact_id") or "").strip()
         text = str(item.get("text") or "").strip()
         sources = [source for source in (item.get("sources") or []) if isinstance(source, dict)]
-        if not fact_id or fact_id in seen or not text or not sources:
+        if not fact_id or fact_id in seen or fact_id in existing or not text or not sources:
             continue
         seen.add(fact_id)
         selected = False
@@ -346,7 +381,7 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
             confidence = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
         except (TypeError, ValueError):
             confidence = 0.0
-        db.execute(
+        inserted += db.execute(
             "INSERT OR IGNORE INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
             "VALUES(?,?,?,?,1,?,?)",
             (
@@ -357,8 +392,7 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
                 int(selected),
                 json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
             ),
-        )
-        inserted += 1
+        ).rowcount
     if inserted:
         from .fact_ledger import backfill_legacy_fact_ledger, refresh_review_status
         now = float(db.execute("SELECT unixepoch('subsec')").fetchone()[0])
@@ -368,14 +402,18 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
             if item.get('origin') != 'poi_research':
                 continue
             fact_id = str(item.get('fact_id') or '')
-            memory = db.execute('SELECT review_story_id FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?', (poi_key(identity), fact_id)).fetchone()
+            if fact_id in existing:
+                continue
+            keys = memory_keys(db, identity)
+            placeholders = ','.join('?' for _ in keys)
+            memory = db.execute(f'SELECT review_story_id FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY reviewed_at DESC LIMIT 1', (*keys, fact_id)).fetchone()
             origin = str(memory['review_story_id'] or '') if memory else ''
             if not origin or origin == story_id:
                 continue
             if origin not in refreshed:
                 refresh_review_status(db, origin, now)
                 refreshed.add(origin)
-            source = db.execute("SELECT a.display_text,a.revision_digest FROM fact_assertions a JOIN stories s ON s.id=a.story_id WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible' AND json_extract(s.research_json,'$.visual_identity.candidate_id')=?", (origin, fact_id, poi_key(identity))).fetchone()
+            source = db.execute(f"SELECT a.display_text,a.revision_digest FROM fact_assertions a JOIN stories s ON s.id=a.story_id WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible' AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN ({placeholders})", (origin, fact_id, *keys)).fetchone()
             target = db.execute('SELECT display_text,revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?', (story_id, fact_id)).fetchone()
             if not source or not target or tuple(source) != tuple(target):
                 continue
@@ -388,32 +426,35 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
                            (story_id, poi_key(identity), f"poi-memory:{origin}:{scan['id']}", json.dumps({fact_id: source['revision_digest']}, sort_keys=True), scan['created_at']))
                 break
         refresh_review_status(db, story_id, now)
+        logger.info('street_story_poi_hydration story_id=%s candidate_id=%s added=%s existing=%s', story_id, poi_key(identity), inserted, len(existing))
     return inserted
 
 
 def _research_memory_facts(
     db,
     identity: dict[str, Any],
-    limit: int,
+    limit: int | None,
     *,
     include_unreviewed: bool = True,
 ) -> list[dict[str, Any]]:
-    key = poi_key(identity)
-    if not key:
+    keys = memory_keys(db, identity)
+    if not keys:
         return []
     if include_unreviewed:
         where = (
-            "poi_key=? AND eligibility<>'withheld' "
+            "eligibility<>'withheld' "
             "AND review_status<>'quarantined'"
         )
     else:
-        where = "poi_key=? AND eligibility='eligible'"
+        where = "eligibility='eligible'"
+    placeholders = ','.join('?' for _ in keys)
     rows = list(db.execute(
         "SELECT assertion_id,semantic_key,text,confidence,sources_json,"
-        "review_status,eligibility,updated_at "
-        f"FROM poi_research_assertions WHERE {where} "
-        "ORDER BY updated_at DESC LIMIT ?",
-        (key, max(1, int(limit))),
+        "review_status,eligibility,updated_at FROM (SELECT *,ROW_NUMBER() OVER "
+        "(PARTITION BY assertion_id ORDER BY updated_at DESC,reviewed_at DESC) AS rank "
+        f"FROM poi_research_assertions WHERE poi_key IN ({placeholders})) WHERE rank=1 AND {where} "
+        "ORDER BY updated_at DESC" + (' LIMIT ?' if limit is not None else ''),
+        (*keys, max(1, int(limit))) if limit is not None else tuple(keys),
     ))
     return [
         {
@@ -433,15 +474,16 @@ def _research_memory_facts(
 
 
 def processed_sources(db, identity: dict[str, Any], limit: int = 80) -> list[dict[str, Any]]:
-    key = poi_key(identity)
-    if not key:
+    keys = memory_keys(db, identity)
+    if not keys:
         return []
+    placeholders = ','.join('?' for _ in keys)
     rows = db.execute(
         "SELECT url,title,last_query,supports_json,last_seen_at "
-        "FROM poi_research_sources WHERE poi_key=? ORDER BY last_seen_at DESC LIMIT ?",
-        (key, max(1, min(int(limit), 200))),
+        f"FROM poi_research_sources WHERE poi_key IN ({placeholders}) ORDER BY last_seen_at DESC LIMIT ?",
+        (*keys, max(1, min(int(limit), 200))),
     )
-    return [
+    result = [
         {
             "url": str(row["url"]),
             "title": str(row["title"]),
@@ -451,6 +493,13 @@ def processed_sources(db, identity: dict[str, Any], limit: int = 80) -> list[dic
         }
         for row in rows
     ]
+    from .research_runs import source_coverage
+    coverage = source_coverage(db, keys)
+    by_url = {item['url']: item for item in result}
+    for url, scopes in coverage.items():
+        item = by_url.setdefault(url, {'url': url, 'title': url, 'supports': [], 'last_query': ''})
+        item['extraction_coverage'] = scopes
+    return list(by_url.values())
 
 
 def persist_research_memory(
@@ -638,7 +687,7 @@ def persist_research_memory(
                 ),
             )
 
-def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | None) -> list[dict[str, Any]]:
     aliases = _identity_alias_values(identity)
     if not aliases:
         return []
@@ -663,9 +712,8 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int) -
         WHERE c.poi_id=? AND x.visibility='public'
           AND c.status IN ('candidate','accepted','contested')
         ORDER BY x.updated_at DESC
-        LIMIT ?
-        """,
-        (poi_id, max(1, int(limit))),
+        """ + (' LIMIT ?' if limit is not None else ''),
+        (poi_id, max(1, int(limit))) if limit is not None else (poi_id,),
     )
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -699,7 +747,7 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int) -
             "poi_id": poi_id,
             "poi_claim_status": str(row["status"]),
         })
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 
@@ -729,11 +777,11 @@ def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) ->
         "FROM facts f JOIN stories s ON s.id=f.story_id "
         "LEFT JOIN fact_assertions a "
         "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
-        "WHERE s.id<>? AND json_extract(s.research_json,'$.visual_identity.candidate_id')=? "
+        "WHERE s.id<>? AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN (" + ','.join('?' for _ in memory_keys(db, identity)) + ") "
         "AND COALESCE(a.eligibility,'unreviewed')<>'withheld' "
         "AND COALESCE(a.review_status,'unreviewed')<>'quarantined' "
         "ORDER BY s.updated_at DESC,f.rowid LIMIT ?",
-        (story_id, key, limit),
+        (story_id, *memory_keys(db, identity), limit),
     )
     for row in rows:
         fact_id = str(row["fact_id"])
