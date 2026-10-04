@@ -182,7 +182,7 @@ class LiveVisualComparisonMixin:
                 'A visual comparison is pending. Call compare_place_images to retrieve its SOURCE/REF image '
                 'as a multimodal tool result before recording a verdict. Article titles are not visual evidence.'})
 
-    async def _compare_place_images(self, session, args, *, refill=True):
+    async def _compare_place_images(self, session, args, *, page_budget=4):
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
@@ -230,6 +230,7 @@ class LiveVisualComparisonMixin:
                     'status': 'pending', 'attempts': 0})
         for source in sources:
             state['sources'].setdefault(source['url'], {'source': source, 'status': 'pending', 'attempts': 0})
+        read_pages = 0
         if not state['queue']:
             from .article_media import article_candidates
             query = str(args.get('query') or state['query'])[:180]
@@ -252,9 +253,8 @@ class LiveVisualComparisonMixin:
                 for source in result['sources']:
                     state['sources'].setdefault(source['url'], {'source': source, 'status': 'pending', 'attempts': 0})
             # Read the first usable page, not all 20 before showing any image.
-            read_pages = 0
             for page in state['sources'].values():
-                if state['queue'] or read_pages >= 3:
+                if state['queue'] or read_pages >= page_budget:
                     break
                 if page['status'] == 'completed' or page.get('attempts', 0) >= (10 if page['status'] == 'partial' else 2) or page.get('retry_at', 0) > self.service.store.now():
                     continue
@@ -300,12 +300,13 @@ class LiveVisualComparisonMixin:
             partial = bool(state['queue']) or any(p['status'] != 'completed' for p in state['sources'].values())
             unavailable = any(r.get('status') != 'completed' for r in state['searches'].values())
             self._save_visual_queue(session, state)
-            if refill and not state['queue'] and any(p['status'] == 'pending' for p in state['sources'].values()):
-                # Already-reviewed lead references should not require another
-                # model decision to start reading the actual article.
-                return await self._compare_place_images(session, args, refill=False)
+            remaining_pages = page_budget - read_pages
+            if remaining_pages > 0 and not state['queue'] and any(p['status'] == 'pending' for p in state['sources'].values()):
+                # Skip already-reviewed leads mechanically. Share one bounded
+                # page allowance across refills, stopping at the first new frame.
+                return await self._compare_place_images(session, args, page_budget=remaining_pages)
             if not state['web_searched'] and state['query'] and not partial and not unavailable:
-                return await self._compare_place_images(session, args, refill=False)
+                return await self._compare_place_images(session, args, page_budget=remaining_pages)
             if partial or unavailable:
                 return {'partial': True, 'search_unavailable': unavailable, 'images_compared': 0,
                     'instruction': 'Queue retained. Some articles/images are unavailable or partial; continue later or supply new API-found article URLs/query. This is not exhausted or mismatch.'}

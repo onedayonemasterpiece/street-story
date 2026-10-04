@@ -318,6 +318,53 @@ async def test_reviewed_wiki_lead_advances_to_article_queue_before_api_search(tm
     assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('wiki_count', [3, 8])
+async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allowance(tmp_path, monkeypatch, wiki_count):
+    from live_interaction.tool_parts import function_response
+    svc, adapter, story, session = prepared(tmp_path)
+    candidates = [{'candidate_id': f'wiki:{i}', 'name': 'Gate',
+        'url': f'https://ru.wikipedia.org/wiki/Gate_{i}',
+        'reference_image_urls': [f'https://upload.wikimedia.org/lead_{i}.jpg']} for i in range(wiki_count)]
+    seen = [c['reference_image_urls'][0] for c in candidates]
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': candidates},
+            'identity_progress': {'generation': 0, 'reviewed_image_sha256s': seen,
+                'images_reviewed_count': wiki_count}}), story['id']))
+    s = session()
+    s.state['visual_comparison'] = {'generation': 0, 'photo_sha256': svc._identity_snapshot(story['id'])[0]['photo_sha256'],
+        'queue': [], 'query': 'Gate', 'seen_images': seen, 'sources': {}, 'searches': {},
+        'fetch_failures': [], 'browser_budget': {'remaining': 2}, 'web_searched': False}
+    pages, searches = [], []
+    broad = {'candidate_id': 'broad', 'name': 'Gate', 'url': 'https://example.com/broad',
+        'reference_image_urls': ['https://example.com/later.jpg'], 'discovery': 'web_article_media'}
+    async def articles(service, topic, sources, excluded, *, receipts):
+        url = sources[0]['url']
+        pages.append(url)
+        receipts.append({'status': 'completed'})
+        return [broad if url == broad['url'] else next(c for c in candidates if c['url'] == url)]
+    async def search(session, args):
+        searches.append(args['query'])
+        return {'status': 'completed', 'sources': [{'url': broad['url']}]}
+    async def images(candidates, limit, *, story_id, evidence):
+        c = candidates[0]
+        evidence.append({'candidate_id': c['candidate_id'], 'model_image_sha256': c['reference_image_urls'][0]})
+        return [(c['candidate_id'], 'image/jpeg', jpeg())]
+    monkeypatch.setattr(article_media, 'article_candidates', articles)
+    adapter._find_place_articles = search
+    svc._candidate_reference_images = images
+    reply = await adapter._compare_place_images(s, {})
+    assert len(pages) == 4
+    assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == wiki_count
+    if wiki_count == 3:
+        assert searches == ['Gate'] and pages[-1] == broad['url']
+        assert reply['comparison_id'] and function_response('compare_place_images', 'call', reply)['parts']
+    else:
+        assert not searches and reply['partial']
+        assert sum(p['status'] == 'pending' for p in s.state['visual_comparison']['sources'].values()) == 4
+
+
 def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
     svc, adapter, story, session = prepared(tmp_path)
     s = session()
