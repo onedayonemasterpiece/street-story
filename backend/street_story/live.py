@@ -1296,7 +1296,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         story_id = session.resource_id
 
         if name == 'find_place_articles':
-            return await self._find_place_articles(session, args)
+            return await self._next_visual_result(session, await self._find_place_articles(session, args))
 
         if name == "read_topic":
             result = self._topic_state(story_id)
@@ -1370,6 +1370,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name != "literal_finish":
             replay = self._command_replay(story_id, command_id, name, args)
             if replay is not None:
+                if name in {'resolve_place', 'reject_place'}:
+                    return await self._next_visual_result(session, self._model_result(name, replay))
                 return self._model_result(name, replay)
 
         if name == "compare_place_images":
@@ -1445,7 +1447,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name == 'compare_place_images' and result.get('comparison_id'):
             return result
         projected = self._model_result(name, result)
-        if name == 'record_place_comparison' and not result.get('matched'):
+        if name in {'resolve_place', 'reject_place'} or (name == 'record_place_comparison' and not result.get('matched')):
             return await self._next_visual_result(session, projected)
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
