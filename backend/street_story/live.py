@@ -738,6 +738,17 @@ class StreetStoryLiveAdapter:
 
     def initialize(self, *, resource_id: str, actor: Any, model: str, **_args: Any) -> dict[str, Any]:
         state = self._topic_state(resource_id)
+        context = self._compact_context(state)
+        reviewing = (state.get('research_run') or {}).get('state') == 'verifying'
+        instruction = 'Semantic verification policy when reviewing candidates: ' + review_packets.REVIEW_CHECKS + '\n' + SYSTEM_INSTRUCTION
+        if reviewing:
+            # A resumed verification phase must not frame the old inventory as facts
+            # already established by the authoritative product-state snapshot.
+            context['candidate_count'] = len(state['story'].get('facts', []))
+            context['facts'] = []
+            context['review_policy'] = review_packets.REVIEW_CHECKS
+            instruction = ('Current phase: independent verification of unverified candidates. '
+                           + instruction)
         return {
             "state": {
                 "recent_user": deque(maxlen=24),
@@ -746,9 +757,9 @@ class StreetStoryLiveAdapter:
                 "live_message_seq": 0,
                 "live_message": None,
             },
-            "context": self._compact_context(state),
+            "context": context,
             "configuration": {
-                "system_instruction": SYSTEM_INSTRUCTION,
+                "system_instruction": instruction,
                 "context_instruction": "Authoritative current topic snapshot; product functions supersede this snapshot when state changes: ",
                 "functions": FUNCTIONS,
                 "voice": "Aoede",
@@ -1203,10 +1214,13 @@ class StreetStoryLiveAdapter:
         chosen = str(identity.get("candidate_id") or "")
         # The selected object must survive compaction even when it was last in OSM/Wikipedia.
         candidates.sort(key=lambda item: str(item.get("candidate_id") or "") != chosen)
+        selected = next((item for item in candidates if str(item.get('candidate_id') or '') == chosen), {})
         return {
             key: identity.get(key)
             for key in ("status", "candidate_id", "candidate_name", "canonical_name", "aliases", "locality", "country", "confidence", "candidate_url", "photo_sha256", "generation")
         } | {
+            "canonical_name": identity.get('canonical_name') or identity.get('candidate_name') or selected.get('name'),
+            "aliases": identity.get('aliases') or selected.get('entity_aliases') or [],
             "observations": [str(value)[:300] for value in identity.get("observations", [])[:3]],
             "candidate_count": len(candidates),
             "candidates": [
@@ -1455,6 +1469,7 @@ class StreetStoryLiveAdapter:
         with self.service.store.connection() as db:
             row = self.service._story_row(db, story_id)
             story = self.service._story_repr(db, row)
+            story['latitude'], story['longitude'] = row['latitude'], row['longitude']
             editor = db.execute("SELECT * FROM live_editor_state WHERE story_id=?", (story_id,)).fetchone()
             if editor:
                 editor_state = {

@@ -166,3 +166,30 @@ async def test_own_quote_and_decomposition_checks_reject_borrowed_or_compound_po
             await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'wrong-basis', 'args': {**args, 'decisions': [decision]}})
     assert all(f['eligibility'] == 'unreviewed' for f in adapter._get_facts(session.resource_id, {})['facts'])
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_resumed_review_frames_inventory_as_candidates_and_preserves_canonical_identity(tmp_path):
+    import json
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save', 'args': findings(chunk, QUOTES)})
+    with svc.store.tx() as db:
+        db.execute("UPDATE research_runs SET state='verifying' WHERE run_id=?", (run_id,))
+        row = db.execute('SELECT research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()
+        research = json.loads(row[0])
+        identity = research['visual_identity']
+        identity['candidate_id'] = 'confirmed-place'
+        identity['candidate_name'] = 'Бранденбургские ворота (Калининград)'
+        identity['candidates'] = [{'candidate_id': 'confirmed-place', 'name': identity['candidate_name'], 'entity_aliases': ['Brandenburger Tor, Kaliningrad']}]
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), session.resource_id))
+    initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
+    assert initialized['context']['facts'] == [] and initialized['context']['candidate_count'] == 3
+    assert initialized['context']['visual_identity']['canonical_name'] == 'Бранденбургские ворота (Калининград)'
+    assert initialized['context']['visual_identity']['aliases'] == ['Brandenburger Tor, Kaliningrad']
+    assert initialized['context']['poi_location'] == {'latitude': 54.7, 'longitude': 20.5}
+    assert initialized['configuration']['system_instruction'].startswith('Current phase: independent verification')
+    assert 'edit_text' in {tool['name'] for tool in initialized['configuration']['functions']}
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    assert packet['total_facts'] == 3
+    await reader.search_http.aclose()
