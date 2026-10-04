@@ -213,21 +213,68 @@ async def article_browser(page_url: str):
             await context.close()
 
 
-async def rendered_media(page, page_url):
+class RenderedMedia(list):
+    def __init__(self, values, cursor, partial, slide_cursor=0):
+        super().__init__(values)
+        self.cursor, self.partial = cursor, partial
+        self.slide_cursor = slide_cursor
+
+
+async def rendered_media(page, page_url, cursor=0, slide_cursor=0, *, stop_image=None):
     await page.goto(page_url, wait_until='domcontentloaded', timeout=12000)
-    for _ in range(3):
+    controls = page.locator('article button[data-gallery-next]:not([disabled]), main button[data-gallery-next]:not([disabled]), article .swiper-button-next:not(.swiper-button-disabled):not(a), main .swiper-button-next:not(.swiper-button-disabled):not(a)')
+    async def next_slide():
+        if not await controls.count() or not await controls.first.is_visible():
+            return False
+        await controls.first.click(timeout=1000)
+        await page.wait_for_timeout(100)
+        return True
+    # Restore the bounded gallery cursor on this exact article, not the site.
+    for _ in range(min(slide_cursor, 120)):
+        if not await next_slide():
+            break
+    await page.evaluate('(n) => window.scrollTo(0, n * window.innerHeight)', cursor)
+    bottom = False
+    enumerated = {}
+    for _ in range(12):
         await page.evaluate('window.scrollBy(0, window.innerHeight)')
         await page.wait_for_timeout(200)
+        cursor += 1
+        await page.evaluate("document.querySelectorAll('img').forEach(i => { if(i.currentSrc) i.setAttribute('data-src', i.currentSrc) })")
+        _title, current = extract_media(await page.content(), page.url)
+        enumerated.update({m['image_url']: m for m in current})
+        if stop_image and stop_image in enumerated:
+            images = page.locator('img')
+            found = False
+            for index in range(await images.count()):
+                image = images.nth(index)
+                exact = await image.evaluate("(i, url) => [i.currentSrc, i.src, i.dataset.src, i.dataset.original, i.closest('a')?.href].includes(url)", stop_image)
+                if exact and await image.is_visible():
+                    found = True
+                    break
+            if found:
+                break
+        advanced = await next_slide()
+        if advanced:
+            slide_cursor += 1
+        if await page.evaluate('window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4'):
+            bottom = True
+            if not advanced:
+                break
     await page.evaluate("document.querySelectorAll('img').forEach(i => { if(i.currentSrc) i.setAttribute('data-src', i.currentSrc) })")
     document = await page.content()
     if len(document.encode()) > MAX_PAGE_BYTES:
         raise ValueError('article_media_size')
-    return extract_media(document, page.url)
+    title, media = extract_media(document, page.url)
+    enumerated.update({m['image_url']: m for m in media})
+    # Hidden slides/next controls may still contain unseen frames even at bottom.
+    remaining = await controls.count()
+    return title, RenderedMedia(list(enumerated.values()), cursor, not bottom or bool(remaining), slide_cursor)
 
 
-async def browser_media(page_url: str) -> tuple[str, list[dict]]:
+async def browser_media(page_url: str, cursor=0, slide_cursor=0) -> tuple[str, list[dict]]:
     async with article_browser(page_url) as page:
-        return await rendered_media(page, page_url)
+        return await rendered_media(page, page_url, cursor, slide_cursor)
 
 
 async def wikipedia_article_references(candidate):
@@ -252,7 +299,7 @@ async def browser_reference(descriptor):
     """Extract only the authorized article's rendered illustration, never the page."""
     raw = descriptor['image_url']
     async with article_browser(descriptor['article_url']) as page:
-        _title, media = await rendered_media(page, descriptor['article_url'])
+        _title, media = await rendered_media(page, descriptor['article_url'], stop_image=raw)
         if raw not in {item['image_url'] for item in media}:
             raise ValueError('article_media_not_extracted')
         images = page.locator('img')
@@ -291,7 +338,7 @@ def browser_executable(default: str) -> str:
     raise ValueError('article_browser_unavailable')
 
 
-async def article_candidates(service, story, sources, excluded, *, http=None, resolver=resolve_public, browser=browser_media):
+async def article_candidates(service, story, sources, excluded, *, http=None, resolver=resolve_public, browser=browser_media, receipts=None):
     own = http is None
     client = http or httpx.AsyncClient(timeout=8, follow_redirects=False,
         headers={'User-Agent': 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story) article-media'})
@@ -309,28 +356,44 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
         if cid in excluded:
             return None
         async with semaphore:
-            page_url, title, media = raw, '', []
+            page_url, title, media, partial, body = raw, '', [], False, b''
             try:
                 page_url, mime, body = await fetch_public(client, raw, MAX_PAGE_BYTES, resolver=resolver)
                 if mime not in {'text/html', 'application/xhtml+xml'}:
                     raise ValueError('article_media_not_html')
                 # BeautifulSoup honors declared HTML encoding (including CP1251).
                 title, media = extract_media(body, page_url)
+                # A lead in static HTML does not prove a JS gallery was read.
+                document = BeautifulSoup(body, 'html.parser')
+                partial = bool(document.select('[data-gallery], [data-fancybox], [data-swiper], .swiper, .slick-slider, .owl-carousel, [data-lazy-src]'))
             except (httpx.HTTPError, ValueError, OSError) as exc:
                 event('identity_article_unavailable', {'reason': type(exc).__name__})
-            if not media and browser_slots > 0:
+            if (not media or partial) and browser_slots > 0:
                 browser_slots -= 1
                 try:
-                    title, media = await asyncio.wait_for(browser(page_url), timeout=20)
+                    render = browser(page_url, cursor=source.get('gallery_cursor', 0), slide_cursor=source.get('gallery_slide_cursor', 0)) if browser is browser_media else browser(page_url)
+                    rendered_title, rendered = await asyncio.wait_for(render, timeout=20)
+                    title = rendered_title or title
+                    media = list({m['image_url']: m for m in [*media, *rendered]}.values())
+                    partial = getattr(rendered, 'partial', partial)
+                    source = dict(source, gallery_cursor=getattr(rendered, 'cursor', source.get('gallery_cursor', 0)),
+                        gallery_slide_cursor=getattr(rendered, 'slide_cursor', source.get('gallery_slide_cursor', 0)))
+                    # Bounded browser enumeration can be partial; do not assert
+                    # exhaustion of a scripted gallery from three scrolls.
                     event('identity_article_browser', {'image_count': len(media), 'headless': True})
                 except Exception as exc:
                     event('identity_article_browser_unavailable', {'reason': type(exc).__name__})
             if not media:
+                if receipts is not None:
+                    receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure'})
                 return None
+            if receipts is not None:
+                receipts.append({'url': raw, 'final_url': page_url, 'status': 'partial' if partial else 'completed', 'image_count': len(media), 'gallery_cursor': source.get('gallery_cursor', 0), 'gallery_slide_cursor': source.get('gallery_slide_cursor', 0)})
             event('identity_article_media', {'candidate_id': cid, 'image_count': len(media)})
             return {'candidate_id': cid, 'name': title or str(source.get('title') or '')[:180],
                 'url': page_url, 'source_urls': [page_url], 'reference_image_urls': [item['image_url'] for item in media],
-                'article_media': media, 'multi_view': True, 'discovery': 'web_article_media'}
+                'article_media': media, 'multi_view': True, 'discovery': 'web_article_media',
+                'enumeration_status': 'partial' if partial else 'completed', 'discovery_provenance': source}
     try:
         unique = {str(s.get('url')): s for s in sources if isinstance(s, dict)}
         values = await asyncio.gather(*(read(source) for source in list(unique.values())[:MAX_PAGES]))

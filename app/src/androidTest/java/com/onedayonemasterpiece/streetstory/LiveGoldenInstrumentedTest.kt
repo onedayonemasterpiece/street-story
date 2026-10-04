@@ -47,6 +47,7 @@ class LiveGoldenInstrumentedTest {
     private var routeStartedAt = 0L
     private var observedLive: LiveSessionController? = null
     private val stageTimings = mutableListOf<Map<String, Any?>>()
+    private val identityProgressSamples = mutableListOf<Map<String, Any?>>()
 
     private fun beginStage(name: String, budgetMs: Long) {
         if (stageStartedAt != 0L) finishStage("passed")
@@ -79,6 +80,18 @@ class LiveGoldenInstrumentedTest {
             "Stage watchdog failed: stage=$activeStage elapsed_ms=${System.currentTimeMillis() - stageStartedAt}"
         }
         observedLive?.snapshot()?.error?.let { error("Live failed: stage=$activeStage error=$it") }
+        observedLive?.snapshot()?.identityProgress?.let { progress ->
+            val sample = mapOf("elapsed_ms" to (System.currentTimeMillis() - routeStartedAt),
+                "reviewed" to progress.imagesReviewedCount, "verified" to progress.visualComparisonVerified,
+                "generation" to progress.generation)
+            val last = identityProgressSamples.lastOrNull()
+            if (last == null || last["reviewed"] != sample["reviewed"] || last["verified"] != sample["verified"] || last["generation"] != sample["generation"]) {
+                if (last != null && last["generation"] == sample["generation"]) {
+                    check(progress.imagesReviewedCount >= (last["reviewed"] as Int)) { "Identity counter went backwards" }
+                }
+                identityProgressSamples.add(sample)
+            }
+        }
     }
 
     @Test
@@ -91,6 +104,7 @@ class LiveGoldenInstrumentedTest {
         val token = File(root, "token.txt").readText().trim()
         require(baseUrl.startsWith("https://") && token.isNotBlank())
         val keepPublication = InstrumentationRegistry.getArguments().getString("keepPublication") == "true"
+        val identityOnly = InstrumentationRegistry.getArguments().getString("identityOnly") == "true"
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
 
@@ -132,6 +146,7 @@ class LiveGoldenInstrumentedTest {
         val screenshots = mutableListOf<Map<String, Any?>>()
         evidence["stage_screenshots"] = screenshots
         evidence["stage_timings"] = stageTimings
+        evidence["identity_progress_samples"] = identityProgressSamples
         fun capture(stage: String, story: StoryWire) {
             captureStage(stage, story, local.clientStoryId, store, screenshots)
         }
@@ -167,7 +182,7 @@ class LiveGoldenInstrumentedTest {
 
             if (story.visualIdentity?.status != "match") {
                 ownerText(live,
-                    "Определи объект на фотографии самостоятельно: используй геометки, ближайшие OSM/Wikipedia кандидаты и сравнение эталонных фотографий через resolve_place. Я не знаю название объекта.",
+                    "Помоги узнать, что за здание на фотографии. Я не знаю его названия.",
                     "automatic identity retry")
                 story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale")) {
                     it.visualIdentity?.status == "match"
@@ -176,6 +191,16 @@ class LiveGoldenInstrumentedTest {
             assertEquals("Golden photo must be identified automatically", "match", story.visualIdentity?.status)
             evidence["automatic_identity"] = true
             capture("02-object-identified", story)
+            if (identityOnly) {
+                evidence["identity_only"] = true
+                evidence["discovery_seeded"] = false
+                evidence["prepared_pcm_after_capture_boundary"] = true
+                evidence["legacy_voice_endpoint_used"] = false
+                evidence["identity_progress"] = live.snapshot().identityProgress
+                evidence["visual_identity"] = story.visualIdentity
+                finishStage("passed")
+                return
+            }
             beginStage("research", 5L * 60 * 1000)
             // Identity confirmation precedes research. Do not wait for facts before
             // allowing the author to confirm an uncertain photo match.

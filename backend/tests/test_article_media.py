@@ -197,7 +197,8 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
     async def search(service, query, visual_query):
         searched.append(query)
         return [{'url': article['url']}]
-    async def articles(*_args):
+    async def articles(*_args, receipts):
+        receipts.append({'status': 'completed'})
         return [article]
     svc._candidate_reference_images = images
     monkeypatch.setattr(identity_discovery, 'web_image_sources', search)

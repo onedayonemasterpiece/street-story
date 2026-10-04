@@ -44,20 +44,108 @@ def comparison_sheet(photo_path, references):
 
 
 class LiveVisualComparisonMixin:
+    def _save_visual_queue(self, session, state, *, db=None, research=None):
+        """Persist cursors/receipts, never multimedia or session credentials.
+
+        An unacknowledged comparison is offered again after reconnect. Only a
+        completed verdict enters seen_images, so download/replay never counts.
+        """
+        durable = {k: v for k, v in state.items() if k != 'pending'}
+        pending = state.get('pending') or {}
+        durable['queue'] = [*pending.get('candidates', []), *state['queue']]
+        def save(connection, current):
+            row = self.service._story_row(connection, session.resource_id)
+            if (row['photo_sha256'] != state['photo_sha256']
+                    or int(current.get('identity_generation') or 0) != state['generation']):
+                raise ConflictError('visual_comparison_changed', 'Фото уже изменилось.')
+            current['visual_search_operation'] = durable
+            connection.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(current), row['id']))
+        if db is not None:
+            save(db, research)
+        else:
+            with self.service.store.tx() as connection:
+                row = self.service._story_row(connection, session.resource_id)
+                save(connection, json.loads(row['research_json'] or '{}'))
+
+    @staticmethod
+    def _image_entries(candidate):
+        for url in candidate.get('reference_image_urls', []):
+            yield {**candidate, 'reference_image_urls': [url], 'reference_batch': True,
+                   'article_media': [m for m in candidate.get('article_media', []) if m['image_url'] == url]}
+
     async def _find_place_articles(self, session, args):
         from .identity_discovery import web_image_sources
         query = str(args.get('query') or '').strip()[:180]
         if not query:
             raise ConflictError('visual_query_required', 'Нужен поисковый запрос.')
         attempted = session.state.setdefault('identity_search_queries', {})
-        if query not in attempted:
-            attempted[query] = await web_image_sources(self.service, query, '')
-        sources = attempted[query]
+        story, research = self.service._identity_snapshot(session.resource_id)
+        saved = research.get('identity_article_discovery') or {}
+        if saved.get('photo_sha256') == story['photo_sha256'] and saved.get('generation') == int(research.get('identity_generation') or 0):
+            attempted.update(saved.get('queries') or {})
+        previous = attempted.get(query) or {}
+        now = self.service.store.now()
+        if previous.get('status') == 'completed':
+            return previous
+        if previous.get('retry_at', 0) > now:
+            return previous
+        try:
+            sources = await web_image_sources(self.service, query, '')
+            result = {'sources': sources, 'status': 'completed', 'search_unavailable': False,
+                'instruction': 'Fetch article illustrations with compare_place_images; titles are hypotheses only.'}
+        except Exception as exc:
+            code = getattr(exc, 'code', None) or type(exc).__name__
+            result = {'sources': [], 'status': 'temporary_failure', 'search_unavailable': True,
+                'code': code, 'retry_at': max(now + 3, float(getattr(exc, 'retry_at', None) or now + 15)),
+                'provider_receipt': getattr(self.service.providers.gemini, 'last_article_discovery_failure', None),
+                'instruction': 'Search failed, not a visual mismatch. Retain progress and retry after retry_at or with another query.'}
+            record_identity_event(self.service, session.resource_id, 'identity_web_search_unavailable', {'code': code})
+            if (session.state.get('visual_comparison') or {}).get('queue') or any(
+                    c.get('discovery') == 'web_article_media' and c.get('reference_image_urls')
+                    for c in (research.get('visual_identity') or {}).get('candidates', [])):
+                result['instruction'] = 'Search failed, but saved illustrations remain. Call compare_place_images to process them before another search.'
+        attempted[query] = result
+        sources = result['sources']
         if sources:
-            session.state['identity_article_sources'] = sources
-        return {'sources': sources, 'search_unavailable': not sources,
-                'instruction': 'Fetch these article illustrations with compare_place_images. Search titles are hypotheses only.' if sources else
-                    'Search returned no sources. Do not repeat this helper or claim visual mismatches without images. Use native search if available; otherwise explain the current search availability gap.'}
+            old = session.state.get('identity_article_sources', [])
+            session.state['identity_article_sources'] = list({x['url']: x for x in [*old, *sources]}.values())[-60:]
+        with self.service.store.tx() as db:
+            row = self.service._story_row(db, session.resource_id)
+            current = json.loads(row['research_json'] or '{}')
+            if row['photo_sha256'] != story['photo_sha256'] or int(current.get('identity_generation') or 0) != int(research.get('identity_generation') or 0):
+                raise ConflictError('visual_comparison_changed', 'Фото уже изменилось.')
+            old_sources = (saved.get('sources') or []) if (saved.get('photo_sha256') == row['photo_sha256']
+                and saved.get('generation') == int(current.get('identity_generation') or 0)) else []
+            current['identity_article_discovery'] = {'generation': int(current.get('identity_generation') or 0),
+                'photo_sha256': row['photo_sha256'], 'queries': attempted,
+                'sources': list({x['url']: x for x in [*old_sources, *sources]}.values())[-60:]}
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(current), row['id']))
+        return result
+
+    def _continue_identity(self, session):
+        state = session.state.get('visual_comparison') or {}
+        if not state or state.get('pending'):
+            return
+        _story, research = self.service._identity_snapshot(session.resource_id)
+        identity = research.get('visual_identity') or {}
+        if identity.get('status') in {'match', 'owner_confirmed'}:
+            return
+        now = self.service.store.now()
+        pages = state.get('sources') or {}
+        available = bool(state.get('queue')) or any(p['status'] == 'pending' or
+            (p['status'] == 'partial' and p.get('attempts', 0) < 10 and p.get('retry_at', 0) <= now)
+            for p in pages.values()) or any(c.get('discovery') == 'web_article_media' and c.get('url') not in pages
+                for c in identity.get('candidates', []))
+        if not available:
+            return
+        token = canonical([len(state.get('seen_images', [])), len(state.get('queue', [])),
+            [(url, p.get('status'), p.get('attempts')) for url, p in pages.items()]])
+        if session.state.get('identity_continuation_token') == token:
+            return
+        session.state['identity_continuation_token'] = token
+        self.write(session, {'type': 'text', 'text': 'Continue the pending visual operation: saved illustrations remain. '
+            'Call compare_place_images and record_place_comparison in this same conversation. '
+            'Do not repeat search while usable saved references remain; stop on proved match.'})
 
     def _comparison_result(self, pending):
         return with_live_tool_parts({**pending['reply'], 'image': {'$ref': 'comparison.jpg'}},
@@ -77,7 +165,7 @@ class LiveVisualComparisonMixin:
         identity = research.get('visual_identity') or {}
         if identity.get('status') in {'match', 'owner_confirmed'}:
             return {'already_resolved': True, 'visual_identity': identity}
-        state = session.state.get('visual_comparison')
+        state = session.state.get('visual_comparison') or research.get('visual_search_operation')
         if state and (state['generation'] != generation or state['photo_sha256'] != story['photo_sha256']):
             state = None
         if state and state.get('pending'):
@@ -90,58 +178,106 @@ class LiveVisualComparisonMixin:
                     from .article_media import wikipedia_article_references
                     gallery = await wikipedia_article_references(candidate)
                     urls = list(dict.fromkeys(original_reference(url) or url for url in [*candidate['reference_image_urls'], *gallery]))
-                    queue.extend({**candidate, 'reference_image_urls': [url], 'reference_batch': True}
-                                 for url in urls)
+                    queue.extend(self._image_entries({**candidate, 'reference_image_urls': urls}))
             state = {'generation': generation, 'photo_sha256': story['photo_sha256'],
                      'queue': queue, 'web_searched': False, 'query': str(args.get('query') or identity.get('candidate_name') or '')[:180],
-                     'seen_images': list((research.get('identity_progress') or {}).get('reviewed_image_sha256s') or []),
-                     'browser_budget': {'remaining': 2}}
+                     'seen_images': list((research.get('identity_progress') or {}).get('reviewed_image_sha256s') or [])
+                         if (research.get('identity_progress') or {}).get('generation', generation) == generation else [],
+                     'browser_budget': {'remaining': 2}, 'sources': {}, 'searches': {}, 'fetch_failures': []}
             session.state['visual_comparison'] = state
-        if not state['queue'] and not state['web_searched']:
+        session.state['visual_comparison'] = state
+        # Accept later native/API URLs even after the first discovery portion.
+        urls = args.get('article_urls') or []
+        if not isinstance(urls, list) or any(not isinstance(url, str) for url in urls):
+            raise ConflictError('visual_article_urls_invalid', 'Некорректные ссылки статей.')
+        discovery = research.get('identity_article_discovery') or {}
+        if discovery.get('generation') != generation or discovery.get('photo_sha256') != story['photo_sha256']:
+            discovery = {}
+        sources = [{'url': url} for url in urls[:20]] + session.state.get('identity_article_sources', []) + discovery.get('sources', [])
+        state.setdefault('sources', {})
+        state.setdefault('searches', {})
+        state['searches'].update(discovery.get('queries') or {})
+        state.setdefault('fetch_failures', [])
+        for source in sources:
+            state['sources'].setdefault(source['url'], {'source': source, 'status': 'pending', 'attempts': 0})
+        if not state['queue']:
             from .article_media import article_candidates
-            record_identity_event(self.service, story['id'], 'identity_web_media_started', {'generation': generation})
-            state['query'] = str(args.get('query') or state['query'])[:180]
-            if not state['query']:
-                return {'instruction': 'Передай query — гипотезу о названии либо видимые отличительные признаки объекта. Это не подтверждение автора.'}
+            query = str(args.get('query') or state['query'])[:180]
+            state['query'] = query
+            if not query and not state['sources']:
+                return {'query_required': True, 'instruction': 'Use visible features or an object-name hypothesis as query; do not ask the owner to identify it.'}
             saved_articles = [c for c in identity.get('candidates', []) if c.get('discovery') == 'web_article_media']
-            urls = args.get('article_urls') or []
-            if not isinstance(urls, list) or any(not isinstance(url, str) for url in urls):
-                raise ConflictError('visual_article_urls_invalid', 'Некорректные ссылки статей.')
-            sources = [{'url': url} for url in urls[:20]] or session.state.get('identity_article_sources', [])
-            if not sources and not saved_articles and not state.get('search_unavailable'):
-                sources = (await self._find_place_articles(session, {'query': state['query']}))['sources']
-            if not sources and not saved_articles:
-                state['search_unavailable'] = True
-                record_identity_event(self.service, story['id'], 'identity_web_search_unavailable', {'generation': generation})
-                return {'search_unavailable': True, 'images_compared': 0,
-                    'instruction': 'Поисковый helper не вернул статей. Это НЕ визуальное несовпадение: новых эталонов не было. Используй свой native Google Search, затем передай реальные URL статей в compare_place_images.article_urls. Не повторяй helper без новых источников и не утверждай, что фотографии просмотрены.'}
-            articles = saved_articles or await article_candidates(self.service,
-                {**story, '_identity_generation': generation}, sources, set(research.get('identity_rejected_ids') or []))
-            state['web_searched'] = True
-            for candidate in articles:
-                state['queue'].extend({**candidate, 'reference_image_urls': [url], 'reference_batch': True}
-                                     for url in candidate['reference_image_urls'])
+            for candidate in saved_articles:
+                if candidate['url'] not in state['sources']:
+                    state['queue'].extend(self._image_entries(candidate))
+                    state['sources'][candidate['url']] = {'status': 'completed', 'source': {'url': candidate['url']}, 'attempts': 1}
+            available = any(p['status'] in {'pending', 'partial', 'temporary_failure'} and p.get('attempts', 0) < (10 if p['status'] == 'partial' else 2)
+                            for p in state['sources'].values())
+            previous = state['searches'].get(query) or {}
+            if not available and not state['queue'] and query and (previous.get('status') != 'completed'):
+                record_identity_event(self.service, story['id'], 'identity_web_media_started', {'generation': generation})
+                session.state.setdefault('identity_search_queries', {}).update(state['searches'])
+                result = await self._find_place_articles(session, {'query': query})
+                state['searches'][query] = result
+                for source in result['sources']:
+                    state['sources'].setdefault(source['url'], {'source': source, 'status': 'pending', 'attempts': 0})
+            # Read the first usable page, not all 20 before showing any image.
+            read_pages = 0
+            for page in state['sources'].values():
+                if state['queue'] or read_pages >= 3:
+                    break
+                if page['status'] == 'completed' or page.get('attempts', 0) >= (10 if page['status'] == 'partial' else 2) or page.get('retry_at', 0) > self.service.store.now():
+                    continue
+                read_pages += 1
+                receipts = []
+                articles = await article_candidates(self.service, {**story, '_identity_generation': generation},
+                    [page['source']], set(research.get('identity_rejected_ids') or []), receipts=receipts)
+                page['attempts'] += 1
+                page['status'] = receipts[0]['status'] if receipts else 'temporary_failure'
+                if receipts:
+                    page['source']['gallery_cursor'] = receipts[0].get('gallery_cursor', 0)
+                    page['source']['gallery_slide_cursor'] = receipts[0].get('gallery_slide_cursor', 0)
+                page['retry_at'] = self.service.store.now() + 15 if page['status'] != 'completed' else 0
+                for candidate in articles:
+                    state['queue'].extend(self._image_entries(candidate))
+            state['web_searched'] = state['searches'].get(query, {}).get('status') == 'completed'
+        self._save_visual_queue(session, state)
         references, evidence, candidates = [], [], []
         # One reference beside the source keeps detail readable and the current
         # Live context bounded. Every completed image advances the UI counter.
-        while state['queue'] and len(references) < 1:
+        fetch_attempts = 0
+        while state['queue'] and len(references) < 1 and fetch_attempts < 3:
             candidate = state['queue'].pop(0)
+            fetch_attempts += 1
             receipts = []
             images = await self.service._candidate_reference_images([{**candidate, '_browser_budget': state['browser_budget']}],
                 limit=1, story_id=story['id'], evidence=receipts)
-            if not images or not receipts or receipts[0]['model_image_sha256'] in state['seen_images']:
+            if not images or not receipts:
+                candidate['_fetch_attempts'] = candidate.get('_fetch_attempts', 0) + 1
+                if candidate['_fetch_attempts'] < 2:
+                    state['fetch_failures'].append(candidate)
                 continue
-            state['seen_images'].append(receipts[0]['model_image_sha256'])
+            if receipts[0]['model_image_sha256'] in state['seen_images']:
+                continue
             references.extend(images)
             evidence.extend(receipts)
             candidates.append(candidate)
         if not references:
-            if not state['web_searched']:
+            # Retry failed media on a later turn; never manufacture a verdict.
+            failed = state['fetch_failures']
+            state['fetch_failures'] = []
+            state['queue'].extend(failed)
+            partial = bool(state['queue']) or any(p['status'] != 'completed' for p in state['sources'].values())
+            unavailable = any(r.get('status') != 'completed' for r in state['searches'].values())
+            self._save_visual_queue(session, state)
+            if not state['web_searched'] and not state['sources'] and not unavailable:
                 return await self._compare_place_images(session, args)
+            if partial or unavailable:
+                return {'partial': True, 'search_unavailable': unavailable, 'images_compared': 0,
+                    'instruction': 'Queue retained. Some articles/images are unavailable or partial; continue later or supply new API-found article URLs/query. This is not exhausted or mismatch.'}
             record_identity_event(self.service, story['id'], 'identity_finished', {
-                'generation': generation, 'status': 'uncertain', 'candidate_id': identity.get('candidate_id'),
-                'reference_verified': False})
-            return {'exhausted': True, 'instruction': 'Доступные иллюстрации проверены; объясни конкретный пробел без выдуманного подтверждения.'}
+                'generation': generation, 'status': 'uncertain', 'candidate_id': identity.get('candidate_id'), 'reference_verified': False})
+            return {'exhausted': True, 'instruction': 'Available illustrations reviewed for this query. A new query or article URLs can continue the same queue.'}
         sheet = comparison_sheet(story['photo_path'], references)
         comparison_id = 'comparison_' + uuid.uuid4().hex
         reply = {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
@@ -151,6 +287,7 @@ class LiveVisualComparisonMixin:
             'remaining_illustrations': len(state['queue']),
             'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Нет match — продолжай compare_place_images. Реклама и другие объекты не доказательство.'}
         state['pending'] = {'id': comparison_id, 'candidates': candidates, 'evidence': evidence, 'reply': reply, 'snapshot': sheet}
+        self._save_visual_queue(session, state)
         record_identity_event(self.service, story['id'], 'identity_live_comparison_sent', {
             'generation': generation, 'image_count': len(references), 'sheet_sha256': hashlib.sha256(sheet).hexdigest(),
             'comparison_id': comparison_id, 'model': session.model})
@@ -198,6 +335,12 @@ class LiveVisualComparisonMixin:
                     (identity['candidate_name'], canonical(research), self.service.store.now(), row['id']))
             result = {'matched': matched, 'continue_comparison': not matched,
                       'instruction': 'Объект подтверждён.' if matched else 'Совпадения пока нет: вызови compare_place_images для следующей группы; широкий поиск выполняется автоматически.'}
+            state['seen_images'] = list(dict.fromkeys([*state['seen_images'], *[e['model_image_sha256'] for e in pending['evidence']]]))
+            from .identity_progress import advance
+            research['identity_progress'] = advance(research.get('identity_progress') or {}, 'identity_images_reviewed',
+                {'generation': state['generation'], 'image_sha256s': [e['model_image_sha256'] for e in pending['evidence']]}, self.service.store.now())
+            state['pending'] = None
+            self._save_visual_queue(session, state, db=db, research=research)
             self._store_command(db, row['id'], command_id, 'record_place_comparison', args, result)
         record_identity_event(self.service, session.resource_id, 'identity_images_reviewed', {
             'generation': state['generation'], 'image_count': len(pending['evidence']),

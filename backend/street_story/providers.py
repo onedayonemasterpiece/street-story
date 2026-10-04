@@ -733,11 +733,12 @@ class GeminiClient:
     ):
         from google.genai import types
         config = config or types.GenerateContentConfig()
-        config.max_output_tokens = 8192
+        output_limit = 1024 if operation == 'article_url_discovery' else 8192
+        config.max_output_tokens = output_limit
         # Same reservation contract as the existing GoogleAI gateway: estimated
         # input + bounded output + safety margin, reconciled with actual usage.
         # This is not a provider token-count/remaining-quota guarantee.
-        size = 1000 + 8192
+        size = 1000 + output_limit
         for part in contents:
             if isinstance(part, str):
                 size += len(part.encode('utf-8'))
@@ -3032,6 +3033,61 @@ class GeminiClient:
             MalformedProviderResponse,
         ):
             return None
+
+    async def discover_article_urls(self, query: str) -> GroundedResearch:
+        """Google grounding URL discovery only; no fact extraction or HTML SERP."""
+        from google.genai import types
+        query = str(query or '').strip()[:1000]
+        if not query:
+            raise ValueError('web search query is required')
+        prompt = ('Find articles and photo galleries relevant to this object, including different views. '
+                  'Use Google Search. Return a short list of up to 12 page titles; do not extract facts. Query: ' + query)
+        config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
+        retry_at = []
+        for model, _pool, quota, executor in self.web_search_routes:
+            async def call(key, timeout, *, _model=model, _quota=quota):
+                try:
+                    response = await self._generate(key, timeout, [prompt], config,
+                        operation='article_url_discovery', model=_model, quota=_quota)
+                except Exception as exc:
+                    # Whitelist numeric quota facts; never log request/key/body.
+                    raw = getattr(exc, 'response_json', None) or {}
+                    error = raw.get('error', raw) if isinstance(raw, dict) else {}
+                    details = error.get('details', []) if isinstance(error, dict) else []
+                    violations = [{k: v.get(k) for k in ('quotaMetric', 'quotaId', 'quotaValue') if k in v}
+                        for d in details if isinstance(d, dict) for v in d.get('violations', []) if isinstance(v, dict)]
+                    receipt = {'model': _model, 'provider_status': getattr(exc, 'code', None),
+                        'error_type': type(exc).__name__, 'quota_violations': violations,
+                        'provider_message': self.settings.redact(str(getattr(exc, 'message', '') or ''))[:1200],
+                        'retry_delay': next((d.get('retryDelay') for d in details if isinstance(d, dict) and d.get('retryDelay')), None)}
+                    self.last_article_discovery_failure = receipt
+                    self.article_discovery_failures = [*getattr(self, 'article_discovery_failures', [])[-5:], receipt]
+                    import logging
+                    logging.getLogger(__name__).info('article_api_search_failed %s', json.dumps(receipt))
+                    raise
+                sources = {}
+                for candidate in getattr(response, 'candidates', []) or []:
+                    metadata = getattr(candidate, 'grounding_metadata', None)
+                    for chunk in getattr(metadata, 'grounding_chunks', []) or []:
+                        web = getattr(chunk, 'web', None)
+                        uri = getattr(web, 'uri', '')
+                        if isinstance(uri, str) and uri.startswith('https://'):
+                            sources.setdefault(uri, {'url': uri, 'grounding_url': uri,
+                                'title': str(getattr(web, 'title', '') or '')[:180],
+                                'query': query, 'model': _model, 'provider': 'gemini_google_search',
+                                'discovered_at': self.store.now()})
+                return GroundedResearch(payload={'search_provider': 'gemini_google_search',
+                    'search_model': _model, 'query': query, 'status': 'completed'},
+                    grounding_sources=list(sources.values())[:20])
+            try:
+                return await executor.execute('web_search', call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+            except PermanentProviderError as exc:
+                if str(exc) != 'gemini:unsupported_model':
+                    raise
+        raise GeminiUnavailable(min(retry_at) if retry_at else None, 'article_url_discovery_unavailable')
 
     async def search_web(
         self,

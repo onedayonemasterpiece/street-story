@@ -189,7 +189,9 @@ async def test_resumed_review_frames_inventory_as_candidates_and_preserves_canon
     assert initialized['context']['visual_identity']['aliases'] == ['Brandenburger Tor, Kaliningrad']
     assert initialized['context']['poi_location'] == {'latitude': 54.7, 'longitude': 20.5}
     assert initialized['configuration']['system_instruction'].startswith('Current phase: independent verification')
-    assert 'edit_text' in {tool['name'] for tool in initialized['configuration']['functions']}
+    assert initialized['capability'] == 'review'
+    assert 'get_review_packet' in {tool['name'] for tool in initialized['configuration']['functions']}
+    assert 'continue_story' in {tool['name'] for tool in initialized['configuration']['functions']}
     packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
     assert packet['total_facts'] == 3
     await reader.search_http.aclose()
