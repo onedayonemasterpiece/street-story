@@ -233,8 +233,9 @@ Regex/keyword/year/person-name правила не решают семантик
 Проверь текущую реализацию и **минимально** сделай Live-first extraction normal path:
 - search/fetch;
 - durable chunks;
+- предварительную гидрацию накопленного POI/history knowledge;
 - маленькие Live extraction calls;
-- save atomic facts with own evidence;
+- save atomic facts with own evidence в общий POI/history graph и story projection;
 - continuation;
 - useful partial completion.
 
@@ -306,8 +307,8 @@ Regex/keyword/year/person-name правила не решают семантик
 
 - backend реально развернут;
 - Mira остаётся `gemini-3.8-live`;
-- обычный user request запускает интернет-исследование;
-- появляется полезный набор source-backed facts;
+- обычный user request сначала использует накопленное знание canonical POI, затем при необходимости запускает интернет-доисследование;
+- появляется полезный набор source-backed facts, а новое знание остаётся в общем POI/history graph для следующих историй;
 - один плохой candidate не уничтожает весь набор;
 - пользователь видит и выбирает факты;
 - выбранные факты доходят до draft;
