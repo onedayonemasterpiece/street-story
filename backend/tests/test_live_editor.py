@@ -1823,6 +1823,8 @@ def test_search_projection_exposes_live_semantic_fallback_contract():
     assert projected["next_tool"] == "get_research_chunk"
     assert projected["sources"] == [{
         "source_ref": "source_royal_gate",
+        "url": "https://cached.example/royal-gate",
+        "title": "Cached Royal Gate",
         "evidence": [{
             "evidence_ref": "evref_royal_gate",
             "text": "Слева направо изображены Отакар II, Фридрих I и Альбрехт I.",

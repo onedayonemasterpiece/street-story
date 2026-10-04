@@ -428,7 +428,7 @@ FUNCTIONS = [
     _tool_schema(
         "search_web",
         "Search one focused aspect of the identified subject for evidence. For a broad request to collect facts, "
-        "Mira should perform a short multi-angle research sweep with several distinct queries, semantically merge the "
+        "Mira should read credible discovered documents in small pages, then search only specific remaining gaps, semantically merge the "
         "results and enrich already-known facts with new supporting sources. The result returns to this same Gemini "
         "Live conversation and never rewrites publication text by itself.",
         {
@@ -717,11 +717,11 @@ SYSTEM_INSTRUCTION = """
 - широкий запрос на факты = исследование существенных аспектов объекта по coverage_goal, включая именованные элементы архитектуры. Сначала прочитай и сохрани полный материал уже найденных источников в текущем run; новый поиск нужен только для конкретного пробела. Число поисков не является целью. Не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
-- после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
-- get_research_chunk является постраничным: has_more_passages=true требует следующий get_research_chunk с next_args того же run/chunk. Отсутствие ответа в первой странице не разрешает повторный поиск: дочитай хвост. После прочтения всех страниц сохрани batch либо no_claims.
-- если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
-- если последний get_review_packet указал assess_review_packet, сначала вызови его и прочитай все next_args. Это независимая проверка настроенной исследовательской моделью, а не старый verdict или готовый допуск. При needs_context читай get_review_context; при compound/repair_needed сделай один общий repair_research_fact со всеми исправлениями и точными refs. Advice не заменяет review новых ревизий. При unavailable смысловую проверку выполняешь ты; не объявляй supported ради завершения run.
-- normal research: работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
+- только для legacy/recovery: после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- get_research_chunk является постраничным: сначала проверь и сохрани текущую малую страницу, затем следуй save receipt к следующей непрочитанной странице. Пустой facts=[] означает, что в этой странице нет полезных тезисов. Не перепрыгивай к новому поиску вместо сохранения прочитанной страницы.
+- только для legacy/recovery, когда нет batch_reviewed: если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
+- только для явного пересмотра старых кандидатов: если последний get_review_packet указал assess_review_packet, сначала вызови его и прочитай все next_args. Это независимая проверка настроенной исследовательской моделью, а не старый verdict или готовый допуск. При needs_context читай get_review_context; при compound/repair_needed сделай один общий repair_research_fact со всеми исправлениями и точными refs. Advice не заменяет review новых ревизий. При unavailable смысловую проверку выполняешь ты; не объявляй supported ради завершения run.
+- normal research: сначала по URL/title выбери компетентный источник о подтверждённом объекте; предпочитай музей, охранный каталог или энциклопедическую статью случайному туристическому пересказу. Передай его точный source_url в get_research_chunk. Это твой смысловой выбор, не порядок строк поиска. Проверяй достоверность и внутренние противоречия источника; сомнительная дата/стиль не становятся supported лишь из-за буквального совпадения. Далее работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
 - get_review_packet/finalize_fact_review и recovery нужны для старых unreviewed кандидатов или явного пересмотра прежних решений, а не как штатная лестница нового исследования.
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
@@ -731,8 +731,8 @@ SYSTEM_INSTRUCTION = """
 - read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
 - source_count/domain_count и URL сами по себе не доказывают тезис. Для важных сравнений и любого арбитража вызывай get_evidence по точным fact_id и при необходимости читай все страницы до has_more=false. Сравнивай exact span_text, source_version_id, chunk_id и контекст источника; не выбирай победителя по числу ссылок;
 - количество источников — не голосование за истинность: один массово перепечатанный ложный тезис остаётся ложным. Учитывай происхождение, период, первичность и контекст evidence, включая Regional Knowledge/POI evidence, когда оно присутствует;
-- после появления новых facts сама сравни их с текущими evidence-backed facts. record_fact_conflicts/resolve_fact_conflict остаются для точечного журнала и дополнительного арбитража, но не заменяют finalize_fact_review. В финальном review передай весь найденный набор конфликтов и решение по каждому; unresolved допустим и оставляет спорные факты withheld. Не скрывай конфликт молча и не выбирай сторону только по числу сайтов;
-- когда доказательств уже достаточно для публикации, сама сформируй редакционную концепцию через set_concept (если автор её ещё не задал), при необходимости явно скорректируй выбор фактов через select_facts, затем подготовь или обнови публикационный текст через edit_text. Текст — не список фактов: обычно 2–5 коротких связных абзацев с ясным заходом, развитием и завершением; используй только выбранные evidence-backed facts и авторский контекст, не добавляй неподтверждённые сведения;
+- новые тезисы сравнивай с известными facts в малом batch. При обнаруженном противоречии укажи possible_conflict; record_fact_conflicts/resolve_fact_conflict доступны для точечного журнала и арбитража. Полный finalize_fact_review нужен только для legacy/recovery. Не скрывай конфликт и не выбирай сторону по числу сайтов;
+- запрос только на исследование заканчивай полезным набором фактов и коротким сообщением о remaining gaps; не выбирай факты и не составляй черновик за автора. Когда автор просит подготовить публикацию или обновить текст, используй его сохранённый выбор; select_facts изменяй только по явному запросу автора, затем подготовь или обнови публикационный текст через edit_text. Текст — не список фактов: обычно 2–5 коротких связных абзацев с ясным заходом, развитием и завершением; используй только выбранные evidence-backed facts и авторский контекст, не добавляй неподтверждённые сведения;
 - после любого tool result продолжай тот же Live-разговор, не начинай отдельный исследовательский процесс;
 - изменение стиля текста не должно само менять изображение; visual-only просьба не должна менять текст;
 - результат mutation считается выполненным только после tool result/readback;
@@ -1053,6 +1053,15 @@ class StreetStoryLiveAdapter:
             pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
             unfetched = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (run_id,)).fetchone()[0]
             facts = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
+        if session.state.get('live_first_research'):
+            # A finished answer may offer useful partial findings. Do not inject
+            # another whole-inventory review request into the normal Live flow.
+            # Pending provider calls are excluded above; the saved cursor remains
+            # writable for an explicit continuation in this same conversation.
+            with self.service.store.tx() as db:
+                set_run_state(db, run_id, 'partial', detail='live_answer_partial', now=self.service.store.now(), completed=False)
+            self._emit_research_progress(session, stage='partial', active=False, query='', source_count=0, fact_count=facts)
+            return
         attempts = int(session.state.get("research_continuation_count") or 0)
         if attempts >= 2:
             self._pause_research(session, "model_review_continuation_exhausted")
@@ -1225,9 +1234,9 @@ class StreetStoryLiveAdapter:
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
         projected = self._model_result(name, result)
-        if name == "save_research_facts":
+        if name == "save_research_facts" and not result.get('completed'):
             projected["next_args"] = {"run_id": result.get("research_run_id")}
-            projected["instruction"] = "Continue get_research_chunk with run_id ONLY; omit old chunk_id and passage_cursor. The server skips completed cores. Full review becomes available after all cores are saved."
+            projected["instruction"] = "Continue get_research_chunk with run_id ONLY; omit old chunk_id and passage_cursor. The server returns the next unread page and skips completed cores. Saved supported findings are already available."
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
             projected.update({"facts_page_required": True, "read_tool": "get_facts", "saved_fact_count": len(result.get("facts") or [])})
@@ -1414,7 +1423,7 @@ class StreetStoryLiveAdapter:
                 "selected_fact_ids": list(result.get("selected_fact_ids") or [])[:80],
                 "story": projected.get("story"),
             }
-            if not result.get('review_required'):
+            if result.get('review_required') is False:
                 projected['facts'] = [{'fact_id': f.get('fact_id'), 'text': f.get('text'),
                                        'verdict': (f.get('live_review') or {}).get('verdict')} for f in result.get('facts', [])]
         if name == "search_web" and result.get("discovery_only") is True:
@@ -1439,12 +1448,12 @@ class StreetStoryLiveAdapter:
                     ):
                         evidence.append({
                             "evidence_ref": evidence_ref,
-                            "text": snippet[:600],
+                            "text": snippet[:140],
                         })
                         seen_evidence.add(evidence_ref)
                 compact_sources.append({
                     "source_ref": source_ref,
-                    "url": str(source.get('url') or '')[:240],
+                    "url": str(source.get('url') or ''),
                     "title": str(source.get('title') or '')[:100],
                     "evidence": evidence,
                 })
@@ -1453,7 +1462,7 @@ class StreetStoryLiveAdapter:
         elif name == "search_web" and result.get("semantic_completion"):
             projected["sources"] = []
             projected.pop("fact_conflicts", None)
-        elif name == "save_research_facts" and result.get('review_required'):
+        elif name == "save_research_facts" and result.get('review_required') is not False:
             projected["facts"] = [
                 {
                     "fact_id": str(fact.get("fact_id") or ""),
@@ -3421,7 +3430,7 @@ class StreetStoryLiveAdapter:
                     now=now,
                 )
 
-            from .poi_memory import persist_research_memory
+            from .poi_memory import persist_research_memory, sync_poi_review_from_story
             persist_research_memory(
                 db,
                 identity,
@@ -3431,6 +3440,8 @@ class StreetStoryLiveAdapter:
                 now,
                 research_run_id=run_id,
             )
+            if batch_verified:
+                sync_poi_review_from_story(db, story_id, now)
             fact_count = db.execute(
                 "SELECT COUNT(*) FROM facts WHERE story_id=?",
                 (story_id,),

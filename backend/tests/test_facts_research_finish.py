@@ -90,12 +90,33 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
     assert any(e.get('type') == 'research_progress' and not e['state']['active'] for e in events)
     with svc.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM live_review_packets').fetchone()[0] == 0
+        assert dict(db.execute('SELECT eligibility,COUNT(*) FROM poi_research_assertions GROUP BY eligibility')) == {'eligible': 2, 'withheld': 1}
     adapter._select_facts(session.resource_id, 'select-normal', {'fact_ids': [f['fact_id'] for f in good]})
     draft = adapter._edit_text(session.resource_id, 'draft-normal', {'expected_text_revision': 0, 'new_text': ' '.join(f['text'] for f in good), 'change_summary': 'Selected checked findings.'})
     assert bad[0]['text'] not in draft['draft_text']
     adapter._select_facts(session.resource_id, 'select-withheld', {'fact_ids': [bad[0]['fact_id']]})
     with pytest.raises(ConflictError):
         adapter._edit_text(session.resource_id, 'bad-draft', {'expected_text_revision': 1, 'new_text': bad[0]['text'], 'change_summary': 'Must reject withheld selection.'})
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_answer_returns_resumable_partial_without_review_continuation(tmp_path):
+    svc, adapter, session, events, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    chunk = await adapter._get_research_chunk(session, {'run_id': run_id})
+    session.state['research_provider_tool_pending'] = True
+    adapter._continue_pending_research(session)
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['state'] != 'partial'
+    session.state['research_provider_tool_pending'] = False
+    adapter._continue_pending_research(session)
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['state'] == 'partial'
+    assert events[-1]['type'] == 'research_progress' and not events[-1]['state']['active']
+    assert not session.state.get('research_continuation_count')
+    resumed = await adapter._get_research_chunk(session, {'run_id': run_id})
+    assert resumed['chunk_id'] == chunk['chunk_id'] and resumed['source_version_id'] == chunk['source_version_id']
     await reader.search_http.aclose()
 
 
