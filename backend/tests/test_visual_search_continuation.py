@@ -128,6 +128,40 @@ async def test_next_frame_failure_keeps_completed_verdict_acknowledgement(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['resolve_place', 'reject_place', 'find_place_articles'])
+async def test_identity_entry_tools_deliver_frames_without_a_separate_read(tmp_path, name):
+    from live_interaction.tool_parts import function_response
+    svc, adapter, story, session = prepared(tmp_path)
+    candidate = {'candidate_id': 'gate', 'name': 'Gate', 'url': 'https://example.com/article',
+        'reference_image_urls': ['https://example.com/front.jpg']}
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': [candidate]}}), story['id']))
+    calls = []
+    async def identity_tool(s, *args):
+        calls.append(name)
+        result = {'visual_identity': {'status': 'uncertain'}, 'sources': []}
+        if name != 'find_place_articles':
+            with svc.store.tx() as db:
+                adapter._store_command(db, story['id'], args[0], name, args[1], result)
+        return result
+    setattr(adapter, '_' + name, identity_tool)
+    async def images(candidates, limit, *, story_id, evidence):
+        evidence.append({'candidate_id': 'gate', 'model_image_sha256': 'front'})
+        return [('gate', 'image/jpeg', jpeg())]
+    svc._candidate_reference_images = images
+    s = session()
+    call = {'name': name, 'id': 'entry', 'args': {}}
+    first = await adapter.execute_tool(s, call)
+    assert first['comparison_id'] and function_response(name, 'entry', first)['parts']
+    if name != 'find_place_articles':
+        replay = await adapter.execute_tool(s, call)
+        assert replay['comparison_id'] == first['comparison_id'] and calls == [name]
+        assert function_response(name, 'entry', replay)['parts']
+    assert svc.story(story['id'])['identity_progress'].get('images_reviewed_count', 0) == 0
+
+
+@pytest.mark.asyncio
 async def test_search_failure_survives_restart_then_retries_without_serp(tmp_path, monkeypatch):
     svc, adapter, story, session = prepared(tmp_path)
     calls = []
