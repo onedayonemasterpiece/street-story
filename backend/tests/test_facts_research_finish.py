@@ -167,7 +167,7 @@ async def test_bound_live_checkpoint_still_rejects_changed_story_revision(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_live_answer_returns_resumable_partial_without_review_continuation(tmp_path):
+async def test_live_answer_without_saved_batch_continues_source_research(tmp_path):
     svc, adapter, session, events, run_id, _, reader = await fallback(tmp_path)
     session.state['live_first_research'] = True
     chunk = await adapter._get_research_chunk(session, {'run_id': run_id})
@@ -178,12 +178,60 @@ async def test_live_answer_returns_resumable_partial_without_review_continuation
     session.state['research_provider_tool_pending'] = False
     adapter._continue_pending_research(session)
     with svc.store.connection() as db:
-        assert run_manifest(db, run_id)['run']['state'] == 'partial'
-    assert events[-1]['type'] == 'research_progress' and not events[-1]['state']['active']
-    assert not session.state.get('research_continuation_count')
+        assert run_manifest(db, run_id)['run']['state'] != 'partial'
+    assert session.state.get('research_continuation_count') == 1
+    assert session.state.get('research_continuation_queued') is True
     resumed = await adapter._get_research_chunk(session, {'run_id': run_id})
     assert resumed['chunk_id'] == chunk['chunk_id'] and resumed['source_version_id'] == chunk['source_version_id']
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_search_with_sources_and_zero_new_facts_requires_live_source_read(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    mark_identity_ready(svc, session.resource_id)
+    session.state['live_first_research'] = True
+
+    async def source_only(query, context):
+        return GroundedResearch(
+            payload={
+                'facts': [],
+                'search_provider': 'google_grounding',
+                'semantic_status': 'complete',
+                'coverage_satisfied': False,
+            },
+            grounding_sources=[{
+                'url': URL,
+                'title': 'Useful source',
+                'supports': [{
+                    'kind': 'search_snippet',
+                    'source_url': URL,
+                    'text': 'Короткий поисковый фрагмент; полный источник ещё не прочитан.',
+                }],
+            }],
+        )
+
+    svc.providers.gemini.search_web = source_only
+    result = await adapter.execute_tool(
+        session,
+        {
+            'name': 'search_web',
+            'id': 'additional-facts',
+            'args': {
+                'query': 'Найди дополнительные факты.',
+                'coverage_goal': 'Дополнительные факты об объекте.',
+            },
+        },
+    )
+    assert result['facts'] == []
+    assert result['review_required'] is False
+    assert result['continuation_required'] is True
+    assert result['next_tool'] == 'get_research_chunk'
+    assert result['sources'][0]['source_ref'].startswith('websrc_')
+    with svc.store.connection() as db:
+        manifest = run_manifest(db, result['research_run_id'])
+        assert manifest['run']['state'] == 'extracting'
+        assert manifest['run']['status_detail'] == 'awaiting_live_source_read'
 
 
 @pytest.mark.asyncio
