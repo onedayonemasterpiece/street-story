@@ -3,6 +3,7 @@ package com.onedayonemasterpiece.streetstory
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import java.io.File
 import java.net.URI
@@ -48,6 +49,7 @@ class DebugProvisioningActivity : Activity() {
         val rawBackendUrl = intent.getStringExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL)
         val inlineDeviceToken = intent.getStringExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN)
         val useStagedToken = intent.getBooleanExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED, false)
+        Log.i("StreetStoryProvisioning", "event=received staged=$useStagedToken inline=${inlineDeviceToken != null} recreated=${savedInstanceState != null}")
         intent.removeExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL)
         intent.removeExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN)
         intent.removeExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED)
@@ -62,6 +64,7 @@ class DebugProvisioningActivity : Activity() {
         }
         val values = DebugProvisioningPolicy.parse(rawBackendUrl, rawDeviceToken)
         if (values == null) {
+            Log.i("StreetStoryProvisioning", "event=validation_failed backend_valid=${rawBackendUrl?.let(DebugProvisioningPolicy::validBackendUrl) == true} token_valid=${rawDeviceToken?.let(DebugProvisioningPolicy::validDeviceToken) == true}")
             Toast.makeText(this, "ADB-настройка отклонена: проверь HTTPS URL и device token", Toast.LENGTH_LONG).show()
             finish()
             return
@@ -71,12 +74,14 @@ class DebugProvisioningActivity : Activity() {
         if (config.backendUrl != values.backendUrl) config.backendUrl = values.backendUrl
         if (config.deviceToken != values.deviceToken) config.deviceToken = values.deviceToken
         if (!config.configured) {
+            Log.i("StreetStoryProvisioning", "event=config_failed backend_present=${config.backendUrl.isNotBlank()} token_present=${config.deviceToken.isNotBlank()}")
             Toast.makeText(this, "ADB-настройка не завершена", Toast.LENGTH_LONG).show()
             finish()
             return
         }
 
         SyncScheduler.enqueue(this)
+        Log.i("StreetStoryProvisioning", "event=configured staged=$useStagedToken")
         Toast.makeText(this, "Street Story backend настроен через ADB", Toast.LENGTH_SHORT).show()
         startActivity(
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),

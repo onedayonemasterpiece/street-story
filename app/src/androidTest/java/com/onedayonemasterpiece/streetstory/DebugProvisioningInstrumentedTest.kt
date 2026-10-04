@@ -168,7 +168,7 @@ class DebugProvisioningInstrumentedTest {
         // before the receiver consumes the staged file. No token enters the command.
         val output = device.executeShellCommand(
             "am start -W -n ${context.packageName}/${DebugProvisioningActivity::class.java.name} " +
-                "--es ${DebugProvisioningPolicy.EXTRA_BACKEND_URL} '$backendUrl' " +
+                "--es ${DebugProvisioningPolicy.EXTRA_BACKEND_URL} $backendUrl " +
                 "--ez ${DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED} true",
         )
         assertTrue("ADB activity launch must report success", output.contains("Status: ok"))

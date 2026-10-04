@@ -46,5 +46,6 @@ fi
 adb install -r "$test_apk"
 adb shell pm grant "$pkg" android.permission.RECORD_AUDIO || true
 adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS || true
+trap 'adb logcat -d -s StreetStoryProvisioning:I "*:S" > provisioning-logcat.txt' EXIT
 adb shell am instrument -w "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tee instrumentation.txt
 grep -q 'OK (' instrumentation.txt
