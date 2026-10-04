@@ -1094,7 +1094,7 @@ class StreetStoryLiveAdapter:
         if session.state.get('live_first_research'):
             with self.service.store.connection() as db:
                 progress = self._live_research_progress(db, session.resource_id, run_id)
-            if not progress['observations'] and (pending or (progress['remaining'] and progress['attempts'] < 3)):
+            if (not progress['observations'] or session.state.get('research_output_pending')) and (pending or (progress['remaining'] and progress['attempts'] < 3)):
                 attempts = int(session.state.get("research_continuation_count") or 0)
                 if attempts < 12:
                     next_tool = (
@@ -1110,8 +1110,8 @@ class StreetStoryLiveAdapter:
                             "type": "text",
                             "text": (
                                 "Server context for the author's current research request: "
-                                f"run {run_id} has discovered evidence but has no durable "
-                                "supported durable observation yet. Save sufficient discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Never speak unsaved snippets as facts. Do not answer with remembered or "
+                                f"run {run_id} has unread evidence and the current answer is not authorized by a save receipt. "
+                                "Save sufficient NEW discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Compare the known_fact_inventory; equivalent claims must reuse existing_fact_id and are not new findings. Never speak unsaved snippets as facts. Do not answer with remembered or "
                                 "search-snippet facts. Continue "
                                 f"{next_tool}. For get_research_chunk choose one competent "
                                 "source by title/provenance and copy its exact source_ref from "
@@ -2221,7 +2221,9 @@ class StreetStoryLiveAdapter:
                     "Сначала нужно определить объект на фотографии.",
                 )
             if args.get('confirmed_poi_id') is not None and args['confirmed_poi_id'] != identity.get('candidate_id'):
-                raise ConflictError('live_research_identity_mismatch', 'Copy the current confirmed POI ID; do not search another object.')
+                raise ConflictError('live_research_identity_mismatch',
+                    f"The confirmed POI ID is {identity.get('candidate_id')}; copy it exactly. "
+                    "Do not replace it with another source's ID for the same named landmark. Retry search_web for the confirmed object.")
             if args.get('query_matches_poi') is False:
                 raise ConflictError('live_research_identity_mismatch', 'Your query/goal targets another object. Correct it using confirmed identity and geography.')
             all_story_facts = [
@@ -4839,6 +4841,11 @@ def _live_resource_environment(settings: Settings) -> dict[str, str]:
 
 
 def _forward_committed_output(service, session, event, on_event):
+    if session.state.get("research_output_pending") and event.get("type") == "turn_complete":
+        # Withheld audio never reaches the shared host's audio callback, which
+        # normally clears this post-tool wait. The provider has finished this
+        # turn; release only that wait so the adapter can continue unread proof.
+        session.awaiting_audio = False
     if session.state.get("research_output_pending") and event.get("type") in {"audio", "output_transcript", "text"}:
         if event.get("type") == "output_transcript":
             session.state["research_continuation_queued"] = False

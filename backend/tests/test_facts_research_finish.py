@@ -187,6 +187,37 @@ async def test_live_answer_without_saved_batch_continues_source_research(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('previous_observations', [0, 1])
+async def test_withheld_post_tool_audio_does_not_deadlock_unread_research(tmp_path, monkeypatch, previous_observations):
+    from street_story.live import _forward_committed_output
+
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    await adapter._get_research_chunk(session, {'run_id': run_id})
+    monkeypatch.setattr(adapter, '_live_research_progress', lambda *_: {
+        'observations': previous_observations, 'attempts': 1, 'remaining': 0,
+    })
+    session.state['research_output_pending'] = True
+    session.awaiting_audio = True
+    delivered = []
+
+    def receive(event):
+        delivered.append(event)
+        adapter.on_event(session, event)
+
+    _forward_committed_output(svc, session, {'type': 'audio', 'data': 'unsaved'}, receive)
+    assert delivered == [] and session.awaiting_audio
+    _forward_committed_output(svc, session, {'type': 'turn_complete'}, receive)
+    assert not session.awaiting_audio
+    assert session.state['research_continuation_queued']
+    assert session.state['research_continuation_count'] == 1
+    assert delivered == [{'type': 'turn_complete'}]
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['state'] != 'partial'
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_search_with_sources_and_zero_new_facts_requires_live_source_read(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     mark_identity_ready(svc, session.resource_id)
@@ -553,6 +584,13 @@ async def test_discovery_without_checkpoint_is_bounded_and_all_owned_runs_pause(
 async def test_model_declared_wrong_poi_query_and_source_are_withheld_without_semantic_regex(tmp_path):
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     session.state.pop('research_run_id', None)
+    with pytest.raises(ConflictError) as wrong_id:
+        await adapter.execute_tool(session, {'name': 'search_web', 'id': 'wrong-id', 'args': {
+            'query': 'The same named object', 'confirmed_poi_id': 'different-source-id',
+        }})
+    confirmed_id = adapter._topic_state(session.resource_id)['story']['visual_identity']['candidate_id']
+    assert confirmed_id in str(wrong_id.value)
+    assert wrong_id.value.code == 'live_research_identity_mismatch'
     with pytest.raises(ConflictError) as error:
         await adapter.execute_tool(session, {'name': 'search_web', 'id': 'wrong-query', 'args': {'query': 'Other city and object', 'query_matches_poi': False}})
     assert error.value.code == 'live_research_identity_mismatch'
