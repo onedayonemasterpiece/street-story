@@ -5,11 +5,14 @@ No network access, executable archive entries, product forks or runtime secrets.
 The source archive is a versioned dependency, not a disposable diagnostic copy.
 """
 from __future__ import annotations
+
 import hashlib
 import io
 import json
-from pathlib import Path, PurePosixPath
 import tarfile
+from pathlib import Path, PurePosixPath
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,6 +32,9 @@ def prepare(root: Path = ROOT) -> dict:
         manifest = json.load(bundle.extractfile(package[0]))
         if manifest.get('name') != '@onedayonemasterpiece/live-interaction' or manifest.get('version') != lock['version']:
             raise ValueError('shared Live archive identity/version mismatch')
+        python_manifest = [item for item in files if len(PurePosixPath(item.name).parts) == 2 and item.name.endswith('/pyproject.toml')]
+        if len(python_manifest) != 1 or tomllib.loads(bundle.extractfile(python_manifest[0]).read().decode())['project']['version'] != lock['python_version']:
+            raise ValueError('shared Live Python archive identity/version mismatch')
         selected = []
         for item in files:
             parts = PurePosixPath(item.name).parts[1:]

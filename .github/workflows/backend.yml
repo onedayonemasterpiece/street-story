@@ -25,7 +25,9 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - name: Install backend
-        run: python -m pip install -r requirements-dev.txt
+        run: |
+          python ../scripts/install_live_framework.py
+          python -m pip install -r requirements-dev.txt
       - name: Ruff
         run: python -m ruff check street_story tests tools
       - name: Pytest

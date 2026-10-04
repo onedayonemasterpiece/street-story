@@ -574,7 +574,9 @@ class MainActivity : Activity() {
         identityProgressView?.apply {
             val progress = projection?.identityProgress
             val lines = progress?.steps?.map { step ->
-                val mark = when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
+                val mark = if (step.key == "visual_comparison") {
+                    if (progress.visualComparisonVerified) "☑" else "☐"
+                } else when(step.status) { "done" -> "✓"; "warning" -> "!"; else -> "…" }
                 "$mark ${step.label}"
             } ?: emptyList()
             val waiting = story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING)

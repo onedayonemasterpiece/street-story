@@ -78,11 +78,11 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
         if story_id:
             record_identity_event(service, story_id, name, payload)
 
-    def receipt(cid, url, image, cache_hit):
+    def receipt(cid, url, image, cache_hit, descriptor=None):
         if evidence is not None:
             evidence.append({'candidate_id': cid, 'source_url': url,
                 'model_image_sha256': hashlib.sha256(image[1]).hexdigest(),
-                'model_image_bytes': len(image[1]), 'cache_hit': cache_hit})
+                'model_image_bytes': len(image[1]), 'cache_hit': cache_hit, **(descriptor or {})})
 
     async def fetch_variant(cid, url):
         now = time.monotonic()
@@ -170,8 +170,27 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
             cid = candidate.get('candidate_id')
             if not cid:
                 continue
-            per_candidate = min(2 if candidate.get('multi_view') else 1, remaining)
+            per_candidate = min(remaining if candidate.get('reference_batch') else (2 if candidate.get('multi_view') else 1), remaining)
             loaded_for_candidate = 0
+            if candidate.get('discovery') == 'web_article_media':
+                from .article_media import load_article_reference
+                for raw in candidate.get('reference_image_urls', [])[:64]:
+                    if loaded_for_candidate >= per_candidate or remaining <= 0:
+                        break
+                    if raw in seen_urls:
+                        continue
+                    seen_urls.add(raw)
+                    try:
+                        image, descriptor = await load_article_reference(client, candidate, raw)
+                    except (httpx.HTTPError, ValueError, OSError) as exc:
+                        event('identity_reference_unavailable', {'candidate_id': cid, 'reason': type(exc).__name__})
+                        continue
+                    receipt(cid, raw, image, False, descriptor)
+                    event('identity_reference_loaded', {'candidate_id': cid, 'bytes': len(image[1]), 'source_kind': 'article_media'})
+                    result.append((cid, image[0], image[1]))
+                    loaded_for_candidate += 1
+                    remaining -= 1
+                continue
             groups = []
             seen_roots = set()
             for raw in candidate.get('reference_image_urls', [])[:6]:

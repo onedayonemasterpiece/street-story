@@ -19,23 +19,22 @@ from street_story.providers import GroundedResearch
 from street_story.service import ConflictError, ProviderBundle, canonical
 
 
-def test_live_interaction_is_pinned_to_manual_activity_release() -> None:
-    requirements = Path(__file__).resolve().parents[1] / "requirements.txt"
-    text = requirements.read_text(encoding="utf-8")
-    assert (
-        "live-interaction @ "
-        "https://github.com/onedayonemasterpiece/live-interaction/archive/"
-        "refs/tags/v0.3.7-rc.1.tar.gz#sha256=f817bea35bb8d7d1e9778ba6dac9fb88a42e50c3f827b25aa025c6d25d8e7660"
-    ) in text
+def test_live_interaction_is_pinned_to_multimodal_manual_activity_release() -> None:
+    import json
+    root = Path(__file__).resolve().parents[2]
+    lock = json.loads((root / 'live-framework.lock.json').read_text())
+    assert f"live-interaction=={lock['python_version']}" in (root / 'backend/requirements.txt').read_text()
+    from live_interaction import with_live_tool_parts
+    assert callable(with_live_tool_parts)
 
 
 def test_live_initialization_declares_application_search_function(tmp_path) -> None:
     svc, adapter, session, _events = make_service(tmp_path)
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
     configuration = initialized["configuration"]
-    assert configuration["search_enabled"] is False
+    assert configuration["search_enabled"] is True
     assert configuration["manual_activity_detection"] is True
-    assert configuration["application_search_function"] == "search_web"
+    assert configuration["application_search_function"] == "find_place_articles"
     assert configuration["media_resolution"] == "MEDIA_RESOLUTION_MEDIUM"
     assert configuration["voice"] == "Aoede"
     assert "один стабильный голосовой образ Миры" in configuration["system_instruction"]
@@ -58,7 +57,17 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     # lease after photo (8KB) and identity (5KB), before a second voice turn.
     # Reserve room for the actual owner flow, not only initial setup.
     assert len(__import__('json').dumps(provider_setup, ensure_ascii=False, separators=(',', ':')).encode()) < 34_000
-    assert not any("googleSearch" in tool for tool in provider_setup["tools"])
+    assert any("googleSearch" in tool for tool in provider_setup["tools"])
+    assert any(item['name'] == 'compare_place_images' for tool in provider_setup['tools']
+               for item in tool.get('functionDeclarations', []))
+    # Identity discovery may use native search; normal confirmed-object research
+    # keeps the existing application search/evidence-persistence policy.
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                   (json.dumps({'visual_identity': {'status': 'match'}}), session.resource_id))
+    confirmed = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
+    assert confirmed['configuration']['search_enabled'] is False
+    assert confirmed['configuration']['application_search_function'] == 'search_web'
     function_names = {
         item["name"]
         for tool in provider_setup["tools"]

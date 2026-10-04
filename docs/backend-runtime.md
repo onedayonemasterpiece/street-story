@@ -17,7 +17,7 @@ This is the deployment boundary for the backend source in `backend/`. It intenti
 
 ## Required runtime configuration
 
-Create a Python 3.12 environment, install `backend/requirements.txt`, place the repository at `/opt/street-story` (or equivalent exact checkout), and configure the systemd example. Populate runtime secrets locally; never commit them.
+Create a Python 3.12 environment, run `python scripts/install_live_framework.py` to verify and install the versioned shared Live archive, then install `backend/requirements.txt`, place the repository at `/opt/street-story` (or equivalent exact checkout), and configure the systemd example. Populate runtime secrets locally; never commit them.
 
 Required values:
 - `STREET_STORY_DEVICE_TOKEN`

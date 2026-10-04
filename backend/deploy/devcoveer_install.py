@@ -383,6 +383,7 @@ def ensure_venv(release: Path) -> Path:
     )
     if pip_probe.returncode != 0:
         run([str(target_python), "-m", "ensurepip", "--upgrade"], timeout=180)
+    run([str(target_python), str(source / 'scripts/install_live_framework.py')], timeout=180)
     run(
         [
             str(target_python),
@@ -396,6 +397,14 @@ def ensure_venv(release: Path) -> Path:
         timeout=900,
     )
     install_ai_resource_control(target_python)
+    # Prepare the quiet article browser before restarting the live service.
+    try:
+        run([str(target_python), '-c',
+             'from playwright.sync_api import sync_playwright; from street_story.article_media import browser_executable; '
+             'p=sync_playwright().start(); browser_executable(p.chromium.executable_path); p.stop()'],
+            env={**os.environ, 'PYTHONPATH': str(source / 'backend')}, timeout=30)
+    except DeployError:
+        run([str(target_python), '-m', 'playwright', 'install', 'chromium'], timeout=600)
     run(
         [
             str(target_python),
