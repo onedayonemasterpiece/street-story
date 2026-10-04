@@ -123,23 +123,24 @@ class LiveVisualComparisonMixin:
         return result
 
     def _continue_identity(self, session):
-        state = session.state.get('visual_comparison') or {}
-        if not state or state.get('pending'):
-            return
         _story, research = self.service._identity_snapshot(session.resource_id)
+        state = session.state.get('visual_comparison') or research.get('visual_search_operation') or {}
+        if state.get('pending'):
+            return
         identity = research.get('visual_identity') or {}
         if identity.get('status') in {'match', 'owner_confirmed'}:
             return
         now = self.service.store.now()
         pages = state.get('sources') or {}
-        available = bool(state.get('queue')) or any(p['status'] == 'pending' or
+        available = (not state and any(c.get('reference_image_urls') for c in identity.get('candidates', []))) or bool(state.get('queue')) or any(p['status'] == 'pending' or
             (p['status'] == 'partial' and p.get('attempts', 0) < 10 and p.get('retry_at', 0) <= now)
             for p in pages.values()) or any(c.get('discovery') == 'web_article_media' and c.get('url') not in pages
                 for c in identity.get('candidates', []))
         if not available:
             return
         token = canonical([len(state.get('seen_images', [])), len(state.get('queue', [])),
-            [(url, p.get('status'), p.get('attempts')) for url, p in pages.items()]])
+            [(url, p.get('status'), p.get('attempts')) for url, p in pages.items()],
+            [c.get('candidate_id') or c.get('url') for c in identity.get('candidates', [])] if not state else []])
         if session.state.get('identity_continuation_token') == token:
             return
         session.state['identity_continuation_token'] = token
