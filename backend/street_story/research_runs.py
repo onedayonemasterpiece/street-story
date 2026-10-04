@@ -35,7 +35,7 @@ def source_coverage(db, poi_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
         complete = bool(chunks) and row['run_state'] not in {'cancelled', 'failed'} and row['status'] == 'fetched' and not row['error_code'] and row['read_status'] == 'complete' and all(
             c['status'] in {'extracted', 'no_claims'} and not c['error_code']
             and c['prompt_version'] == 'live-chunk-findings-v1'
-            and _valid_checkpoint(db, row['run_id'], c['chunk_id']).get('terminal') for c in chunks)
+            and _valid_checkpoint(db, row['run_id'], c['chunk_id']).get('reusable_terminal') for c in chunks)
         for url in urls:
             if (url, scope) in seen:
                 continue
@@ -50,7 +50,20 @@ def source_coverage(db, poi_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
 
 def _valid_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
     try:
-        return chunk_checkpoint(db, run_id, chunk_id)
+        checkpoint = chunk_checkpoint(db, run_id, chunk_id)
+        # Legacy empty/menu receipts did not distinguish readable article
+        # content from a navigation dump. They cannot prove complete coverage.
+        batches = list(db.execute('SELECT payload_json,batch_index,status,error_code FROM research_chunk_batches WHERE run_id=? AND chunk_id=? ORDER BY batch_index',
+                                  (run_id, chunk_id)))
+        prefix = [row for row in batches if row['batch_index'] < checkpoint['next_batch_index']]
+        checked = [row['batch_index'] for row in prefix] == list(range(checkpoint['next_batch_index']))
+        for row in prefix:
+            payload = json.loads(row['payload_json'] or '{}')
+            checked = checked and not row['error_code'] and (payload.get('source_content_valid') is True or bool(payload.get('facts')))
+        checkpoint['article_content_checked'] = checked
+        checkpoint['reusable_terminal'] = checkpoint['terminal'] and checked and all(
+            row['status'] in {'completed', 'continuation'} and not row['error_code'] for row in batches)
+        return checkpoint
     except ValueError:
         logger.warning('street_story_chunk_reuse_rejected run_id=%s chunk_id=%s reason=invalid_checkpoint', run_id, chunk_id)
         return {}
@@ -80,6 +93,12 @@ def reuse_chunk_checkpoint(db, run_id: str, chunk_id: str, now: float,
             continue
         checkpoint = _valid_checkpoint(db, donor['run_id'], chunk_id)
         if not checkpoint:
+            continue
+        if checkpoint['terminal'] and not checkpoint['reusable_terminal']:
+            continue
+        if not checkpoint['article_content_checked']:
+            logger.info('street_story_chunk_reuse_rejected run_id=%s chunk_id=%s donor_run_id=%s reason=legacy_empty_content_unverified',
+                        run_id, chunk_id, donor['run_id'])
             continue
         if checkpoint['payload_missing'] or not checkpoint['next_batch_index']:
             continue

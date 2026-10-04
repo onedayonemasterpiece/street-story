@@ -3714,6 +3714,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     continuation_reason="mira_live_remaining_findings" if continuation_needed else "",
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
                     payload={"facts": normalized, "no_claims": not normalized, "official_source_urls": [],
+                             "source_content_valid": args.get('source_content_valid') is not False,
                              "next_passage_cursor": session.state.get('research_pending_page', {}).get(chunk_id, 0) if continuation_needed else 0,
                              "read_passage_ids": sorted(session.state.get('research_passages_seen', {}).get(chunk_id, set()))})
                 mark_chunk(db, run_id=run_id, chunk_id=chunk_id,

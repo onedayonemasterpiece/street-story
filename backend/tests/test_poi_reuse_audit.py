@@ -37,13 +37,13 @@ def complete(db, run, chunk, *, continuation=False):
         status='continuation' if continuation else 'completed', raw_fact_count=0, accepted_fact_count=0,
         continuation_needed=continuation, continuation_reason='', model_name='controlled',
         prompt_version='live-chunk-findings-v1', now=3,
-        payload={'facts': [], 'no_claims': True, 'next_passage_cursor': 2 if continuation else 0,
+        payload={'facts': [], 'no_claims': True, 'source_content_valid': True, 'next_passage_cursor': 2 if continuation else 0,
                  'read_passage_ids': [0, 1]})
     mark_chunk(db, run_id=run, chunk_id=chunk, status='deferred' if continuation else 'no_claims',
         observation_count=0, model_name='controlled', prompt_version='live-chunk-findings-v1', now=3)
 
 
-@pytest.mark.parametrize('change', ['none', 'scope', 'poi', 'version', 'missing_payload', 'corrupt_payload', 'policy', 'invalid_text', 'invalid_source'])
+@pytest.mark.parametrize('change', ['none', 'scope', 'poi', 'version', 'missing_payload', 'corrupt_payload', 'legacy_empty', 'policy', 'invalid_text', 'invalid_source'])
 def test_reuse_requires_exact_version_poi_scope_and_valid_checkpoint(tmp_path, change):
     store = Store(tmp_path / 'reuse.sqlite3')
     story = create_story(store)
@@ -55,6 +55,9 @@ def test_reuse_requires_exact_version_poi_scope_and_valid_checkpoint(tmp_path, c
             db.execute("UPDATE research_chunk_batches SET payload_json='',payload_sha256='' WHERE run_id='old'")
         if change == 'corrupt_payload':
             db.execute("UPDATE research_chunk_batches SET payload_sha256='invalid' WHERE run_id='old'")
+        if change == 'legacy_empty':
+            db.execute("UPDATE research_chunk_batches SET payload_json='{\"facts\":[],\"no_claims\":true}',payload_sha256='' WHERE run_id='old'")
+            assert not source_coverage(db, ['wiki:77'])[URL][0]['completed']
         if change == 'policy':
             db.execute("UPDATE research_chunk_runs SET prompt_version='obsolete' WHERE run_id='old'")
         if change == 'invalid_text':
