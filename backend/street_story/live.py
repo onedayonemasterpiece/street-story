@@ -726,7 +726,7 @@ Photo and identity:
 Research and durable evidence:
 - Never invent facts. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
 - Separate retrieval query from coverage_goal. Short queries must retain all owner requirements in coverage_goal, including positions such as left/center/right. Use visible sculptures, figures, inscriptions, coats of arms and plaques as coverage hints: targeted search must answer the named detail concretely, not merely describe the building.
-- discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
+- discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
 - Attach only each claim's own supporting evidence refs. Semantically equivalent claims use exact existing_fact_id; enrich evidence rather than multiplying paraphrases.
 - get_research_chunk is paginated: check/save the current small page before following save receipt next_args to the next unread page. facts=[] means no useful claims on that page, not completed research. Do not skip an unread page to a new search. Do not reread saved pages.
 - After no_claims with zero new durable observations, continue get_research_chunk(run_id only), at most three full-source attempts. Only after bounded source exhaustion honestly say no new confirmed facts were found.
@@ -744,7 +744,7 @@ Research and durable evidence:
 - Before lengthy research briefly say "Ищу факты"; the app shows progress. Do not read the inventory aloud: end with counts, remaining gaps and at most 1-2 important saved findings. A research-only request must not select facts or draft a publication.
 
 Concept, editing and publication:
-- Persist an owner's publication angle with set_concept. If relevance changes selection, call select_facts separately and briefly disclose the change. select_facts otherwise changes only on the owner's explicit request.
+- Persist an owner's publication angle with set_concept. If relevance changes selection, call select_facts separately and briefly disclose the change. select_facts otherwise changes only on the owner's explicit request. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
@@ -2743,7 +2743,7 @@ class StreetStoryLiveAdapter:
         return story, run
 
     @staticmethod
-    def _core_passages(chunk_id, core, *, contextual=False):
+    def _core_passages(chunk_id, core, *, contextual=False, source_text=None, core_start=0):
         """Address literal paragraphs; this makes no semantic fact decisions."""
         passages, cursor = [], 0
         # HTML navigation often produces dozens of tiny lines. Address fixed
@@ -2761,10 +2761,15 @@ class StreetStoryLiveAdapter:
             cursor += len(line)
         if contextual:
             for passage in passages:
-                start = max(0, passage['core_offset'] - 450)
-                end = min(len(core), passage['core_offset'] + len(passage['text']) + 250)
-                passage.update(text=core[start:end], core_offset=start,
-                               evidence_ref='evref_' + hashlib.sha256(f'{chunk_id}:{start}:{core[start:end]}'.encode()).hexdigest()[:24])
+                document = core if source_text is None else source_text
+                origin = 0 if source_text is None else core_start
+                start = max(0, origin + passage['core_offset'] - 450)
+                end = min(len(document), origin + passage['core_offset'] + len(passage['text']) + 250)
+                # Keep literal source context across a core boundary.
+                text = document[start:end]
+                offset = start - origin
+                passage.update(text=text, core_offset=offset,
+                               evidence_ref='evref_' + hashlib.sha256(f'{chunk_id}:{offset}:{text}'.encode()).hexdigest()[:24])
         return passages
 
     async def _get_research_chunk(self, session, args):
@@ -2861,7 +2866,7 @@ class StreetStoryLiveAdapter:
             "source_version_id": candidate["source_version_id"], "chunk_id": candidate["chunk_id"],
             "ordinal": candidate["ordinal"], "core_start": candidate["core_start"], "core_end": candidate["core_end"],
             "core_text": core, "context_text": candidate["chunk_text"],
-            "evidence_passages": self._core_passages(candidate["chunk_id"], core, contextual=bool(session.state.get('live_first_research'))),
+            "evidence_passages": self._core_passages(candidate["chunk_id"], core, contextual=bool(session.state.get('live_first_research')), source_text=candidate['normalized_text'], core_start=candidate['core_start']),
             "context_before": candidate["normalized_text"][candidate["context_start"]:candidate["core_start"]],
             "context_after": candidate["normalized_text"][candidate["core_end"]:candidate["context_end"]],
             "batch_id": batch_id, "batch_index": batch_index, "expected_story_revision": snapshot_revision,
@@ -3066,7 +3071,7 @@ class StreetStoryLiveAdapter:
                     batch_index = int(args.get("batch_index"))
                 except (TypeError, ValueError):
                     raise ConflictError("live_research_batch_invalid", "Exact batch index is required.") from None
-                all_passages = self._core_passages(chunk_id, chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]], contextual=bool(session.state.get('live_first_research')))
+                all_passages = self._core_passages(chunk_id, chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]], contextual=bool(session.state.get('live_first_research')), source_text=chunk_row['normalized_text'], core_start=chunk_row['core_start'])
                 seen = session.state.get("research_passages_seen", {}).get(chunk_id, set())
                 if len(seen) < len(all_passages):
                     continuation_needed = True
@@ -3138,7 +3143,7 @@ class StreetStoryLiveAdapter:
                 url = str(chunk_row["requested_url"]).rstrip("/")
                 source_ref = _search_source_ref(url)
                 core = chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]]
-                passages = self._core_passages(chunk_id, core, contextual=bool(session.state.get('live_first_research')))
+                passages = self._core_passages(chunk_id, core, contextual=bool(session.state.get('live_first_research')), source_text=chunk_row['normalized_text'], core_start=chunk_row['core_start'])
                 addressed = {p["evidence_ref"]: p["text"] for p in passages}
                 numbered = {p["passage_id"]: p["text"] for p in passages}
                 current_passage_ids = session.state.get('research_page_passage_ids', {}).get(chunk_id, set(numbered))
@@ -3169,7 +3174,9 @@ class StreetStoryLiveAdapter:
                     for value in quotes:
                         quote = str(value or "")
                         offset = core.find(quote)
-                        if not quote.strip() or len(quote) > 1600 or offset < 0:
+                        if session.state.get('live_first_research') and quote in addressed.values():
+                            offset = next(p['core_offset'] for p in passages if p['text'] == quote)
+                        if not quote.strip() or len(quote) > 1600 or (offset < 0 and quote not in addressed.values()):
                             raise ConflictError("live_research_quote_invalid", "Quote is not a verbatim passage of this frozen core.")
                         evidence_ref = "evref_" + hashlib.sha256(f"{chunk_id}:{offset}:{quote}".encode()).hexdigest()[:24]
                         support = {"kind": "verified_page_span", "source_url": url, "source_version_id": chunk_row["source_version_id"],

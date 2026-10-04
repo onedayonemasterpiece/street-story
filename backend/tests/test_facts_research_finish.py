@@ -778,3 +778,24 @@ async def test_pending_discovery_redirect_retains_addresses_without_new_search(t
         assert all(not source['evidence'] for source in result['sources'])
     finally:
         await reader.search_http.aclose()
+
+
+def test_frozen_passage_keeps_sentence_across_core_boundary():
+    from street_story.live import StreetStoryLiveAdapter
+    prefix = 'Navigation ' * 180
+    sentence = 'Торжественная закладка состоялась 30 августа 1843 года в присутствии короля Фридриха-Вильгельма IV.'
+    document = prefix + sentence + ' Следующий абзац.'
+    boundary = len(prefix) + 35
+    passages = StreetStoryLiveAdapter._core_passages(
+        'chunk', document[:boundary], contextual=True, source_text=document, core_start=0,
+    )
+    own = passages[-1]
+    assert sentence in own['text']
+    assert document[own['core_offset']:own['core_offset'] + len(own['text'])] == own['text']
+    second = StreetStoryLiveAdapter._core_passages(
+        'next-chunk', document[boundary:], contextual=True, source_text=document, core_start=boundary,
+    )[0]
+    assert sentence in second['text']
+    assert second['core_offset'] < 0
+    absolute = boundary + second['core_offset']
+    assert document[absolute:absolute + len(second['text'])] == second['text']

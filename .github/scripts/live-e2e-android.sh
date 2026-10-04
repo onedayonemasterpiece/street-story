@@ -24,6 +24,7 @@ adb shell am instrument -w \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 # Preserve bounded evidence on failure; never export token/configuration stores.
+adb exec-out "run-as $PKG cat files/live-golden/stage-progress.json" > "$ARTIFACT_DIR/android-stage-progress.json" || true
 adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json" || true
 mkdir -p "$ARTIFACT_DIR/stage-screenshots"
 for name in $(adb shell "run-as $PKG ls files/live-golden/screenshots" 2>/dev/null | tr -d '\r'); do

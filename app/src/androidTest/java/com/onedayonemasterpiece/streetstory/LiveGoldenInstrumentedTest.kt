@@ -41,6 +41,45 @@ class LiveGoldenInstrumentedTest {
     private val gson = Gson()
     private var awaitingTurnAfter = 0
     private var transientStoryReadRetries = 0
+    private var activeStage = "setup"
+    private var stageStartedAt = 0L
+    private var stageDeadline = Long.MAX_VALUE
+    private var routeStartedAt = 0L
+    private var observedLive: LiveSessionController? = null
+    private val stageTimings = mutableListOf<Map<String, Any?>>()
+
+    private fun beginStage(name: String, budgetMs: Long) {
+        if (stageStartedAt != 0L) finishStage("passed")
+        activeStage = name
+        stageStartedAt = System.currentTimeMillis()
+        if (routeStartedAt == 0L) routeStartedAt = stageStartedAt
+        stageDeadline = stageStartedAt + budgetMs
+        android.util.Log.i("StreetStoryGolden", "stage_started stage=$name budget_ms=$budgetMs")
+        persistWatchdog()
+    }
+
+    private fun finishStage(outcome: String) {
+        if (stageStartedAt == 0L) return
+        val elapsed = System.currentTimeMillis() - stageStartedAt
+        stageTimings.add(mapOf("stage" to activeStage, "duration_ms" to elapsed, "outcome" to outcome))
+        android.util.Log.i("StreetStoryGolden", "stage_finished stage=$activeStage duration_ms=$elapsed outcome=$outcome")
+        stageStartedAt = 0L
+        persistWatchdog()
+    }
+
+    private fun persistWatchdog() {
+        File(root, "stage-progress.json").writeText(gson.toJson(mapOf(
+            "stage" to activeStage, "stage_started_at_ms" to stageStartedAt,
+            "route_started_at_ms" to routeStartedAt, "stage_timings" to stageTimings,
+        )))
+    }
+
+    private fun checkStageWatchdog() {
+        check(System.currentTimeMillis() < stageDeadline) {
+            "Stage watchdog failed: stage=$activeStage elapsed_ms=${System.currentTimeMillis() - stageStartedAt}"
+        }
+        observedLive?.snapshot()?.error?.let { error("Live failed: stage=$activeStage error=$it") }
+    }
 
     @Test
     fun androidClientToNativeTelegramGoldenPath() {
@@ -55,6 +94,7 @@ class LiveGoldenInstrumentedTest {
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
 
+        beginStage("photo", 120_000)
         val photoFile = File(root, "photo.jpg")
         val pcmFiles = (1..6).map { File(root, "voice-$it.pcm") }
         require(photoFile.isFile && pcmFiles.all(File::isFile))
@@ -79,6 +119,7 @@ class LiveGoldenInstrumentedTest {
         store.setServerIdentity(local.clientStoryId, created.id)
         val storyId = created.id
         val live = AppGraph.live(context)
+        observedLive = live
         val evidence = linkedMapOf<String, Any?>(
             "server_story_id" to storyId,
             "client_story_id" to local.clientStoryId,
@@ -90,11 +131,13 @@ class LiveGoldenInstrumentedTest {
         var cancelConfirmed = false
         val screenshots = mutableListOf<Map<String, Any?>>()
         evidence["stage_screenshots"] = screenshots
+        evidence["stage_timings"] = stageTimings
         fun capture(stage: String, story: StoryWire) {
             captureStage(stage, story, local.clientStoryId, store, screenshots)
         }
 
         try {
+            beginStage("identity", 5L * 60 * 1000)
             capture("01-photo-before-research", api.getStory(storyId))
             val ready = CountDownLatch(1)
             var liveError: String? = null
@@ -122,19 +165,18 @@ class LiveGoldenInstrumentedTest {
                 it.visualIdentity?.status in setOf("match", "uncertain", "owner_confirmed")
             }
 
-            if (story.visualIdentity?.status !in setOf("match", "owner_confirmed")) {
-                speak(live, pcmFiles[2])
-                awaitAnswer(live, "identity confirmation")
-                story = pollWithOwnerClarification(
-                    api, storyId, live, evidence, "identity confirmation",
-                    "Подтверждаю: на моей фотографии именно Закхаймские ворота в Калининграде. Подтверди этот объект через confirm_place и продолжи исследование.",
-                    allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
-                ) {
-                    it.visualIdentity?.status in setOf("match", "owner_confirmed")
+            if (story.visualIdentity?.status != "match") {
+                ownerText(live,
+                    "Определи объект на фотографии самостоятельно: используй геометки, ближайшие OSM/Wikipedia кандидаты и сравнение эталонных фотографий через resolve_place. Я не знаю название объекта.",
+                    "automatic identity retry")
+                story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale")) {
+                    it.visualIdentity?.status == "match"
                 }
             }
-            assertTrue(story.visualIdentity?.status in setOf("match", "owner_confirmed"))
+            assertEquals("Golden photo must be identified automatically", "match", story.visualIdentity?.status)
+            evidence["automatic_identity"] = true
             capture("02-object-identified", story)
+            beginStage("research", 5L * 60 * 1000)
             // Identity confirmation precedes research. Do not wait for facts before
             // allowing the author to confirm an uncertain photo match.
             if (story.sourceCount == 0) {
@@ -154,15 +196,17 @@ class LiveGoldenInstrumentedTest {
             require(story.facts.count { it.evidenceSupported } >= 2)
             capture("03-facts-after-research", story)
 
+            beginStage("selection", 4L * 60 * 1000)
             speak(live, pcmFiles[3])
             awaitAnswer(live, "fact selection")
             story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
-                "Уточняю: оставь для поста ровно два самых надёжных подтверждённых факта. Остальные не выбирай.") {
+                "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор через select_facts. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
                 it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
             }
             capture("04-facts-selected", story)
             val selectedFactIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
 
+            beginStage("concept", 3L * 60 * 1000)
             ownerText(live, "Концепция поста: исторический вход в город, история которого видна в кирпичных башнях на фотографии. Сохрани эту концепцию; выбор двух фактов оставь без изменений.", "publication concept")
             story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {
                 !it.publicationConcept.isNullOrBlank()
@@ -171,6 +215,7 @@ class LiveGoldenInstrumentedTest {
             capture("05-publication-concept", story)
             evidence["publication_concept"] = story.publicationConcept
 
+            beginStage("draft", 4L * 60 * 1000)
             if (story.draftText.isNullOrBlank()) {
                 live.sendText(
                     "По уже выбранным подтверждённым фактам собери первый короткий городской пост. " +
@@ -194,6 +239,7 @@ class LiveGoldenInstrumentedTest {
             // Full-social acceptance covers the owner MVP path only. Literal mode,
             // protected-span editing and undo have dedicated tests and must not
             // consume real-provider budget before image/publication acceptance.
+            beginStage("visual", 8L * 60 * 1000)
             val textBeforeVisual = requireNotNull(story.draftText)
             speak(live, pcmFiles[5])
             awaitAnswer(live, "visual-only edit")
@@ -239,6 +285,7 @@ class LiveGoldenInstrumentedTest {
             store.setProcessedImagePath(local.clientStoryId, processed.absolutePath)
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
                 .edit().putString("active_story_id", local.clientStoryId).apply()
+            beginStage("publication", 8L * 60 * 1000)
             val publicDestinations = api.capabilities().destinations
             assertEquals(
                 "Owner MVP must expose exactly the configured test Telegram group",
@@ -317,7 +364,11 @@ class LiveGoldenInstrumentedTest {
                     "cancel_operation_id" to cancelled?.get("cancel_operation_id")?.asString,
                 )
             )
+            finishStage("passed")
         } finally {
+            finishStage("failed")
+            evidence["last_stage"] = activeStage
+            evidence["route_duration_ms"] = System.currentTimeMillis() - routeStartedAt
             if (publicationScheduled && !cancelConfirmed && !keepPublication) {
                 runCatching {
                     if (live.isActiveFor(local.clientStoryId)) {
@@ -378,11 +429,15 @@ class LiveGoldenInstrumentedTest {
             stage.contains("generated-visual") -> "publication-image" to "image"
             else -> "facts-island-expanded" to "facts"
         }
+        val live = AppGraph.live(context)
+        val liveWasActive = live.isActiveFor(clientStoryId)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             instrumentation.waitForIdleSync()
             Thread.sleep(1_000)
             (device.findObject(By.text("ПОЗЖЕ")) ?: device.findObject(By.text("Позже")))?.click()
             instrumentation.waitForIdleSync()
+            // UiAutomator's click returns before the dialog dismissal frame.
+            Thread.sleep(500)
             assertTrue("Stage screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage.png")))
             scenario.onActivity { activity ->
                 fun find(view: View): View? {
@@ -399,7 +454,19 @@ class LiveGoldenInstrumentedTest {
             instrumentation.waitForIdleSync()
             Thread.sleep(500)
             assertTrue("Detail screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage-$detailSuffix.png")))
+            if (stage == "03-facts-after-research") {
+                scenario.onActivity { it.onBackPressed() }
+                instrumentation.waitForIdleSync()
+                assertTrue("Navigating to topics stopped Live", live.isActiveFor(clientStoryId))
+                scenario.recreate()
+                instrumentation.waitForIdleSync()
+                val topic = requireNotNull(device.findObject(By.text(requireNotNull(story.placeName)))) { "Topic missing after navigation" }
+                topic.click()
+                instrumentation.waitForIdleSync()
+                assertTrue("Returning to the photo stopped Live", live.isActiveFor(clientStoryId))
+            }
         }
+        if (liveWasActive) assertTrue("Activity navigation stopped Live at $stage", live.isActiveFor(clientStoryId))
         screenshots.add(mapOf("stage" to stage, "story_revision" to story.revision,
             "fact_count" to story.facts.size, "selected_count" to story.facts.count { it.selected },
             "files" to listOf("$stage.png", "$stage-$detailSuffix.png")))
@@ -437,6 +504,7 @@ class LiveGoldenInstrumentedTest {
     private fun awaitAnswer(live: LiveSessionController, label: String) {
         // Wait for provider turn completion, not its first transcript fragment.
         waitUntil(120_000, "Live answer timed out: $label") {
+            checkStageWatchdog()
             val state = live.snapshot()
             state.error?.let { error("Live failed during $label: $it") }
             state.active && state.completedTurns > awaitingTurnAfter
@@ -471,6 +539,7 @@ class LiveGoldenInstrumentedTest {
     private fun waitUntil(timeoutMs: Long, message: String, predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            checkStageWatchdog()
             if (predicate()) return
             Thread.sleep(250)
         }
@@ -487,6 +556,7 @@ class LiveGoldenInstrumentedTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         var last: StoryWire? = null
         while (System.currentTimeMillis() < deadline) {
+            checkStageWatchdog()
             last = readStory(api, storyId)
             if (predicate(last)) return last
             val code = last.error?.code.orEmpty()
@@ -559,8 +629,8 @@ class LiveGoldenInstrumentedTest {
         private const val OWNER_PROMPT_SHA256 = "92496e7fd70419af40312865f486907fecea9ab84fdb35edc0fbef427faec424"
         private const val PCM_CHUNK_SAMPLES = 4096
         private const val PCM_CHUNK_SLEEP_MS = 260L
-        private const val RESEARCH_TIMEOUT_MS = 12L * 60 * 1000
-        private const val VISUAL_TIMEOUT_MS = 12L * 60 * 1000
+        private const val RESEARCH_TIMEOUT_MS = 90_000L
+        private const val VISUAL_TIMEOUT_MS = 8L * 60 * 1000
         private const val SOCIAL_TIMEOUT_MS = 6L * 60 * 1000
     }
 }
