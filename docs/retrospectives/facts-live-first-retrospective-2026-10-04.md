@@ -19,7 +19,27 @@
 
 С 2026-10-04 эта гипотеза защищена требованиями:
 - `CORE-LIVE-FIRST-FACT-RESEARCH`;
-- `CORE-PRODUCT-FIRST-PARTIAL-VALUE`.
+- `CORE-PRODUCT-FIRST-PARTIAL-VALUE`;
+- `CORE-SHARED-POI-HISTORY-GRAPH`.
+
+### 1.1. Накопление знаний — не в story
+
+Нужно различать два слоя:
+- `story` — текущая публикация: выбранные факты, editorial angle, draft, visual;
+- общий серверный `POI/history graph` — каноническая накопительная память региона.
+
+Street Story — клиент и producer этого общего слоя, а не его story-local замена. Новая история должна сначала переиспользовать накопленные POI claims/sources/aliases/relations и только затем искать новые источники или закрывать пробелы.
+
+Новый research должен обогащать общий граф:
+- POI и алиасы;
+- evidence-backed claims и источники;
+- личности;
+- исторические события/сюжеты;
+- связи POI ↔ person ↔ event/thread и другие подтверждённые source-backed relations.
+
+Regional Knowledge Base поставляет provenance-rich evidence в этот слой. Обратная синхронизация Street Story → Regional Knowledge Base **не является требованием**.
+
+Физически текущие POI tables пока находятся рядом со Street Story backend; это implementation detail, а не основание считать знания собственностью одной story или приложения.
 
 ## 2. Что реально удалось доказать
 
@@ -249,16 +269,18 @@ Helper с high reasoning улучшал отдельные диагностич�
 
 Нормальный facts flow:
 
-1. Mira формулирует goal.
-2. Search/fetch получает источники.
-3. Источник режется на небольшие стабильные chunks.
-4. Live выполняет много маленьких extraction operations.
-5. Каждый хороший candidate сразу имеет собственное evidence.
-6. Mechanical validation сохраняет его.
-7. Сомнительный candidate withheld/unfinished, а не валит run.
-8. Progress/partial facts доступны пользователю.
-9. Selection → draft работает до достижения идеального recall.
-10. Deep dedup/conflict/review может продолжаться resumably и не обязана держать весь пользовательский результат.
+1. Mira определяет canonical POI и читает уже накопленную POI/history memory.
+2. Существующие eligible claims/sources/relations сразу доступны story projection.
+3. Mira формулирует goal для **нового/недостающего** исследования.
+4. Search/fetch получает новые источники.
+5. Источник режется на небольшие стабильные chunks.
+6. Live выполняет много маленьких extraction operations.
+7. Каждый хороший candidate сразу имеет собственное evidence и, где применимо, entity/relation proposals для person/event/thread.
+8. Mechanical validation сохраняет его в общий POI/history graph и обновляет story projection.
+9. Сомнительный candidate withheld/unfinished, а не валит run.
+10. Progress/partial facts доступны пользователю.
+11. Selection → draft работает до достижения идеального recall.
+12. Deep dedup/conflict/review может продолжаться resumably и не обязана держать весь пользовательский результат.
 
 Helper допустим только как измеренно полезный fallback.
 
