@@ -29,7 +29,7 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     async def guarded(**kwargs):
         calls.append({**kwargs, "environment": dict(kwargs["environment"])})
 
-    import ai_resource_control
+    ai_resource_control = pytest.importorskip('ai_resource_control', reason='Private managed SDK is installed by server deployment; verified in retained runtime acceptance')
     monkeypatch.setattr(ai_resource_control, 'run_guarded', guarded)
     initialized = _adapter.initialize(resource_id=_session.resource_id, actor=None, model='gemini-3.8-live')
     reader = asyncio.StreamReader()
