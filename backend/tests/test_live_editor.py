@@ -2003,7 +2003,12 @@ async def test_research_output_requires_durable_save_or_bounded_exhaustion(tmp_p
     assert delivered == [{'type': 'turn_complete'}]
     await adapter.execute_tool(session, {'name': 'save_research_facts'})
     assert session.state['research_output_pending'] is True
-    replies['save_research_facts'] = {'facts': [{'evidence_supported': True}]}
+    # execute_tool receives the actual model-facing save projection, whose
+    # durable supported verdict replaces the canonical evidence flag.
+    replies['save_research_facts'] = adapter._model_result('save_research_facts', {
+        'review_required': False, 'facts': [{'fact_id': 'saved', 'text': 'Saved finding',
+            'evidence_supported': True, 'live_review': {'verdict': 'supported'}}],
+    })
     await adapter.execute_tool(session, {'name': 'save_research_facts'})
     saved = {'type': 'output_transcript', 'text': 'Saved finding'}
     _forward_committed_output(svc, session, saved, delivered.append)

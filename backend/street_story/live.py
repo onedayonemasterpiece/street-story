@@ -1166,7 +1166,8 @@ class StreetStoryLiveAdapter:
         try:
             result = await self._execute_tool(session, call)
             if name == "save_research_facts" and any(
-                fact.get("evidence_supported") for fact in result.get("facts", [])
+                fact.get("evidence_supported") or fact.get("verdict") == "supported"
+                for fact in result.get("facts", [])
             ):
                 session.state["research_output_pending"] = False
             elif name == "get_research_chunk" and result.get("all_chunks_processed") and result.get("next_tool") is None:
