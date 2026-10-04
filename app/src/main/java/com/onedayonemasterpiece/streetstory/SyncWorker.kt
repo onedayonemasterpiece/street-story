@@ -221,8 +221,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                     it.factId,
                     it.text,
                     it.confidence,
-                    it.evidenceSupported,
-                    it.selected && it.evidenceSupported,
+                    it.eligibleForSelection,
+                    it.selected && it.eligibleForSelection,
                     gson.toJson(it.sources),
                 )
             },

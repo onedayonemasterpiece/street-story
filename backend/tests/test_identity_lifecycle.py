@@ -195,7 +195,9 @@ async def test_same_poi_hydrates_only_reviewed_eligible_facts_before_new_search(
         "claim-durable-sculptures"
     ]
     assert second_ready["facts"][0]["evidence_supported"] is True
-    assert second_ready["facts"][0]["selected"] is True
+    assert second_ready["facts"][0]["selected"] is False
+    # A legacy cache flag without a retained exact model proof is not admission.
+    assert second_ready["facts"][0]["eligibility"] != 'eligible'
     assert gemini.research_calls == 0
 
     with service.store.connection() as db:

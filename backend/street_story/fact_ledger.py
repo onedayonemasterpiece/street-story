@@ -481,7 +481,7 @@ def persist_fact_candidates(
         if previous_digest and previous_digest != new_digest:
             db.execute(
                 "UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed',updated_at=? "
-                "WHERE story_id=? AND assertion_id=?",
+                "WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'",
                 (now, story_id, assertion_id),
             )
             db.execute(
@@ -713,55 +713,192 @@ def set_owner_selection(db, story_id: str, selected_ids: list[str], now: float) 
 
 
 def refresh_review_status(db, story_id: str, now: float) -> None:
+    """Recompute eligibility from exact review revisions and all active blockers.
+
+    A successful review only covers assertion revisions explicitly frozen in its
+    revision bundle. Conflict decisions never grant eligibility by themselves:
+    they can only remove or add blockers on top of a reviewed, evidence-backed
+    assertion. This makes the result independent of conflict row order.
+    """
     backfill_legacy_fact_ledger(db, now)
-    scan = db.execute(
-        "SELECT status,coverage_complete FROM fact_conflict_scans "
-        "WHERE story_id=? ORDER BY id DESC LIMIT 1",
+    assertions = {
+        str(row["assertion_id"]): dict(row)
+        for row in db.execute(
+            "SELECT assertion_id,review_status,eligibility,revision_digest "
+            "FROM fact_assertions WHERE story_id=?",
+            (story_id,),
+        )
+    }
+    if not assertions:
+        return
+
+    evidence_supported = {
+        str(row["assertion_id"])
+        for row in db.execute(
+            "SELECT DISTINCT o.assertion_id FROM fact_observations o "
+            "JOIN fact_evidence_spans e ON e.observation_id=o.observation_id "
+            "WHERE o.story_id=? AND o.status='accepted'",
+            (story_id,),
+        )
+    }
+
+    successful_scans: list[dict[str, Any]] = []
+    for row in db.execute(
+        "SELECT id,status,coverage_complete,revision_bundle_json,conflict_ids_json,created_at "
+        "FROM fact_conflict_scans WHERE story_id=? ORDER BY id DESC",
         (story_id,),
-    ).fetchone()
-    scan_status = str(scan["status"]) if scan else ""
-    fully_covered = bool(
-        scan
-        and scan_status in {"ok", "no_candidates"}
-        and int(scan["coverage_complete"] or 0) == 1
-    )
-    default_review = "eligible" if fully_covered else "unreviewed"
-    default_eligibility = "eligible" if fully_covered else "unreviewed"
+    ):
+        if (
+            str(row["status"]) not in {"ok", "no_candidates"}
+            or int(row["coverage_complete"] or 0) != 1
+        ):
+            continue
+        try:
+            raw_bundle = json.loads(row["revision_bundle_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_bundle = {}
+        if not isinstance(raw_bundle, dict):
+            raw_bundle = {}
+        bundle = {
+            str(fact_id): str(revision or "")
+            for fact_id, revision in raw_bundle.items()
+            if str(fact_id)
+        }
+        try:
+            raw_conflicts = json.loads(row["conflict_ids_json"] or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_conflicts = []
+        conflict_ids = (
+            {
+                str(value)
+                for value in raw_conflicts
+                if str(value)
+            }
+            if isinstance(raw_conflicts, list)
+            else set()
+        )
+        successful_scans.append(
+            {
+                "id": int(row["id"]),
+                "bundle": bundle,
+                "conflict_ids": conflict_ids,
+                "created_at": float(row["created_at"] or 0.0),
+            }
+        )
 
-    db.execute(
-        "UPDATE fact_assertions SET review_status=?,eligibility=?,updated_at=? "
-        "WHERE story_id=? AND review_status<>'quarantined'",
-        (default_review, default_eligibility, now, story_id),
-    )
+    def latest_scan_for(*fact_ids: str) -> dict[str, Any] | None:
+        for scan in successful_scans:
+            bundle = scan["bundle"]
+            if all(fact_id in assertions for fact_id in fact_ids) and all(
+                bundle.get(fact_id)
+                == str(assertions[fact_id]["revision_digest"] or "")
+                for fact_id in fact_ids
+            ):
+                return scan
+        return None
 
-    for conflict in db.execute("SELECT * FROM fact_conflicts WHERE story_id=?", (story_id,)):
+    blocked: dict[str, set[str]] = {fact_id: set() for fact_id in assertions}
+    for conflict in db.execute(
+        "SELECT * FROM fact_conflicts WHERE story_id=? ORDER BY conflict_id",
+        (story_id,),
+    ):
         left = str(conflict["left_fact_id"])
         right = str(conflict["right_fact_id"])
-        resolution = str(conflict["final_resolution"] or "")
+        if left not in assertions or right not in assertions:
+            continue
+        left_revision = str(assertions[left]["revision_digest"] or "")
+        right_revision = str(assertions[right]["revision_digest"] or "")
+        reviewed_pair = latest_scan_for(left, right)
+        conflict_id = str(conflict["conflict_id"])
+        conflict_seen_at = float(conflict["last_seen_at"] or 0.0)
+
+        if (
+            reviewed_pair is not None
+            and float(reviewed_pair["created_at"]) >= conflict_seen_at
+            and conflict_id not in reviewed_pair["conflict_ids"]
+        ):
+            # A later complete review of these exact revisions explicitly found
+            # no such conflict. An older review cannot erase a newly observed one.
+            continue
+
+        detection_scoped = (
+            str(conflict["left_revision_digest"] or "") == left_revision
+            and str(conflict["right_revision_digest"] or "") == right_revision
+            and bool(left_revision)
+            and bool(right_revision)
+        )
+        legacy_unscoped = (
+            not str(conflict["left_revision_digest"] or "")
+            and not str(conflict["right_revision_digest"] or "")
+        )
+        if reviewed_pair is None and not detection_scoped and not legacy_unscoped:
+            # The conflict belongs to older assertion revisions. The changed
+            # assertion itself is unreviewed until a new exact review.
+            continue
+
+        event = db.execute(
+            "SELECT resolution,left_revision_digest,right_revision_digest "
+            "FROM fact_arbitration_events "
+            "WHERE story_id=? AND conflict_id=? AND state='active' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (story_id, conflict_id),
+        ).fetchone()
+        event_valid = bool(
+            event
+            and str(event["left_revision_digest"] or "") == left_revision
+            and str(event["right_revision_digest"] or "") == right_revision
+        )
+        if not event_valid:
+            blocked[left].add("unresolved_or_stale_conflict")
+            blocked[right].add("unresolved_or_stale_conflict")
+            continue
+
+        resolution = str(event["resolution"] or "")
         if resolution == "prefer_left":
-            eligible, withheld = [left], [right]
+            blocked[right].add("losing_conflict")
         elif resolution == "prefer_right":
-            eligible, withheld = [right], [left]
+            blocked[left].add("losing_conflict")
         elif resolution == "both_valid":
-            eligible, withheld = [left, right], []
+            pass
         else:
-            eligible, withheld = [], [left, right]
-        for assertion_id in eligible:
-            db.execute(
-                "UPDATE fact_assertions SET review_status='eligible',eligibility='eligible',updated_at=? "
-                "WHERE story_id=? AND assertion_id=?",
-                (now, story_id, assertion_id),
-            )
-        for assertion_id in withheld:
-            db.execute(
-                "UPDATE fact_assertions SET review_status='disputed',eligibility='withheld',updated_at=? "
-                "WHERE story_id=? AND assertion_id=?",
-                (now, story_id, assertion_id),
-            )
+            blocked[left].add("unresolved_conflict")
+            blocked[right].add("unresolved_conflict")
+
+    pending_review = set()
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_review_attempts'").fetchone():
+        for row in db.execute("SELECT a.affected_json FROM live_review_attempts a JOIN live_review_packets p ON p.packet_ref=a.packet_ref WHERE p.story_id=? AND a.state='pending'", (story_id,)):
+            pending_review.update(json.loads(row['affected_json']))
+    for fact_id, assertion in assertions.items():
+        current_status = str(assertion["review_status"] or "")
+        if current_status == "quarantined":
+            review_status = "quarantined"
+            eligibility = "withheld"
+        elif fact_id in pending_review:
+            review_status = "unreviewed"
+            eligibility = "unreviewed"
+        elif current_status == "withheld":
+            review_status = "withheld"
+            eligibility = "withheld"
+        elif fact_id not in evidence_supported:
+            review_status = "withheld"
+            eligibility = "withheld"
+        elif blocked[fact_id]:
+            review_status = "disputed"
+            eligibility = "withheld"
+        elif latest_scan_for(fact_id) is None:
+            review_status = "unreviewed"
+            eligibility = "unreviewed"
+        else:
+            review_status = "eligible"
+            eligibility = "eligible"
+        db.execute(
+            "UPDATE fact_assertions SET review_status=?,eligibility=?,updated_at=? "
+            "WHERE story_id=? AND assertion_id=?",
+            (review_status, eligibility, now, story_id, fact_id),
+        )
 
     from .poi_memory import sync_poi_review_from_story
     sync_poi_review_from_story(db, story_id, now)
-
 
 def selected_eligibility_issues(db, story_id: str) -> list[dict[str, Any]]:
     backfill_legacy_fact_ledger(db, 0.0)

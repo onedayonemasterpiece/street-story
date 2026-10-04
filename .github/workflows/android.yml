@@ -114,7 +114,10 @@ jobs:
         if: always()
         with:
           name: street-story-emulator-${{ github.run_number }}
-          path: instrumentation.txt
+          path: |
+            instrumentation.txt
+            provisioning-logcat.txt
+            ui-evidence/
 
   release:
     needs: [checks, emulator]

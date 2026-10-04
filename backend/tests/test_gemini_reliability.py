@@ -569,6 +569,20 @@ async def test_sdk_uses_single_attempt_bounded_timeout_and_closes_both_clients(t
     monkeypatch.setattr(genai,'Client',Client)
     client = GeminiClient(config(tmp_path))
     assert (await client._provider_request(KEYS[0],.5,['fixture'])).text == 'result'
-    assert observations[0]['http_options'].timeout == 500
+    assert observations[0]['http_options'].timeout == 10_000
     assert observations[0]['http_options'].retry_options.attempts == 1
     assert observations[1:] == ['async_closed','sync_closed']
+
+    cancelled = False
+    async def waiting_request(self, **kwargs):
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+    monkeypatch.setattr(Client, 'generate_content', waiting_request)
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(.01):
+            await client._provider_request(KEYS[0], .01, ['fixture'])
+    assert cancelled
+    assert observations[-2:] == ['async_closed', 'sync_closed']

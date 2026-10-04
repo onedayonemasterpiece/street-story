@@ -79,6 +79,131 @@ def persist(store: Store, story_id: str, items: list[dict], run: str, batch: str
         )
 
 
+def insert_review_scan(
+    db,
+    store: Store,
+    story_id: str,
+    fact_ids: list[str],
+    *,
+    conflict_ids: list[str] | None = None,
+    coverage_complete: bool = True,
+    created_at: float | None = None,
+) -> None:
+    bundle = fact_revision_bundle(db, story_id, fact_ids)
+    conflicts = list(conflict_ids or [])
+    db.execute(
+        "INSERT INTO fact_conflict_scans("
+        "story_id,poi_key,run_id,detector,status,pair_count,detected_count,"
+        "coverage_complete,revision_bundle_json,conflict_ids_json,"
+        "missing_aspects_json,error_type,created_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            story_id,
+            "wiki:403645",
+            "run-review",
+            "test-review",
+            "ok" if conflicts else "no_candidates",
+            len(fact_ids) * (len(fact_ids) - 1) // 2,
+            len(conflicts),
+            int(coverage_complete),
+            json.dumps(bundle, ensure_ascii=False, sort_keys=True),
+            json.dumps(conflicts, ensure_ascii=False),
+            "[]",
+            None,
+            created_at if created_at is not None else store.now(),
+        ),
+    )
+
+
+def insert_conflict(
+    db,
+    store: Store,
+    story_id: str,
+    conflict_id: str,
+    left: str,
+    right: str,
+    *,
+    last_seen_at: float,
+) -> None:
+    revisions = fact_revision_bundle(db, story_id, [left, right])
+    texts = {
+        row["fact_id"]: row["text"]
+        for row in db.execute(
+            "SELECT fact_id,text FROM facts WHERE story_id=? AND fact_id IN (?,?)",
+            (story_id, left, right),
+        )
+    }
+    db.execute(
+        "INSERT INTO fact_conflicts("
+        "story_id,conflict_id,poi_key,left_fact_id,right_fact_id,left_text,right_text,"
+        "relation,detector_confidence,suggested_resolution,suggested_fact_id,"
+        "detector_rationale,evidence_json,left_revision_digest,right_revision_digest,"
+        "first_seen_at,last_seen_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            story_id,
+            conflict_id,
+            "wiki:403645",
+            left,
+            right,
+            texts[left],
+            texts[right],
+            "contradiction",
+            .9,
+            "unresolved",
+            None,
+            "Model review detected a contradiction.",
+            "{}",
+            revisions[left],
+            revisions[right],
+            last_seen_at,
+            last_seen_at,
+        ),
+    )
+
+
+def insert_active_resolution(
+    db,
+    store: Store,
+    story_id: str,
+    conflict_id: str,
+    left: str,
+    right: str,
+    resolution: str,
+    *,
+    created_at: float,
+) -> None:
+    revisions = fact_revision_bundle(db, story_id, [left, right])
+    final_fact_id = (
+        left
+        if resolution == "prefer_left"
+        else right
+        if resolution == "prefer_right"
+        else None
+    )
+    db.execute(
+        "INSERT INTO fact_arbitration_events("
+        "event_id,story_id,conflict_id,resolution,final_fact_id,reason,confidence,"
+        "arbitrated_by,left_revision_digest,right_revision_digest,evidence_digest,"
+        "state,stale_reason,created_at,stale_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,'active',NULL,?,NULL)",
+        (
+            f"arb-{conflict_id}",
+            story_id,
+            conflict_id,
+            resolution,
+            final_fact_id,
+            "Mira reviewed exact evidence revisions.",
+            .95,
+            "mira-test",
+            revisions[left],
+            revisions[right],
+            "e" * 64,
+            created_at,
+        ),
+    )
+
+
 def test_pass_two_does_not_remove_pass_one_observation_or_projection(tmp_path):
     store = Store(tmp_path / "db.sqlite3")
     story_id = create_story(store)
@@ -248,10 +373,12 @@ def test_selected_fact_is_fail_closed_until_successful_review_scan(tmp_path):
         refresh_review_status(db, story_id, store.now())
         assert selected_eligibility_issues(db, story_id)
 
-        db.execute(
-            "INSERT INTO fact_conflict_scans(story_id,poi_key,detector,status,pair_count,detected_count,coverage_complete,error_type,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (story_id, "wiki:403645", "test", "no_candidates", 0, 0, 1, None, store.now() + 1),
+        insert_review_scan(
+            db,
+            store,
+            story_id,
+            [fact_id],
+            created_at=store.now() + 1,
         )
         refresh_review_status(db, story_id, store.now() + 1)
         assert selected_eligibility_issues(db, story_id) == []
@@ -412,22 +539,12 @@ def test_complete_review_can_mark_over_eighty_inventory_eligible(tmp_path):
     ids = persist(store, story_id, initial, "run-complete-review", "batch-1")
     with store.tx() as db:
         set_owner_selection(db, story_id, [ids[-1]], store.now())
-        db.execute(
-            "INSERT INTO fact_conflict_scans("
-            "story_id,poi_key,detector,status,pair_count,detected_count,"
-            "coverage_complete,error_type,created_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                story_id,
-                "wiki:403645",
-                "test",
-                "ok",
-                3240,
-                0,
-                1,
-                None,
-                store.now(),
-            ),
+        insert_review_scan(
+            db,
+            store,
+            story_id,
+            ids,
+            coverage_complete=True,
         )
         refresh_review_status(db, story_id, store.now())
         assert selected_eligibility_issues(db, story_id) == []
@@ -863,3 +980,215 @@ def test_missing_unproven_evidence_is_downgraded_fail_closed(tmp_path):
             "SELECT evidence_supported FROM facts WHERE story_id=? AND fact_id=?",
             (story_id, fact_id),
         ).fetchone()["evidence_supported"] == 0
+
+
+def _three_conflicting_facts(store: Store, story_id: str) -> tuple[str, str, str]:
+    return tuple(
+        persist(
+            store,
+            story_id,
+            [
+                fact("claim-a", "Факт A.", "https://a.example/page", "Evidence A."),
+                fact("claim-b", "Факт B.", "https://b.example/page", "Evidence B."),
+                fact("claim-c", "Факт C.", "https://c.example/page", "Evidence C."),
+            ],
+            "run-conflicts",
+            "batch-conflicts",
+        )
+    )
+
+
+def _conflict_order_case(tmp_path, order: list[str]) -> str:
+    store = Store(tmp_path / ("-".join(order) + ".sqlite3"))
+    story_id = create_story(store, "story_" + "_".join(order))
+    a, b, c = _three_conflicting_facts(store, story_id)
+    now = store.now()
+    with store.tx() as db:
+        pairs = {
+            "ab": ("conflict-ab", a, b),
+            "ac": ("conflict-ac", a, c),
+        }
+        for offset, key in enumerate(order):
+            conflict_id, left, right = pairs[key]
+            insert_conflict(
+                db,
+                store,
+                story_id,
+                conflict_id,
+                left,
+                right,
+                last_seen_at=now + offset,
+            )
+        insert_active_resolution(
+            db,
+            store,
+            story_id,
+            "conflict-ac",
+            a,
+            c,
+            "prefer_left",
+            created_at=now + 2,
+        )
+        insert_review_scan(
+            db,
+            store,
+            story_id,
+            [a, b, c],
+            conflict_ids=["conflict-ab", "conflict-ac"],
+            created_at=now + 3,
+        )
+        refresh_review_status(db, story_id, now + 4)
+        return db.execute(
+            "SELECT eligibility FROM fact_assertions "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, a),
+        ).fetchone()["eligibility"]
+
+
+def test_unresolved_conflict_blocks_fact_even_when_another_pair_prefers_it(tmp_path):
+    assert _conflict_order_case(tmp_path, ["ab", "ac"]) == "withheld"
+
+
+def test_conflict_row_order_does_not_change_eligibility(tmp_path):
+    assert _conflict_order_case(tmp_path, ["ab", "ac"]) == _conflict_order_case(
+        tmp_path,
+        ["ac", "ab"],
+    )
+
+
+def test_quarantine_is_not_overridden_by_preferred_conflict_resolution(tmp_path):
+    store = Store(tmp_path / "quarantine.sqlite3")
+    story_id = create_story(store, "story_quarantine")
+    a, b = persist(
+        store,
+        story_id,
+        [
+            fact("claim-a", "Факт A.", "https://a.example/page", "Evidence A."),
+            fact("claim-b", "Факт B.", "https://b.example/page", "Evidence B."),
+        ],
+        "run-quarantine",
+        "batch-quarantine",
+    )
+    now = store.now()
+    with store.tx() as db:
+        insert_conflict(
+            db,
+            store,
+            story_id,
+            "conflict-ab",
+            a,
+            b,
+            last_seen_at=now,
+        )
+        insert_active_resolution(
+            db,
+            store,
+            story_id,
+            "conflict-ab",
+            a,
+            b,
+            "prefer_left",
+            created_at=now + 1,
+        )
+        db.execute(
+            "UPDATE fact_assertions SET review_status='quarantined',eligibility='withheld' "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, a),
+        )
+        insert_review_scan(
+            db,
+            store,
+            story_id,
+            [a, b],
+            conflict_ids=["conflict-ab"],
+            created_at=now + 2,
+        )
+        refresh_review_status(db, story_id, now + 3)
+        row = db.execute(
+            "SELECT review_status,eligibility FROM fact_assertions "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, a),
+        ).fetchone()
+        assert dict(row) == {
+            "review_status": "quarantined",
+            "eligibility": "withheld",
+        }
+
+
+def test_new_assertion_does_not_inherit_old_complete_review(tmp_path):
+    store = Store(tmp_path / "new-assertion.sqlite3")
+    story_id = create_story(store, "story_new_assertion")
+    a = persist(
+        store,
+        story_id,
+        [fact("claim-a", "Факт A.", "https://a.example/page", "Evidence A.")],
+        "run-a",
+        "batch-a",
+    )[0]
+    with store.tx() as db:
+        insert_review_scan(db, store, story_id, [a], created_at=store.now())
+        refresh_review_status(db, story_id, store.now())
+        assert db.execute(
+            "SELECT eligibility FROM fact_assertions "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, a),
+        ).fetchone()["eligibility"] == "eligible"
+
+    b = persist(
+        store,
+        story_id,
+        [fact("claim-b", "Факт B.", "https://b.example/page", "Evidence B.")],
+        "run-b",
+        "batch-b",
+    )[0]
+    with store.tx() as db:
+        refresh_review_status(db, story_id, store.now())
+        assert db.execute(
+            "SELECT eligibility FROM fact_assertions "
+            "WHERE story_id=? AND assertion_id=?",
+            (story_id, b),
+        ).fetchone()["eligibility"] == "unreviewed"
+
+
+def test_conflict_observed_after_review_is_not_erased_by_older_scan(tmp_path):
+    store = Store(tmp_path / "late-conflict.sqlite3")
+    story_id = create_story(store, "story_late_conflict")
+    a, b = persist(
+        store,
+        story_id,
+        [
+            fact("claim-a", "Факт A.", "https://a.example/page", "Evidence A."),
+            fact("claim-b", "Факт B.", "https://b.example/page", "Evidence B."),
+        ],
+        "run-late",
+        "batch-late",
+    )
+    now = store.now()
+    with store.tx() as db:
+        insert_review_scan(
+            db,
+            store,
+            story_id,
+            [a, b],
+            created_at=now,
+        )
+        insert_conflict(
+            db,
+            store,
+            story_id,
+            "conflict-late",
+            a,
+            b,
+            last_seen_at=now + 1,
+        )
+        refresh_review_status(db, story_id, now + 2)
+        rows = {
+            row["assertion_id"]: row["eligibility"]
+            for row in db.execute(
+                "SELECT assertion_id,eligibility FROM fact_assertions "
+                "WHERE story_id=?",
+                (story_id,),
+            )
+        }
+        assert rows[a] == "withheld"
+        assert rows[b] == "withheld"

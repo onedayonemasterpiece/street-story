@@ -68,7 +68,7 @@ def test_compact_context_keeps_confirmed_candidate_outside_first_page():
     assert candidates[0]["candidate_id"] == "osm:0"
 
 
-def test_discovery_search_projection_keeps_refs_and_evidence_without_url_duplication():
+def test_discovery_search_projection_keeps_source_identity_and_bounds_snippets():
     sources = [
         {
             "source_ref": f"websrc_{i:020x}",
@@ -101,7 +101,9 @@ def test_discovery_search_projection_keeps_refs_and_evidence_without_url_duplica
     assert projected["sources"][0]["source_ref"].startswith("websrc_")
     assert projected["sources"][0]["evidence"]
     assert projected["sources"][0]["evidence"][0]["evidence_ref"].startswith("evref_")
-    assert "url" not in projected["sources"][0]
+    assert projected["sources"][0]['url'] == sources[0]['url']
+    assert projected["sources"][0]['title'] == sources[0]['title'][:100]
+    assert len(projected["sources"][0]['evidence'][0]['text']) <= 160
     assert "fact_conflicts" not in projected
     assert "draft_text" not in projected["story"]
     assert len(json.dumps(projected, ensure_ascii=False)) < 5000
@@ -112,6 +114,8 @@ def test_save_facts_projection_confirms_ids_without_repeating_evidence():
         "facts": [{
             "fact_id": "claim_a",
             "text": "A durable fact",
+            "revision_digest": "v2:exact_revision",
+            "supporting_evidence_ids": ["evidence_a"],
             "sources": [
                 {"url": "https://one.example/a", "supports": [{"text": "evidence " * 100}]},
                 {"url": "https://two.example/a", "supports": [{"text": "more evidence " * 100}]},
@@ -124,7 +128,7 @@ def test_save_facts_projection_confirms_ids_without_repeating_evidence():
     original = copy.deepcopy(full)
     projected = StreetStoryLiveAdapter._model_result("save_research_facts", full)
     assert full == original
-    assert projected["facts"] == [{"fact_id": "claim_a", "source_count": 2}]
+    assert projected["facts"] == [{"fact_id": "claim_a", "text": "A durable fact", "revision_digest": "v2:exact_revision", "supporting_evidence_ids": ["evidence_a"], "source_count": 2}]
     assert projected["selected_fact_ids"] == ["claim_a"]
     assert "draft_text" not in projected["story"]
     assert len(json.dumps(projected)) < 1000

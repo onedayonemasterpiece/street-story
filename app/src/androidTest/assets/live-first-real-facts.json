@@ -1,0 +1,298 @@
+{
+  "source_sha": "74ff7a9874ddbd6a030b4fd223fe4684ac19dc66",
+  "receipt": "broad-1791099737532212546/acceptance.json",
+  "source_mode": "real_retrieval",
+  "draft_text": "Королевские ворота выстроены в псевдоготическом стиле. Строительство ворот завершилось в 1850 году, а современное название они носят с 1811 года.",
+  "facts": [
+    {
+      "fact_id": "claim_3d815781a8f9dcf29ead",
+      "text": "Королевские ворота — одни из восьми сохранившихся городских ворот Калининграда.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:c2f7f4a982d61ba3be1c031cbab62dea51646f11991cc1dc2c2683a0b8608996",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_592b70665fbadedf7d2d",
+      "text": "Королевские ворота расположены на пересечении улицы Фрунзе и Литовского вала.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:16b525f1ac2f19686977b19d317e4493fabbc4c468caf3c5627356b5ad39248f",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_d4afe852bfb13f935f23",
+      "text": "В 2005 году Королевские ворота были символом празднования 750-летия Калининграда.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:75a51bf3c9e08f71655c424bb2b85639802143bdc45c95852314161a014c4b96",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_05be704be20323c5f1d6",
+      "text": "В Королевских воротах размещается Историко-культурный центр «Великое посольство», являющийся филиалом Музея Мирового океана.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:20ea92226e047f8fe962530943e41c5e5ea6ec65879b2181aa3110cad69cc265",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_20418571106fd3e9c0d5",
+      "text": "В воротах расположены экспозиции, посвящённые истории Кёнигсберга-Калининграда и дипломатической истории, в частности посещению города Великим посольством Петра I.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:93c6584532ecb1d3b0c6af5f197111f795bfe2f98d2599ddf82a87b8b53efdb3",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_010ab7176a2ef9d6d8f2",
+      "text": "Королевские ворота выстроены в псевдоготическом стиле.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": true,
+      "owner_selected": true,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:e17fb2169c9e244fd70bc26730152e1d67b9c0e6d83ce026f8f2c0b9570e4c7b",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_12e7d407bc4fd6578701",
+      "text": "Внешне Королевские ворота напоминают маленький замок.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:c62498fe5e0d1c0f1ce6bfac0008d9647abcaa8afbfcb513ab69d9cb765a2144",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_4051fcac33477ad671ec",
+      "text": "Первоначально на месте Королевских ворот находились Кальтхофские ворота.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:b90c7ffc91a001d2339bf7c50bf7c824089b1ee90fcd70947320e9b8dbf288ff",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_0677b131f06844858649",
+      "text": "Во время Семилетней войны ворота на этом месте были построены заново русскими инженерами и назывались Гумбинненскими.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:64a6614925bdd370726216cec4a6f2eb5bc1226cb58278ac0b38c8e409bbe222",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_1334065f9ab7d00f65fd",
+      "text": "В 1811 году ворота были переименованы в Королевские по названию улицы Königstrasse.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": true,
+      "owner_selected": true,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:580e1a6c1276de34480ae6ab307d6d2d4da80f82932614ccc457e142e6d295c2",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_3c96eeaec903d9c003ec",
+      "text": "Торжественная закладка новых Королевских ворот состоялась 30 августа 1843 года в присутствии короля Фридриха-Вильгельма IV.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:0fcfb845801eafcdfd7569e8bfe2fec57a7d2a7dcd5570e14192b24ac034d6a0",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_80c86a789800ab1160f0",
+      "text": "Строительство Королевских ворот завершилось в 1850 году.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": true,
+      "owner_selected": true,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:0b7a3f960533b2c17514d9536c3f1ce0f9c2582fc9bad47c30033acb000cf309",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_dba6de5b5881d5f1ccae",
+      "text": "В 1910 году военное ведомство продало Королевские ворота городу, так как они утратили военное значение.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:99695825a321a1133919b0b97e3a7aaa91e6fe10f18abd089bb65975db7e3470",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_19c307a02e8ece5adb53",
+      "text": "Позднее валы по бокам ворот были срыты, и ворота стали свободностоящим строением, выполняющим функцию триумфальной арки.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:71bab95d89ae927cdfeeee85399bd825829ac64cced5d63b1b3c31f28639dfd9",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_756de31814c05397cee8",
+      "text": "Неизвестно, использовались ли Королевские ворота в качестве оборонительного сооружения во время штурма города советскими войсками в ходе Великой Отечественной войны.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:d65b668e7d3070d67f80516e4f7bf6bb524970528a9c50acc336374ec9e179d1",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    },
+    {
+      "fact_id": "claim_c6cb9e6b5ec10f9e36de",
+      "text": "В 1960 году Королевские ворота были взяты под государственную охрану как исторический памятник.",
+      "confidence": 0.99,
+      "evidence_supported": true,
+      "selected": false,
+      "owner_selected": false,
+      "review_status": "eligible",
+      "eligibility": "eligible",
+      "revision_digest": "v2:4fd9508023e11c7759d69fcab824eef8ee565fd1ac856de18d02d43d724761ce",
+      "sources": [
+        {
+          "type": "web_search",
+          "title": "Королевские ворота — Википедия",
+          "url": "https://ru.wikipedia.org/wiki/%D0%9A%D0%BE%D1%80%D0%BE%D0%BB%D0%B5%D0%B2%D1%81%D0%BA%D0%B8%D0%B5_%D0%B2%D0%BE%D1%80%D0%BE%D1%82%D0%B0"
+        }
+      ]
+    }
+  ],
+  "selection_receipt": "livefirst-owner-selection.json",
+  "draft_receipt": "livefirst-owner-draft.json"
+}

@@ -72,6 +72,42 @@
         "If the required model semantic step is unavailable or malformed, the product surfaces or logs that state and fails closed rather than synthesizing semantic facts through deterministic fallback.",
         "Legacy deterministic normalization may exist only as explicitly labeled migration/repair compatibility code and is not used by the normal photo-to-publication path or POI/RAG evidence path."
       ]
+    },
+    {
+      "id": "CORE-LIVE-FIRST-FACT-RESEARCH",
+      "statement": "Street Story is Live-first for fact research economics and orchestration. The normal fact-research path should exploit the Live model as the primary low-marginal-cost semantic worker by decomposing research into many small, simple, bounded operations over retrieved source material. Search/fetch may use dedicated services, but stronger or separately metered non-Live models are not a mandatory dependency of normal fact extraction unless measured product evidence shows that Live alone is insufficient.",
+      "critical": true,
+      "acceptance": [
+        "A normal source-research run can produce a useful evidence-backed fact set with Mira/Live plus search/fetch and deterministic persistence/orchestration, without requiring a paid or stronger helper-model chain.",
+        "Live work is decomposed into small bounded semantic operations that fit the model and resource envelope; weakness of the Live model is addressed first by decomposition, repetition, evidence access and resumable orchestration rather than by replacing it with deterministic semantics.",
+        "A non-Live research or verification model may be used as an optional targeted quality/latency fallback only when a concrete measured blocker justifies it; it must not silently become a permanent mandatory cost of the normal path.",
+        "If operational evidence later disproves the assumed Live cost/capacity advantage, that is surfaced as a product/economic constraint and the architecture may be reconsidered explicitly rather than drifting implicitly."
+      ]
+    },
+    {
+      "id": "CORE-PRODUCT-FIRST-PARTIAL-VALUE",
+      "statement": "Street Story prioritizes a working end-to-end product that returns useful, source-backed partial results over an idealized fact pipeline that withholds the entire product outcome until near-perfect recall or precision is achieved.",
+      "critical": true,
+      "acceptance": [
+        "One uncertain, malformed or unsupported candidate does not fail an otherwise useful research run; that candidate is withheld while supported facts remain available to the owner.",
+        "Research quality is improved iteratively from real product outcomes. Imperfect recall is acceptable for MVP when the returned set is materially useful and evidence-backed; there is no requirement to find every possible fact before the user can proceed.",
+        "Tests, semantic benchmarks and acceptance harnesses are quality controls, not substitutes for delivery. A green test suite without a usable research-to-selection-to-draft flow is not product completion.",
+        "Recovery, repair, review and supersession mechanisms must not become mandatory normal-path ceremony unless concrete product failures prove they are necessary."
+      ]
+    },
+    {
+      "id": "CORE-SHARED-POI-HISTORY-GRAPH",
+      "statement": "Street Story is not a knowledge silo. Facts discovered by Street Story are accumulated directly in the existing persistent server-side POI memory and reused across stories and devices; story-local facts are only a publication projection. The Regional Knowledge Base maintains its evidence-backed historical graph for people, events and historical threads linked to canonical POIs. These existing domains interoperate by stable references and evidence contracts; no duplicate canonical POI layer or mandatory migration between POI tables is required.",
+      "critical": true,
+      "acceptance": [
+        "A new story hydrates relevant existing POI memory before redundant web research, including eligible claims, known sources and aliases.",
+        "Research reuses already processed evidence and focuses new web work on gaps, new sources or changed questions instead of rediscovering the same POI from zero.",
+        "New evidence-backed facts discovered by Street Story persist directly in the existing POI research memory and are reusable by later stories; no second copy is required for them to become canonical product knowledge.",
+        "poi_research_assertions, poi_research_observations and poi_research_sources are valid durable POI knowledge for Street Story-discovered web research; they must not be mirrored into poi_claims merely to satisfy architecture ceremony.",
+        "poi_claims, poi_claim_evidence and poi_external_events remain integration-specific structures for typed external evidence intake where that contract is useful, not a mandatory migration target for existing Street Story POI memory.",
+        "Story-specific owner selection, editorial angle and draft state remain local to the story and do not redefine reusable POI knowledge.",
+        "Regional Knowledge Base can contribute provenance-rich evidence and maintain person/event/historical_thread relations linked to POIs without requiring Street Story research findings to be copied back into the Regional Knowledge corpus."
+      ]
     }
   ]
 }

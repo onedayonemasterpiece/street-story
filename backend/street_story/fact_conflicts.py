@@ -7,6 +7,7 @@ evidence for later arbitration, not a truth vote.
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
 import json
 from urllib.parse import urlparse
 from typing import Any
@@ -241,6 +242,18 @@ def normalize_conflict_records(
     return records
 
 
+def _current_review_bundle(db, story_id: str) -> dict[str, str]:
+    return {
+        str(row["assertion_id"]): str(row["revision_digest"] or "")
+        for row in db.execute(
+            "SELECT a.assertion_id,a.revision_digest FROM fact_assertions a "
+            "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+            "WHERE a.story_id=? AND f.evidence_supported=1 ORDER BY a.assertion_id",
+            (story_id,),
+        )
+    }
+
+
 def _record_conflict_scan(
     service,
     story_id: str,
@@ -252,30 +265,59 @@ def _record_conflict_scan(
     detected_count: int,
     coverage_complete: bool = False,
     error_type: str | None = None,
+    run_id: str | None = None,
+    revision_bundle: dict[str, str] | None = None,
+    conflict_ids: list[str] | None = None,
+    missing_aspects: list[str] | None = None,
+    connection=None,
 ) -> None:
     now = service.store.now()
-    with service.store.tx() as db:
+    with (nullcontext(connection) if connection is not None else service.store.tx()) as db:
         if not db.execute("SELECT 1 FROM stories WHERE id=?", (story_id,)).fetchone():
             return
+        if revision_bundle is None and coverage_complete and status in {"ok", "no_candidates"}:
+            revision_bundle = _current_review_bundle(db, story_id)
+        safe_bundle = {
+            str(fact_id): str(revision or "")
+            for fact_id, revision in (revision_bundle or {}).items()
+            if str(fact_id)
+        }
+        safe_conflicts = list(dict.fromkeys(
+            str(value)[:160]
+            for value in (conflict_ids or [])
+            if str(value).strip()
+        ))[:200]
+        safe_missing = [
+            str(value).strip()[:500]
+            for value in (missing_aspects or [])
+            if str(value).strip()
+        ][:40]
         db.execute(
             """
             INSERT INTO fact_conflict_scans(
-              story_id,poi_key,detector,status,pair_count,detected_count,
-              coverage_complete,error_type,created_at
-            ) VALUES(?,?,?,?,?,?,?,?,?)
+              story_id,poi_key,run_id,detector,status,pair_count,detected_count,
+              coverage_complete,revision_bundle_json,conflict_ids_json,
+              missing_aspects_json,error_type,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 story_id,
                 poi_key,
+                str(run_id or "").strip() or None,
                 detector[:120],
                 status[:40],
                 max(0, int(pair_count)),
                 max(0, int(detected_count)),
                 int(bool(coverage_complete)),
+                json.dumps(safe_bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                json.dumps(safe_conflicts, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(safe_missing, ensure_ascii=False, separators=(",", ":")),
                 str(error_type or "")[:120] or None,
                 now,
             ),
         )
+    if connection is not None:
+        return
     from .identity_telemetry import record_identity_event
     record_identity_event(
         service,
@@ -286,12 +328,45 @@ def _record_conflict_scan(
             "pair_count": max(0, int(pair_count)),
             "detected_count": max(0, int(detected_count)),
             "coverage_complete": bool(coverage_complete),
+            "reviewed_assertion_count": len(revision_bundle or {}),
+            "reviewed_conflict_count": len(conflict_ids or []),
+            "run_id": str(run_id or "")[:120] or None,
             "error_type": str(error_type or "")[:120] or None,
             "detector": detector[:120],
         },
         source="fact_conflict",
     )
 
+
+def record_fact_review_scan(
+    service,
+    story_id: str,
+    poi_key: str | None,
+    *,
+    detector: str,
+    run_id: str,
+    revision_bundle: dict[str, str],
+    conflict_ids: list[str],
+    coverage_complete: bool,
+    missing_aspects: list[str],
+    connection=None,
+) -> None:
+    pair_count = len(revision_bundle) * (len(revision_bundle) - 1) // 2
+    _record_conflict_scan(
+        service,
+        story_id,
+        poi_key,
+        detector=detector,
+        status="ok" if conflict_ids else "no_candidates",
+        pair_count=pair_count,
+        detected_count=len(conflict_ids),
+        coverage_complete=coverage_complete,
+        run_id=run_id,
+        revision_bundle=revision_bundle,
+        conflict_ids=conflict_ids,
+        missing_aspects=missing_aspects,
+        connection=connection,
+    )
 
 def conflict_stats(db, story_id: str, poi_key: str | None = None) -> dict[str, Any]:
     by_relation = {
@@ -360,15 +435,32 @@ def persist_fact_conflicts(
     records: list[dict[str, Any]],
     *,
     detector: str,
+    connection=None,
 ) -> list[dict[str, Any]]:
     if not records:
         return []
     now = service.store.now()
     regional_conflict_ids: list[str] = []
-    with service.store.tx() as db:
+    with (nullcontext(connection) if connection is not None else service.store.tx()) as db:
         row = db.execute("SELECT research_json FROM stories WHERE id=?", (story_id,)).fetchone()
         if row is None:
             return []
+        revision_ids = {
+            str(value)
+            for record in records
+            for value in (record["left_fact_id"], record["right_fact_id"])
+        }
+        revisions: dict[str, str] = {}
+        if revision_ids:
+            placeholders = ",".join("?" for _ in revision_ids)
+            revisions = {
+                str(item["assertion_id"]): str(item["revision_digest"] or "")
+                for item in db.execute(
+                    f"SELECT assertion_id,revision_digest FROM fact_assertions "
+                    f"WHERE story_id=? AND assertion_id IN ({placeholders})",
+                    (story_id, *sorted(revision_ids)),
+                )
+            }
         for record in records:
             db.execute(
                 """
@@ -376,8 +468,9 @@ def persist_fact_conflicts(
                   story_id,conflict_id,poi_key,left_fact_id,right_fact_id,left_text,right_text,
                   relation,detector_confidence,suggested_resolution,suggested_fact_id,
                   detector_rationale,final_resolution,final_fact_id,arbitration_reason,
-                  arbitration_confidence,arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,1,?,?)
+                  arbitration_confidence,arbitrated_by,evidence_json,left_revision_digest,
+                  right_revision_digest,times_seen,first_seen_at,last_seen_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,?,?,?,1,?,?)
                 ON CONFLICT(story_id,conflict_id) DO UPDATE SET
                   poi_key=excluded.poi_key,
                   relation=excluded.relation,
@@ -386,6 +479,8 @@ def persist_fact_conflicts(
                   suggested_fact_id=excluded.suggested_fact_id,
                   detector_rationale=excluded.detector_rationale,
                   evidence_json=excluded.evidence_json,
+                  left_revision_digest=excluded.left_revision_digest,
+                  right_revision_digest=excluded.right_revision_digest,
                   times_seen=fact_conflicts.times_seen+1,
                   last_seen_at=excluded.last_seen_at
                 """,
@@ -403,6 +498,8 @@ def persist_fact_conflicts(
                     record["suggested_fact_id"],
                     record["detector_rationale"],
                     json.dumps(record["evidence"], ensure_ascii=False, separators=(",", ":")),
+                    revisions.get(str(record["left_fact_id"]), ""),
+                    revisions.get(str(record["right_fact_id"]), ""),
                     now,
                     now,
                 ),
@@ -447,7 +544,8 @@ def persist_fact_conflicts(
             SELECT conflict_id,left_fact_id,right_fact_id,left_text,right_text,relation,
                    detector_confidence,suggested_resolution,suggested_fact_id,
                    detector_rationale,final_resolution,final_fact_id,arbitration_reason,
-                   arbitration_confidence,arbitrated_by,evidence_json,times_seen,first_seen_at,last_seen_at
+                   arbitration_confidence,arbitrated_by,evidence_json,left_revision_digest,
+                   right_revision_digest,times_seen,first_seen_at,last_seen_at
             FROM fact_conflicts WHERE story_id=? ORDER BY last_seen_at DESC LIMIT 40
             """,
             (story_id,),
@@ -469,6 +567,8 @@ def persist_fact_conflicts(
             "UPDATE stories SET research_json=? WHERE id=?",
             (json.dumps(research, ensure_ascii=False, separators=(",", ":")), story_id),
         )
+    if connection is not None:
+        return durable
     if regional_conflict_ids:
         from .poi_reviews import sync_review_cases
         sync_review_cases(service.store, regional_conflict_ids)
@@ -498,6 +598,51 @@ def persist_fact_conflicts(
     return durable
 
 
+def stamp_fact_conflict_revisions(
+    db,
+    story_id: str,
+    conflict_ids: list[str],
+) -> None:
+    ids = list(dict.fromkeys(str(value) for value in conflict_ids if str(value)))
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    rows = list(
+        db.execute(
+            f"SELECT conflict_id,left_fact_id,right_fact_id FROM fact_conflicts "
+            f"WHERE story_id=? AND conflict_id IN ({placeholders})",
+            (story_id, *ids),
+        )
+    )
+    assertion_ids = {
+        str(value)
+        for row in rows
+        for value in (row["left_fact_id"], row["right_fact_id"])
+    }
+    revisions: dict[str, str] = {}
+    if assertion_ids:
+        fact_placeholders = ",".join("?" for _ in assertion_ids)
+        revisions = {
+            str(row["assertion_id"]): str(row["revision_digest"] or "")
+            for row in db.execute(
+                f"SELECT assertion_id,revision_digest FROM fact_assertions "
+                f"WHERE story_id=? AND assertion_id IN ({fact_placeholders})",
+                (story_id, *sorted(assertion_ids)),
+            )
+        }
+    for row in rows:
+        db.execute(
+            "UPDATE fact_conflicts SET left_revision_digest=?,right_revision_digest=? "
+            "WHERE story_id=? AND conflict_id=?",
+            (
+                revisions.get(str(row["left_fact_id"]), ""),
+                revisions.get(str(row["right_fact_id"]), ""),
+                story_id,
+                row["conflict_id"],
+            ),
+        )
+
+
 async def analyze_fact_conflicts(
     service,
     story_id: str,
@@ -508,6 +653,10 @@ async def analyze_fact_conflicts(
     detector: str = "gemini_research",
 ) -> list[dict[str, Any]]:
     model_items = conflict_scan_items(items)
+    with service.store.connection() as db:
+        snapshot_bundle = _current_review_bundle(db, story_id)
+    reviewed_ids = {str(item.get("fact_id") or "") for item in model_items}
+    snapshot_bundle = {key: value for key, value in snapshot_bundle.items() if key in reviewed_ids}
     pair_count = len(model_items) * (len(model_items) - 1) // 2
     if len(model_items) < 2:
         _record_conflict_scan(
@@ -519,6 +668,7 @@ async def analyze_fact_conflicts(
             pair_count=0,
             detected_count=0,
             coverage_complete=True,
+            revision_bundle=snapshot_bundle,
         )
         return []
     detector_fn = getattr(service.providers.gemini, "detect_fact_conflicts", None)
@@ -567,23 +717,17 @@ async def analyze_fact_conflicts(
             source="fact_conflict",
         )
         return []
-    _record_conflict_scan(
-        service,
-        story_id,
-        poi_key,
-        detector=detector,
-        status="ok",
-        pair_count=pair_count,
-        detected_count=len(records),
-        coverage_complete=coverage_complete,
-    )
-    return persist_fact_conflicts(
-        service,
-        story_id,
-        poi_key,
-        records,
-        detector=detector,
-    )
+    with service.store.tx() as db:
+        current = _current_review_bundle(db, story_id)
+        current = {key: value for key, value in current.items() if key in reviewed_ids}
+        if current != snapshot_bundle:
+            _record_conflict_scan(service, story_id, poi_key, detector=detector, status="stale_review",
+                                  pair_count=pair_count, detected_count=0, connection=db)
+            return []
+        _record_conflict_scan(service, story_id, poi_key, detector=detector, status="ok",
+                              pair_count=pair_count, detected_count=len(records), coverage_complete=coverage_complete,
+                              revision_bundle=snapshot_bundle, conflict_ids=[str(record.get("conflict_id") or "") for record in records], connection=db)
+        return persist_fact_conflicts(service, story_id, poi_key, records, detector=detector, connection=db)
 
 
 def resolve_fact_conflict(
@@ -595,6 +739,7 @@ def resolve_fact_conflict(
     confidence: float,
     *,
     arbitrated_by: str = "mira_live",
+    connection=None,
 ) -> dict[str, Any]:
     conflict_id = str(conflict_id or "").strip()
     resolution = str(resolution or "").strip()
@@ -605,7 +750,7 @@ def resolve_fact_conflict(
         raise ValueError("fact_conflict_reason_required")
     confidence = max(0.0, min(1.0, float(confidence)))
     changed = False
-    with service.store.tx() as db:
+    with (nullcontext(connection) if connection is not None else service.store.tx()) as db:
         row = db.execute(
             "SELECT * FROM fact_conflicts WHERE story_id=? AND conflict_id=?",
             (story_id, conflict_id),
@@ -744,7 +889,7 @@ def resolve_fact_conflict(
             "UPDATE stories SET research_json=? WHERE id=?",
             (json.dumps(research, ensure_ascii=False, separators=(",", ":")), story_id),
         )
-    if changed:
+    if changed and connection is None:
         from .identity_telemetry import record_identity_event
         record_identity_event(
             service,
@@ -768,7 +913,8 @@ def conflict_rows(db, story_id: str, limit: int = 20) -> list[dict[str, Any]]:
         SELECT conflict_id,left_fact_id,right_fact_id,left_text,right_text,relation,
                detector_confidence,suggested_resolution,suggested_fact_id,
                detector_rationale,final_resolution,final_fact_id,arbitration_reason,
-               arbitration_confidence,arbitrated_by,evidence_json,times_seen
+               arbitration_confidence,arbitrated_by,evidence_json,left_revision_digest,
+               right_revision_digest,times_seen
         FROM fact_conflicts WHERE story_id=? ORDER BY last_seen_at DESC LIMIT ?
         """,
         (story_id, limit),

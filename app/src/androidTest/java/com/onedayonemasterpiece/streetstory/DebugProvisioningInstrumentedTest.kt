@@ -2,6 +2,7 @@ package com.onedayonemasterpiece.streetstory
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import android.view.View
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
@@ -72,7 +73,8 @@ class DebugProvisioningInstrumentedTest {
         assertTrue(staged.isFile)
 
         startStagedProvisioning(backendUrl)
-        assertTrue(waitForConfig(backendUrl, token))
+        val configured = waitForConfig(backendUrl, token)
+        assertTrue(provisioningDiagnostics(backendUrl, token), configured)
         assertFalse(staged.exists())
 
         val encrypted = context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE)
@@ -162,12 +164,18 @@ class DebugProvisioningInstrumentedTest {
     }
 
     private fun startStagedProvisioning(backendUrl: String) {
-        context.startActivity(
-            Intent().setClassName(context.packageName, DebugProvisioningActivity::class.java.name)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL, backendUrl)
-                .putExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED, true),
+        // Exercise the actual ADB entry point. A background application-context
+        // launch is subject to Android 15 activity-start policy and can be ignored
+        // before the receiver consumes the staged file. No token enters the command.
+        val output = device.executeShellCommand(
+            "am start -W -f 0x10008000 -n ${context.packageName}/${DebugProvisioningActivity::class.java.name} " +
+                "--es ${DebugProvisioningPolicy.EXTRA_BACKEND_URL} $backendUrl " +
+                "--ez ${DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED} true",
         )
+        // A fresh activity task isolates this entry point from the preceding
+        // test's handoff/finish lifecycle. Task flags do not clear stored data.
+        Log.i("StreetStoryProvisioning", "event=test_adb_launch status_ok=${output.contains("Status: ok")} delivered=${output.contains("intent has been delivered")} error=${output.contains("Error:")}")
+        assertTrue("ADB activity launch must report success", output.contains("Status: ok"))
         instrumentation.waitForIdleSync()
     }
 
@@ -179,5 +187,15 @@ class DebugProvisioningInstrumentedTest {
             Thread.sleep(50)
         }
         return false
+    }
+
+    private fun provisioningDiagnostics(backendUrl: String, token: String): String {
+        val config = ConfigStore(context)
+        val encryptedPresent = context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE)
+            .contains("device_token")
+        val stagedPresent = context.getFileStreamPath(DebugProvisioningPolicy.STAGED_DEVICE_TOKEN_FILE).exists()
+        // Only state flags: never expose URLs, plaintext tokens or encrypted credentials.
+        return "provisioning configured=${config.configured} backendMatches=${config.backendUrl == backendUrl} " +
+            "tokenMatches=${config.deviceToken == token} encryptedPresent=$encryptedPresent stagedPresent=$stagedPresent"
     }
 }
