@@ -1,8 +1,9 @@
 # Facts research finish — 2026-10-03
 
-Overall: `IMPLEMENTED_BUT_EXTERNAL_CHECK_BLOCKED` pending delivered-build and
-physical Android checks. A real semantic FAIL below is a FAIL, not a provider
-block or product success. This report is updated with final delivery receipts.
+Overall: `FAIL_SEMANTIC` for broad/holdout acceptance. Targeted ordinary real-model
+research passed its manually assessed frozen-corpus gold gate. This is not full
+product acceptance. PR #126 is unmerged; backend/APK delivery was not performed
+because content review exposed false-positive eligibility despite green CI.
 
 Existing worktree: `/home/dev/projects/street-story-poi-runtime-clean`, branch
 `chatgpt/street-story-facts-review-finalization-20261003`, inherited from #124
@@ -34,7 +35,9 @@ Retained task evidence:
 `/home/dev/artifacts/street-story/20261003T210444Z-facts-research-finish`.
 No credentials copied; isolated fixture stores do not clear user cache.
 
-Local tests: full backend **462 passed** in **14.14 s** before the final routing correction; Ruff passed. Final counts are recorded below at delivery.
+Local tests at frozen functional source `bec193e55fbac2a3698558d28732e34e8f2e63a8`:
+**475 passed**, **34.64 s**, two dependency deprecation warnings; Ruff passed.
+The installed private SDK is exercised through a private artifact-path link.
 `backend/tests/test_facts_research_finish.py` verifies the full controlled fallback
 through evidence/review/selection/draft, no-claim receipt, stable replay, partial
 coverage, invalid quote rejection, rollback of late review failure, and three
@@ -62,7 +65,7 @@ early. Completed coverage was already reported false; the harness exited nonzero
 Correction: addressable literal passages and rejecting claimed complete coverage
 while chunks remain. Later bounded runs are recorded below.
 
-Intermediate targeted run: BLOCKED_PROVIDER at tool-response budget after
+Intermediate targeted run: BLOCKED_RESOURCE at tool-response budget after
 181.47 s, three atomic figure assertions saved but unreviewed,
 RESOURCE_TOKEN_BUDGET requested 40,119 units. Initial targeted run requested
 35,418 units. Initial holdout: FAIL after 180.26 s: saved claims, then invented
@@ -81,15 +84,25 @@ tool route (read tools return before the general mutation projection).
 | D02 | IMPLEMENTED_AND_VERIFIED | Ledger counterexamples and revision-scoped scans/decisions; quarantine and conflict-order tests. |
 | D03 | IMPLEMENTED_AND_VERIFIED locally | Payload checkpoint, continuation/replay, frozen-document resume, terminal no-claims receipt. Actual process death/phone reconnect remains external acceptance. |
 | D04 | IMPLEMENTED_AND_VERIFIED | Parametrized cancellation, identity and concurrent revision change inside the last awaited reconciliation reject late batch and preserve the first observation. |
-| D05 | NOT_IMPLEMENTED as accepted outcome | Initial real broad failed; final broad/targeted/holdout receipts pending. No mock or gold name match alone is called semantic product success. Warm-cache real-model reuse remains unverified. |
+| D05 | FAIL_SEMANTIC overall | Ordinary targeted passed; broad and holdout failed atomic gold criteria. Broad also admitted assertions unsupported by their own spans. Warm-cache real-model reuse remains unverified. |
 | D06 | IMPLEMENTED_BUT_EXTERNAL_CHECK_BLOCKED | Backend selection/draft gates tested. Android focus/PCM tests and delivered build checks pending. Physical microphone/cancel/resume requires owner's phone. |
-| D07 | IMPLEMENTED_BUT_EXTERNAL_CHECK_BLOCKED | Backend/APK delivery receipts pending below. Before delivery disk had 30 GiB free; current and rollback were preserved. |
+| D07 | NOT_DELIVERED | PR #126 remains open after semantic failure; backend stays at #124, no new canonical owner APK delivered. Disk space is not the blocker. |
 | D08 | IMPLEMENTED_AND_VERIFIED for reporting | This report separates controlled/real/phone evidence, PASS/FAIL/provider block, measured times and residual work. |
 
 ## Delivery receipts
 
-Pending CI, exact backend revision/health, canonical signed APK version and link.
-No unrelated social or image-generation runs, and no real channel publication.
+Frozen candidate CI: backend, Android checks and emulator passed at `bec193e`.
+Release job is skipped on PR runs; a debug APK is not canonical owner delivery.
+CI: https://github.com/onedayonemasterpiece/street-story/actions/runs/37163185994
+and https://github.com/onedayonemasterpiece/street-story/actions/runs/37163185999.
+Last runtime readback before the retrospective: HTTP 200, backend
+`74c8f71da901a2c1fd9339eb79e0500efcfc0110`; no installation/restart was attempted.
+No new canonical signed APK, physical microphone acceptance, real Internet
+retrieval acceptance, social publishing or image-generation run is claimed.
+
+Retained production backup `production-before-facts-finish.sqlite3` contains
+private story data (mode 0600); it is sensitive evidence, not a distributable
+fixture. Credentials were not copied. Production data and rollback were preserved.
 
 
 ## Budget/review unblock — 2026-10-04 (UTC+2)
@@ -139,7 +152,7 @@ room below the observed 6,333 remaining allowance. Document tail cannot become
 processed after reading one page. The authority still guards actual batches;
 fully occupied windows use the shared bounded wait, without redoing tools.
 
-Offline: **472 backend tests passed**, including the actual installed SDK estimator
+Offline: **475 backend tests passed**, including the actual installed SDK estimator
 and Lease on production execute_tool replies; deny/refill causes exactly one send,
 oversize and lease expiry fail closed. Controlled packet negatives, foreign/stale
 references, replay, cross-page gate, and 241-assertion completion pass. Ruff passes.
@@ -156,5 +169,69 @@ corpus probes use the production discovery fallback branch. Internet retrieval,
 fixture identity/helper outage and physical microphone remain distinct scopes.
 
 U1: measured local boundary; historical policy/other-lease details above are explicit.
-U2/U3: controlled verification passed. U4 ordinary real-model targeted, broad and
-holdout plus U5 final backend/canonical APK delivery are pending this iteration.
+U2/U3: controlled verification passed; broad results below show that a valid
+packet contract alone does not guarantee accurate model support verdicts.
+U4: targeted PASS, broad/holdout FAIL_SEMANTIC; no blanket acceptance.
+U5: this single report is current; backend/canonical APK delivery is not complete.
+
+## Retrospective and freeze — 2026-10-04
+
+The review covers this task's preserved receipts, source history including #123
+and #124, and the earlier owner-review report. There is no matched historical
+phone/fact-research baseline proving that an earlier release met all these gates.
+Earlier guided prompts and the old discovery-fixture label differ from current
+ordinary prompts; counts and times are not an isolated causal benchmark.
+
+| Preserved result | Time | Facts / coverage | Assessment |
+|---|---:|---|---|
+| Initial guided broad | 116.14 s | 5 eligible, 1/2 cores | FAIL; no three distinct figure facts, incomplete coverage |
+| Earlier targeted `targeted-1791065439571442723` | 180.35 s | 3 saved, 0 eligible, 1/2 cores | Local admission block; extraction succeeded but review did not finish |
+| Harness adapter regression after `9cc28e` | ~2.8 s | No extraction | Agent introduced an invalid `host.sessions[id].adapter` access; fixed via `host.adapter` |
+| Continuation regression `targeted-1791070627650378585` | 5.99 s | 0 facts | Agent fired continuation on intermediate tool completion; exhausted bounded nudges before the model finished |
+| Targeted `targeted-1791071594320565279` | 119.59 s | 3 eligible, 2/2 cores, completed | PASS after manual own-evidence gold assessment; exact clean functional `bec193e` |
+| Broad `broad-1791071858579050101` | 140.03 s | 18 eligible, 2/2 cores, completed | FAIL_SEMANTIC; three figures combined, false-positive support verdicts |
+| Holdout `holdout-1791071858577683009` | 94.09 s | 7 eligible, 1/1 core, completed | FAIL_SEMANTIC; two portrait relations combined; goal/search incorrectly says Berlin |
+
+The targeted PASS has three separate affirmative assertions for Frederick I,
+Duke Albrecht and Otakar II, each bound to its own literal evidence IDs and text
+digest. The evaluated relation is depiction/person identity; the corpus mixes
+relief terminology, so independent classification as bas-relief is not certified.
+Online `REVIEW_REQUIRED` receipts are unchanged; offline manual assessment creates
+separate `acceptance-assessed.json` files. Broad and holdout assessments correctly
+fail the required three-distinct-assertion gate even though their shared spans
+mention all three gold relations.
+
+Broad content review found failures beyond atomicity:
+
+- `claim_124a21b1e9c81e3e5e3c` asserts a 1976 shop opening, but both own spans only
+  say “В том же году”; neither resolves that year. Full document context does
+  not establish support from these isolated own spans.
+- `claim_1eb0fc3fc0c72e2350a3` includes Ministry confirmation of protected status;
+  its own spans only describe a request to remove protection.
+- `claim_a403c081b00666027228` states confidently that all eight towers were
+  rebuilt from turrets in the nineteenth century. Its span describes four
+  lower-tier turrets and qualifies the later change as probable.
+
+Holdout facts and source are about Kaliningrad, but the model's run goal and
+search query say Berlin. That is observed identity drift; the frozen HTTP fixture
+still supplies the Kaliningrad source. Correct saved facts therefore do not prove
+correct ordinary Internet discovery for the intended object.
+
+Broad/holdout processes loaded `bec193e` plus a tiny uncommitted `ready_to_save`
+envelope safeguard. That exact hunk was removed after the freeze; these receipts
+are explicitly not exact-clean-SHA acceptance proof. The targeted PASS and final
+475-test run do use the clean frozen functional source. No functional edits or
+new paid reruns followed this retrospective.
+
+Transport, persistence and completion improved in the measured targeted case,
+but semantic acceptance remains failing. The two introduced regressions were
+real, and successive fixes did not monotonically improve results. No rollback to
+an older version is justified as a proven complete solution by these receipts.
+The next implementation must address explicit semantic review of unresolved
+deictic references, claim qualifiers and compound claims, and object identity
+drift; it must not replace model decisions with name/negation heuristics or quota
+bypasses. Until those gates pass, no merge/deploy or full-product success claim.
+
+Evidence: `retrospective.json`, `retrospective-assessment.json`, the three latest
+case receipts and `gold-assessment.json`/`acceptance-assessed.json`, and
+`full-frozen-retrospective.log` in the retained task directory above.
