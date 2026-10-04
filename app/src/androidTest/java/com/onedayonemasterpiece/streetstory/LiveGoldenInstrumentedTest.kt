@@ -383,6 +383,12 @@ class LiveGoldenInstrumentedTest {
     }
 
     private fun speak(live: LiveSessionController, pcm: File) {
+        // Provider turn completion can precede AudioTrack playback draining.
+        // A real owner waits for Mira; injecting the next fixture immediately
+        // loses its opening words to the normal echo/research input gate.
+        waitUntil(120_000, "Microphone input did not resume before prepared speech") {
+            !live.shouldSuppressMicrophoneInput()
+        }
         awaitingTurnAfter = live.snapshot().completedTurns
         val bytes = pcm.readBytes()
         require(bytes.size % 2 == 0)
