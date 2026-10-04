@@ -155,6 +155,7 @@ async def assess(adapter, session, args):
     """Scoped configured-model advice, cached only for this frozen attempt."""
     import json
     from .gemini import GeminiUnavailable
+    from .errors import MalformedProviderResponse
     ref = str(args.get('packet_ref') or '')
     cursor = args.get('cursor', 0)
     decision_cursor = args.get('decision_cursor', 0)
@@ -183,12 +184,15 @@ async def assess(adapter, session, args):
             result = {**await helper(items, {'identity': state['visual_identity'], 'location': state['poi_location']}), 'helper_available': True}
         except GeminiUnavailable as exc:
             result = {'helper_available': False, 'reason': str(exc), 'decisions': []}
+        except MalformedProviderResponse:
+            result = {'helper_available': False, 'reason': 'semantic_review_contract_invalid', 'decisions': []}
         with adapter.service.store.tx() as db:
             current, _ = review_packets.load(adapter, session, db, ref)
             if current['result_json']:
                 raise ConflictError('live_review_packet_stale', 'Review completed during helper assessment.')
             db.execute('INSERT OR IGNORE INTO live_review_assessments VALUES(?,?,?)', (ref, cursor, canonical(result)))
     page = {'packet_ref': ref, 'helper_available': result['helper_available'], 'model': result.get('model'),
+            'thinking_level': result.get('thinking_level'),
             'policy_version': review_packets.POLICY_VERSION, 'decisions': [], 'has_more': False,
             'instruction': 'Independent model advice, not a completed review. Read missing context, batch-repair candidates, then review fresh revisions. Do not copy suggested text without binding its own evidence.',
             'next_tool': 'finalize_fact_review'}
@@ -199,6 +203,8 @@ async def assess(adapter, session, args):
             break
         page = candidate
     consumed = decision_cursor + len(page['decisions'])
+    if decisions and not page['decisions']:
+        raise ConflictError('live_review_advice_oversize', 'One helper assessment exceeds the bounded page. Keep the snapshot and perform addressed Live review; do not repeat this cursor.')
     if consumed < len(decisions):
         page.update(has_more=True, next_tool='assess_review_packet', next_args={'packet_ref': ref, 'cursor': cursor, 'decision_cursor': consumed})
     elif result['helper_available'] and cursor + len(items) < len(payload['items']):

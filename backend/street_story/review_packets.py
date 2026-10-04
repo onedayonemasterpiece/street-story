@@ -6,7 +6,7 @@ import uuid
 from .research_budget import PAGE_UNITS, response_units
 from .service import ConflictError, canonical
 
-POLICY_VERSION = 'own-evidence-repair-v3'
+POLICY_VERSION = 'own-evidence-repair-v4'
 
 REVIEW_CHECKS = (
     'These are unverified candidates, not established facts. First enumerate independent claims '
@@ -26,22 +26,22 @@ CREATE TABLE IF NOT EXISTS live_review_packets(
  decisions_json TEXT NOT NULL DEFAULT '{}', result_json TEXT, request_json TEXT
 );
 CREATE TABLE IF NOT EXISTS live_review_attempts(
- packet_ref TEXT PRIMARY KEY REFERENCES live_review_packets(packet_ref),
+ packet_ref TEXT PRIMARY KEY REFERENCES live_review_packets(packet_ref) ON DELETE CASCADE,
  policy_version TEXT NOT NULL, supersedes_ref TEXT,
  affected_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
 );
 CREATE TABLE IF NOT EXISTS live_review_contexts(
- context_ref TEXT PRIMARY KEY, packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref),
+ context_ref TEXT PRIMARY KEY, packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref) ON DELETE CASCADE,
  source_version_id TEXT NOT NULL, span_start INTEGER NOT NULL, span_end INTEGER NOT NULL,
  span_sha256 TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS live_fact_repairs(
- story_id TEXT NOT NULL, parent_id TEXT NOT NULL, child_id TEXT NOT NULL,
+ story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE, parent_id TEXT NOT NULL, child_id TEXT NOT NULL,
  command_id TEXT NOT NULL, packet_ref TEXT NOT NULL, reason TEXT NOT NULL,
  PRIMARY KEY(story_id,parent_id,child_id,command_id)
 );
 CREATE TABLE IF NOT EXISTS live_review_assessments(
- packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref),
+ packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref) ON DELETE CASCADE,
  cursor INTEGER NOT NULL, payload_json TEXT NOT NULL,
  PRIMARY KEY(packet_ref,cursor)
 );

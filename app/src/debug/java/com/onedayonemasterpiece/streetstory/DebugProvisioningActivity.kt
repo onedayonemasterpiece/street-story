@@ -74,7 +74,7 @@ class DebugProvisioningActivity : Activity() {
         if (config.backendUrl != values.backendUrl) config.backendUrl = values.backendUrl
         if (config.deviceToken != values.deviceToken) config.deviceToken = values.deviceToken
         if (!config.configured) {
-            Log.i("StreetStoryProvisioning", "event=config_failed backend_present=${config.backendUrl.isNotBlank()} token_present=${config.deviceToken.isNotBlank()}")
+            Log.i("StreetStoryProvisioning", "event=config_failed backend_present=${!config.backendUrl.isNullOrBlank()} token_present=${!config.deviceToken.isNullOrBlank()}")
             Toast.makeText(this, "ADB-настройка не завершена", Toast.LENGTH_LONG).show()
             finish()
             return

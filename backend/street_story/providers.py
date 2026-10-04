@@ -2753,7 +2753,8 @@ class GeminiClient:
                   + 'Give a short checkable reason, not private reasoning. No prior verdicts are provided.\n'
                   + 'Confirmed POI: ' + json.dumps(context, ensure_ascii=False) + '\n'
                   + 'Candidates with their own attached evidence: ' + json.dumps(items, ensure_ascii=False))
-        config = types.GenerateContentConfig(response_mime_type='application/json', response_json_schema=schema)
+        config = types.GenerateContentConfig(response_mime_type='application/json', response_json_schema=schema,
+                                             thinking_config=types.ThinkingConfig(thinking_level='high', include_thoughts=False))
         retry_at = []
         for model, _pool, quota, executor in self.research_routes:
             async def call(key, timeout, *, _model=model, _quota=quota):
@@ -2766,9 +2767,11 @@ class GeminiClient:
                         raise ValueError('incomplete_or_foreign_decisions')
                     if any(len(d['reason']) > 500 or not 1 <= len(d['propositions']) <= 8 or len(d['replacement_texts']) > 8 or any(len(t) > 500 for t in d['propositions'] + d['replacement_texts']) for d in decisions):
                         raise ValueError('oversize_semantic_advice')
+                    if any(d['verdict'] == 'supported' and (d['needs_context'] or len(d['propositions']) != 1) for d in decisions):
+                        raise ValueError('inconsistent_semantic_advice')
                 except (TypeError, ValueError, KeyError, json.JSONDecodeError):
                     raise MalformedProviderResponse('gemini:malformed_semantic_review') from None
-                return {'model': _model, 'decisions': decisions}
+                return {'model': _model, 'thinking_level': 'high', 'decisions': decisions}
             try:
                 return await executor.execute('grounded_research', call)
             except GeminiUnavailable as exc:
