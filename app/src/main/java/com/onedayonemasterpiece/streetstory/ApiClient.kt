@@ -22,12 +22,24 @@ class IdentityStepWire {
     var status: String = ""
 }
 class IdentityProgressWire {
+    var generation: Int = 0
+    @SerializedName("updated_at") var updatedAt: Double = 0.0
     var steps: ArrayList<IdentityStepWire> = arrayListOf()
     var attempt: Int = 0
     var finished: Boolean = false
     @SerializedName("elapsed_ms") var elapsedMs: Long = 0
     @SerializedName("images_reviewed_count") var imagesReviewedCount: Int = 0
     @SerializedName("visual_comparison_verified") var visualComparisonVerified: Boolean = false
+}
+
+internal fun newestIdentityProgress(previous: IdentityProgressWire?, incoming: IdentityProgressWire?): IdentityProgressWire? = when {
+    previous == null -> incoming
+    incoming == null -> previous
+    incoming.generation < previous.generation -> previous
+    incoming.generation > previous.generation -> incoming
+    incoming.updatedAt < previous.updatedAt -> previous
+    incoming.imagesReviewedCount < previous.imagesReviewedCount -> previous
+    else -> incoming
 }
 
 class PublicationWire {

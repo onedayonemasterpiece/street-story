@@ -202,14 +202,20 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
     svc._candidate_reference_images = images
     monkeypatch.setattr(identity_discovery, 'web_image_sources', search)
     monkeypatch.setattr(article_media, 'article_candidates', articles)
-    adapter = StreetStoryLiveAdapter(svc, lambda *a: None, lambda *a: None)
+    events = []
+    adapter = StreetStoryLiveAdapter(svc, lambda _session, event: events.append(event), lambda *a: None)
     session = SimpleNamespace(id='live_1234567890abcdef', resource_id=story['id'], model='gemini-3.8-live', state={})
     for index, status in enumerate(('mismatch', 'mismatch', 'match'), 1):
         reply = await adapter.execute_tool(session, {'name': 'compare_place_images', 'id': f'load-{index}', 'args': {'query': 'Gate'}})
         assert len(searched) == (0 if index == 1 else 1)
-        result = adapter._record_place_comparison(session, f'verdict-{index}', {
+        await adapter.execute_tool(session, {'name': 'record_place_comparison', 'id': f'verdict-{index}', 'args': {
             'comparison_id': reply['comparison_id'], 'candidate_id': reply['references'][0]['candidate_id'],
-            'status': status, 'confidence': .99, 'observations': ['Visible detail comparison'], 'alternative_candidate_ids': []})
-        assert result['story']['identity_progress']['images_reviewed_count'] == index
-        assert result['story']['identity_progress']['visual_comparison_verified'] == (status == 'match')
+            'status': status, 'confidence': .99, 'observations': ['Visible detail comparison'], 'alternative_candidate_ids': []}})
+        current = svc.story(story['id'])
+        assert current['identity_progress']['images_reviewed_count'] == index
+        assert current['identity_progress']['visual_comparison_verified'] == (status == 'match')
+        pushed = [event for event in events if event['type'] == 'product_state'][-1]['state']['identity_progress']
+        assert pushed['images_reviewed_count'] == index
+        assert pushed['visual_comparison_verified'] == (status == 'match')
+        assert 'reviewed_image_sha256s' not in pushed
     assert loaded == [wiki['reference_image_urls'][0], *article['reference_image_urls']]

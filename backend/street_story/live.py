@@ -783,6 +783,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         # A growing story must still leave lease room for history, photo and
         # the owner's first input. The paginated inventory remains authoritative.
         context = self._compact_context(state, fact_preview_limit=8)
+        context.pop('identity_progress', None)  # UI progress is pushed; do not charge it in setup.
         # A short preview hid older facts from additional-research comparison.
         # Supply whole assertion text/IDs cheaply; proofs stay in paginated tools.
         context["facts"] = [fact for fact in context["facts"] if fact["selected"]]
@@ -1927,6 +1928,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
+            "identity_progress": {key: value for key, value in (story.get('identity_progress') or {}).items()
+                if key in {'generation', 'updated_at', 'steps', 'attempt', 'finished', 'elapsed_ms',
+                           'images_reviewed_count', 'visual_comparison_verified'}},
             "facts": facts,
             "fact_count": len(inventory),
             "facts_preview_truncated": len(inventory) > fact_preview_limit,
