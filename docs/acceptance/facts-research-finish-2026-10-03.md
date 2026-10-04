@@ -182,15 +182,74 @@ phone/fact-research baseline proving that an earlier release met all these gates
 Earlier guided prompts and the old discovery-fixture label differ from current
 ordinary prompts; counts and times are not an isolated causal benchmark.
 
-| Preserved result | Time | Facts / coverage | Assessment |
-|---|---:|---|---|
-| Initial guided broad | 116.14 s | 5 eligible, 1/2 cores | FAIL; no three distinct figure facts, incomplete coverage |
-| Earlier targeted `targeted-1791065439571442723` | 180.35 s | 3 saved, 0 eligible, 1/2 cores | Local admission block; extraction succeeded but review did not finish |
-| Harness adapter regression after `9cc28e` | ~2.8 s | No extraction | Agent introduced an invalid `host.sessions[id].adapter` access; fixed via `host.adapter` |
-| Continuation regression `targeted-1791070627650378585` | 5.99 s | 0 facts | Agent fired continuation on intermediate tool completion; exhausted bounded nudges before the model finished |
-| Targeted `targeted-1791071594320565279` | 119.59 s | 3 eligible, 2/2 cores, completed | PASS after manual own-evidence gold assessment; exact clean functional `bec193e` |
-| Broad `broad-1791071858579050101` | 140.03 s | 18 eligible, 2/2 cores, completed | FAIL_SEMANTIC; three figures combined, false-positive support verdicts |
-| Holdout `holdout-1791071858577683009` | 94.09 s | 7 eligible, 1/1 core, completed | FAIL_SEMANTIC; two portrait relations combined; goal/search incorrectly says Berlin |
+Checkpoint comparison uses three exact runs, not the newest changing filename.
+Paths below are relative to the retained evidence directory. All three used
+`gemini-3.8-live`, cold isolated stores with zero baseline facts, the pinned Royal
+Gates excerpt (9,651 frozen characters), controlled HTTP/discovery and unavailable
+research/reconciliation helpers. Earlier discovery fixture provider labeling and
+guided input differed; this is descriptive comparison, not an isolated causal test.
+
+| Outcome / exact artifact, code and evaluator | Request / corpus-cache / helpers | Supported atomic claims / three figure relations | Own evidence / actual admission | Completion / time / tool repetition |
+|---|---|---|---|---|
+| Early most useful: `targeted-1791065439571442723/acceptance.json`; code SHA absent in receipt; legacy evaluator lacks semantic assessment; manually reread with current criteria in `retrospective-assessment.json` | Guided; pinned Royal/cold; helpers unavailable | 3 atomic figure claims; all 3 depiction identities supported, relief classification scope below | Each has 1 own span, same source/version; durable status remains **unreviewed**, 0 eligible; no retrospective relabeling | 1/2 cores, not completed; 180.35 s; 9 tool results: search1/chunk3/save1/facts1/evidence1/finalize2; exact-args repeats unavailable because args were not captured |
+| Best current: `targeted-1791071594320565279/acceptance.json` plus `gold-assessment.json` and `acceptance-assessed.json`; clean code/evaluator `bec193e55fbac2a3698558d28732e34e8f2e63a8` | Ordinary; same pinned Royal/cold; helpers unavailable | 3 supported atomic claims; 3 separate eligible figure IDs; manual **PASS** | 2 own spans/observations per fact, repeated same source/version, not independent corroboration; 3 eligible, owner-selected | 2/2 cores, completed; 119.59 s; 19 calls: search1/chunk7/save3/packet6/finalize2; 9 repeated name+args (chunk4/packet5), including legitimate default resume/packet access |
+| Last completed: `broad-1791071858579050101/acceptance.json` plus `gold-assessment.json` and `acceptance-assessed.json`; evaluator `bec193e`, functional code plus removed WIP safeguard described below | Ordinary broad; same pinned Royal/cold; helpers unavailable | Conservative manual count **6/18** wholly supported atomic claims; all 3 figure relations share 1 compound assertion, not 3 selectable IDs; **FAIL_SEMANTIC** | 18 durable eligible flags remain unchanged; all spans from one source/version. Own evidence does not support 3 identified assertions below; other bundled claims excluded from atomic count | 2/2 cores, completed; 140.03 s; 32 calls: search1/chunk9/save9/packet11/finalize2; 14 repeated name+args (chunk4/save3/packet7), not automatically 14 wasted operations |
+
+Atomic count assesses the whole selectable assertion: attributes of one event
+may stay together; independently selectable people, roles, properties or events
+must split. The six accepted broad IDs are recorded in the existing JSON
+assessment. This manual measure neither alters persisted eligibility nor claims
+an independent multi-source confirmation.
+
+The earlier initial broad's five eligible records also fail the stronger own-span
+criterion: its shop and anniversary spans omit the asserted year, the official
+document span does not itself establish protection, and the restoration span
+omits the asserted July 2005 endpoint. Those weaknesses predate the latest
+packet changes. The agent's adapter regression (~2.8 s bootstrap failure after
+`9cc28e`) and premature continuation (`365119c`, 5.99 s, zero facts) remain real;
+their repairs are not evidence that every subsequent edit improved the outcome.
+
+Holdout remains separately assessed: exact run
+`holdout-1791071858577683009`, 94.09 s, 7 eligible, completed 1/1 core,
+FAIL_SEMANTIC because both portrait relations share one assertion. Its goal and
+query incorrectly say Berlin despite the Kaliningrad fixture and source.
+
+### Candidate historical baseline around `97b3317`
+
+Read the exact `97b33173deb551231736bf15bd5577691afea215` source and
+[PR #96](https://github.com/onedayonemasterpiece/street-story/pull/96): configured
+research model extraction/persistence occurs inside search; a second Live save is
+only fallback. This preserves the useful earlier reduction in service hops.
+[PR #95](https://github.com/onedayonemasterpiece/street-story/pull/95) already
+compacted model-facing replies without deleting durable evidence. These are
+different conditions from forced helper outage, and not a reason to reset the
+current ledger/review/data protections.
+
+Exact baseline CI passed ([backend](https://github.com/onedayonemasterpiece/street-story/actions/runs/37073378462),
+[Android](https://github.com/onedayonemasterpiece/street-story/actions/runs/37073378555)),
+but matching semantic receipt/texts at `97b3317` were not found in the managed
+Street Story artifacts, legacy canary locations or PR discussion inspected.
+Corpus/cache/helper availability, atomic count, three figures, exact admission,
+completion, elapsed time and repeated calls for that baseline are **missing**.
+The bounded journal search did not cover the entire requested historical
+interval; it is not evidence that no older result exists. No old production DB
+was started and no checkout was switched.
+
+Two earlier primary canaries were found and retained byte-for-byte with hashes:
+`baseline-pre97-search.json` at `dceb9eee` reports PASS/8 supported counts, but
+contains no fact texts or own spans to reevaluate. `baseline-pre97-product.json`
+at `490982b2` records 8 Zakhaym Gates entries (reported supported_count=7): all
+bundle independent propositions, truncated snippets or navigation/title text;
+7 have URL/title sources and one has none. Under the same whole-assertion
+criterion, **0 complete independently selectable atomic assertions** can be
+accepted as stored. Literal own passage evidence, the Royal Gates gold, timing,
+cache and final version-scoped review are absent. Their original PASS labels
+are preserved; no current eligibility is projected backwards onto them.
+
+The historical canary evaluator primarily checked search success and continued
+Live output. Its PASS did not mean today's atomicity/evidence/review gates passed.
+This establishes weaker old acceptance, not that `97b3317` itself was worse or
+better. No paid historical reruns are needed to reach that bounded conclusion.
 
 The targeted PASS has three separate affirmative assertions for Frederick I,
 Duke Albrecht and Otakar II, each bound to its own literal evidence IDs and text
@@ -227,10 +286,37 @@ Transport, persistence and completion improved in the measured targeted case,
 but semantic acceptance remains failing. The two introduced regressions were
 real, and successive fixes did not monotonically improve results. No rollback to
 an older version is justified as a proven complete solution by these receipts.
-The next implementation must address explicit semantic review of unresolved
-deictic references, claim qualifiers and compound claims, and object identity
-drift; it must not replace model decisions with name/negation heuristics or quota
-bypasses. Until those gates pass, no merge/deploy or full-product success claim.
+The first incorrect transition in the last broad run is **semantic review**:
+the model selected `supported` for the three counterexamples despite complete
+literal packet slices containing the missing/qualified information. Their final
+commit succeeded; this is not a new evidence-envelope or budget failure.
+The retained application tool trace shows the later valid packet-ref decisions;
+it is not a raw per-send provider acknowledgement for every read response.
+
+An offline paired final-commit replay used two copies of that exact completed
+fixture DB, synthetic reopened review state, fresh packets and the production
+adapter. No original DB was changed and no model/network call occurred. With
+the captured all-positive choices, all 18 assertions become eligible; changing
+only the three manually judged counterexample verdicts to `not_supported` gives
+**15 eligible / 3 withheld**, with a completed run and immutable original fixture
+hash. This proves the existing final commit honors negative semantic choices;
+it does not prove that the real model will choose them or repair compound claims.
+The initial synthetic setup attempted the invalid run-state label `running`;
+the fixture-copy transaction rejected it. The corrected replay uses `verifying`;
+that setup error is not a product acceptance failure or a paid retry.
+Evidence: `replay_saved_review.py` and `offline-review-replay.json` in the same
+retained task directory; the two replay copies are isolated synthetic evidence.
+
+Minimal next action is a bounded comparison of the **same saved review packet**,
+same Live model/budget/cache/helper conditions, changing only the review
+instruction's explicit requirement to preserve qualifiers, reject unsupported
+attributes and withhold compound assertions. Do not redo search/extraction or
+introduce another continuation. Only a measured improvement on the existing
+counterexamples justifies that source change; then retain the successful
+targeted result as the regression gate and repair the missing separate figure
+assertions through model-owned extraction. Normal helper-assisted acceptance
+remains a separate scope. No semantic regexes, quota changes, whole-project
+rollback, merge/deploy or full-product success claim follows from this checkpoint.
 
 Evidence: `retrospective.json`, `retrospective-assessment.json`, the three latest
 case receipts and `gold-assessment.json`/`acceptance-assessed.json`, and
