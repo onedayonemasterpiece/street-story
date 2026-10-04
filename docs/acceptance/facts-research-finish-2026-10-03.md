@@ -1,13 +1,14 @@
 # Facts research finish — 2026-10-03
 
-Current Live-first checkpoint (2026-10-04): real Internet research produced a useful
+Delivered Live-first release (2026-10-04): real Internet research produced a useful
 partial set of 16 source-backed facts. An explicit owner subset of three persisted;
 real Mira regenerated its selected-only draft in 2.91 seconds. Android replay of
 this captured production projection passed its facts/source/selection/reopen test
 and 20 emulator tests. The second POI produced 17 candidates in 125.25 seconds;
 its explicit three-fact owner draft took 3.20 seconds. Warm reuse now preserves
-16 eligible facts without copying owner selections. Final Android wire-gate CI
-and exact release verification are pending; PR #126 is still unmerged.
+16 eligible facts without copying owner selections. PR #126 is merged; backend
+health/readback confirms exact merge SHA `7228cce91958ba1af77906e0e20c3c3160e2ca4e`.
+Canonical signed owner APK `android-v696` is published and verified.
 
 Historical broad/holdout frozen-corpus gold failures remain recorded below. The
 new product-first contract permits useful partial findings; it does not turn those
@@ -98,7 +99,7 @@ tool route (read tools return before the general mutation projection).
 | D07 | NOT_DELIVERED | PR #126 remains open after semantic failure; backend stays at #124, no new canonical owner APK delivered. Disk space is not the blocker. |
 | D08 | IMPLEMENTED_AND_VERIFIED for reporting | This report separates controlled/real/phone evidence, PASS/FAIL/provider block, measured times and residual work. |
 
-## Delivery receipts
+## Historical delivery receipts before Live-first release
 
 Frozen candidate CI: backend, Android checks and emulator passed at `bec193e`.
 Release job is skipped on PR runs; a debug APK is not canonical owner delivery.
@@ -404,7 +405,9 @@ replay of a captured backend projection with real facts/URLs, source spans in th
 online receipt, owner checkbox changes and storage reopening. It is not a
 connected emulator/backend or physical microphone acceptance. The screenshot
 exposed a stale selection-count heading; the subsequent change updates it on
-checkbox changes and asserts that update. Final candidate Android CI is pending.
+checkbox changes and asserts that update. Final candidate CI passed at `b6c62f09`:
+backend run 37189949631 and Android run 37189949634, `OK (20 tests)`. Screenshot
+`android-livefirst-695/ui-evidence/real-facts-ui.png` shows “выбрано 4 из 16”.
 
 For Brandenburg, three independently supported claims were explicitly selected:
 original traffic function, construction in 1657, and Ernst von Aster's portrait.
@@ -430,5 +433,43 @@ identity, exact literal claim and evidence revision; modified cached text withou
 that proof stays unreviewed. There were zero new source/model calls for hydration.
 Tests cover changed cached text, missing proof and owner-choice independence.
 
-Release checkpoint: pending final candidate Android CI, guarded merge and exact
-runtime/canonical APK verification. No delivered release is claimed yet.
+### Exact delivery receipts
+
+PR #126 merged normally after green checks, retaining the owner's protected
+requirements updates. Merge and deployed SHA:
+`7228cce91958ba1af77906e0e20c3c3160e2ca4e`.
+The existing installer accepted that exact source SHA, preserved the existing
+device token and reported the backend active. Registered health returned HTTP200
+with that SHA both after installation and after APK publication. Service readback
+showed zero restarts. Startup was present in the registered journal; a bounded
+180-second ERROR search covering deployment returned no matches. Authenticated
+production list/story readback returned HTTP200; the 114-story collection remains
+present and the inspected seven-fact story has eligibility in its wire projection.
+Private response bodies were not stored in the readback artifact.
+
+Evidence in the retained task root: `deploy-7228cce.json`,
+`livefirst-deployed-readback.json`, `android-release-696/BUILD.txt`,
+`android-release-696/SHA256SUMS`, `android-release-696/workflow.log`, and
+`android-emulator-696/instrumentation.txt`.
+
+Canonical signed owner release:
+https://github.com/onedayonemasterpiece/street-story/releases/tag/android-v696
+
+Installable APK:
+https://github.com/onedayonemasterpiece/street-story/releases/download/android-v696/street-story.apk
+
+BUILD.txt records the exact merge SHA, version code696/name0.1.696 and run37190309719.
+Downloaded APK SHA256 matches the published checksum:
+`ba9ef9044008c0fb16a681ca1231161c4feb90741f7156051bbe8663873a9e26`.
+Canonical certificate verification passed for the existing expected fingerprint
+`fdff25f36f5504174f13639d741a440ef76b5be0b97039ad41123ad36d3b0e94`.
+The release workflow passed checks, emulator and publication; its in-place upgrade
+receipt is `previous=android-v648 before=648 after=696`, followed by `OK (20 tests)`.
+Backend push CI37190309717 also passed at the merge SHA.
+
+This delivery-only report update is committed to the existing facts branch after
+its merge, so it does not change the verified release SHA or trigger an unrelated
+APK release. Remaining limitations are the explicitly described imperfect semantic
+candidates, incomplete source inventory and absence of a connected/physical
+microphone test; the demonstrated selected-only drafts remain useful partial
+product outcomes. Historical gold failures are retained rather than relabelled.
