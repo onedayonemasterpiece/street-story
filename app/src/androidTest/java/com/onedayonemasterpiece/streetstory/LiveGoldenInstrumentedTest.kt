@@ -2,8 +2,13 @@ package com.onedayonemasterpiece.streetstory
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Rect
+import android.view.View
+import android.view.ViewGroup
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.core.app.ActivityScenario
+import androidx.test.uiautomator.UiDevice
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.gson.Gson
@@ -81,8 +86,14 @@ class LiveGoldenInstrumentedTest {
         )
         var publicationScheduled = false
         var cancelConfirmed = false
+        val screenshots = mutableListOf<Map<String, Any?>>()
+        evidence["stage_screenshots"] = screenshots
+        fun capture(stage: String, story: StoryWire) {
+            captureStage(stage, story, local.clientStoryId, store, screenshots)
+        }
 
         try {
+            capture("01-photo-before-research", api.getStory(storyId))
             val ready = CountDownLatch(1)
             var liveError: String? = null
             live.start(local.clientStoryId) { ok, error ->
@@ -122,6 +133,7 @@ class LiveGoldenInstrumentedTest {
                 }
             }
             assertTrue(story.visualIdentity?.status in setOf("match", "owner_confirmed"))
+            capture("02-object-identified", story)
             // Identity confirmation precedes research. Do not wait for facts before
             // allowing the author to confirm an uncertain photo match.
             if (story.sourceCount == 0) {
@@ -135,6 +147,7 @@ class LiveGoldenInstrumentedTest {
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
             require(story.facts.count { it.evidenceSupported } >= 2)
+            capture("03-facts-after-research", story)
 
             speak(live, pcmFiles[3])
             awaitAnswer(live, "fact selection")
@@ -145,6 +158,7 @@ class LiveGoldenInstrumentedTest {
             ) {
                 it.facts.count { fact -> fact.selected && fact.evidenceSupported } >= 1
             }
+            capture("04-facts-selected", story)
             val selectedFactIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
 
             if (story.draftText.isNullOrBlank()) {
@@ -166,6 +180,8 @@ class LiveGoldenInstrumentedTest {
                 allowedNeedsReviewCodes = setOf("visual_stale"),
             ) { !it.draftText.isNullOrBlank() && it.draftText != beforeEdit }
 
+            capture("05-publication-text", story)
+
             // Full-social acceptance covers the owner MVP path only. Literal mode,
             // protected-span editing and undo have dedicated tests and must not
             // consume real-provider budget before image/publication acceptance.
@@ -181,6 +197,7 @@ class LiveGoldenInstrumentedTest {
                 it.state == StoryStage.READY_TO_PUBLISH && !it.processedImageUrl.isNullOrBlank()
             }
             assertEquals("Visual-only change rewrote text", textBeforeVisual, story.draftText)
+            capture("06-generated-visual", story)
             val rawReady = rawStory(baseUrl, token, storyId)
             val visual = rawReady.requireObject("visual")
             assertEquals(OWNER_PROMPT_SHA256, visual.requireString("prompt_sha256"))
@@ -229,6 +246,7 @@ class LiveGoldenInstrumentedTest {
             waitUntil(90_000, "publication confirmation was not prepared") {
                 live.snapshot().confirmation != null
             }
+            capture("07-publication-confirmation", api.getStory(storyId))
             val confirmation = requireNotNull(live.snapshot().confirmation)
             assertEquals(story.draftText, confirmation.text)
             assertEquals(listOf(safeAlias), confirmation.destinations)
@@ -239,6 +257,7 @@ class LiveGoldenInstrumentedTest {
                 rawStory(baseUrl, token, storyId)
                     .getAsJsonObject("publication")?.get("state")?.asString in setOf("scheduled", "verified")
             }
+            capture("08-test-publication-scheduled", scheduled)
             val rawScheduled = rawStory(baseUrl, token, storyId)
             val publication = rawScheduled.requireObject("publication")
             val publicationId = publication.requireString("publication_id")
@@ -304,6 +323,7 @@ class LiveGoldenInstrumentedTest {
                     }
                 }
             }
+            runCatching { capture("99-final-state", api.getStory(storyId)) }
             evidence["last_live_error"] = live.snapshot().error
             evidence["completed_live_turns"] = live.snapshot().completedTurns
             evidence["transport_final"] = live.transportEvidence()
@@ -312,6 +332,54 @@ class LiveGoldenInstrumentedTest {
             store.close()
         }
         assertTrue(if (keepPublication) publicationScheduled else cancelConfirmed)
+    }
+
+    private fun captureStage(
+        stage: String,
+        story: StoryWire,
+        clientStoryId: String,
+        store: StoryStore,
+        screenshots: MutableList<Map<String, Any?>>,
+    ) {
+        // Render the actual production response through the normal durable UI projection.
+        store.setServerSnapshot(clientStoryId, story.state, story.placeName, story.summary, story.draftText,
+            story.processedImageUrl, story.scheduledFor, story.publishedAt, story.error?.message, story.revision)
+        store.replaceFacts(clientStoryId, story.facts.map { it.local() })
+        ResearchProjectionStore(context).replace(clientStoryId, story)
+        context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
+            .putString("active_story_id", clientStoryId).putBoolean("identity_live_attempted:$clientStoryId", true).commit()
+        if (story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()) {
+            val image = File(root, "screenshot-visual.img")
+            val config = AppGraph.config(context)
+            ApiClient(config.backendUrl, config.deviceToken).downloadAsset(requireNotNull(story.processedImageUrl), image)
+            store.setProcessedImagePath(clientStoryId, image.absolutePath)
+        }
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        val directory = File(root, "screenshots").apply { mkdirs() }
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            instrumentation.waitForIdleSync()
+            Thread.sleep(1_000)
+            assertTrue("Stage screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage.png")))
+            scenario.onActivity { activity ->
+                fun find(view: View): View? {
+                    if (view.contentDescription?.toString() == "facts-island-expanded") return view
+                    if (view is ViewGroup) for (index in 0 until view.childCount) {
+                        find(view.getChildAt(index))?.let { return it }
+                    }
+                    return null
+                }
+                find(activity.findViewById(android.R.id.content))?.let { facts ->
+                    facts.requestRectangleOnScreen(Rect(0, 0, facts.width, minOf(facts.height, 600)), true)
+                }
+            }
+            instrumentation.waitForIdleSync()
+            Thread.sleep(500)
+            assertTrue("Facts screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage-facts.png")))
+        }
+        screenshots.add(mapOf("stage" to stage, "story_revision" to story.revision,
+            "fact_count" to story.facts.size, "selected_count" to story.facts.count { it.selected },
+            "files" to listOf("$stage.png", "$stage-facts.png")))
     }
 
     private fun speak(live: LiveSessionController, pcm: File) {

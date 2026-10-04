@@ -25,7 +25,12 @@ adb shell am instrument -w \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 # Preserve bounded evidence on failure; never export token/configuration stores.
 adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json" || true
-grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
+mkdir -p "$ARTIFACT_DIR/stage-screenshots"
+for name in $(adb shell "run-as $PKG ls files/live-golden/screenshots" 2>/dev/null | tr -d '\r'); do
+  [[ "$name" =~ ^[0-9][0-9]-[a-z-]+\.png$ ]] || continue
+  adb exec-out "run-as $PKG cat files/live-golden/screenshots/$name" > "$ARTIFACT_DIR/stage-screenshots/$name"
+done
+grep -q 'OK (1 test)'  "$ARTIFACT_DIR/android-instrumentation.txt"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
 adb shell am start -W -n "$PKG/.MainActivity" >/dev/null
 sleep 3
