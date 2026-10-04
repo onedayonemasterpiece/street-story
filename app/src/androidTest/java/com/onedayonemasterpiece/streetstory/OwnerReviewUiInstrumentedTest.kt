@@ -41,9 +41,10 @@ class OwnerReviewUiInstrumentedTest {
         )), "image/png", storyId)
         val rows = captured.getJSONArray("facts")
         val facts = (0 until rows.length()).map { index ->
-            val fact = rows.getJSONObject(index)
-            FactSnapshot(fact.getString("fact_id"), fact.getString("text"), fact.getDouble("confidence"),
-                fact.getBoolean("evidence_supported"), fact.getBoolean("selected"), fact.getJSONArray("sources").toString())
+            val json = rows.getJSONObject(index)
+            val fact = com.google.gson.Gson().fromJson(json.toString(), FactWire::class.java)
+            FactSnapshot(fact.factId, fact.text, fact.confidence,
+                fact.eligibleForSelection, fact.selected && fact.eligibleForSelection, json.getJSONArray("sources").toString())
         }
         StoryStore(context).use { store ->
             store.createStory(imported)

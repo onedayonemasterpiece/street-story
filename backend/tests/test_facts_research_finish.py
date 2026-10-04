@@ -98,6 +98,29 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
     adapter._select_facts(session.resource_id, 'select-withheld', {'fact_ids': [bad[0]['fact_id']]})
     with pytest.raises(ConflictError):
         adapter._edit_text(session.resource_id, 'bad-draft', {'expected_text_revision': 1, 'new_text': bad[0]['text'], 'change_summary': 'Must reject withheld selection.'})
+    from test_live_editor import PHOTO, PHOTO_SHA
+    from street_story.poi_memory import hydrate_story_facts
+    import json
+    with svc.store.connection() as db:
+        identity = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()[0])['visual_identity']
+    def new_topic(key):
+        topic = svc.create_story(key=key, client_story_id=key, photo_sha256=PHOTO_SHA, photo_mime_type='image/jpeg', photo_bytes=PHOTO, voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
+        mark_identity_ready(svc, topic['id'])
+        with svc.store.tx() as db:
+            hydrate_story_facts(db, identity, topic['id'])
+        return topic['id']
+    reused_id = new_topic('reuse-exact')
+    reused = adapter._get_facts(reused_id, {})['facts']
+    assert len(reused) == 2 and all(f['eligibility'] == 'eligible' and not f['owner_selected'] for f in reused)
+    adapter._select_facts(reused_id, 'choose-reused', {'fact_ids': [good[0]['fact_id']]})
+    with svc.store.tx() as db:
+        assert hydrate_story_facts(db, identity, reused_id) == 0
+        db.execute('UPDATE poi_research_assertions SET text=? WHERE assertion_id=?', ('Changed cache claim, not reviewed.', good[0]['fact_id']))
+    changed_id = new_topic('reuse-changed')
+    changed = adapter._get_facts(changed_id, {})['facts']
+    assert next(f for f in changed if f['fact_id'] == good[0]['fact_id'])['eligibility'] != 'eligible'
+    assert sum(f['owner_selected'] for f in adapter._get_facts(reused_id, {})['facts']) == 1
+    assert helper_calls == []
     await reader.search_http.aclose()
 
 

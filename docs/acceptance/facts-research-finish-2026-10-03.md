@@ -1,16 +1,25 @@
 # Facts research finish — 2026-10-03
 
-Overall: `FAIL_SEMANTIC` for broad/holdout acceptance. Targeted ordinary real-model
-research passed its manually assessed frozen-corpus gold gate. This is not full
-product acceptance. PR #126 is unmerged; backend/APK delivery was not performed
-because content review exposed false-positive eligibility despite green CI.
+Current Live-first checkpoint (2026-10-04): real Internet research produced a useful
+partial set of 16 source-backed facts. An explicit owner subset of three persisted;
+real Mira regenerated its selected-only draft in 2.91 seconds. Android replay of
+this captured production projection passed its facts/source/selection/reopen test
+and 20 emulator tests. The second POI produced 17 candidates in 125.25 seconds;
+its explicit three-fact owner draft took 3.20 seconds. Warm reuse now preserves
+16 eligible facts without copying owner selections. Final Android wire-gate CI
+and exact release verification are pending; PR #126 is still unmerged.
+
+Historical broad/holdout frozen-corpus gold failures remain recorded below. The
+new product-first contract permits useful partial findings; it does not turn those
+old failures, or an incomplete corpus, into complete gold acceptance.
 
 Existing worktree: `/home/dev/projects/street-story-poi-runtime-clean`, branch
 `chatgpt/street-story-facts-review-finalization-20261003`, inherited from #124
 (`74c8f71`). No new worktree; inherited WIP preserved in retained evidence.
-Protected requirements unchanged; models continue to own semantic decisions.
+Owner requirement updates c7e09a8/e64aaf8/e4ebb3c are preserved; no implementation
+change weakens their statements. Models continue to own semantic decisions.
 
-## Product result
+## Historical fallback implementation (superseded normal path)
 
 Live can read frozen full-document chunks when text research/detector is
 unavailable, save atomic claims and evidence, review the exact assertion/evidence
@@ -76,7 +85,7 @@ guidance, research by coverage instead of a mandatory 4–6-search quota, compac
 manifest/checkpoint, and applying the model projection on the actual chunk read
 tool route (read tools return before the general mutation projection).
 
-## DoD
+## Historical DoD before Live-first contract
 
 | ID | Status | Evidence / exact remainder |
 |---|---|---|
@@ -321,3 +330,105 @@ rollback, merge/deploy or full-product success claim follows from this checkpoin
 Evidence: `retrospective.json`, `retrospective-assessment.json`, the three latest
 case receipts and `gold-assessment.json`/`acceptance-assessed.json`, and
 `full-frozen-retrospective.log` in the retained task directory above.
+
+
+## Live-first, real Internet product slice — 2026-10-04
+
+The pinned retrospective `6c52c0c` was read in full before source changes; its
+owner clarification `5e90f2b` and the eleven current requirements were also read.
+No new worktree, transport, model router, service or mandatory helper was added.
+The normal flow now uses the existing shared Live runner for semantic work:
+public search transport -> chosen frozen document -> small consecutive literal
+windows -> model-enumerated independent claims/checks -> mechanical evidence
+validation and immediate scoped eligibility. Recovery packets remain available
+for explicit old-candidate reassessment, not as a normal global gate.
+
+Each failed run below remains immutable in the retained task root. A source fetch
+failure skips that source with its error receipt preserved; it does not wipe other
+findings. HTML menu lines no longer generate dozens of repeated contextual
+paragraphs. Finished Live answers return resumable partial state instead of
+injecting mandatory whole-inventory review continuations. The final batch also
+syncs its reviewed state into existing POI memory in the same transaction.
+
+| Receipt directory | Actual result / first observed boundary |
+|---|---|
+| `broad-1791099146906141373` | Real Internet, 11.78 s, zero facts: first source HTTP502 ended the whole run despite nine remaining sources. |
+| `broad-1791099397517715322` | Real Internet, 187.50 s, four eligible facts: short menu lines repeatedly reproduced the beginning of the same page; discovery continuation exhausted. |
+| `broad-1791099737532212546` | Real Internet, ordinary request, configured helpers, 204.33 s, 16 eligible findings from fetched Wikipedia. Useful partial, not full inventory/gold completion; raw `FAIL_CONTRACT` preserved. |
+| `holdout-1791100010290316796` | Real Internet, 480.47 s, seven facts from a weak tourism source; model stopped tool work but old continuations left active state until timeout. Its XVIII-century/classicism assertions are unsuitable historical acceptance despite literal source support. |
+| `holdout-1791100743007157756` | Real Internet, 124.48 s, six facts, explicit partial. Mira chose Wikipedia but misspelled encoded Kaliningrad in its URL; the error instructed run-only retry and silently substituted the alphabetically first weak source. |
+| `holdout-1791101044060070281` | Real Internet, 99.51 s, three good facts from Wikipedia via exact `source_ref`; subsequent batch rejected three rewritten quotes. Good saved findings remained. |
+| `holdout-1791101475435157663` | Real Internet, 119.81 s, zero facts: model omitted/copied incorrect server checkpoint fields. Investigation also found inconsistent read/save passage windows on multiline HTML, an implementation regression missed by the one-line fixture. |
+| `holdout-1791102087502158758` | Real Internet, ordinary request, configured helpers, 125.25 s, 17 eligible candidates, all initially unselected, resumable `live_answer_partial`. No save failures or semantic helper calls. Raw `FAIL_CONTRACT` retains the recovered unknown-URL error; exact source reference retry succeeded. |
+
+The source-choice boundary is addressed mechanically by the existing short
+`source_ref`; unknown URLs no longer instruct selection of an arbitrary source.
+The new ordinary batch declaration accepts claims with numeric `passage_ids`
+instead of inviting three redundant evidence-address mechanisms and rewritten
+quotes. Stored source versions and exact span hashes/offsets are preserved. The existing
+read receipt now binds omitted checkpoint metadata on save; the model supplies
+only facts and batch review results. Read/save use identical normal document
+windows. Revision/identity/cancellation guards and exact idempotent replay remain
+checked, including multiline empty-page completion and stale-revision rejection.
+
+Manual reading of all five distinct own spans for the 16-fact broad set found
+support for each displayed assertion. Twelve are simple individually scoped
+claims; four still combine related predicates (museum/branch, exhibitions,
+Russian rebuilding/name, and wall removal/result/function). This is imperfect
+atomization, not sixteen newly certified atomic gold facts. The selected draft
+uses three simple claims only: pseudogothic style, name since 1811, construction
+completed in 1850. No production eligibility was manually overridden.
+
+`livefirst-owner-selection.json` records the product mutation, exact three IDs,
+idempotent replay and readback. Existing POI memory holds sixteen assertions,
+32 retained observations and ten discovered sources. `livefirst-owner-draft.json`
+records a new ordinary owner request, real Mira's tools and persisted draft:
+“Королевские ворота выстроены в псевдоготическом стиле. Строительство ворот
+завершилось в 1850 году, а современное название они носят с 1811 года.”
+The response took 2.91 s and retained exactly three selected facts.
+
+No forced helper outage was used in these real Internet runs. Normal search is
+transport-only; normal batch extraction/checking/reconciliation is Mira's work.
+There are no normal repair/assessment packet calls or required non-Live semantic
+helper calls. This does not assert unmeasured provider billing or savings.
+
+Final local backend checks: **497 passed in 31.13 s**, two dependency deprecation
+warnings; Ruff and whitespace checks pass. Android now consumes backend
+`eligibility=eligible` together with literal evidence support: a withheld or
+unreviewed assertion cannot be admitted merely because its span exists. A focused
+wire test covers that actual distinction and missing legacy eligibility. Android checks/emulator at `be9e9db` passed:
+https://github.com/onedayonemasterpiece/street-story/actions/runs/37187446070
+(`OK (20 tests)`). Its retained screenshot is
+`android-livefirst-693/ui-evidence/real-facts-ui.png`. This is actual MainActivity
+replay of a captured backend projection with real facts/URLs, source spans in the
+online receipt, owner checkbox changes and storage reopening. It is not a
+connected emulator/backend or physical microphone acceptance. The screenshot
+exposed a stale selection-count heading; the subsequent change updates it on
+checkbox changes and asserts that update. Final candidate Android CI is pending.
+
+For Brandenburg, three independently supported claims were explicitly selected:
+original traffic function, construction in 1657, and Ernst von Aster's portrait.
+`livefirst-holdout-owner-selection.json` preserves the mutation/readback;
+`livefirst-holdout-owner-draft.json` records real Mira's 3.20-second selected-only
+text: “Бранденбургские ворота были выстроены в Кёнигсберге в 1657 году. Это
+единственные городские ворота Калининграда, которые до сих пор используются по
+прямому назначению. На воротах также установлен портрет генерал-лейтенанта Эрнста
+фон Астера.” No eligibility was manually overridden. Other eligible candidates
+remain imperfect: unqualified infobox “Дата основания 1862” conflicts with
+construction stages in the body; Boyen's left position is inferred rather than
+explicit in its span; several facts combine predicates. Those candidates were
+excluded from this owner draft. Seventeen candidates are not seventeen certified
+atomic facts. Useful partial product acceptance does not erase this limitation.
+
+Actual warm reuse before the change (`livefirst-memory-reuse-before.json`) copied
+16 facts, selected all of them and admitted none. After the change
+(`livefirst-memory-reuse-after.json`), another story receives 16 eligible facts,
+zero selected, while the source story retains its exact three owner choices.
+Existing POI memory remains canonical; no POI-table migration or duplicate layer
+was introduced. Eligibility reuses an existing model proof only for the same
+identity, exact literal claim and evidence revision; modified cached text without
+that proof stays unreviewed. There were zero new source/model calls for hydration.
+Tests cover changed cached text, missing proof and owner-choice independence.
+
+Release checkpoint: pending final candidate Android CI, guarded merge and exact
+runtime/canonical APK verification. No delivered release is claimed yet.

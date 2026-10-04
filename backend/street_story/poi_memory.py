@@ -341,7 +341,7 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
         if not fact_id or fact_id in seen or not text or not sources:
             continue
         seen.add(fact_id)
-        selected = item.get("poi_claim_status") != "contested"
+        selected = False
         try:
             confidence = max(0.0, min(1.0, float(item.get("confidence") or 0.0)))
         except (TypeError, ValueError):
@@ -359,6 +359,35 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
             ),
         )
         inserted += 1
+    if inserted:
+        from .fact_ledger import backfill_legacy_fact_ledger, refresh_review_status
+        now = float(db.execute("SELECT unixepoch('subsec')").fetchone()[0])
+        backfill_legacy_fact_ledger(db, now)
+        refreshed: set[str] = set()
+        for item in candidates:
+            if item.get('origin') != 'poi_research':
+                continue
+            fact_id = str(item.get('fact_id') or '')
+            memory = db.execute('SELECT review_story_id FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?', (poi_key(identity), fact_id)).fetchone()
+            origin = str(memory['review_story_id'] or '') if memory else ''
+            if not origin or origin == story_id:
+                continue
+            if origin not in refreshed:
+                refresh_review_status(db, origin, now)
+                refreshed.add(origin)
+            source = db.execute("SELECT a.display_text,a.revision_digest FROM fact_assertions a JOIN stories s ON s.id=a.story_id WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible' AND json_extract(s.research_json,'$.visual_identity.candidate_id')=?", (origin, fact_id, poi_key(identity))).fetchone()
+            target = db.execute('SELECT display_text,revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?', (story_id, fact_id)).fetchone()
+            if not source or not target or tuple(source) != tuple(target):
+                continue
+            # Reuse an existing model decision only for the SAME literal claim
+            # and evidence revision. Never promote a changed cache snapshot.
+            for scan in db.execute("SELECT * FROM fact_conflict_scans WHERE story_id=? AND status IN ('ok','no_candidates') AND coverage_complete=1 ORDER BY id DESC", (origin,)):
+                if json.loads(scan['revision_bundle_json'] or '{}').get(fact_id) != source['revision_digest']:
+                    continue
+                db.execute("INSERT INTO fact_conflict_scans(story_id,poi_key,run_id,detector,status,pair_count,detected_count,coverage_complete,revision_bundle_json,conflict_ids_json,missing_aspects_json,error_type,created_at) VALUES(?,?,?,'poi_memory_reuse','no_candidates',0,0,1,?,'[]','[]',NULL,?)",
+                           (story_id, poi_key(identity), f"poi-memory:{origin}:{scan['id']}", json.dumps({fact_id: source['revision_digest']}, sort_keys=True), scan['created_at']))
+                break
+        refresh_review_status(db, story_id, now)
     return inserted
 
 
