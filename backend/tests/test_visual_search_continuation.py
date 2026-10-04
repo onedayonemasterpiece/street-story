@@ -127,6 +127,19 @@ async def test_next_frame_failure_keeps_completed_verdict_acknowledgement(tmp_pa
     assert result['matched'] is False and result['visual_queue_partial']
 
 
+def test_live_grounding_does_not_replace_dedicated_api_article_sources(tmp_path):
+    _svc, adapter, _story, session = prepared(tmp_path)
+    s = session()
+    event = {'type': 'grounding', 'metadata': {'groundingChunks': [
+        {'web': {'uri': 'https://ru.wikipedia.org/wiki/Misspelled_gate', 'title': 'Gate'}}]}}
+    adapter.on_event(s, event)
+    assert 'identity_article_sources' not in s.state
+    backed = [{'url': 'https://example.com/api-found-article', 'model': 'search-model'}]
+    s.state['identity_article_sources'] = backed
+    adapter.on_event(s, event)
+    assert s.state['identity_article_sources'] == backed
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('name', ['resolve_place', 'reject_place', 'find_place_articles'])
 async def test_identity_entry_tools_deliver_frames_without_a_separate_read(tmp_path, name):
