@@ -154,3 +154,24 @@ def test_save_facts_projection_confirms_ids_without_repeating_evidence():
     assert projected["selected_fact_ids"] == ["claim_a"]
     assert "draft_text" not in projected["story"]
     assert len(json.dumps(projected)) < 1000
+
+
+def test_discovery_budget_keeps_source_refs_and_only_omits_whole_snippets():
+    from street_story.research_budget import PAGE_UNITS, response_units
+    sources = [
+        {'source_ref': f'src-{i}', 'url': f'https://museum.example/{i}', 'title': f'Museum {i}',
+         'supports': [{'evidence_ref': f'ev-{i}', 'text': 'Плановая стоимость составит 1,5 млн рублей. ' * 8}]}
+        for i in range(12)
+    ]
+    result = {'discovery_only': True, 'sources': sources, 'instruction': 'Save only exact checked refs.'}
+    projected = StreetStoryLiveAdapter._model_result('search_web', result)
+    assert [s['source_ref'] for s in projected['sources']] == [s['source_ref'] for s in sources]
+    assert projected['snippet_budget_omitted'] > 0
+    assert response_units('search_web', projected) <= PAGE_UNITS
+    for source in projected['sources']:
+        for snippet in source['evidence']:
+            original = sources[int(source['source_ref'].split('-')[1])]['supports'][0]
+            assert snippet['evidence_ref'] == original['evidence_ref']
+            assert snippet['text'].strip() == original['text'][:360].strip()
+            assert 'составит' in snippet['text']
+    assert all(source['supports'] for source in sources)

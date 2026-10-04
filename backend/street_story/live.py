@@ -734,7 +734,7 @@ Research and durable evidence:
 - supported requires every material attribute in OWN attached spans: dates, roles, quantities, object parts, stages and qualifications. Do not borrow another candidate's evidence. Missing antecedents mean insufficient, not a false event. Do not turn "probably" into certainty. Correct old erroneous support using get_review_packet with supersedes_packet_ref; never overwrite the old receipt.
 - One checkbox chooses one independent claim. Separate each person, role, distinct event and date; never save several people as one claim. Atomicity, names, stable claim_key, equivalence, contradictions and evidence sufficiency are your semantic work, not server regex/splitting rules. Check names and atomicity against passages in final review.
 - Never invent revision_digest/evidence_id; take them from get_facts/get_evidence or save receipts. On review errors use the specified read tool and retry review; do not announce completion before success.
-- read_topic is a compact overview, not full inventory. For additional research, deduplication, selection, contradiction or arbitration, paginate get_facts until has_more=false; omission from a snapshot does not mean absence from the topic.
+- read_topic is a compact overview, not full proof inventory. Use a complete known_fact_inventory for additional research and equivalence; if that index is truncated, paginate get_facts fully. For selection, contradiction or arbitration also paginate get_facts until has_more=false; omission from a snapshot does not mean absence from the topic.
 - Source/domain counts and URLs are not proof or votes for truth. For important comparisons/arbitration get_evidence for exact fact_id and paginate fully as needed. Compare exact span_text, source_version_id, chunk_id, source origin/time/primary status and context, including Regional Knowledge/POI evidence. Mass repetition does not make a false claim true.
 - Compare new claims with known facts in small batches. Mark contradictions possible_conflict; record_fact_conflicts/resolve_fact_conflict provide targeted logging/arbitration. Never hide conflicts or choose by site counts. Full final review is for legacy/recovery.
 - Before lengthy research briefly say "Ищу факты"; the app shows progress. Do not read the inventory aloud: end with counts, remaining gaps and at most 1-2 important saved findings. A research-only request must not select facts or draft a publication.
@@ -762,11 +762,23 @@ class StreetStoryLiveAdapter:
         # A growing story must still leave lease room for history, photo and
         # the owner's first input. The paginated inventory remains authoritative.
         context = self._compact_context(state, fact_preview_limit=8)
-        if context["facts_preview_truncated"]:
-            context["facts_instruction"] = (
-                "Preview only. Before additional research or deduplication, read get_facts pages "
-                "until has_more=false. A fact missing from this preview is not absent from the story."
-            )
+        # A short preview hid older facts from additional-research comparison.
+        # Supply whole assertion text/IDs cheaply; proofs stay in paginated tools.
+        context["facts"] = [fact for fact in context["facts"] if fact["selected"]]
+        context["known_fact_inventory_fields"] = ["fact_id", "text"]
+        index = []
+        for fact in state["story"].get("facts", []):
+            proposed = [*index, [fact["fact_id"], fact["text"]]]
+            if len(canonical(proposed).encode()) > 12_000:
+                break
+            index = proposed
+        context["known_fact_inventory"] = index
+        context["known_fact_inventory_truncated"] = len(index) < context["fact_count"]
+        context["facts_instruction"] = (
+            "Use the known_fact_inventory for semantic equivalence and missing-aspect research; "
+            "reuse its exact existing_fact_id for known claims. It contains assertions, not proof. "
+            "If truncated, read all get_facts pages. Read get_facts/get_evidence for selection or verification."
+        )
         reviewing = (state.get('research_run') or {}).get('state') == 'verifying'
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
@@ -795,7 +807,11 @@ class StreetStoryLiveAdapter:
             "configuration": {
                 "system_instruction": instruction,
                 "context_instruction": "Authoritative current topic snapshot; product functions supersede this snapshot when state changes: ",
-                "functions": FUNCTIONS,
+                "functions": [{**function, "description": (
+                    "Save checked snippets or frozen passages. Copy exact nonempty source_refs/evidence_refs for snippets; "
+                    "empty arrays only with numeric passage_ids. Never speak unsaved findings; follow next_args."
+                    if function["name"] == "save_research_facts" else function["description"].split(". ")[0][:140]
+                )} for function in FUNCTIONS],
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
                 "manual_activity_detection": True,
@@ -1163,7 +1179,7 @@ class StreetStoryLiveAdapter:
                 session.state["research_output_pending"] = False
             return result
         except ConflictError as exc:
-            record_live_diagnostic(self.service, session.resource_id, session.id, "backend", "live_tool_rejected", {
+            record_live_diagnostic(self.service, session.resource_id, getattr(session, "id", ""), "backend", "live_tool_rejected", {
                 "tool": name, "code": exc.code, "run_id": session.state.get("research_run_id"),
             })
             if call.get("name") in {"get_review_packet", "finalize_fact_review"} and exc.code in {
@@ -1570,6 +1586,16 @@ class StreetStoryLiveAdapter:
                 + str(result.get("instruction") or "")
             )
             projected.pop("fact_conflicts", None)
+            # Keep every source addressable. Omit whole snippets, never truncate
+            # qualifiers, when their model envelope exceeds the page budget.
+            omitted = 0
+            for source in reversed(projected["sources"]):
+                while source["evidence"] and response_units(name, projected) > PAGE_UNITS - 240:
+                    source["evidence"].pop()
+                    omitted += 1
+            if omitted:
+                projected["snippet_budget_omitted"] = omitted
+                projected["instruction"] += " Sources without snippets remain available: choose a competent source_ref and read its full document."
         elif name == "search_web" and result.get("semantic_completion"):
             projected["sources"] = []
             projected.pop("fact_conflicts", None)

@@ -2036,3 +2036,20 @@ def test_live_save_schema_requires_exact_source_and_evidence_ref_arrays():
     finding = declaration['parameters']['properties']['facts']['items']
     assert {'source_refs', 'evidence_refs'} <= set(finding['required'])
     assert 'claims' in finding['properties'] and 'passage_ids' in finding['properties']
+
+
+def test_startup_index_retains_late_known_claims_for_additional_research(tmp_path, monkeypatch):
+    _svc, adapter, session, _events = make_service(tmp_path)
+    state = adapter._topic_state(session.resource_id)
+    state['story']['facts'] = [
+        {'fact_id': f'old-{i}', 'text': f'Existing distinct claim {i}', 'selected': i == 40,
+         'evidence_supported': True, 'eligibility': 'eligible'} for i in range(44)
+    ]
+    monkeypatch.setattr(adapter, '_topic_state', lambda _id: state)
+    initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model=session.model)
+    context = initialized['context']
+    assert context['known_fact_inventory_truncated'] is False
+    assert context['known_fact_inventory'][-1] == ['old-43', 'Existing distinct claim 43']
+    assert context['selected_fact_ids'] == ['old-40']
+    assert [fact['fact_id'] for fact in context['facts']] == ['old-40']
+    assert len(state['story']['facts']) == 44
