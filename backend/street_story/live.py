@@ -2874,6 +2874,7 @@ class StreetStoryLiveAdapter:
         session.state.setdefault("research_chunk_receipts", {})[candidate["chunk_id"]] = recipe
         session.state['research_current_chunk_id'] = candidate['chunk_id']
         if "passage_cursor" not in args and len(seen) == len(passages):
+            session.state.setdefault('research_page_passage_ids', {})[candidate['chunk_id']] = set(seen)
             return {**result, "core_text": "", "context_text": "", "evidence_passages": [], "context_before": "", "context_after": "",
                     "checkpoint": {"next_batch_index": batch_index, "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3]},
                     "ready_to_save": True, "has_more_passages": False, "next_passage_cursor": None,
@@ -2921,12 +2922,15 @@ class StreetStoryLiveAdapter:
             result["instruction"] = "The target may be in the unread tail. Read next_args before another search; do not assume missing facts from this first page. You may checkpoint this page with continuation_needed=true."
         seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
         seen.update(p["passage_id"] for p in result["evidence_passages"])
+        session.state.setdefault('research_page_passage_ids', {})[candidate['chunk_id']] = {
+            p['passage_id'] for p in result['evidence_passages']
+        }
         session.state.setdefault("research_pending_page", {})[candidate["chunk_id"]] = next_offset if next_offset < len(passages) else 0
         if session.state.get('live_first_research'):
             result['next_tool'] = 'save_research_facts'
             recipe['continuation_needed'] = next_offset < len(passages)
             result['next_args'] = {'batch_reviewed': True, 'source_matches_poi': True}
-            result['instruction'] = 'Extract and check assertions in THIS small page, then save facts with own passage_ids and explicit batch_reviewed/source_matches_poi. The server binds this frozen read checkpoint; do not copy batch hashes or revisions. Save facts=[] for a page without findings, then follow the save receipt to the next unread page.'
+            result['instruction'] = 'Extract and check assertions in THIS small page, then save facts with own passage_ids and explicit batch_reviewed/source_matches_poi. Copy the exact passage_id values shown here; these are stable chunk IDs, not zero-based indexes of this page. Do not use IDs from earlier pages. The server binds this frozen read checkpoint; do not copy batch hashes or revisions. Save facts=[] for a page without findings, then follow the save receipt to the next unread page.'
         return result
 
 
@@ -3137,6 +3141,7 @@ class StreetStoryLiveAdapter:
                 passages = self._core_passages(chunk_id, core, contextual=bool(session.state.get('live_first_research')))
                 addressed = {p["evidence_ref"]: p["text"] for p in passages}
                 numbered = {p["passage_id"]: p["text"] for p in passages}
+                current_passage_ids = session.state.get('research_page_passage_ids', {}).get(chunk_id, set(numbered))
                 quoted_facts = []
                 for raw in raw_facts:
                     if not isinstance(raw, dict):
@@ -3147,6 +3152,10 @@ class StreetStoryLiveAdapter:
                         if passage_ids is not None:
                             if not isinstance(passage_ids, list) or not 1 <= len(passage_ids) <= 8 or any(type(pid) is not int or pid not in numbered for pid in passage_ids):
                                 raise ConflictError("live_research_passage_unknown", "Choose numeric passage_ids from this frozen chunk.")
+                            if session.state.get('live_first_research') and any(pid not in current_passage_ids for pid in passage_ids):
+                                raise ConflictError('live_research_passage_stale',
+                                    f"Copy the exact passage_id values from the CURRENT read page: {sorted(current_passage_ids)}. "
+                                    "Do not renumber them from zero or reuse an earlier page ID. No findings were saved; retry the same page with its own supporting passages.")
                             quotes = [numbered[pid] for pid in passage_ids]
                     if quotes is None or quotes == []:
                         supplied_refs = raw.get("evidence_refs")
