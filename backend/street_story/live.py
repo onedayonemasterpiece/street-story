@@ -396,9 +396,9 @@ FUNCTIONS = [
     _tool_schema(
         "get_research_chunk",
         "Read a document chunk of the SAME research run before facts exist. Omit chunk_id for the next unfinished "
-        "chunk; omit source_url for the next source too. Only pass source_url to explicitly choose a discovered URL. Uses the guarded fetch pipeline. Returns frozen "
+        "chunk. For the first document choose a discovered source_ref by competence and provenance; copy its short ref instead of rewriting a long URL. source_url remains supported for exact legacy URLs. Uses the guarded fetch pipeline. Returns frozen "
         "source version, exact core/context, batch_id and expected_story_revision. Resume does not repeat completed chunks.",
-        {"run_id": {"type": "string"}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}, "passage_cursor": {"type": "integer", "description": "Follow next_passage_cursor before completing this chunk; unseen pages remain pending."}},
+        {"run_id": {"type": "string"}, "source_ref": {"type": "string", "description": "Exact short source_ref from this run's discovery; prefer this to copying a URL."}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}, "passage_cursor": {"type": "integer", "description": "Follow next_passage_cursor before completing this chunk; unseen pages remain pending."}},
         ["run_id"],
     ),
     _tool_schema(
@@ -721,7 +721,7 @@ SYSTEM_INSTRUCTION = """
 - get_research_chunk является постраничным: сначала проверь и сохрани текущую малую страницу, затем следуй save receipt к следующей непрочитанной странице. Пустой facts=[] означает, что в этой странице нет полезных тезисов. Не перепрыгивай к новому поиску вместо сохранения прочитанной страницы.
 - только для legacy/recovery, когда нет batch_reviewed: если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - только для явного пересмотра старых кандидатов: если последний get_review_packet указал assess_review_packet, сначала вызови его и прочитай все next_args. Это независимая проверка настроенной исследовательской моделью, а не старый verdict или готовый допуск. При needs_context читай get_review_context; при compound/repair_needed сделай один общий repair_research_fact со всеми исправлениями и точными refs. Advice не заменяет review новых ревизий. При unavailable смысловую проверку выполняешь ты; не объявляй supported ради завершения run.
-- normal research: сначала по URL/title выбери компетентный источник о подтверждённом объекте; предпочитай музей, охранный каталог или энциклопедическую статью случайному туристическому пересказу. Передай его точный source_url в get_research_chunk. Это твой смысловой выбор, не порядок строк поиска. Проверяй достоверность и внутренние противоречия источника; сомнительная дата/стиль не становятся supported лишь из-за буквального совпадения. Далее работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
+- normal research: сначала по URL/title выбери компетентный источник о подтверждённом объекте; предпочитай музей, охранный каталог или энциклопедическую статью случайному туристическому пересказу. Передай его короткий source_ref в get_research_chunk; не переписывай URL. Это твой смысловой выбор, не порядок строк поиска. Проверяй достоверность и внутренние противоречия источника; сомнительная дата/стиль не становятся supported лишь из-за буквального совпадения. Далее работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
 - get_review_packet/finalize_fact_review и recovery нужны для старых unreviewed кандидатов или явного пересмотра прежних решений, а не как штатная лестница нового исследования.
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
@@ -2590,16 +2590,26 @@ class StreetStoryLiveAdapter:
         run_id = _bounded_text(args.get("run_id"), 160, required=True)
         session.state["research_run_id"] = run_id
         source_url = str(args.get("source_url") or "").rstrip("/")
+        source_ref = str(args.get('source_ref') or '')
         chunk_id = str(args.get("chunk_id") or "")
         with self.service.store.connection() as db:
             story, run = self._research_run_guard(db, session, run_id)
             snapshot_revision = int(story["revision"] or 0)
             sources = [dict(row) for row in db.execute("SELECT * FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url", (run_id,))]
+            if source_ref:
+                chosen = next((row['url'] for row in sources if _search_source_ref(row['url']) == source_ref), None)
+                if chosen is None:
+                    raise ConflictError('live_research_source_unknown', 'Copy an exact short source_ref from the saved discovery of this run; do not invent a URL or silently choose another source.')
+                if source_url and unquote(source_url) != unquote(chosen):
+                    raise ConflictError('live_research_source_unknown', 'source_ref and source_url disagree; pass only the chosen discovery source_ref.')
+                source_url = chosen
             if source_url:
                 matching = next((row["url"] for row in sources if unquote(row["url"]) == unquote(source_url)), None)
                 if matching is None:
-                    raise ConflictError("live_research_source_unknown", "Retry get_research_chunk with the SAME run_id only. OMIT source_url and chunk_id: the server chooses the next discovered document. Do not repeat search_web.")
+                    raise ConflictError("live_research_source_unknown", "The URL does not match this run's saved discovery. Copy the chosen short source_ref instead; do not repeat search or switch to an arbitrary source.")
                 source_url = matching  # Fetch only the stored discovered URL.
+            elif session.state.get('live_first_research') and len(sources) > 1 and not any(row['source_version_id'] or row['status'] == 'failed' for row in sources):
+                raise ConflictError('live_research_source_choice_required', 'Choose a competent source from the saved discovery by title/provenance and pass its exact source_ref. The server does not rank sources semantically.')
 
             candidate = db.execute(
                 "SELECT c.*,v.normalized_text,v.final_url,v.requested_url FROM research_chunk_runs r "

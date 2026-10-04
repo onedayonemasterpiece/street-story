@@ -133,12 +133,34 @@ async def test_live_first_skips_failed_source_and_reads_another_saved_source(tmp
     reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
         502 if str(request.url) == bad_url else 200,
         headers={'content-type': 'text/html'}, text='<main><p>' + ' '.join(QUOTES) + '</p></main>')))
-    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id, 'source_url': bad_url}})
     assert chunk['source_url'] == URL and chunk['evidence_passages']
     with svc.store.connection() as db:
         failed = db.execute('SELECT status,error_code FROM research_run_sources WHERE run_id=? AND url=?', (run_id, bad_url)).fetchone()
         assert tuple(failed) == ('failed', 'http_502')
         assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0] != 'partial'
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_discovery_source_ref_preserves_model_choice_after_url_copy_error(tmp_path):
+    from street_story.live import _search_source_ref
+    from street_story.research_runs import register_discovered_source
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    chosen = 'https://encyclopedia.example/wiki/' + 'Encoded-long-object-name_' * 20
+    with svc.store.tx() as db:
+        register_discovered_source(db, run_id=run_id, url=chosen, title='Chosen encyclopedia', status='snippet_only', now=0)
+    with pytest.raises(ConflictError) as unknown:
+        await adapter._get_research_chunk(session, {'run_id': run_id, 'source_url': chosen[:-2]})
+    assert unknown.value.code == 'live_research_source_unknown'
+    with pytest.raises(ConflictError) as required:
+        await adapter._get_research_chunk(session, {'run_id': run_id})
+    assert required.value.code == 'live_research_source_choice_required'
+    chunk = await adapter._get_research_chunk(session, {'run_id': run_id, 'source_ref': _search_source_ref(chosen)})
+    assert chunk['source_url'] == chosen
+    with svc.store.connection() as db:
+        assert db.execute('SELECT status FROM research_run_sources WHERE run_id=? AND url=?', (run_id, URL)).fetchone()[0] == 'snippet_only'
     await reader.search_http.aclose()
 
 
