@@ -218,10 +218,31 @@ jobs:
         with:
           gradle-version: '8.13'
 
+      - name: Restore canonical signing key for live emulator APKs
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.STREET_STORY_SIGNING_KEYSTORE_B64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.STREET_STORY_SIGNING_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEYSTORE_B64"
+          test -n "$SIGNING_STORE_PASSWORD"
+          install -d -m 0700 "$RUNNER_TEMP/street-story-signing"
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/street-story-signing/owner-signing.p12"
+          chmod 0600 "$RUNNER_TEMP/street-story-signing/owner-signing.p12"
+          keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/street-story-signing/owner-signing.p12" \
+            -storepass "$SIGNING_STORE_PASSWORD" -alias streetstory >/dev/null
+
       - name: Build exact-HEAD Android test APKs
         if: >-
           (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
+        env:
+          STREET_STORY_SIGNING_STORE_FILE: ${{ runner.temp }}/street-story-signing/owner-signing.p12
+          STREET_STORY_SIGNING_STORE_PASSWORD: ${{ secrets.STREET_STORY_SIGNING_STORE_PASSWORD }}
+          STREET_STORY_SOURCE_SHA: ${{ github.sha }}
         run: |
           sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
           gradle --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest
