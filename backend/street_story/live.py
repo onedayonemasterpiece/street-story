@@ -1120,6 +1120,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 (run_id,),
             ).fetchone()[0]
             facts = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
+            recipe = session.state.get('research_chunk_receipts', {}).get(session.state.get('research_current_chunk_id')) or {}
+            unread_save = bool(recipe.get('run_id') == run_id and recipe.get('batch_id') and not db.execute(
+                "SELECT 1 FROM live_commands WHERE story_id=? AND command_id=? AND tool_name='save_research_facts'",
+                (session.resource_id, recipe.get('batch_id'))).fetchone())
         if session.state.get('live_first_research'):
             with self.service.store.connection() as db:
                 progress = self._live_research_progress(db, session.resource_id, run_id)
@@ -1128,7 +1132,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 if attempts < 12:
                     next_tool = (
                         "save_research_facts"
-                        if pending and session.state.get("research_current_chunk_id")
+                        if pending and unread_save
                         else "get_research_chunk"
                     )
                     session.state["research_continuation_count"] = attempts + 1
@@ -1139,15 +1143,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             "type": "text",
                             "text": (
                                 "Server context for the author's current research request: "
-                                f"run {run_id} has unread evidence and the current answer is not authorized by a save receipt. "
+                                f"run {run_id} has unread evidence. Already saved supported findings remain usable. "
                                 "Save sufficient NEW discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Compare the known_fact_inventory; equivalent claims must reuse existing_fact_id and are not new findings. Never speak unsaved snippets as facts. Do not answer with remembered or "
                                 "search-snippet facts. Continue "
                                 f"{next_tool}. For get_research_chunk choose one competent "
                                 "source by title/provenance and copy its exact source_ref from "
                                 "the previous search result. For save_research_facts review "
                                 "the evidence already read and preserve every qualifier. "
-                                "After no_claims use get_research_chunk(run_id only) for the next source, at most three full-source attempts. Only after a supported durable save, or after the bounded sources are exhausted "
-                                "with no supported claim, say новых подтверждённых фактов не нашла."
+                                "After no_claims use get_research_chunk(run_id only) for the next source, at most three full-source attempts. "
+                                "If this work adds no new supported claim, report that honestly. Distinguish previously saved facts and added evidence from new eligible claims."
                             ),
                         },
                     )
@@ -1164,7 +1168,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             "pending_chunks": pending,
                             "unfetched_sources": unfetched,
                             "saved_batches": saved_batches,
-                            "reason": "no_new_durable_observations",
+                            "reason": "unread_saved_source_work",
                             **progress,
                         },
                     )

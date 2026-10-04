@@ -185,6 +185,10 @@ async def test_live_resume_uses_saved_page_and_menu_is_not_completed_article(tmp
         200, headers={'content-type': 'text/html'}, text='<main>' + 'Navigation item. ' * 300 + '</main>')))
     first = await adapter._get_research_chunk(session, {'run_id': run})
     await adapter._save_research_facts(session, 'partial-page', {'facts': [], 'batch_reviewed': True, 'source_matches_poi': True})
+    continuation_messages = []
+    adapter.write = lambda _, message: continuation_messages.append(message)
+    adapter._continue_pending_research(session)
+    assert 'Continue get_research_chunk.' in continuation_messages[-1]['text']
     session.state['research_passages_seen'] = {}
     session.state['research_pending_page'] = {}
     resumed = await adapter._get_research_chunk(session, {'run_id': run})
