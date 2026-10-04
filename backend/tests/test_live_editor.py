@@ -54,6 +54,10 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
         configuration=configuration,
         search=configuration["search_enabled"],
     )["setup"]
+    # Production admitted a 45KB setup then exhausted its unchanged 60KB
+    # lease after photo (8KB) and identity (5KB), before a second voice turn.
+    # Reserve room for the actual owner flow, not only initial setup.
+    assert len(__import__('json').dumps(provider_setup, ensure_ascii=False, separators=(',', ':')).encode()) < 34_000
     assert not any("googleSearch" in tool for tool in provider_setup["tools"])
     function_names = {
         item["name"]
