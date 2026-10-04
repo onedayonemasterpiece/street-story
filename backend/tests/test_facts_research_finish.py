@@ -565,3 +565,81 @@ async def test_model_declared_wrong_poi_query_and_source_are_withheld_without_se
     result = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-negative-test', 'args': {**args, 'facts': []}})
     assert not result.get('facts')
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_source_continues_and_blocks_premature_inventory(tmp_path):
+    from street_story.research_runs import register_discovered_source
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    with svc.store.tx() as db:
+        register_discovered_source(db, run_id=run_id, url='https://next.example/document', title='Next source', status='snippet_only', now=1)
+    await adapter._get_research_chunk(session, {'run_id': run_id, 'source_url': URL})
+    saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'empty-first', 'args': {'facts': [], 'batch_reviewed': True}})
+    assert not saved['completed']
+    adapter._continue_pending_research(session)
+    assert session.state['research_continuation_queued']
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['state'] == 'extracting'
+    with pytest.raises(ConflictError) as err:
+        await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}})
+    assert err.value.code == 'live_research_more_sources_required'
+    next_chunk = await adapter._get_research_chunk(session, {'run_id': run_id})
+    assert next_chunk['source_url'] == 'https://next.example/document'
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sufficient_snippet_save_preserves_future_cost_and_allows_partial(tmp_path):
+    from street_story.live import StreetStoryLiveAdapter
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    # Keep the exact frozen discovery evidence, including future modality.
+    future = 'Стоимость работ составит почти 1,5 млн рублей.'
+    import json
+    with svc.store.tx() as db:
+        row = db.execute('SELECT research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()
+        research = json.loads(row[0])
+        result = research['live_web_searches'][-1]
+        research['grounding_sources'][0]['supports'][0]['text'] = future
+        result = {**result, 'sources': research['grounding_sources'], 'discovery_only': True, 'semantic_status': 'live_model_required'}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), session.resource_id))
+    projected = StreetStoryLiveAdapter._model_result('search_web', result)
+    assert projected['next_tool'] == 'save_research_facts'
+    source = projected['sources'][0]
+    assert source['evidence'][0]['text'] == future
+    saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'snippet-save', 'args': {
+        'run_id': run_id, 'batch_id': result['save_batch_id'], 'batch_reviewed': True, 'inventory_reviewed': True,
+        'facts': [{'claim_key': 'projected-cost', 'text': future, 'confidence': .95, 'selected': False,
+                   'source_refs': [source['source_ref']], 'evidence_refs': [source['evidence'][0]['evidence_ref']],
+                   'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+                   'review_reason': 'The snippet gives projected future cost; the claim preserves составит.'}]}})
+    assert saved['facts'][0]['text'] == future
+    assert saved['selected_fact_ids'] == [] and saved['review_required'] is False
+    assert (await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}}))['facts'][0]['eligibility'] == 'eligible'
+    adapter._continue_pending_research(session)
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['status_detail'] == 'live_answer_partial'
+        assert db.execute('SELECT COUNT(*) FROM poi_research_observations').fetchone()[0] == 1
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_full_source_attempts_are_bounded_to_three(tmp_path):
+    from street_story.research_runs import register_discovered_source
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    with svc.store.tx() as db:
+        for n in range(5):
+            register_discovered_source(db, run_id=run_id, url=f'https://source{n}.example/page', title='Source', status='snippet_only', now=n + 1)
+    calls = []
+    async def empty(urls, context):
+        calls.extend(urls)
+        return []
+    svc.providers.gemini._fetch_page_documents = empty
+    result = await adapter._get_research_chunk(session, {'run_id': run_id, 'source_url': URL})
+    assert len(calls) == 3
+    assert result['completed'] and result['full_source_attempts'] == 3
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['status_detail'] == 'live_no_new_confirmed_facts'
+    await reader.search_http.aclose()

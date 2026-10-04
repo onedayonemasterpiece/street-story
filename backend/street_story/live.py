@@ -729,8 +729,8 @@ SYSTEM_INSTRUCTION = """
 - get_research_chunk является постраничным: сначала проверь и сохрани текущую малую страницу, затем следуй save receipt к следующей непрочитанной странице. Пустой facts=[] означает, что в этой странице нет полезных тезисов. Не перепрыгивай к новому поиску вместо сохранения прочитанной страницы.
 - только для legacy/recovery, когда нет batch_reviewed: если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - только для явного пересмотра старых кандидатов: если последний get_review_packet указал assess_review_packet, сначала вызови его и прочитай все next_args. Это независимая проверка настроенной исследовательской моделью, а не старый verdict или готовый допуск. При needs_context читай get_review_context; при compound/repair_needed сделай один общий repair_research_fact со всеми исправлениями и точными refs. Advice не заменяет review новых ревизий. При unavailable смысловую проверку выполняешь ты; не объявляй supported ради завершения run.
-- normal research: сначала по URL/title выбери компетентный источник о подтверждённом объекте; предпочитай музей, охранный каталог или энциклопедическую статью случайному туристическому пересказу. Передай его короткий source_ref в get_research_chunk; не переписывай URL. Это твой смысловой выбор, не порядок строк поиска. Проверяй достоверность и внутренние противоречия источника; сомнительная дата/стиль не становятся supported лишь из-за буквального совпадения. Далее работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
-- если search_web нашёл источники, но не вернул новых durable facts, это НЕ результат исследования. До содержательного голосового ответа обязательно продолжи get_research_chunk по exact source_ref из результата поиска и сохрани проверенный batch через save_research_facts. Не пересказывай старые facts или search snippets как будто это новые найденные факты. Если выбранные источники исчерпаны и новых подтверждённых тезисов нет, честно скажи именно это.
+- normal research: sufficient discovery snippet -> немедленно save_research_facts с exact source_ref/evidence_ref, batch_reviewed=true и selected=false; insufficient snippet -> full source. Никогда не озвучивай unsaved snippet как факт. Сохраняй время и модальность: «стоимость составит» не означает «обошлось». После no_claims при нуле новых durable observations продолжи get_research_chunk(run_id only), максимум 3 full-source attempts; затем сообщи, что новых подтверждённых фактов нет. Если нужен full source, по URL/title выбери компетентный источник о подтверждённом объекте; предпочитай музей, охранный каталог или энциклопедическую статью случайному туристическому пересказу. Передай его короткий source_ref в get_research_chunk; не переписывай URL. Это твой смысловой выбор, не порядок строк поиска. Проверяй достоверность и внутренние противоречия источника; сомнительная дата/стиль не становятся supported лишь из-за буквального совпадения. Далее работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
+- если search_web нашёл источники, но не вернул новых durable facts, это НЕ результат исследования. До factual answer сохрани достаточный snippet через save_research_facts; иначе продолжи get_research_chunk и сохрани проверенный batch. Не пересказывай старые facts или search snippets как будто это новые найденные факты. Если выбранные источники исчерпаны и новых подтверждённых тезисов нет, честно скажи именно это.
 - get_review_packet/finalize_fact_review и recovery нужны для старых unreviewed кандидатов или явного пересмотра прежних решений, а не как штатная лестница нового исследования.
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
@@ -1048,6 +1048,14 @@ class StreetStoryLiveAdapter:
     def on_stopped(self, session) -> None:
         self._pause_research(session, "live_stopped_resume_required")
 
+    @staticmethod
+    def _live_research_progress(db, story_id, run_id):
+        observations = db.execute("SELECT COUNT(*) FROM fact_observations WHERE story_id=? AND run_id=? AND status='accepted'", (story_id, run_id)).fetchone()[0]
+        sources = db.execute("SELECT source_version_id,status FROM research_run_sources WHERE run_id=?", (run_id,)).fetchall()
+        return {'observations': observations,
+                'attempts': sum(bool(row['source_version_id']) or row['status'] == 'failed' for row in sources),
+                'remaining': sum(not row['source_version_id'] and row['status'] != 'failed' for row in sources)}
+
     def _continue_pending_research(self, session):
         run_id = str(session.state.get("research_run_id") or "")
         if not run_id or getattr(session, "closed", False) or getattr(session, "awaiting_audio", False) or any(session.state.get(key) for key in (
@@ -1067,12 +1075,14 @@ class StreetStoryLiveAdapter:
             ).fetchone()[0]
             facts = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (session.resource_id,)).fetchone()[0]
         if session.state.get('live_first_research'):
-            if not saved_batches and (pending or unfetched):
+            with self.service.store.connection() as db:
+                progress = self._live_research_progress(db, session.resource_id, run_id)
+            if not progress['observations'] and (pending or (progress['remaining'] and progress['attempts'] < 3)):
                 attempts = int(session.state.get("research_continuation_count") or 0)
-                if attempts < 2:
+                if attempts < 12:
                     next_tool = (
                         "save_research_facts"
-                        if session.state.get("research_current_chunk_id")
+                        if pending and session.state.get("research_current_chunk_id")
                         else "get_research_chunk"
                     )
                     session.state["research_continuation_count"] = attempts + 1
@@ -1084,14 +1094,14 @@ class StreetStoryLiveAdapter:
                             "text": (
                                 "Server context for the author's current research request: "
                                 f"run {run_id} has discovered evidence but has no durable "
-                                "source-reviewed batch yet. Do not answer with remembered or "
+                                "supported durable observation yet. Save sufficient discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Never speak unsaved snippets as facts. Do not answer with remembered or "
                                 "search-snippet facts. Continue "
                                 f"{next_tool}. For get_research_chunk choose one competent "
                                 "source by title/provenance and copy its exact source_ref from "
                                 "the previous search result. For save_research_facts review "
-                                "only the page already read and preserve every qualifier. "
-                                "Only after a durable save, or after the sources are exhausted "
-                                "with no supported claim, summarize the outcome to the author."
+                                "the evidence already read and preserve every qualifier. "
+                                "After no_claims use get_research_chunk(run_id only) for the next source, at most three full-source attempts. Only after a supported durable save, or after the bounded sources are exhausted "
+                                "with no supported claim, say новых подтверждённых фактов не нашла."
                             ),
                         },
                     )
@@ -1108,17 +1118,22 @@ class StreetStoryLiveAdapter:
                             "pending_chunks": pending,
                             "unfetched_sources": unfetched,
                             "saved_batches": saved_batches,
-                            "reason": "no_durable_source_batch",
+                            "reason": "no_new_durable_observations",
+                            **progress,
                         },
                     )
+                    logger.info('street_story_research_continue run=%s next=%s observations=%s sources_attempted=%s remaining=%s', run_id, next_tool, progress['observations'], progress['attempts'], progress['remaining'])
                     return
+                self._pause_research(session, 'live_continuation_exhausted')
+                self._emit_research_progress(session, stage='partial', active=False, query='', source_count=0, fact_count=facts)
+                return
             # A finished answer may offer useful partial findings. Do not inject
             # another whole-inventory review request into the normal Live flow.
             # Pending provider calls are excluded above; the saved cursor remains
             # writable for an explicit continuation in this same conversation.
             with self.service.store.tx() as db:
-                set_run_state(db, run_id, 'partial', detail='live_answer_partial', now=self.service.store.now(), completed=False)
-            self._emit_research_progress(session, stage='partial', active=False, query='', source_count=0, fact_count=facts)
+                set_run_state(db, run_id, 'partial' if progress['observations'] or pending else 'completed', detail='live_answer_partial' if progress['observations'] else 'live_continuation_exhausted' if pending else 'live_no_new_confirmed_facts', now=self.service.store.now(), completed=not progress['observations'] and not pending)
+            self._emit_research_progress(session, stage='partial' if progress['observations'] else 'completed', active=False, query='', source_count=0, fact_count=facts)
             return
         attempts = int(session.state.get("research_continuation_count") or 0)
         if attempts >= 2:
@@ -1164,6 +1179,13 @@ class StreetStoryLiveAdapter:
             self.emit(session, {"type": "product_state", "state": compact})
             return compact
         if name == "get_facts":
+            run_id = session.state.get('research_run_id')
+            if session.state.get('live_first_research') and run_id:
+                with self.service.store.connection() as db:
+                    run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?", (run_id, story_id)).fetchone()
+                    progress = self._live_research_progress(db, story_id, run_id)
+                if run and run['state'] not in {'completed', 'failed', 'cancelled'} and not progress['observations'] and progress['remaining'] and progress['attempts'] < 3:
+                    raise ConflictError('live_research_more_sources_required', 'Zero new durable observations. Next action: get_research_chunk with run_id only; save sufficient snippets before a factual answer.')
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
             packet = review_packets.read(self, session, args)
@@ -1414,7 +1436,7 @@ class StreetStoryLiveAdapter:
                 "next_tool": (
                     explicit_next_tool
                     or (
-                        "get_research_chunk"
+                        "save_research_facts"
                         if discovery_only
                         and result.get("semantic_status") == "live_model_required"
                         else (
@@ -1514,7 +1536,7 @@ class StreetStoryLiveAdapter:
                     ):
                         evidence.append({
                             "evidence_ref": evidence_ref,
-                            "text": snippet[:140],
+                            "text": snippet[:360],
                         })
                         seen_evidence.add(evidence_ref)
                 compact_sources.append({
@@ -2584,10 +2606,10 @@ class StreetStoryLiveAdapter:
                 "save_batch_id": save_batch_id,
                 "review_required": review_required,
                 "continuation_required": bool(source_read_required or review_required),
-                "next_tool": "get_research_chunk" if source_read_required else None,
-                "next_args": {"run_id": run_id} if source_read_required else None,
+                "next_tool": "save_research_facts" if discovery_only else "get_research_chunk" if source_read_required else None,
+                "next_args": {"run_id": run_id, "batch_id": save_batch_id} if discovery_only else {"run_id": run_id} if source_read_required else None,
                 "instruction": (
-                    "Search found sources but no new durable fact. Choose one competent "
+                    "First review snippets: sufficient snippet -> save_research_facts immediately with exact source_ref/evidence_ref, batch_reviewed=true, verdict=supported, atomic/support_complete/qualifiers_preserved=true, review_reason and selected=false. Never speak unsaved snippets as facts. Preserve planned/future wording: стоимость составит is not actual cost. If insufficient, choose one competent "
                     "source from this result and call get_research_chunk with run_id plus "
                     "that exact source_ref before giving a factual answer."
                     if source_read_required
@@ -2702,18 +2724,22 @@ class StreetStoryLiveAdapter:
         if candidate is None:
             if chunk_id:
                 raise ConflictError("live_research_chunk_unknown", "Retry get_research_chunk with run_id only. Omit chunk_id to read the next chunk; never invent chunk IDs.")
-            source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
+            with self.service.store.connection() as db:
+                progress = self._live_research_progress(db, session.resource_id, run_id)
+            bounded_stop = session.state.get('live_first_research') and progress['attempts'] >= 3
+            source = None if bounded_stop else next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
             if source is None:
                 if session.state.get('live_first_research'):
                     with self.service.store.tx() as db:
                         self._research_run_guard(db, session, run_id)
                         manifest = run_manifest(db, run_id)
                         unreviewed = db.execute("SELECT COUNT(DISTINCT a.assertion_id) FROM fact_assertions a JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed'", (session.resource_id, run_id)).fetchone()[0]
-                        complete = manifest_complete(manifest) and not unreviewed
-                        set_run_state(db, run_id, 'completed' if complete else 'partial', detail='live_batches_complete' if complete else 'saved_findings_need_review', now=self.service.store.now(), completed=complete)
+                        complete = (manifest_complete(manifest) or bounded_stop) and not unreviewed
+                        set_run_state(db, run_id, 'completed' if complete else 'partial', detail='live_no_new_confirmed_facts' if not progress['observations'] else 'live_batches_complete' if complete else 'saved_findings_need_review', now=self.service.store.now(), completed=complete)
                     self._emit_research_progress(session, stage='completed' if complete else 'partial', active=False, query='', source_count=len(sources), fact_count=len(self._get_facts(session.resource_id, {})['facts']))
                     return {'research_run_id': run_id, 'all_chunks_processed': True, 'completed': complete, 'partial': not complete,
-                            'next_tool': None, 'state': self._compact_context(self._topic_state(session.resource_id))}
+                            'next_tool': None, 'full_source_attempts': progress['attempts'],
+                            'instruction': 'Report only saved supported facts; if none, say новых подтверждённых фактов не нашла. Never report unsaved snippets.', 'state': self._compact_context(self._topic_state(session.resource_id))}
                 with self.service.store.connection() as db:
                     return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_review_packet", "next_args": {"run_id": run_id}, "final_tool": "finalize_fact_review"}
             fetch = getattr(self.service.providers.gemini, "_fetch_page_documents", None)
@@ -2836,7 +2862,7 @@ class StreetStoryLiveAdapter:
         if session.state.get('live_first_research') and not args.get('chunk_id'):
             current_chunk = session.state.get('research_current_chunk_id')
             recipe = session.state.get('research_chunk_receipts', {}).get(current_chunk)
-            if recipe:
+            if recipe and (not args.get('batch_id') or args['batch_id'] == recipe['batch_id']):
                 if args.get('run_id') and args['run_id'] != recipe['run_id']:
                     raise ConflictError('live_research_run_unknown', 'The findings do not belong to the current read checkpoint.')
                 args = {**recipe, **args}
@@ -3596,7 +3622,9 @@ class StreetStoryLiveAdapter:
             )
             history[history_index] = latest_search
             research["live_web_searches"] = history[-12:]
-            batches_complete = bool(batch_verified and manifest_complete(run_manifest(db, run_id)))
+            progress = self._live_research_progress(db, story_id, run_id)
+            more_sources_required = not progress['observations'] and progress['remaining'] and progress['attempts'] < 3
+            batches_complete = bool(batch_verified and manifest_complete(run_manifest(db, run_id)) and not more_sources_required and (not progress['remaining'] or progress['attempts'] >= 3))
             set_run_state(
                 db,
                 run_id,
@@ -3624,7 +3652,7 @@ class StreetStoryLiveAdapter:
                 "review_required": not bool(batch_verified),
                 "completed": batches_complete,
                 "continuation_required": not batches_complete,
-                "next_tool": None if batches_complete else "get_research_chunk" if chunk_id else "get_review_packet",
+                "next_tool": None if batches_complete else "get_research_chunk" if chunk_id or batch_verified else "get_review_packet",
                 "next_args": {"run_id": run_id},
                 "chunk_id": chunk_id or None,
                 "payload_saved": True,
