@@ -2053,3 +2053,29 @@ def test_startup_index_retains_late_known_claims_for_additional_research(tmp_pat
     assert context['selected_fact_ids'] == ['old-40']
     assert [fact['fact_id'] for fact in context['facts']] == ['old-40']
     assert len(state['story']['facts']) == 44
+
+
+@pytest.mark.asyncio
+async def test_successful_owner_editing_releases_stale_research_focus(tmp_path, monkeypatch):
+    svc, adapter, session, events = make_service(tmp_path)
+    session.state.update(research_run_id='owned-run', research_output_pending=True)
+    paused = []
+    monkeypatch.setattr(adapter, '_pause_research', lambda _session, reason: paused.append(reason))
+    async def edit(_session, _call):
+        return {'text_revision': 2}
+    monkeypatch.setattr(adapter, '_execute_tool', edit)
+    result = await adapter.execute_tool(session, {'name': 'edit_text'})
+    assert result['text_revision'] == 2
+    assert paused == ['live_owner_switched_to_editing']
+    assert session.state['research_author_interrupted'] is True
+    assert session.state['research_output_pending'] is False
+    assert events[-1]['type'] == 'research_progress'
+    assert events[-1]['state']['active'] is False
+    async def rejected(_session, _call):
+        raise ConflictError('live_text_revision_conflict', 'Read state before retrying')
+    monkeypatch.setattr(adapter, '_execute_tool', rejected)
+    session.state['research_output_pending'] = True
+    with pytest.raises(ConflictError):
+        await adapter.execute_tool(session, {'name': 'edit_text'})
+    assert session.state['research_output_pending'] is True
+    assert len(paused) == 1
