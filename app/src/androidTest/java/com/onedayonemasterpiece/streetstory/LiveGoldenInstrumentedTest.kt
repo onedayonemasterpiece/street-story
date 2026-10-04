@@ -140,8 +140,9 @@ class LiveGoldenInstrumentedTest {
                 live.sendText("Объект подтверждён. Найди проверяемые исторические факты через search_web и сохрани источники.")
                 awaitAnswer(live, "research after identity confirmation")
             }
-            story = pollStory(
-                api, storyId, RESEARCH_TIMEOUT_MS,
+            story = pollWithOwnerClarification(
+                api, storyId, live, evidence, "fact research",
+                "Продолжи поиск фактов о подтверждённом объекте на фотографии. Прочитай текущее состояние темы, используй именно его подтверждённый POI ID и сохрани проверенные факты с источниками. Не выбирай факты и не готовь текст публикации.",
                 allowedNeedsReviewCodes = setOf("visual_stale"),
             ) {
                 live.snapshot().researchProgress?.active != true &&

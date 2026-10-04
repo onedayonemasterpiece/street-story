@@ -688,14 +688,18 @@ _save_declaration['description'] = ('Persist checked discovery snippets OR a sma
                                     'Do not rewrite quotes or evidence hashes: the server binds these passage numbers to exact immutable source spans. '
                                     'Withhold doubtful claims, save good supported findings immediately, then follow the returned next unread page.')
 _finding_schema = _save_declaration['parameters']['properties']['facts']['items']
+_finding_schema['properties']['existing_fact_id']['description'] = (
+    'Compare the complete known_fact_inventory by meaning before saving. Copy its exact fact_id for an equivalent claim; '
+    'use an empty string only for a genuinely new claim. A fact_id belongs here, never in claim_key.'
+)
 _claim_fields = {k: v for k, v in _finding_schema['properties'].items()
                  if k not in {'source_refs', 'evidence_refs', 'evidence_quotes', 'passage_ids'}}
 # Keep the existing direct snippet fields alongside the compact document grouping.
 # The backend validates which evidence format applies; neither path invents refs.
 _finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enumerate EACH independently selectable assertion in these passages. Each depicted person or independent role/event is its own object, never one compound sentence.',
                                           'items': {'type': 'object', 'properties': _claim_fields,
-                                                    'required': ['claim_key', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
-_finding_schema['required'] = ['source_refs', 'evidence_refs']
+                                                    'required': ['claim_key', 'existing_fact_id', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
+_finding_schema['required'] = ['source_refs', 'evidence_refs', 'existing_fact_id']
 _save_parameters = _save_declaration['parameters']
 _save_parameters['properties'] = {key: _save_parameters['properties'][key]
                                   for key in ('run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi')}
@@ -809,7 +813,7 @@ class StreetStoryLiveAdapter:
                 "context_instruction": "Authoritative current topic snapshot; product functions supersede this snapshot when state changes: ",
                 "functions": [{**function, "description": (
                     "Save checked snippets or frozen passages. Copy exact nonempty source_refs/evidence_refs for snippets; "
-                    "empty arrays only with numeric passage_ids. Never speak unsaved findings; follow next_args."
+                    "empty arrays only with numeric passage_ids. Compare known_fact_inventory: equivalent claim -> exact existing_fact_id, genuinely new -> empty string. Never speak unsaved findings; follow next_args."
                     if function["name"] == "save_research_facts" else
                     "First document: choose a competent discovery source and copy source_ref. Follow saved next_args for later pages; empty source_ref follows the next unread source."
                     if function["name"] == "get_research_chunk" else function["description"].split(". ")[0][:140]
@@ -1094,7 +1098,7 @@ class StreetStoryLiveAdapter:
         if session.state.get('live_first_research'):
             with self.service.store.connection() as db:
                 progress = self._live_research_progress(db, session.resource_id, run_id)
-            if not progress['observations'] and (pending or (progress['remaining'] and progress['attempts'] < 3)):
+            if (not progress['observations'] or session.state.get('research_output_pending')) and (pending or (progress['remaining'] and progress['attempts'] < 3)):
                 attempts = int(session.state.get("research_continuation_count") or 0)
                 if attempts < 12:
                     next_tool = (
@@ -1110,8 +1114,8 @@ class StreetStoryLiveAdapter:
                             "type": "text",
                             "text": (
                                 "Server context for the author's current research request: "
-                                f"run {run_id} has discovered evidence but has no durable "
-                                "supported durable observation yet. Save sufficient discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Never speak unsaved snippets as facts. Do not answer with remembered or "
+                                f"run {run_id} has unread evidence and the current answer is not authorized by a save receipt. "
+                                "Save sufficient NEW discovery snippets immediately with exact source_ref/evidence_ref and scoped review. Compare the known_fact_inventory; equivalent claims must reuse existing_fact_id and are not new findings. Never speak unsaved snippets as facts. Do not answer with remembered or "
                                 "search-snippet facts. Continue "
                                 f"{next_tool}. For get_research_chunk choose one competent "
                                 "source by title/provenance and copy its exact source_ref from "
@@ -2221,7 +2225,9 @@ class StreetStoryLiveAdapter:
                     "Сначала нужно определить объект на фотографии.",
                 )
             if args.get('confirmed_poi_id') is not None and args['confirmed_poi_id'] != identity.get('candidate_id'):
-                raise ConflictError('live_research_identity_mismatch', 'Copy the current confirmed POI ID; do not search another object.')
+                raise ConflictError('live_research_identity_mismatch',
+                    f"The confirmed POI ID is {identity.get('candidate_id')}; copy it exactly. "
+                    "Do not replace it with another source's ID for the same named landmark. Retry search_web for the confirmed object.")
             if args.get('query_matches_poi') is False:
                 raise ConflictError('live_research_identity_mismatch', 'Your query/goal targets another object. Correct it using confirmed identity and geography.')
             all_story_facts = [
@@ -4839,6 +4845,11 @@ def _live_resource_environment(settings: Settings) -> dict[str, str]:
 
 
 def _forward_committed_output(service, session, event, on_event):
+    if session.state.get("research_output_pending") and event.get("type") == "turn_complete":
+        # Withheld audio never reaches the shared host's audio callback, which
+        # normally clears this post-tool wait. The provider has finished this
+        # turn; release only that wait so the adapter can continue unread proof.
+        session.awaiting_audio = False
     if session.state.get("research_output_pending") and event.get("type") in {"audio", "output_transcript", "text"}:
         if event.get("type") == "output_transcript":
             session.state["research_continuation_queued"] = False
