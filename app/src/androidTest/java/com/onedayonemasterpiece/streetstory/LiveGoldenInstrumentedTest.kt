@@ -40,6 +40,7 @@ class LiveGoldenInstrumentedTest {
     private val root = File(context.filesDir, "live-golden")
     private val gson = Gson()
     private var awaitingTurnAfter = 0
+    private var transientStoryReadRetries = 0
 
     @Test
     fun androidClientToNativeTelegramGoldenPath() {
@@ -336,7 +337,8 @@ class LiveGoldenInstrumentedTest {
                     }
                 }
             }
-            runCatching { capture("99-final-state", api.getStory(storyId)) }
+            runCatching { capture("99-final-state", readStory(api, storyId)) }
+            evidence["transient_story_read_retries"] = transientStoryReadRetries
             evidence["last_live_error"] = live.snapshot().error
             evidence["completed_live_turns"] = live.snapshot().completedTurns
             evidence["transport_final"] = live.transportEvidence()
@@ -485,7 +487,7 @@ class LiveGoldenInstrumentedTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         var last: StoryWire? = null
         while (System.currentTimeMillis() < deadline) {
-            last = api.getStory(storyId)
+            last = readStory(api, storyId)
             if (predicate(last)) return last
             val code = last.error?.code.orEmpty()
             if (last.state == StoryStage.NEEDS_REVIEW && code.isNotBlank() && code !in allowedNeedsReviewCodes) {
@@ -494,6 +496,20 @@ class LiveGoldenInstrumentedTest {
             Thread.sleep(2_000)
         }
         error("Timed out waiting for story; last=${last?.state}")
+    }
+
+    private fun readStory(api: ApiClient, storyId: String): StoryWire {
+        for (attempt in 0..3) {
+            try {
+                return api.getStory(storyId)
+            } catch (failure: ApiException) {
+                if (failure.status !in setOf(502, 503, 504) || attempt == 3) throw failure
+                transientStoryReadRetries += 1
+                android.util.Log.w("StreetStoryGolden", "story_read_retry status=${failure.status} attempt=${attempt + 1}")
+                Thread.sleep(2_000)
+            }
+        }
+        error("Unreachable story read retry state")
     }
 
     private fun rawStory(baseUrl: String, token: String, storyId: String): JsonObject {
