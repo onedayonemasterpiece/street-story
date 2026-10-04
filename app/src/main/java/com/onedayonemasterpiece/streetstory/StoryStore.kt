@@ -389,9 +389,12 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
         db.beginTransaction()
         try {
             val existing = facts(storyId).associateBy { it.factId }
+            // Pending checkbox edits belong to the offline owner. Once synced,
+            // the backend also carries owner changes made through Mira/Live.
+            val preserveLocalSelection = pendingOperations(storyId).any { it.kind == "facts" }
             db.delete("facts", "story_id=?", arrayOf(storyId))
             for (fact in incoming) {
-                val preserved = existing[fact.factId]?.selected
+                val preserved = if (preserveLocalSelection) existing[fact.factId]?.selected else null
                 val selected = if (!fact.evidenceSupported) false else preserved ?: fact.selected
                 db.insertOrThrow("facts", null, ContentValues().apply {
                     put("story_id", storyId)

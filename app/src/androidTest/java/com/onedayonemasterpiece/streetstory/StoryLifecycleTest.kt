@@ -93,7 +93,15 @@ class StoryLifecycleTest {
             ))
             assertFalse(store.facts(storyId).first { it.factId == "unsupported" }.selected)
             store.setFactSelected(storyId, "supported", false)
+            val factEdit = store.enqueueOperation(storyId, "facts", "ss-facts-$storyId", "{\"selected_fact_ids\":[]}")
             store.replaceFacts(storyId, listOf(FactSnapshot("supported", "Проверенный факт", 0.95, true, true, "[]")))
+            assertFalse(store.facts(storyId).single().selected)
+            store.markOperationDone(factEdit.id)
+            // Mira's later authoritative selection must reach the UI once no
+            // offline checkbox edit remains, including subsequent deselection.
+            store.replaceFacts(storyId, listOf(FactSnapshot("supported", "Проверенный факт", 0.95, true, true, "[]")))
+            assertTrue(store.facts(storyId).single().selected)
+            store.replaceFacts(storyId, listOf(FactSnapshot("supported", "Проверенный факт", 0.95, true, false, "[]")))
             assertFalse(store.facts(storyId).single().selected)
 
             store.setDraftText(storyId, "Моя локальная правка")
