@@ -63,6 +63,31 @@ def prepared(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_search_receipt_reads_real_google_sdk_error_details(tmp_path):
+    from google.genai.errors import ClientError
+    from street_story.providers import GeminiUnavailable
+    client = GeminiClient(config(tmp_path), Store(tmp_path / 'db'))
+    class Executor:
+        async def execute(self, operation, call):
+            try:
+                return await call('fixture', 5)
+            except ClientError:
+                raise GeminiUnavailable('provider quota') from None
+    client.web_search_routes = [('search-model', None, object(), Executor())]
+    async def generate(*args, **kwargs):
+        raise ClientError(429, {'error': {'message': 'Quota exhausted', 'details': [
+            {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [
+                {'quotaMetric': 'generate_content', 'quotaId': 'minute', 'quotaValue': '60'}]},
+            {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '30s'}]}})
+    client._generate = generate
+    with pytest.raises(GeminiUnavailable):
+        await client.discover_article_urls('Gate')
+    assert client.last_article_discovery_failure['quota_violations'] == [
+        {'quotaMetric': 'generate_content', 'quotaId': 'minute', 'quotaValue': '60'}]
+    assert client.last_article_discovery_failure['retry_delay'] == '30s'
+
+
+@pytest.mark.asyncio
 async def test_search_failure_survives_restart_then_retries_without_serp(tmp_path, monkeypatch):
     svc, adapter, story, session = prepared(tmp_path)
     calls = []
