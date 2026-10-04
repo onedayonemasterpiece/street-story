@@ -240,3 +240,30 @@ async def test_live_first_search_skips_only_fresh_completed_scope_and_keeps_snip
     stale = await client.search_web('more facts', context)
     assert len(stale.grounding_sources) == 2
     await client.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_same_literal_evidence_is_reused_not_reported_as_new_fact_or_evidence(tmp_path):
+    svc, adapter, session, _, _, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    with svc.store.connection() as db:
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()[0])
+    source = research['grounding_sources'][0]
+    claim = {'claim_key': 'controlled-snippet', 'text': source['supports'][0]['text'], 'confidence': .9,
+             'source_refs': [source['source_ref']], 'evidence_refs': [source['supports'][0]['evidence_ref']],
+             'verdict': 'supported', 'atomic': True, 'support_complete': True,
+             'qualifiers_preserved': True, 'review_reason': 'Controlled literal evidence.'}
+    first = await adapter._save_research_facts(session, 'first-save', {'run_id': session.state['research_run_id'],
+        'facts': [claim], 'batch_reviewed': True, 'source_matches_poi': True})
+    assert first['save_research_audit']['new_eligible_claim_count'] == 1
+    await adapter._get_research_chunk(session, {'run_id': first['research_run_id']})
+    await adapter._save_research_facts(session, 'finish-first-page', {'facts': [], 'batch_reviewed': True, 'source_matches_poi': True})
+    second = await adapter._search_web(session, 'second-search', {'query': 'Inspect another aspect'})
+    again = await adapter._save_research_facts(session, 'second-save', {
+        'run_id': second['research_run_id'], 'batch_id': second['save_batch_id'],
+        'facts': [{**claim, 'existing_fact_id': first['facts'][0]['fact_id']}],
+        'batch_reviewed': True, 'source_matches_poi': True})
+    audit = again['save_research_audit']
+    assert audit['new_eligible_claim_count'] == audit['evidence_to_existing_claim_count'] == audit['new_evidence_span_count'] == 0
+    assert audit['reused_fact_count'] == 1
+    await reader.search_http.aclose()

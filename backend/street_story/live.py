@@ -3620,6 +3620,21 @@ class StreetStoryLiveAdapter:
             prior_poi_ids = {str(row[0]) for row in db.execute(
                 f'SELECT assertion_id FROM poi_research_assertions WHERE poi_key IN ({placeholders})', tuple(keys))}
             prior_poi_ids.update(str(row[0]) for row in db.execute('SELECT assertion_id FROM fact_assertions WHERE story_id=?', (story_id,)))
+            def support_keys(sources):
+                return {(str(span.get('source_url') or source.get('url') or '').rstrip('/'),
+                         str(span.get('source_version_id') or source.get('source_version_id') or ''),
+                         str(span.get('kind') or 'support'), str(span.get('text') or '').strip())
+                        for source in sources for span in source.get('supports') or []
+                        if isinstance(span, dict) and str(span.get('text') or '').strip()}
+
+            prior_supports: dict[str, set] = {}
+            for fact in normalized:
+                fact_id = fact['fact_id']
+                rows = db.execute(
+                    f'SELECT sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? '
+                    'UNION ALL SELECT sources_json FROM facts WHERE story_id=? AND fact_id=?',
+                    (*keys, fact_id, story_id, fact_id))
+                prior_supports[fact_id] = set().union(*(support_keys(json.loads(row[0])) for row in rows))
 
             persist_fact_candidates(
                 db,
@@ -3698,8 +3713,12 @@ class StreetStoryLiveAdapter:
             eligible_ids = {str(row[0]) for row in db.execute(
                 'SELECT assertion_id FROM fact_assertions WHERE story_id=? AND eligibility=\'eligible\'', (story_id,))}
             saved_ids = {str(f['fact_id']) for f in normalized}
+            added_supports = {f['fact_id']: support_keys(f.get('sources') or []) - prior_supports[f['fact_id']]
+                              for f in normalized if f['fact_id'] in prior_poi_ids}
             save_audit.update(new_eligible_claim_count=len((saved_ids - prior_poi_ids) & eligible_ids),
-                              evidence_to_existing_claim_count=len(saved_ids & prior_poi_ids),
+                              evidence_to_existing_claim_count=sum(bool(spans) for spans in added_supports.values()),
+                              new_evidence_span_count=sum(len(spans) for spans in added_supports.values()),
+                              reused_fact_count=sum(not spans for spans in added_supports.values()),
                               withheld_or_insufficient_count=len(saved_ids - eligible_ids))
             manifest_counts = run_manifest(db, run_id)['counts']
             save_audit.update(skipped_completed_chunks=manifest_counts['chunks_skipped_completed'],

@@ -1001,6 +1001,8 @@ async def test_live_discovery_save_reconciles_against_existing_full_inventory(tm
         "collapsed_in_batch_count": 0,
         "new_eligible_claim_count": 0,
         "evidence_to_existing_claim_count": 1,
+        "new_evidence_span_count": 1,
+        "reused_fact_count": 0,
         "withheld_or_insufficient_count": 1,
         "skipped_completed_chunks": 0,
         "resumed_chunks": 0,
