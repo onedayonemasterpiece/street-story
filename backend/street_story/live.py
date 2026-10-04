@@ -1444,6 +1444,8 @@ class StreetStoryLiveAdapter:
                         seen_evidence.add(evidence_ref)
                 compact_sources.append({
                     "source_ref": source_ref,
+                    "url": str(source.get('url') or '')[:240],
+                    "title": str(source.get('title') or '')[:100],
                     "evidence": evidence,
                 })
             projected["sources"] = compact_sources
@@ -1451,7 +1453,7 @@ class StreetStoryLiveAdapter:
         elif name == "search_web" and result.get("semantic_completion"):
             projected["sources"] = []
             projected.pop("fact_conflicts", None)
-        elif name == "save_research_facts":
+        elif name == "save_research_facts" and result.get('review_required'):
             projected["facts"] = [
                 {
                     "fact_id": str(fact.get("fact_id") or ""),
@@ -2597,7 +2599,7 @@ class StreetStoryLiveAdapter:
         if candidate is None:
             if chunk_id:
                 raise ConflictError("live_research_chunk_unknown", "Retry get_research_chunk with run_id only. Omit chunk_id to read the next chunk; never invent chunk IDs.")
-            source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"]), None)
+            source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
             if source is None:
                 if session.state.get('live_first_research'):
                     with self.service.store.tx() as db:
@@ -2621,6 +2623,15 @@ class StreetStoryLiveAdapter:
                 if int(current["revision"] or 0) != snapshot_revision:
                     raise ConflictError("live_research_run_stale", "Story changed while reading evidence.")
             if not documents:
+                if session.state.get('live_first_research'):
+                    # One unreachable document must not terminate discovery of
+                    # the other saved sources. The failed receipt stays durable.
+                    with self.service.store.tx() as db:
+                        self._research_run_guard(db, session, run_id)
+                        db.execute("UPDATE research_run_sources SET status='failed',error_code=COALESCE(error_code,'fetch_empty'),updated_at=? WHERE run_id=? AND url=? AND source_version_id IS NULL", (self.service.store.now(), run_id, source['url']))
+                    logger.warning('street_story_source_skipped run=%s reason=fetch_failed remaining=%s', run_id,
+                                   sum(not s['source_version_id'] and s['status'] != 'failed' and s['url'] != source['url'] for s in sources))
+                    return await self._get_research_chunk(session, {'run_id': run_id})
                 with self.service.store.tx() as db:
                     self._research_run_guard(db, session, run_id)
                     set_run_state(db, run_id, "partial", detail="source_fetch_failed_resume_required", now=self.service.store.now(), completed=False)

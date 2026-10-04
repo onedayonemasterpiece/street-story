@@ -90,6 +90,28 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
 
 
 @pytest.mark.asyncio
+async def test_live_first_skips_failed_source_and_reads_another_saved_source(tmp_path):
+    import httpx
+    from street_story.research_runs import register_discovered_source
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    bad_url = 'https://a-unreachable.example/page'
+    with svc.store.tx() as db:
+        register_discovered_source(db, run_id=run_id, url=bad_url, title='Unavailable', status='snippet_only', now=0)
+    await reader.search_http.aclose()
+    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        502 if str(request.url) == bad_url else 200,
+        headers={'content-type': 'text/html'}, text='<main><p>' + ' '.join(QUOTES) + '</p></main>')))
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    assert chunk['source_url'] == URL and chunk['evidence_passages']
+    with svc.store.connection() as db:
+        failed = db.execute('SELECT status,error_code FROM research_run_sources WHERE run_id=? AND url=?', (run_id, bad_url)).fetchone()
+        assert tuple(failed) == ('failed', 'http_502')
+        assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (run_id,)).fetchone()[0] != 'partial'
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_document_fallback_checkpoint_replay_review_selection_and_draft(tmp_path):
     svc, adapter, session, events, run_id, helper_calls, reader = await fallback(tmp_path)
     first = await adapter.execute_tool(session, {"name": "get_research_chunk", "args": {"run_id": run_id, "source_url": URL}})
