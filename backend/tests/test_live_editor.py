@@ -1977,3 +1977,41 @@ async def test_live_fallback_zero_conflict_review_completes_same_run(tmp_path):
         {"cursor": 0, "limit": 50, "eligibility": "all"},
     )
     assert after_review["facts"][0]["eligibility"] == "eligible"
+
+@pytest.mark.asyncio
+async def test_research_output_requires_durable_save_or_bounded_exhaustion(tmp_path, monkeypatch):
+    from street_story.live import _forward_committed_output
+
+    svc, adapter, session, _events = make_service(tmp_path)
+    replies = {
+        'search_web': {'discovery_only': True},
+        'save_research_facts': {'facts': []},
+        'get_research_chunk': {'next_tool': 'save_research_facts'},
+    }
+
+    async def execute(_session, call):
+        return replies[call['name']]
+
+    monkeypatch.setattr(adapter, '_execute_tool', execute)
+    delivered = []
+    await adapter.execute_tool(session, {'name': 'search_web'})
+    for event in [{'type': 'audio', 'data': 'private audio'}, {'type': 'output_transcript', 'text': 'Unsaved claim'}]:
+        _forward_committed_output(svc, session, event, delivered.append)
+    assert delivered == []
+    # Tools and completion still reach the shared host, so continuation runs.
+    _forward_committed_output(svc, session, {'type': 'turn_complete'}, delivered.append)
+    assert delivered == [{'type': 'turn_complete'}]
+    await adapter.execute_tool(session, {'name': 'save_research_facts'})
+    assert session.state['research_output_pending'] is True
+    replies['save_research_facts'] = {'facts': [{'evidence_supported': True}]}
+    await adapter.execute_tool(session, {'name': 'save_research_facts'})
+    saved = {'type': 'output_transcript', 'text': 'Saved finding'}
+    _forward_committed_output(svc, session, saved, delivered.append)
+    assert delivered[-1] == saved
+    await adapter.execute_tool(session, {'name': 'get_research_chunk'})
+    assert session.state['research_output_pending'] is True
+    replies['get_research_chunk'] = {'all_chunks_processed': True, 'next_tool': None, 'full_source_attempts': 3}
+    await adapter.execute_tool(session, {'name': 'get_research_chunk'})
+    empty = {'type': 'output_transcript', 'text': 'Новых подтверждённых фактов не нашла.'}
+    _forward_committed_output(svc, session, empty, delivered.append)
+    assert delivered[-1] == empty
