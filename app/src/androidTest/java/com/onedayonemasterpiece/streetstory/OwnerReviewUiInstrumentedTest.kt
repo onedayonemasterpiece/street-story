@@ -60,6 +60,7 @@ class OwnerReviewUiInstrumentedTest {
                 assertEquals(3, boxes.count { it.isChecked })
                 assertTrue(boxes.all { it.isEnabled })
                 boxes[0].performClick()
+                assertEquals("Факты · выбрано 4 из 16", (root as ViewGroup).getChildAt(0).let { (it as TextView).text.toString() })
                 selectedId = facts[0].factId
                 val sources = descendants(root).filterIsInstance<TextView>().filter { it.contentDescription?.toString()?.startsWith("Источники факта:") == true }
                 assertEquals(facts.size, sources.size)

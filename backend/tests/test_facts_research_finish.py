@@ -76,7 +76,7 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
         fact.update(verdict='supported' if n < 2 else 'insufficient', atomic=True,
                     support_complete=n < 2, qualifiers_preserved=True,
                     review_reason='Controlled model verdict for this own passage.', selected=False)
-    args['facts'] = [{'source_refs': [], 'evidence_refs': [], 'evidence_quotes': QUOTES,
+    args['facts'] = [{'passage_ids': [0],
                       'claims': [{k: v for k, v in fact.items() if k not in {'source_refs', 'evidence_refs', 'evidence_quotes'}} for fact in args['facts']]}]
     saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'normal-batch', 'args': args})
     assert saved['review_required'] is False

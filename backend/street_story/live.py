@@ -683,15 +683,19 @@ FUNCTIONS = [
 # The model emits independent claims in each evidence group. The server only
 # flattens that model-owned structure; it never splits prose.
 _save_declaration = next(f for f in FUNCTIONS if f['name'] == 'save_research_facts')
+_save_declaration['description'] = ('Persist your extraction and checks of the current small frozen document page. '
+                                    'Copy its batch checkpoint and enumerate independent claims grouped by own numeric passage_ids. '
+                                    'Do not rewrite quotes or evidence hashes: the server binds these passage numbers to exact immutable source spans. '
+                                    'Withhold doubtful claims, save good supported findings immediately, then follow the returned next unread page.')
 _finding_schema = _save_declaration['parameters']['properties']['facts']['items']
 _claim_fields = {k: v for k, v in _finding_schema['properties'].items()
                  if k not in {'source_refs', 'evidence_refs', 'evidence_quotes', 'passage_ids'}}
 _finding_schema['properties'] = {k: v for k, v in _finding_schema['properties'].items()
-                                 if k in {'source_refs', 'evidence_refs', 'evidence_quotes', 'passage_ids'}}
+                                 if k == 'passage_ids'}
 _finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enumerate EACH independently selectable assertion in these passages. Each depicted person or independent role/event is its own object, never one compound sentence.',
                                           'items': {'type': 'object', 'properties': _claim_fields,
                                                     'required': ['claim_key', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
-_finding_schema['required'] = ['claims', 'source_refs', 'evidence_refs']
+_finding_schema['required'] = ['claims', 'passage_ids']
 
 SYSTEM_INSTRUCTION = """
 Ты — голосовой редактор Street Story. Работай только с текущей темой.

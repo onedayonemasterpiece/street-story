@@ -1486,7 +1486,8 @@ class MainActivity : Activity() {
             facts.isNotEmpty() -> "Факты · выбрано $selectedCount из ${facts.size}"
             else -> "Факты"
         }
-        host.addView(label(title, 15, INK, Typeface.DEFAULT_BOLD))
+        val factsHeading = label(title, 15, INK, Typeface.DEFAULT_BOLD)
+        host.addView(factsHeading)
         if (progress != null) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -1548,6 +1549,9 @@ class MainActivity : Activity() {
                     store.setFactSelected(storyId, fact.factId, checked && fact.evidenceSupported)
                     enqueueFactSelection(storyId)
                     val updated = store.facts(storyId)
+                    if (progress?.active != true) {
+                        factsHeading.text = "Факты · выбрано ${updated.count { it.selected && it.evidenceSupported }} из ${updated.size}"
+                    }
                     stickyFacts?.text = "Факты · ${updated.count { it.selected && it.evidenceSupported }}/${updated.size}"
                 }
             }
