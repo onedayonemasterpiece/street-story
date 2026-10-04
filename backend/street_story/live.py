@@ -398,8 +398,8 @@ FUNCTIONS = [
         "Read a document chunk of the SAME research run before facts exist. Omit chunk_id for the next unfinished "
         "chunk. For the first document choose a discovered source_ref by competence and provenance; copy its short ref instead of rewriting a long URL. source_url remains supported for exact legacy URLs. Uses the guarded fetch pipeline. Returns frozen "
         "source version, exact core/context, batch_id and expected_story_revision. Resume does not repeat completed chunks.",
-        {"run_id": {"type": "string"}, "source_ref": {"type": "string", "description": "Exact short source_ref from this run's discovery; prefer this to copying a URL."}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}, "passage_cursor": {"type": "integer", "description": "Follow next_passage_cursor before completing this chunk; unseen pages remain pending."}},
-        ["run_id"],
+        {"run_id": {"type": "string"}, "source_ref": {"type": "string", "description": "First read: choose a competent discovery source and copy exact source_ref. After a saved page, use empty string to follow the next unread page/source."}, "source_url": {"type": "string"}, "chunk_id": {"type": "string"}, "passage_cursor": {"type": "integer", "description": "Follow next_passage_cursor before completing this chunk; unseen pages remain pending."}},
+        ["run_id", "source_ref"],
     ),
     _tool_schema(
         "resolve_place",
@@ -810,7 +810,9 @@ class StreetStoryLiveAdapter:
                 "functions": [{**function, "description": (
                     "Save checked snippets or frozen passages. Copy exact nonempty source_refs/evidence_refs for snippets; "
                     "empty arrays only with numeric passage_ids. Never speak unsaved findings; follow next_args."
-                    if function["name"] == "save_research_facts" else function["description"].split(". ")[0][:140]
+                    if function["name"] == "save_research_facts" else
+                    "First document: choose a competent discovery source and copy source_ref. Follow saved next_args for later pages; empty source_ref follows the next unread source."
+                    if function["name"] == "get_research_chunk" else function["description"].split(". ")[0][:140]
                 )} for function in FUNCTIONS],
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
@@ -2189,7 +2191,9 @@ class StreetStoryLiveAdapter:
                             break
                     return {"research_run_id": current_run, "discovery_only": True, "semantic_status": "live_model_required", "continuation_required": True,
                             "next_tool": "get_research_chunk", "next_args": next_args,
-                            "instruction": "Read the existing discovered document and ALL its next_args pages before repeating search. The saved run and goal are unchanged.", "facts": [], "sources": []}
+                            "instruction": "Read the existing discovered document and ALL its next_args pages before repeating search. Choose a competent source from the retained addresses and copy its source_ref for the first document. The saved run and goal are unchanged.", "facts": [],
+                            "sources": [{"source_ref": _search_source_ref(row["url"]), "url": row["url"], "title": row["title"], "supports": []}
+                                        for row in db.execute("SELECT url,title FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url", (current_run,))]}
         coverage_goal = _bounded_text(args.get("coverage_goal") or query, 1600, required=True)
         story_id = session.resource_id
 

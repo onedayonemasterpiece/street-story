@@ -653,3 +653,26 @@ def test_published_live_save_schema_accepts_snippets_and_document_groups():
     assert {'source_refs', 'evidence_refs', 'text', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason', 'passage_ids', 'claims'} <= finding['properties'].keys()
     assert {'source_refs', 'evidence_refs'} <= set(finding['required'])
     assert {'text', 'verdict', 'qualifiers_preserved'} <= set(finding['properties']['claims']['items']['required'])
+
+
+@pytest.mark.asyncio
+async def test_pending_discovery_redirect_retains_addresses_without_new_search(tmp_path):
+    from street_story.live import _search_source_ref
+    svc, adapter, session, _events, run_id, _calls, reader = await fallback(tmp_path)
+    try:
+        async def forbidden_search(*_args, **_kwargs):
+            raise AssertionError('Pending discovery must not perform another external search')
+        svc.providers.gemini.search_web = forbidden_search
+        with svc.store.tx() as db:
+            now = svc.store.now()
+            db.execute('INSERT INTO research_run_sources(run_id,url,title,status,discovered_at,updated_at) VALUES(?,?,?,?,?,?)',
+                (run_id, 'https://museum.example/history', 'Primary museum history', 'discovered', now, now))
+        result = await adapter.execute_tool(session, {'name': 'search_web', 'id': 'repeat-discovery', 'args': {'query': 'same owner research'}})
+        assert result['research_run_id'] == run_id
+        assert result['next_tool'] == 'get_research_chunk'
+        addresses = {source['source_ref']: source['url'] for source in result['sources']}
+        assert addresses[_search_source_ref(URL)] == URL
+        assert addresses[_search_source_ref('https://museum.example/history')] == 'https://museum.example/history'
+        assert all(not source['evidence'] for source in result['sources'])
+    finally:
+        await reader.search_http.aclose()
