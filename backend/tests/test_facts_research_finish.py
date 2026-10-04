@@ -130,6 +130,7 @@ async def test_live_empty_pages_use_bound_checkpoint_and_complete_multiline_docu
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     session.state['live_first_research'] = True
     await reader.search_http.aclose()
+
     body = '<main>' + ''.join(f'<p>Menu item {i}, no assertions.</p>' for i in range(70)) + '</main>'
     reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={'content-type': 'text/html'}, text=body)))
     pages = 0
@@ -149,6 +150,46 @@ async def test_live_empty_pages_use_bound_checkpoint_and_complete_multiline_docu
         assert manifest['run']['state'] == 'completed'
         assert all(c['status'] == 'no_claims' for c in manifest['chunks'])
     await reader.search_http.aclose()
+
+@pytest.mark.asyncio
+async def test_current_page_cannot_save_a_previous_page_passage_number(tmp_path):
+    import httpx
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    await reader.search_http.aclose()
+    claim = 'The gate has a documented second-page feature.'
+    body = '<main><p>' + 'Navigation section. ' * 130 + claim + '</p></main>'
+    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={'content-type': 'text/html'}, text=body,
+    )))
+    first = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    assert claim not in first['evidence_passages'][0]['text']
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'empty-first', 'args': {
+        'facts': [], 'batch_reviewed': True, 'source_matches_poi': True,
+    }})
+    second = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    own = next(p for p in second['evidence_passages'] if claim in p['text'])
+    assert own['passage_id'] > 0
+    args = {'batch_reviewed': True, 'source_matches_poi': True, 'facts': [{
+        'passage_ids': [0], 'source_refs': [], 'evidence_refs': [], 'existing_fact_id': '',
+        'claim_key': 'second-page-feature', 'text': claim, 'confidence': 1.0, 'selected': False,
+        'verdict': 'supported', 'atomic': True, 'support_complete': True,
+        'qualifiers_preserved': True, 'review_reason': 'Exact own supporting passage.',
+    }]}
+    with pytest.raises(ConflictError) as stale:
+        await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'wrong-page-id', 'args': args})
+    assert stale.value.code == 'live_research_passage_stale'
+    assert str(own['passage_id']) in str(stale.value)
+    assert not adapter._get_facts(session.resource_id, {})['facts']
+    args['facts'][0]['passage_ids'] = [own['passage_id']]
+    saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'correct-page-id', 'args': args})
+    assert len(saved['facts']) == 1
+    with svc.store.connection() as db:
+        spans = db.execute('SELECT e.span_text FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id WHERE o.story_id=?', (session.resource_id,)).fetchall()
+    assert any(claim in span['span_text'] for span in spans)
+    assert not adapter._get_facts(session.resource_id, {})['facts'][0]['owner_selected']
+    await reader.search_http.aclose()
+
 
 
 @pytest.mark.asyncio

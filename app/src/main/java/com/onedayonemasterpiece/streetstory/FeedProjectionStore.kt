@@ -39,7 +39,7 @@ class FeedProjectionStore(context: Context) : SQLiteOpenHelper(context.applicati
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
-            """CREATE TABLE voice_messages(
+            """CREATE TABLE IF NOT EXISTS voice_messages(
                 story_id TEXT NOT NULL,
                 session_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -50,7 +50,7 @@ class FeedProjectionStore(context: Context) : SQLiteOpenHelper(context.applicati
                 updated_at INTEGER NOT NULL
             )""".trimIndent(),
         )
-        db.execSQL("CREATE INDEX idx_feed_voice_story ON voice_messages(story_id,started_at,session_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_feed_voice_story ON voice_messages(story_id,started_at,session_id)")
         createLiveMessagesTable(db)
     }
 

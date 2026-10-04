@@ -17,6 +17,29 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class FeedProjectionInstrumentedTest {
     @Test
+    fun repeatedFeedInitializationPreservesExistingMessages() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val storyId = "feed-init-${System.nanoTime()}"
+        val wire = VoiceMessageWire().apply {
+            sessionId = "$storyId-voice"
+            kind = RecordingKind.REFINEMENT
+            displayText = "Сохранённое сообщение"
+        }
+        FeedProjectionStore(context).use { first ->
+            first.replaceVoiceMessages(storyId, listOf(wire))
+            val version = first.writableDatabase.version
+            FeedProjectionStore(context).use { second ->
+                // Two SQLiteOpenHelpers can both observe version zero before
+                // either creation transaction completes. Replay that creation.
+                second.onCreate(first.writableDatabase)
+                assertEquals(version, first.writableDatabase.version)
+                assertEquals("Сохранённое сообщение", first.voiceMessages(storyId).single().displayText)
+                assertEquals("Сохранённое сообщение", second.voiceMessages(storyId).single().displayText)
+            }
+        }
+    }
+
+    @Test
     fun cleanedVoiceProjectionPersistsAcrossStoreRestart() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         context.deleteDatabase("street-story-feed.db")
