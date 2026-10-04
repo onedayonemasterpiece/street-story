@@ -117,6 +117,7 @@ jobs:
           path: |
             instrumentation.txt
             provisioning-logcat.txt
+            ui-evidence/
 
   release:
     needs: [checks, emulator]
