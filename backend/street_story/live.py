@@ -775,7 +775,7 @@ class StreetStoryLiveAdapter:
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
         # duplicating it on every setup consumes the same lease as bootstrap.
-        instruction = ('Research formation policy: ' + review_packets.EXTRACTION_CHECKS
+        instruction = ('During research, discovery is not an answer. After search_web, call save_research_facts or get_research_chunk before speaking any factual finding. Only a successful save receipt authorizes reporting that finding.\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
                        + '\n' + SYSTEM_INSTRUCTION)
         if reviewing:
             # A resumed verification phase must not frame the old inventory as facts
@@ -1549,6 +1549,16 @@ class StreetStoryLiveAdapter:
                     "evidence": evidence,
                 })
             projected["sources"] = compact_sources
+            # A search-provider summary is unsaved prose, not a product finding.
+            # Keep the addressable evidence for the model's semantic work, but do
+            # not present a ready-made answer beside the required save action.
+            projected.pop("summary", None)
+            projected["instruction"] = (
+                "RESEARCH IN PROGRESS, NOT READY FOR A FACTUAL ANSWER. Your next response must be a function call: "
+                "save_research_facts using next_args and the exact snippet refs if sufficient, otherwise get_research_chunk. "
+                "Do not speak factual findings before a successful save receipt. "
+                + str(result.get("instruction") or "")
+            )
             projected.pop("fact_conflicts", None)
         elif name == "search_web" and result.get("semantic_completion"):
             projected["sources"] = []

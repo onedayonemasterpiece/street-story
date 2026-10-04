@@ -105,6 +105,9 @@ def test_discovery_search_projection_keeps_source_identity_and_bounds_snippets()
     assert projected["sources"][0]['title'] == sources[0]['title'][:100]
     assert projected["sources"][0]['evidence'][0]['text'] == sources[0]['supports'][0]['text'][:360]
     assert "fact_conflicts" not in projected
+    assert "summary" not in projected
+    assert "next response must be a function call" in projected["instruction"]
+    assert "before a successful save receipt" in projected["instruction"]
     assert "draft_text" not in projected["story"]
     assert len(json.dumps(projected, ensure_ascii=False)) < 7500
 
