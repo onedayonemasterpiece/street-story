@@ -259,6 +259,29 @@ async def test_withheld_post_tool_audio_does_not_deadlock_unread_research(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_tool_call_turn_without_withheld_answer_does_not_queue_research(tmp_path):
+    from street_story.live import _forward_committed_output
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    await adapter._get_research_chunk(session, {'run_id': run_id})
+    session.state['research_output_pending'] = True
+    session.awaiting_audio = True
+
+    def receive(event):
+        adapter.on_event(session, event)
+
+    # A provider function-call turn may finish before its tool reply is read.
+    # The shared host must keep waiting for the forthcoming model answer.
+    _forward_committed_output(svc, session, {'type': 'turn_complete'}, receive)
+    assert session.awaiting_audio
+    assert not session.state.get('research_continuation_queued')
+    assert not session.state.get('research_continuation_count')
+    with svc.store.connection() as db:
+        assert run_manifest(db, run_id)['run']['state'] != 'partial'
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_search_with_sources_and_zero_new_facts_requires_live_source_read(tmp_path):
     svc, adapter, session, _events = make_service(tmp_path)
     mark_identity_ready(svc, session.resource_id)

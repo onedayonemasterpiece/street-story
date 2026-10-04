@@ -4854,12 +4854,13 @@ def _live_resource_environment(settings: Settings) -> dict[str, str]:
 
 
 def _forward_committed_output(service, session, event, on_event):
-    if session.state.get("research_output_pending") and event.get("type") == "turn_complete":
+    if event.get("type") == "turn_complete" and session.state.pop('research_turn_output_withheld', False):
         # Withheld audio never reaches the shared host's audio callback, which
         # normally clears this post-tool wait. The provider has finished this
         # turn; release only that wait so the adapter can continue unread proof.
         session.awaiting_audio = False
     if session.state.get("research_output_pending") and event.get("type") in {"audio", "output_transcript", "text"}:
+        session.state['research_turn_output_withheld'] = True
         if event.get("type") == "output_transcript":
             session.state["research_continuation_queued"] = False
         # Product evidence policy at the provider boundary; transport,
