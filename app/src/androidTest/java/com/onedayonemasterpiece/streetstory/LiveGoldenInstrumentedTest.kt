@@ -351,7 +351,7 @@ class LiveGoldenInstrumentedTest {
         if (story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()) {
             val image = File(root, "screenshot-visual.img")
             val config = AppGraph.config(context)
-            ApiClient(config.backendUrl, config.deviceToken).downloadAsset(requireNotNull(story.processedImageUrl), image)
+            ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken)).downloadAsset(requireNotNull(story.processedImageUrl), image)
             store.setProcessedImagePath(clientStoryId, image.absolutePath)
         }
         val instrumentation = InstrumentationRegistry.getInstrumentation()
