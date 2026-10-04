@@ -1179,6 +1179,19 @@ class StreetStoryLiveAdapter:
                 session.state["research_output_pending"] = False
             elif name == "get_research_chunk" and result.get("all_chunks_processed") and result.get("next_tool") is None:
                 session.state["research_output_pending"] = False
+            if session.state.get("research_run_id") and name in {"select_facts", "set_concept", "edit_text", "generate_visual", "prepare_publication"}:
+                # A successful owner editing action ends research input focus.
+                # Keep pending documents/facts durable for an explicit resume.
+                session.state["research_author_interrupted"] = True
+                session.state["research_output_pending"] = False
+                self._pause_research(session, "live_owner_switched_to_editing")
+                topic = self._topic_state(session.resource_id)
+                completed = (topic.get("research_run") or {}).get("state") == "completed"
+                self._emit_research_progress(session, stage="completed" if completed else "partial", active=False,
+                    query="", source_count=topic["story"].get("source_count", 0), fact_count=len(topic["story"].get("facts", [])))
+                record_live_diagnostic(self.service, session.resource_id, getattr(session, "id", ""), "backend", "research_owner_editing", {
+                    "run_id": session.state["research_run_id"], "tool": name, "research_input_active": False,
+                })
             return result
         except ConflictError as exc:
             record_live_diagnostic(self.service, session.resource_id, getattr(session, "id", ""), "backend", "live_tool_rejected", {
