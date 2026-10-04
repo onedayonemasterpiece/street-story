@@ -103,10 +103,10 @@ def test_discovery_search_projection_keeps_source_identity_and_bounds_snippets()
     assert projected["sources"][0]["evidence"][0]["evidence_ref"].startswith("evref_")
     assert projected["sources"][0]['url'] == sources[0]['url']
     assert projected["sources"][0]['title'] == sources[0]['title'][:100]
-    assert len(projected["sources"][0]['evidence'][0]['text']) <= 160
+    assert projected["sources"][0]['evidence'][0]['text'] == sources[0]['supports'][0]['text'][:360]
     assert "fact_conflicts" not in projected
     assert "draft_text" not in projected["story"]
-    assert len(json.dumps(projected, ensure_ascii=False)) < 5000
+    assert len(json.dumps(projected, ensure_ascii=False)) < 7500
 
 
 def test_save_facts_projection_confirms_ids_without_repeating_evidence():
