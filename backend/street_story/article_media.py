@@ -277,24 +277,6 @@ async def browser_media(page_url: str, cursor=0, slide_cursor=0) -> tuple[str, l
         return await rendered_media(page, page_url, cursor, slide_cursor)
 
 
-async def wikipedia_article_references(candidate):
-    """Expand all inline/gallery images, rather than the API's lead thumbnail."""
-    page_url = public_url(str(candidate.get('url') or ''))
-    if not page_url or not (urlsplit(page_url).hostname or '').endswith('.wikipedia.org'):
-        return []
-    async with httpx.AsyncClient(timeout=8, follow_redirects=False,
-            headers={'User-Agent': 'StreetStory/0.1 article-media'}) as client:
-        try:
-            _resolved, mime, body = await fetch_public(client, page_url, MAX_PAGE_BYTES)
-            if mime not in {'text/html', 'application/xhtml+xml'}:
-                return []
-            _title, media = extract_media(body, page_url)
-        except (ValueError, OSError, httpx.HTTPError):
-            return []
-    from .identity_references import canonical_reference
-    return list(dict.fromkeys(url for item in media if (url := canonical_reference(item['image_url']))))
-
-
 async def browser_reference(descriptor):
     """Extract only the authorized article's rendered illustration, never the page."""
     raw = descriptor['image_url']
@@ -350,9 +332,11 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
     async def read(source):
         nonlocal browser_slots
         raw = public_url(str(source.get('url') or ''))
-        if not raw or any((urlsplit(raw).hostname or '').endswith(host) for host in ('wikipedia.org', 'wikimedia.org')):
+        if not raw or (urlsplit(raw).hostname or '').endswith('wikimedia.org'):
             return None
-        cid = 'web:' + hashlib.sha256(raw.encode()).hexdigest()[:16]
+        wiki = (urlsplit(raw).hostname or '').endswith('.wikipedia.org')
+        wiki_id = str(source.get('candidate_id') or '')
+        cid = wiki_id if wiki and re.fullmatch(r'wiki:\d{1,20}', wiki_id) else 'web:' + hashlib.sha256(raw.encode()).hexdigest()[:16]
         if cid in excluded:
             return None
         async with semaphore:
@@ -383,6 +367,12 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     event('identity_article_browser', {'image_count': len(media), 'headless': True})
                 except Exception as exc:
                     event('identity_article_browser_unavailable', {'reason': type(exc).__name__})
+            if wiki:
+                from .identity_references import original_reference
+                # Reuse the existing Wikimedia thumbnail/original transport
+                # and hash identity, while retaining article provenance.
+                media = list({url: {**item, 'image_url': url} for item in media
+                    if (url := original_reference(item['image_url']))}.values())
             if not media:
                 if receipts is not None:
                     receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure'})
@@ -392,7 +382,8 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
             event('identity_article_media', {'candidate_id': cid, 'image_count': len(media)})
             return {'candidate_id': cid, 'name': title or str(source.get('title') or '')[:180],
                 'url': page_url, 'source_urls': [page_url], 'reference_image_urls': [item['image_url'] for item in media],
-                'article_media': media, 'multi_view': True, 'discovery': 'web_article_media',
+                'article_media': media, 'multi_view': True,
+                'discovery': 'wikipedia_article_media' if wiki else 'web_article_media',
                 'enumeration_status': 'partial' if partial else 'completed', 'discovery_provenance': source}
     try:
         unique = {str(s.get('url')): s for s in sources if isinstance(s, dict)}
