@@ -94,10 +94,12 @@ def reuse_chunk_checkpoint(db, run_id: str, chunk_id: str, now: float,
         checkpoint = _valid_checkpoint(db, donor['run_id'], chunk_id)
         if not checkpoint:
             continue
-        if checkpoint['terminal'] and not checkpoint['reusable_terminal']:
-            continue
         if not checkpoint['article_content_checked']:
             logger.info('street_story_chunk_reuse_rejected run_id=%s chunk_id=%s donor_run_id=%s reason=legacy_empty_content_unverified',
+                        run_id, chunk_id, donor['run_id'])
+            continue
+        if checkpoint['terminal'] and not checkpoint['reusable_terminal']:
+            logger.info('street_story_chunk_reuse_rejected run_id=%s chunk_id=%s donor_run_id=%s reason=incomplete_terminal_receipt',
                         run_id, chunk_id, donor['run_id'])
             continue
         if checkpoint['payload_missing'] or not checkpoint['next_batch_index']:
