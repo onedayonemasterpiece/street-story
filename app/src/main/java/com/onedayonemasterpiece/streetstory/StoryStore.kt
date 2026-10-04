@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
 import java.io.File
 import java.time.OffsetDateTime
 
@@ -405,6 +406,11 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
                     put("selected", if (selected) 1 else 0)
                     put("sources_json", fact.sourcesJson)
                 })
+            }
+            val selectedCount = facts(storyId).count { it.selected }
+            if (existing.size != incoming.size || existing.values.count { it.selected } != selectedCount) {
+                Log.i("StreetStoryFacts", "event=facts_projection story_id=$storyId source_sha=${BuildConfig.SOURCE_SHA} " +
+                    "fact_count=${incoming.size} selected_count=$selectedCount preserve_pending_owner_selection=$preserveLocalSelection")
             }
             db.setTransactionSuccessful()
         } finally {
