@@ -94,6 +94,19 @@
         "Tests, semantic benchmarks and acceptance harnesses are quality controls, not substitutes for delivery. A green test suite without a usable research-to-selection-to-draft flow is not product completion.",
         "Recovery, repair, review and supersession mechanisms must not become mandatory normal-path ceremony unless concrete product failures prove they are necessary."
       ]
+    },
+    {
+      "id": "CORE-SHARED-POI-HISTORY-GRAPH",
+      "statement": "Street Story is not a knowledge silo. The platform maintains a persistent server-side canonical regional POI/history knowledge graph, and Street Story both consumes and enriches that shared graph. Story-local facts are a projection for one publication, not the authoritative long-term store. The graph accumulates POI identity and aliases, evidence-backed claims and sources, people, historical events/threads and their relations to POIs and to one another.",
+      "critical": true,
+      "acceptance": [
+        "A new story hydrates relevant existing canonical POI knowledge before doing redundant web research, including prior eligible claims, known sources and aliases.",
+        "Research reuses already processed evidence and focuses new web work on gaps, new sources or changed questions instead of rediscovering the same POI knowledge from zero.",
+        "New evidence-backed facts and semantic relations discovered by Street Story are persisted into the shared canonical POI/history graph so they remain reusable across stories, devices and other products.",
+        "Story-specific owner selection, editorial angle and draft state remain local to the story and do not redefine canonical graph truth.",
+        "Regional Knowledge Base may enrich the same canonical graph by delivering provenance-rich typed evidence events; Street Story findings do not need to be written back into Regional Knowledge Base.",
+        "Physical co-location of the current POI tables with the Street Story backend does not make the knowledge graph story-local: the logical ownership boundary is the shared regional POI/history knowledge layer."
+      ]
     }
   ]
 }
