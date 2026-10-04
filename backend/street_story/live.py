@@ -803,8 +803,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if stage not in self.CAPABILITY_TOOLS:
             raise ConflictError('live_stage_invalid', 'Неизвестный этап.')
         initialized = self.initialize(resource_id=session.resource_id, actor=session.actor, model=session.model, full_configuration=True)
+        continuation = str((call.get('args') or {}).get('intent') or '')[:1200]
+        if stage != 'identity' and (initialized['context'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}:
+            stage = 'identity'
+            continuation = 'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.'
         return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
-            'context': initialized['context'], 'continuation': str((call.get('args') or {}).get('intent') or '')[:1200]}
+            'context': initialized['context'], 'continuation': continuation}
 
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
