@@ -770,7 +770,14 @@ class StreetStoryLiveAdapter:
 
     def initialize(self, *, resource_id: str, actor: Any, model: str, **_args: Any) -> dict[str, Any]:
         state = self._topic_state(resource_id)
-        context = self._compact_context(state)
+        # A growing story must still leave lease room for history, photo and
+        # the owner's first input. The paginated inventory remains authoritative.
+        context = self._compact_context(state, fact_preview_limit=8)
+        if context["facts_preview_truncated"]:
+            context["facts_instruction"] = (
+                "Preview only. Before additional research or deduplication, read get_facts pages "
+                "until has_more=false. A fact missing from this preview is not absent from the story."
+            )
         reviewing = (state.get('research_run') or {}).get('state') == 'verifying'
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
@@ -1799,8 +1806,11 @@ class StreetStoryLiveAdapter:
         }
 
     @staticmethod
-    def _compact_context(state: dict[str, Any]) -> dict[str, Any]:
+    def _compact_context(state: dict[str, Any], *, fact_preview_limit: int = 48) -> dict[str, Any]:
         story = state["story"]
+        inventory = list(story.get("facts", []))
+        if fact_preview_limit < 48:
+            inventory.sort(key=lambda item: not bool(item.get("selected")))
         facts = [
             {
                 "fact_id": item.get("fact_id"),
@@ -1809,7 +1819,7 @@ class StreetStoryLiveAdapter:
                 "has_attached_evidence": bool(item.get("evidence_supported")),
                 "eligibility": item.get("eligibility", "unreviewed"),
             }
-            for item in story.get("facts", [])[:48]
+            for item in inventory[:fact_preview_limit]
         ]
         visual = story.get("visual") if isinstance(story.get("visual"), dict) else {}
         identity = story.get("visual_identity") if isinstance(story.get("visual_identity"), dict) else {}
@@ -1826,6 +1836,10 @@ class StreetStoryLiveAdapter:
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
             "facts": facts,
+            "fact_count": len(inventory),
+            "facts_preview_truncated": len(inventory) > fact_preview_limit,
+            "facts_read_tool": "get_facts",
+            "selected_fact_ids": [item.get("fact_id") for item in inventory if item.get("selected")],
             "fact_conflicts": [
                 {
                     **{

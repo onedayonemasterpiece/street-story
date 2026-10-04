@@ -7,6 +7,25 @@ import logging
 from street_story.live import StreetStoryLiveAdapter
 
 
+def test_startup_fact_preview_preserves_selection_and_full_inventory_address():
+    state = {"story": {"id": "story-growing", "facts": [
+        {"fact_id": f"fact-{index}", "text": "Own-evidence finding " * 20,
+         "selected": index in {70, 79}, "evidence_supported": True}
+        for index in range(80)
+    ]}, "editor": {"text_revision": 4}}
+    original = copy.deepcopy(state)
+    preview = StreetStoryLiveAdapter._compact_context(state, fact_preview_limit=8)
+    assert state == original
+    assert len(preview["facts"]) == 8
+    assert preview["fact_count"] == 80
+    assert preview["facts_preview_truncated"] is True
+    assert preview["facts_read_tool"] == "get_facts"
+    assert preview["selected_fact_ids"] == ["fact-70", "fact-79"]
+    assert [fact["fact_id"] for fact in preview["facts"][:2]] == ["fact-70", "fact-79"]
+    # Ordinary product-state projection keeps its established preview capacity.
+    assert len(StreetStoryLiveAdapter._compact_context(state)["facts"]) == 48
+
+
 def test_live_model_reply_omits_duplicate_research_without_mutating_durable_result(caplog):
     identity = {
         "status": "owner_confirmed",
