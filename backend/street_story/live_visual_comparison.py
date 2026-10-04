@@ -140,7 +140,9 @@ class LiveVisualComparisonMixin:
             return
         token = canonical([len(state.get('seen_images', [])), len(state.get('queue', [])),
             [(url, p.get('status'), p.get('attempts')) for url, p in pages.items()],
-            [c.get('candidate_id') or c.get('url') for c in identity.get('candidates', [])] if not state else []])
+            [c.get('candidate_id') or c.get('url') for c in identity.get('candidates', [])] if not state else [],
+            [(query, result.get('status'), result.get('retry_at')) for query, result in
+                (research.get('identity_article_discovery') or {}).get('queries', {}).items()]])
         if session.state.get('identity_continuation_token') == token:
             return
         session.state['identity_continuation_token'] = token
