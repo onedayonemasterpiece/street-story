@@ -683,7 +683,7 @@ FUNCTIONS = [
 # The model emits independent claims in each evidence group. The server only
 # flattens that model-owned structure; it never splits prose.
 _save_declaration = next(f for f in FUNCTIONS if f['name'] == 'save_research_facts')
-_save_declaration['description'] = ('Persist checked discovery snippets OR a small frozen document page. For sufficient search snippets, pass exact run_id and batch_id from search_web, and flat facts with source_refs/evidence_refs and every review flag. Never speak an unsaved snippet as a fact. For document pages use passage_ids/claims groups. '
+_save_declaration['description'] = ('Persist checked discovery snippets OR a small frozen document page. For sufficient search snippets, pass exact run_id and batch_id from search_web, and flat facts with nonempty exact source_refs/evidence_refs and every review flag. Each evidence group must include both ref arrays. For frozen document pages these arrays may be empty when numeric passage_ids bind the evidence. Never speak an unsaved snippet as a fact. For document pages use passage_ids/claims groups. '
                                     'The server binds the current read checkpoint; enumerate independent claims grouped by own numeric passage_ids. '
                                     'Do not rewrite quotes or evidence hashes: the server binds these passage numbers to exact immutable source spans. '
                                     'Withhold doubtful claims, save good supported findings immediately, then follow the returned next unread page.')
@@ -695,7 +695,7 @@ _claim_fields = {k: v for k, v in _finding_schema['properties'].items()
 _finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enumerate EACH independently selectable assertion in these passages. Each depicted person or independent role/event is its own object, never one compound sentence.',
                                           'items': {'type': 'object', 'properties': _claim_fields,
                                                     'required': ['claim_key', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
-_finding_schema['required'] = []
+_finding_schema['required'] = ['source_refs', 'evidence_refs']
 _save_parameters = _save_declaration['parameters']
 _save_parameters['properties'] = {key: _save_parameters['properties'][key]
                                   for key in ('run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi')}
@@ -1163,6 +1163,9 @@ class StreetStoryLiveAdapter:
                 session.state["research_output_pending"] = False
             return result
         except ConflictError as exc:
+            record_live_diagnostic(self.service, session.resource_id, session.id, "backend", "live_tool_rejected", {
+                "tool": name, "code": exc.code, "run_id": session.state.get("research_run_id"),
+            })
             if call.get("name") in {"get_review_packet", "finalize_fact_review"} and exc.code in {
                 "live_review_decisions_invalid", "live_review_canonical_invalid", "live_fact_review_evidence_invalid", "live_review_packet_unknown",
             }:
@@ -4793,7 +4796,7 @@ def _live_resource_environment(settings: Settings) -> dict[str, str]:
 
 
 def _forward_committed_output(service, session, event, on_event):
-    if session.state.get("research_output_pending") and not session.state.get("research_cancelled") and event.get("type") in {"audio", "output_transcript", "text"}:
+    if session.state.get("research_output_pending") and event.get("type") in {"audio", "output_transcript", "text"}:
         if event.get("type") == "output_transcript":
             session.state["research_continuation_queued"] = False
         # Product evidence policy at the provider boundary; transport,

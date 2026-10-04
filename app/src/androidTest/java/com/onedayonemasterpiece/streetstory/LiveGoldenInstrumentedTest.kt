@@ -143,7 +143,10 @@ class LiveGoldenInstrumentedTest {
             story = pollStory(
                 api, storyId, RESEARCH_TIMEOUT_MS,
                 allowedNeedsReviewCodes = setOf("visual_stale"),
-            ) { it.sourceCount > 0 && it.facts.count { fact -> fact.evidenceSupported } >= 2 }
+            ) {
+                live.snapshot().researchProgress?.active != true &&
+                    it.sourceCount > 0 && it.facts.count { fact -> fact.evidenceSupported } >= 2
+            }
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
             require(story.facts.count { it.evidenceSupported } >= 2)
