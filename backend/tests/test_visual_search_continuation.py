@@ -88,6 +88,46 @@ async def test_search_receipt_reads_real_google_sdk_error_details(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_read_topic_delivers_frame_and_negative_verdict_delivers_next(tmp_path):
+    from live_interaction.tool_parts import function_response
+    svc, adapter, story, session = prepared(tmp_path)
+    candidate = {'candidate_id': 'gate', 'name': 'Gate', 'url': 'https://example.com/article',
+        'reference_image_urls': ['https://example.com/first.jpg', 'https://example.com/second.jpg']}
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': [candidate]}}), story['id']))
+    async def images(candidates, limit, *, story_id, evidence):
+        url = candidates[0]['reference_image_urls'][0]
+        evidence.append({'candidate_id': 'gate', 'model_image_sha256': hashlib.sha256(url.encode()).hexdigest()})
+        return [('gate', 'image/jpeg', jpeg())]
+    svc._candidate_reference_images = images
+    s = session()
+    first = await adapter.execute_tool(s, {'name': 'read_topic', 'id': 'read', 'args': {}})
+    assert first['comparison_id'] and function_response('read_topic', 'read', first)['parts']
+    assert svc.story(story['id']).get('identity_progress', {}).get('images_reviewed_count', 0) == 0
+    reply = await adapter.execute_tool(s, {'name': 'record_place_comparison', 'id': 'verdict', 'args': {
+        'comparison_id': first['comparison_id'], 'status': 'mismatch', 'candidate_id': '',
+        'confidence': 1, 'observations': ['Different'], 'alternative_candidate_ids': []}})
+    assert reply['comparison_id'] != first['comparison_id']
+    assert function_response('record_place_comparison', 'verdict', reply)['parts']
+    assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == 1
+    assert not svc.story(story['id'])['identity_progress']['visual_comparison_verified']
+    replay = await adapter.execute_tool(s, {'name': 'read_topic', 'id': 'read-again', 'args': {}})
+    assert replay['comparison_id'] == reply['comparison_id']
+    assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == 1
+
+
+@pytest.mark.asyncio
+async def test_next_frame_failure_keeps_completed_verdict_acknowledgement(tmp_path):
+    svc, adapter, story, session = prepared(tmp_path)
+    async def unavailable(*args):
+        raise OSError('network')
+    adapter._compare_place_images = unavailable
+    result = await adapter._next_visual_result(session(), {'matched': False, 'continue_comparison': True})
+    assert result['matched'] is False and result['visual_queue_partial']
+
+
+@pytest.mark.asyncio
 async def test_search_failure_survives_restart_then_retries_without_serp(tmp_path, monkeypatch):
     svc, adapter, story, session = prepared(tmp_path)
     calls = []
