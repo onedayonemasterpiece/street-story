@@ -177,6 +177,8 @@ CREATE TABLE IF NOT EXISTS fact_conflicts(
  arbitration_confidence REAL,
  arbitrated_by TEXT,
  evidence_json TEXT NOT NULL,
+ left_revision_digest TEXT NOT NULL DEFAULT '',
+ right_revision_digest TEXT NOT NULL DEFAULT '',
  times_seen INTEGER NOT NULL DEFAULT 1,
  first_seen_at REAL NOT NULL,
  last_seen_at REAL NOT NULL,
@@ -190,11 +192,15 @@ CREATE TABLE IF NOT EXISTS fact_conflict_scans(
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
  poi_key TEXT,
+ run_id TEXT,
  detector TEXT NOT NULL,
  status TEXT NOT NULL,
  pair_count INTEGER NOT NULL,
  detected_count INTEGER NOT NULL,
  coverage_complete INTEGER NOT NULL DEFAULT 0,
+ revision_bundle_json TEXT NOT NULL DEFAULT '{}',
+ conflict_ids_json TEXT NOT NULL DEFAULT '[]',
+ missing_aspects_json TEXT NOT NULL DEFAULT '[]',
  error_type TEXT,
  created_at REAL NOT NULL
 );
@@ -410,6 +416,8 @@ CREATE TABLE IF NOT EXISTS research_chunk_batches(
   error_code TEXT,
   model_name TEXT NOT NULL DEFAULT '',
   prompt_version TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '',
+  payload_sha256 TEXT NOT NULL DEFAULT '',
   created_at REAL NOT NULL,
   UNIQUE(run_id,chunk_id,batch_index)
 );
@@ -725,11 +733,32 @@ class Store:
             db.executescript(RELIABILITY_SCHEMA)
             db.executescript(POI_SCHEMA)
             scan_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_conflict_scans)")}
-            if "coverage_complete" not in scan_columns:
-                db.execute(
-                    "ALTER TABLE fact_conflict_scans "
-                    "ADD COLUMN coverage_complete INTEGER NOT NULL DEFAULT 0"
-                )
+            for name, sql in (
+                ("coverage_complete", "INTEGER NOT NULL DEFAULT 0"),
+                ("run_id", "TEXT"),
+                ("revision_bundle_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("conflict_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("missing_aspects_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if name not in scan_columns:
+                    db.execute(
+                        f"ALTER TABLE fact_conflict_scans ADD COLUMN {name} {sql}"
+                    )
+            conflict_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_conflicts)")}
+            for name in ("left_revision_digest", "right_revision_digest"):
+                if name not in conflict_columns:
+                    db.execute(
+                        f"ALTER TABLE fact_conflicts ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
+            batch_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(research_chunk_batches)")
+            }
+            for name in ("payload_json", "payload_sha256"):
+                if name not in batch_columns:
+                    db.execute(
+                        f"ALTER TABLE research_chunk_batches "
+                        f"ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
             evidence_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_evidence_spans)")}
             for name, sql_type in (
                 ("chunk_id", "TEXT"),

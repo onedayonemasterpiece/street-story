@@ -216,6 +216,8 @@ class LiveSessionController(context: Context) {
     private fun researchStatus(progress: LiveResearchProgress?): String = when (progress?.stage) {
         "searching" -> "Ищу источники…"
         "extracting" -> "Извлекаю и сверяю факты…"
+        "review" -> "Проверяю факты…"
+        "partial" -> "Исследование приостановлено"
         else -> if (progress?.active == true) "Обрабатываю факты…" else "Факты обновлены"
     }
 

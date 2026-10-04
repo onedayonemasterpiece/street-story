@@ -17,6 +17,7 @@ from .config import Settings, reveal
 from .db import Store
 from .fact_conflicts import conflict_scan_items, normalize_model_conflict_records
 from .research_runs import (
+    chunk_checkpoint,
     mark_chunk,
     persist_source_version,
     record_chunk_batch,
@@ -1191,6 +1192,13 @@ class GeminiClient:
         documents: dict[str, dict[str, Any]] = {}
         try:
             for requested_url in selected:
+                if run_id:
+                    from .research_runs import saved_run_document
+                    with self.store.connection() as db:
+                        saved = saved_run_document(db, run_id, requested_url)
+                    if saved is not None:
+                        documents[requested_url] = saved
+                        continue
                 now = self.store.now()
                 if run_id:
                     with self.store.tx() as db:
@@ -1585,6 +1593,11 @@ class GeminiClient:
             with self.store.tx() as db:
                 for source in active_sources:
                     url = str(source.get("url") or "").rstrip("/")
+                    if db.execute(
+                        "SELECT 1 FROM research_run_sources WHERE run_id=? AND url=? "
+                        "AND source_version_id IS NOT NULL", (run_id, url),
+                    ).fetchone():
+                        continue
                     register_discovered_source(
                         db,
                         run_id=run_id,
@@ -2006,16 +2019,99 @@ class GeminiClient:
                         ]
                         for chunk in document.get("chunks") or []:
                             page_chunk_count += 1
+                            checkpoint = {
+                                "status": "planned",
+                                "terminal": False,
+                                "facts": [],
+                                "official_source_urls": [],
+                                "next_batch_index": 0,
+                                "continuation_batches": 0,
+                                "payload_missing": False,
+                                "raw_fact_count": 0,
+                                "accepted_fact_count": 0,
+                                "resumable_deferred_batches": [],
+                            }
                             if run_id:
+                                with self.store.connection() as db:
+                                    checkpoint = chunk_checkpoint(
+                                        db,
+                                        run_id,
+                                        chunk["chunk_id"],
+                                    )
+                                resumable_deferred = list(
+                                    checkpoint.get("resumable_deferred_batches") or []
+                                )
+                                if resumable_deferred:
+                                    placeholders = ",".join("?" for _ in resumable_deferred)
+                                    with self.store.tx() as db:
+                                        db.execute(
+                                            f"UPDATE research_chunk_batches SET "
+                                            f"status='continuation',error_code=NULL "
+                                            f"WHERE run_id=? AND chunk_id=? "
+                                            f"AND batch_index IN ({placeholders})",
+                                            (
+                                                run_id,
+                                                chunk["chunk_id"],
+                                                *resumable_deferred,
+                                            ),
+                                        )
+                                if checkpoint.get("terminal"):
+                                    restored_facts = [
+                                        dict(item)
+                                        for item in (checkpoint.get("facts") or [])
+                                        if isinstance(item, dict)
+                                    ]
+                                    page_facts.extend(restored_facts)
+                                    page_continuation_batches += int(
+                                        checkpoint.get("continuation_batches") or 0
+                                    )
+                                    aggregate_audit["raw_fact_count"] += int(
+                                        checkpoint.get("raw_fact_count") or 0
+                                    )
+                                    aggregate_audit["accepted_fact_count"] += len(
+                                        restored_facts
+                                    )
+                                    for url in checkpoint.get("official_source_urls") or []:
+                                        if url not in page_official:
+                                            page_official.append(url)
+                                    for restored in restored_facts:
+                                        for span in restored.get("evidence_spans") or []:
+                                            if not isinstance(span, dict):
+                                                continue
+                                            span_chunk_id = str(span.get("chunk_id") or "")
+                                            quote = str(span.get("quote") or "")
+                                            if not span_chunk_id or not quote:
+                                                continue
+                                            support = {
+                                                "kind": "verified_page_span",
+                                                "source_url": str(span.get("source_url") or requested_url),
+                                                "source_version_id": str(
+                                                    span.get("source_version_id")
+                                                    or document["source_version_id"]
+                                                ),
+                                                "evidence_ref": span_chunk_id,
+                                                "chunk_id": span_chunk_id,
+                                                "text": quote,
+                                                "span_start": span.get("span_start"),
+                                                "span_end": span.get("span_end"),
+                                            }
+                                            if not any(
+                                                isinstance(item, dict)
+                                                and str(item.get("chunk_id") or "") == span_chunk_id
+                                                and str(item.get("text") or "") == quote
+                                                for item in supports
+                                            ):
+                                                supports.append(support)
+                                    continue
                                 with self.store.tx() as db:
                                     mark_chunk(
                                         db,
                                         run_id=run_id,
                                         chunk_id=chunk["chunk_id"],
                                         status="extracting",
-                                        observation_count=0,
+                                        observation_count=len(checkpoint.get("facts") or []),
                                         model_name=str(model or ""),
-                                        prompt_version="page-chunk-extraction-v1",
+                                        prompt_version="page-chunk-extraction-v2",
                                         now=self.store.now(),
                                     )
                             try:
@@ -2031,14 +2127,81 @@ class GeminiClient:
                                     }
                                 }
 
-                                chunk_facts_total: list[dict[str, Any]] = []
+                                chunk_facts_total: list[dict[str, Any]] = [
+                                    dict(item)
+                                    for item in (checkpoint.get("facts") or [])
+                                    if isinstance(item, dict)
+                                ]
                                 seen_exact_outputs: set[str] = set()
                                 already_returned: list[dict[str, str]] = []
+                                for restored in chunk_facts_total:
+                                    exact_payload = {
+                                        "claim_key": str(restored.get("claim_key") or ""),
+                                        "text": str(restored.get("text") or ""),
+                                        "evidence_spans": restored.get("evidence_spans") or [],
+                                    }
+                                    seen_exact_outputs.add(
+                                        hashlib.sha256(
+                                            json.dumps(
+                                                exact_payload,
+                                                ensure_ascii=False,
+                                                sort_keys=True,
+                                                separators=(",", ":"),
+                                            ).encode("utf-8")
+                                        ).hexdigest()
+                                    )
+                                    already_returned.append({
+                                        "claim_key": str(restored.get("claim_key") or "")[:300],
+                                        "text": str(restored.get("text") or "")[:1200],
+                                    })
+                                    for span in restored.get("evidence_spans") or []:
+                                        if not isinstance(span, dict):
+                                            continue
+                                        span_chunk_id = str(span.get("chunk_id") or "")
+                                        quote = str(span.get("quote") or "")
+                                        if not span_chunk_id or not quote:
+                                            continue
+                                        support = {
+                                            "kind": "verified_page_span",
+                                            "source_url": str(span.get("source_url") or requested_url),
+                                            "source_version_id": str(
+                                                span.get("source_version_id")
+                                                or document["source_version_id"]
+                                            ),
+                                            "evidence_ref": span_chunk_id,
+                                            "chunk_id": span_chunk_id,
+                                            "text": quote,
+                                            "span_start": span.get("span_start"),
+                                            "span_end": span.get("span_end"),
+                                        }
+                                        if not any(
+                                            isinstance(item, dict)
+                                            and str(item.get("chunk_id") or "") == span_chunk_id
+                                            and str(item.get("text") or "") == quote
+                                            for item in supports
+                                        ):
+                                            supports.append(support)
+                                for url in checkpoint.get("official_source_urls") or []:
+                                    if url not in page_official:
+                                        page_official.append(url)
+                                aggregate_audit["raw_fact_count"] += int(
+                                    checkpoint.get("raw_fact_count") or 0
+                                )
+                                aggregate_audit["accepted_fact_count"] += len(
+                                    chunk_facts_total
+                                )
+                                page_continuation_batches += int(
+                                    checkpoint.get("continuation_batches") or 0
+                                )
                                 terminal_status: str | None = None
                                 terminal_error: str | None = None
-                                max_continuation_batches = 6
+                                continuation_budget = 6
+                                batch_start = int(
+                                    checkpoint.get("next_batch_index") or 0
+                                )
+                                batch_stop = batch_start + continuation_budget
 
-                                for batch_index in range(max_continuation_batches):
+                                for batch_index in range(batch_start, batch_stop):
                                     try:
                                         response = await self._generate(
                                             key,
@@ -2207,7 +2370,7 @@ class GeminiClient:
                                             terminal_status = "deferred"
                                             terminal_error = batch_error
                                             page_chunk_deferred += 1
-                                        elif batch_index + 1 >= max_continuation_batches:
+                                        elif batch_index + 1 >= batch_stop:
                                             batch_status = "deferred"
                                             batch_error = "continuation_limit"
                                             terminal_status = "deferred"
@@ -2240,6 +2403,13 @@ class GeminiClient:
                                                 model_name=str(model or ""),
                                                 prompt_version="page-chunk-extraction-v2",
                                                 error_code=batch_error,
+                                                payload={
+                                                    "facts": new_batch_facts,
+                                                    "official_source_urls": chunk_official,
+                                                    "no_claims": bool(
+                                                        terminal_status == "no_claims"
+                                                    ),
+                                                },
                                                 now=self.store.now(),
                                             )
 
@@ -2281,9 +2451,11 @@ class GeminiClient:
                                             run_id=run_id,
                                             chunk_id=chunk["chunk_id"],
                                             status="failed",
-                                            observation_count=0,
+                                            observation_count=len(
+                                                checkpoint.get("facts") or []
+                                            ),
                                             model_name=str(model or ""),
-                                            prompt_version="page-chunk-extraction-v1",
+                                            prompt_version="page-chunk-extraction-v2",
                                             error_code=type(exc).__name__,
                                             now=self.store.now(),
                                         )

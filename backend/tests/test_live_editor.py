@@ -66,6 +66,7 @@ def test_live_functions_expose_place_and_search_tools_not_async_research_job() -
     assert "get_evidence" in names
     assert "save_research_facts" in names
     assert "record_fact_conflicts" in names
+    assert "finalize_fact_review" in names
     assert "resolve_fact_conflict" in names
     assert "start_research" not in names
 
@@ -267,18 +268,17 @@ async def test_live_get_facts_paginates_beyond_compact_topic_snapshot(tmp_path):
         session,
         {"name": "get_facts", "args": {"limit": 50}},
     )
-    assert len(first["facts"]) == 50
+    from street_story.research_budget import PAGE_UNITS, response_units
+    assert 1 <= len(first["facts"]) <= 50
     assert first["has_more"] is True
-    assert first["next_cursor"] is not None
-
-    second = await adapter.execute_tool(
-        session,
-        {"name": "get_facts", "args": {"cursor": first["next_cursor"], "limit": 50}},
-    )
-    assert len(second["facts"]) == 35
-    assert second["has_more"] is False
-    assert second["next_cursor"] is None
-    texts = [item["text"] for item in first["facts"] + second["facts"]]
+    texts = [item["text"] for item in first["facts"]]
+    page = first
+    while page["has_more"]:
+        assert response_units("get_facts", page) <= PAGE_UNITS
+        page = await adapter.execute_tool(session, {"name": "get_facts", "args": {"cursor": page["next_cursor"], "limit": 50}})
+        texts.extend(item["text"] for item in page["facts"])
+    assert page["next_cursor"] is None
+    assert len(texts) == 85
     assert texts[0] == "Проверяемый факт номер 0."
     assert texts[-1] == "Проверяемый факт номер 84."
 
@@ -1820,7 +1820,7 @@ def test_search_projection_exposes_live_semantic_fallback_contract():
     assert projected["coverage_satisfied"] is False
     assert projected["missing_aspects"] == ["semantic_model_temporarily_unavailable"]
     assert projected["continuation_required"] is True
-    assert projected["next_tool"] == "save_research_facts"
+    assert projected["next_tool"] == "get_research_chunk"
     assert projected["sources"] == [{
         "source_ref": "source_royal_gate",
         "evidence": [{
@@ -1828,3 +1828,144 @@ def test_search_projection_exposes_live_semantic_fallback_contract():
             "text": "Слева направо изображены Отакар II, Фридрих I и Альбрехт I.",
         }],
     }]
+
+
+@pytest.mark.asyncio
+async def test_live_fallback_zero_conflict_review_completes_same_run(tmp_path):
+    svc, adapter, session, _events = make_service(tmp_path)
+    story_id = session.resource_id
+    mark_identity_ready(svc, story_id)
+    evidence_ref = "evref_" + "f" * 24
+    detector_called = False
+
+    async def fallback_search(query, topic_context):
+        return GroundedResearch(
+            payload={
+                "summary": "Discovery evidence; helper semantic model unavailable.",
+                "facts": [],
+                "search_provider": "duckduckgo_html_fallback",
+                "semantic_status": "live_model_required",
+                "coverage_satisfied": False,
+                "missing_aspects": ["live_review_required"],
+                "extraction_complete": False,
+            },
+            grounding_sources=[{
+                "type": "web_search",
+                "title": "Archive",
+                "url": "https://archive.example/gate-review",
+                "supports": [{
+                    "kind": "search_snippet",
+                    "source_url": "https://archive.example/gate-review",
+                    "text": "Строительство нынешних ворот началось в 1843 году.",
+                    "evidence_ref": evidence_ref,
+                }],
+            }],
+        )
+
+    async def forbidden_helper_detector(*args, **kwargs):
+        nonlocal detector_called
+        detector_called = True
+        raise RetryableProviderError("helper_detector_unavailable")
+
+    svc.providers.gemini.search_web = fallback_search
+    svc.providers.gemini.detect_fact_conflicts = forbidden_helper_detector
+
+    search_result = await adapter.execute_tool(
+        session,
+        {
+            "name": "search_web",
+            "id": "search-live-review-fallback",
+            "args": {"query": "история ворот"},
+        },
+    )
+    assert search_result["next_tool"] == "get_research_chunk"
+    run_id = search_result["research_run_id"]
+    batch_id = search_result["save_batch_id"]
+    source_ref = search_result["sources"][0]["source_ref"]
+
+    saved = await adapter.execute_tool(
+        session,
+        {
+            "name": "save_research_facts",
+            "id": "save-live-review-fallback",
+            "args": {
+                "run_id": run_id,
+                "batch_id": batch_id,
+                "facts": [{
+                    "claim_key": "current-gate-construction-start-1843",
+                    "text": "Строительство нынешних ворот началось в 1843 году.",
+                    "confidence": .95,
+                    "selected": True,
+                    "source_refs": [source_ref],
+                    "evidence_refs": [evidence_ref],
+                }],
+            },
+        },
+    )
+    assert saved["research_run_id"] == run_id
+    assert saved["next_tool"] == "get_review_packet"
+    assert saved["continuation_required"] is True
+
+    before_review = adapter._get_facts(
+        story_id,
+        {"cursor": 0, "limit": 50, "eligibility": "all"},
+    )
+    assert len(before_review["facts"]) == 1
+    assert before_review["facts"][0]["eligibility"] == "unreviewed"
+    reviewed_assertions = [
+        {
+            "fact_id": item["fact_id"],
+            "revision_digest": item["revision_digest"],
+            "supporting_evidence_ids": [e["evidence_id"] for e in adapter._get_evidence(story_id, {"fact_ids": [item["fact_id"]]})["evidence"]],
+        }
+        for item in before_review["facts"]
+    ]
+
+    finalized = await adapter.execute_tool(
+        session,
+        {
+            "name": "finalize_fact_review",
+            "id": "finalize-live-review-fallback",
+            "args": {
+                "run_id": run_id,
+                "reviewed_assertions": reviewed_assertions,
+                "conflicts": [],
+                "coverage_complete": True,
+                "missing_aspects": [],
+            },
+        },
+    )
+
+    assert detector_called is False
+    assert finalized["research_run_id"] == run_id
+    assert finalized["complete"] is True
+    assert finalized["eligible_count"] == 1
+    assert finalized["withheld_count"] == 0
+    assert finalized["unreviewed_count"] == 0
+    with svc.store.connection() as db:
+        run = db.execute(
+            "SELECT state,status_detail,completed_at FROM research_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        assert run["state"] == "completed"
+        assert run["status_detail"] == "live_review_complete"
+        assert run["completed_at"] is not None
+        scan = db.execute(
+            "SELECT detector,status,coverage_complete,revision_bundle_json,"
+            "conflict_ids_json FROM fact_conflict_scans "
+            "WHERE story_id=? ORDER BY id DESC LIMIT 1",
+            (story_id,),
+        ).fetchone()
+        assert scan["detector"] == "mira_live_review"
+        assert scan["status"] == "no_candidates"
+        assert scan["coverage_complete"] == 1
+        assert json.loads(scan["revision_bundle_json"]) == {
+            reviewed_assertions[0]["fact_id"]: reviewed_assertions[0]["revision_digest"],
+        }
+        assert json.loads(scan["conflict_ids_json"]) == []
+
+    after_review = adapter._get_facts(
+        story_id,
+        {"cursor": 0, "limit": 50, "eligibility": "all"},
+    )
+    assert after_review["facts"][0]["eligibility"] == "eligible"

@@ -112,6 +112,8 @@ def test_save_facts_projection_confirms_ids_without_repeating_evidence():
         "facts": [{
             "fact_id": "claim_a",
             "text": "A durable fact",
+            "revision_digest": "v2:exact_revision",
+            "supporting_evidence_ids": ["evidence_a"],
             "sources": [
                 {"url": "https://one.example/a", "supports": [{"text": "evidence " * 100}]},
                 {"url": "https://two.example/a", "supports": [{"text": "more evidence " * 100}]},
@@ -124,7 +126,7 @@ def test_save_facts_projection_confirms_ids_without_repeating_evidence():
     original = copy.deepcopy(full)
     projected = StreetStoryLiveAdapter._model_result("save_research_facts", full)
     assert full == original
-    assert projected["facts"] == [{"fact_id": "claim_a", "source_count": 2}]
+    assert projected["facts"] == [{"fact_id": "claim_a", "text": "A durable fact", "revision_digest": "v2:exact_revision", "supporting_evidence_ids": ["evidence_a"], "source_count": 2}]
     assert projected["selected_fact_ids"] == ["claim_a"]
     assert "draft_text" not in projected["story"]
     assert len(json.dumps(projected)) < 1000
