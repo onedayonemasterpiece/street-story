@@ -3051,7 +3051,7 @@ class GeminiClient:
                         operation='article_url_discovery', model=_model, quota=_quota)
                 except Exception as exc:
                     # Whitelist numeric quota facts; never log request/key/body.
-                    raw = getattr(exc, 'response_json', None) or {}
+                    raw = getattr(exc, 'details', None) or getattr(exc, 'response_json', None) or {}
                     error = raw.get('error', raw) if isinstance(raw, dict) else {}
                     details = error.get('details', []) if isinstance(error, dict) else []
                     violations = [{k: v.get(k) for k in ('quotaMetric', 'quotaId', 'quotaValue') if k in v}

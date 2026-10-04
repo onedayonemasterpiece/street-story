@@ -1302,7 +1302,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             result = self._topic_state(story_id)
             compact = self._compact_context(result)
             self.emit(session, {"type": "product_state", "state": compact})
-            return compact
+            return await self._next_visual_result(session, compact)
         if name == "get_facts":
             run_id = session.state.get('research_run_id')
             if session.state.get('live_first_research') and run_id:
@@ -1445,6 +1445,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name == 'compare_place_images' and result.get('comparison_id'):
             return result
         projected = self._model_result(name, result)
+        if name == 'record_place_comparison' and not result.get('matched'):
+            return await self._next_visual_result(session, projected)
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
             projected.update({"facts_page_required": True, "read_tool": "get_facts", "saved_fact_count": len(result.get("facts") or [])})

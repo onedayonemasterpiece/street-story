@@ -155,6 +155,26 @@ class LiveVisualComparisonMixin:
             [{'inlineData': {'mimeType': 'image/jpeg', 'displayName': 'comparison.jpg',
                 'data': base64.b64encode(pending['snapshot']).decode('ascii')}}])
 
+    async def _next_visual_result(self, session, result):
+        """Deliver the next bounded frame while the model owns its verdict."""
+        _story, research = self.service._identity_snapshot(session.resource_id)
+        identity = research.get('visual_identity') or {}
+        if identity.get('status') not in {'uncertain', 'mismatch'}:
+            return result
+        try:
+            comparison = await self._compare_place_images(session, {})
+        except Exception as exc:
+            # A completed verdict remains acknowledged if fetching the next
+            # frame fails. The durable cursor and count survive the failure.
+            record_identity_event(self.service, session.resource_id, 'identity_next_frame_unavailable',
+                {'code': getattr(exc, 'code', None) or type(exc).__name__})
+            return {**result, 'visual_queue_partial': True,
+                'instruction': 'Saved progress remains. Resume compare_place_images; no new verdict is available.'}
+        merged = {**result, **dict(comparison)}
+        if getattr(comparison, 'parts', None):
+            return with_live_tool_parts(merged, comparison.parts)
+        return merged
+
     def _send_pending_comparison(self, session):
         pending = (session.state.get('visual_comparison') or {}).get('pending') or {}
         if pending.get('snapshot'):
