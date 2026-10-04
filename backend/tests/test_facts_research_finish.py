@@ -818,4 +818,7 @@ async def test_existing_assertion_observation_is_not_new_research_progress(tmp_p
         db.execute('UPDATE fact_assertions SET created_at=(SELECT created_at-1 FROM research_runs WHERE run_id=?) WHERE story_id=?', (run_id, session.resource_id))
         assert adapter._live_research_progress(db, session.resource_id, run_id)['observations'] == 0
         assert db.execute("SELECT COUNT(*) FROM fact_observations WHERE run_id=? AND status='accepted'", (run_id,)).fetchone()[0] == 1
+    session.state['research_output_pending'] = True
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'new-claim', 'args': args})
+    assert session.state['research_output_pending'] is True
     await reader.search_http.aclose()

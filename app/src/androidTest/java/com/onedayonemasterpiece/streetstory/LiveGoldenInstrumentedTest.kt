@@ -383,6 +383,8 @@ class LiveGoldenInstrumentedTest {
             Thread.sleep(1_000)
             (device.findObject(By.text("ПОЗЖЕ")) ?: device.findObject(By.text("Позже")))?.click()
             instrumentation.waitForIdleSync()
+            // UiAutomator's click returns before the dialog dismissal frame.
+            Thread.sleep(500)
             assertTrue("Stage screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage.png")))
             scenario.onActivity { activity ->
                 fun find(view: View): View? {
