@@ -684,7 +684,7 @@ FUNCTIONS = [
 # flattens that model-owned structure; it never splits prose.
 _save_declaration = next(f for f in FUNCTIONS if f['name'] == 'save_research_facts')
 _save_declaration['description'] = ('Persist your extraction and checks of the current small frozen document page. '
-                                    'Copy its batch checkpoint and enumerate independent claims grouped by own numeric passage_ids. '
+                                    'The server binds the current read checkpoint; enumerate independent claims grouped by own numeric passage_ids. '
                                     'Do not rewrite quotes or evidence hashes: the server binds these passage numbers to exact immutable source spans. '
                                     'Withhold doubtful claims, save good supported findings immediately, then follow the returned next unread page.')
 _finding_schema = _save_declaration['parameters']['properties']['facts']['items']
@@ -696,6 +696,10 @@ _finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enum
                                           'items': {'type': 'object', 'properties': _claim_fields,
                                                     'required': ['claim_key', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
 _finding_schema['required'] = ['claims', 'passage_ids']
+_save_parameters = _save_declaration['parameters']
+_save_parameters['properties'] = {key: _save_parameters['properties'][key]
+                                  for key in ('facts', 'batch_reviewed', 'source_matches_poi')}
+_save_parameters['required'] = ['facts', 'batch_reviewed', 'source_matches_poi']
 
 SYSTEM_INSTRUCTION = """
 Ты — голосовой редактор Street Story. Работай только с текущей темой.
@@ -1238,9 +1242,6 @@ class StreetStoryLiveAdapter:
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
         projected = self._model_result(name, result)
-        if name == "save_research_facts" and not result.get('completed'):
-            projected["next_args"] = {"run_id": result.get("research_run_id")}
-            projected["instruction"] = "Continue get_research_chunk with run_id ONLY; omit old chunk_id and passage_cursor. The server returns the next unread page and skips completed cores. Saved supported findings are already available."
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}
             projected.update({"facts_page_required": True, "read_tool": "get_facts", "saved_fact_count": len(result.get("facts") or [])})
@@ -1430,6 +1431,9 @@ class StreetStoryLiveAdapter:
             if result.get('review_required') is False:
                 projected['facts'] = [{'fact_id': f.get('fact_id'), 'text': f.get('text'),
                                        'verdict': (f.get('live_review') or {}).get('verdict')} for f in result.get('facts', [])]
+            if result.get('next_tool') == 'get_research_chunk':
+                projected['next_args'] = {'run_id': result.get('research_run_id')}
+                projected['instruction'] = 'Continue get_research_chunk with run_id ONLY. The server returns the next unread page and skips completed cores. Saved supported findings are already available.'
         if name == "search_web" and result.get("discovery_only") is True:
             compact_sources = []
             for source in (result.get("sources") or [])[:20]:
@@ -2691,6 +2695,7 @@ class StreetStoryLiveAdapter:
         recipe = {key: result[key] for key in ("chunk_id", "batch_id", "batch_index", "expected_story_revision")}
         recipe["run_id"] = run_id
         session.state.setdefault("research_chunk_receipts", {})[candidate["chunk_id"]] = recipe
+        session.state['research_current_chunk_id'] = candidate['chunk_id']
         if "passage_cursor" not in args and len(seen) == len(passages):
             return {**result, "core_text": "", "context_text": "", "evidence_passages": [], "context_before": "", "context_after": "",
                     "checkpoint": {"next_batch_index": batch_index, "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3]},
@@ -2742,8 +2747,9 @@ class StreetStoryLiveAdapter:
         session.state.setdefault("research_pending_page", {})[candidate["chunk_id"]] = next_offset if next_offset < len(passages) else 0
         if session.state.get('live_first_research'):
             result['next_tool'] = 'save_research_facts'
-            result['next_args'] = {**recipe, 'continuation_needed': next_offset < len(passages), 'batch_reviewed': True}
-            result['instruction'] = 'Extract and check the atomic assertions in THIS small page, then save using next_args and own passage_ids. Withhold uncertainty; keep useful supported assertions. Do not read more pages before saving this batch. The save receipt resumes the next unread page.'
+            recipe['continuation_needed'] = next_offset < len(passages)
+            result['next_args'] = {'batch_reviewed': True, 'source_matches_poi': True}
+            result['instruction'] = 'Extract and check assertions in THIS small page, then save facts with own passage_ids and explicit batch_reviewed/source_matches_poi. The server binds this frozen read checkpoint; do not copy batch hashes or revisions. Save facts=[] for a page without findings, then follow the save receipt to the next unread page.'
         return result
 
 
@@ -2754,10 +2760,18 @@ class StreetStoryLiveAdapter:
         args: dict[str, Any],
     ) -> dict[str, Any]:
         story_id = session.resource_id
+        canonical_args = args
+        if session.state.get('live_first_research') and not args.get('chunk_id'):
+            current_chunk = session.state.get('research_current_chunk_id')
+            recipe = session.state.get('research_chunk_receipts', {}).get(current_chunk)
+            if recipe:
+                if args.get('run_id') and args['run_id'] != recipe['run_id']:
+                    raise ConflictError('live_research_run_unknown', 'The findings do not belong to the current read checkpoint.')
+                args = {**recipe, **args}
         raw_facts = args.get("facts")
         explicit_batch_id = str(args.get("batch_id") or "")
         if explicit_batch_id:
-            replay = self._command_replay(story_id, explicit_batch_id, "save_research_facts", args)
+            replay = self._command_replay(story_id, explicit_batch_id, "save_research_facts", canonical_args)
             if replay is not None:
                 return replay
         if args.get('source_matches_poi') is False and raw_facts:
@@ -2871,14 +2885,14 @@ class StreetStoryLiveAdapter:
                     batch_index = int(args.get("batch_index"))
                 except (TypeError, ValueError):
                     raise ConflictError("live_research_batch_invalid", "Exact batch index is required.") from None
-                all_passages = self._core_passages(chunk_id, chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]])
+                all_passages = self._core_passages(chunk_id, chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]], contextual=bool(session.state.get('live_first_research')))
                 seen = session.state.get("research_passages_seen", {}).get(chunk_id, set())
                 if len(seen) < len(all_passages):
                     continuation_needed = True
                 checkpoint = chunk_checkpoint(db, run_id, chunk_id)
                 expected_save_batch_id = "batch_" + hashlib.sha256(f"{run_id}:{chunk_id}:{batch_index}".encode()).hexdigest()[:24]
                 # A batch owns its receipt across different provider call IDs.
-                prior = self._command_replay(story_id, expected_save_batch_id, "save_research_facts", args)
+                prior = self._command_replay(story_id, expected_save_batch_id, "save_research_facts", canonical_args)
                 if prior is not None:
                     return prior
                 if checkpoint["terminal"] or batch_index != checkpoint["next_batch_index"]:
@@ -3559,11 +3573,11 @@ class StreetStoryLiveAdapter:
                 story_id,
                 command_id,
                 "save_research_facts",
-                args,
+                canonical_args,
                 result,
             )
             if command_id != save_batch_id:
-                self._store_command(db, story_id, save_batch_id, "save_research_facts", args, result)
+                self._store_command(db, story_id, save_batch_id, "save_research_facts", canonical_args, result)
             all_research_sources = [
                 source
                 for source in (

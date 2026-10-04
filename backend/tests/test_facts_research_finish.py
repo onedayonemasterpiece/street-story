@@ -78,6 +78,7 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
                     review_reason='Controlled model verdict for this own passage.', selected=False)
     args['facts'] = [{'passage_ids': [0],
                       'claims': [{k: v for k, v in fact.items() if k not in {'source_refs', 'evidence_refs', 'evidence_quotes'}} for fact in args['facts']]}]
+    args = {'facts': args['facts'], 'batch_reviewed': True, 'source_matches_poi': True}
     saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'normal-batch', 'args': args})
     assert saved['review_required'] is False
     inventory = adapter._get_facts(session.resource_id, {})['facts']
@@ -97,6 +98,48 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
     adapter._select_facts(session.resource_id, 'select-withheld', {'fact_ids': [bad[0]['fact_id']]})
     with pytest.raises(ConflictError):
         adapter._edit_text(session.resource_id, 'bad-draft', {'expected_text_revision': 1, 'new_text': bad[0]['text'], 'change_summary': 'Must reject withheld selection.'})
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_empty_pages_use_bound_checkpoint_and_complete_multiline_document(tmp_path):
+    import httpx
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    await reader.search_http.aclose()
+    body = '<main>' + ''.join(f'<p>Menu item {i}, no assertions.</p>' for i in range(70)) + '</main>'
+    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={'content-type': 'text/html'}, text=body)))
+    pages = 0
+    for index in range(10):
+        chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+        assert chunk['evidence_passages']
+        args = {'facts': [], 'batch_reviewed': True, 'source_matches_poi': True}
+        saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': f'empty-page-{index}', 'args': args})
+        assert saved['payload_saved']
+        assert await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': f'empty-page-{index}', 'args': args}) == saved
+        pages += 1
+        if saved['completed']:
+            break
+    assert 1 < pages < 10 and saved['completed']
+    with svc.store.connection() as db:
+        manifest = run_manifest(db, run_id)
+        assert manifest['run']['state'] == 'completed'
+        assert all(c['status'] == 'no_claims' for c in manifest['chunks'])
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bound_live_checkpoint_still_rejects_changed_story_revision(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    await adapter._get_research_chunk(session, {'run_id': run_id})
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))
+    with pytest.raises(ConflictError) as stale:
+        await adapter._save_research_facts(session, 'late-page', {'facts': [], 'batch_reviewed': True, 'source_matches_poi': True})
+    assert stale.value.code == 'live_research_save_stale'
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM research_chunk_batches').fetchone()[0] == 0
     await reader.search_http.aclose()
 
 
