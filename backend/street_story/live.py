@@ -354,7 +354,7 @@ FUNCTIONS = [
     _tool_schema('compare_place_images',
         'Show SOURCE and the next article illustrations to this same Live model for visual comparison. After Wikipedia fails, automatically search up to 20 websites and examine their article images, including later gallery photos. Call record_place_comparison after every group.',
         {'query': {'type': 'string', 'description': 'Object-name hypothesis or visible distinctive details; never author confirmation.'},
-         'article_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Optional actual article URLs found by your native Google Search. They are fetched as hypotheses; only decoded illustrations and your comparison prove identity.'}}),
+         'article_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Optional exact article URLs already returned by find_place_articles. They are fetched as hypotheses; only decoded illustrations and your comparison prove identity.'}}),
     _tool_schema('record_place_comparison',
         'Record YOUR visual comparison of the SOURCE/REF snapshot just received. This is model evidence, not author consent. Match requires distinctive repeated details and confidence >=0.90. On no match continue compare_place_images.',
         {'comparison_id': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['match', 'uncertain', 'mismatch']},
@@ -963,11 +963,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         text = str(event.get("text") or "").strip()
         if kind == 'grounding':
             chunks = (event.get('metadata') or {}).get('groundingChunks') or []
-            sources = [{'url': item['web']['uri'], 'title': item['web'].get('title', '')}
-                       for item in chunks if isinstance(item, dict) and isinstance(item.get('web'), dict)
-                       and isinstance(item['web'].get('uri'), str)]
-            if sources:
-                session.state['identity_article_sources'] = sources[:20]
+            # Live citations are not receipts from our dedicated page-search
+            # API. They must not overwrite or delay its durable source queue.
+            record_live_diagnostic(self.service, session.resource_id, session.id, 'backend',
+                'identity_live_grounding_ignored', {'chunk_count': len(chunks)})
         if kind == "tool_call":
             session.state["research_provider_tool_pending"] = True
             session.state["research_continuation_queued"] = False
