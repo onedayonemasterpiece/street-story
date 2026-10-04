@@ -16,6 +16,7 @@ from typing import Any
 
 from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
+from .live_visual_comparison import LiveVisualComparisonMixin
 from .config import Settings
 from .research_budget import PAGE_UNITS, response_units, bounded_inventory
 from . import review_packets, research_repairs
@@ -347,6 +348,20 @@ REPAIR_FIELDS = {
 
 
 FUNCTIONS = [
+    _tool_schema('find_place_articles',
+        'Find actual article URLs for uncertain photo identity. Discovery hypotheses only, never facts or visual proof. Then compare_place_images examines the article illustrations.',
+        {'query': {'type': 'string'}}, ['query']),
+    _tool_schema('compare_place_images',
+        'Show SOURCE and the next article illustrations to this same Live model for visual comparison. After Wikipedia fails, automatically search up to 20 websites and examine their article images, including later gallery photos. Call record_place_comparison after every group.',
+        {'query': {'type': 'string', 'description': 'Object-name hypothesis or visible distinctive details; never author confirmation.'},
+         'article_urls': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Optional actual article URLs found by your native Google Search. They are fetched as hypotheses; only decoded illustrations and your comparison prove identity.'}}),
+    _tool_schema('record_place_comparison',
+        'Record YOUR visual comparison of the SOURCE/REF snapshot just received. This is model evidence, not author consent. Match requires distinctive repeated details and confidence >=0.90. On no match continue compare_place_images.',
+        {'comparison_id': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['match', 'uncertain', 'mismatch']},
+         'candidate_id': {'type': 'string'}, 'object_name': {'type': 'string'}, 'confidence': {'type': 'number'},
+         'observations': {'type': 'array', 'items': {'type': 'string'}},
+         'alternative_candidate_ids': {'type': 'array', 'items': {'type': 'string'}}},
+        ['comparison_id', 'status', 'candidate_id', 'confidence', 'observations', 'alternative_candidate_ids']),
     _tool_schema(
         "read_topic",
         "Read the current authoritative Street Story topic, facts, visual and publication state. No mutation.",
@@ -719,7 +734,7 @@ Photo and identity:
 - The topic photo is supplied as a separate visual snapshot. Describe only visible features; admit when the snapshot is unavailable. A question "что видно/что ты видишь на фото" is visual: не вызывай resolve_place/search_web just to answer it.
 - Backend identification runs automatically after photo selection. EXIF coordinates center nearby OSM/Wikipedia discovery; coordinates alone do not identify the object. visual_identity match/owner_confirmed is mandatory before factual research, final generate_visual or prepare_publication.
 - Reuse an automatic match and briefly say the object was found; do not rerun resolve_place without reason. Reuse confirmed identity from the topic.
-- For uncertain/mismatch, resolve_place checks candidates within a bounded budget. Do not replace verification by asking the owner to name the unknown object. Explain candidate matches and the specific evidence gap. A failed reference-photo fetch does not mean the owner must know the answer. Do not repeat expensive discovery without new data.
+- For uncertain/mismatch, call compare_place_images and visually compare SOURCE against each REF in this same Live session. After EVERY group call record_place_comparison so the owner sees the processed-illustration counter grow during the work. On no match continue the later gallery photos; broad article search starts automatically after Wikipedia. Stop on proved match or exhausted. If the helper search is unavailable, use native Google Search and pass article_urls; unavailable images are not visual mismatches. Do not ask the owner to name the unknown object. Different pages of one physical building are not competing objects.
 - confirm_place requires fresh voluntary explicit owner speech naming and confirming the object. Greetings, "what?", silence, your inference or tool arguments are not consent. Не проси автора подтвердить объект, который он сам пытается определить.
 - If the owner says it is the wrong object, call reject_place with current candidate_id instead of repeating confirmation.
 - Missing GPS in the supplied copy does not prove the original lacks coordinates. Explain granting geotag access and selecting the original with the topic button.
@@ -756,7 +771,7 @@ Answer briefly and concretely in Russian.
 """.strip()
 
 
-class StreetStoryLiveAdapter:
+class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
         self.emit = emit
@@ -823,8 +838,8 @@ class StreetStoryLiveAdapter:
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
                 "manual_activity_detection": True,
-                "search_enabled": False,
-                "application_search_function": "search_web",
+                "search_enabled": (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'},
+                "application_search_function": 'find_place_articles' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'} else 'search_web',
             },
             "response": {
                 "story_id": resource_id,
@@ -902,6 +917,13 @@ class StreetStoryLiveAdapter:
     def on_event(self, session, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "unknown")
         text = str(event.get("text") or "").strip()
+        if kind == 'grounding':
+            chunks = (event.get('metadata') or {}).get('groundingChunks') or []
+            sources = [{'url': item['web']['uri'], 'title': item['web'].get('title', '')}
+                       for item in chunks if isinstance(item, dict) and isinstance(item.get('web'), dict)
+                       and isinstance(item['web'].get('uri'), str)]
+            if sources:
+                session.state['identity_article_sources'] = sources[:20]
         if kind == "tool_call":
             session.state["research_provider_tool_pending"] = True
             session.state["research_continuation_queued"] = False
@@ -1055,6 +1077,7 @@ class StreetStoryLiveAdapter:
             {"voice": "Aoede", "model": str(session.model), "phase": "resumed"},
         )
         self._send_visual_snapshot(session)
+        self._send_pending_comparison(session)
         self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
 
     def _pause_research(self, session, reason):
@@ -1223,6 +1246,9 @@ class StreetStoryLiveAdapter:
         command_id = str(call.get("id") or "")
         story_id = session.resource_id
 
+        if name == 'find_place_articles':
+            return await self._find_place_articles(session, args)
+
         if name == "read_topic":
             result = self._topic_state(story_id)
             compact = self._compact_context(result)
@@ -1297,7 +1323,11 @@ class StreetStoryLiveAdapter:
             if replay is not None:
                 return self._model_result(name, replay)
 
-        if name == "resolve_place":
+        if name == "compare_place_images":
+            result = await self._compare_place_images(session, args)
+        elif name == "record_place_comparison":
+            result = self._record_place_comparison(session, command_id, args)
+        elif name == "resolve_place":
             result = await self._resolve_place(session, command_id, args)
         elif name == "reject_place":
             result = await self._reject_place(session, command_id, args)
@@ -1363,6 +1393,8 @@ class StreetStoryLiveAdapter:
 
         if name != "literal_finish":
             self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
+        if name == 'compare_place_images' and result.get('comparison_id'):
+            return result
         projected = self._model_result(name, result)
         if name == "save_research_facts" and response_units(name, projected, command_id) > PAGE_UNITS:
             projected = {key: projected.get(key) for key in ("research_run_id", "payload_saved", "chunk_id", "save_batch_id", "review_required", "continuation_required", "next_tool")}

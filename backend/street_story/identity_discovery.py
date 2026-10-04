@@ -433,6 +433,39 @@ async def web_search_hints(service, visual_query):
     ))[:3]
 
 
+async def web_image_sources(service, entity_name, visual_query):
+    """Retain actual search URLs; titles alone cannot yield article illustrations."""
+    search = getattr(service.providers.gemini, 'search_web', None)
+    if not callable(search):
+        return []
+    queries = list(dict.fromkeys(q for q in (
+        f'{entity_name} {REGION_HINT} фотографии разные ракурсы' if entity_name else '',
+        f'{visual_query} {REGION_HINT} фото' if visual_query else '',
+    ) if q))
+    async def run(query):
+        try:
+            result = await asyncio.wait_for(search(query, {
+                'purpose': 'identity_article_media_discovery',
+                'live_first': True,
+                'instruction': 'Найди до 20 страниц с фотографиями самого объекта с разных сторон, включая галереи внутри статей.',
+            }), timeout=35)
+            return getattr(result, 'grounding_sources', None) or []
+        except Exception:
+            return []
+    responses = await asyncio.gather(*(run(query) for query in queries[:2]))
+    sources = {str(item.get('url')): item for values in responses for item in values if isinstance(item, dict) and item.get('url')}
+    public_search = getattr(service.providers.gemini, '_public_web_search', None)
+    if len(sources) < 10 and callable(public_search) and queries:
+        try:
+            result = await asyncio.wait_for(public_search(queries[0]), timeout=12)
+            for item in getattr(result, 'grounding_sources', None) or []:
+                if isinstance(item, dict) and item.get('url'):
+                    sources.setdefault(str(item['url']), item)
+        except Exception:
+            pass
+    return list(sources.values())[:20]
+
+
 async def recover(service, story, transcript, candidates, excluded):
     gemini = service.providers.gemini
     if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
@@ -441,7 +474,17 @@ async def recover(service, story, transcript, candidates, excluded):
     async def work():
         entity_name, wiki_queries, visual_query, commons_query = await suggest(
             service, story, transcript, candidates)
-        web_hints = await web_search_hints(service, visual_query)
+        from .article_media import article_candidates
+        record_identity_event(service, story['id'], 'identity_web_media_started', {'generation': story.get('_identity_generation', 0)})
+        sources = await web_image_sources(service, entity_name, visual_query)
+        articles = await article_candidates(service, story, sources, excluded)
+        # Third-party illustrations belong to the current Live conversation.
+        # Prepare the queue here; never start another provider conversation.
+        if articles:
+            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': ['Найдены иллюстрации в статьях; продолжаю визуальное сравнение в Live.'],
+                '_article_media_pending': True, '_references_sent': []}, articles
+        web_hints = list(dict.fromkeys(plain(source.get('title'), 180) for source in sources))[:3]
         search_queries = list(dict.fromkeys([
             *wiki_queries,
             *([visual_query] if visual_query else []),
@@ -463,7 +506,7 @@ async def recover(service, story, transcript, candidates, excluded):
         result = await service._identify_photo_batch(story, transcript, discovered, reference_limit=6)
         return result, discovered
     try:
-        return await asyncio.wait_for(work(), timeout=75)
+        return await asyncio.wait_for(work(), timeout=240)
     except Exception as exc:
         record_identity_event(service, story['id'], 'identity_discovery_unavailable', {'error_type': type(exc).__name__})
         return None

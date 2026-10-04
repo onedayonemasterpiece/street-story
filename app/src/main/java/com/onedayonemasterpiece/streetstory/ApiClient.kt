@@ -26,6 +26,8 @@ class IdentityProgressWire {
     var attempt: Int = 0
     var finished: Boolean = false
     @SerializedName("elapsed_ms") var elapsedMs: Long = 0
+    @SerializedName("images_reviewed_count") var imagesReviewedCount: Int = 0
+    @SerializedName("visual_comparison_verified") var visualComparisonVerified: Boolean = false
 }
 
 class PublicationWire {
