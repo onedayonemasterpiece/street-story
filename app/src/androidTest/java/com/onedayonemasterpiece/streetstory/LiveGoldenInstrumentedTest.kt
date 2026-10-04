@@ -157,7 +157,7 @@ class LiveGoldenInstrumentedTest {
             speak(live, pcmFiles[3])
             awaitAnswer(live, "fact selection")
             story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
-                "Уточняю: оставь для поста ровно два самых надёжных подтверждённых факта. Остальные не выбирай.") {
+                "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор через select_facts. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
                 it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
             }
             capture("04-facts-selected", story)
