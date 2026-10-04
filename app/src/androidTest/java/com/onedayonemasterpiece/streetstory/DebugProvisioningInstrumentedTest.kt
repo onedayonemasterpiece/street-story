@@ -163,12 +163,15 @@ class DebugProvisioningInstrumentedTest {
     }
 
     private fun startStagedProvisioning(backendUrl: String) {
-        context.startActivity(
-            Intent().setClassName(context.packageName, DebugProvisioningActivity::class.java.name)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                .putExtra(DebugProvisioningPolicy.EXTRA_BACKEND_URL, backendUrl)
-                .putExtra(DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED, true),
+        // Exercise the actual ADB entry point. A background application-context
+        // launch is subject to Android 15 activity-start policy and can be ignored
+        // before the receiver consumes the staged file. No token enters the command.
+        val output = device.executeShellCommand(
+            "am start -W -n ${context.packageName}/${DebugProvisioningActivity::class.java.name} " +
+                "--es ${DebugProvisioningPolicy.EXTRA_BACKEND_URL} '$backendUrl' " +
+                "--ez ${DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED} true",
         )
+        assertTrue("ADB activity launch must report success", output.contains("Status: ok"))
         instrumentation.waitForIdleSync()
     }
 

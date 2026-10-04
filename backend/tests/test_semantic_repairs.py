@@ -160,3 +160,40 @@ async def test_batch_repair_rolls_back_every_parent_when_one_reference_is_invali
         assert db.execute('SELECT COUNT(*) FROM live_fact_repairs').fetchone()[0] == 0
         assert db.execute('SELECT state FROM live_review_attempts WHERE packet_ref=?', (packet['packet_ref'],)).fetchone()[0] == 'pending'
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_configured_review_advice_is_scoped_cached_and_cannot_grant_eligibility(tmp_path):
+    svc, adapter, session, run_id, reader, _ = await saved_candidates(tmp_path)
+    calls = []
+    async def helper(items, context):
+        calls.append(items)
+        return {'model': 'configured-test-model', 'decisions': [{'fact': item['fact'], 'verdict': 'insufficient', 'needs_context': True, 'reason': 'Controlled helper advice.', 'propositions': [item['text']], 'replacement_texts': []} for item in items]}
+    svc.providers.gemini.assess_fact_candidates = helper
+    packet, _ = await packet_items(adapter, session, run_id)
+    assert packet['next_tool'] == 'assess_review_packet'
+    args = {'packet_ref': packet['packet_ref']}
+    reply = await adapter.execute_tool(session, {'name': 'assess_review_packet', 'args': args})
+    replay = await adapter.execute_tool(session, {'name': 'assess_review_packet', 'args': args})
+    assert replay == reply and len(calls) == 1 and reply['helper_available']
+    assert all(f['eligibility'] == 'unreviewed' for f in adapter._get_facts(session.resource_id, {})['facts'])
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM live_review_packets WHERE result_json IS NOT NULL').fetchone()[0] == 0
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_review_helper_late_result_rejected_after_revision_changed(tmp_path):
+    svc, adapter, session, run_id, reader, _ = await saved_candidates(tmp_path)
+    async def helper(items, context):
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))
+        return {'model': 'configured-test-model', 'decisions': []}
+    svc.providers.gemini.assess_fact_candidates = helper
+    packet, _ = await packet_items(adapter, session, run_id)
+    with pytest.raises(ConflictError) as error:
+        await adapter.execute_tool(session, {'name': 'assess_review_packet', 'args': {'packet_ref': packet['packet_ref']}})
+    assert error.value.code == 'live_review_packet_stale'
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM live_review_assessments').fetchone()[0] == 0
+    await reader.search_http.aclose()

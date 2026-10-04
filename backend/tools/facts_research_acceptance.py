@@ -141,6 +141,7 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False, hel
     if helpers == 'unavailable':
         svc.providers.gemini.detect_fact_conflicts = unavailable
         svc.providers.gemini.reconcile_fact_identities = unavailable
+        svc.providers.gemini.assess_fact_candidates = unavailable
     host = create_live_host(svc, svc.settings)
     events, started, session_id, cursor = [], time.monotonic(), "", 0
     tool_trace = []

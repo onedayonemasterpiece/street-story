@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS live_fact_repairs(
  command_id TEXT NOT NULL, packet_ref TEXT NOT NULL, reason TEXT NOT NULL,
  PRIMARY KEY(story_id,parent_id,child_id,command_id)
 );
+CREATE TABLE IF NOT EXISTS live_review_assessments(
+ packet_ref TEXT NOT NULL REFERENCES live_review_packets(packet_ref),
+ cursor INTEGER NOT NULL, payload_json TEXT NOT NULL,
+ PRIMARY KEY(packet_ref,cursor)
+);
 """
 
 
@@ -186,6 +191,8 @@ def read(adapter, session, args):
         else:
             candidate.pop('next_args', None)
             candidate['next_tool'] = 'finalize_fact_review'
+            if hasattr(adapter.service.providers.gemini, 'assess_fact_candidates'):
+                candidate.update(next_tool='assess_review_packet', next_args={'packet_ref': ref})
         if response_units('get_review_packet', candidate) > PAGE_UNITS:
             if not page['items']:
                 raise ConflictError('live_review_item_oversize', 'Assertion text exceeds a bounded review operation; all data preserved.')
@@ -219,7 +226,7 @@ def prepare(adapter, session, args):
                     raise ConflictError('live_review_decisions_invalid', 'equivalent_to must be a canonical fact number from this packet.')
             refs = decision.get('evidence')
             evs = payload['items'][decision['fact']]['evidence']
-            if not isinstance(refs, list) or not refs or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
+            if not isinstance(refs, list) or (verdict == 'supported' and not refs) or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
                 raise ConflictError('live_fact_review_evidence_invalid', 'Use evidence numbers scoped to this assertion.')
             decision = dict(decision)
             claims = decision.get('claims')

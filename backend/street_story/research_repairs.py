@@ -149,3 +149,60 @@ def _apply_repair(adapter, session, db, row, payload, stable_id, args):
     result = {'parent_fact_id': item['id'], 'fact_ids': ids, 'selection_preserved': evidence_only,
               'review_required': True, 'next_tool': 'get_review_packet', 'next_args': {'run_id': row['run_id']}}
     return result
+
+
+async def assess(adapter, session, args):
+    """Scoped configured-model advice, cached only for this frozen attempt."""
+    import json
+    from .gemini import GeminiUnavailable
+    ref = str(args.get('packet_ref') or '')
+    cursor = args.get('cursor', 0)
+    decision_cursor = args.get('decision_cursor', 0)
+    if type(cursor) is not int or type(decision_cursor) is not int or cursor < 0 or cursor % 12 or decision_cursor < 0:
+        raise ConflictError('live_research_cursor_invalid', 'Use the returned assessment cursor.')
+    with adapter.service.store.tx() as db:
+        row, payload = review_packets.load(adapter, session, db, ref)
+        if row['result_json']:
+            raise ConflictError('live_review_packet_stale', 'Assessment requires a pending review attempt.')
+        cached = db.execute('SELECT payload_json FROM live_review_assessments WHERE packet_ref=? AND cursor=?', (ref, cursor)).fetchone()
+        attempts = db.execute('SELECT COUNT(*) FROM live_review_assessments a JOIN live_review_packets p ON p.packet_ref=a.packet_ref WHERE p.run_id=?', (row['run_id'],)).fetchone()[0]
+        if cursor >= len(payload['items']):
+            raise ConflictError('live_research_cursor_invalid', 'Assessment cursor exceeds the packet.')
+        items = [{'fact': n, 'text': item['text'], 'evidence': [{'evidence': e, 'text': ev['text'], 'source_url': ev['url']} for e, ev in enumerate(item['evidence'])]}
+                 for n, item in enumerate(payload['items'][cursor:cursor + 12], start=cursor)]
+    if cached:
+        result = json.loads(cached[0])
+    else:
+        helper = getattr(adapter.service.providers.gemini, 'assess_fact_candidates', None)
+        try:
+            if helper is None:
+                raise GeminiUnavailable(None, 'semantic_review_helper_not_configured')
+            if attempts >= 12:
+                raise GeminiUnavailable(None, 'semantic_review_helper_attempt_limit')
+            state = adapter._compact_context(adapter._topic_state(session.resource_id))
+            result = {**await helper(items, {'identity': state['visual_identity'], 'location': state['poi_location']}), 'helper_available': True}
+        except GeminiUnavailable as exc:
+            result = {'helper_available': False, 'reason': str(exc), 'decisions': []}
+        with adapter.service.store.tx() as db:
+            current, _ = review_packets.load(adapter, session, db, ref)
+            if current['result_json']:
+                raise ConflictError('live_review_packet_stale', 'Review completed during helper assessment.')
+            db.execute('INSERT OR IGNORE INTO live_review_assessments VALUES(?,?,?)', (ref, cursor, canonical(result)))
+    page = {'packet_ref': ref, 'helper_available': result['helper_available'], 'model': result.get('model'),
+            'policy_version': review_packets.POLICY_VERSION, 'decisions': [], 'has_more': False,
+            'instruction': 'Independent model advice, not a completed review. Read missing context, batch-repair candidates, then review fresh revisions. Do not copy suggested text without binding its own evidence.',
+            'next_tool': 'finalize_fact_review'}
+    decisions = result['decisions']
+    for n in range(decision_cursor, len(decisions)):
+        candidate = {**page, 'decisions': [*page['decisions'], decisions[n]]}
+        if response_units('assess_review_packet', candidate) > PAGE_UNITS - 400:
+            break
+        page = candidate
+    consumed = decision_cursor + len(page['decisions'])
+    if consumed < len(decisions):
+        page.update(has_more=True, next_tool='assess_review_packet', next_args={'packet_ref': ref, 'cursor': cursor, 'decision_cursor': consumed})
+    elif result['helper_available'] and cursor + len(items) < len(payload['items']):
+        page.update(has_more=True, next_tool='assess_review_packet', next_args={'packet_ref': ref, 'cursor': cursor + len(items)})
+    if not result['helper_available']:
+        page.update(reason=result['reason'], instruction='Configured helper unavailable. Mira owns the same semantic checks in Live; unresolved candidates remain withheld. No helper verdict was recorded.')
+    return page

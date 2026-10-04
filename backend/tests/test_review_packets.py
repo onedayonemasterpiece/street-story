@@ -193,3 +193,17 @@ async def test_resumed_review_frames_inventory_as_candidates_and_preserves_canon
     packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
     assert packet['total_facts'] == 3
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_insufficient_can_withhold_without_inventing_supporting_evidence(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save', 'args': findings(chunk, QUOTES)})
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': n, 'evidence': [] if n == 0 else [0], 'verdict': 'insufficient' if n == 0 else 'supported'} for n in range(3)], 'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
+    result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review', 'args': args})
+    assert result['complete'] and result['eligible_count'] == 2 and result['withheld_count'] == 1
+    replay = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'again', 'args': args})
+    assert replay == result
+    await reader.search_http.aclose()

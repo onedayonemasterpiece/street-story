@@ -2727,6 +2727,58 @@ class GeminiClient:
         }
 
 
+    async def assess_fact_candidates(self, items, context):
+        """Independent bounded semantic advice using the configured research routes.
+
+        This does not write eligibility or replace Live's final review. Code does
+        not classify claims or supply expected answers.
+        """
+        from google.genai import types
+        from .review_packets import REVIEW_CHECKS
+        if not 1 <= len(items) <= 12:
+            raise ValueError('bounded_semantic_review_batch')
+        schema = {"type": "object", "properties": {"decisions": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "fact": {"type": "integer"},
+                "verdict": {"type": "string", "enum": ["supported", "insufficient", "repair_needed", "contradicted", "role_mismatch"]},
+                "reason": {"type": "string"}, "needs_context": {"type": "boolean"},
+                "propositions": {"type": "array", "items": {"type": "string"}},
+                "replacement_texts": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["fact", "verdict", "reason", "needs_context", "propositions", "replacement_texts"]
+        }}}, "required": ["decisions"]}
+        prompt = ('You independently verify unverified Street Story candidates. ' + REVIEW_CHECKS
+                  + ' Enumerate each independent person/role/event in propositions, do not simply repeat a compound sentence. '
+                  + 'replacement_texts may propose narrower or split claims supported by OWN evidence, '
+                  + 'never manufacture missing context. Correct affirmative candidates must stay supported. '
+                  + 'Give a short checkable reason, not private reasoning. No prior verdicts are provided.\n'
+                  + 'Confirmed POI: ' + json.dumps(context, ensure_ascii=False) + '\n'
+                  + 'Candidates with their own attached evidence: ' + json.dumps(items, ensure_ascii=False))
+        config = types.GenerateContentConfig(response_mime_type='application/json', response_json_schema=schema)
+        retry_at = []
+        for model, _pool, quota, executor in self.research_routes:
+            async def call(key, timeout, *, _model=model, _quota=quota):
+                response = await self._generate(key, timeout, [prompt], config, operation='grounded_research', model=_model, quota=_quota)
+                try:
+                    payload = json.loads(response.text or '{}')
+                    decisions = payload['decisions']
+                    numbers = [d['fact'] for d in decisions]
+                    if len(numbers) != len(items) or set(numbers) != {item['fact'] for item in items}:
+                        raise ValueError('incomplete_or_foreign_decisions')
+                    if any(len(d['reason']) > 500 or not 1 <= len(d['propositions']) <= 8 or len(d['replacement_texts']) > 8 or any(len(t) > 500 for t in d['propositions'] + d['replacement_texts']) for d in decisions):
+                        raise ValueError('oversize_semantic_advice')
+                except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                    raise MalformedProviderResponse('gemini:malformed_semantic_review') from None
+                return {'model': _model, 'decisions': decisions}
+            try:
+                return await executor.execute('grounded_research', call)
+            except GeminiUnavailable as exc:
+                if exc.retry_at is not None:
+                    retry_at.append(exc.retry_at)
+            except PermanentProviderError as exc:
+                if str(exc) != 'gemini:unsupported_model':
+                    raise
+        raise GeminiUnavailable(min(retry_at) if retry_at else None, 'semantic_review_helpers_unavailable')
+
     async def detect_fact_conflicts(
         self,
         items: list[dict[str, Any]],
