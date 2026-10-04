@@ -97,15 +97,16 @@
     },
     {
       "id": "CORE-SHARED-POI-HISTORY-GRAPH",
-      "statement": "Street Story is not a knowledge silo. The platform maintains a persistent server-side canonical regional POI/history knowledge graph, and Street Story both consumes and enriches that shared graph. Story-local facts are a projection for one publication, not the authoritative long-term store. The graph accumulates POI identity and aliases, evidence-backed claims and sources, people, historical events/threads and their relations to POIs and to one another.",
+      "statement": "Street Story is not a knowledge silo. Facts discovered by Street Story are accumulated directly in the existing persistent server-side POI memory and reused across stories and devices; story-local facts are only a publication projection. The Regional Knowledge Base maintains its evidence-backed historical graph for people, events and historical threads linked to canonical POIs. These existing domains interoperate by stable references and evidence contracts; no duplicate canonical POI layer or mandatory migration between POI tables is required.",
       "critical": true,
       "acceptance": [
-        "A new story hydrates relevant existing canonical POI knowledge before doing redundant web research, including prior eligible claims, known sources and aliases.",
-        "Research reuses already processed evidence and focuses new web work on gaps, new sources or changed questions instead of rediscovering the same POI knowledge from zero.",
-        "New evidence-backed facts and semantic relations discovered by Street Story are persisted into the shared canonical POI/history graph so they remain reusable across stories, devices and other products.",
-        "Story-specific owner selection, editorial angle and draft state remain local to the story and do not redefine canonical graph truth.",
-        "Regional Knowledge Base may enrich the same canonical graph by delivering provenance-rich typed evidence events; Street Story findings do not need to be written back into Regional Knowledge Base.",
-        "Physical co-location of the current POI tables with the Street Story backend does not make the knowledge graph story-local: the logical ownership boundary is the shared regional POI/history knowledge layer."
+        "A new story hydrates relevant existing POI memory before redundant web research, including eligible claims, known sources and aliases.",
+        "Research reuses already processed evidence and focuses new web work on gaps, new sources or changed questions instead of rediscovering the same POI from zero.",
+        "New evidence-backed facts discovered by Street Story persist directly in the existing POI research memory and are reusable by later stories; no second copy is required for them to become canonical product knowledge.",
+        "poi_research_assertions, poi_research_observations and poi_research_sources are valid durable POI knowledge for Street Story-discovered web research; they must not be mirrored into poi_claims merely to satisfy architecture ceremony.",
+        "poi_claims, poi_claim_evidence and poi_external_events remain integration-specific structures for typed external evidence intake where that contract is useful, not a mandatory migration target for existing Street Story POI memory.",
+        "Story-specific owner selection, editorial angle and draft state remain local to the story and do not redefine reusable POI knowledge.",
+        "Regional Knowledge Base can contribute provenance-rich evidence and maintain person/event/historical_thread relations linked to POIs without requiring Street Story research findings to be copied back into the Regional Knowledge corpus."
       ]
     }
   ]
