@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.By
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.gson.Gson
@@ -143,7 +144,7 @@ class LiveGoldenInstrumentedTest {
             story = pollStory(
                 api, storyId, RESEARCH_TIMEOUT_MS,
                 allowedNeedsReviewCodes = setOf("visual_stale"),
-            ) { it.sourceCount > 0 }
+            ) { it.sourceCount > 0 && it.facts.count { fact -> fact.evidenceSupported } >= 2 }
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
             require(story.facts.count { it.evidenceSupported } >= 2)
@@ -360,6 +361,8 @@ class LiveGoldenInstrumentedTest {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             instrumentation.waitForIdleSync()
             Thread.sleep(1_000)
+            (device.findObject(By.text("ПОЗЖЕ")) ?: device.findObject(By.text("Позже")))?.click()
+            instrumentation.waitForIdleSync()
             assertTrue("Stage screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage.png")))
             scenario.onActivity { activity ->
                 fun find(view: View): View? {
@@ -386,8 +389,15 @@ class LiveGoldenInstrumentedTest {
         // Provider turn completion can precede AudioTrack playback draining.
         // A real owner waits for Mira; injecting the next fixture immediately
         // loses its opening words to the normal echo/research input gate.
+        var readySince = 0L
         waitUntil(120_000, "Microphone input did not resume before prepared speech") {
-            !live.shouldSuppressMicrophoneInput()
+            if (live.shouldSuppressMicrophoneInput()) {
+                readySince = 0L
+                false
+            } else {
+                if (readySince == 0L) readySince = System.currentTimeMillis()
+                System.currentTimeMillis() - readySince >= 750L
+            }
         }
         awaitingTurnAfter = live.snapshot().completedTurns
         val bytes = pcm.readBytes()
