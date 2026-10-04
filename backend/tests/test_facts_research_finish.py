@@ -66,6 +66,8 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
         fact.update(verdict='supported' if n < 2 else 'insufficient', atomic=True,
                     support_complete=n < 2, qualifiers_preserved=True,
                     review_reason='Controlled model verdict for this own passage.', selected=False)
+    args['facts'] = [{'source_refs': [], 'evidence_refs': [], 'evidence_quotes': QUOTES,
+                      'claims': [{k: v for k, v in fact.items() if k not in {'source_refs', 'evidence_refs', 'evidence_quotes'}} for fact in args['facts']]}]
     saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'normal-batch', 'args': args})
     assert saved['review_required'] is False
     inventory = adapter._get_facts(session.resource_id, {})['facts']
@@ -74,8 +76,7 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
     assert len(good) == 2 and len(bad) == 1 and not any(f['owner_selected'] for f in inventory)
     assert helper_calls == []
     assert await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'same-batch', 'args': args}) == saved
-    done = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
-    assert done['completed'] and done['next_tool'] is None
+    assert saved['completed'] and saved['next_tool'] is None
     assert any(e.get('type') == 'research_progress' and not e['state']['active'] for e in events)
     with svc.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM live_review_packets').fetchone()[0] == 0

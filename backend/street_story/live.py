@@ -680,6 +680,19 @@ FUNCTIONS = [
 ]
 
 
+# The model emits independent claims in each evidence group. The server only
+# flattens that model-owned structure; it never splits prose.
+_save_declaration = next(f for f in FUNCTIONS if f['name'] == 'save_research_facts')
+_finding_schema = _save_declaration['parameters']['properties']['facts']['items']
+_claim_fields = {k: v for k, v in _finding_schema['properties'].items()
+                 if k not in {'source_refs', 'evidence_refs', 'evidence_quotes', 'passage_ids'}}
+_finding_schema['properties'] = {k: v for k, v in _finding_schema['properties'].items()
+                                 if k in {'source_refs', 'evidence_refs', 'evidence_quotes', 'passage_ids'}}
+_finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enumerate EACH independently selectable assertion in these passages. Each depicted person or independent role/event is its own object, never one compound sentence.',
+                                          'items': {'type': 'object', 'properties': _claim_fields,
+                                                    'required': ['claim_key', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
+_finding_schema['required'] = ['claims', 'source_refs', 'evidence_refs']
+
 SYSTEM_INSTRUCTION = """
 Ты — голосовой редактор Street Story. Работай только с текущей темой.
 Главный объект — текущий видимый вариант публикации: изображение и текст. Пользователь может
@@ -1320,6 +1333,7 @@ class StreetStoryLiveAdapter:
                 "extraction_complete": result.get("extraction_complete"),
                 "continuation_reason": result.get("continuation_reason"),
                 "review_required": bool(result.get("review_required")),
+                "completed": bool(result.get('completed')),
                 "continuation_required": bool(
                     (
                         discovery_only
@@ -1370,6 +1384,7 @@ class StreetStoryLiveAdapter:
                 "chunk_id": result.get("chunk_id"),
                 "save_batch_id": result.get("save_batch_id"),
                 "review_required": bool(result.get("review_required")),
+                "completed": bool(result.get('completed')),
                 "continuation_required": bool(result.get("continuation_required")),
                 "next_tool": result.get("next_tool"),
                 "next_args": result.get("next_args"),
@@ -2536,7 +2551,7 @@ class StreetStoryLiveAdapter:
         return story, run
 
     @staticmethod
-    def _core_passages(chunk_id, core):
+    def _core_passages(chunk_id, core, *, contextual=False):
         """Address literal paragraphs; this makes no semantic fact decisions."""
         passages, cursor = [], 0
         for line in core.splitlines(keepends=True):
@@ -2548,6 +2563,12 @@ class StreetStoryLiveAdapter:
                     ref = "evref_" + hashlib.sha256(f"{chunk_id}:{offset}:{text}".encode()).hexdigest()[:24]
                     passages.append({"passage_id": len(passages), "evidence_ref": ref, "text": text, "core_offset": offset})
             cursor += len(line)
+        if contextual:
+            for passage in passages:
+                start = max(0, passage['core_offset'] - 450)
+                end = min(len(core), passage['core_offset'] + len(passage['text']) + 250)
+                passage.update(text=core[start:end], core_offset=start,
+                               evidence_ref='evref_' + hashlib.sha256(f'{chunk_id}:{start}:{core[start:end]}'.encode()).hexdigest()[:24])
         return passages
 
     async def _get_research_chunk(self, session, args):
@@ -2621,7 +2642,7 @@ class StreetStoryLiveAdapter:
             "source_version_id": candidate["source_version_id"], "chunk_id": candidate["chunk_id"],
             "ordinal": candidate["ordinal"], "core_start": candidate["core_start"], "core_end": candidate["core_end"],
             "core_text": core, "context_text": candidate["chunk_text"],
-            "evidence_passages": self._core_passages(candidate["chunk_id"], core),
+            "evidence_passages": self._core_passages(candidate["chunk_id"], core, contextual=bool(session.state.get('live_first_research'))),
             "context_before": candidate["normalized_text"][candidate["context_start"]:candidate["core_start"]],
             "context_after": candidate["normalized_text"][candidate["core_end"]:candidate["context_end"]],
             "batch_id": batch_id, "batch_index": batch_index, "expected_story_revision": snapshot_revision,
@@ -2712,6 +2733,18 @@ class StreetStoryLiveAdapter:
                 "live_research_facts_invalid",
                 "Provide between 1 and 32 facts from the latest search evidence",
             )
+        expanded = []
+        for group in raw_facts:
+            if isinstance(group, dict) and 'claims' in group:
+                claims = group['claims']
+                if not isinstance(claims, list) or not 1 <= len(claims) <= 32 or any(not isinstance(c, dict) for c in claims):
+                    raise ConflictError('live_research_facts_invalid', 'An evidence group needs explicit bounded claim objects.')
+                expanded.extend({**{k: v for k, v in group.items() if k != 'claims'}, **claim} for claim in claims)
+            else:
+                expanded.append(group)  # Legacy receipts remain replayable.
+        if len(expanded) > 32:
+            raise ConflictError('live_research_facts_invalid', 'Save at most 32 claims per batch and continue the same core.')
+        raw_facts = expanded
 
         # Phase 1 is read-only. Never hold a SQLite write transaction while the
         # semantic reconciler is making a provider call.
@@ -2872,8 +2905,9 @@ class StreetStoryLiveAdapter:
                 url = str(chunk_row["requested_url"]).rstrip("/")
                 source_ref = _search_source_ref(url)
                 core = chunk_row["normalized_text"][chunk_row["core_start"]:chunk_row["core_end"]]
-                addressed = {p["evidence_ref"]: p["text"] for p in self._core_passages(chunk_id, core)}
-                numbered = {p["passage_id"]: p["text"] for p in self._core_passages(chunk_id, core)}
+                passages = self._core_passages(chunk_id, core, contextual=bool(session.state.get('live_first_research')))
+                addressed = {p["evidence_ref"]: p["text"] for p in passages}
+                numbered = {p["passage_id"]: p["text"] for p in passages}
                 quoted_facts = []
                 for raw in raw_facts:
                     if not isinstance(raw, dict):
@@ -3436,13 +3470,14 @@ class StreetStoryLiveAdapter:
             )
             history[history_index] = latest_search
             research["live_web_searches"] = history[-12:]
+            batches_complete = bool(batch_verified and manifest_complete(run_manifest(db, run_id)))
             set_run_state(
                 db,
                 run_id,
-                "verifying",
-                detail="awaiting_live_semantic_review",
+                "completed" if batches_complete else "extracting" if batch_verified else "verifying",
+                detail="live_batches_complete" if batches_complete else "live_batches_in_progress" if batch_verified else "awaiting_live_semantic_review",
                 now=now,
-                completed=False,
+                completed=batches_complete,
             )
             db.execute(
                 "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,"
@@ -3461,8 +3496,9 @@ class StreetStoryLiveAdapter:
                 "research_run_id": run_id,
                 "save_batch_id": save_batch_id,
                 "review_required": not bool(batch_verified),
-                "continuation_required": True,
-                "next_tool": "get_research_chunk" if chunk_id else "get_review_packet",
+                "completed": batches_complete,
+                "continuation_required": not batches_complete,
+                "next_tool": None if batches_complete else "get_research_chunk" if chunk_id else "get_review_packet",
                 "next_args": {"run_id": run_id},
                 "chunk_id": chunk_id or None,
                 "payload_saved": True,
@@ -3520,8 +3556,8 @@ class StreetStoryLiveAdapter:
         )
         self._emit_research_progress(
             session,
-            stage="review",
-            active=True,
+            stage="completed" if batches_complete else "extracting" if batch_verified else "review",
+            active=not batches_complete,
             query=str(latest_search.get("query") or ""),
             source_count=len(all_research_sources),
             fact_count=int(fact_count),
