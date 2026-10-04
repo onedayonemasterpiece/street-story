@@ -2556,7 +2556,11 @@ class StreetStoryLiveAdapter:
     def _core_passages(chunk_id, core, *, contextual=False):
         """Address literal paragraphs; this makes no semantic fact decisions."""
         passages, cursor = [], 0
-        for line in core.splitlines(keepends=True):
+        # HTML navigation often produces dozens of tiny lines. Address fixed
+        # consecutive windows in the normal flow so pagination advances through
+        # the document rather than repeating its menu with every context span.
+        lines = [core[i:i + 900] for i in range(0, len(core), 900)] if contextual else core.splitlines(keepends=True)
+        for line in lines:
             for start in range(0, len(line), 900):
                 raw = line[start:start + 900]
                 text = raw.strip()

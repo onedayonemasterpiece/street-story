@@ -16,6 +16,16 @@ URL = "https://archive.example/full-document"
 QUOTES = ["Первый подтверждённый атомарный тезис.", "Второй подтверждённый атомарный тезис.", "Третий подтверждённый атомарный тезис."]
 
 
+def test_live_document_windows_advance_past_short_navigation_lines():
+    from street_story.live import StreetStoryLiveAdapter
+    core = ''.join(f'Menu item {i}\n' for i in range(90)) + 'Historical source paragraph. ' * 150
+    passages = StreetStoryLiveAdapter._core_passages('chunk', core, contextual=True)
+    assert len(passages) == (len(core) + 899) // 900
+    assert passages[-1]['core_offset'] + len(passages[-1]['text']) == len(core)
+    assert all(core[p['core_offset']:p['core_offset'] + len(p['text'])] == p['text'] for p in passages)
+    assert all(b['core_offset'] > a['core_offset'] for a, b in zip(passages, passages[1:]))
+
+
 async def fallback(tmp_path):
     svc, adapter, session, events = make_service(tmp_path)
     mark_identity_ready(svc, session.resource_id)
