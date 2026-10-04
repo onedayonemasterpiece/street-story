@@ -726,7 +726,7 @@ Photo and identity:
 Research and durable evidence:
 - Never invent facts. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
 - Separate retrieval query from coverage_goal. Short queries must retain all owner requirements in coverage_goal, including positions such as left/center/right. Use visible sculptures, figures, inscriptions, coats of arms and plaques as coverage hints: targeted search must answer the named detail concretely, not merely describe the building.
-- discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Enriching existing_fact_id is not a new fact; continue bounded research if no new assertion was saved. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
+- discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
 - Attach only each claim's own supporting evidence refs. Semantically equivalent claims use exact existing_fact_id; enrich evidence rather than multiplying paraphrases.
 - get_research_chunk is paginated: check/save the current small page before following save receipt next_args to the next unread page. facts=[] means no useful claims on that page, not completed research. Do not skip an unread page to a new search. Do not reread saved pages.
 - After no_claims with zero new durable observations, continue get_research_chunk(run_id only), at most three full-source attempts. Only after bounded source exhaustion honestly say no new confirmed facts were found.
@@ -1071,14 +1071,7 @@ class StreetStoryLiveAdapter:
 
     @staticmethod
     def _live_research_progress(db, story_id, run_id):
-        observations = db.execute(
-            "SELECT COUNT(DISTINCT a.assertion_id) FROM fact_observations o "
-            "JOIN fact_assertions a ON a.story_id=o.story_id AND a.assertion_id=o.assertion_id "
-            "JOIN research_runs r ON r.run_id=o.run_id "
-            "WHERE o.story_id=? AND o.run_id=? AND o.status='accepted' "
-            "AND a.created_at>=r.created_at AND a.eligibility='eligible'",
-            (story_id, run_id),
-        ).fetchone()[0]
+        observations = db.execute("SELECT COUNT(*) FROM fact_observations WHERE story_id=? AND run_id=? AND status='accepted'", (story_id, run_id)).fetchone()[0]
         sources = db.execute("SELECT source_version_id,status FROM research_run_sources WHERE run_id=?", (run_id,)).fetchall()
         return {'observations': observations,
                 'attempts': sum(bool(row['source_version_id']) or row['status'] == 'failed' for row in sources),
@@ -1187,12 +1180,7 @@ class StreetStoryLiveAdapter:
                 fact.get("evidence_supported") or fact.get("verdict") == "supported"
                 for fact in result.get("facts", [])
             ):
-                if session.state.get('live_first_research'):
-                    with self.service.store.connection() as db:
-                        progress = self._live_research_progress(db, session.resource_id, session.state.get('research_run_id'))
-                    session.state['research_output_pending'] = not bool(progress['observations'])
-                else:
-                    session.state["research_output_pending"] = False
+                session.state["research_output_pending"] = False
             elif name == "get_research_chunk" and result.get("all_chunks_processed") and result.get("next_tool") is None:
                 session.state["research_output_pending"] = False
             if session.state.get("research_run_id") and name in {"select_facts", "set_concept", "edit_text", "generate_visual", "prepare_publication"}:

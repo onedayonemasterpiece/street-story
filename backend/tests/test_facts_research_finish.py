@@ -799,26 +799,3 @@ def test_frozen_passage_keeps_sentence_across_core_boundary():
     assert second['core_offset'] < 0
     absolute = boundary + second['core_offset']
     assert document[absolute:absolute + len(second['text'])] == second['text']
-
-
-@pytest.mark.asyncio
-async def test_existing_assertion_observation_is_not_new_research_progress(tmp_path):
-    svc, adapter, session, events, run_id, helper_calls, reader = await fallback(tmp_path)
-    session.state['live_first_research'] = True
-    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
-    args = findings(chunk, [QUOTES[0]])
-    args.update(batch_reviewed=True, source_matches_poi=True)
-    args['facts'][0].update(verdict='supported', atomic=True, support_complete=True,
-                            qualifiers_preserved=True, review_reason='Own exact passage', selected=False)
-    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'new-claim', 'args': args})
-    with svc.store.tx() as db:
-        assert adapter._live_research_progress(db, session.resource_id, run_id)['observations'] == 1
-        # The same accepted observation enriching a pre-existing assertion must
-        # not satisfy the additional-research completion or speech gate.
-        db.execute('UPDATE fact_assertions SET created_at=(SELECT created_at-1 FROM research_runs WHERE run_id=?) WHERE story_id=?', (run_id, session.resource_id))
-        assert adapter._live_research_progress(db, session.resource_id, run_id)['observations'] == 0
-        assert db.execute("SELECT COUNT(*) FROM fact_observations WHERE run_id=? AND status='accepted'", (run_id,)).fetchone()[0] == 1
-    session.state['research_output_pending'] = True
-    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'new-claim', 'args': args})
-    assert session.state['research_output_pending'] is True
-    await reader.search_http.aclose()
