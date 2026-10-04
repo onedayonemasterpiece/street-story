@@ -32,7 +32,7 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     svc, adapter, session, _events = make_service(tmp_path)
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
     configuration = initialized["configuration"]
-    assert configuration["search_enabled"] is True
+    assert configuration["search_enabled"] is False
     assert configuration["manual_activity_detection"] is True
     assert configuration["application_search_function"] == "find_place_articles"
     assert configuration["media_resolution"] == "MEDIA_RESOLUTION_MEDIUM"
@@ -40,11 +40,11 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     assert "один стабильный голосовой образ Миры" in configuration["system_instruction"]
     from street_story.review_packets import EXTRACTION_CHECKS, REVIEW_CHECKS
 
-    assert EXTRACTION_CHECKS in configuration["system_instruction"]
+    assert EXTRACTION_CHECKS not in configuration["system_instruction"]
     # The normal setup must leave room in the resource lease for bootstrap.
     # Legacy verification policy is sent only when that phase is active.
     assert REVIEW_CHECKS not in configuration["system_instruction"]
-    assert any(item["name"] == "search_web" for item in configuration["functions"])
+    assert any(item["name"] == "find_place_articles" for item in configuration["functions"])
     from live_interaction.provider import setup_config
 
     provider_setup = setup_config(
@@ -57,7 +57,7 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     # lease after photo (8KB) and identity (5KB), before a second voice turn.
     # Reserve room for the actual owner flow, not only initial setup.
     assert len(__import__('json').dumps(provider_setup, ensure_ascii=False, separators=(',', ':')).encode()) < 34_000
-    assert any("googleSearch" in tool for tool in provider_setup["tools"])
+    assert not any("googleSearch" in tool for tool in provider_setup["tools"])
     assert any(item['name'] == 'compare_place_images' for tool in provider_setup['tools']
                for item in tool.get('functionDeclarations', []))
     # Identity discovery may use native search; normal confirmed-object research
@@ -73,7 +73,9 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
         for tool in provider_setup["tools"]
         for item in tool.get("functionDeclarations", [])
     }
-    assert "search_web" in function_names
+    assert "find_place_articles" in function_names
+    assert "search_web" not in function_names
+    assert len(function_names) <= 9
 
 
 def test_live_functions_expose_place_and_search_tools_not_async_research_job() -> None:

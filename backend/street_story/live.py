@@ -772,6 +772,40 @@ Answer briefly and concretely in Russian.
 
 
 class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
+    CAPABILITY_TOOLS = {
+        'identity': {'find_place_articles', 'compare_place_images', 'record_place_comparison', 'read_topic', 'resolve_place', 'confirm_place', 'reject_place'},
+        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'select_facts'},
+        'review': {'read_topic', 'get_facts', 'get_review_packet', 'get_review_context', 'assess_review_packet', 'repair_research_fact', 'finalize_fact_review', 'resolve_fact_conflict'},
+        'editor': {'read_topic', 'get_facts', 'select_facts', 'set_concept', 'edit_text', 'literal_begin', 'literal_finish', 'literal_cancel'},
+        'publication': {'read_topic', 'generate_visual', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
+    }
+
+    def _capability_configuration(self, configuration, capability):
+        router = _tool_schema('continue_story', 'Continue the same story with tools for the requested stage. This changes capabilities only; it never edits, generates or publishes.',
+            {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS)}, 'intent': {'type': 'string'}}, ['stage', 'intent'])
+        configuration = dict(configuration)
+        configuration['functions'] = [f for f in configuration['functions'] if f['name'] in self.CAPABILITY_TOOLS[capability]] + [router]
+        configuration['search_enabled'] = False
+        configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
+        if capability == 'identity':
+            configuration['system_instruction'] = (SYSTEM_INSTRUCTION.split('Research and durable evidence:')[0]
+                .replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
+                         'If the API search is unavailable, report its error and retain the queue for continuation;')
+                + '\nAfter a proved match use continue_story stage=research for facts, editor for concept/text, publication for visuals/post. Never invent facts or perform publication before the separate author confirmation.')
+        else:
+            configuration['system_instruction'] += '\nUse continue_story to access another stage: research, review, editor, publication or identity. Changing stage is not consent for mutations.'
+        return configuration
+
+    def resolve_capability(self, session, call):
+        if call.get('name') != 'continue_story':
+            return None
+        stage = (call.get('args') or {}).get('stage')
+        if stage not in self.CAPABILITY_TOOLS:
+            raise ConflictError('live_stage_invalid', 'Неизвестный этап.')
+        initialized = self.initialize(resource_id=session.resource_id, actor=session.actor, model=session.model, full_configuration=True)
+        return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
+            'context': initialized['context'], 'continuation': str((call.get('args') or {}).get('intent') or '')[:1200]}
+
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
         self.emit = emit
@@ -816,7 +850,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             instruction = ('Current phase: independent verification of unverified candidates. '
                            + review_packets.REVIEW_CHECKS + '\n'
                            + instruction)
-        return {
+        initialized = {
             "state": {
                 "recent_user": deque(maxlen=24),
                 "live_first_research": True,
@@ -848,6 +882,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "revision": state["story"]["revision"],
             },
         }
+        if not _args.get('full_configuration'):
+            capability = 'identity' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'} else 'review' if reviewing else 'research'
+            initialized['capability'] = capability
+            initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
+        return initialized
 
     def input(self, session, message: dict[str, Any]) -> None:
         if session.state.get("research_run_id") and (message.get("activity_start") or message.get("text")):
@@ -977,6 +1016,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
         if kind == "turn_complete":
+            self._continue_identity(session)
             self._continue_pending_research(session)
 
         if kind in {"input_transcript", "output_transcript"} and text:
@@ -4988,11 +5028,14 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
 
     async def managed_runner(*, session, reader, on_event):
         environment = _live_resource_environment(settings)
+        control = None
         def committed_output(event):
             _forward_committed_output(service, session, event, on_event)
         try:
             try:
                 from ai_resource_control import run_guarded
+                from ai_resource_control.client import Config, Control, estimate_input_tokens
+                from ai_resource_control.live import PrependReader
             except ImportError:
                 on_event(
                     {
@@ -5002,14 +5045,32 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
                     }
                 )
                 return
+            # Acquire must select a scope capable of admitting the actual setup,
+            # rather than choosing it for 1024 units and denying setup afterward.
+            # The shared controller still owns selection, leases and every send.
+            from dataclasses import replace
+            from live_interaction.provider import setup_config
+            first = await reader.readline()
+            start = json.loads(first)
+            configuration = start.get('configuration') or {}
+            setup = setup_config(start['model'], start.get('context') or {}, start.get('history'),
+                configuration=configuration, search=bool(configuration.get('search_enabled')))
+            requested = estimate_input_tokens(setup)
+            config = replace(Config.from_env('street-story', environment), grant_tokens=requested)
+            control = Control(config)
+            logger.info('street_story_live_setup_admission %s', canonical({
+                'session_id': session.id, 'estimated_units': requested, 'model': start['model']}))
             await run_guarded(
                 consumer="street-story",
                 environment=environment,
-                reader=reader,
+                reader=PrependReader(first, reader),
+                control=control,
                 on_event=committed_output,
                 binding=f"street-story:{session.id}",
             )
         finally:
+            if control is not None:
+                await control.close()
             environment.clear()
 
     def transport_diagnostic(record: dict[str, Any]) -> None:

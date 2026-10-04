@@ -11,6 +11,7 @@ on:
         options:
           - smoke
           - full_social
+          - identity
           - readback
       keep_publication:
         description: 'Owner-visible test: retain one test-group post instead of testing cancellation (full_social only)'
@@ -200,7 +201,7 @@ jobs:
 
       - uses: actions/setup-java@v4
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         with:
           distribution: temurin
@@ -208,19 +209,19 @@ jobs:
 
       - uses: android-actions/setup-android@v4
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
 
       - uses: gradle/actions/setup-gradle@v4
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         with:
           gradle-version: '8.13'
 
       - name: Restore canonical signing key for live emulator APKs
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
           SIGNING_KEYSTORE_B64: ${{ secrets.STREET_STORY_SIGNING_KEYSTORE_B64 }}
@@ -237,7 +238,7 @@ jobs:
 
       - name: Build exact-HEAD Android test APKs
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
           STREET_STORY_SIGNING_STORE_FILE: ${{ runner.temp }}/street-story-signing/owner-signing.p12
@@ -249,7 +250,7 @@ jobs:
 
       - name: Prepare licensed photo and prepared-audio fixtures
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
@@ -291,9 +292,9 @@ jobs:
           )
           (root / 'token.txt').write_text(os.environ['STREET_STORY_LIVE_TOKEN'], encoding='utf-8')
           texts = [
-              'Это Закхаймские ворота в Калининграде. Я хочу сделать живой городской пост об этой фотографии.',
-              'Сначала определи объект на фото через resolve_place, OSM и Википедию. Пока не ищи факты.',
-              'Подтверждаю: это Закхаймские ворота. Сохрани подходящего кандидата через confirm_place.',
+              'Я хочу сделать городской пост об этой фотографии. Помоги узнать, что за здание на ней.',
+              'Рассмотри фотографию и помоги определить здание. Я не знаю его названия.',
+              'Теперь найди проверяемые исторические факты об этом здании.',
               'Оставь два самых надежных подтвержденных факта, остальные не используй в текущем посте.',
               'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
               'Сделай картинку чуть теплее, а текст оставь без изменений.',
@@ -338,7 +339,7 @@ jobs:
 
       - name: Enable KVM for Android live E2E
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         run: |
           test -c /dev/kvm
@@ -347,8 +348,9 @@ jobs:
       - name: Android client -> live backend -> native Telegram golden run
         env:
           LIVE_E2E_KEEP_PUBLICATION: ${{ inputs.keep_publication && 'true' || 'false' }}
+          LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.acceptance == 'full_social') ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:

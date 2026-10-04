@@ -50,6 +50,16 @@ async def run(args):
                 candidate['reference_image_urls'] = candidate['reference_image_urls'][args.start_image - 1:]
         print(json.dumps({'seeded_article_candidates': len(identity['candidates']),
             'illustrations': sum(len(c['article_media']) for c in identity['candidates'])}), flush=True)
+    if args.negative_wikipedia:
+        from street_story.identity_discovery import retrieve
+        negatives = await retrieve(service, [args.negative_wikipedia], '', set())
+        from urllib.parse import unquote
+        negatives = [c for c in negatives if unquote(c.get('url') or '').rsplit('/', 1)[-1].startswith(
+            args.negative_wikipedia.replace(' ', '_')) and c.get('reference_image_urls')]
+        if not negatives:
+            raise ValueError('negative_control_reference_unavailable')
+        # This is explicitly a comparison control, never automatic discovery.
+        identity['candidates'] = [negatives[0], *identity['candidates']]
     with service.store.tx() as db:
         db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (
             json.dumps({'visual_identity': identity, 'identity_generation': 0, 'identity_attempted_generation': 0}), story['id']))
@@ -102,6 +112,7 @@ async def run(args):
     report = {'photo_sha256': hashlib.sha256(photo).hexdigest(), 'live_model': 'gemini-3.8-live',
         'same_live_session': session_id, 'discovery_seeded': bool(args.sources),
         'no_wikipedia_confirmation_boundary': True, 'progress_samples': progress,
+        'negative_control_query': args.negative_wikipedia,
         'gallery_start_image': args.start_image,
         'identity': result.get('visual_identity'), 'progress': result.get('identity_progress'),
         'events': events, 'elapsed_ms': round((time.monotonic()-started)*1000),
@@ -119,6 +130,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--photo', type=Path, default=Path(__file__).parent / 'fixtures/zachheim-owner-20260928/source.png')
     parser.add_argument('--sources', type=Path)
+    parser.add_argument('--negative-wikipedia', help='Optional real other-object negative control; not an unseeded scenario')
     parser.add_argument('--run-name', default='live-visual-acceptance')
     parser.add_argument('--start-image', type=int, default=1, help='Exercise a later actual gallery image as the first group')
     args = parser.parse_args()

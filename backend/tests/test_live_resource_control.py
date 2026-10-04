@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import types
+import asyncio
+import json
 
 import pytest
 
@@ -27,10 +29,15 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     async def guarded(**kwargs):
         calls.append({**kwargs, "environment": dict(kwargs["environment"])})
 
-    monkeypatch.setitem(sys.modules, "ai_resource_control", types.SimpleNamespace(run_guarded=guarded))
+    ai_resource_control = pytest.importorskip('ai_resource_control', reason='Private managed SDK is installed by server deployment; verified in retained runtime acceptance')
+    monkeypatch.setattr(ai_resource_control, 'run_guarded', guarded)
+    initialized = _adapter.initialize(resource_id=_session.resource_id, actor=None, model='gemini-3.8-live')
+    reader = asyncio.StreamReader()
+    reader.feed_data((json.dumps({'type': 'start', 'model': 'gemini-3.8-live',
+        'context': initialized['context'], 'configuration': initialized['configuration']}) + '\n').encode())
     await host.managed_runner(
         session=types.SimpleNamespace(id="live_fixture_session"),
-        reader=object(),
+        reader=reader,
         on_event=lambda _event: None,
     )
 
@@ -38,6 +45,11 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     call = calls[0]
     assert call["consumer"] == "street-story"
     assert call["binding"] == "street-story:live_fixture_session"
+    from live_interaction.provider import setup_config
+    from ai_resource_control.client import estimate_input_tokens
+    assert call['control'].config.grant_tokens == estimate_input_tokens(setup_config('gemini-3.8-live',
+        initialized['context'], configuration=initialized['configuration'], search=False))
+    assert 1024 < call['control'].config.grant_tokens < 20000
     assert call["environment"] == {
         "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
         "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
