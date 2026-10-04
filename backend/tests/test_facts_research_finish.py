@@ -56,6 +56,39 @@ def review_args(adapter, story_id, run_id, coverage=True):
 
 
 @pytest.mark.asyncio
+async def test_live_batch_exposes_good_facts_without_global_review_and_withholds_one(tmp_path):
+    svc, adapter, session, events, run_id, helper_calls, reader = await fallback(tmp_path)
+    session.state['live_first_research'] = True
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    args = findings(chunk, QUOTES)
+    args['batch_reviewed'] = True
+    for n, fact in enumerate(args['facts']):
+        fact.update(verdict='supported' if n < 2 else 'insufficient', atomic=True,
+                    support_complete=n < 2, qualifiers_preserved=True,
+                    review_reason='Controlled model verdict for this own passage.', selected=False)
+    saved = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'normal-batch', 'args': args})
+    assert saved['review_required'] is False
+    inventory = adapter._get_facts(session.resource_id, {})['facts']
+    good = [f for f in inventory if f['eligibility'] == 'eligible']
+    bad = [f for f in inventory if f['eligibility'] == 'withheld']
+    assert len(good) == 2 and len(bad) == 1 and not any(f['owner_selected'] for f in inventory)
+    assert helper_calls == []
+    assert await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'same-batch', 'args': args}) == saved
+    done = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    assert done['completed'] and done['next_tool'] is None
+    assert any(e.get('type') == 'research_progress' and not e['state']['active'] for e in events)
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM live_review_packets').fetchone()[0] == 0
+    adapter._select_facts(session.resource_id, 'select-normal', {'fact_ids': [f['fact_id'] for f in good]})
+    draft = adapter._edit_text(session.resource_id, 'draft-normal', {'expected_text_revision': 0, 'new_text': ' '.join(f['text'] for f in good), 'change_summary': 'Selected checked findings.'})
+    assert bad[0]['text'] not in draft['draft_text']
+    adapter._select_facts(session.resource_id, 'select-withheld', {'fact_ids': [bad[0]['fact_id']]})
+    with pytest.raises(ConflictError):
+        adapter._edit_text(session.resource_id, 'bad-draft', {'expected_text_revision': 1, 'new_text': bad[0]['text'], 'change_summary': 'Must reject withheld selection.'})
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_document_fallback_checkpoint_replay_review_selection_and_draft(tmp_path):
     svc, adapter, session, events, run_id, helper_calls, reader = await fallback(tmp_path)
     first = await adapter.execute_tool(session, {"name": "get_research_chunk", "args": {"run_id": run_id, "source_url": URL}})

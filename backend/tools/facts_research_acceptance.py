@@ -130,7 +130,7 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False, hel
         result = GroundedResearch(payload={"facts": [], "search_provider": "duckduckgo_html_fallback", "retrieval_mode": "controlled_snapshot", "semantic_status": "live_model_required", "coverage_satisfied": False}, grounding_sources=[{"url": url, "title": canonical_name, "supports": [{"kind": "search_snippet", "source_url": url, "text": "Документ об объекте. Прочитайте полный сохранённый текст.", "evidence_ref": "evref_" + "1" * 24}]}])
         if wrong_poi_source:
             result.grounding_sources.insert(0, {'url': wrong_url, 'title': 'Бранденбургские ворота (Берлин), synthetic negative fixture', 'supports': [{'kind': 'search_snippet', 'source_url': wrong_url, 'text': wrong_body, 'evidence_ref': 'evref_' + '2' * 24}]})
-        return await svc.providers.gemini._semantic_complete_discovery(query, context, result) if helpers == 'configured' else result
+        return await svc.providers.gemini._semantic_complete_discovery(query, context, result) if helpers == 'configured' and context.get('live_first') is not True else result
 
     async def unavailable(*args, **kwargs):
         raise GeminiUnavailable(None, "acceptance_controlled_helper_outage")

@@ -3048,6 +3048,18 @@ class GeminiClient:
             raise ValueError("web search query is required")
 
         cached_sources = self._cached_evidence_sources(topic_context)
+        if topic_context.get('live_first') is True:
+            # The existing public discovery/fetch path supplies evidence. Live
+            # owns extraction; no metered semantic helper is on this path.
+            try:
+                discovery = await self._public_web_search(query)
+            except RetryableProviderError:
+                if not cached_sources:
+                    raise
+                discovery = GroundedResearch(payload={'search_provider': 'poi_cache_fallback', 'facts': []}, grounding_sources=cached_sources)
+            discovery.payload.update(semantic_completion='', semantic_status='live_model_required',
+                                     coverage_satisfied=False, live_first=True)
+            return discovery
         if cached_sources:
             cached_discovery = GroundedResearch(
                 payload={

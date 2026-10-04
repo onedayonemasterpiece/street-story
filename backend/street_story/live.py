@@ -467,12 +467,18 @@ FUNCTIONS = [
             "continuation_needed": {"type": "boolean"},
             "inventory_reviewed": {"type": "boolean", "description": "True only after Mira read the whole existing inventory and chose equivalence IDs herself."},
             "source_matches_poi": {"type": "boolean", "description": "Your semantic check that these source passages concern the confirmed object, including city/geography. Wrong-object cores must be checkpointed facts=[]; never import their claims."},
+            "batch_reviewed": {"type": "boolean", "description": "True after checking this small batch against its OWN chosen passages and local duplicate/conflict context. Eligible findings can be used immediately; this is not a full-inventory review."},
             "facts": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
                         "claim_key": {"type": "string"},
+                        "verdict": {"type": "string", "enum": ["supported", "insufficient", "contradicted", "possible_conflict"]},
+                        "atomic": {"type": "boolean"},
+                        "support_complete": {"type": "boolean"},
+                        "qualifiers_preserved": {"type": "boolean"},
+                        "review_reason": {"type": "string", "description": "Brief checkable support or withholding reason, never private reasoning."},
                         "existing_fact_id": {"type": "string"},
                         "text": {"type": "string", "description": "One independently selectable atomic assertion. Each named figure/person gets a separate fact; never bundle a list of people, separate roles or events in one fact."},
                         "evidence_quotes": {"type": "array", "items": {"type": "string"}, "description": "Optional verbatim alternative to evidence_refs from chunk evidence_passages. Never rewrite the quoted source."},
@@ -483,13 +489,13 @@ FUNCTIONS = [
                         "passage_ids": {"type": "array", "items": {"type": "integer"}, "description": "For chunk batches, choose numeric passage_id from evidence_passages. Prefer these to copying long evidence_ref hashes. Leave evidence_refs/source_refs empty when using passage_ids."},
                     },
                     "required": [
-                        "claim_key", "text", "confidence", "selected",
+                        "claim_key", "text", "confidence", "selected", "verdict", "atomic", "support_complete", "qualifiers_preserved", "review_reason",
                         "source_refs", "evidence_refs",
                     ],
                 },
             },
         },
-        ["facts", "source_matches_poi"],
+        ["facts", "source_matches_poi", "batch_reviewed"],
     ),
     _tool_schema(
         "record_fact_conflicts",
@@ -702,7 +708,8 @@ SYSTEM_INSTRUCTION = """
 - get_research_chunk является постраничным: has_more_passages=true требует следующий get_research_chunk с next_args того же run/chunk. Отсутствие ответа в первой странице не разрешает повторный поиск: дочитай хвост. После прочтения всех страниц сохрани batch либо no_claims.
 - если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - если последний get_review_packet указал assess_review_packet, сначала вызови его и прочитай все next_args. Это независимая проверка настроенной исследовательской моделью, а не старый verdict или готовый допуск. При needs_context читай get_review_context; при compound/repair_needed сделай один общий repair_research_fact со всеми исправлениями и точными refs. Advice не заменяет review новых ревизий. При unavailable смысловую проверку выполняешь ты; не объявляй supported ради завершения run.
-- после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Для финализации сначала вызови get_review_packet с run_id БЕЗ packet_ref: сервер создаёт packet_ref. Packet уже содержит весь evidence-backed inventory и его passages; прочитай все страницы по packet_ref/cursor. Не используй batch_id вместо packet_ref и не придумывай локальные номера. Верни packet_ref и decisions с локальными fact/evidence номерами и явными verdict supported/insufficient/repair_needed/contradicted/role_mismatch; relations_complete=true только после equivalence/conflict проверки всех страниц. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
+- normal research: работай маленькими страницами get_research_chunk. Перед save_research_facts проверь каждый новый тезис по выбранным passage_ids: verdict, atomic, support_complete, qualifiers_preserved и краткий review_reason. batch_reviewed=true означает проверку только этого малого batch. Сомнительный тезис получает insufficient/possible_conflict, а хорошие supported сохраняются и сразу доступны. Новый факт не выбирай за автора: selected=false. При совпадении смысла используй existing_fact_id; потенциальный конфликт не объявляй supported. После save следуй next_args к следующей странице, не перечитывай сохранённое. Не нужно повторно проверять хорошие batches через get_review_packet/finalize_fact_review. Сервер сообщает completed/partial, когда выбранные источники прочитаны; partial не скрывает хорошие факты.
+- get_review_packet/finalize_fact_review и recovery нужны для старых unreviewed кандидатов или явного пересмотра прежних решений, а не как штатная лестница нового исследования.
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
 - review: supported требует всех существенных атрибутов в СОБСТВЕННЫХ прикреплённых spans: даты, роли, числа, части объекта, стадии и оговорки. Не заимствуй доказательство другого candidate. Недостающая анафора = insufficient, а не ложность события; запрос не доказывает результат. Для исправления сначала get_review_context, затем repair_research_fact с точными refs. Составные независимые люди/отношения = repair_needed: раздели моделью, сохрани lineage, перечитай новый packet и проверь новые ревизии. Не превращай «вероятно» в уверенность. Нужна новая проверка старого ошибочного supported — get_review_packet с supersedes_packet_ref; старый receipt не переписывай.
@@ -757,6 +764,7 @@ class StreetStoryLiveAdapter:
         return {
             "state": {
                 "recent_user": deque(maxlen=24),
+                "live_first_research": True,
                 "recent_model": deque(maxlen=16),
                 "literal": None,
                 "live_message_seq": 0,
@@ -1364,6 +1372,7 @@ class StreetStoryLiveAdapter:
                 "review_required": bool(result.get("review_required")),
                 "continuation_required": bool(result.get("continuation_required")),
                 "next_tool": result.get("next_tool"),
+                "next_args": result.get("next_args"),
                 "facts": [
                     {
                         "fact_id": fact.get("fact_id"),
@@ -1390,6 +1399,9 @@ class StreetStoryLiveAdapter:
                 "selected_fact_ids": list(result.get("selected_fact_ids") or [])[:80],
                 "story": projected.get("story"),
             }
+            if not result.get('review_required'):
+                projected['facts'] = [{'fact_id': f.get('fact_id'), 'text': f.get('text'),
+                                       'verdict': (f.get('live_review') or {}).get('verdict')} for f in result.get('facts', [])]
         if name == "search_web" and result.get("discovery_only") is True:
             compact_sources = []
             for source in (result.get("sources") or [])[:20]:
@@ -2107,6 +2119,7 @@ class StreetStoryLiveAdapter:
             "coverage_goal": coverage_goal,
             "research_run_id": run_id,
             "visual_identity": identity,
+            "live_first": True,
         }
         prior_progress_sources = [
             source for source in (research.get("grounding_sources") or [])
@@ -2565,6 +2578,16 @@ class StreetStoryLiveAdapter:
                 raise ConflictError("live_research_chunk_unknown", "Retry get_research_chunk with run_id only. Omit chunk_id to read the next chunk; never invent chunk IDs.")
             source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"]), None)
             if source is None:
+                if session.state.get('live_first_research'):
+                    with self.service.store.tx() as db:
+                        self._research_run_guard(db, session, run_id)
+                        manifest = run_manifest(db, run_id)
+                        unreviewed = db.execute("SELECT COUNT(DISTINCT a.assertion_id) FROM fact_assertions a JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed'", (session.resource_id, run_id)).fetchone()[0]
+                        complete = manifest_complete(manifest) and not unreviewed
+                        set_run_state(db, run_id, 'completed' if complete else 'partial', detail='live_batches_complete' if complete else 'saved_findings_need_review', now=self.service.store.now(), completed=complete)
+                    self._emit_research_progress(session, stage='completed' if complete else 'partial', active=False, query='', source_count=len(sources), fact_count=len(self._get_facts(session.resource_id, {})['facts']))
+                    return {'research_run_id': run_id, 'all_chunks_processed': True, 'completed': complete, 'partial': not complete,
+                            'next_tool': None, 'state': self._compact_context(self._topic_state(session.resource_id))}
                 with self.service.store.connection() as db:
                     return {"research_run_id": run_id, "all_chunks_processed": True, "research_manifest": run_manifest(db, run_id), "next_tool": "get_review_packet", "next_args": {"run_id": run_id}, "final_tool": "finalize_fact_review"}
             fetch = getattr(self.service.providers.gemini, "_fetch_page_documents", None)
@@ -2628,6 +2651,8 @@ class StreetStoryLiveAdapter:
         # of repeating every previously saved claim on each document page.
         result["checkpoint"] = {"next_batch_index": checkpoint["next_batch_index"], "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3], "terminal": checkpoint["terminal"]}
         for passage in passages[offset:]:
+            if session.state.get('live_first_research') and len(result['evidence_passages']) >= 2:
+                break
             trial = {**result, "evidence_passages": [*result["evidence_passages"], passage], "has_more_passages": True, "next_passage_cursor": passage["passage_id"] + 1}
             end = passage["core_offset"] + len(passage["text"])
             trial["context_after"] = core[end:end + 100] if end < len(core) else result["context_after"]
@@ -2656,6 +2681,10 @@ class StreetStoryLiveAdapter:
         seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
         seen.update(p["passage_id"] for p in result["evidence_passages"])
         session.state.setdefault("research_pending_page", {})[candidate["chunk_id"]] = next_offset if next_offset < len(passages) else 0
+        if session.state.get('live_first_research'):
+            result['next_tool'] = 'save_research_facts'
+            result['next_args'] = {**recipe, 'continuation_needed': next_offset < len(passages), 'batch_reviewed': True}
+            result['instruction'] = 'Extract and check the atomic assertions in THIS small page, then save using next_args and own passage_ids. Withhold uncertainty; keep useful supported assertions. Do not read more pages before saving this batch. The save receipt resumes the next unread page.'
         return result
 
 
@@ -3028,6 +3057,9 @@ class StreetStoryLiveAdapter:
                     "text": fact_text,
                     "confidence": confidence,
                     "evidence_supported": True,
+                    "live_review": {
+                        key: item.get(key) for key in ('verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason')
+                    } if args.get('batch_reviewed') is True else None,
                     "selected": bool(item.get("selected")),
                     "evidence_refs": selected_evidence_refs,
                     "sources": [
@@ -3095,6 +3127,7 @@ class StreetStoryLiveAdapter:
             and known_facts
             and callable(reconciler)
             and args.get("inventory_reviewed") is not True
+            and not session.state.get('live_first_research')
         ):
             try:
                 reconciliation = await reconciler(
@@ -3299,6 +3332,25 @@ class StreetStoryLiveAdapter:
                 ),
                 now=now,
             )
+            batch_verified = session.state.get('live_first_research') and args.get('batch_reviewed') is True
+            if batch_verified:
+                accepted_bundle = {}
+                for fact in normalized:
+                    review = fact.get('live_review') or {}
+                    if review.get('verdict') not in {'supported', 'insufficient', 'contradicted', 'possible_conflict'} or any(type(review.get(flag)) is not bool for flag in ('atomic', 'support_complete', 'qualifiers_preserved')) or not isinstance(review.get('review_reason'), str) or not 1 <= len(review['review_reason']) <= 500:
+                        raise ConflictError('live_research_review_invalid', 'Each finding needs a scoped model verdict, three boolean checks and a brief reason.')
+                    positive = review['verdict'] == 'supported' and all(review[flag] for flag in ('atomic', 'support_complete', 'qualifiers_preserved'))
+                    if positive:
+                        assertion = db.execute('SELECT revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?', (story_id, fact['fact_id'])).fetchone()
+                        accepted_bundle[fact['fact_id']] = assertion['revision_digest']
+                    else:
+                        db.execute("UPDATE fact_assertions SET eligibility='withheld',review_status='withheld',owner_selected=0 WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact['fact_id']))
+                        db.execute('UPDATE facts SET selected=0 WHERE story_id=? AND fact_id=?', (story_id, fact['fact_id']))
+                if accepted_bundle:
+                    record_fact_review_scan(self.service, story_id, str(identity.get('candidate_id') or '') or None,
+                                            detector='mira_live_batch', run_id=run_id, revision_bundle=accepted_bundle,
+                                            conflict_ids=[], coverage_complete=True, missing_aspects=[], connection=db)
+                refresh_review_status(db, story_id, now)
             if chunk_id:
                 record_chunk_batch(db, run_id=run_id, chunk_id=chunk_id, batch_index=batch_index,
                     status="continuation" if continuation_needed else "completed", raw_fact_count=len(raw_facts),
@@ -3408,9 +3460,10 @@ class StreetStoryLiveAdapter:
             result = {
                 "research_run_id": run_id,
                 "save_batch_id": save_batch_id,
-                "review_required": True,
+                "review_required": not bool(batch_verified),
                 "continuation_required": True,
                 "next_tool": "get_research_chunk" if chunk_id else "get_review_packet",
+                "next_args": {"run_id": run_id},
                 "chunk_id": chunk_id or None,
                 "payload_saved": True,
                 "facts": normalized,
