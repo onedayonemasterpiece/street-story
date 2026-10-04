@@ -643,3 +643,13 @@ async def test_live_full_source_attempts_are_bounded_to_three(tmp_path):
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['status_detail'] == 'live_no_new_confirmed_facts'
     await reader.search_http.aclose()
+
+
+def test_published_live_save_schema_accepts_snippets_and_document_groups():
+    from street_story.live import FUNCTIONS
+    schema = next(tool for tool in FUNCTIONS if tool['name'] == 'save_research_facts')['parameters']
+    assert {'run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi'} <= schema['properties'].keys()
+    finding = schema['properties']['facts']['items']
+    assert {'source_refs', 'evidence_refs', 'text', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason', 'passage_ids', 'claims'} <= finding['properties'].keys()
+    assert not finding['required']
+    assert {'text', 'verdict', 'qualifiers_preserved'} <= set(finding['properties']['claims']['items']['required'])
