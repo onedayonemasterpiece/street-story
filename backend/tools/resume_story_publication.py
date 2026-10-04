@@ -40,7 +40,8 @@ def main() -> int:
                     if f.get("selected") and f.get("eligibility") == "eligible"]
         if not selected or not before.get("draft_text"):
             raise smoke.ProductSmokeError("saved_selected_facts_and_draft_required")
-        if args.phase == 'visual' and (before.get('error') or before['state'] == 'visual_processing'):
+        if args.phase == 'visual' and (before.get('error') or before['state'] == 'visual_processing'
+                                       or (before.get('visual') or {}).get('content_revision') is not None):
             raise smoke.ProductSmokeError('existing_visual_outcome_requires_review_no_retry')
         if before.get("publication"):
             receipt.update(status="existing_publication_no_write", publication=before["publication"])
