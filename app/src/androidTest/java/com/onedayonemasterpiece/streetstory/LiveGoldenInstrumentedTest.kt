@@ -152,15 +152,20 @@ class LiveGoldenInstrumentedTest {
 
             speak(live, pcmFiles[3])
             awaitAnswer(live, "fact selection")
-            story = pollStory(
-                api,
-                storyId,
-                allowedNeedsReviewCodes = setOf("visual_stale"),
-            ) {
-                it.facts.count { fact -> fact.selected && fact.evidenceSupported } >= 1
+            story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
+                "Уточняю: оставь для поста ровно два самых надёжных подтверждённых факта. Остальные не выбирай.") {
+                it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
             }
             capture("04-facts-selected", story)
             val selectedFactIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
+
+            ownerText(live, "Концепция поста: исторический вход в город, история которого видна в кирпичных башнях на фотографии. Сохрани эту концепцию; выбор двух фактов оставь без изменений.", "publication concept")
+            story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {
+                !it.publicationConcept.isNullOrBlank()
+            }
+            assertEquals(selectedFactIds, story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId })
+            capture("05-publication-concept", story)
+            evidence["publication_concept"] = story.publicationConcept
 
             if (story.draftText.isNullOrBlank()) {
                 live.sendText(
@@ -175,11 +180,10 @@ class LiveGoldenInstrumentedTest {
             val beforeEdit = requireNotNull(story.draftText)
             speak(live, pcmFiles[4])
             awaitAnswer(live, "text edit")
-            story = pollStory(
-                api,
-                storyId,
-                allowedNeedsReviewCodes = setOf("visual_stale"),
-            ) { !it.draftText.isNullOrBlank() && it.draftText != beforeEdit }
+            story = pollWithOwnerClarification(api, storyId, live, evidence, "text edit",
+                "Уточняю правку: сделай текущий текст короче и живее, без канцелярита. Используй только два уже выбранных факта; выбор и изображение не меняй.") {
+                !it.draftText.isNullOrBlank() && it.draftText != beforeEdit
+            }
 
             capture("05-publication-text", story)
 
@@ -189,6 +193,11 @@ class LiveGoldenInstrumentedTest {
             val textBeforeVisual = requireNotNull(story.draftText)
             speak(live, pcmFiles[5])
             awaitAnswer(live, "visual-only edit")
+            val visualStarted = api.getStory(storyId)
+            if (visualStarted.state != StoryStage.VISUAL_PROCESSING && visualStarted.processedImageUrl.isNullOrBlank()) {
+                evidence["visual_text_clarification"] = true
+                ownerText(live, "Создай инфографичную картинку по исходной фотографии, сохранённой концепции и двум выбранным фактам. Сделай её чуть теплее. Текущий текст поста оставь без изменений.", "visual clarification")
+            }
             story = pollStory(
                 api,
                 storyId,
@@ -358,6 +367,12 @@ class LiveGoldenInstrumentedTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val directory = File(root, "screenshots").apply { mkdirs() }
+        val (detailDescription, detailSuffix) = when {
+            stage.contains("publication-concept") -> "concept-island-expanded" to "concept"
+            stage.contains("publication-text") -> "publication-preview-chat" to "text"
+            stage.contains("generated-visual") -> "publication-image" to "image"
+            else -> "facts-island-expanded" to "facts"
+        }
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             instrumentation.waitForIdleSync()
             Thread.sleep(1_000)
@@ -366,7 +381,7 @@ class LiveGoldenInstrumentedTest {
             assertTrue("Stage screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage.png")))
             scenario.onActivity { activity ->
                 fun find(view: View): View? {
-                    if (view.contentDescription?.toString() == "facts-island-expanded") return view
+                    if (view.contentDescription?.toString() == detailDescription) return view
                     if (view is ViewGroup) for (index in 0 until view.childCount) {
                         find(view.getChildAt(index))?.let { return it }
                     }
@@ -378,11 +393,11 @@ class LiveGoldenInstrumentedTest {
             }
             instrumentation.waitForIdleSync()
             Thread.sleep(500)
-            assertTrue("Facts screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage-facts.png")))
+            assertTrue("Detail screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage-$detailSuffix.png")))
         }
         screenshots.add(mapOf("stage" to stage, "story_revision" to story.revision,
             "fact_count" to story.facts.size, "selected_count" to story.facts.count { it.selected },
-            "files" to listOf("$stage.png", "$stage-facts.png")))
+            "files" to listOf("$stage.png", "$stage-$detailSuffix.png")))
     }
 
     private fun speak(live: LiveSessionController, pcm: File) {
@@ -422,6 +437,29 @@ class LiveGoldenInstrumentedTest {
             state.active && state.completedTurns > awaitingTurnAfter
         }
         awaitingTurnAfter = live.snapshot().completedTurns
+    }
+
+    private fun ownerText(live: LiveSessionController, text: String, label: String) {
+        awaitingTurnAfter = live.snapshot().completedTurns
+        live.sendText(text)
+        awaitAnswer(live, label)
+    }
+
+    private fun pollWithOwnerClarification(
+        api: ApiClient, storyId: String, live: LiveSessionController,
+        evidence: MutableMap<String, Any?>, label: String, clarification: String,
+        predicate: (StoryWire) -> Boolean,
+    ): StoryWire {
+        try {
+            return pollStory(api, storyId, 60_000, setOf("visual_stale"), predicate)
+        } catch (failure: IllegalStateException) {
+            if (!failure.message.orEmpty().startsWith("Timed out waiting for story")) throw failure
+        }
+        // Real owner clarification through the same native WSS conversation.
+        // Backend/tool errors remain failures; this does not fabricate a result.
+        evidence["$label text clarification"] = true
+        ownerText(live, clarification, "$label clarification")
+        return pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale"), predicate = predicate)
     }
 
     private fun waitUntil(timeoutMs: Long, message: String, predicate: () -> Boolean) {
