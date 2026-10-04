@@ -1160,8 +1160,18 @@ class StreetStoryLiveAdapter:
 
     async def execute_tool(self, session, call: dict[str, Any]) -> dict[str, Any]:
         session.state["research_tool_busy"] = True
+        name = call.get("name")
+        if name in {"search_web", "get_research_chunk"}:
+            session.state["research_output_pending"] = True
         try:
-            return await self._execute_tool(session, call)
+            result = await self._execute_tool(session, call)
+            if name == "save_research_facts" and any(
+                fact.get("evidence_supported") for fact in result.get("facts", [])
+            ):
+                session.state["research_output_pending"] = False
+            elif name == "get_research_chunk" and result.get("all_chunks_processed") and result.get("next_tool") is None:
+                session.state["research_output_pending"] = False
+            return result
         except ConflictError as exc:
             if call.get("name") in {"get_review_packet", "finalize_fact_review"} and exc.code in {
                 "live_review_decisions_invalid", "live_review_canonical_invalid", "live_fact_review_evidence_invalid", "live_review_packet_unknown",
@@ -4792,6 +4802,20 @@ def _live_resource_environment(settings: Settings) -> dict[str, str]:
     return environment
 
 
+def _forward_committed_output(service, session, event, on_event):
+    if session.state.get("research_output_pending") and not session.state.get("research_cancelled") and event.get("type") in {"audio", "output_transcript", "text"}:
+        if event.get("type") == "output_transcript":
+            session.state["research_continuation_queued"] = False
+        # Product evidence policy at the provider boundary; transport,
+        # tool execution and progress events still use the shared host.
+        if not session.state.get("research_output_suppressed"):
+            session.state["research_output_suppressed"] = True
+            record_live_diagnostic(service, session.resource_id, session.id, "backend", "research_output_suppressed", {"run_id": session.state.get("research_run_id"), "reason": "uncommitted_evidence"})
+        return
+    session.state["research_output_suppressed"] = False
+    on_event(event)
+
+
 def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSessionHost:
     ensure_live_schema(service)
 
@@ -4800,6 +4824,8 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
 
     async def managed_runner(*, session, reader, on_event):
         environment = _live_resource_environment(settings)
+        def committed_output(event):
+            _forward_committed_output(service, session, event, on_event)
         try:
             try:
                 from ai_resource_control import run_guarded
@@ -4816,7 +4842,7 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
                 consumer="street-story",
                 environment=environment,
                 reader=reader,
-                on_event=on_event,
+                on_event=committed_output,
                 binding=f"street-story:{session.id}",
             )
         finally:

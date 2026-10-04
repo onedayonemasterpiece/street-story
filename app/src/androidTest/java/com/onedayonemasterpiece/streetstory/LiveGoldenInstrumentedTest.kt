@@ -124,10 +124,9 @@ class LiveGoldenInstrumentedTest {
             if (story.visualIdentity?.status !in setOf("match", "owner_confirmed")) {
                 speak(live, pcmFiles[2])
                 awaitAnswer(live, "identity confirmation")
-                story = pollStory(
-                    api,
-                    storyId,
-                    RESEARCH_TIMEOUT_MS,
+                story = pollWithOwnerClarification(
+                    api, storyId, live, evidence, "identity confirmation",
+                    "Подтверждаю: на моей фотографии именно Закхаймские ворота в Калининграде. Подтверди этот объект через confirm_place и продолжи исследование.",
                     allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
                 ) {
                     it.visualIdentity?.status in setOf("match", "owner_confirmed")
@@ -448,10 +447,11 @@ class LiveGoldenInstrumentedTest {
     private fun pollWithOwnerClarification(
         api: ApiClient, storyId: String, live: LiveSessionController,
         evidence: MutableMap<String, Any?>, label: String, clarification: String,
+        allowedNeedsReviewCodes: Set<String> = setOf("visual_stale"),
         predicate: (StoryWire) -> Boolean,
     ): StoryWire {
         try {
-            return pollStory(api, storyId, 60_000, setOf("visual_stale"), predicate)
+            return pollStory(api, storyId, 60_000, allowedNeedsReviewCodes, predicate)
         } catch (failure: IllegalStateException) {
             if (!failure.message.orEmpty().startsWith("Timed out waiting for story")) throw failure
         }
@@ -459,7 +459,7 @@ class LiveGoldenInstrumentedTest {
         // Backend/tool errors remain failures; this does not fabricate a result.
         evidence["$label text clarification"] = true
         ownerText(live, clarification, "$label clarification")
-        return pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale"), predicate = predicate)
+        return pollStory(api, storyId, allowedNeedsReviewCodes = allowedNeedsReviewCodes, predicate = predicate)
     }
 
     private fun waitUntil(timeoutMs: Long, message: String, predicate: () -> Boolean) {
