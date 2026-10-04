@@ -8,6 +8,17 @@ from .service import ConflictError, canonical
 
 POLICY_VERSION = 'own-evidence-repair-v4'
 
+EXTRACTION_CHECKS = (
+    'Before saving, enumerate independently selectable assertions from the source '
+    '(each depicted person, role or event separately). Form each candidate only after '
+    'checking all its dates, numbers, parts, stages and qualifiers against its own '
+    'chosen passages. Include the actual antecedent of a date and the actual outcome '
+    'of a request in those passages; neither may be inferred from another candidate. '
+    'Preserve uncertainty and subset versus whole. If the source context is incomplete, '
+    'continue reading or leave that claim unresolved; do not save a confident guess '
+    'for a later correction. Save the supported atomic assertions directly.'
+)
+
 REVIEW_CHECKS = (
     'These are unverified candidates, not established facts. First enumerate independent claims '
     '(each person/role/event separately), then compare EVERY date, number, part, stage and qualifier '
@@ -171,6 +182,8 @@ def read(adapter, session, args):
             for fact_id in scope:
                 db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
         row, payload = load(adapter, session, db, ref)
+        attempt = db.execute('SELECT supersedes_ref FROM live_review_attempts WHERE packet_ref=?', (ref,)).fetchone()
+        superseding = bool(attempt and attempt[0])
     cursor = max(0, int(args.get('cursor') or 0))
     # Each domain page contains one fact and one literal evidence slice. Every
     # slice is addressed; a long passage is never silently clipped.
@@ -191,7 +204,7 @@ def read(adapter, session, args):
         else:
             candidate.pop('next_args', None)
             candidate['next_tool'] = 'finalize_fact_review'
-            if hasattr(adapter.service.providers.gemini, 'assess_fact_candidates'):
+            if superseding and hasattr(adapter.service.providers.gemini, 'assess_fact_candidates'):
                 candidate.update(next_tool='assess_review_packet', next_args={'packet_ref': ref})
         if response_units('get_review_packet', candidate) > PAGE_UNITS:
             if not page['items']:

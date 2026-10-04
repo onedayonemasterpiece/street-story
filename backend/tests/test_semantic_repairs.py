@@ -171,7 +171,9 @@ async def test_configured_review_advice_is_scoped_cached_and_cannot_grant_eligib
         return {'model': 'configured-test-model', 'decisions': [{'fact': item['fact'], 'verdict': 'insufficient', 'needs_context': True, 'reason': 'Controlled helper advice.', 'propositions': [item['text']], 'replacement_texts': []} for item in items]}
     svc.providers.gemini.assess_fact_candidates = helper
     packet, _ = await packet_items(adapter, session, run_id)
-    assert packet['next_tool'] == 'assess_review_packet'
+    # Formation/verification is the normal route. Independent retrospective
+    # assessment remains callable without becoming a mandatory recovery stage.
+    assert packet['next_tool'] == 'finalize_fact_review'
     args = {'packet_ref': packet['packet_ref']}
     reply = await adapter.execute_tool(session, {'name': 'assess_review_packet', 'args': args})
     replay = await adapter.execute_tool(session, {'name': 'assess_review_packet', 'args': args})

@@ -743,7 +743,9 @@ class StreetStoryLiveAdapter:
         state = self._topic_state(resource_id)
         context = self._compact_context(state)
         reviewing = (state.get('research_run') or {}).get('state') == 'verifying'
-        instruction = 'Semantic verification policy when reviewing candidates: ' + review_packets.REVIEW_CHECKS + '\n' + SYSTEM_INSTRUCTION
+        instruction = ('Research formation policy: ' + review_packets.EXTRACTION_CHECKS
+                       + '\nSemantic verification policy when reviewing candidates: '
+                       + review_packets.REVIEW_CHECKS + '\n' + SYSTEM_INSTRUCTION)
         if reviewing:
             # A resumed verification phase must not frame the old inventory as facts
             # already established by the authoritative product-state snapshot.
@@ -1080,20 +1082,11 @@ class StreetStoryLiveAdapter:
             session.state["research_run_id"] = packet["run_id"]
             session.state.setdefault("research_run_ids", []).append(packet["run_id"])
             self._emit_research_progress(session, stage="review" if packet.get("review_available", True) else "extracting", active=True, query="", source_count=0, fact_count=packet.get("total_facts", 0))
-            if packet.get('review_available', True) and not packet.get('has_more') and hasattr(self.service.providers.gemini, 'assess_fact_candidates'):
-                packet['next_tool'] = 'assess_review_packet'
-                packet['next_args'] = {'packet_ref': packet['packet_ref']}
             return packet
         if name == 'assess_review_packet':
             return await research_repairs.assess(self, session, args)
         if name == "get_review_context":
             return research_repairs.context(self, session, args)
-        if name == "repair_research_fact":
-            result = research_repairs.repair(self, session, command_id, args)
-            self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
-            repairs = result.get('repairs', [result])
-            logger.info("street_story_research_repair story=%s run=%s parents=%s children=%s policy=%s", story_id, session.state.get("research_run_id"), len(repairs), sum(len(r['fact_ids']) for r in repairs), review_packets.POLICY_VERSION)
-            return result
         if name == "get_evidence":
             # Live reads are paginated by the existing cursor contract so one
             # verbose evidence reply cannot exceed the shared token budget.
@@ -1126,6 +1119,13 @@ class StreetStoryLiveAdapter:
                 "reason": "suspected_noise_turn",
                 "instruction": "Do not mutate product state or answer this fragment. Wait for the author's next clear utterance.",
             }
+
+        if name == "repair_research_fact":
+            result = research_repairs.repair(self, session, command_id, args)
+            self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
+            repairs = result.get('repairs', [result])
+            logger.info("street_story_research_repair story=%s run=%s parents=%s children=%s policy=%s", story_id, session.state.get("research_run_id"), len(repairs), sum(len(r['fact_ids']) for r in repairs), review_packets.POLICY_VERSION)
+            return result
 
         if not command_id:
             raise ConflictError("live_command_id_required", "Provider call id is required for mutations")

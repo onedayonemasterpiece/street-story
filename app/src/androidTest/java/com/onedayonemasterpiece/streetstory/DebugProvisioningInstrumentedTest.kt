@@ -2,6 +2,7 @@ package com.onedayonemasterpiece.streetstory
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import android.view.View
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
@@ -167,10 +168,13 @@ class DebugProvisioningInstrumentedTest {
         // launch is subject to Android 15 activity-start policy and can be ignored
         // before the receiver consumes the staged file. No token enters the command.
         val output = device.executeShellCommand(
-            "am start -W -n ${context.packageName}/${DebugProvisioningActivity::class.java.name} " +
+            "am start -W -f 0x10008000 -n ${context.packageName}/${DebugProvisioningActivity::class.java.name} " +
                 "--es ${DebugProvisioningPolicy.EXTRA_BACKEND_URL} $backendUrl " +
                 "--ez ${DebugProvisioningPolicy.EXTRA_DEVICE_TOKEN_STAGED} true",
         )
+        // A fresh activity task isolates this entry point from the preceding
+        // test's handoff/finish lifecycle. Task flags do not clear stored data.
+        Log.i("StreetStoryProvisioning", "event=test_adb_launch status_ok=${output.contains("Status: ok")} delivered=${output.contains("intent has been delivered")} error=${output.contains("Error:")}")
         assertTrue("ADB activity launch must report success", output.contains("Status: ok"))
         instrumentation.waitForIdleSync()
     }

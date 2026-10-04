@@ -764,7 +764,10 @@ class GeminiClient:
         # Disable the SDK's hidden same-key retries; the pool owns this budget.
         from google import genai
         from google.genai import types
-        options = types.HttpOptions(timeout=max(1, int(timeout * 1000)), retry_options=types.HttpRetryOptions(attempts=1))
+        # Gemini rejects a transport deadline below ten seconds. The executor's
+        # enclosing asyncio timeout still cancels at the actual remaining budget;
+        # this transport minimum neither extends the operation nor adds retries.
+        options = types.HttpOptions(timeout=max(10_000, int(timeout * 1000)), retry_options=types.HttpRetryOptions(attempts=1))
         with genai.Client(api_key=key, http_options=options) as root:
             async with root.aio as client:
                 return await client.models.generate_content(model=model or self.settings.gemini_model, contents=contents, config=config)
@@ -1807,6 +1810,7 @@ class GeminiClient:
             return normalized_facts, official_urls[:12], audit
 
         coverage_goal = str(topic_context.get("coverage_goal") or query).strip()[:1600]
+        from .review_packets import EXTRACTION_CHECKS
 
         def build_prompt(evidence: list[dict[str, Any]], *, page_pass: bool) -> str:
             coverage_rule = (
@@ -1820,7 +1824,7 @@ class GeminiClient:
             )
             return (
                 "Ты внутренний LLM-экстрактор фактов Street Story. Search discovery и semantic extraction разделены. "
-                "Не используй знания вне переданного evidence. " + coverage_rule +
+                "Не используй знания вне переданного evidence. " + EXTRACTION_CHECKS + ' ' + coverage_rule +
                 "Извлеки до 32 содержательных атомарных проверяемых фактов. Один fact.text = один тезис. "
                 "Если один абзац содержит несколько независимо проверяемых утверждений, разнеси их на отдельные facts; "
                 "не склеивай перечень людей/дат/ролей в один факт, когда каждый элемент имеет самостоятельный смысл. "
@@ -1855,10 +1859,12 @@ class GeminiClient:
         coverage_config = types.GenerateContentConfig(
             response_mime_type="application/json",
             response_json_schema=self.DISCOVERY_COVERAGE_SCHEMA,
+            thinking_config=types.ThinkingConfig(thinking_level='high', include_thoughts=False),
         )
         chunk_config = types.GenerateContentConfig(
             response_mime_type="application/json",
             response_json_schema=self.CHUNK_EXTRACTION_SCHEMA,
+            thinking_config=types.ThinkingConfig(thinking_level='high', include_thoughts=False),
         )
 
         def build_chunk_prompt(
@@ -1871,7 +1877,7 @@ class GeminiClient:
         ) -> str:
             prior = already_returned or []
             return (
-                "Ты внутренний LLM-экстрактор Street Story. Передан один chunk документа. "
+                "Ты внутренний LLM-экстрактор Street Story. Передан один chunk документа. " + EXTRACTION_CHECKS + ' ' +
                 "Извлекай атомарные проверяемые facts ТОЛЬКО когда утверждение поддерживается текстом секции [core]. "
                 "[context_before] и [context_after] разрешено использовать только для разрешения ссылок, имён и границ; "
                 "не создавай факт, если его содержательная опора находится только в context. "

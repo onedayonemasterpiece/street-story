@@ -1,11 +1,15 @@
 """Bounded snapshot context and model-owned candidate repair; no semantic parsing."""
 import hashlib
+import logging
 import math
+import time
 
 from . import review_packets
 from .fact_ledger import persist_fact_candidates, _invalidate_story_outputs_for_fact_revision
 from .research_budget import PAGE_UNITS, response_units
 from .service import ConflictError, canonical
+
+logger = logging.getLogger(__name__)
 
 
 def _item(payload, number):
@@ -155,7 +159,7 @@ async def assess(adapter, session, args):
     """Scoped configured-model advice, cached only for this frozen attempt."""
     import json
     from .gemini import GeminiUnavailable
-    from .errors import MalformedProviderResponse
+    from .errors import MalformedProviderResponse, PermanentProviderError
     ref = str(args.get('packet_ref') or '')
     cursor = args.get('cursor', 0)
     decision_cursor = args.get('decision_cursor', 0)
@@ -175,6 +179,9 @@ async def assess(adapter, session, args):
         result = json.loads(cached[0])
     else:
         helper = getattr(adapter.service.providers.gemini, 'assess_fact_candidates', None)
+        started = time.monotonic()
+        logger.info('street_story_review_assessment event=started story=%s packet=%s cursor=%s items=%s policy=%s',
+                    session.resource_id, ref, cursor, len(items), review_packets.POLICY_VERSION)
         try:
             if helper is None:
                 raise GeminiUnavailable(None, 'semantic_review_helper_not_configured')
@@ -186,6 +193,11 @@ async def assess(adapter, session, args):
             result = {'helper_available': False, 'reason': str(exc), 'decisions': []}
         except MalformedProviderResponse:
             result = {'helper_available': False, 'reason': 'semantic_review_contract_invalid', 'decisions': []}
+        except PermanentProviderError:
+            result = {'helper_available': False, 'reason': 'semantic_review_request_rejected', 'decisions': []}
+        logger.info('street_story_review_assessment event=finished story=%s packet=%s cursor=%s available=%s model=%s reason=%s elapsed_ms=%s',
+                    session.resource_id, ref, cursor, result['helper_available'], result.get('model'),
+                    result.get('reason'), round((time.monotonic() - started) * 1000))
         with adapter.service.store.tx() as db:
             current, _ = review_packets.load(adapter, session, db, ref)
             if current['result_json']:
