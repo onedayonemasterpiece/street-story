@@ -772,9 +772,11 @@ class StreetStoryLiveAdapter:
         state = self._topic_state(resource_id)
         context = self._compact_context(state)
         reviewing = (state.get('research_run') or {}).get('state') == 'verifying'
+        # Normal research already has its formation and review rules below.
+        # Send the additional legacy candidate policy only during verification;
+        # duplicating it on every setup consumes the same lease as bootstrap.
         instruction = ('Research formation policy: ' + review_packets.EXTRACTION_CHECKS
-                       + '\nSemantic verification policy when reviewing candidates: '
-                       + review_packets.REVIEW_CHECKS + '\n' + SYSTEM_INSTRUCTION)
+                       + '\n' + SYSTEM_INSTRUCTION)
         if reviewing:
             # A resumed verification phase must not frame the old inventory as facts
             # already established by the authoritative product-state snapshot.
@@ -782,6 +784,7 @@ class StreetStoryLiveAdapter:
             context['facts'] = []
             context['review_policy'] = review_packets.REVIEW_CHECKS
             instruction = ('Current phase: independent verification of unverified candidates. '
+                           + review_packets.REVIEW_CHECKS + '\n'
                            + instruction)
         return {
             "state": {

@@ -39,6 +39,12 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     assert configuration["media_resolution"] == "MEDIA_RESOLUTION_MEDIUM"
     assert configuration["voice"] == "Aoede"
     assert "один стабильный голосовой образ Миры" in configuration["system_instruction"]
+    from street_story.review_packets import EXTRACTION_CHECKS, REVIEW_CHECKS
+
+    assert EXTRACTION_CHECKS in configuration["system_instruction"]
+    # The normal setup must leave room in the resource lease for bootstrap.
+    # Legacy verification policy is sent only when that phase is active.
+    assert REVIEW_CHECKS not in configuration["system_instruction"]
     assert any(item["name"] == "search_web" for item in configuration["functions"])
     from live_interaction.provider import setup_config
 
