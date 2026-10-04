@@ -683,22 +683,22 @@ FUNCTIONS = [
 # The model emits independent claims in each evidence group. The server only
 # flattens that model-owned structure; it never splits prose.
 _save_declaration = next(f for f in FUNCTIONS if f['name'] == 'save_research_facts')
-_save_declaration['description'] = ('Persist your extraction and checks of the current small frozen document page. '
+_save_declaration['description'] = ('Persist checked discovery snippets OR a small frozen document page. For sufficient search snippets, pass exact run_id and batch_id from search_web, and flat facts with source_refs/evidence_refs and every review flag. Never speak an unsaved snippet as a fact. For document pages use passage_ids/claims groups. '
                                     'The server binds the current read checkpoint; enumerate independent claims grouped by own numeric passage_ids. '
                                     'Do not rewrite quotes or evidence hashes: the server binds these passage numbers to exact immutable source spans. '
                                     'Withhold doubtful claims, save good supported findings immediately, then follow the returned next unread page.')
 _finding_schema = _save_declaration['parameters']['properties']['facts']['items']
 _claim_fields = {k: v for k, v in _finding_schema['properties'].items()
                  if k not in {'source_refs', 'evidence_refs', 'evidence_quotes', 'passage_ids'}}
-_finding_schema['properties'] = {k: v for k, v in _finding_schema['properties'].items()
-                                 if k == 'passage_ids'}
+# Keep the existing direct snippet fields alongside the compact document grouping.
+# The backend validates which evidence format applies; neither path invents refs.
 _finding_schema['properties']['claims'] = {'type': 'array', 'description': 'Enumerate EACH independently selectable assertion in these passages. Each depicted person or independent role/event is its own object, never one compound sentence.',
                                           'items': {'type': 'object', 'properties': _claim_fields,
                                                     'required': ['claim_key', 'text', 'confidence', 'selected', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}}
-_finding_schema['required'] = ['claims', 'passage_ids']
+_finding_schema['required'] = []
 _save_parameters = _save_declaration['parameters']
 _save_parameters['properties'] = {key: _save_parameters['properties'][key]
-                                  for key in ('facts', 'batch_reviewed', 'source_matches_poi')}
+                                  for key in ('run_id', 'batch_id', 'facts', 'batch_reviewed', 'source_matches_poi')}
 _save_parameters['required'] = ['facts', 'batch_reviewed', 'source_matches_poi']
 
 SYSTEM_INSTRUCTION = """
@@ -725,7 +725,7 @@ SYSTEM_INSTRUCTION = """
 - широкий запрос на факты = исследование существенных аспектов объекта по coverage_goal, включая именованные элементы архитектуры. Сначала прочитай и сохрани полный материал уже найденных источников в текущем run; новый поиск нужен только для конкретного пробела. Число поисков не является целью. Не повторяй одинаковые запросы и остановись, когда новые поиски перестали добавлять факты/evidence;
 - у search_web разделяй retrieval query и coverage_goal: query можно сделать коротким для поиска, но coverage_goal обязан сохранять все существенные требования автора. Например, если автор просит кто изображён слева/в центре/справа, эти позиции нельзя потерять при упрощении поискового запроса;
 - visual snapshot используй как coverage hint для исследования: если на фото крупно выделены именованные скульптуры, фигуры, надписи, гербы, памятные доски или иная смысловая деталь, включи отдельный targeted search именно про эту деталь и добейся конкретного ответа, а не только общего факта об объекте;
-- только для legacy/recovery: после discovery_only search_web сохрани поддержанные snippets через save_research_facts с точными research_run_id/save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
+- normal discovery: после discovery_only search_web сохрани достаточные snippets через save_research_facts с run_id=research_run_id и batch_id=save_batch_id; если snippets недостаточны, сразу читай полный документ через get_research_chunk, не сохраняй выдуманные или пустые snippet-факты: совпавший смысл привяжи exact existing_fact_id и для каждого тезиса укажи подтверждающие source_ref И только те evidence_ref, чьи passages поддерживают именно этот тезис. Grounded search тоже обогащает существующий fact evidence, а не плодит перефразы;
 - get_research_chunk является постраничным: сначала проверь и сохрани текущую малую страницу, затем следуй save receipt к следующей непрочитанной странице. Пустой facts=[] означает, что в этой странице нет полезных тезисов. Не перепрыгивай к новому поиску вместо сохранения прочитанной страницы.
 - только для legacy/recovery, когда нет batch_reviewed: если snippets не отвечают всей цели, вызывай get_research_chunk по тому же run_id, читай core/context и сохраняй каждый batch через save_research_facts с chunk_id, batch_index, batch_id, expected_story_revision и короткими числовыми passage_ids из evidence_passages (или точными evidence_refs/дословными evidence_quotes) для каждого факта. Пустой facts=[] означает проверенный no_claims только для прочитанного chunk. continuation_needed=true оставляет тот же chunk для следующего batch. Прочитай весь существующий get_facts inventory; inventory_reviewed=true подтверждает твою equivalence-проверку и позволяет обойти недоступного helper, сохраняя его смысловую работу у тебя.
 - только для явного пересмотра старых кандидатов: если последний get_review_packet указал assess_review_packet, сначала вызови его и прочитай все next_args. Это независимая проверка настроенной исследовательской моделью, а не старый verdict или готовый допуск. При needs_context читай get_review_context; при compound/repair_needed сделай один общий repair_research_fact со всеми исправлениями и точными refs. Advice не заменяет review новых ревизий. При unavailable смысловую проверку выполняешь ты; не объявляй supported ради завершения run.
