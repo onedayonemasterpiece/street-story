@@ -83,7 +83,7 @@ async def test_241_assertions_finish_via_bounded_decisions(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unchanged_semantic_decisions_reused_without_claiming_cross_coverage(tmp_path):
+async def test_unfinished_semantic_decisions_not_reused_as_final_review(tmp_path):
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
     await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save', 'args': findings(chunk, QUOTES)})
@@ -94,13 +94,42 @@ async def test_unchanged_semantic_decisions_reused_without_claiming_cross_covera
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))
     replacement = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
-    assert any(i['fact'] == 0 and i['saved_verdict'] == 'supported' for i in replacement['items'])
-    args = {**args, 'packet_ref': replacement['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in [1, 2]]}
+    assert all(i['saved_verdict'] is None for i in replacement['items'])
+    args = {**args, 'packet_ref': replacement['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in [0, 1, 2]]}
     staged = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'rest', 'args': args})
     assert staged['remaining_facts'] == 0 and not staged['complete']
     assert staged['cross_packet_review_required']
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'relations', 'args': {**args, 'decisions': [], 'relations_complete': True}})
     assert result['complete'] and result['eligible_count'] == 3
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_new_policy_supersedes_wrong_completed_review_without_rewriting_receipt(tmp_path, monkeypatch):
+    from street_story import review_packets
+    from street_story.fact_ledger import refresh_review_status
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save', 'args': findings(chunk, QUOTES)})
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in range(3)], 'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
+    original = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review1', 'args': args})
+    assert original['eligible_count'] == 3
+    monkeypatch.setattr(review_packets, 'POLICY_VERSION', 'test-new-policy')
+    fresh = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'supersedes_packet_ref': packet['packet_ref'], 'recheck_facts': [1]}})
+    assert all(i['saved_verdict'] is None for i in fresh['items'])
+    with svc.store.tx() as db:
+        refresh_review_status(db, session.resource_id, svc.store.now())
+        pending = db.execute('SELECT eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=(SELECT assertion_id FROM fact_assertions WHERE story_id=? ORDER BY assertion_id LIMIT 1 OFFSET 1)', (session.resource_id, session.resource_id)).fetchone()[0]
+        assert pending == 'unreviewed'
+    new = {**args, 'packet_ref': fresh['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'insufficient' if n == 1 else 'supported'} for n in range(3)]}
+    result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review2', 'args': new})
+    assert result['eligible_count'] == 2 and result['withheld_count'] == 1
+    replay = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'old-replay', 'args': args})
+    assert replay == original
+    assert sum(f['eligibility'] == 'eligible' for f in adapter._get_facts(session.resource_id, {})['facts']) == 2
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM live_review_packets WHERE result_json IS NOT NULL').fetchone()[0] == 2
     await reader.search_http.aclose()
 
 
@@ -117,4 +146,23 @@ async def test_equivalence_requires_explicit_support_and_supported_canonical(tmp
     decisions = [{'fact': n, 'evidence': [0], 'verdict': 'supported', 'equivalent_to': 1 if n in [0, 1] else 2} for n in range(3)]
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'explicit-support', 'args': {**args, 'decisions': decisions}})
     assert result['complete'] and result['eligible_count'] == 2 and result['withheld_count'] == 1
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_own_quote_and_decomposition_checks_reject_borrowed_or_compound_positive(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-negative-test', 'args': findings(chunk, QUOTES)})
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    item = packet['items'][0]
+    args = {'packet_ref': packet['packet_ref'], 'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
+    foreign_quote = next(quote for quote in QUOTES if quote != item['text'])
+    for decision in [
+        {'fact': 0, 'evidence': [0], 'verdict': 'supported', 'claims': [item['text']], 'basis_quotes': [foreign_quote]},
+        {'fact': 0, 'evidence': [0], 'verdict': 'supported', 'claims': ['First person.', 'Second person.'], 'basis_quotes': [item['text']]},
+    ]:
+        with pytest.raises(ConflictError):
+            await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'wrong-basis', 'args': {**args, 'decisions': [decision]}})
+    assert all(f['eligibility'] == 'unreviewed' for f in adapter._get_facts(session.resource_id, {})['facts'])
     await reader.search_http.aclose()

@@ -324,3 +324,21 @@ async def test_discovery_without_checkpoint_is_bounded_and_all_owned_runs_pause(
         assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=?", (session.resource_id,)).fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM research_runs WHERE story_id=? AND state<>'partial'", (session.resource_id,)).fetchone()[0] == 0
     await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_model_declared_wrong_poi_query_and_source_are_withheld_without_semantic_regex(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    session.state.pop('research_run_id', None)
+    with pytest.raises(ConflictError) as error:
+        await adapter.execute_tool(session, {'name': 'search_web', 'id': 'wrong-query', 'args': {'query': 'Other city and object', 'query_matches_poi': False}})
+    assert error.value.code == 'live_research_identity_mismatch'
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    args = {**findings(chunk, QUOTES), 'source_matches_poi': False}
+    with pytest.raises(ConflictError) as error:
+        await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-negative-test', 'args': args})
+    assert error.value.code == 'live_research_identity_mismatch'
+    assert not adapter._get_facts(session.resource_id, {})['facts']
+    result = await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-negative-test', 'args': {**args, 'facts': []}})
+    assert not result.get('facts')
+    await reader.search_http.aclose()

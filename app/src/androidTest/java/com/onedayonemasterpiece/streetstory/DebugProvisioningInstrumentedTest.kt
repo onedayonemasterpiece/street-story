@@ -72,7 +72,8 @@ class DebugProvisioningInstrumentedTest {
         assertTrue(staged.isFile)
 
         startStagedProvisioning(backendUrl)
-        assertTrue(waitForConfig(backendUrl, token))
+        val configured = waitForConfig(backendUrl, token)
+        assertTrue(provisioningDiagnostics(backendUrl, token), configured)
         assertFalse(staged.exists())
 
         val encrypted = context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE)
@@ -179,5 +180,15 @@ class DebugProvisioningInstrumentedTest {
             Thread.sleep(50)
         }
         return false
+    }
+
+    private fun provisioningDiagnostics(backendUrl: String, token: String): String {
+        val config = ConfigStore(context)
+        val encryptedPresent = context.getSharedPreferences("street_story_secrets", Context.MODE_PRIVATE)
+            .contains("device_token")
+        val stagedPresent = context.getFileStreamPath(DebugProvisioningPolicy.STAGED_DEVICE_TOKEN_FILE).exists()
+        // Only state flags: never expose URLs, plaintext tokens or encrypted credentials.
+        return "provisioning configured=${config.configured} backendMatches=${config.backendUrl == backendUrl} " +
+            "tokenMatches=${config.deviceToken == token} encryptedPresent=$encryptedPresent stagedPresent=$stagedPresent"
     }
 }

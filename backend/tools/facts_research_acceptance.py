@@ -91,9 +91,10 @@ def assess_gold(result, assessments):
     return len(approved) == 3 and {x[0] for x in approved} == expected and len({x[1] for x in approved}) == 3 and result["state_ok"]
 
 
-async def run_case(output, case, budget, guided=False, real_retrieval=False):
+async def run_case(output, case, budget, guided=False, real_retrieval=False, helpers='unavailable', wrong_poi_source=False):
     name, filename, prompt = CASES[case]
     source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    tracked_diff = subprocess.check_output(["git", "diff", "HEAD", "--", "backend"], text=True)
     case_dir = output / (case + "-" + str(time.time_ns()))
     case_dir.mkdir(parents=True, exist_ok=True)
     settings = replace(Settings.from_env(), data_dir=case_dir)
@@ -103,16 +104,33 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
     story_id = story["id"]
     adapter = StreetStoryLiveAdapter(svc, lambda *args: None, lambda *args: None)
     with svc.store.tx() as db:
-        research = {"visual_identity": {"status": "owner_confirmed", "candidate_id": "fixture:" + case, "candidate_name": name, "observations": ["Controlled fixture identity"], "candidates": []}}
+        canonical_name = name + ' (Калининград)'
+        research = {"identity_generation": 1, "visual_identity": {"status": "owner_confirmed", "candidate_id": "fixture:" + filename, "candidate_name": canonical_name, "canonical_name": canonical_name, "aliases": [name], "locality": "Калининград", "country": "Россия", "generation": 1, "observations": ["Controlled fixture identity"], "candidates": []}}
         db.execute("UPDATE stories SET state='identity_ready',place_name=?,research_json=? WHERE id=?", (name, json.dumps(research), story_id))
     url = "https://ru.wikipedia.org/wiki/" + ("Королевские_ворота" if filename == "royal-gates" else "Бранденбургские_ворота_(Калининград)")
     body = (FIXTURES / f"{filename}-wikipedia-20261003.txt").read_text()
+    wrong_url = 'https://negative-fixture.example/brandenburg-berlin'
+    wrong_body = 'Синтетический отрицательный контроль, не исторический источник. Бранденбургские ворота в Берлине, Германия. Эти сведения относятся к объекту в Берлине, а не к воротам в Калининграде.'
+    documents = {str(httpx.URL(url)): body}
+    if wrong_poi_source:
+        documents[str(httpx.URL(wrong_url))] = wrong_body
     reader = GeminiClient(svc.settings, svc.store)
-    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(
-        lambda request: httpx.Response(200, headers={"content-type": "text/html"}, text="<main>" + body.replace("\n", "<br>") + "</main>")))
+    fetch_trace, discovery_trace = [], []
+    def snapshot_response(request):
+        requested = str(request.url)
+        fetch_trace.append(requested)
+        # Unknown URLs must never silently receive the confirmed object's body.
+        if requested not in documents:
+            return httpx.Response(404, text='No controlled snapshot for this URL')
+        return httpx.Response(200, headers={"content-type": "text/html"}, text="<main>" + documents[requested].replace("\n", "<br>") + "</main>")
+    reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(snapshot_response))
 
     async def discovery(query, context):
-        return GroundedResearch(payload={"facts": [], "search_provider": "duckduckgo_html_fallback", "retrieval_mode": "controlled_snapshot", "semantic_status": "live_model_required", "coverage_satisfied": False}, grounding_sources=[{"url": url, "title": name, "supports": [{"kind": "search_snippet", "source_url": url, "text": "Документ об объекте. Прочитайте полный сохранённый текст.", "evidence_ref": "evref_" + "1" * 24}]}])
+        discovery_trace.append({'query': query, 'identity': context.get('visual_identity'), 'fixture_discovery': 'fixed candidate, not a query relevance oracle'})
+        result = GroundedResearch(payload={"facts": [], "search_provider": "duckduckgo_html_fallback", "retrieval_mode": "controlled_snapshot", "semantic_status": "live_model_required", "coverage_satisfied": False}, grounding_sources=[{"url": url, "title": canonical_name, "supports": [{"kind": "search_snippet", "source_url": url, "text": "Документ об объекте. Прочитайте полный сохранённый текст.", "evidence_ref": "evref_" + "1" * 24}]}])
+        if wrong_poi_source:
+            result.grounding_sources.insert(0, {'url': wrong_url, 'title': 'Бранденбургские ворота (Берлин), synthetic negative fixture', 'supports': [{'kind': 'search_snippet', 'source_url': wrong_url, 'text': wrong_body, 'evidence_ref': 'evref_' + '2' * 24}]})
+        return await svc.providers.gemini._semantic_complete_discovery(query, context, result) if helpers == 'configured' else result
 
     async def unavailable(*args, **kwargs):
         raise GeminiUnavailable(None, "acceptance_controlled_helper_outage")
@@ -120,8 +138,9 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
     if not real_retrieval:
         svc.providers.gemini.search_web = discovery
         svc.providers.gemini._fetch_page_documents = reader._fetch_page_documents
-    svc.providers.gemini.detect_fact_conflicts = unavailable
-    svc.providers.gemini.reconcile_fact_identities = unavailable
+    if helpers == 'unavailable':
+        svc.providers.gemini.detect_fact_conflicts = unavailable
+        svc.providers.gemini.reconcile_fact_identities = unavailable
     host = create_live_host(svc, svc.settings)
     events, started, session_id, cursor = [], time.monotonic(), "", 0
     tool_trace = []
@@ -198,6 +217,11 @@ async def run_case(output, case, budget, guided=False, real_retrieval=False):
     # PCM is discarded; keep bounded state/tool evidence, never credentials/audio.
     clean_events = [{k: v for k, v in e.items() if k not in {"data", "audio", "audio_base64"}} for e in events if e.get("type") != "audio"]
     result = {"case": case, "status": status, "stage": stage, "model": "gemini-3.8-live", "route": "shared_run_guarded", "source_mode": "real_retrieval" if real_retrieval else "controlled_licensed_snapshot", "prompt_mode": "guided_diagnostic" if guided else "ordinary_request", "semantic_review": "pending_manual_gold_assessment", "source_sha": source_sha, "dependencies": {name: importlib.metadata.version(name) for name in ("ai-resource-control", "live-interaction")}, "corpus_sha256": hashlib.sha256(body.encode()).hexdigest(), "cold_store": True, "baseline_facts": 0, "elapsed_seconds": round(time.monotonic() - started, 2), "gold_fact_ids": ids, "gold_ok": bool(gold_ok), "state_ok": state_ok, "eligible_count": len(eligible), "facts": inventory, "evidence": evidence, "runs": runs, "events": clean_events, "tool_trace": tool_trace, "error": error}
+    result.update(helper_mode=helpers,
+                  tracked_diff_sha256=hashlib.sha256(tracked_diff.encode()).hexdigest(),
+                  tracked_tree_clean=not bool(tracked_diff), discovery_trace=discovery_trace, fetch_trace=fetch_trace,
+                  wrong_poi_negative_fixture=wrong_poi_source,
+                  documents_sha256={key: hashlib.sha256(value.encode()).hexdigest() for key, value in documents.items()})
     (case_dir / "acceptance.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({k: result[k] for k in ["case", "status", "stage", "elapsed_seconds", "eligible_count", "gold_ok", "error"]}, ensure_ascii=False), flush=True)
     return status
@@ -212,7 +236,11 @@ async def main():
     parser.add_argument("--case", choices=CASES)
     parser.add_argument("--guided", action="store_true")
     parser.add_argument("--real-retrieval", action="store_true")
+    parser.add_argument('--helpers', choices=['configured', 'unavailable'], default='unavailable', help='Declare configured production helpers or a controlled Live-only helper outage.')
+    parser.add_argument('--wrong-poi-source', action='store_true', help='Add a clearly synthetic Berlin source before the correct controlled snapshot; no query relevance oracle.')
     args = parser.parse_args()
+    if args.real_retrieval and args.wrong_poi_source:
+        parser.error('wrong-POI synthetic fixture is controlled retrieval only')
     if args.assess_receipt:
         if not args.assessment or not args.assess_receipt.is_relative_to(Path("/home/dev/artifacts")):
             parser.error("assessment and managed receipt required")
@@ -232,7 +260,7 @@ async def main():
     for path in [Path("/home/dev/.local/state/street-story/providers.env"), Path("/home/dev/.local/state/street-story/service.env")]:
         os.environ.update(parse_dotenv(path))
     for case in ([args.case] if args.case else CASES):
-        status = await run_case(args.output, case, args.budget, args.guided, args.real_retrieval)
+        status = await run_case(args.output, case, args.budget, args.guided, args.real_retrieval, args.helpers, args.wrong_poi_source)
         if status != "PASS":
             return 2 if status.startswith("BLOCKED_") else 1
     return 0

@@ -864,11 +864,18 @@ def refresh_review_status(db, story_id: str, now: float) -> None:
             blocked[left].add("unresolved_conflict")
             blocked[right].add("unresolved_conflict")
 
+    pending_review = set()
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_review_attempts'").fetchone():
+        for row in db.execute("SELECT a.affected_json FROM live_review_attempts a JOIN live_review_packets p ON p.packet_ref=a.packet_ref WHERE p.story_id=? AND a.state='pending'", (story_id,)):
+            pending_review.update(json.loads(row['affected_json']))
     for fact_id, assertion in assertions.items():
         current_status = str(assertion["review_status"] or "")
         if current_status == "quarantined":
             review_status = "quarantined"
             eligibility = "withheld"
+        elif fact_id in pending_review:
+            review_status = "unreviewed"
+            eligibility = "unreviewed"
         elif current_status == "withheld":
             review_status = "withheld"
             eligibility = "withheld"

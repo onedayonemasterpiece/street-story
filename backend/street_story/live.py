@@ -18,7 +18,7 @@ from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .config import Settings
 from .research_budget import PAGE_UNITS, response_units, bounded_inventory
-from . import review_packets
+from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
 from .fact_conflicts import (
@@ -336,6 +336,16 @@ def _tool_schema(
     return {"name": name, "description": description, "parameters": schema}
 
 
+REPAIR_FIELDS = {
+    "fact": {"type": "integer"}, "reason": {"type": "string"},
+    "facts": {"type": "array", "items": {"type": "object", "properties": {
+        "text": {"type": "string"}, "claim_key": {"type": "string"}, "confidence": {"type": "number"},
+        "evidence": {"type": "array", "items": {"type": "integer"}},
+        "context_refs": {"type": "array", "items": {"type": "string"}},
+    }, "required": ["text", "claim_key"]}},
+}
+
+
 FUNCTIONS = [
     _tool_schema(
         "read_topic",
@@ -422,6 +432,8 @@ FUNCTIONS = [
         "results and enrich already-known facts with new supporting sources. The result returns to this same Gemini "
         "Live conversation and never rewrites publication text by itself.",
         {
+            "confirmed_poi_id": {"type": "string", "description": "Copy candidate_id of the currently confirmed visual_identity."},
+            "query_matches_poi": {"type": "boolean", "description": "Your semantic check of query and goal against confirmed canonical name, aliases and geography. False means correct the query before searching."},
             "query": {
                 "type": "string",
                 "description": "Concise internet-search query. It may be optimized for retrieval.",
@@ -431,7 +443,7 @@ FUNCTIONS = [
                 "description": "What the evidence must actually answer. Preserve important user constraints such as left/center/right positions, exact names, authorship, dates or inscriptions even if the search query is shorter.",
             },
         },
-        ["query"],
+        ["query", "confirmed_poi_id", "query_matches_poi"],
     ),
     _tool_schema(
         "save_research_facts",
@@ -454,6 +466,7 @@ FUNCTIONS = [
             "expected_story_revision": {"type": "integer"},
             "continuation_needed": {"type": "boolean"},
             "inventory_reviewed": {"type": "boolean", "description": "True only after Mira read the whole existing inventory and chose equivalence IDs herself."},
+            "source_matches_poi": {"type": "boolean", "description": "Your semantic check that these source passages concern the confirmed object, including city/geography. Wrong-object cores must be checkpointed facts=[]; never import their claims."},
             "facts": {
                 "type": "array",
                 "items": {
@@ -476,7 +489,7 @@ FUNCTIONS = [
                 },
             },
         },
-        ["facts"],
+        ["facts", "source_matches_poi"],
     ),
     _tool_schema(
         "record_fact_conflicts",
@@ -520,8 +533,12 @@ FUNCTIONS = [
         },
         ["conflicts"],
     ),
-    _tool_schema("get_review_packet", "Read a frozen semantic review packet. Follow cursor until has_more=false. Local fact/evidence numbers replace long hashes. Compare support, negation, roles, equivalence and conflicts across all pages.",
-        {"run_id": {"type": "string"}, "packet_ref": {"type": "string"}, "cursor": {"type": "integer"}, "allow_partial_review": {"type": "boolean", "description": "Explicitly request partial coverage review with missing_aspects; otherwise finish all cores first."}}),
+    _tool_schema("get_review_packet", "Read a frozen semantic review packet. Follow cursor until has_more=false. Local fact/evidence numbers replace long hashes. Compare support, negation, roles, equivalence and conflicts across all pages. To reconsider a completed or erroneous review, supply supersedes_packet_ref and its run_id; this creates an independent versioned attempt, retaining the old receipt.",
+        {"run_id": {"type": "string"}, "packet_ref": {"type": "string"}, "cursor": {"type": "integer"}, "supersedes_packet_ref": {"type": "string"}, "recheck_facts": {"type": "array", "items": {"type": "integer"}}, "allow_partial_review": {"type": "boolean", "description": "Explicitly request partial coverage review with missing_aspects; otherwise finish all cores first."}}),
+    _tool_schema("get_review_context", "Read adjacent literal passages from the SAME retained source version, even after extraction completed. Does not change checkpoints or search again. Context is not supporting evidence until explicitly attached by repair_research_fact. Follow next_args for the bounded window, or document_cursor for another addressed window.",
+        {"packet_ref": {"type": "string"}, "fact": {"type": "integer"}, "evidence": {"type": "integer"}, "cursor": {"type": "integer"}, "document_cursor": {"type": "integer"}}, ["packet_ref", "fact"]),
+    _tool_schema("repair_research_fact", "Atomically repair 1–12 candidates from this SAME frozen packet before requesting a new one. Model owns evidence attachment, narrowed text and splitting. Read missing context first, then submit all needed repairs together. Same-text repair preserves selection; changed meanings are new unselected claims. Retain original observations/lineage, withhold old variants, then get a NEW packet and review. Max 8 replacements per parent, 2 repairs per parent and 12 per run.",
+        {"packet_ref": {"type": "string"}, "repairs": {"type": "array", "items": {"type": "object", "properties": REPAIR_FIELDS, "required": ["fact", "reason", "facts"]}}}, ["packet_ref", "repairs"]),
     _tool_schema(
         "finalize_fact_review",
         "Commit semantic decisions for a frozen packet returned by get_review_packet. Never use a batch ID as packet_ref. Read all packet pages, use exact ZERO-BASED fact/evidence numbers, explicitly assess support/negation/roles/equivalence and compare relations across pages. Does not publish.",
@@ -529,9 +546,13 @@ FUNCTIONS = [
             "packet_ref": {"type": "string", "description": "Copy ONLY packet_ref returned by get_review_packet; never invent it."},
             "decisions": {"type": "array", "items": {"type": "object", "properties": {
                 "fact": {"type": "integer", "description": "Zero-based local fact number from packet items."},
-                "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch"]},
+                "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch", "insufficient", "repair_needed"]},
+                "reason": {"type": "string", "description": "Brief basis in THIS fact's attached spans; do not borrow unbound evidence from another candidate."},
+                "atomic": {"type": "boolean"}, "support_complete": {"type": "boolean"}, "qualifiers_preserved": {"type": "boolean"},
+                "claims": {"type": "array", "items": {"type": "string"}, "description": "Enumerate independently selectable assertions actually present in the candidate; each depicted person is independently selectable. Multiple entries require repair/split before supported."},
+                "basis_quotes": {"type": "array", "items": {"type": "string"}, "description": "Literal short quotations from this fact's selected attached evidence. Every substantive attribute must follow; never quote another candidate's passage. Empty only for unsupported decisions."},
                 "evidence": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based evidence numbers within THIS fact, from packet items."},
-                "equivalent_to": {"type": "integer", "description": "Optional canonical fact number for a semantic duplicate. Still return an explicit support verdict for EVERY fact including the canonical one. A supported canonical may reference itself."}}, "required": ["fact", "verdict", "evidence"]}},
+                "equivalent_to": {"type": "integer", "description": "Optional canonical fact number for a semantic duplicate. Still return an explicit support verdict for EVERY fact including the canonical one. A supported canonical may reference itself."}}, "required": ["fact", "verdict", "evidence", "reason", "atomic", "support_complete", "qualifiers_preserved", "claims", "basis_quotes"]}},
             "relations_complete": {"type": "boolean", "description": "True only after comparing ALL packet pages for equivalence and conflicts."},
             "conflicts": {"type": "array", "items": {"type": "object", "properties": {
                 "left": {"type": "integer"}, "right": {"type": "integer"},
@@ -681,6 +702,7 @@ SYSTEM_INSTRUCTION = """
 - после появления или сохранения фактов обязательно заверши тот же research run через finalize_fact_review. Для финализации сначала вызови get_review_packet с run_id БЕЗ packet_ref: сервер создаёт packet_ref. Packet уже содержит весь evidence-backed inventory и его passages; прочитай все страницы по packet_ref/cursor. Не используй batch_id вместо packet_ref и не придумывай локальные номера. Верни packet_ref и decisions с локальными fact/evidence номерами и явными verdict supported/not_supported/contradicted/role_mismatch; relations_complete=true только после equivalence/conflict проверки всех страниц. До final review прочитай и сохрани ВСЕ chunks; промежуточный save не завершает run. Если после полноценной проверки конфликтов нет, передай conflicts=[] — это допустимый и значимый результат review;
 - Не выдумывай revision_digest/evidence_id: бери их только из get_facts/get_evidence или сохранённого receipt. При ошибке review выполни указанный read tool и повтори review; не объявляй исследование завершённым до его успеха.
 - полный список фактов не зачитывай: перед долгим поиском коротко скажи «Ищу факты», затем приложение показывает прогресс; в конце достаточно числа фактов/источников и максимум 1–2 важных вывода;
+- review: supported требует всех существенных атрибутов в СОБСТВЕННЫХ прикреплённых spans: даты, роли, числа, части объекта, стадии и оговорки. Не заимствуй доказательство другого candidate. Недостающая анафора = insufficient, а не ложность события; запрос не доказывает результат. Для исправления сначала get_review_context, затем repair_research_fact с точными refs. Составные независимые люди/отношения = repair_needed: раздели моделью, сохрани lineage, перечитай новый packet и проверь новые ревизии. Не превращай «вероятно» в уверенность. Нужна новая проверка старого ошибочного supported — get_review_packet с supersedes_packet_ref; старый receipt не переписывай.
 - атомарность: один checkbox выбирает один самостоятельный тезис. Каждую изображённую персоналию, её роль, отдельное событие и датировку выделяй в отдельный факт; перечень нескольких людей нельзя сохранить одним фактом. Это твоя смысловая работа, не серверный split. При финальном review проверь атомарность и точность имён по passages.
 - семантические решения LLM-first: именно ты определяешь, что является отдельным фактом, его устойчивый claim_key, смысловую эквивалентность, противоречие и достаточность доказательств. Сервер только проверяет форму, ссылки и границы; не перекладывай смысловую работу на регулярки или правила;
 - read_topic — только компактный обзор, а не полный research inventory. Если для deduplication, отбора, противоречий или арбитража важен полный набор фактов, вызывай get_facts постранично до has_more=false; не делай вывод, что отсутствующий в snapshot факт отсутствует в теме;
@@ -1045,6 +1067,14 @@ class StreetStoryLiveAdapter:
             session.state.setdefault("research_run_ids", []).append(packet["run_id"])
             self._emit_research_progress(session, stage="review" if packet.get("review_available", True) else "extracting", active=True, query="", source_count=0, fact_count=packet.get("total_facts", 0))
             return packet
+        if name == "get_review_context":
+            return research_repairs.context(self, session, args)
+        if name == "repair_research_fact":
+            result = research_repairs.repair(self, session, command_id, args)
+            self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(story_id))})
+            repairs = result.get('repairs', [result])
+            logger.info("street_story_research_repair story=%s run=%s parents=%s children=%s policy=%s", story_id, session.state.get("research_run_id"), len(repairs), sum(len(r['fact_ids']) for r in repairs), review_packets.POLICY_VERSION)
+            return result
         if name == "get_evidence":
             # Live reads are paginated by the existing cursor contract so one
             # verbose evidence reply cannot exceed the shared token budget.
@@ -1175,7 +1205,7 @@ class StreetStoryLiveAdapter:
         candidates.sort(key=lambda item: str(item.get("candidate_id") or "") != chosen)
         return {
             key: identity.get(key)
-            for key in ("status", "candidate_id", "candidate_name", "confidence", "candidate_url", "photo_sha256", "generation")
+            for key in ("status", "candidate_id", "candidate_name", "canonical_name", "aliases", "locality", "country", "confidence", "candidate_url", "photo_sha256", "generation")
         } | {
             "observations": [str(value)[:300] for value in identity.get("observations", [])[:3]],
             "candidate_count": len(candidates),
@@ -1614,7 +1644,8 @@ class StreetStoryLiveAdapter:
                 "fact_id": item.get("fact_id"),
                 "text": str(item.get("text") or "")[:280],
                 "selected": bool(item.get("selected")),
-                "evidence_supported": bool(item.get("evidence_supported")),
+                "has_attached_evidence": bool(item.get("evidence_supported")),
+                "eligibility": item.get("eligibility", "unreviewed"),
             }
             for item in story.get("facts", [])[:48]
         ]
@@ -1626,6 +1657,7 @@ class StreetStoryLiveAdapter:
             "state": story.get("state"),
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
+            "poi_location": {"latitude": story.get("latitude", story.get("lat")), "longitude": story.get("longitude", story.get("lon"))},
             "draft_text": str(story.get("draft_text") or "")[:5000],
             "text_revision": state["editor"].get("text_revision"),
             "literal_spans": state["editor"].get("literal_spans", []),
@@ -1966,6 +1998,10 @@ class StreetStoryLiveAdapter:
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
                 )
+            if args.get('confirmed_poi_id') is not None and args['confirmed_poi_id'] != identity.get('candidate_id'):
+                raise ConflictError('live_research_identity_mismatch', 'Copy the current confirmed POI ID; do not search another object.')
+            if args.get('query_matches_poi') is False:
+                raise ConflictError('live_research_identity_mismatch', 'Your query/goal targets another object. Correct it using confirmed identity and geography.')
             all_story_facts = [
                 {
                     "fact_id": row["fact_id"],
@@ -2613,6 +2649,8 @@ class StreetStoryLiveAdapter:
             replay = self._command_replay(story_id, explicit_batch_id, "save_research_facts", args)
             if replay is not None:
                 return replay
+        if args.get('source_matches_poi') is False and raw_facts:
+            raise ConflictError('live_research_identity_mismatch', 'Do not import claims from another object. Checkpoint its read core with facts=[].')
         chunk_id = str(args.get("chunk_id") or "")
         chunk_row = None
         batch_index = 0
@@ -3504,16 +3542,7 @@ class StreetStoryLiveAdapter:
                     "live_fact_review_stale",
                     "Object identity changed; this research review is stale.",
                 )
-            current_bundle = {
-                str(row["assertion_id"]): str(row["revision_digest"] or "")
-                for row in db.execute(
-                    "SELECT a.assertion_id,a.revision_digest FROM fact_assertions a "
-                    "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
-                    "WHERE a.story_id=? AND f.evidence_supported=1 "
-                    "ORDER BY a.assertion_id",
-                    (story_id,),
-                )
-            }
+            current_bundle = review_packets.bundle(db, story_id)
             current_items = [
                 {
                     "fact_id": row["fact_id"],
@@ -3601,16 +3630,7 @@ class StreetStoryLiveAdapter:
                     "live_fact_review_stale",
                     "Research identity changed before review commit.",
                 )
-            current_after = {
-                str(row["assertion_id"]): str(row["revision_digest"] or "")
-                for row in db.execute(
-                    "SELECT a.assertion_id,a.revision_digest FROM fact_assertions a "
-                    "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
-                    "WHERE a.story_id=? AND f.evidence_supported=1 "
-                    "ORDER BY a.assertion_id",
-                    (story_id,),
-                )
-            }
+            current_after = review_packets.bundle(db, story_id)
             if current_after != current_bundle:
                 raise ConflictError(
                     "live_fact_review_stale",
@@ -3626,6 +3646,7 @@ class StreetStoryLiveAdapter:
                     raise ConflictError("live_fact_review_evidence_invalid", "Evidence does not support this exact assertion scope.")
             if packet_rejected is not None:
                 review_packets.load(self, session, db, str(args["packet_ref"]))
+                db.execute("UPDATE live_review_attempts SET state='finished' WHERE packet_ref=?", (str(args["packet_ref"]),))
                 for fact_id in packet_rejected:
                     db.execute("UPDATE fact_assertions SET review_status='withheld',eligibility='withheld' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (story_id, fact_id))
             poi_key = str(identity.get("candidate_id") or "") or None
