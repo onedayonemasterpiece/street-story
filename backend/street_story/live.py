@@ -2930,7 +2930,6 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         }
         passages = result["evidence_passages"]
         seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
-        seen.update(p['passage_id'] for p in passages if p['passage_id'] < checkpoint.get('passage_cursor', 0))
         seen.update(checkpoint.get('read_passage_ids') or [])
         recipe = {key: result[key] for key in ("chunk_id", "batch_id", "batch_index", "expected_story_revision")}
         recipe["run_id"] = run_id

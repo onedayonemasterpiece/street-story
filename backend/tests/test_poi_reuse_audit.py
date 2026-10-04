@@ -180,13 +180,14 @@ def run_manifest_read(svc, run):
 
 
 @pytest.mark.asyncio
-async def test_live_resume_uses_saved_page_and_menu_is_not_completed_article(tmp_path):
+@pytest.mark.parametrize('start_offset', [0, 2])
+async def test_live_resume_uses_saved_page_and_menu_is_not_completed_article(tmp_path, start_offset):
     svc, adapter, session, _, run, _, reader = await fallback(tmp_path)
     session.state['live_first_research'] = True
     await reader.search_http.aclose()
     reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(
         200, headers={'content-type': 'text/html'}, text='<main>' + 'Navigation item. ' * 300 + '</main>')))
-    first = await adapter._get_research_chunk(session, {'run_id': run})
+    first = await adapter._get_research_chunk(session, {'run_id': run, 'passage_cursor': start_offset})
     await adapter._save_research_facts(session, 'partial-page', {'facts': [], 'batch_reviewed': True, 'source_matches_poi': True})
     continuation_messages = []
     adapter.write = lambda _, message: continuation_messages.append(message)
@@ -195,7 +196,10 @@ async def test_live_resume_uses_saved_page_and_menu_is_not_completed_article(tmp
     session.state['research_passages_seen'] = {}
     session.state['research_pending_page'] = {}
     resumed = await adapter._get_research_chunk(session, {'run_id': run})
-    assert min(p['passage_id'] for p in resumed['evidence_passages']) > max(p['passage_id'] for p in first['evidence_passages'])
+    if start_offset == 0:
+        assert min(p['passage_id'] for p in resumed['evidence_passages']) > max(p['passage_id'] for p in first['evidence_passages'])
+    else:
+        assert min(p['passage_id'] for p in resumed['evidence_passages']) == 0  # The skipped prefix was never read.
     await adapter._save_research_facts(session, 'invalid-page', {'facts': [], 'batch_reviewed': True,
         'source_matches_poi': True, 'source_content_valid': False})
     with svc.store.connection() as db:
