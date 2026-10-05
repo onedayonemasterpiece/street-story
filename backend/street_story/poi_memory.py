@@ -11,16 +11,44 @@ from .model_facts import normalized_claim_key
 logger = logging.getLogger(__name__)
 
 
+def _canonical_poi_owner(db, owner: str) -> str | None:
+    """Follow only persisted exact owner-ID aliases; cycles are conflicts."""
+    visited: set[str] = set()
+    while owner not in visited:
+        visited.add(owner)
+        row = db.execute("SELECT poi_id FROM poi_aliases WHERE namespace='poi_id' AND normalized_value=?",
+                         (_normalized_alias(owner),)).fetchone()
+        if not row or str(row['poi_id']) == owner:
+            return owner
+        owner = str(row['poi_id'])
+    return None
+
+
+def _equivalent_poi_owners(db, canonical: str) -> list[str]:
+    """Keep historical graph owners addressable without moving their claims."""
+    return [str(row['id']) for row in db.execute(
+        "WITH RECURSIVE family(id) AS (SELECT ? UNION SELECT a.value FROM poi_aliases a "
+        "JOIN family f ON a.poi_id=f.id WHERE a.namespace='poi_id') "
+        "SELECT p.id FROM pois p JOIN family f ON p.id=f.id ORDER BY p.created_at,p.id", (canonical,))]
+
+
 def memory_keys(db, identity: dict[str, Any]) -> list[str]:
     """Read exact candidate bindings in the existing registry, never name similarity."""
     key = poi_key(identity)
     if not key:
         return []
-    rows = list(db.execute(
-        "SELECT value FROM poi_aliases WHERE namespace='street_story_candidate' AND poi_id IN "
-        "(SELECT poi_id FROM poi_aliases WHERE namespace='street_story_candidate' AND normalized_value=?)",
+    owners = list(db.execute(
+        "SELECT poi_id FROM poi_aliases WHERE namespace='street_story_candidate' AND normalized_value=?",
         (_normalized_alias(key),),
     ))
+    if not owners:
+        return [key]
+    canonical = _canonical_poi_owner(db, str(owners[0]['poi_id']))
+    if canonical is None:
+        return [key]
+    family = _equivalent_poi_owners(db, canonical)
+    rows = list(db.execute("SELECT value FROM poi_aliases WHERE namespace='street_story_candidate' AND poi_id IN ("
+        + ','.join('?' for _ in family) + ') ORDER BY created_at,normalized_value', tuple(family))) if family else []
     return list(dict.fromkeys([key, *(str(row['value']) for row in rows)]))
 
 
@@ -97,8 +125,8 @@ def ensure_poi_identity(
     if isinstance(chosen, dict):
         for namespace, raw in (
             ("wikidata", chosen.get("wikidata")),
-            ("wikipedia_url", chosen.get("wikipedia_url") or chosen.get("url") if key.startswith("wiki:") else None),
-            ("osm_id", chosen.get("osm_id") or key if key.startswith("osm:") else None),
+            ("wikipedia_url", chosen.get("wikipedia_url") or (chosen.get("url") if key.startswith("wiki:") else None)),
+            ("osm_id", chosen.get("osm_id") or (key if key.startswith("osm:") else None)),
         ):
             value = str(raw or "").strip()
             if value:
@@ -113,18 +141,29 @@ def ensure_poi_identity(
 
     # Exact registry entity aliases and model-verified clusters may point to
     # an already accumulated physical POI. Names/proximity never merge objects.
-    owners = {alias_owner(namespace, value) for namespace, value in aliases
+    raw_owners = {alias_owner(namespace, value) for namespace, value in aliases
               if namespace in {'street_story_candidate', 'wikidata', 'wikipedia_url', 'osm_id'}} - {None}
+    proved = {key}
+    proved_raw_owners: set[str] = set()
     if chosen and identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
         from .identity_subject_binding import subject_aliases
         proved = subject_aliases(identity.get('candidates') or []).get(key, {key})
-        owners.update(owner for alias in proved if (owner := alias_owner('street_story_candidate', alias)))
-    primary_owner = alias_owner('street_story_candidate', key)
-    cluster_proved = chosen and identity.get('status')=='match' and identity.get('visual_reference_verified') is True and chosen.get('discovery')=='wikimedia_entity_cluster'
-    if len(owners) > 1 and not (cluster_proved and primary_owner):
+        proved_raw_owners = {owner for alias in proved if (owner := alias_owner('street_story_candidate', alias))}
+        raw_owners.update(proved_raw_owners)
+    owners = {_canonical_poi_owner(db, owner) for owner in raw_owners}
+    proved_owners = {_canonical_poi_owner(db, owner) for owner in proved_raw_owners}
+    if None in owners or (len(owners) > 1 and not owners.issubset(proved_owners)):
         logger.warning('street_story_poi_binding_conflict candidate_id=%s owners=%s', key, len(owners))
         return None
-    poi_id = primary_owner or next(iter(owners), None)
+    # Stable across candidate choice and discovery order. Every competing owner
+    # must be witnessed by the verified exact candidate cluster before any edit.
+    poi_id = None
+    if owners:
+        row = db.execute('SELECT id FROM pois WHERE id IN (' + ','.join('?' for _ in owners)
+                         + ') ORDER BY created_at,id LIMIT 1', tuple(owners)).fetchone()
+        if row is None:
+            return None
+        poi_id = str(row['id'])
     if poi_id is None:
         poi_id = "poi_ss_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
         db.execute("INSERT OR IGNORE INTO pois(id,status,canonical_name,latitude,longitude,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
@@ -144,14 +183,19 @@ def ensure_poi_identity(
             "INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,?,?,?,?)",
             (poi_id, namespace, value[:500], normalized[:500], ts),
         )
-    # Identity discovery already supplied this cluster's explicit membership;
-    # the visual verifier accepted the chosen cluster. Alternatives alone and
-    # equally named places cannot establish an alias.
+    # Preserve historical owner rows and all external aliases/claims/evidence.
+    # Only candidate keys whose exact equivalence was verified move ownership.
     if (identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
-            and chosen and chosen.get('discovery') == 'wikimedia_entity_cluster'):
-        for alias in chosen.get('alias_candidate_ids') or []:
+            and chosen):
+        for owner in sorted(raw_owners):
+            if owner == poi_id:
+                continue
+            db.execute("INSERT INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,'poi_id',?,?,?) "
+                       "ON CONFLICT(namespace,normalized_value) DO UPDATE SET poi_id=excluded.poi_id",
+                       (poi_id, owner, _normalized_alias(owner), ts))
+        for alias in sorted(proved):
             alias = str(alias).strip()
-            if not alias or alias == key:
+            if not alias:
                 continue
             owner = alias_owner('street_story_candidate', alias)
             if owner and owner != poi_id:
@@ -162,8 +206,9 @@ def ensure_poi_identity(
             else:
                 db.execute("INSERT OR IGNORE INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES(?,'street_story_candidate',?,?,?)",
                            (poi_id, alias, _normalized_alias(alias), ts))
-        logger.info('street_story_poi_alias_binding poi_id=%s candidate_id=%s aliases=%s proof=verified_identity_cluster',
-                    poi_id, key, len(chosen.get('alias_candidate_ids') or []))
+        if len(proved) > 1 or len(raw_owners) > 1:
+            logger.info('street_story_poi_alias_binding component=poi_memory stage=owner_reconciliation poi_id=%s candidate_id=%s aliases=%s owners=%s proof=verified_exact_entity_cluster',
+                        poi_id, key, len(proved), len(raw_owners))
     return poi_id
 
 
@@ -703,23 +748,27 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
         f"SELECT DISTINCT poi_id FROM poi_aliases WHERE normalized_value IN ({placeholders})",
         tuple(normalized),
     ))
-    if len(poi_rows) != 1:
+    owners = {_canonical_poi_owner(db, str(row['poi_id'])) for row in poi_rows}
+    if len(owners) != 1 or None in owners:
         return []
-    poi_id = str(poi_rows[0]["poi_id"])
+    family = _equivalent_poi_owners(db, next(iter(owners)))
+    if not family:
+        return []
+    owner_placeholders = ','.join('?' for _ in family)
     rows = db.execute(
-        """
-        SELECT c.id,c.semantic_key,c.kind,c.text,c.status,
+        f"""
+        SELECT c.id,c.poi_id,c.semantic_key,c.kind,c.text,c.status,
                e.evidence_ref,e.source_family_id,e.author_score,e.publication_score,
                e.provenance_score,e.verification_score,e.evidence_json,
                x.source_ref,x.payload_json,x.updated_at
         FROM poi_claims c
         JOIN poi_claim_evidence e ON e.claim_id=c.id
         JOIN poi_external_events x ON x.event_id=e.event_id
-        WHERE c.poi_id=? AND x.visibility='public'
+        WHERE c.poi_id IN ({owner_placeholders}) AND x.visibility='public'
           AND c.status IN ('candidate','accepted','contested')
         ORDER BY x.updated_at DESC
         """ + (' LIMIT ?' if limit is not None else ''),
-        (poi_id, max(1, int(limit))) if limit is not None else (poi_id,),
+        (*family, max(1, int(limit))) if limit is not None else tuple(family),
     )
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -750,7 +799,7 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
                 "evidence_verification_score": row["verification_score"],
                 "evidence": evidence_payload,
             }],
-            "poi_id": poi_id,
+            "poi_id": str(row['poi_id']),
             "poi_claim_status": str(row["status"]),
         })
         if limit is not None and len(result) >= limit:

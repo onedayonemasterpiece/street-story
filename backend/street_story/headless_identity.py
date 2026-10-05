@@ -1,11 +1,14 @@
 """One bounded background executor over the SAME Live visual queue/verdict gate."""
 from __future__ import annotations
 import json
+import logging
 from types import SimpleNamespace
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .service import canonical,digest,ConflictError
 from .errors import RetryableProviderError
 from .identity_telemetry import record_identity_event
+
+LOG = logging.getLogger(__name__)
 
 VERDICT_SCHEMA = {'type':'object','properties':{
     'status':{'enum':['match','uncertain','mismatch']}, 'candidate_id':{'type':'string'},
@@ -41,6 +44,40 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             state={}, closed=False, model=provider.vision_model)
         scope = {'photo_sha256': story['photo_sha256'], 'generation': generation,
                  'control_revision': self._visual_control_revision(research, story['photo_sha256'], generation)}
+        try:
+            await self._run_owned_unit(job, provider, story, session, scope)
+        finally:
+            # The awaited provider operation has exited. Preserve its durable
+            # unknown/completed receipt and pending pair for ordinary resume.
+            try:
+                self._release_visual_lease(session, scope)
+            except Exception as exc:
+                LOG.warning('street_story_identity component=visual_queue stage=lease_release story_id=%s status=failed error_type=%s',
+                            story['id'], type(exc).__name__)
+
+    def _release_visual_lease(self, session, scope):
+        """Release only this still-current worker, reading fresh queue state."""
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT photo_sha256,research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()
+            if row is None:
+                return
+            research = json.loads(row['research_json'] or '{}')
+            saved = research.get('visual_search_operation') or {}
+            if (saved.get('lease_owner') != session.id or saved.get('photo_sha256') != scope['photo_sha256']
+                    or saved.get('generation') != scope['generation']
+                    or int(saved.get('control_revision') or 0) != scope['control_revision']):
+                return
+            try:
+                self._assert_visual_current(row, research, scope, session=session)
+            except ConflictError:
+                return
+            saved.update(lease_owner=None, lease_until=0)
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), session.resource_id))
+        LOG.info('street_story_identity component=visual_queue stage=lease_release story_id=%s status=released lease_owner=%s',
+                 session.resource_id, session.id)
+
+    async def _run_owned_unit(self, job, provider, story, session, scope):
+        generation = scope['generation']
         try:
             unit = await self._compare_place_images(session,{},expected_scope=scope)
         except ConflictError:
