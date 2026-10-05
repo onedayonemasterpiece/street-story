@@ -139,7 +139,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     def _session_permissions(self, role):
         if self.require_guard:
             return [{'permission': name, 'pattern': '*', 'action': 'deny'}
-                    for name in ('question', 'plan_enter', 'plan_exit')]
+                    for name in ('question', 'plan_enter', 'plan_exit', *(() if role == 'search' else ('websearch',)))]
         return [{'permission': '*', 'pattern': '*', 'action': 'deny'},
                 *([{'permission': 'websearch', 'pattern': '*', 'action': 'allow'}] if role == 'search' else [])]
 
@@ -149,7 +149,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_shared_unhealthy')
         guard_verified = False
         if self.require_guard:
-            if role != 'search':
+            if role not in {'search', 'facts'}:
                 raise ResearchUnavailable('research_shared_search_only')
             profile = guard_profile(Path(self.directory), self.limits)
             guard = Path(self.directory) / Path(profile[0]).name
@@ -192,7 +192,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
                 'steps': steps, 'steps_enforcement': 'controller_observed_abort', 'atomic_tool_call_cap': False,
                 'tool_boundary_enforced': guard_verified, 'search_call_limit': None,
                 'allowed_tools': ['websearch'] if role == 'search' else [], 'deny_default': True,
-                'permission_authority': 'attested_pre_execution_guard' if guard_verified else 'session_readback',
+                'permission_authority': (('attested_pre_execution_guard' if role == 'search' else
+                                          'attested_guard_and_session_readback') if guard_verified else 'session_readback'),
                 'guard_sha256': profile[1]['marker'].split(':')[-1] if guard_verified else None,
                 'max_output_tokens': output,
                 'max_tool_bytes': tool_bytes, 'worker_timeout_seconds': self.limits.timeout_seconds}

@@ -237,6 +237,30 @@ async def test_loaded_guard_attested_before_prompt_with_native_tool_schemas(tmp_
 
 
 @pytest.mark.asyncio
+async def test_guarded_fact_extraction_uses_same_server_with_search_denied(tmp_path):
+    h, backend, adapter = guarded_setup(tmp_path)
+    h.result = {'facts': []}
+    result = await adapter.extract_facts({'binding': {'request_id': 'fact-reserve'},
+        'jsonschema': {'type': 'object'}, 'source_passages': [{'text': 'Construction was planned.'}]})
+    isolation = result['receipt']['isolation']
+    assert isolation['allowed_tools'] == []
+    assert isolation['permission_authority'] == 'attested_guard_and_session_readback'
+    assert {'permission': 'websearch', 'pattern': '*', 'action': 'deny'} in backend.session['permission']
+    assert all(directory == str(tmp_path) for _method, _path, directory, *_rest in backend.calls)
+    assert len(h.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_guarded_facts_refuse_lost_session_policy_before_inference(tmp_path):
+    h, backend, adapter = guarded_setup(tmp_path)
+    backend.drop_policy = True
+    with pytest.raises(ResearchUnavailable, match='research_session_scope_unverified'):
+        await adapter.extract_facts({'binding': {'request_id': 'fact-reserve'},
+            'jsonschema': {'type': 'object'}, 'source_passages': []})
+    assert not h.sends
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('version', ['999.0.0', 'custom-build', None])
 async def test_runtime_version_is_diagnostic_and_required_contract_still_attested(tmp_path, version):
     h, backend, adapter = guarded_setup(tmp_path)
