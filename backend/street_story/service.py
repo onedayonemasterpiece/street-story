@@ -819,7 +819,7 @@ class StreetStoryService:
                     self._resume_joined_fact_request(db, job['story_id'])
         except RetryableProviderError as exc:
             reason = str(getattr(exc, 'code', None) or exc)
-            logging.getLogger(__name__).info('street_story_worker_waiting %s', canonical({
+            logging.getLogger('uvicorn.error').info('street_story_worker_waiting %s', canonical({
                 'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
                 'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
                 'reason': reason if re.fullmatch(r'[A-Za-z0-9._:-]{1,200}', reason) else type(exc).__name__,
@@ -851,7 +851,7 @@ class StreetStoryService:
             return True
         except Exception as exc:
             import traceback
-            logging.getLogger(__name__).error('street_story_worker_failure %s', canonical({
+            logging.getLogger('uvicorn.error').error('street_story_worker_failure %s', canonical({
                 'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
                 'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
                 'frames': [{'file': Path(frame.filename).name, 'function': frame.name, 'line': frame.lineno}

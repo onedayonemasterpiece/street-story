@@ -57,6 +57,38 @@ def poi_key(identity: dict[str, Any]) -> str | None:
     return value or None
 
 
+def candidate_article_sources(db, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Public acquisition hints for exact shortlist bindings, never identity proof.
+
+    Text extraction coverage does not mean that an article's gallery was viewed
+    for this photo. Read all saved URLs; the existing visual queue bounds work.
+    """
+    keys: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.get('candidate_id') or '').strip()
+        if not key or candidate.get('identity_eligible') is False:
+            continue
+        owner = db.execute("SELECT poi_id FROM poi_aliases WHERE namespace='street_story_candidate' AND normalized_value=?",
+                           (_normalized_alias(key),)).fetchone()
+        if owner and _canonical_poi_owner(db, str(owner['poi_id'])) is not None:
+            keys.update(memory_keys(db, {'candidate_id': key}))
+    if not keys:
+        return []
+    rows = db.execute('SELECT poi_key,url,title,last_seen_at FROM poi_research_sources WHERE poi_key IN ('
+                      + ','.join('?' for _ in keys) + ') ORDER BY last_seen_at DESC,url,poi_key', tuple(sorted(keys)))
+    from .article_media import public_url
+    sources: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        url = public_url(str(row['url']))
+        if not url:
+            continue
+        source = sources.setdefault(url, {'url': url, 'title': str(row['title']),
+            'discovery_provider': 'poi_memory', 'memory_candidate_ids': [], 'last_seen_at': row['last_seen_at']})
+        if row['poi_key'] not in source['memory_candidate_ids']:
+            source['memory_candidate_ids'].append(str(row['poi_key']))
+    return list(sources.values())
+
+
 def _identity_alias_values(identity: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for raw in (

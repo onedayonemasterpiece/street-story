@@ -8,7 +8,7 @@ from .service import canonical,digest,ConflictError
 from .errors import RetryableProviderError
 from .identity_telemetry import record_identity_event
 
-LOG = logging.getLogger(__name__)
+LOG = logging.getLogger('uvicorn.error')
 
 VERDICT_SCHEMA = {'type':'object','properties':{
     'status':{'enum':['match','uncertain','mismatch']}, 'candidate_id':{'type':'string'},

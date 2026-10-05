@@ -508,6 +508,12 @@ class LiveVisualComparisonMixin:
         if discovery.get('generation') != generation or discovery.get('photo_sha256') != story['photo_sha256']:
             discovery = {}
         sources = [{'url': url} for url in urls] + session.state.get('identity_article_sources', []) + discovery.get('sources', [])
+        # Acquisition hints from previous stories stay useful before this
+        # photo's identity is confirmed. Every image needs a fresh verdict.
+        from .poi_memory import candidate_article_sources
+        with self.service.store.connection() as db:
+            memory_sources = candidate_article_sources(db, identity.get('candidates') or [])
+        sources.extend(memory_sources)
         state.setdefault('sources', {})
         state.setdefault('searches', {})
         state['searches'].update(discovery.get('queries') or {})
@@ -528,8 +534,14 @@ class LiveVisualComparisonMixin:
             if candidate.get('reference_image_urls') and (urlsplit(url).hostname or '').endswith('.wikipedia.org'):
                 state['sources'].setdefault(url, {'source': {'url': url, 'candidate_id': candidate['candidate_id']},
                     'status': 'pending', 'attempts': 0})
+        memory_added = 0
         for source in sources:
+            if source.get('discovery_provider') == 'poi_memory' and source['url'] not in state['sources']:
+                memory_added += 1
             state['sources'].setdefault(source['url'], {'source': source, 'status': 'pending', 'attempts': 0})
+        if memory_added:
+            record_identity_event(self.service, story['id'], 'identity_poi_sources_reused', {
+                'generation': generation, 'source_count': memory_added, 'identity_proof_reused': False})
         if state.get('pending'):
             # A pending verdict must not swallow URLs supplied by a later tool.
             self._save_visual_queue(session, state)

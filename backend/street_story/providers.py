@@ -815,7 +815,7 @@ class GeminiClient:
         raise PermanentProviderError("gemini:unsupported_model")
 
     @staticmethod
-    def _cached_evidence_sources(topic_context: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+    def _cached_evidence_sources(topic_context: dict[str, Any], limit: int | None = 12) -> list[dict[str, Any]]:
         sources: list[dict[str, Any]] = []
         for item in topic_context.get("previously_processed_sources") or []:
             if not isinstance(item, dict):
@@ -847,7 +847,7 @@ class GeminiClient:
                 "supports": supports,
                 "cached": True,
             })
-            if len(sources) >= max(1, min(int(limit), 24)):
+            if limit is not None and len(sources) >= max(1, min(int(limit), 24)):
                 break
         return sources
 
@@ -3105,7 +3105,10 @@ class GeminiClient:
                         and 0 <= self.store.now() - float(item.get('checked_at') or 0) <= 86400
                         for item in source.get('extraction_coverage') or [])
             }
-            cached_sources = [source for source in cached_sources if str(source['url']).rstrip('/') not in excluded]
+            # A model-context page is not a total acquisition ceiling. In
+            # particular, completed early URLs must not hide later unread ones.
+            cached_sources = [source for source in self._cached_evidence_sources(topic_context, limit=None)
+                              if str(source['url']).rstrip('/') not in excluded]
             try:
                 discovery = await self._public_web_search(query, excluded) if excluded else await self._public_web_search(query)
             except RetryableProviderError:

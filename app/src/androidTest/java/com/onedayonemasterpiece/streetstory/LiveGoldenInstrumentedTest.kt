@@ -348,6 +348,37 @@ class LiveGoldenInstrumentedTest {
 
             capture("05-publication-text", story)
 
+            beginStage("more", 6L * 60 * 1000)
+            val textBeforeMore = requireNotNull(story.draftText)
+            val conceptBeforeMore = story.publicationConcept
+            val factsBeforeMore = story.facts.associate { it.factId to it.sources.map { source -> source.url }.toSet() }
+            val moreStarted = System.currentTimeMillis()
+            ownerText(live,
+                "Найди ещё полезные проверяемые факты о подтверждённом объекте. Прочитай полную накопленную историю фактов и источников, " +
+                    "продолжи незавершённые статьи и используй уже найденные материалы прежде нового поиска. " +
+                    "Сохрани новые подтверждённые факты в общей памяти POI и в этой истории. " +
+                    "Два выбранных факта, концепцию и текущий текст публикации оставь без изменений.", "more facts")
+            story = pollWithOwnerClarification(api, storyId, live, evidence, "more facts",
+                "Продолжи именно дополнительное исследование. Сохрани новые факты с evidence через продуктовые инструменты; " +
+                    "готовность в речи без сохранённых фактов недостаточна. Выбор, концепцию и текст публикации сохрани.",
+                allowedNeedsReviewCodes = setOf("visual_stale")) { candidate ->
+                candidate.facts.any { fact -> fact.evidenceSupported &&
+                    (fact.factId !in factsBeforeMore || fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) }) }
+            }
+            val addedFacts = story.facts.filter { it.evidenceSupported && it.factId !in factsBeforeMore }.map { it.factId }
+            val improvedFacts = story.facts.filter { fact -> fact.evidenceSupported && fact.factId in factsBeforeMore &&
+                fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } }.map { it.factId }
+            assertTrue("More returned no new supported fact or evidence", addedFacts.isNotEmpty() || improvedFacts.isNotEmpty())
+            assertEquals("More changed selected facts", selectedFactIds, story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId })
+            assertEquals("More rewrote publication text", textBeforeMore, story.draftText)
+            assertEquals("More changed publication concept", conceptBeforeMore, story.publicationConcept)
+            capture("05-more-facts-preserved-draft", story)
+            evidence["more_added_fact_ids"] = addedFacts
+            evidence["more_improved_fact_ids"] = improvedFacts
+            evidence["more_duration_ms"] = System.currentTimeMillis() - moreStarted
+            evidence["more_fact_count"] = story.facts.size
+            evidence["more_selection_and_draft_preserved"] = true
+
             // Full-social acceptance covers the owner MVP path only. Literal mode,
             // protected-span editing and undo have dedicated tests and must not
             // consume real-provider budget before image/publication acceptance.
