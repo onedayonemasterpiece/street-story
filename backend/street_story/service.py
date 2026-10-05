@@ -161,15 +161,23 @@ class StreetStoryService:
 
     def _hydrate_poi_memory(self, db, row) -> int:
         from .poi_memory import ensure_poi_identity, hydrate_story_facts, memory_keys
-        identity = json.loads(row['research_json'] or '{}').get('visual_identity') or {}
+        research = json.loads(row['research_json'] or '{}')
+        identity = research.get('visual_identity') or {}
         if identity.get('status') not in {'match', 'owner_confirmed'} or row['state'] in {'scheduling', 'scheduled', 'published'}:
             return 0
         keys = memory_keys(db, identity)
         chosen = next((item for item in identity.get('candidates') or [] if item.get('candidate_id') == identity.get('candidate_id')), {})
         bound = db.execute("SELECT 1 FROM poi_aliases WHERE namespace='street_story_candidate' AND value=?", (identity.get('candidate_id'),)).fetchone()
-        if not bound or (identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
-                         and any(alias not in keys for alias in chosen.get('alias_candidate_ids') or [])):
-            ensure_poi_identity(db, identity, latitude=row['latitude'], longitude=row['longitude'], now=self.store.now())
+        verified = identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
+        aliases = set(chosen.get('alias_candidate_ids') or [])
+        if verified:
+            from .identity_subject_binding import subject_aliases
+            aliases.update(subject_aliases(identity.get('candidates') or []).get(identity.get('candidate_id'), set()))
+        if not bound or (verified and (not research.get('poi_id') or any(alias not in keys for alias in aliases))):
+            poi_id = ensure_poi_identity(db, identity, latitude=row['latitude'], longitude=row['longitude'], now=self.store.now())
+            if poi_id and research.get('poi_id') != poi_id:
+                research['poi_id'] = poi_id
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), row['id']))
         added = hydrate_story_facts(db, identity, row['id'])
         if added:
             db.execute('UPDATE stories SET revision=revision+1,updated_at=? WHERE id=?', (self.store.now(), row['id']))
@@ -810,6 +818,13 @@ class StreetStoryService:
                 if job['kind'] in {'research', 'refinement'}:
                     self._resume_joined_fact_request(db, job['story_id'])
         except RetryableProviderError as exc:
+            reason = str(getattr(exc, 'code', None) or exc)
+            logging.getLogger(__name__).info('street_story_worker_waiting %s', canonical({
+                'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
+                'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
+                'reason': reason if re.fullmatch(r'[A-Za-z0-9._:-]{1,200}', reason) else type(exc).__name__,
+                'retry_at': exc.retry_at,
+            }))
             with self.store.tx() as db:
                 if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
                     return True
@@ -835,6 +850,13 @@ class StreetStoryService:
                     self._resume_joined_fact_request(db, job['story_id'])
             return True
         except Exception as exc:
+            import traceback
+            logging.getLogger(__name__).error('street_story_worker_failure %s', canonical({
+                'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
+                'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
+                'frames': [{'file': Path(frame.filename).name, 'function': frame.name, 'line': frame.lineno}
+                           for frame in traceback.extract_tb(exc.__traceback__)[-6:]],
+            }))
             with self.store.tx() as db:
                 if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
                     return True
