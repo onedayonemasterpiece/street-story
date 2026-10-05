@@ -188,6 +188,11 @@ class LiveVisualComparisonMixin:
         identity = research.get('visual_identity') or {}
         if identity.get('status') in {'match', 'owner_confirmed'}:
             return {'already_resolved': True, 'visual_identity': identity}
+        # An uncertain verdict intentionally has no selected candidate_name.
+        # Retain a reference-bearing hypothesis for search, never as identity proof.
+        query_hint = str(args.get('query') or identity.get('candidate_name') or next(
+            (c['name'] for c in identity.get('candidates', [])
+             if c.get('name') and c.get('reference_image_urls') and c.get('identity_eligible', True)), ''))[:180]
         state = session.state.get('visual_comparison') or research.get('visual_search_operation')
         if state and (state['generation'] != generation or state['photo_sha256'] != story['photo_sha256']):
             state = None
@@ -201,7 +206,7 @@ class LiveVisualComparisonMixin:
                     urls = list(dict.fromkeys(original_reference(url) or url for url in candidate['reference_image_urls']))
                     queue.extend(self._image_entries({**candidate, 'reference_image_urls': urls}))
             state = {'generation': generation, 'photo_sha256': story['photo_sha256'],
-                     'queue': queue, 'web_searched': False, 'query': str(args.get('query') or identity.get('candidate_name') or '')[:180],
+                     'queue': queue, 'web_searched': False, 'query': query_hint,
                      'seen_images': list((research.get('identity_progress') or {}).get('reviewed_image_sha256s') or [])
                          if (research.get('identity_progress') or {}).get('generation', generation) == generation else [],
                      'browser_budget': {'remaining': 2}, 'sources': {}, 'searches': {}, 'fetch_failures': []}
@@ -233,7 +238,7 @@ class LiveVisualComparisonMixin:
         read_pages = 0
         if not state['queue']:
             from .article_media import article_candidates
-            query = str(args.get('query') or state['query'])[:180]
+            query = str(args.get('query') or state['query'] or query_hint)[:180]
             state['query'] = query
             if not query and not state['sources']:
                 return {'query_required': True, 'instruction': 'Use visible features or an object-name hypothesis as query; do not ask the owner to identify it.'}
