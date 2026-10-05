@@ -300,6 +300,162 @@ class LiveVisualComparisonMixin:
             db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), row['id']))
         return state
 
+    async def _reconcile_completed_reference(self, session, story, research, identity, state):
+        """Repair host provenance for an observed pair, never rerun its model.
+
+        A completed native result rejected only for missing article provenance
+        is reusable only when the original semantic unit can be reconstructed.
+        Previously seen pixels remain seen, including when proof is unavailable.
+        """
+        from pathlib import Path
+        from urllib.parse import urlsplit
+        from .article_media import extract_media, public_url
+        from .headless_identity import VERDICT_SCHEMA
+        from .identity_references import original_reference
+        from .research_adapter import semantic_visual_context
+        from .errors import RetryableProviderError
+
+        history = [entry for entry in state.get('verdict_history', [])
+            if entry.get('model_status') == 'match' and entry.get('binding_reason') == 'reference_provenance_missing'
+            and entry.get('photo_sha256') == story['photo_sha256']
+            and entry.get('generation') == state['generation']
+            and entry.get('control_revision', 0) == state['control_revision']]
+        if not history:
+            return None
+        previous = history[-1]
+        marker = state.get('completed_reconciliation') or {}
+        now = self.service.store.now()
+        if marker.get('comparison_id') == previous['comparison_id'] and marker.get('retry_at', 0) > now:
+            raise RetryableProviderError('identity_completed_reference_waiting', retry_at=marker['retry_at'])
+
+        def waiting(reason):
+            state['completed_reconciliation'] = {'comparison_id': previous['comparison_id'],
+                'status': 'waiting', 'reason': reason, 'retry_at': now + 300}
+            self._save_visual_queue(session, state)
+            record_identity_event(self.service, story['id'], 'identity_completed_reference_reconciliation', {
+                'component': 'visual_queue', 'stage': 'provenance_reconciliation',
+                'comparison_id': previous['comparison_id'], 'generation': state['generation'],
+                'status': 'waiting', 'reason': reason})
+            raise RetryableProviderError('identity_completed_reference_' + reason, retry_at=now + 300)
+
+        with self.service.store.connection() as db:
+            attempts = list(db.execute("SELECT * FROM research_provider_attempts WHERE story_id=? AND role='vision_native' ORDER BY created_at DESC",
+                                       (story['id'],)))
+        completed = []
+        for attempt in attempts:
+            receipt = json.loads(attempt['receipt_json'])
+            binding, result = receipt.get('binding') or {}, receipt.get('result') or {}
+            if (receipt.get('phase') == 'completed' and receipt.get('provider') == 'codex_native'
+                    and receipt.get('transport') == 'native_codex_app_server'
+                    and receipt.get('photo_sha256') == story['photo_sha256']
+                    and receipt.get('generation') == state['generation']
+                    and receipt.get('profile_verified') is True and receipt.get('thread_id') and receipt.get('turn_id')
+                    and binding.get('story_id') == story['id'] and binding.get('photo_sha256') == story['photo_sha256']
+                    and binding.get('generation') == state['generation']
+                    and binding.get('control_revision', 0) == state['control_revision']
+                    and binding.get('attempt_id') == attempt['attempt_id']
+                    and result.get('status') == 'match'
+                    and result.get('candidate_id') == previous.get('reference_candidate_id')
+                    and result.get('reference_subject_candidate_id') == previous.get('reference_subject_candidate_id')):
+                completed.append((attempt, receipt))
+        if not completed:
+            waiting('completed_receipt_missing')
+        sources = [entry for entry in previous.get('references', [])
+            if entry.get('candidate_id') == previous.get('reference_candidate_id')]
+        if len(sources) != 1 or len(sources[0].get('image_urls') or []) != 1:
+            waiting('original_reference_missing')
+        source = sources[0]
+        article_url = public_url(source.get('url') or '')
+        original = source['image_urls'][0]
+        if (not article_url or not (urlsplit(article_url).hostname or '').endswith('.wikipedia.org')
+                or original_reference(original) != original
+                or source['candidate_id'] != 'web:' + hashlib.sha256(article_url.encode()).hexdigest()[:16]):
+            waiting('article_extraction_unproved')
+        saved = self.service.store.cache_get('public-article-acquisition-v1:' + hashlib.sha256(article_url.encode()).hexdigest())
+        try:
+            body = base64.b64decode(saved['body'], validate=True)
+            if saved['final_url'] != article_url or hashlib.sha256(body).hexdigest() != saved['sha256']:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            waiting('immutable_article_missing')
+        title, media = extract_media(body, article_url)
+        media = [{**item, 'image_url': original} for item in media if original_reference(item['image_url']) == original]
+        if not media:
+            waiting('article_extraction_unproved')
+        candidate = {'candidate_id': source['candidate_id'], 'name': title, 'url': article_url,
+            'source_urls': [article_url], 'reference_image_urls': [original], 'article_media': media,
+            'discovery': 'wikipedia_article_media', 'reference_batch': True}
+        evidence = []
+        try:
+            references = await self.service._candidate_reference_images([candidate], limit=1,
+                story_id=story['id'], evidence=evidence)
+        except (ValueError, OSError) as exc:
+            waiting('reference_' + type(exc).__name__)
+        if (len(references) != 1 or len(evidence) != 1
+                or evidence[0].get('article_source_sha256') != saved['sha256']
+                or evidence[0].get('model_image_sha256') != hashlib.sha256(references[0][2]).hexdigest()
+                or references[0][0] != candidate['candidate_id']):
+            waiting('immutable_reference_missing')
+        try:
+            actual_photo_sha = hashlib.sha256(Path(story['photo_path']).read_bytes()).hexdigest()
+        except OSError:
+            waiting('source_pixels_missing')
+        if actual_photo_sha != story['photo_sha256']:
+            waiting('source_pixels_changed')
+        sheet = comparison_sheet(story['photo_path'], references)
+        comparison_id = 'comparison_' + hashlib.sha256(canonical([story['photo_sha256'], state['generation'],
+            state['control_revision'], [evidence[0]['model_image_sha256']]]).encode()).hexdigest()[:32]
+        if comparison_id != previous['comparison_id']:
+            waiting('reference_pixels_changed')
+        reply = self._visual_reply(comparison_id, [candidate], identity, len(state['queue']))
+        unit = hashlib.sha256(sheet).hexdigest() + hashlib.sha256(
+            (semantic_visual_context(canonical(reply)) + canonical(VERDICT_SCHEMA)).encode()).hexdigest()
+        logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'], state['generation'], 'vision_native', unit]).encode()).hexdigest()
+        selected = next(((attempt, receipt) for attempt, receipt in completed
+            if attempt['logical_id'] == logical and (receipt.get('binding') or {}).get('request_id') == logical
+            and receipt.get('model_image_sha256') == hashlib.sha256(sheet).hexdigest()), None)
+        if selected is None:
+            waiting('semantic_unit_changed')
+        attempt, receipt = selected
+        import re
+        if not re.fullmatch(r'rattempt_[0-9a-f]{24}', attempt['attempt_id']):
+            waiting('input_receipt_unproved')
+        original_input = self.service.settings.data_dir / 'stories' / story['id'] / 'native-comparisons' / (attempt['attempt_id'] + '.jpg')
+        try:
+            if hashlib.sha256(original_input.read_bytes()).hexdigest() != receipt['model_image_sha256']:
+                raise ValueError
+        except (OSError, ValueError):
+            waiting('immutable_input_missing')
+        from jsonschema import ValidationError, validate
+        try:
+            validate(receipt['result'], VERDICT_SCHEMA)
+        except ValidationError:
+            waiting('completed_result_invalid')
+        state['pending'] = {'id': comparison_id, 'candidates': [candidate], 'evidence': evidence,
+            'reply': reply, 'snapshot': sheet}
+        state['completed_reconciliation'] = {'comparison_id': comparison_id, 'attempt_id': attempt['attempt_id'],
+            'status': 'reconciled', 'reason': 'reference_provenance_missing'}
+        self._save_visual_queue(session, state)
+        session.model = receipt.get('model') or session.model
+        result = self._record_place_comparison(session, 'reconcile:' + comparison_id,
+            {**receipt['result'], 'comparison_id': comparison_id, 'provider_receipt': receipt})
+        record_identity_event(self.service, story['id'], 'identity_completed_reference_reconciliation', {
+            'component': 'visual_queue', 'stage': 'provenance_reconciliation',
+            'comparison_id': comparison_id, 'attempt_id': attempt['attempt_id'], 'generation': state['generation'],
+            'status': 'reconciled', 'reason': 'reference_provenance_missing', 'matched': result['matched']})
+        return {**result, 'reconciled_completed': True}
+
+    @staticmethod
+    def _visual_reply(comparison_id, candidates, identity, remaining):
+        return {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
+            'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name']}
+                for i, c in enumerate(candidates, 1)],
+            'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
+                'url': c.get('url'), 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
+                for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')][:32],
+            'remaining_illustrations': remaining,
+            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Название статьи, реклама и другие объекты не доказательство.'}
+
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1):
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
@@ -378,6 +534,9 @@ class LiveVisualComparisonMixin:
             # A pending verdict must not swallow URLs supplied by a later tool.
             self._save_visual_queue(session, state)
             return self._comparison_result(state['pending'])
+        reconciled = await self._reconcile_completed_reference(session, story, research, identity, state)
+        if reconciled is not None:
+            return reconciled
         read_pages = 0
         searches_performed = 0
         if not state['queue']:
@@ -493,15 +652,7 @@ class LiveVisualComparisonMixin:
         sheet = comparison_sheet(story['photo_path'], references)
         comparison_id = 'comparison_' + hashlib.sha256(canonical([story['photo_sha256'], generation,
             state['control_revision'], [e['model_image_sha256'] for e in evidence]]).encode()).hexdigest()[:32]
-        reply = {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
-            'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name'],
-                }
-                for i, (c, e) in enumerate(zip(candidates, evidence), 1)],
-            'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
-                'url': c.get('url'), 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
-                for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')][:32],
-            'remaining_illustrations': len(state['queue']),
-            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Название статьи, реклама и другие объекты не доказательство.'}
+        reply = self._visual_reply(comparison_id, candidates, identity, len(state['queue']))
         state['pending'] = {'id': comparison_id, 'candidates': candidates, 'evidence': evidence, 'reply': reply, 'snapshot': sheet}
         self._save_visual_queue(session, state)
         record_identity_event(self.service, story['id'], 'identity_live_comparison_sent', {
