@@ -223,10 +223,17 @@ async def test_resume_reads_existing_attempt_without_model_resubmission():
     adapter = h.adapter()
     result = await adapter.search_articles('photo', {'request_id': 'r'})
     receipt = result['receipt']
+    @asynccontextmanager
+    async def exhausted(binding, workload):
+        raise AssertionError('readback must not request another inference reservation')
+        yield
+    adapter.admission = exhausted
     resumed = await adapter.search_articles('photo', {'request_id': 'r', 'session_id': receipt['session_id'],
                                                      'message_id': receipt['message_id'], 'phase': 'submitted'})
     assert resumed['sources'] == result['sources']
     assert len(h.sends) == 1
+    assert resumed['receipt']['readback_only'] is True
+    assert len(h.finalized) == 1  # Original conservative charge is not refunded.
     assert sum(path.endswith('prompt_async') for _method, path, _payload in h.requests) == 1
 
 

@@ -1064,12 +1064,27 @@ def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
     caches = qualification.get('caches') or {}
     native = caches.get('native-vision-verification-v1') or {}
     text = caches.get('research-text-verification-v1') or {}
-    if (set(caches) != {'native-vision-verification-v1', 'research-text-verification-v1'}
+    required = {'native-vision-verification-v1', 'research-text-verification-v1'}
+    if (not required.issubset(caches) or set(caches) - required - {'headless-vision-verification-v1'}
             or native.get('model') != 'gpt-6-luna' or native.get('transport') != 'native_codex_app_server'
             or native.get('controls') != {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}
             or not native.get('common_acceptance_verified') or text.get('gigachat_model') != 'GigaChat-2'
             or not text.get('semantic_contract_verified')):
         raise DeployError('research semantic qualification incomplete')
+    direct = caches.get('headless-vision-verification-v1')
+    if direct is not None:
+        models = direct.get('models') if isinstance(direct, dict) else None
+        if not isinstance(models, list) or not models:
+            raise DeployError('direct vision qualification incomplete')
+        proofs = {item['path']: item['sha256'] for item in evidence}
+        for model in models:
+            if (not isinstance(model, dict) or not isinstance(model.get('model'), str)
+                    or model.get('transport') != 'gemini_generate_content'
+                    or model.get('controls') != {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}
+                    or model.get('common_acceptance_verified') is not True
+                    or not model.get('qualification_sha256')
+                    or proofs.get(model.get('qualification_receipt')) != model['qualification_sha256']):
+                raise DeployError('direct vision qualification incomplete')
     RESEARCH_DIRECTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
     source = release / 'source'
     guard = source / 'backend/deploy/research_guard.mjs'

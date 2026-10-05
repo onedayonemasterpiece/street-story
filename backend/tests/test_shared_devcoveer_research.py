@@ -13,7 +13,7 @@ from street_story.opencode_research import ResearchLimits, ResearchUnavailable
 from street_story.shared_devcoveer_research import (
     GUARD_SOURCE, NATIVE_TOOL_IDS, SharedDevCoveerResearch, guard_profile, scoped_research_config,
 )
-from test_opencode_research import Harness
+from test_opencode_research import Harness, sheet
 
 
 class Backend:
@@ -27,6 +27,7 @@ class Backend:
         self.tool_ids = sorted(NATIVE_TOOL_IDS)
         self.health = {'healthy': True, 'version': '1.18.31'}
         self.agent_permission = [{'permission': '*', 'pattern': '*', 'action': 'allow'}]
+        self.image_capabilities = {'attachment': True, 'input': {'image': True}}
 
     async def request(self, method, path, *, directory=None, payload=None, timeout=30):
         self.calls.append((method, path, directory, copy.deepcopy(payload), timeout))
@@ -37,6 +38,9 @@ class Backend:
         if clean_path == '/agent':
             return [{'name': 'plan', 'native': True, 'mode': 'primary',
                      'steps': self.h.config['agent']['plan']['steps'], 'permission': self.agent_permission}]
+        if clean_path == '/config/providers':
+            return {'providers': [{'id': 'opencode', 'models': {'mimo-v2.6-flash-free': {
+                'capabilities': self.image_capabilities}}}]}
         if clean_path == '/experimental/tool/ids':
             if self.guard_loaded and self.h.config.get('plugin'):
                 self.h.config['username'] = self.h.config['plugin'][0][1]['marker']
@@ -257,6 +261,28 @@ async def test_guarded_facts_refuse_lost_session_policy_before_inference(tmp_pat
     with pytest.raises(ResearchUnavailable, match='research_session_scope_unverified'):
         await adapter.extract_facts({'binding': {'request_id': 'fact-reserve'},
             'jsonschema': {'type': 'object'}, 'source_passages': []})
+    assert not h.sends
+
+
+@pytest.mark.asyncio
+async def test_guarded_vision_uses_actual_attachment_same_server_and_no_search(tmp_path):
+    h, backend, adapter = guarded_setup(tmp_path)
+    h.result = {'status': 'mismatch'}
+    result = await adapter.compare_image(sheet(), {'request_id': 'vision'}, {'type': 'object'}, 'SOURCE / REF park')
+    assert result['receipt']['image_attachment_readback_verified'] is True
+    assert result['receipt']['isolation']['allowed_tools'] == []
+    assert {'permission': 'websearch', 'pattern': '*', 'action': 'deny'} in backend.session['permission']
+    assert len(h.sends) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('capabilities', [{}, {'attachment': True, 'input': {'image': False}},
+    {'attachment': False, 'input': {'image': True}}])
+async def test_guarded_vision_rejects_text_only_or_unverified_image_transport_before_send(tmp_path, capabilities):
+    h, backend, adapter = guarded_setup(tmp_path)
+    backend.image_capabilities = capabilities
+    with pytest.raises(ResearchUnavailable, match='research_model_image_input_unverified'):
+        await adapter.compare_image(sheet(), {'request_id': 'vision'}, {'type': 'object'}, 'SOURCE / REF park')
     assert not h.sends
 
 

@@ -291,7 +291,14 @@ class HeadlessFacts:
             with self.service.store.connection() as db:
                 complete = manifest_complete(run_manifest(db, run_id))
             if page.get('completed') and complete:
-                if discovery_pending:
+                payload = json.loads(job.get('payload_json') or '{}')
+                requested_query = str(payload.get('research_query') or '').strip()
+                cached_only = any(item.get('research_run_id') == run_id and item.get('search_provider') == 'poi_memory'
+                                  for item in snapshot[1].get('live_web_searches') or [] if isinstance(item, dict))
+                # Complete checked extraction satisfies this scope on the known
+                # pages, but cannot silently consume an explicit new query. No
+                # model page runs in the skip path to make another recommendation.
+                if discovery_pending or (requested_query and cached_only):
                     await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return
             self._partial(run_id, 'research_fact_source_coverage_partial')

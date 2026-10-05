@@ -201,13 +201,15 @@ class ProductResearchAdapter:
             self.client.endpoint, self.client.model_id, getattr(self.client, 'directory', None),
             getattr(self.client, 'profile_fingerprint', None)]).encode()).hexdigest()
         quota_key = 'research-quota-health:' + self.client.provider_id + ':' + self.client.model_id
-        for health_key in (route_key, quota_key):
-            health = self.service.store.cache_get(health_key) or {}
-            if health.get('retry_at', 0) > self.service.store.now():
-                raise RetryableProviderError(health.get('category','research_route_waiting'), retry_at=health['retry_at'])
         binding, saved = self.attempt(story, role, unit)
         if saved:
             return {'result': saved.get('result'), 'sources': saved.get('sources', []), 'receipt': saved}
+        readback = (binding.get('session_id') and binding.get('message_id')
+                    and binding.get('phase') in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
+        for health_key in (() if readback else (route_key, quota_key)):
+            health = self.service.store.cache_get(health_key) or {}
+            if health.get('retry_at', 0) > self.service.store.now():
+                raise RetryableProviderError(health.get('category','research_route_waiting'), retry_at=health['retry_at'])
         try:
             return await invoke(binding)
         except ResearchUnavailable as exc:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import httpx
@@ -268,6 +269,9 @@ async def test_worker_failure_budget_terminalizes_without_more_provider_work(tmp
             "UPDATE jobs SET state='retry',attempts=?,available_at=0,lease_until=0,last_error='worker_failure:RuntimeError' WHERE kind='research'",
             (MAX_JOB_ATTEMPTS,),
         )
+        job_id = db.execute("SELECT id FROM jobs WHERE kind='research'").fetchone()[0]
+        db.execute("INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?)",
+                   (job_id, 'worker_non_wait_failures', json.dumps({'count': MAX_JOB_ATTEMPTS}), svc.store.now()))
     gemini = FakeGemini()
     restarted = StreetStoryService(config(tmp_path), ProviderBundle(FakeOSM(), FakeWikipedia(), gemini, vp))
     assert restarted.recover_jobs() == 1

@@ -10,6 +10,38 @@ from test_research_control import fixture
 
 
 @pytest.mark.asyncio
+async def test_unknown_addressed_request_readback_is_not_blocked_by_inference_cooldown(tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    from street_story.service import canonical
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter.client = SimpleNamespace(endpoint='http://existing-opencode:4097', model_id='configured', provider_id='opencode')
+    story = {'id': sid, 'photo_sha256': photo}
+    binding, _ = adapter.attempt(story, 'search', 'same-unit')
+    saved = {'binding': binding, 'phase': 'abort_outcome_unknown', 'session_id': 'sesExisting', 'message_id': 'msgExisting'}
+    with service.store.tx() as db:
+        db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                   (canonical(saved), binding['attempt_id']))
+    route_key = 'research-route-health:' + hashlib.sha256(canonical([
+        adapter.client.endpoint, adapter.client.model_id, None, None]).encode()).hexdigest()
+    health = {'category': 'research_provider_quota', 'retry_at': service.store.now()+3600}
+    for key in [route_key, 'research-quota-health:opencode:configured']:
+        service.store.cache_put(key, health, 3600)
+    called = []
+    async def readback(current):
+        called.append(current)
+        assert current['phase'] == 'abort_outcome_unknown'
+        assert current['session_id'] == 'sesExisting' and current['message_id'] == 'msgExisting'
+        return {'result': 'existing-response'}
+    assert await adapter.run(story, 'search', 'same-unit', readback) == {'result': 'existing-response'}
+    assert len(called) == 1
+    with service.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM research_provider_attempts WHERE story_id=?', (sid,)).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_all_search_routes_blocked_retains_independent_and_google_failures(tmp_path):
     from types import SimpleNamespace
     from street_story.errors import RetryableProviderError

@@ -116,7 +116,12 @@ class StreetStoryService:
             )]
             changed = 0
             for job in exhausted:
-                if job["kind"] in RESEARCH_JOB_KINDS and not str(job.get('last_error') or '').startswith('worker_failure:'):
+                if job['kind'] in {'research', 'refinement'}:
+                    row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
+                                     (job['id'], 'worker_non_wait_failures')).fetchone()
+                    if not row or int(json.loads(row[0]).get('count', 0)) < MAX_JOB_ATTEMPTS:
+                        continue
+                elif job["kind"] in RESEARCH_JOB_KINDS and not str(job.get('last_error') or '').startswith('worker_failure:'):
                     continue
                 self._fail_retry_exhausted(db, job, "retry_budget_exhausted")
                 changed += 1
@@ -865,7 +870,22 @@ class StreetStoryService:
                 if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
                     return True
                 error = f"worker_failure:{type(exc).__name__}"
-                if job["attempts"] >= MAX_JOB_ATTEMPTS:
+                failure_attempts = job["attempts"]
+                if job['kind'] in {'research', 'refinement'}:
+                    # Queue claims include quota and lease waits. Only actual
+                    # worker failures consume the research failure budget.
+                    row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
+                                     (job['id'], 'worker_non_wait_failures')).fetchone()
+                    failure_attempts = int(json.loads(row[0]).get('count', 0)) + 1 if row else 1
+                    db.execute("INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) "
+                               "ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json",
+                               (job['id'], 'worker_non_wait_failures', canonical({'count': failure_attempts}), self.store.now()))
+                    logging.getLogger('uvicorn.error').info('street_story_worker_failure_budget %s', canonical({
+                        'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
+                        'kind': job['kind'], 'attempt': job['attempts'], 'failure_count': failure_attempts,
+                        'error_type': type(exc).__name__,
+                    }))
+                if failure_attempts >= MAX_JOB_ATTEMPTS:
                     self._fail_retry_exhausted(db, job, error)
                 else:
                     db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+5, error, self.store.now(), job["id"], job['attempts']))

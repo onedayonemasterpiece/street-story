@@ -3,12 +3,58 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlparse
 
 from .identity_candidate_policy import candidate_identity_eligible
 
 
 def article_candidate(candidate: dict[str, Any]) -> bool:
     return str(candidate.get('candidate_id') or '').startswith('web:')
+
+
+def documented_physical_subject(candidate: dict[str, Any], candidates: Mapping[str, dict[str, Any]]) -> str | None:
+    """Read the host-validated official location receipt, never infer a building.
+
+    An institution housed in a building is distinct from that building. The
+    receipt relates their physical subjects without creating an entity alias.
+    """
+    evidence = candidate.get('physical_subject_evidence')
+    subject_id = candidate.get('physical_subject_candidate_id')
+    subject = candidates.get(subject_id) if isinstance(subject_id, str) else None
+    if not isinstance(evidence, dict) or not subject:
+        return None
+    try:
+        source = urlparse(str(evidence.get('source_url') or ''))
+    except ValueError:
+        return None
+    image_hash = evidence.get('source_sha256')
+    quote = evidence.get('source_quote')
+    if (candidate.get('identity_role') != 'institution_at_physical_subject'
+            or candidate.get('identity_eligible') is not False
+            or evidence.get('proof') != 'host_reviewed_official_location'
+            or evidence.get('relation') != 'institution_housed_in_physical_object'
+            or evidence.get('institution_candidate_id') != candidate.get('candidate_id')
+            or evidence.get('physical_subject_candidate_id') != subject_id
+            or subject_id == candidate.get('candidate_id')
+            or article_candidate(subject) or not candidate_identity_eligible(subject)
+            or source.scheme not in {'http', 'https'} or not source.hostname
+            or not isinstance(quote, str) or not quote.strip()
+            or not isinstance(image_hash, str) or len(image_hash) != 64
+            or any(character not in '0123456789abcdef' for character in image_hash)):
+        return None
+    return subject_id
+
+
+def physical_alternative_id(candidate_id: str, candidates: Mapping[str, dict[str, Any]]) -> str | None:
+    """Normalize documented hosted venues; unknown venue relationships compete."""
+    candidate = candidates.get(candidate_id) or {}
+    subject_id = documented_physical_subject(candidate, candidates)
+    if subject_id:
+        return subject_id
+    if (candidate.get('identity_role') == 'institution_at_physical_subject'
+            or candidate.get('physical_subject_candidate_id') or candidate.get('physical_subject_evidence')):
+        return candidate_id
+    return candidate_id if candidate_identity_eligible(candidate) else None
 
 
 def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[str, str] | None = None) -> dict[str, set[str]]:
@@ -18,6 +64,8 @@ def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[st
     not model output or name aliases. Article addresses do not identify entities.
     """
     parent: dict[str, str] = {}
+    by_id = {item.get('candidate_id'): item for item in candidates}
+    institutions = {cid for cid, item in by_id.items() if documented_physical_subject(item, by_id)}
 
     def find(value: str) -> str:
         parent.setdefault(value, value)
@@ -34,6 +82,8 @@ def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[st
         if not cid or article_candidate(candidate):
             continue
         find(cid)
+        if cid in institutions:
+            continue
         keys = [('wikidata', candidate.get('wikidata')), ('osm_id', candidate.get('osm_id')),
                 ('wikipedia_url', candidate.get('wikipedia_url'))]
         if cid.startswith('wiki:'):
@@ -53,7 +103,7 @@ def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[st
                 owners[key] = cid
         if candidate.get('discovery') == 'wikimedia_entity_cluster':
             for alias in candidate.get('alias_candidate_ids') or []:
-                if isinstance(alias, str) and alias and not alias.startswith('web:'):
+                if isinstance(alias, str) and alias and not alias.startswith('web:') and alias not in institutions:
                     join(cid, alias)
     groups: dict[str, set[str]] = {}
     for cid in parent:

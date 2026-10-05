@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -16,6 +17,54 @@ def _load_installer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize('broken', [None, 'missing_proof', 'wrong_control', 'unverified_common_gate'])
+def test_installer_preserves_proven_direct_vision_route_and_rejects_incomplete_metadata(tmp_path, monkeypatch, broken):
+    module = _load_installer()
+    proof = tmp_path / 'vision-control.json'
+    proof.write_text('{"positive":"match","negative":"mismatch"}')
+    digest = hashlib.sha256(proof.read_bytes()).hexdigest()
+    model = {'model': 'gemini-3.5-flash-lite', 'transport': 'gemini_generate_content',
+             'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True},
+             'common_acceptance_verified': True, 'qualification_receipt': str(proof), 'qualification_sha256': digest}
+    if broken == 'missing_proof':
+        model['qualification_receipt'] = str(tmp_path / 'not-retained.json')
+    elif broken == 'wrong_control':
+        model['controls']['negative'] = 'match'
+    elif broken == 'unverified_common_gate':
+        model['common_acceptance_verified'] = False
+    caches = {'native-vision-verification-v1': {'model': 'gpt-6-luna', 'transport': 'native_codex_app_server',
+              'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True},
+              'common_acceptance_verified': True},
+              'research-text-verification-v1': {'gigachat_model': 'GigaChat-2', 'semantic_contract_verified': True},
+              'headless-vision-verification-v1': {'models': [model]}}
+    qualification = tmp_path / 'qualification.json'
+    qualification.write_text(json.dumps({'evidence': [{'path': str(proof), 'sha256': digest}], 'caches': caches}))
+    qualification.chmod(0o600)
+    source = tmp_path / 'release/source/backend/deploy'
+    source.mkdir(parents=True)
+    (source / 'research_guard.mjs').write_text('retained guard fixture')
+    with sqlite3.connect(tmp_path / 'street-story.sqlite3') as db:
+        db.execute('CREATE TABLE cache(key TEXT PRIMARY KEY,value_json TEXT,expires_at REAL,created_at REAL)')
+    monkeypatch.setattr(module, 'RESEARCH_QUALIFICATION', qualification)
+    monkeypatch.setattr(module, 'RESEARCH_DIRECTORY', tmp_path / 'opencode')
+    monkeypatch.setattr(module, 'DATA_ROOT', tmp_path)
+    calls = []
+    def attest(argv, **kwargs):
+        calls.append(argv)
+        return '{}'
+    monkeypatch.setattr(module, 'run', attest)
+    if broken:
+        with pytest.raises(module.DeployError, match='direct vision qualification incomplete'):
+            module.install_research_runtime(tmp_path / 'release', tmp_path / 'existing-venv')
+        assert not calls
+    else:
+        receipt = module.install_research_runtime(tmp_path / 'release', tmp_path / 'existing-venv')
+        assert receipt['new_inference'] is False and len(calls) == 1
+        with sqlite3.connect(tmp_path / 'street-story.sqlite3') as db:
+            row = db.execute('SELECT value_json FROM cache WHERE key=?', ('headless-vision-verification-v1',)).fetchone()
+        assert json.loads(row[0]) == caches['headless-vision-verification-v1']
 
 
 def _deployment_fixture(root: Path, sha: str, repository: str = "onedayonemasterpiece/street-story") -> Path:
