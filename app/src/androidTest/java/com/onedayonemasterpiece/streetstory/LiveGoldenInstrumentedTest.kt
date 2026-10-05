@@ -333,25 +333,35 @@ class LiveGoldenInstrumentedTest {
             capture("03-facts-after-research", story)
 
             beginStage("selection", 4L * 60 * 1000)
-            speak(live, pcmFiles[3])
-            awaitAnswer(live, "fact selection")
-            story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
-                "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор через select_facts. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
-                it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
+            val savedSelectionReady = resumed != null && story.facts.count { it.selected && it.eligibleForSelection } == 2
+            evidence["selection_history_reused"] = savedSelectionReady
+            if (!savedSelectionReady) {
+                speak(live, pcmFiles[3])
+                awaitAnswer(live, "fact selection")
+                story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
+                    "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор через select_facts. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
+                    it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
+                }
             }
             capture("04-facts-selected", story)
             val selectedFactIds = story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }
 
             beginStage("concept", 3L * 60 * 1000)
-            ownerText(live, "Концепция поста: исторический вход в город, история которого видна в кирпичных башнях на фотографии. Сохрани эту концепцию; выбор двух фактов оставь без изменений.", "publication concept")
-            story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {
-                !it.publicationConcept.isNullOrBlank()
+            val savedConceptReady = resumed != null && !story.publicationConcept.isNullOrBlank()
+            evidence["concept_history_reused"] = savedConceptReady
+            if (!savedConceptReady) {
+                ownerText(live, "Концепция поста: исторический вход в город, история которого видна в кирпичных башнях на фотографии. Сохрани эту концепцию; выбор двух фактов оставь без изменений.", "publication concept")
+                story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {
+                    !it.publicationConcept.isNullOrBlank()
+                }
             }
             assertEquals(selectedFactIds, story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId })
             capture("05-publication-concept", story)
             evidence["publication_concept"] = story.publicationConcept
 
             beginStage("draft", 4L * 60 * 1000)
+            val savedDraftReady = resumed != null && savedSelectionReady && savedConceptReady && !story.draftText.isNullOrBlank()
+            evidence["draft_history_reused"] = savedDraftReady
             if (story.draftText.isNullOrBlank()) {
                 live.sendText(
                     "По уже выбранным подтверждённым фактам собери первый короткий городской пост. " +
@@ -362,12 +372,14 @@ class LiveGoldenInstrumentedTest {
                     !it.draftText.isNullOrBlank()
                 }
             }
-            val beforeEdit = requireNotNull(story.draftText)
-            speak(live, pcmFiles[4])
-            awaitAnswer(live, "text edit")
-            story = pollWithOwnerClarification(api, storyId, live, evidence, "text edit",
-                "Уточняю правку: сделай текущий текст короче и живее, без канцелярита. Используй только два уже выбранных факта; выбор и изображение не меняй.") {
-                !it.draftText.isNullOrBlank() && it.draftText != beforeEdit
+            if (!savedDraftReady) {
+                val beforeEdit = requireNotNull(story.draftText)
+                speak(live, pcmFiles[4])
+                awaitAnswer(live, "text edit")
+                story = pollWithOwnerClarification(api, storyId, live, evidence, "text edit",
+                    "Уточняю правку: сделай текущий текст короче и живее, без канцелярита. Используй только два уже выбранных факта; выбор и изображение не меняй.") {
+                    !it.draftText.isNullOrBlank() && it.draftText != beforeEdit
+                }
             }
 
             capture("05-publication-text", story)
@@ -422,8 +434,12 @@ class LiveGoldenInstrumentedTest {
             // consume real-provider budget before image/publication acceptance.
             beginStage("visual", 8L * 60 * 1000)
             val textBeforeVisual = requireNotNull(story.draftText)
-            speak(live, pcmFiles[5])
-            awaitAnswer(live, "visual-only edit")
+            val savedVisualReady = resumed != null && savedDraftReady && story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()
+            evidence["visual_history_reused"] = savedVisualReady
+            if (!savedVisualReady) {
+                speak(live, pcmFiles[5])
+                awaitAnswer(live, "visual-only edit")
+            }
             val visualStarted = api.getStory(storyId)
             if (visualStarted.state != StoryStage.VISUAL_PROCESSING && visualStarted.processedImageUrl.isNullOrBlank()) {
                 evidence["visual_text_clarification"] = true
