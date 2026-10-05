@@ -778,7 +778,7 @@ Answer briefly and concretely in Russian.
 class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     CAPABILITY_TOOLS = {
         'identity': {'find_place_articles', 'compare_place_images', 'record_place_comparison', 'read_topic', 'resolve_place', 'confirm_place', 'reject_place'},
-        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'select_facts'},
+        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'select_facts', 'set_concept', 'edit_text'},
         'review': {'read_topic', 'get_facts', 'get_review_packet', 'get_review_context', 'assess_review_packet', 'repair_research_fact', 'finalize_fact_review', 'resolve_fact_conflict'},
         'editor': {'read_topic', 'get_facts', 'select_facts', 'set_concept', 'edit_text', 'literal_begin', 'literal_finish', 'literal_cancel'},
         'publication': {'read_topic', 'generate_visual', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
@@ -802,7 +802,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             ).replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
                       'If the API search is unavailable, report its error and retain the queue for continuation;')
         elif capability in {'research', 'review'}:
-            overlay = research
+            # Selection, concept and draft are an ordinary continuation of the
+            # same facts conversation. Keep their small tools visible so the
+            # model can persist explicit owner requests without a reconnect.
+            # Additional research can then preserve that draft in the same session.
+            overlay = research + ('\n' + editorial if capability == 'research' else '')
         elif capability == 'editor':
             overlay = editorial
         else:
@@ -1198,6 +1202,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     def _pause_research(self, session, reason):
         session.state["research_cancelled"] = True
+        session.state["research_pause_reason"] = reason
+        session.state["research_paused_turn_serial"] = int(session.state.get("author_turn_serial") or 0)
         owned = set(session.state.get("research_run_ids") or [])
         if session.state.get("research_run_id"):
             owned.add(session.state["research_run_id"])
@@ -2428,11 +2434,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         })
 
     async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        if getattr(session, "closed", False) or session.state.get("research_cancelled"):
-            raise ConflictError("live_research_partial", "This Live research phase is paused. Resume the saved run in a new Live session.")
-        with self.service.store.connection() as db:
-            self._fact_research_control_guard(db, session)
         query = _bounded_text(args.get("query"), 1000, required=True)
+        self._enter_requested_research(session)
         current_run = str(session.state.get("research_run_id") or "")
         if current_run:
             with self.service.store.connection() as db:
@@ -2999,6 +3002,55 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             raise ConflictError('live_research_control_changed', 'Исследование было остановлено или возобновлено; старый запрос больше не действует.')
         return story, research
 
+    def _enter_requested_research(self, session):
+        """A new owner research turn may continue a pause caused by editing.
+
+        This does not resume explicit Stop, failed evidence validation, stale
+        control epochs, or a closed session. The model chooses the research tool;
+        the server checks freshness and the durable control fence only.
+        """
+        if getattr(session, "closed", False):
+            raise ConflictError("live_research_partial", "This Live session is closed.")
+        with self.service.store.connection() as db:
+            self._fact_research_control_guard(db, session)
+        if session.state.get("research_cancelled"):
+            turn = session.state.get("author_turn") or {}
+            if (
+                session.state.get("research_pause_reason") != "live_owner_switched_to_editing"
+                or int(turn.get("serial") or 0) <= int(session.state.get("research_paused_turn_serial") or 0)
+                or not str(turn.get("text") or "").strip()
+                or turn.get("consumed") or turn.get("suspected_noise")
+                or session.state.get("literal") is not None
+                or not 0 <= time.monotonic() - float(turn.get("at") or 0) <= 50
+            ):
+                raise ConflictError("live_research_partial", "This Live research phase is paused. Resume the saved run explicitly.")
+            session.state["research_cancelled"] = False
+            run_id = str(session.state.get("research_run_id") or "")
+            try:
+                if run_id:
+                    with self.service.store.tx() as db:
+                        self._fact_research_control_guard(db, session)
+                        run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?",
+                                         (run_id, session.resource_id)).fetchone()
+                        if run is not None and run["state"] == "completed":
+                            # Keep the completed historical run immutable. A new
+                            # search may start another scope instead of reopening it.
+                            session.state.pop("research_run_id", None)
+                            session.state.pop("research_current_chunk_id", None)
+                        else:
+                            _, run = self._research_run_guard(db, session, run_id)
+                            if run["state"] == "partial":
+                                set_run_state(db, run_id, "extracting", detail="live_owner_requested_continuation",
+                                              now=self.service.store.now())
+            except Exception:
+                session.state["research_cancelled"] = True
+                raise
+            session.state["research_continuation_count"] = 0
+            session.state.pop("research_pause_reason", None)
+            record_live_diagnostic(self.service, session.resource_id, session.id, "backend",
+                                   "research_owner_resumed", {"run_id": run_id, "author_turn_serial": turn["serial"]})
+        session.state["research_author_interrupted"] = False
+
     def _research_run_guard(self, db, session, run_id: str):
         story, research = self._fact_research_control_guard(db, session)
         run = db.execute("SELECT * FROM research_runs WHERE run_id=? AND story_id=?", (run_id, session.resource_id)).fetchone()
@@ -3042,6 +3094,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     async def _get_research_chunk(self, session, args):
         run_id = _bounded_text(args.get("run_id"), 160, required=True)
+        self._enter_requested_research(session)
         session.state["research_run_id"] = run_id
         source_url = str(args.get("source_url") or "").rstrip("/")
         source_ref = str(args.get('source_ref') or '')

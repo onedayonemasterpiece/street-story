@@ -327,6 +327,7 @@ def prune_release_environments(current_sha: str, previous_sha: str | None) -> di
         return {"status": "skipped", "reason": "process_references_unverified", "removed": []}
     removed: list[str] = []
     skipped: list[str] = []
+    failures: list[dict[str, Any]] = []
     for release in sorted(RELEASES_ROOT.iterdir()):
         if release.name in protected or not SHA_RE.fullmatch(release.name):
             continue
@@ -353,9 +354,26 @@ def prune_release_environments(current_sha: str, previous_sha: str | None) -> di
                 continue
         except DeployError:
             return {"status": "partial", "reason": "process_references_unverified", "removed": removed}
-        shutil.rmtree(environment)
+        try:
+            shutil.rmtree(environment)
+        except OSError as exc:
+            failures.append({"release": release.name, "errno": exc.errno})
+            continue
         removed.append(release.name)
-    return {"status": "completed", "protected": sorted(protected), "removed": removed, "skipped": skipped}
+    return {"status": "partial" if failures else "completed", "protected": sorted(protected),
+            "removed": removed, "skipped": skipped, "failures": failures}
+
+
+def activate_release_pointer(release: Path) -> None:
+    current = RELEASES_ROOT.parent / "current"
+    if current.exists() and not current.is_symlink():
+        raise DeployError("current release pointer is not a symlink")
+    stage = current.with_name(".street-story-current-" + secrets.token_hex(8))
+    try:
+        stage.symlink_to(release, target_is_directory=True)
+        os.replace(stage, current)
+    finally:
+        stage.unlink(missing_ok=True)
 
 
 def _python_312_runtime() -> str:
@@ -1249,6 +1267,7 @@ def main() -> int:
     install_service(release, venv)
     status = service_status()
     health, capabilities = verify_runtime(sha, device)
+    activate_release_pointer(release)
 
     # Cleanup runs only after exact-SHA health/capability verification. A failed
     # installation must retain the previous working dependency environment.

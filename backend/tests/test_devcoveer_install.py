@@ -99,6 +99,37 @@ def test_previous_release_comes_from_live_unit(monkeypatch, tmp_path):
     assert module.deployed_release_sha() is None
 
 
+def test_verified_release_pointer_replaces_old_link_and_preserves_targets(monkeypatch, tmp_path):
+    module = _load_installer()
+    root = tmp_path / 'releases'
+    root.mkdir()
+    previous = _deployment_fixture(root, 'a' * 40)
+    current_release = _deployment_fixture(root, 'b' * 40)
+    pointer = tmp_path / 'current'
+    pointer.symlink_to(previous, target_is_directory=True)
+    monkeypatch.setattr(module, 'RELEASES_ROOT', root)
+    module.activate_release_pointer(current_release)
+    assert pointer.resolve() == current_release
+    assert previous.is_dir() and current_release.is_dir()
+    assert not list(tmp_path.glob('.street-story-current-*'))
+
+
+def test_cleanup_failure_is_reported_without_failing_verified_service(monkeypatch, tmp_path):
+    module = _load_installer()
+    release = _deployment_fixture(tmp_path, 'b' * 40)
+    monkeypatch.setattr(module, 'RELEASES_ROOT', tmp_path)
+    monkeypatch.setattr(module, 'release_process_references', set)
+
+    def denied(path):
+        raise PermissionError(13, 'not removable')
+
+    monkeypatch.setattr(module.shutil, 'rmtree', denied)
+    receipt = module.prune_release_environments('a' * 40, None)
+    assert receipt['status'] == 'partial'
+    assert receipt['failures'] == [{'release': 'b' * 40, 'errno': 13}]
+    assert (release / 'venv/bin/python').exists()
+
+
 @pytest.mark.parametrize(
     ("alias_kind", "status", "accepted"),
     [
