@@ -5,6 +5,8 @@ unavailable image being requested again by a targeted visual verification.
 """
 from __future__ import annotations
 import asyncio
+import base64
+import binascii
 import time
 import math
 from email.utils import parsedate_to_datetime
@@ -78,18 +80,40 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
         if story_id:
             record_identity_event(service, story_id, name, payload)
 
-    def receipt(cid, url, image, cache_hit, descriptor=None):
+    def receipt(cid, url, image, cache_hit, descriptor=None, *, article_source_url=None, resolved_url=None):
         if evidence is not None:
-            evidence.append({'candidate_id': cid, 'source_url': url,
+            provenance = dict(descriptor or {})
+            if descriptor and article_source_url:
+                # The extracted article URL identifies the source illustration;
+                # Wikimedia may serve a bounded derivative of that same file.
+                provenance.update(requested_image_url=url, retrieval_method='wikimedia_reference')
+                if resolved_url:
+                    provenance['resolved_image_url'] = resolved_url
+                store = getattr(service, 'store', None)
+                if store is not None:
+                    key = 'public-article-acquisition-v1:' + hashlib.sha256(descriptor['article_url'].encode()).hexdigest()
+                    saved_article = store.cache_get(key)
+                    if saved_article and saved_article.get('final_url') == descriptor['article_url']:
+                        try:
+                            body = base64.b64decode(saved_article['body'], validate=True)
+                            article_hash = hashlib.sha256(body).hexdigest()
+                            if article_hash == saved_article.get('sha256'):
+                                provenance['article_source_sha256'] = article_hash
+                        except (KeyError, ValueError, TypeError, binascii.Error):
+                            pass
+            # Identity and the exact normalized bytes are host-owned, even if a
+            # descriptor contains similarly named article metadata.
+            evidence.append({**provenance, 'candidate_id': cid, 'source_url': article_source_url or url,
                 'model_image_sha256': hashlib.sha256(image[1]).hexdigest(),
-                'model_image_bytes': len(image[1]), 'cache_hit': cache_hit, **(descriptor or {})})
+                'model_image_bytes': len(image[1]), 'cache_hit': cache_hit})
 
-    async def fetch_variant(cid, url):
+    async def fetch_variant(cid, url, *, descriptor=None, article_source_url=None):
         now = time.monotonic()
         saved = cache.get(url)
         if saved and saved[0] > now:
             if saved[1]:
-                receipt(cid, url, saved[1], True)
+                receipt(cid, url, saved[1], True, descriptor,
+                    article_source_url=article_source_url, resolved_url=saved[3] if len(saved) > 3 else None)
                 event('identity_reference_loaded', {
                     'candidate_id': cid, 'bytes': len(saved[1][1]), 'cache_hit': True})
                 return saved[1]
@@ -150,7 +174,7 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
                     break
         except (httpx.HTTPError, ValueError, OSError) as exc:
             reason = type(exc).__name__
-        cache[url] = (time.monotonic() + (300 if image else 60), image, reason)
+        cache[url] = (time.monotonic() + (300 if image else 60), image, reason, target)
         cache.move_to_end(url)
         while len(cache) > 8:
             cache.popitem(last=False)
@@ -159,7 +183,7 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
             'duration_ms': round((time.monotonic() - started) * 1000),
             'bytes': len(image[1]) if image else 0, 'cache_hit': False})
         if image:
-            receipt(cid, url, image, False)
+            receipt(cid, url, image, False, descriptor, article_source_url=article_source_url, resolved_url=target)
         return image
 
     try:
@@ -200,16 +224,20 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
                 seen_roots.add(root)
                 variants = list(dict.fromkeys(
                     value for value in (thumbnail_reference(root), root) if value))
-                groups.append(variants)
-            for variants in groups:
+                groups.append((raw, variants))
+            for raw, variants in groups:
                 if loaded_for_candidate >= per_candidate or remaining <= 0:
                     break
                 image = None
+                descriptor = next((item for item in candidate.get('article_media', [])
+                    if candidate.get('discovery') == 'wikipedia_article_media'
+                    and item.get('image_url') == raw and item.get('article_url') == candidate.get('url')), None)
                 for url in variants:
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    image = await fetch_variant(cid, url)
+                    image = await fetch_variant(cid, url, descriptor=descriptor,
+                        article_source_url=raw if descriptor else None)
                     if image:
                         break
                 if image:
