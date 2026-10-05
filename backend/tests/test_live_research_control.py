@@ -113,16 +113,117 @@ def test_microphone_stop_does_not_cancel_background_research(tmp_path):
     assert not any(v['stopped'] for v in current['research_controls'].values())
 
 
-def test_every_bundle_exposes_controls_without_growing_tool_count(tmp_path):
+def test_every_bundle_exposes_controls_through_one_router(tmp_path):
     _, adapter, session, _ = prepared(tmp_path)
     configuration = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled', full_configuration=True)['configuration']
     for capability in adapter.CAPABILITY_TOOLS:
         bundle = adapter._capability_configuration(configuration, capability)
-        assert len(bundle['functions']) <= 9
+        assert sum(f['name'] == 'continue_story' for f in bundle['functions']) == 1
         router = next(f for f in bundle['functions'] if f['name'] == 'continue_story')
         properties = router['parameters']['properties']
         assert properties['research_purpose']['enum'] == ['identity', 'facts', 'all']
         assert properties['research_action']['enum'] == ['stop', 'resume']
+
+
+@pytest.mark.asyncio
+async def test_research_session_persists_requested_concept_and_text_without_stage_switch(tmp_path):
+    from street_story.live import FUNCTIONS
+
+    service, adapter, session, _ = prepared(tmp_path)
+    bundle = adapter._capability_configuration({'functions': FUNCTIONS}, 'research')
+    names = {function['name'] for function in bundle['functions']}
+    assert {'search_web', 'get_research_chunk', 'set_concept', 'edit_text'} <= names
+    assert 'Persist an owner' in bundle['system_instruction']
+    assert 'only selected evidence-backed facts' in bundle['system_instruction']
+    assert 'A research-only request must not select facts or draft a publication' in bundle['system_instruction']
+
+    await adapter.execute_tool(session, {'name': 'set_concept', 'id': 'requested-concept',
+                                      'args': {'concept': 'История городских ворот'}})
+    await adapter.execute_tool(session, {'name': 'edit_text', 'id': 'requested-draft',
+                                      'args': {'expected_text_revision': 0, 'new_text': 'Сохранённый текст.',
+                                               'change_summary': 'Первый текст по просьбе автора'}})
+    story = service.story(session.resource_id)
+    assert story['publication_concept'] == 'История городских ворот'
+    assert story['draft_text'] == 'Сохранённый текст.'
+    with service.store.connection() as db:
+        tools = [row[0] for row in db.execute('SELECT tool_name FROM live_commands WHERE story_id=?',
+                                             (session.resource_id,))]
+    assert 'set_concept' in tools and 'edit_text' in tools and 'continue_story' not in tools
+
+
+@pytest.mark.asyncio
+async def test_more_after_editing_reads_saved_document_and_preserves_draft(tmp_path):
+    from street_story.research_runs import persist_source_version
+
+    service, adapter, session, _ = prepared(tmp_path)
+    with service.store.tx() as db:
+        persist_source_version(db, run_id='partial-run', requested_url='https://example.org/history',
+                               final_url='https://example.org/history', title='History', content_type='text/html',
+                               http_status=200, redirect_chain=[], normalized_text='Documented history. ' * 80,
+                               read_status='complete', now=service.store.now())
+    begin_turn(session, 'Сохрани концепцию', origin='text')
+    await adapter.execute_tool(session, {'name': 'set_concept', 'id': 'concept-before-more',
+                                       'args': {'concept': 'История ворот'}})
+    with pytest.raises(ConflictError, match='paused'):
+        await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+
+    begin_turn(session, 'Найди ещё факты, сохрани текущий текст', origin='text')
+    page = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    assert page['research_run_id'] == 'partial-run'
+    assert page['evidence_passages']
+    assert service.story(session.resource_id)['draft_text'] == 'Owner draft'
+    assert service.story(session.resource_id)['publication_concept'] == 'История ворот'
+    assert not session.state['research_cancelled']
+    assert not session.state['research_author_interrupted']
+    with service.store.connection() as db:
+        assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'extracting'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pause_reason', ['live_stopped_resume_required', 'invalid_batch_budget_exhausted'])
+async def test_more_cannot_bypass_other_research_pauses(tmp_path, pause_reason):
+    _, adapter, session, _ = prepared(tmp_path)
+    adapter._pause_research(session, pause_reason)
+    begin_turn(session, 'Найди ещё факты', origin='text')
+    with pytest.raises(ConflictError) as denied:
+        await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    assert denied.value.code == 'live_research_partial'
+    assert session.state['research_cancelled']
+
+
+@pytest.mark.asyncio
+async def test_more_cannot_bypass_explicit_stop(tmp_path):
+    _, adapter, session, _ = prepared(tmp_path)
+    await control(adapter, session, 'stop', 'facts', 'owner-stop')
+    begin_turn(session, 'Найди ещё факты', origin='text')
+    with pytest.raises(ConflictError) as denied:
+        await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    assert denied.value.code == 'live_research_stopped'
+
+
+def test_more_keeps_completed_run_immutable(tmp_path):
+    service, adapter, session, _ = prepared(tmp_path)
+    with service.store.tx() as db:
+        db.execute("UPDATE research_runs SET state='completed' WHERE run_id='partial-run'")
+    adapter._pause_research(session, 'live_owner_switched_to_editing')
+    begin_turn(session, 'Найди ещё факты', origin='text')
+    adapter._enter_requested_research(session)
+    assert not session.state['research_cancelled']
+    assert 'research_run_id' not in session.state
+    with service.store.connection() as db:
+        assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'completed'
+
+
+def test_more_does_not_clear_pause_when_old_run_is_stale(tmp_path):
+    service, adapter, session, _ = prepared(tmp_path)
+    adapter._pause_research(session, 'live_owner_switched_to_editing')
+    with service.store.tx() as db:
+        db.execute("UPDATE research_runs SET identity_generation=1 WHERE run_id='partial-run'")
+    begin_turn(session, 'Найди ещё факты', origin='text')
+    with pytest.raises(ConflictError) as denied:
+        adapter._enter_requested_research(session)
+    assert denied.value.code == 'live_research_run_stale'
+    assert session.state['research_cancelled']
 
 
 def test_stage_prompts_advertise_only_available_tools_and_leave_room_for_transition(tmp_path):

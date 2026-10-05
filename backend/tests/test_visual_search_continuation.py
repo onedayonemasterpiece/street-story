@@ -437,7 +437,9 @@ def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
     for stage in adapter.CAPABILITY_TOOLS:
         spec = adapter.resolve_capability(s, {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Continue'}})
         assert spec['capability'] == stage
-        assert len(spec['configuration']['functions']) <= 9
+        names = [f['name'] for f in spec['configuration']['functions']]
+        assert set(names) == {*adapter.CAPABILITY_TOOLS[stage], 'continue_story'}
+        assert len(names) == len(set(names))
         assert 'continue_story' in {f['name'] for f in spec['configuration']['functions']}
 
 

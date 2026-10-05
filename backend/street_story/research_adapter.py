@@ -11,7 +11,7 @@ import re
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from .opencode_research import OpenCodeResearch, ResearchUnavailable
-from .errors import RetryableProviderError
+from .errors import PermanentProviderError, RetryableProviderError
 from .service import ConflictError, canonical
 from .config import reveal
 
@@ -38,6 +38,49 @@ FACT_PAGE_SCHEMA = {'type':'object','properties':{
             'review_reason':{'type':'string','minLength':1,'maxLength':500}},
         'required':['text','claim_key','existing_fact_id','confidence','passage_ids','verdict','atomic','support_complete','qualifiers_preserved','review_reason']}}},
     'required':['facts','source_matches_poi','source_content_valid','continuation_needed']}
+
+
+def fact_page_capsule(page, context):
+    """One semantic index, with intact claims and authorized frozen paging.
+
+    Runtime identity receipts and repeated evidence DTOs stay in the ledger.
+    Their absence from a prompt does not truncate claims or their qualifiers.
+    """
+    public = {key: value for key, value in context.items()
+              if key not in {'_known_fact_inventory', 'known_facts', 'prior_poi_facts'}}
+    identity = public.get('confirmed_identity')
+    if isinstance(identity, dict):
+        public['confirmed_identity'] = {key: identity[key] for key in (
+            'status', 'candidate_id', 'candidate_name', 'candidate_url', 'wikipedia_url', 'wikidata', 'osm_id')
+            if key in identity}
+    if isinstance(public.get('previously_processed_sources'), list):
+        public['previously_processed_sources'] = [{key: source[key] for key in (
+            'url', 'title', 'extraction_coverage') if key in source}
+            for source in public['previously_processed_sources'] if isinstance(source, dict)]
+    inventory = context.get('_known_fact_inventory', context.get('known_facts', []))
+    if not isinstance(inventory, list):
+        raise PermanentProviderError('research_fact_inventory_invalid')
+    by_id = {}
+    for fact in [*inventory, *(context.get('prior_poi_facts') or [])]:
+        if not isinstance(fact, dict):
+            continue
+        item = {key: fact[key] for key in ('fact_id', 'text', 'claim_key', 'qualifiers', 'eligibility') if key in fact}
+        by_id.setdefault(str(fact.get('fact_id') or canonical(item)), item)
+    complete = list(by_id.values())
+    first, size = [], 0
+    for item in complete:
+        item_size = len(canonical(item).encode('utf-8'))
+        if size + item_size > 12000:
+            break
+        first.append(item)
+        size += item_size
+    public.update(known_inventory_complete=len(first) == len(complete),
+                  known_inventory_total=len(complete), known_inventory_next_offset=len(first),
+                  known_inventory_omitted_count=len(complete) - len(first))
+    return {'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
+            'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
+                         'title': page.get('source_title', ''), 'passages': [
+                             {'passage_id': p['passage_id'], 'text': p['text']} for p in page['evidence_passages']]}]}
 
 
 class ProductResearchAdapter:
@@ -279,21 +322,34 @@ class ProductResearchAdapter:
     @property
     def facts_available(self):
         proof = self.service.store.cache_get('research-text-verification-v1') or {}
-        return self.giga is not None and proof.get('gigachat_model')=='GigaChat-2' and proof.get('semantic_contract_verified') is True
+        return (self.giga is not None and proof.get('gigachat_model')=='GigaChat-2'
+                and proof.get('semantic_contract_verified') is True) or self.opencode_facts_available
+
+    @property
+    def opencode_facts_available(self):
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        client = getattr(self, 'client', None)
+        return (client is not None and proof.get('model_id') == client.model_id
+                and proof.get('endpoint') == client.endpoint and proof.get('semantic_contract_verified') is True)
+
+    async def _extract_opencode_page(self, capsule, page, story):
+        if not self.opencode_facts_available:
+            raise RetryableProviderError('research_text_fallback_unverified', retry_at=self.service.store.now()+300)
+        public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
+        # OpenCode's qualified extraction profile has no private inventory
+        # paging tool: supply the complete compact index under admission.
+        public['known_fact_inventory'] = capsule['_known_fact_inventory']
+        public['context'] = {**public['context'], 'known_inventory_complete': True,
+                             'known_inventory_omitted_count': 0}
+        return await self.run(story, 'facts', page['_unit_id'], lambda binding:
+                              self.client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding))
 
     async def extract_fact_page(self, page, story, context):
         from jsonschema import Draft202012Validator
         from .errors import MalformedProviderResponse
-        capsule = {'context':{key:value for key,value in context.items() if key != '_known_fact_inventory'},
-            '_known_fact_inventory':context.get('_known_fact_inventory',context.get('known_facts',[])),
-            'sources':[{'source_version_id':page['source_version_id'],
-            'url':page['source_url'],'title':page.get('source_title',''),
-            'passages':[{'passage_id':p['passage_id'],'text':p['text']} for p in page['evidence_passages']]}],
-            'known_fact_inventory':context.get('known_facts',[])}
-        capsule['context']['known_inventory_next_offset'] = len(capsule['known_fact_inventory'])
+        capsule = fact_page_capsule(page, context)
         if self.giga is None:
-            return await self.run(story,'facts',page['_unit_id'],lambda binding:
-                self.client.extract_facts({**capsule,'jsonschema':FACT_PAGE_SCHEMA},binding))
+            return await self._extract_opencode_page(capsule, page, story)
         binding,saved = self.attempt(story,'facts_gigachat',page['_unit_id'])
         if saved:
             return {'result':saved['result'],'receipt':saved}
@@ -308,6 +364,8 @@ class ProductResearchAdapter:
                 ('attempt_id','operation','purpose','estimated_input_tokens','output_allowance','images','request_body_sha256')
                 if key in metadata})
             await self.checkpoint(binding,receipt)
+        receipt['capsule_component_bytes'] = {key: len(canonical(value).encode('utf-8'))
+            for key, value in capsule.items() if key != '_known_fact_inventory'}
         try:
             receipt['input_sha256']=hashlib.sha256(canonical({
                 'query':context.get('coverage_goal',''),'capsule':capsule,'max_tool_calls':2}).encode()).hexdigest()
@@ -346,6 +404,10 @@ class ProductResearchAdapter:
             await self.checkpoint(binding,receipt)
             LOG.warning('street_story_fact_provider_failure story_id=%s attempt_id=%s provider=gigachat phase=%s not_sent=%s code=%s error_type=%s',
                         story['id'],binding['attempt_id'],receipt['phase'],not_sent,receipt['error_code'],receipt['error_type'])
+            if not_sent and isinstance(exc, ValueError):
+                raise PermanentProviderError(receipt['error_code']) from exc
+            if known_closed and self.opencode_facts_available:
+                return await self._extract_opencode_page(capsule, page, story)
             if not_sent or not known_closed or getattr(exc,'resource_failure',False):
                 raise RetryableProviderError('gigachat_research_waiting',retry_at=self.service.store.now()+300) from exc
             raise
@@ -395,9 +457,14 @@ class ProductResearchAdapter:
             binding, saved = self.attempt(story, 'vision_native', unit)
             if saved:
                 return {'result': saved['result'], 'receipt': saved}
-            result = await self.native_vision.compare_visual(snapshot, story, schema, context, binding)
-            result['receipt']['availability_failures'] = failures
-            return result
+            try:
+                result = await self.native_vision.compare_visual(snapshot, story, schema, context, binding)
+                result['receipt']['availability_failures'] = failures
+                return result
+            except RetryableProviderError as exc:
+                # Preserve any native unknown attempt; another qualified route
+                # observes the pixels without retrying that unknown native send.
+                failures.append({'route': 'native', 'category': _failure_code(exc), 'retry_at': exc.retry_at})
         if not self.opencode_vision_available:
             due = [f['retry_at'] for f in failures if f.get('retry_at')]
             raise RetryableProviderError('research_vision_waiting', retry_at=min(due) if due else self.service.store.now()+300)

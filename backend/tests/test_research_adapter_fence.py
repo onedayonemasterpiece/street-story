@@ -124,3 +124,34 @@ async def test_completed_native_pixels_reused_after_stop_resume_with_new_queue_i
     assert first['result'] == second['result'] and len(calls) == 1
     await adapter.visual_verdict(b'changed-pixels', story, {}, canonical(context))
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_native_reserve_refusal_reaches_qualified_opencode_vision_fallback(tmp_path):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from street_story.errors import RetryableProviderError
+    from street_story.service import canonical
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter.primary_vision = SimpleNamespace(available=False)
+    adapter.client = SimpleNamespace(model_id='verified-vision', endpoint='http://existing-opencode:4097')
+    service.store.cache_put('research-vision-verification-v1', {
+        'model_id': adapter.client.model_id, 'endpoint': adapter.client.endpoint,
+        'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}, ttl_seconds=3600)
+    async def native(*args):
+        raise RetryableProviderError('RESOURCE_NO_CAPACITY', retry_at=service.store.now()+60)
+    adapter.native_vision = SimpleNamespace(available=True, compare_visual=native)
+    calls = []
+    async def compare(pixels, *args):
+        assert pixels.startswith(b'\x89PNG')
+        calls.append(pixels)
+        return {'result': {'status': 'match'}, 'receipt': {'provider_id': 'qualified-vision'}}
+    adapter.compare_image = compare
+    output = io.BytesIO()
+    Image.new('RGB', (32, 32)).save(output, format='JPEG')
+    result = await adapter.visual_verdict(output.getvalue(), {'id': sid, 'photo_sha256': photo}, {}, canonical({
+        'references': [{'candidate_id': 'wiki:1'}], 'physical_candidates': [{'candidate_id': 'wiki:1'}]}))
+    assert result['result']['status'] == 'match' and len(calls) == 1

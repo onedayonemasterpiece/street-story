@@ -111,6 +111,8 @@ class LiveMessageWire {
 
 class FactWire {
     @SerializedName("fact_id") var factId: String = ""
+    @SerializedName("revision_digest") var revisionDigest: String = ""
+    @SerializedName("supporting_evidence_keys") var supportingEvidenceKeys: ArrayList<String> = arrayListOf()
     var text: String = ""
     var confidence: Double = 0.0
     @SerializedName("evidence_supported") var evidenceSupported: Boolean = false

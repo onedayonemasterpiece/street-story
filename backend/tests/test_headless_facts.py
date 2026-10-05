@@ -107,6 +107,7 @@ async def test_no_audio_headless_page_is_immediately_eligible_in_story_and_poi_l
     try:
         facts = svc.story(job['story_id'])['facts']
         assert len(facts) == 1 and facts[0]['evidence_supported'] and not facts[0]['selected']
+        assert facts[0]['supporting_evidence_keys']
         with svc.store.connection() as db:
             assert db.execute('SELECT COUNT(*) FROM voice_sessions').fetchone()[0] == 0
             assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'eligible'
@@ -115,6 +116,7 @@ async def test_no_audio_headless_page_is_immediately_eligible_in_story_and_poi_l
             assert db.execute('SELECT COUNT(*) FROM fact_evidence_spans').fetchone()[0] >= 1
             assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert svc.story(job['story_id'])['facts'][0]['supporting_evidence_keys'] == facts[0]['supporting_evidence_keys']
         assert researcher.searches == 1 and len(researcher.model_units) == 1 and len(fetches) == 1
     finally:
         await reader.search_http.aclose()
@@ -294,5 +296,24 @@ async def test_wrong_subject_or_unreadable_source_never_imports_claims(tmp_path,
             assert db.execute('SELECT COUNT(*) FROM facts').fetchone()[0] == 0
             if invalid == 'navigation':
                 assert run_manifest(db, 'headless-run')['run']['state'] == 'partial'
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_known_poi_article_is_read_without_fresh_search_when_search_is_unavailable(tmp_path):
+    svc, job, researcher, reader, fetches = await fixture(tmp_path)
+    async def unavailable(*args):
+        raise AssertionError('Fresh search must not gate a known unread article')
+    researcher.search_articles = unavailable
+    with svc.store.tx() as db:
+        db.execute('INSERT INTO poi_research_sources(poi_key,url,title,last_query,supports_json,first_seen_at,last_seen_at) '
+                   'VALUES(?,?,?,?,?,?,?)', ('wiki:77', URL, 'Remembered article', 'prior query', '[]', svc.store.now(), svc.store.now()))
+    try:
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert researcher.searches == 0 and len(fetches) == 1
+        assert svc.story(job['story_id'])['facts'][0]['evidence_supported']
+        with svc.store.connection() as db:
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
     finally:
         await reader.search_http.aclose()
