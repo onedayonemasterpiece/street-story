@@ -684,7 +684,10 @@ class LiveVisualComparisonMixin:
             raise ConflictError('visual_comparison_invalid', 'Некорректный результат сравнения.')
         raw = {**{k: v for k, v in args.items() if not k.startswith('_')},
             '_references_sent': [c['candidate_id'] for c in pending['candidates']]}
-        if status == 'match' and (confidence(raw) < .90 or not raw['observations'] or args.get('candidate_id') not in raw['_references_sent']):
+        # A valid but low-confidence verdict is a completed comparison, not a
+        # failed job. The common gate below records it as uncertain and moves
+        # the same durable queue to its next reference without accepting a POI.
+        if status == 'match' and (not raw['observations'] or args.get('candidate_id') not in raw['_references_sent']):
             raise ConflictError('visual_comparison_unproved', 'Совпадение должно опираться на показанные эталоны и отличительные детали.')
         with self.service.store.tx() as db:
             row = self.service._story_row(db, session.resource_id)

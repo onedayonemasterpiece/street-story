@@ -11,9 +11,11 @@ import importlib.util
 import io
 import json
 import logging
+import re
 import sys
 import time
 from copy import deepcopy
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -28,6 +30,23 @@ TRANSPORT = 'native_codex_app_server'
 VERIFICATION_KEY = 'native-vision-verification-v1'
 ACCOUNT_SCOPE = 'codex-native:owner-reserve'
 logger = logging.getLogger('uvicorn.error.street_story.native_vision')
+
+
+@asynccontextmanager
+async def native_readback():
+    """An existing turn can be read even when fresh inference is not admitted.
+
+    This never refunds its original unknown reservation or authorizes a send.
+    Actual turn usage remains in the durable provider receipt.
+    """
+    class ReadbackLease:
+        async def before_send(self, metadata):
+            raise RetryableProviderError('native_readback_cannot_send')
+
+        async def finalize(self, metadata, state):
+            pass
+
+    yield ReadbackLease()
 
 
 def platform_client():
@@ -116,6 +135,8 @@ class NativeVisionProvider:
                    'photo_sha256': story['photo_sha256'], 'generation': story.get('_identity_generation', 0),
                    'model_image_sha256': hashlib.sha256(snapshot).hexdigest(),
                    'comparison_id': supplied.get('comparison_id'), 'usage': {'cost': 'unknown'}}
+        if binding.get('quota_permission'):
+            receipt['quota_permission'] = dict(binding['quota_permission'])
         receipt['prompt_sha256'] = hashlib.sha256(prompt.encode()).hexdigest()
         image = self.service.settings.data_dir / 'stories' / story['id'] / 'native-comparisons' / (binding['attempt_id'] + '.jpg')
         if not image.exists():
@@ -136,8 +157,11 @@ class NativeVisionProvider:
                     'max_steps': 1, 'max_output_tokens': 8192}
         # Reconciliation does not spend another inference or require fresh quota.
         submitted = bool(receipt['turn_id']) or receipt['phase'] in {'prompt_intent', 'submitted', 'unknown'}
+        admission = native_readback() if submitted else self.admission(binding, workload)
+        if submitted:
+            receipt['resource_reconciliation'] = 'readback_only_original_reservation_unchanged'
         try:
-            async with self.admission(binding, workload) as lease:
+            async with admission as lease:
                 try:
                     if not receipt['thread_id']:
                         if receipt['phase'] != 'created':
@@ -242,6 +266,16 @@ class NativeVisionProvider:
             if receipt['phase'] == 'response_completed':
                 receipt['phase'] = 'failed'
             receipt['error_type'] = type(exc).__name__
+            if getattr(exc, 'resource_failure', False):
+                code = getattr(exc, 'code', '')
+                code = code if isinstance(code, str) and re.fullmatch(r'RESOURCE_[A-Z_]{1,80}', code) else 'RESOURCE_UNAVAILABLE'
+                retry_at = self.service.store.now() + max(3, getattr(exc, 'retry_after_ms', 30000) / 1000)
+                receipt['route_failure'] = {'code': code, 'retry_at': retry_at,
+                                            'observed_at': self.service.store.now()}
+                await self._save(binding, receipt)
+                logger.warning('native_visual_resource_wait story_id=%s attempt_id=%s phase=%s code=%s retry_at=%s',
+                               story['id'], binding['attempt_id'], receipt['phase'], code, retry_at)
+                raise RetryableProviderError(code, retry_at=retry_at) from exc
             await self._save(binding, receipt)
             if isinstance(exc, (RetryableProviderError, asyncio.CancelledError)):
                 raise
