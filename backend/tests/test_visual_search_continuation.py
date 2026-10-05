@@ -320,7 +320,8 @@ async def test_reviewed_wiki_lead_advances_to_article_queue_before_api_search(tm
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('wiki_count', [3, 8])
-async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allowance(tmp_path, monkeypatch, wiki_count):
+@pytest.mark.parametrize('named', [True, False])
+async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allowance(tmp_path, monkeypatch, wiki_count, named):
     from live_interaction.tool_parts import function_response
     svc, adapter, story, session = prepared(tmp_path)
     candidates = [{'candidate_id': f'wiki:{i}', 'name': 'Gate',
@@ -329,12 +330,12 @@ async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allo
     seen = [c['reference_image_urls'][0] for c in candidates]
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
-            'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': candidates},
+            'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate' if named else None, 'candidates': candidates},
             'identity_progress': {'generation': 0, 'reviewed_image_sha256s': seen,
                 'images_reviewed_count': wiki_count}}), story['id']))
     s = session()
     s.state['visual_comparison'] = {'generation': 0, 'photo_sha256': svc._identity_snapshot(story['id'])[0]['photo_sha256'],
-        'queue': [], 'query': 'Gate', 'seen_images': seen, 'sources': {}, 'searches': {},
+        'queue': [], 'query': 'Gate' if named else '', 'seen_images': seen, 'sources': {}, 'searches': {},
         'fetch_failures': [], 'browser_budget': {'remaining': 2}, 'web_searched': False}
     pages, searches = [], []
     broad = {'candidate_id': 'broad', 'name': 'Gate', 'url': 'https://example.com/broad',
@@ -356,7 +357,9 @@ async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allo
     svc._candidate_reference_images = images
     reply = await adapter._compare_place_images(s, {})
     assert len(pages) == 4
+    assert s.state['visual_comparison']['query'] == 'Gate'
     assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == wiki_count
+    assert svc.story(story['id'])['visual_identity']['status'] == 'uncertain'
     if wiki_count == 3:
         assert searches == ['Gate'] and pages[-1] == broad['url']
         assert reply['comparison_id'] and function_response('compare_place_images', 'call', reply)['parts']
