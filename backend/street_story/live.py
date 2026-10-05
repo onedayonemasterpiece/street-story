@@ -1013,6 +1013,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     def on_event(self, session, event: dict[str, Any]) -> None:
         kind = str(event.get("type") or "unknown")
+        if kind in {
+            "ready", "resumed", "reconnecting", "resumption_state", "go_away",
+            "history_restored", "capability_transition_acknowledged",
+            "capability_transition_started", "capability_transition_recovered",
+            "capability_transition_error", "capability_budget_wait", "capability_ready",
+        }:
+            payload = {key: event[key] for key in (
+                "attempt", "resumable", "connection_generation", "transition_id", "capability",
+                "code", "reason", "resumption_mode", "time_left", "retry", "wait_ms",
+                "history_turns", "history_chars",
+            ) if key in event}
+            record_live_diagnostic(self.service, session.resource_id, session.id, "provider", kind, payload)
+            logger.info("street_story_live_lifecycle %s", canonical({
+                "story_id": session.resource_id, "session_id": session.id, "type": kind, **payload,
+            }))
         text = str(event.get("text") or "").strip()
         if kind == 'grounding':
             chunks = (event.get('metadata') or {}).get('groundingChunks') or []

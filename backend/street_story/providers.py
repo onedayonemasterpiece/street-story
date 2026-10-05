@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 
 from .config import Settings, reveal
 from .db import Store
@@ -420,6 +421,33 @@ class _ReadablePageParser(HTMLParser):
     def finish(self) -> str:
         lines = [" ".join(line.split()) for line in "".join(self.parts).splitlines()]
         return "\n".join(line for line in lines if line).strip()[: self.limit]
+
+
+def _read_article_text(html: str, *, limit: int = 120_000) -> tuple[str, bool]:
+    """Select declared article structure; leave semantic evidence decisions to Live."""
+    page = BeautifulSoup(html, "html.parser")
+    for node in page.select("script, style, noscript, svg, canvas, template, nav, [role=navigation], [role=menu]"):
+        node.decompose()
+    # Wikipedia's article body precedes the generic main landmark. Other sites
+    # may declare multiple articles; keep every top-level one, not just the first.
+    roots = page.select(".mw-parser-output")
+    if not roots:
+        roots = page.select("main, [role=main]")
+    if not roots:
+        roots = page.select("article")
+    if roots:
+        root_ids = {id(node) for node in roots}
+        roots = [node for node in roots if not any(id(parent) in root_ids for parent in node.parents)]
+    else:
+        roots = [page.body or page]
+        # With no article landmark, exclude only explicit document chrome.
+        # Article headers/footers can contain attribution and citations.
+        for node in page.select("body > header, body > footer, [role=banner], [role=contentinfo]"):
+            node.decompose()
+    parser = _ReadablePageParser(limit=limit)
+    for root in roots:
+        parser.feed(str(root))
+    return parser.finish(), parser.truncated
 
 
 class GeminiClient:
@@ -1247,9 +1275,7 @@ class GeminiClient:
                         raise ValueError(error_code)
                     body_limited = len(raw_bytes) > 768_000
 
-                    parser = _ReadablePageParser(limit=120_000)
-                    parser.feed(response.text)
-                    normalized_text = parser.finish()
+                    normalized_text, text_limited = _read_article_text(response.text)
                     if len(normalized_text) < 80:
                         error_code = "page_text_too_short"
                         raise ValueError(error_code)
@@ -1258,7 +1284,7 @@ class GeminiClient:
                         "partial_body_limit"
                         if body_limited
                         else "partial_text_limit"
-                        if parser.truncated
+                        if text_limited
                         else "complete"
                     )
                     if run_id:
