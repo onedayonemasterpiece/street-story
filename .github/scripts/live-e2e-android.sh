@@ -126,6 +126,10 @@ resume_id = os.environ.get('LIVE_E2E_RESUME_STORY_ID', '')
 if resume_id:
     if evidence.get('resumed_story_id') != resume_id or evidence.get('fresh_full_pass') is not False:
         raise SystemExit('Saved-story continuation must not claim a fresh full pass')
+elif any(evidence.get(key) for key in (
+        'identity_history_reused', 'selection_history_reused', 'concept_history_reused',
+        'draft_history_reused', 'visual_history_reused')):
+    raise SystemExit('A fresh run must perform its own editorial/visual stages')
 if os.environ.get('LIVE_E2E_IDENTITY_ONLY', 'false') == 'true':
     if evidence.get('identity_only') is not True or evidence.get('automatic_identity') is not True:
         raise SystemExit('Android ordinary photo identity not proved')

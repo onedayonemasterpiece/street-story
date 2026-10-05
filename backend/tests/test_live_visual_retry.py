@@ -18,9 +18,17 @@ def visual_snapshot(service, story_id):
 
 
 @pytest.mark.asyncio
-async def test_live_safe_visual_retry_observes_receipt_and_replays_without_repeating(tmp_path):
+@pytest.mark.parametrize('capability', ['research', 'editor', 'publication'])
+async def test_live_safe_visual_retry_observes_receipt_and_replays_without_repeating(tmp_path, capability):
     service, adapter, session, _events = make_service(tmp_path)
     mark_identity_ready(service, session.resource_id)
+    configuration = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled',
+                                       full_configuration=True)['configuration']
+    bundle = adapter._capability_configuration(configuration, capability)
+    tools = {function['name'] for function in bundle['functions']}
+    assert 'generate_visual' in tools
+    assert ('prepare_publication' in tools) is (capability == 'publication')
+    assert ('confirm_publication' in tools) is (capability == 'publication')
     before = previous_visual(service, session.resource_id)
     observed = []
 
