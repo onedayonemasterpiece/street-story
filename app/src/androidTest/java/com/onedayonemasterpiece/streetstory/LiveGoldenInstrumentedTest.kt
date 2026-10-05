@@ -309,17 +309,16 @@ class LiveGoldenInstrumentedTest {
             evidence["transport"] = live.transportEvidence()
 
             beginStage("research", 5L * 60 * 1000)
-            speak(live, pcmFiles[0])
-            awaitAnswer(live, "initial context")
-
-            speak(live, pcmFiles[1])
-            awaitAnswer(live, "research request")
             story = readStory(api, storyId)
-            // Identity confirmation precedes research. Do not wait for facts before
-            // allowing the author to confirm an uncertain photo match.
-            if (story.sourceCount == 0) {
-                live.sendText("Объект подтверждён. Найди проверяемые исторические факты через search_web и сохрани источники.")
-                awaitAnswer(live, "research after identity confirmation")
+            // The headless path has already confirmed this photo. POI memory
+            // and its eligible facts are ordinary product results: a first post
+            // must not require another identification or discovery turn.
+            val savedFactsReady = story.sourceCount > 0 && story.facts.count { it.eligibleForSelection } >= 2
+            evidence["initial_fact_inventory_reused"] = savedFactsReady
+            evidence["initial_eligible_fact_count"] = story.facts.count { it.eligibleForSelection }
+            if (!savedFactsReady) {
+                speak(live, pcmFiles[2])
+                awaitAnswer(live, "research request")
             }
             story = pollWithOwnerClarification(
                 api, storyId, live, evidence, "fact research",
