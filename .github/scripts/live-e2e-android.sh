@@ -93,12 +93,18 @@ for name in "${fixture_names[@]}"; do
   adb exec-in "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "$FIXTURE_DIR/$name"
 done
 mkdir -p "$ARTIFACT_DIR"
+resume_args=()
+# adb joins shell arguments again; an empty value disappears on the device and
+# consumes the instrumentation component as the value of resumeStoryId.
+if [[ -n "$RESUME_STORY_ID" ]]; then
+  resume_args=(-e resumeStoryId "$RESUME_STORY_ID")
+fi
 adb shell am instrument -w \
   -e class com.onedayonemasterpiece.streetstory.LiveGoldenInstrumentedTest \
   -e keepPublication "$KEEP_PUBLICATION" \
   -e identityOnly "$IDENTITY_ONLY" \
   -e moreOnly "$MORE_ONLY" \
-  -e resumeStoryId "$RESUME_STORY_ID" \
+  "${resume_args[@]}" \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 # Preserve bounded evidence on failure; never export token/configuration stores.
