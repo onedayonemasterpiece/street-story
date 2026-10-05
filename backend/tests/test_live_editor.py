@@ -28,6 +28,22 @@ def test_live_interaction_is_pinned_to_multimodal_manual_activity_release() -> N
     assert callable(with_live_tool_parts)
 
 
+def test_provider_lifecycle_diagnostic_excludes_resumption_secret(tmp_path) -> None:
+    svc, adapter, session, _events = make_service(tmp_path)
+    adapter.on_event(session, {"type": "resumption_state", "resumable": True,
+                              "handle": "private-checkpoint", "text": "private-history"})
+    adapter.on_event(session, {"type": "reconnecting", "attempt": 2})
+    with svc.store.connection() as db:
+        rows = list(db.execute(
+            "SELECT event_type,payload_json FROM live_diagnostics WHERE story_id=? "
+            "AND event_type IN ('resumption_state','reconnecting') ORDER BY id",
+            (session.resource_id,),
+        ))
+    assert [(row["event_type"], json.loads(row["payload_json"])) for row in rows] == [
+        ("resumption_state", {"resumable": True}), ("reconnecting", {"attempt": 2}),
+    ]
+
+
 def test_live_initialization_declares_application_search_function(tmp_path) -> None:
     svc, adapter, session, _events = make_service(tmp_path)
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model="gemini-3.8-live")
