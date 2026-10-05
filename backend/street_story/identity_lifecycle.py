@@ -221,7 +221,11 @@ class IdentityLifecycleMixin:
                             and confidence(recovered_raw) >= confidence(raw)
                             and recovered_raw.get('_references_sent'))
                     )
-                    if recovered_raw.get('_article_media_pending'):
+                    if (recovered_raw.get('_article_media_pending')
+                            or recovered_raw.get('_comparison_deferred')):
+                        # The shared visual queue must receive expanded physical
+                        # hypotheses even when no model has selected one yet.
+                        # Retaining references does not replace the current verdict.
                         ids = {item['candidate_id'] for item in discovered}
                         candidates = ([item for item in candidates if item['candidate_id'] not in ids] + discovered)[:36]
                     if recovery_is_better:
