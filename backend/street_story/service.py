@@ -672,8 +672,15 @@ class StreetStoryService:
     def _claim(self):
         now = self.store.now()
         with self.store.tx() as db:
+            # Owner actions and their visual continuation precede speculative
+            # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
             row = db.execute(
-                "SELECT * FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) ORDER BY created_at LIMIT 1",
+                "SELECT * FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) "
+                "ORDER BY CASE WHEN kind IN ('identity','refinement','visual','publish') THEN 0 "
+                "WHEN json_extract(payload_json,'$.queue_priority')='interactive' THEN 0 "
+                "WHEN kind='research' AND semantic_key NOT LIKE 'automatic-facts:%' "
+                "AND coalesce(json_extract(payload_json,'$.queue_priority'),'')<>'background' THEN 0 "
+                "ELSE 1 END,created_at,id LIMIT 1",
                 (now, now),
             ).fetchone()
             if not row:
@@ -689,7 +696,13 @@ class StreetStoryService:
         with self.store.tx() as db:
             # Bound new work, not the stories inspected before eligibility checks.
             # Skipped and already queued stories must not hide later hypotheses.
-            for row in db.execute("SELECT * FROM stories WHERE state IN ('needs_review','identifying','photo_ready') ORDER BY created_at,id"):
+            for row in db.execute(
+                "SELECT stories.*,EXISTS(SELECT 1 FROM jobs origin WHERE origin.story_id=stories.id "
+                "AND origin.kind='identity' AND json_extract(origin.payload_json,'$.identity_generation')="
+                "coalesce(json_extract(stories.research_json,'$.identity_generation'),0) "
+                "AND json_extract(origin.payload_json,'$.queue_priority')='interactive') AS interactive_identity "
+                "FROM stories WHERE state IN ('needs_review','identifying','photo_ready') "
+                "ORDER BY interactive_identity DESC,created_at,id"):
                 research = json.loads(row['research_json'] or '{}')
                 identity = research.get('visual_identity') or {}
                 generation = int(research.get('identity_generation') or 0)
@@ -701,7 +714,8 @@ class StreetStoryService:
                 if db.execute('SELECT 1 FROM jobs WHERE semantic_key=?', (semantic,)).fetchone():
                     continue
                 self._enqueue_job(db,row['id'],'identity_visual',semantic,
-                    {'identity_generation':generation})
+                    {'identity_generation':generation,
+                     'queue_priority': 'interactive' if row['interactive_identity'] else 'background'})
                 scheduled += 1
                 if scheduled >= 20:
                     break
@@ -735,7 +749,7 @@ class StreetStoryService:
                 revision = 'automatic-facts:' + digest([row['id'], row['photo_sha256'], generation, identity.get('candidate_id')])
                 if db.execute('SELECT 1 FROM jobs WHERE semantic_key=?', (revision,)).fetchone():
                     continue
-                payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'],
+                payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'], 'queue_priority': 'background',
                     'identity_generation': generation, 'voice_session_ids': [], 'mode': 'initial',
                     'coverage_goal': 'Найди проверенные сведения о подтверждённом объекте для будущей публикации. '
                                      'Переиспользуй известные факты; исследуй недостающие полезные аспекты. '

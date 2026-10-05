@@ -116,3 +116,76 @@ def test_qualified_native_reserve_admits_scheduler_without_google_or_opencode(tm
     assert adapter.vision_available is True
     service._schedule_identity_visual()
     assert [job['story_id'] for job in scheduled_jobs(service, 'identity')] == [target]
+
+
+@pytest.mark.parametrize(('kind', 'semantic', 'payload'), [
+    ('identity', 'identity:active', {}),
+    ('identity_visual', 'identity-visual:active', {'queue_priority': 'interactive'}),
+    ('research', 'research-explicit:active', {}),
+    ('research', 'research:owner-voice', {}),
+    ('refinement', 'refinement:active', {}),
+    ('visual', 'visual:active', {}),
+    ('publish', 'publish:active', {}),
+])
+def test_owner_work_precedes_older_background_without_reordering_background_fifo(
+        tmp_path, kind, semantic, payload):
+    service, _ = make_service(tmp_path)
+    target = add_topic(service, 'priority-target', 'identity')
+    with service.store.tx() as db:
+        # Unmarked rows represent the already deployed scheduler's legacy jobs.
+        first = service._enqueue_job(db, target, 'identity_visual', 'identity-visual:old', {})
+        second = service._enqueue_job(db, target, 'research', 'automatic-facts:old', {})
+        active = service._enqueue_job(db, target, kind, semantic, payload)
+        now = service.store.now()
+        for offset, ident in enumerate([first, second, active]):
+            db.execute('UPDATE jobs SET created_at=? WHERE id=?', (now - 30 + offset, ident))
+    assert service._claim()['id'] == active
+    assert service._claim()['id'] == first
+    assert service._claim()['id'] == second
+
+
+def test_priority_preserves_due_retry_and_active_lease_filters_and_owner_fifo(tmp_path):
+    service, _ = make_service(tmp_path)
+    target = add_topic(service, 'due-target', 'identity')
+    with service.store.tx() as db:
+        bulk = service._enqueue_job(db, target, 'identity_visual', 'identity-visual:bulk', {})
+        future = service._enqueue_job(db, target, 'identity', 'identity:future', {})
+        live = service._enqueue_job(db, target, 'publish', 'publish:live', {})
+        retry = service._enqueue_job(db, target, 'research', 'research-explicit:retry', {})
+        newer = service._enqueue_job(db, target, 'refinement', 'refinement:newer', {})
+        now = service.store.now()
+        db.execute('UPDATE jobs SET available_at=? WHERE id=?', (now + 60, future))
+        db.execute("UPDATE jobs SET state='running',lease_until=? WHERE id=?", (now + 60, live))
+        db.execute("UPDATE jobs SET state='retry',available_at=?,created_at=? WHERE id=?", (now + 60, now - 20, retry))
+        db.execute('UPDATE jobs SET available_at=? WHERE id=?', (now + 60, newer))
+    assert service._claim()['id'] == bulk
+    assert service._claim() is None
+    with service.store.tx() as db:
+        db.execute('UPDATE jobs SET available_at=? WHERE id IN (?,?)', (service.store.now() - 1, retry, newer))
+    assert service._claim()['id'] == retry
+    assert service._claim()['id'] == newer
+
+
+def test_active_initial_identity_passes_backfill_budget_and_keeps_priority_in_visual_queue(tmp_path):
+    service, _ = make_service(tmp_path)
+    service.providers.research = SimpleNamespace(vision_available=True)
+    backlog = [add_topic(service, f'backfill-{index}', 'identity') for index in range(45)]
+    target = add_topic(service, 'foreground-photo', 'identity')
+    service.ensure_identity(target)
+    with service.store.tx() as db:
+        initial = db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='identity'", (target,)).fetchone()
+        assert json.loads(initial['payload_json'])['queue_priority'] == 'interactive'
+        # Simulate discovery completion without starting any provider work.
+        db.execute("UPDATE jobs SET state='done' WHERE id=?", (initial['id'],))
+    service._schedule_identity_visual()
+    jobs = scheduled_jobs(service, 'identity')
+    assert len(jobs) == 20
+    continuation = next(job for job in jobs if job['story_id'] == target)
+    assert json.loads(continuation['payload_json'])['queue_priority'] == 'interactive'
+    assert all(json.loads(job['payload_json'])['queue_priority'] == 'background'
+        for job in jobs if job['story_id'] in backlog)
+    assert service._claim()['id'] == continuation['id']
+    service._schedule_identity_visual()
+    assert len(scheduled_jobs(service, 'identity')) == 40
+    service._schedule_identity_visual()
+    assert len(scheduled_jobs(service, 'identity')) == 46

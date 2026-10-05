@@ -90,7 +90,8 @@ class IdentityLifecycleMixin:
                 return self._story_repr(db, row)
             semantic = 'identity:' + digest({'story_id': story_id, 'photo_sha256': row['photo_sha256'],
                                             'generation': generation, 'lat': row['latitude'], 'lon': row['longitude']})
-            job_id = self._enqueue_job(db, story_id, 'identity', semantic, {'identity_generation': generation})
+            job_id = self._enqueue_job(db, story_id, 'identity', semantic,
+                {'identity_generation': generation, 'queue_priority': 'interactive'})
             job = db.execute('SELECT state FROM jobs WHERE id=?', (job_id,)).fetchone()
             if job['state'] in {'ready', 'running', 'retry'} and row['state'] in {'photo_ready', 'voice_ready', 'needs_review'}:
                 db.execute("UPDATE stories SET state='identifying',error_code=NULL,error_message=NULL,"

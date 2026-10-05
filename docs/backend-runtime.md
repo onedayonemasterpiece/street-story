@@ -192,3 +192,9 @@ receipts remain in its attempt history; duplicate HTTP keys remain idempotent,
 and a previous worker cannot overwrite the new attempt. Fact selection, concept
 and draft text are retained. VibePublish reconciliation alone never submits
 generation; a fresh explicit product command is required.
+
+Explicit identity, more/refinement, visual and publication requests precede
+background backfill in the existing queue. Initial identity marks its visual
+continuation as interactive; the scheduler admits these before background
+portions. FIFO within each priority and existing due/lease checks remain intact.
+A running unit finishes under its existing lease; it is not preempted.
