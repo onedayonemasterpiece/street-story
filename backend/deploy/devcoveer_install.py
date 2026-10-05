@@ -273,6 +273,91 @@ def materialize_release(sha: str, tree_sha: str) -> Path:
     return release
 
 
+def deployed_release_sha() -> str | None:
+    """Read the actual unit, rather than trusting a historical current symlink."""
+    directory = run(
+        ["systemctl", "--user", "show", SERVICE, "-p", "WorkingDirectory", "--value"],
+        timeout=30,
+    ).strip()
+    path = Path(directory)
+    if path.parent.parent == RELEASES_ROOT and path.name == "source" and SHA_RE.fullmatch(path.parent.name):
+        return path.parent.name
+    return None
+
+
+def release_process_references() -> set[str]:
+    """Keep environments referenced by running processes, including other workers."""
+    pattern = re.compile(re.escape(str(RELEASES_ROOT)) + r"/([0-9a-f]{40})(?:/|\b)")
+    used: set[str] = set()
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            # cmdline remains available for sandboxed browser processes whose maps/fds are private.
+            command = (process / "cmdline").read_bytes().decode(errors="replace")
+            used.update(pattern.findall(command))
+            if process.stat().st_uid != os.getuid():
+                continue
+            for name in ("cwd", "exe"):
+                with contextlib.suppress(OSError):
+                    used.update(pattern.findall(os.readlink(process / name)))
+            with contextlib.suppress(OSError):
+                used.update(pattern.findall((process / "maps").read_text(errors="replace")))
+            with contextlib.suppress(OSError):
+                for descriptor in (process / "fd").iterdir():
+                    with contextlib.suppress(OSError):
+                        used.update(pattern.findall(os.readlink(descriptor)))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except PermissionError as exc:
+            raise DeployError("cannot verify deployment environment process references") from exc
+    return used
+
+
+def prune_release_environments(current_sha: str, previous_sha: str | None) -> dict[str, Any]:
+    """Remove only rebuildable dependency environments after the live health gate.
+
+    Keep the deployed release, its predecessor, and every process-referenced
+    release. Historical exact source, manifests, data, and evidence stay intact.
+    """
+    protected = {current_sha, *([previous_sha] if previous_sha else [])}
+    try:
+        protected.update(release_process_references())
+    except DeployError:
+        return {"status": "skipped", "reason": "process_references_unverified", "removed": []}
+    removed: list[str] = []
+    skipped: list[str] = []
+    for release in sorted(RELEASES_ROOT.iterdir()):
+        if release.name in protected or not SHA_RE.fullmatch(release.name):
+            continue
+        if release.is_symlink() or not release.is_dir():
+            continue
+        try:
+            manifest = json.loads((release / ".street-story-release.json").read_text())
+        except (OSError, ValueError):
+            skipped.append(release.name)
+            continue
+        if (
+            manifest.get("repository") != REPOSITORY
+            or manifest.get("release_sha") != release.name
+            or not (release / "source/backend/street_story").is_dir()
+        ):
+            skipped.append(release.name)
+            continue
+        environment = release / "venv"
+        if environment.is_symlink() or not environment.is_dir():
+            continue
+        # Refresh before each removal so a newly started rollback/worker is protected.
+        try:
+            if release.name in release_process_references():
+                continue
+        except DeployError:
+            return {"status": "partial", "reason": "process_references_unverified", "removed": removed}
+        shutil.rmtree(environment)
+        removed.append(release.name)
+    return {"status": "completed", "protected": sorted(protected), "removed": removed, "skipped": skipped}
+
+
 def _python_312_runtime() -> str:
     candidates = [BRIDGE_PYTHON]
     system_python = shutil.which("python3.12")
@@ -1149,6 +1234,7 @@ def main() -> int:
     expected_sha = args.expected_sha.strip().lower()
 
     sha, tree_sha = exact_source(expected_sha)
+    previous_sha = deployed_release_sha()
     release = materialize_release(sha, tree_sha)
     venv = ensure_venv(release)
     STATE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1164,6 +1250,10 @@ def main() -> int:
     status = service_status()
     health, capabilities = verify_runtime(sha, device)
 
+    # Cleanup runs only after exact-SHA health/capability verification. A failed
+    # installation must retain the previous working dependency environment.
+    environment_cleanup = prune_release_environments(sha, previous_sha)
+
     final_status = _tracked_status()
     if final_status.strip():
         raise DeployError("deployment changed the canonical repository checkout")
@@ -1175,6 +1265,7 @@ def main() -> int:
         "release_sha": sha,
         "tree_sha": tree_sha,
         "release_root": str(release),
+        "environment_cleanup": environment_cleanup,
         "listener": f"127.0.0.1:{PORT}",
         "service": status,
         "local_health": {

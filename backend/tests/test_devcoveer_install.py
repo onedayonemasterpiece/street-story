@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,87 @@ def _load_installer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _deployment_fixture(root: Path, sha: str, repository: str = "onedayonemasterpiece/street-story") -> Path:
+    release = root / sha
+    (release / "source/backend/street_story").mkdir(parents=True)
+    (release / "source/backend/street_story/keep.py").write_text("historical source")
+    (release / "venv/bin").mkdir(parents=True)
+    (release / "venv/bin/python").write_text("rebuildable dependency fixture")
+    (release / ".street-story-release.json").write_text(json.dumps({
+        "repository": repository, "release_sha": sha,
+    }))
+    return release
+
+
+def test_environment_retention_preserves_rollback_processes_and_all_source(monkeypatch, tmp_path):
+    module = _load_installer()
+    releases = [_deployment_fixture(tmp_path, character * 40) for character in "abcd"]
+    monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
+    monkeypatch.setattr(module, "release_process_references", lambda: {"c" * 40})
+
+    receipt = module.prune_release_environments("a" * 40, "b" * 40)
+
+    assert receipt["removed"] == ["d" * 40]
+    assert all((release / "venv").exists() for release in releases[:3])
+    assert not (releases[3] / "venv").exists()
+    assert all((release / "source/backend/street_story/keep.py").read_text() == "historical source"
+               for release in releases)
+    assert all((release / ".street-story-release.json").exists() for release in releases)
+
+
+def test_environment_retention_never_follows_symlinks_or_unverified_manifests(monkeypatch, tmp_path):
+    module = _load_installer()
+    root = tmp_path / "releases"
+    root.mkdir()
+    foreign = _deployment_fixture(root, "b" * 40, "someone/another-project")
+    unverified = _deployment_fixture(root, "c" * 40)
+    (unverified / ".street-story-release.json").write_text("invalid")
+    outside = _deployment_fixture(tmp_path, "d" * 40)
+    (root / ("d" * 40)).symlink_to(outside, target_is_directory=True)
+    linked_env = _deployment_fixture(root, "e" * 40)
+    module.shutil.rmtree(linked_env / "venv")
+    (linked_env / "venv").symlink_to(outside / "venv", target_is_directory=True)
+    monkeypatch.setattr(module, "RELEASES_ROOT", root)
+    monkeypatch.setattr(module, "release_process_references", set)
+
+    assert module.prune_release_environments("a" * 40, None)["removed"] == []
+    assert all((release / "venv/bin/python").exists() for release in [foreign, unverified, outside, linked_env])
+
+
+def test_environment_retention_keeps_newly_started_worker(monkeypatch, tmp_path):
+    module = _load_installer()
+    release = _deployment_fixture(tmp_path, "b" * 40)
+    monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
+    snapshots = iter([set(), {"b" * 40}])
+    monkeypatch.setattr(module, "release_process_references", lambda: next(snapshots))
+
+    assert module.prune_release_environments("a" * 40, None)["removed"] == []
+    assert (release / "venv/bin/python").exists()
+
+
+def test_environment_retention_skips_when_process_verification_fails(monkeypatch, tmp_path):
+    module = _load_installer()
+    release = _deployment_fixture(tmp_path, "b" * 40)
+    monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
+
+    def unavailable():
+        raise module.DeployError("process references unavailable")
+
+    monkeypatch.setattr(module, "release_process_references", unavailable)
+    receipt = module.prune_release_environments("a" * 40, None)
+    assert receipt["status"] == "skipped"
+    assert (release / "venv/bin/python").exists()
+
+
+def test_previous_release_comes_from_live_unit(monkeypatch, tmp_path):
+    module = _load_installer()
+    monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
+    monkeypatch.setattr(module, "run", lambda *args, **kwargs: str(tmp_path / ("b" * 40) / "source"))
+    assert module.deployed_release_sha() == "b" * 40
+    monkeypatch.setattr(module, "run", lambda *args, **kwargs: "/some/unrelated/source")
+    assert module.deployed_release_sha() is None
 
 
 @pytest.mark.parametrize(
