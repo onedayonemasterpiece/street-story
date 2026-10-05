@@ -256,6 +256,10 @@ class StreetStoryService:
                 "review_status": str(assertion.get("review_status") or "unreviewed"),
                 "eligibility": str(assertion.get("eligibility") or "unreviewed"),
                 "revision_digest": str(assertion.get("revision_digest") or ""),
+                "supporting_evidence_keys": sorted({digest(list(evidence)) for evidence in db.execute(
+                    "SELECT e.source_url,e.source_version_id,e.chunk_id,e.span_start,e.span_end,e.span_sha256 "
+                    "FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id "
+                    "WHERE o.story_id=? AND o.assertion_id=? AND o.status='accepted'", (row['id'], fact['fact_id']))}),
                 "sources": json.loads(fact["sources_json"]),
             })
         error = None

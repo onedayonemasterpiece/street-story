@@ -75,6 +75,11 @@ class HeadlessFacts:
                     'discovery_only': True, 'search_provider': receipt.get('backend', 'unknown'),
                 })
                 research['live_web_searches'] = history[-12:]
+            elif receipt.get('backend') and receipt['backend'] != 'poi_memory':
+                for item in history:
+                    if isinstance(item, dict) and item.get('research_run_id') == run_id:
+                        item.update(search_provider=receipt['backend'], source_urls=list(stored),
+                                    source_refs=[_search_source_ref(url) for url in stored])
             grounding = {str(item.get('url') or '').rstrip('/'): item
                          for item in research.get('grounding_sources') or [] if isinstance(item, dict)}
             for url, source in stored.items():
@@ -92,6 +97,39 @@ class HeadlessFacts:
                 set_run_state(db, run_id, 'partial', detail=reason, now=self.service.store.now())
         delay = 300 if reason in {'research_fact_source_coverage_partial', 'research_fact_source_unreadable'} else 10
         raise RetryableProviderError(reason, retry_at=self.service.store.now() + delay)
+
+    async def _discover_requested_gap(self, job, run_id, goal, scope, provider, control_revision):
+        payload = json.loads(job.get('payload_json') or '{}')
+        query = str(payload.get('research_query') or '').strip()
+        snapshot = self._snapshot(job, run_id, control_revision)
+        if snapshot is None:
+            return
+        story, _, _ = snapshot
+        # Keep the accepted model discovery decision across a route failure.
+        with self.service.store.tx() as db:
+            if self._snapshot(job, run_id, control_revision) is None:
+                return
+            set_run_state(db, run_id, 'partial', detail='research_fact_discovery_pending', now=self.service.store.now())
+        search = getattr(provider, 'search_fact_articles', None) or getattr(provider, 'search_articles', None)
+        if not callable(search) or not query:
+            raise RetryableProviderError('research_search_unavailable', retry_at=self.service.store.now()+60)
+        found = await search(query, story)
+        if self._snapshot(job, run_id, control_revision) is None:
+            return
+        added = [source for source in found.get('sources') or [] if isinstance(source, dict)]
+        found_receipt = {**(found.get('receipt') or {}),
+                         'backend': (found.get('receipt') or {}).get('backend', 'external_search')}
+        if not self._bind_discovery(job, run_id, goal, scope, added, found_receipt, control_revision):
+            return
+        with self.service.store.connection() as db:
+            unread = db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL "
+                                "AND status!='failed' LIMIT 1", (run_id,)).fetchone()
+        if unread:
+            self._partial(run_id, 'research_fact_next_page')
+        with self.service.store.tx() as db:
+            if self._snapshot(job, run_id, control_revision) is None:
+                return
+            set_run_state(db, run_id, 'completed', now=self.service.store.now(), completed=True)
 
     def _queue_model_continuation(self, job, run_id, goal, scope, result, control_revision):
         """Join an explicit model-owned new aspect after the current run finishes.
@@ -237,6 +275,7 @@ class HeadlessFacts:
         # The model must check the chosen article's subject before importing it.
         if source:
             args['source_ref'] = _search_source_ref(source['url'])
+        discovery_pending = snapshot[2]['status_detail'] == 'research_fact_discovery_pending'
         try:
             page = await self.adapter._get_research_chunk(session, args)
         except ConflictError as exc:
@@ -252,6 +291,8 @@ class HeadlessFacts:
             with self.service.store.connection() as db:
                 complete = manifest_complete(run_manifest(db, run_id))
             if page.get('completed') and complete:
+                if discovery_pending:
+                    await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return
             self._partial(run_id, 'research_fact_source_coverage_partial')
         story, research, _ = snapshot
@@ -340,3 +381,18 @@ class HeadlessFacts:
                  story['id'], run_id, page['chunk_id'], page['batch_index'], committed.get('completed'))
         if not committed.get('completed'):
             self._partial(run_id, 'research_fact_next_page' if result['source_content_valid'] else 'research_fact_source_unreadable')
+        elif (result.get('research_sufficient') is False and result['source_matches_poi']
+              and result['source_content_valid'] and not continued):
+            # A model can request the current explicit discovery recipe after
+            # exhausting remembered pages. Cache-first must not become cache-only.
+            payload = json.loads(job.get('payload_json') or '{}')
+            query = str(payload.get('research_query') or '').strip()
+            def normalize(value):
+                return ' '.join(str(value or '').split()).casefold()
+            with self.service.store.connection() as db:
+                latest = json.loads(self.service._story_row(db, story['id'])['research_json'])
+                cached_only = any(item.get('research_run_id') == run_id and item.get('search_provider') == 'poi_memory'
+                                  for item in latest.get('live_web_searches') or [] if isinstance(item, dict))
+            if (query and cached_only and normalize(result.get('next_research_query')) == normalize(query)
+                    and normalize(result.get('next_research_goal')) == normalize(goal)):
+                await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)

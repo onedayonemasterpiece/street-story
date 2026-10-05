@@ -107,6 +107,7 @@ async def test_no_audio_headless_page_is_immediately_eligible_in_story_and_poi_l
     try:
         facts = svc.story(job['story_id'])['facts']
         assert len(facts) == 1 and facts[0]['evidence_supported'] and not facts[0]['selected']
+        assert facts[0]['supporting_evidence_keys']
         with svc.store.connection() as db:
             assert db.execute('SELECT COUNT(*) FROM voice_sessions').fetchone()[0] == 0
             assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'eligible'
@@ -115,6 +116,7 @@ async def test_no_audio_headless_page_is_immediately_eligible_in_story_and_poi_l
             assert db.execute('SELECT COUNT(*) FROM fact_evidence_spans').fetchone()[0] >= 1
             assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert svc.story(job['story_id'])['facts'][0]['supporting_evidence_keys'] == facts[0]['supporting_evidence_keys']
         assert researcher.searches == 1 and len(researcher.model_units) == 1 and len(fetches) == 1
     finally:
         await reader.search_http.aclose()

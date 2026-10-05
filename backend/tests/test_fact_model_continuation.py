@@ -4,6 +4,7 @@ import json
 import pytest
 
 from street_story.headless_facts import HeadlessFacts
+from street_story.errors import RetryableProviderError
 from street_story.fact_ledger import set_owner_selection
 from street_story.research_runs import begin_research_run
 from test_headless_facts import controlled_public_dns as controlled_public_dns, fixture
@@ -53,11 +54,17 @@ async def test_model_owned_continuation_uses_existing_joined_job_and_exact_query
 
         async def searched(query, story):
             queries.append(query)
+            if len(queries) == 1:
+                raise RetryableProviderError('controlled_search_wait', retry_at=svc.store.now()+60)
             return await original_search(query, story)
 
         researcher.search_articles = searched
+        with pytest.raises(RetryableProviderError, match='controlled_search_wait'):
+            await HeadlessFacts(svc).run(next_job, 'next-scope', GOAL, payload['extraction_scope'])
+        pages_before_retry = len(researcher.pages)
         await HeadlessFacts(svc).run(next_job, 'next-scope', GOAL, payload['extraction_scope'])
-        assert queries == [QUERY]  # No replacement by a generic POI-name query.
+        assert len(researcher.pages) == pages_before_retry  # No repeated model extraction after discovery failure.
+        assert queries == [QUERY, QUERY]  # Exact accepted recipe survives retry.
         with svc.store.connection() as db:
             research = json.loads(svc._story_row(db, job['story_id'])['research_json'])
             assert len(research['fact_research_continuations']) == 1
@@ -139,7 +146,10 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
             return await original(page, story, context)
 
         researcher.extract_fact_page = inspect
-        await HeadlessFacts(svc).run(job, 'memory-run', 'Museum details', 'museum details')
+        # All remembered unread sources are now attached before new discovery;
+        # one model page is committed and the existing cursor continues later.
+        with pytest.raises(RetryableProviderError, match='research_fact_next_page'):
+            await HeadlessFacts(svc).run(job, 'memory-run', 'Museum details', 'museum details')
         context = captured[0]
         assert len(context['known_facts']) == 50
         assert context['known_inventory_total'] == 71 and context['known_inventory_omitted_count'] == 21

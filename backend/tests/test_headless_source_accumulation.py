@@ -59,6 +59,12 @@ async def test_more_than_three_sources_accumulate_and_completed_scope_reuses_his
 
         researcher.search_articles = search
         researcher.extract_fact_page = extract
+        # MORE starts from the full saved article inventory, including unread
+        # URLs and a completed unchanged scope, with no mandatory rediscovery.
+        with svc.store.tx() as db:
+            for url in sources[1:]:
+                db.execute('INSERT INTO poi_research_sources(poi_key,url,title,supports_json,last_query,first_seen_at,last_seen_at) '
+                           'VALUES(?,?,?,?,?,?,?)', ('wiki:77', url, 'Saved gate archive', '[]', 'prior query', 0, 0))
 
         async def finish(run_id, goal, scope):
             with svc.store.tx() as db:

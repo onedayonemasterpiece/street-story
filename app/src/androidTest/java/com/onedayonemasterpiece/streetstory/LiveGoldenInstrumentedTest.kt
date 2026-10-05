@@ -358,6 +358,7 @@ class LiveGoldenInstrumentedTest {
                 val conceptBeforeMore = story.publicationConcept
                 val factsBeforeMore = story.facts.associate { it.factId to it.sources.map { source -> source.url }.toSet() }
                 val revisionsBeforeMore = story.facts.associate { it.factId to it.revisionDigest }
+                val evidenceBeforeMore = story.facts.associate { it.factId to it.supportingEvidenceKeys.toSet() }
                 val moreStarted = System.currentTimeMillis()
                 ownerText(live,
                     "Найди ещё полезные проверяемые факты о подтверждённом объекте. Прочитай полную накопленную историю фактов и источников, " +
@@ -370,12 +371,12 @@ class LiveGoldenInstrumentedTest {
                     allowedNeedsReviewCodes = setOf("visual_stale")) { candidate ->
                     candidate.facts.any { fact -> fact.evidenceSupported &&
                         (fact.factId !in factsBeforeMore || fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } ||
-                            (fact.revisionDigest.isNotBlank() && fact.revisionDigest != revisionsBeforeMore[fact.factId])) }
+                            fact.supportingEvidenceKeys.any { it !in evidenceBeforeMore.getValue(fact.factId) }) }
                 }
                 val addedFacts = story.facts.filter { it.evidenceSupported && it.factId !in factsBeforeMore }.map { it.factId }
                 val improvedFacts = story.facts.filter { fact -> fact.evidenceSupported && fact.factId in factsBeforeMore &&
                     (fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } ||
-                        (fact.revisionDigest.isNotBlank() && fact.revisionDigest != revisionsBeforeMore[fact.factId])) }.map { it.factId }
+                        fact.supportingEvidenceKeys.any { it !in evidenceBeforeMore.getValue(fact.factId) }) }.map { it.factId }
                 assertTrue("More returned no new supported fact or evidence", addedFacts.isNotEmpty() || improvedFacts.isNotEmpty())
                 assertEquals("More changed selected facts", selectedFactIds, story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId })
                 assertEquals("More rewrote publication text", textBeforeMore, story.draftText)
@@ -388,6 +389,8 @@ class LiveGoldenInstrumentedTest {
                 evidence["more_selection_and_draft_preserved"] = true
                 evidence["more_revisions_before"] = revisionsBeforeMore
                 evidence["more_revisions_after"] = story.facts.associate { it.factId to it.revisionDigest }
+                evidence["more_evidence_before"] = evidenceBeforeMore
+                evidence["more_evidence_after"] = story.facts.associate { it.factId to it.supportingEvidenceKeys.toSet() }
                 evidence["more_acceptance_status"] = "passed"
                 finishStage("passed")
                 return
