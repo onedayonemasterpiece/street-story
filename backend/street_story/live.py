@@ -825,13 +825,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                                        for name in unavailable))
         if capability == 'research':
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
-        elif capability == 'review':
-            overlay += '\nIndependent verification policy: ' + review_packets.REVIEW_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
             + '\nIf the request needs another stage, call continue_story first, rather than declaring '
               'the function unavailable. Stages: identity (object), research (facts), review (evidence), '
               'editor (selection/concept/text), publication (image/post). '
               'Changing stage is not consent for mutations.')
+        if capability == 'review':
+            configuration['system_instruction'] = (
+                'Current phase: independent verification of unverified candidates. '
+                + review_packets.REVIEW_CHECKS + '\n' + configuration['system_instruction']
+            )
         configuration['system_instruction'] += ('\nOnly on an explicit author request, continue_story with research_action=stop/resume '
             'and research_purpose=identity/facts/all controls the independent research queues and preserves progress. '
             'Microphone Stop does not stop background research. An ambiguous "stop" needs clarification about research versus microphone. '
