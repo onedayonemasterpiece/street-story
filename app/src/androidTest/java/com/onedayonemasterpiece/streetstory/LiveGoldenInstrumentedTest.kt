@@ -129,7 +129,9 @@ class LiveGoldenInstrumentedTest {
         require(baseUrl.startsWith("https://") && token.isNotBlank())
         val keepPublication = InstrumentationRegistry.getArguments().getString("keepPublication") == "true"
         val identityOnly = InstrumentationRegistry.getArguments().getString("identityOnly") == "true"
+        val moreOnly = InstrumentationRegistry.getArguments().getString("moreOnly") == "true"
         require(!identityOnly || !keepPublication)
+        require(!moreOnly || (!identityOnly && !keepPublication))
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
 
@@ -180,6 +182,8 @@ class LiveGoldenInstrumentedTest {
             "seed_urls_supplied" to false,
             "prepared_pcm_after_capture_boundary" to false,
             "legacy_voice_endpoint_used" to false,
+            "acceptance" to if (moreOnly) "more" else if (identityOnly) "identity" else "full_social",
+            "more_acceptance_status" to "not_run",
         )
         var publicationScheduled = false
         var cancelConfirmed = false
@@ -300,8 +304,7 @@ class LiveGoldenInstrumentedTest {
                 "Продолжи поиск фактов о подтверждённом объекте на фотографии. Прочитай текущее состояние темы, используй именно его подтверждённый POI ID и сохрани проверенные факты с источниками. Не выбирай факты и не готовь текст публикации.",
                 allowedNeedsReviewCodes = setOf("visual_stale"),
             ) {
-                live.snapshot().researchProgress?.active != true &&
-                    it.sourceCount > 0 && it.facts.count { fact -> fact.evidenceSupported } >= 2
+                it.sourceCount > 0 && it.facts.count { fact -> fact.eligibleForSelection } >= 2
             }
             assertTrue(story.sourceCount > 0)
             assertTrue(story.sources.all { !it.title.isNullOrBlank() && it.url.startsWith("https://") })
@@ -348,36 +351,47 @@ class LiveGoldenInstrumentedTest {
 
             capture("05-publication-text", story)
 
-            beginStage("more", 6L * 60 * 1000)
-            val textBeforeMore = requireNotNull(story.draftText)
-            val conceptBeforeMore = story.publicationConcept
-            val factsBeforeMore = story.facts.associate { it.factId to it.sources.map { source -> source.url }.toSet() }
-            val moreStarted = System.currentTimeMillis()
-            ownerText(live,
-                "Найди ещё полезные проверяемые факты о подтверждённом объекте. Прочитай полную накопленную историю фактов и источников, " +
-                    "продолжи незавершённые статьи и используй уже найденные материалы прежде нового поиска. " +
-                    "Сохрани новые подтверждённые факты в общей памяти POI и в этой истории. " +
-                    "Два выбранных факта, концепцию и текущий текст публикации оставь без изменений.", "more facts")
-            story = pollWithOwnerClarification(api, storyId, live, evidence, "more facts",
-                "Продолжи именно дополнительное исследование. Сохрани новые факты с evidence через продуктовые инструменты; " +
-                    "готовность в речи без сохранённых фактов недостаточна. Выбор, концепцию и текст публикации сохрани.",
-                allowedNeedsReviewCodes = setOf("visual_stale")) { candidate ->
-                candidate.facts.any { fact -> fact.evidenceSupported &&
-                    (fact.factId !in factsBeforeMore || fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) }) }
+            if (moreOnly) {
+                evidence["more_acceptance_status"] = "running"
+                beginStage("more", 6L * 60 * 1000)
+                val textBeforeMore = requireNotNull(story.draftText)
+                val conceptBeforeMore = story.publicationConcept
+                val factsBeforeMore = story.facts.associate { it.factId to it.sources.map { source -> source.url }.toSet() }
+                val revisionsBeforeMore = story.facts.associate { it.factId to it.revisionDigest }
+                val moreStarted = System.currentTimeMillis()
+                ownerText(live,
+                    "Найди ещё полезные проверяемые факты о подтверждённом объекте. Прочитай полную накопленную историю фактов и источников, " +
+                        "продолжи незавершённые статьи и используй уже найденные материалы прежде нового поиска. " +
+                        "Сохрани новые подтверждённые факты в общей памяти POI и в этой истории. " +
+                        "Два выбранных факта, концепцию и текущий текст публикации оставь без изменений.", "more facts")
+                story = pollWithOwnerClarification(api, storyId, live, evidence, "more facts",
+                    "Продолжи именно дополнительное исследование. Сохрани новые факты с evidence через продуктовые инструменты; " +
+                        "готовность в речи без сохранённых фактов недостаточна. Выбор, концепцию и текст публикации сохрани.",
+                    allowedNeedsReviewCodes = setOf("visual_stale")) { candidate ->
+                    candidate.facts.any { fact -> fact.evidenceSupported &&
+                        (fact.factId !in factsBeforeMore || fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } ||
+                            (fact.revisionDigest.isNotBlank() && fact.revisionDigest != revisionsBeforeMore[fact.factId])) }
+                }
+                val addedFacts = story.facts.filter { it.evidenceSupported && it.factId !in factsBeforeMore }.map { it.factId }
+                val improvedFacts = story.facts.filter { fact -> fact.evidenceSupported && fact.factId in factsBeforeMore &&
+                    (fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } ||
+                        (fact.revisionDigest.isNotBlank() && fact.revisionDigest != revisionsBeforeMore[fact.factId])) }.map { it.factId }
+                assertTrue("More returned no new supported fact or evidence", addedFacts.isNotEmpty() || improvedFacts.isNotEmpty())
+                assertEquals("More changed selected facts", selectedFactIds, story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId })
+                assertEquals("More rewrote publication text", textBeforeMore, story.draftText)
+                assertEquals("More changed publication concept", conceptBeforeMore, story.publicationConcept)
+                capture("05-more-facts-preserved-draft", story)
+                evidence["more_added_fact_ids"] = addedFacts
+                evidence["more_improved_fact_ids"] = improvedFacts
+                evidence["more_duration_ms"] = System.currentTimeMillis() - moreStarted
+                evidence["more_fact_count"] = story.facts.size
+                evidence["more_selection_and_draft_preserved"] = true
+                evidence["more_revisions_before"] = revisionsBeforeMore
+                evidence["more_revisions_after"] = story.facts.associate { it.factId to it.revisionDigest }
+                evidence["more_acceptance_status"] = "passed"
+                finishStage("passed")
+                return
             }
-            val addedFacts = story.facts.filter { it.evidenceSupported && it.factId !in factsBeforeMore }.map { it.factId }
-            val improvedFacts = story.facts.filter { fact -> fact.evidenceSupported && fact.factId in factsBeforeMore &&
-                fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } }.map { it.factId }
-            assertTrue("More returned no new supported fact or evidence", addedFacts.isNotEmpty() || improvedFacts.isNotEmpty())
-            assertEquals("More changed selected facts", selectedFactIds, story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId })
-            assertEquals("More rewrote publication text", textBeforeMore, story.draftText)
-            assertEquals("More changed publication concept", conceptBeforeMore, story.publicationConcept)
-            capture("05-more-facts-preserved-draft", story)
-            evidence["more_added_fact_ids"] = addedFacts
-            evidence["more_improved_fact_ids"] = improvedFacts
-            evidence["more_duration_ms"] = System.currentTimeMillis() - moreStarted
-            evidence["more_fact_count"] = story.facts.size
-            evidence["more_selection_and_draft_preserved"] = true
 
             // Full-social acceptance covers the owner MVP path only. Literal mode,
             // protected-span editing and undo have dedicated tests and must not
@@ -510,6 +524,7 @@ class LiveGoldenInstrumentedTest {
             finishStage("passed")
         } finally {
             finishStage("failed")
+            if (evidence["more_acceptance_status"] == "running") evidence["more_acceptance_status"] = "failed"
             evidence["last_stage"] = activeStage
             evidence["route_duration_ms"] = System.currentTimeMillis() - routeStartedAt
             if (publicationScheduled && !cancelConfirmed && !keepPublication) {

@@ -171,6 +171,26 @@ class HeadlessFacts:
                 'SELECT * FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url', (run_id,))]
         search_receipt = {}
         if not sources:
+            # Attach acquisition hints before requiring an external discovery.
+            # The reader still checks article subject/content and reuses only
+            # exact frozen version/scope checkpoints; URL familiarity is no verdict.
+            with self.service.store.connection() as db:
+                keys = memory_keys(db, research['visual_identity'])
+                placeholders = ','.join('?' for _ in keys)
+                remembered = list(db.execute(
+                    f'SELECT url,title,last_seen_at AS seen FROM poi_research_sources WHERE poi_key IN ({placeholders}) '
+                    'UNION ALL SELECT s.url,s.title,s.updated_at AS seen FROM research_run_sources s '
+                    f'JOIN research_runs r ON r.run_id=s.run_id WHERE r.poi_key IN ({placeholders}) '
+                    'ORDER BY seen DESC,url', (*keys, *keys))) if keys else []
+                by_url = {}
+                for row in remembered:
+                    by_url.setdefault(row['url'], {'url': row['url'], 'title': row['title']})
+                sources = list(by_url.values())
+            if sources:
+                search_receipt = {'backend': 'poi_memory'}
+                LOG.info('street_story_fact_sources_reused story_id=%s run_id=%s sources=%s',
+                         story['id'], run_id, len(sources))
+        if not sources:
             search = getattr(provider, 'search_fact_articles', None)
             if not callable(search):
                 search = getattr(provider, 'search_articles', None)

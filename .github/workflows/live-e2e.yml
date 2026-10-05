@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       acceptance:
-        description: 'smoke = backend/providers through verified image; full_social = Android client through native Telegram schedule/readback/cancel'
+        description: 'full_social = complete Android publication; more = independent fact accumulation; identity/readback = focused checks'
         required: true
         default: smoke
         type: choice
         options:
           - smoke
           - full_social
+          - more
           - identity
           - readback
       keep_publication:
@@ -201,7 +202,7 @@ jobs:
 
       - uses: actions/setup-java@v4
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         with:
           distribution: temurin
@@ -209,19 +210,19 @@ jobs:
 
       - uses: android-actions/setup-android@v4
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
 
       - uses: gradle/actions/setup-gradle@v4
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         with:
           gradle-version: '8.13'
 
       - name: Restore canonical signing key for live emulator APKs
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
           SIGNING_KEYSTORE_B64: ${{ secrets.STREET_STORY_SIGNING_KEYSTORE_B64 }}
@@ -238,7 +239,7 @@ jobs:
 
       - name: Build exact-HEAD Android test APKs
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
           STREET_STORY_SIGNING_STORE_FILE: ${{ runner.temp }}/street-story-signing/owner-signing.p12
@@ -250,7 +251,7 @@ jobs:
 
       - name: Prepare licensed photo and prepared-audio fixtures
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         env:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
@@ -340,7 +341,7 @@ jobs:
 
       - name: Enable KVM for Android live E2E
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         run: |
           test -c /dev/kvm
@@ -349,9 +350,10 @@ jobs:
       - name: Android client -> live backend -> native Telegram golden run
         env:
           LIVE_E2E_KEEP_PUBLICATION: ${{ inputs.keep_publication && 'true' || 'false' }}
+          LIVE_E2E_MORE_ONLY: ${{ inputs.acceptance == 'more' && 'true' || 'false' }}
           LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
         if: >-
-          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'identity')) ||
+          (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||
           (github.event_name == 'pull_request' && github.event.label.name == 'live-e2e-full-social')
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:

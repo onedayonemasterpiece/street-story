@@ -6,8 +6,11 @@ ARTIFACT_DIR="${LIVE_E2E_ARTIFACT_DIR:-backend/live-e2e-artifacts}"
 FIXTURE_DIR="${LIVE_E2E_FIXTURE_DIR:-live-android-fixtures}"
 KEEP_PUBLICATION="${LIVE_E2E_KEEP_PUBLICATION:-false}"
 IDENTITY_ONLY="${LIVE_E2E_IDENTITY_ONLY:-false}"
+MORE_ONLY="${LIVE_E2E_MORE_ONLY:-false}"
 [[ "$KEEP_PUBLICATION" == true || "$KEEP_PUBLICATION" == false ]]
 [[ "$IDENTITY_ONLY" == true || "$IDENTITY_ONLY" == false ]]
+[[ "$MORE_ONLY" == true || "$MORE_ONLY" == false ]]
+[[ "$MORE_ONLY" != true || ( "$KEEP_PUBLICATION" == false && "$IDENTITY_ONLY" == false ) ]]
 [[ "$IDENTITY_ONLY" != true || "$KEEP_PUBLICATION" != true ]]
 export LIVE_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
 
@@ -91,6 +94,7 @@ adb shell am instrument -w \
   -e class com.onedayonemasterpiece.streetstory.LiveGoldenInstrumentedTest \
   -e keepPublication "$KEEP_PUBLICATION" \
   -e identityOnly "$IDENTITY_ONLY" \
+  -e moreOnly "$MORE_ONLY" \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 # Preserve bounded evidence on failure; never export token/configuration stores.
@@ -165,14 +169,24 @@ if os.environ.get('LIVE_E2E_IDENTITY_ONLY', 'false') == 'true':
     if not any(item.get('stage') == '02-object-identified' for item in evidence.get('stage_screenshots', [])):
         raise SystemExit('Android headless identity lacks current UI readback')
     raise SystemExit(0)
-keep = os.environ.get('LIVE_E2E_KEEP_PUBLICATION', 'false') == 'true'
-if evidence.get('publication_kept') is not keep:
-    raise SystemExit('Android golden publication mode mismatch')
-if keep:
-    if evidence.get('destination_alias') != 'street_story_e2e_20260928_tg' or not evidence.get('publication_id'):
-        raise SystemExit('Owner-visible mode lacks exact test-group publication receipt')
-elif evidence.get('cancel_confirmed') is not True:
-    raise SystemExit('Android golden run did not confirm native cancellation cleanup')
+if os.environ.get('LIVE_E2E_MORE_ONLY', 'false') == 'true':
+    if evidence.get('acceptance') != 'more' or evidence.get('more_acceptance_status') != 'passed':
+        raise SystemExit('Independent MORE acceptance did not pass')
+    if not (evidence.get('more_added_fact_ids') or evidence.get('more_improved_fact_ids')):
+        raise SystemExit('MORE lacks saved fact/evidence growth')
+    if evidence.get('more_selection_and_draft_preserved') is not True or evidence.get('publication_id'):
+        raise SystemExit('MORE changed editorial state or published')
+else:
+    keep = os.environ.get('LIVE_E2E_KEEP_PUBLICATION', 'false') == 'true'
+    if evidence.get('publication_kept') is not keep:
+        raise SystemExit('Android golden publication mode mismatch')
+    if keep:
+        if evidence.get('destination_alias') != 'street_story_e2e_20260928_tg' or not evidence.get('publication_id'):
+            raise SystemExit('Owner-visible mode lacks exact test-group publication receipt')
+    elif evidence.get('cancel_confirmed') is not True:
+        raise SystemExit('Android golden run did not confirm native cancellation cleanup')
+    if evidence.get('more_acceptance_status') != 'not_run':
+        raise SystemExit('Full publication misrepresents independent MORE acceptance')
 if evidence.get('physical_mic') is not False or evidence.get('prepared_pcm_after_capture_boundary') is not True:
     raise SystemExit('Android golden evidence misrepresents prepared PCM acceptance')
 if evidence.get('legacy_voice_endpoint_used') is not False:

@@ -5,7 +5,7 @@ from contextvars import ContextVar
 import httpx
 import pytest
 
-from street_story.errors import RetryableProviderError
+from street_story.errors import PermanentProviderError, RetryableProviderError
 from street_story.research_adapter import ProductResearchAdapter
 from test_gigachat_research import Admission, PASSAGE, Provider, client
 from test_research_control import fixture
@@ -54,7 +54,7 @@ async def test_local_validation_failure_creates_safe_new_attempt_after_input_fix
     provider, admission = EmptyFindings(), Admission()
     adapter, story = setup(tmp_path, provider, admission)
     try:
-        with pytest.raises(RetryableProviderError, match='gigachat_research_waiting'):
+        with pytest.raises(PermanentProviderError, match=code):
             await adapter.extract_fact_page(PAGE, story, invalid_context)
         before = receipts(adapter)
         assert len(before) == 1
@@ -180,3 +180,44 @@ async def test_historical_unknown_receipt_is_never_reclassified_or_resubmitted(t
         assert not provider.requests and not admission.bindings
     finally:
         await adapter.giga.aclose()
+
+
+@pytest.mark.asyncio
+async def test_configured_but_unavailable_giga_uses_only_qualified_text_fallback(tmp_path):
+    from types import SimpleNamespace
+    adapter, story = setup(tmp_path, EmptyFindings(), Admission(denied=True))
+    adapter.client = SimpleNamespace(endpoint='http://existing-opencode:4097', model_id='qualified-text')
+    calls = []
+    async def fallback(capsule, page, story):
+        calls.append(capsule)
+        return {'result': {'facts': []}, 'receipt': {'provider_id': 'qualified-text'}}
+    adapter._extract_opencode_page = fallback
+    try:
+        with pytest.raises(RetryableProviderError):
+            await adapter.extract_fact_page(PAGE, story, {'coverage_goal': 'Read'})
+        assert not calls
+        adapter.service.store.cache_put('research-text-verification-v1', {
+            'model_id': adapter.client.model_id, 'endpoint': adapter.client.endpoint,
+            'semantic_contract_verified': True}, ttl_seconds=3600)
+        result = await adapter.extract_fact_page(PAGE, story, {'coverage_goal': 'Read'})
+        assert len(calls) == 1 and result['result']['facts'] == []
+        assert all(item['provider_send_state'] == 'not_sent' for item in receipts(adapter))
+    finally:
+        await adapter.giga.aclose()
+
+
+def test_compact_capsule_preserves_whole_claims_and_pages_all_inventory():
+    from street_story.research_adapter import fact_page_capsule
+    text = 'В 2027 году планируют открыть выставку. ' * 10
+    facts = [{'fact_id': f'f{i}', 'text': text, 'sources': [{'supports': ['x' * 5000]}]} for i in range(80)]
+    capsule = fact_page_capsule(PAGE, {
+        'confirmed_identity': {'status': 'match', 'candidate_id': 'wiki:77', 'candidate_name': 'Gate',
+                               'candidates': [{'runtime_receipts': 'x' * 16000}]},
+        'known_facts': facts[:50], '_known_fact_inventory': facts, 'prior_poi_facts': facts[:60]})
+    public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
+    assert len(json.dumps(public, ensure_ascii=False).encode()) < 65536
+    assert len(capsule['_known_fact_inventory']) == 80
+    assert all(item['text'] == text for item in capsule['_known_fact_inventory'])
+    assert capsule['context']['known_inventory_complete'] is False
+    assert capsule['context']['known_inventory_next_offset'] == len(capsule['known_fact_inventory'])
+    assert 'known_facts' not in capsule['context'] and 'prior_poi_facts' not in capsule['context']

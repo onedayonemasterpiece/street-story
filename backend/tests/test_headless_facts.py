@@ -296,3 +296,22 @@ async def test_wrong_subject_or_unreadable_source_never_imports_claims(tmp_path,
                 assert run_manifest(db, 'headless-run')['run']['state'] == 'partial'
     finally:
         await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_known_poi_article_is_read_without_fresh_search_when_search_is_unavailable(tmp_path):
+    svc, job, researcher, reader, fetches = await fixture(tmp_path)
+    async def unavailable(*args):
+        raise AssertionError('Fresh search must not gate a known unread article')
+    researcher.search_articles = unavailable
+    with svc.store.tx() as db:
+        db.execute('INSERT INTO poi_research_sources(poi_key,url,title,last_query,supports_json,first_seen_at,last_seen_at) '
+                   'VALUES(?,?,?,?,?,?,?)', ('wiki:77', URL, 'Remembered article', 'prior query', '[]', svc.store.now(), svc.store.now()))
+    try:
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert researcher.searches == 0 and len(fetches) == 1
+        assert svc.story(job['story_id'])['facts'][0]['evidence_supported']
+        with svc.store.connection() as db:
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
+    finally:
+        await reader.search_http.aclose()
