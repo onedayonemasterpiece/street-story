@@ -50,6 +50,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             except ConflictError:
                 return
             raise
+        if unit.get('reconciled_completed'):
+            if not unit['matched']:
+                raise RetryableProviderError('identity_background_next_reference', retry_at=self.service.store.now()+3)
+            return
         pending = (session.state.get('visual_comparison') or {}).get('pending')
         if not pending:
             record_identity_event(self.service,story['id'],'identity_background_waiting',{

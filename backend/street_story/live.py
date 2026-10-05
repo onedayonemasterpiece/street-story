@@ -793,13 +793,48 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         configuration['functions'] = [f for f in configuration['functions'] if f['name'] in self.CAPABILITY_TOOLS[capability]] + [router]
         configuration['search_enabled'] = False
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
+        core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
+        identity, remainder = remainder.split('Research and durable evidence:', 1)
+        research, editorial = remainder.split('Concept, editing and publication:', 1)
         if capability == 'identity':
-            configuration['system_instruction'] = (SYSTEM_INSTRUCTION.split('Research and durable evidence:')[0]
-                .replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
-                         'If the API search is unavailable, report its error and retain the queue for continuation;')
-                + '\nAfter a proved match use continue_story stage=research for facts, editor for concept/text, publication for visuals/post. Never invent facts or perform publication before the separate author confirmation.')
+            overlay = identity.replace('resolve_place/search_web', 'a search tool').replace(
+                'final generate_visual or prepare_publication', 'final visuals or publication'
+            ).replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
+                      'If the API search is unavailable, report its error and retain the queue for continuation;')
+        elif capability in {'research', 'review'}:
+            overlay = research
+        elif capability == 'editor':
+            overlay = editorial
         else:
-            configuration['system_instruction'] += '\nUse continue_story to access another stage: research, review, editor, publication or identity. Changing stage is not consent for mutations.'
+            overlay = (
+                "Use the saved confirmed identity, selected eligible facts, concept and draft. "
+                "Visual-only changes preserve the text; text changes need the editor stage. "
+                "generate_visual is only for an explicit request, using the original photo and "
+                "all selected facts; preserve dates and essential qualifications in readable annotations. "
+                "Do not regenerate a reviewed image merely to publish it. "
+                "Publication is two-step: prepare_publication shows the exact text, image, destinations "
+                "and time; confirm_publication needs a separate unambiguous author confirmation "
+                "of that card. Never publish on preparation alone. Read state after an unknown result "
+                "before taking another action."
+            )
+        # Do not advertise functions belonging to another bundle. The model
+        # reaches those functions through the router within the same conversation.
+        unavailable = {f['name'] for f in FUNCTIONS} - self.CAPABILITY_TOOLS[capability]
+        overlay = '\n'.join(line for line in overlay.splitlines()
+                            if not any(re.search(r'\b' + re.escape(name) + r'\b', line)
+                                       for name in unavailable))
+        if capability == 'research':
+            overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
+        configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
+            + '\nIf the request needs another stage, call continue_story first, rather than declaring '
+              'the function unavailable. Stages: identity (object), research (facts), review (evidence), '
+              'editor (selection/concept/text), publication (image/post). '
+              'Changing stage is not consent for mutations.')
+        if capability == 'review':
+            configuration['system_instruction'] = (
+                'Current phase: independent verification of unverified candidates. '
+                + review_packets.REVIEW_CHECKS + '\n' + configuration['system_instruction']
+            )
         configuration['system_instruction'] += ('\nOnly on an explicit author request, continue_story with research_action=stop/resume '
             'and research_purpose=identity/facts/all controls the independent research queues and preserves progress. '
             'Microphone Stop does not stop background research. An ambiguous "stop" needs clarification about research versus microphone. '

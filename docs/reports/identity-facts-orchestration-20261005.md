@@ -1,6 +1,6 @@
 # Street Story: идентификация и накопительное исследование, 5 октября 2026
 
-Интеграционный владелец один. База — проверенный релиз `57df972617494ca93a808b7c6a5b783969886655`, ветка поставки `work/street-story-mvp-20260908`. Текущий интеграционный релиз `c6c56be9f865c7f70d8aefefbe6a273951560672` выпущен и подтверждён обоими health endpoints; сохранность выбранных фактов, draft/source SHA исходной истории проверена. Компонентные проверки не являются сквозной Android-приёмкой.
+Интеграционный владелец один. База — проверенный релиз `57df972617494ca93a808b7c6a5b783969886655`, ветка поставки `work/street-story-mvp-20260908`. Текущий интеграционный релиз `315e14c5274493fde360db2bbd8d82197a20bcad` выпущен и подтверждён обоими health endpoints; сохранность выбранных фактов, draft/source SHA исходной истории проверена. Компонентные проверки не являются сквозной Android-приёмкой. По последнему уточнению владельца retained пост в тестовой группе допускается **только как результат полного продуктового сценария**; ручная/agent/API отправка готовой картинки не является приёмкой и не выполняется.
 
 Уточнения владельца имеют приоритет над прежними пилотными ограничениями: нет лимита «два поиска» и общего потолка источников. Ограничены ресурсные порции, сохраняются все найденные URL, unfinished cursors и завершённые scopes. История помогает модели расширять поиск, а не повторять обработанное. При Stop/Resume сохраняются очереди и результаты. Остановка микрофона управляет разговором, явная остановка исследования — отдельными назначениями identity/facts.
 
@@ -11,7 +11,7 @@
 | ID | Статус этого среза | Доказательство и оставшаяся проверка |
 |---|---|---|
 | D1 | pass | Текущая база и истории сохранены; один интеграционный владелец, exactc6c56be runtime health и readback исходных историй. |
-| D2 | partial | Реальный независимый OpenCode search: 4 вызова, 26 URL; та же завершённая сессия прочитана без нового inference. Natural Android flow ещё требуется. |
+| D2 | partial | В natural Android story_fc8a4ab765ce989c77e0179b после выключения теста и без Live/микрофона тот же OpenCode4097 выполнил четыре actual websearch и сохранил шесть URL до подтверждения POI. call/message IDs и raw-output SHA сверены. Общий natural flow ещё не завершён. |
 | D3 | partial | Реальные SOURCE/REF Luna-контроли: парк mismatch, полезный поздний кадр match; недоставленные pixels отклоняются регрессиями. Требуется новый runtime readback счётчиков. |
 | D4 | partial | Реальный headless match commonscat:a785ed5cd5fea44c/Sackheimgate сохранил canonical poi_ss_3c64bbf08a2f5fe9c2b3bc33 исходного wiki:381537 и переиспользовал 12 фактов. Альтернативы вне REF-batch и article→POI отдельно покрыты регрессиями; natural Android подтверждение ещё требуется. |
 | D5 | partial | Принудительного owner_confirmed, снижения порога или seed URL нет. Natural Android automatic match ещё не подтверждён. |
@@ -21,7 +21,7 @@
 | D9 | partial | Общий frozen acquisition и single-flight text/media fetch; scopes сохраняют complete/partial раздельно. Component regression проходит; реальная cross-purpose трасса требуется. |
 | D10 | partial | GigaChat прошёл реальные modality/subject/known-claim контроли; 71-фактный POI-memory regression сохраняет выбор, концепцию и draft. Natural «ещё» с Android-проекцией требуется. |
 | D11 | partial | SDK 0.1.14 и additive migrations 009–010 поставлены в общую authority; private wheel зафиксирован digest. Provider/source/usage receipts сохраняются. Принятые runtime batches ещё требуются. |
-| D12 | partial | Оригинальная operation авторитетно закрыта failed/imagegen_not_dispatched, retry_safe=true, generation_dispatch=not_sent; исходный receipt неизменён, fence sealed. VibePublish4c13d3 выпущен без CLI version gate; отдельный новый запрос в прежней истории получил реальные native thread/turn IDs. Изображение ещё ожидается. Signed APK exactc6c56be опубликован; natural Android и retained Telegram/readback ещё не завершены. |
+| D12 | partial | Оригинальная operation авторитетно закрыта failed/imagegen_not_dispatched, retry_safe=true, generation_dispatch=not_sent; receipt неизменён. VibePublish1ff8126 выпущен без CLI version gate и с no-crop composition. Отдельная explicit visual correction в прежней истории завершена: обе выбранные фактические подписи читаемы, draft/selection сохранены. Full product flow остановился на publication capability RESOURCE_TOKEN_BUDGET; пост не отправлен. |
 
 ## Проверки и доказательства
 
@@ -65,4 +65,22 @@ Read-only расследование трёх исторических Giga `unk
 
 Локальный Telegram readback identity проверен через canonical `telegram-e2e-run`, источник `/home/dev/.env:TELEGRAM_E2E`, без подмены publishing/knowledge-base ролей: authorization и get_me успешны, writes=0. Это готовность readback, не доказательство публикации.
 
-Первый незавершённый шаг сквозной приёмки — natural Android после исправления probe. Далее нужны no-crop recomposition, retained Telegram/native readback и фактическое «ещё». Стоимость новой генерации пока unknown, проверенный no-crop результат и retained Telegram post пока отсутствуют.
+Этот предыдущий срез заменён дальнейшими фактическими наблюдениями ниже. Стоимость модельных генераций пока unknown; retained Telegram post отсутствует.
+
+## Срез после замечаний владельца: факты на изображении и полный пайплайн
+
+- Релизы Street Story315e14c и VibePublish1ff8126 выпущены в существующие службы; CI обеих exacttested ревизий прошёл. Local no-crop recomposition завершена без нового inference, но владелец обнаружил неполноту надписей: голые даты и общий «памятник» не передают две выбранные формулировки.
+- Проверка frozen brief3794chars доказала передачу обоих фактов полностью; проблема была в редакционном сокращении моделью. Через normal visual endpoint выполнен отдельный explicit correction intent, operation op_89c57b3a309349039cb76229cd9698bd verified. Финальный asset SHA `c3dbaa76a051a9cf718d5704e6721a41668fb5711bef97b9133c0abb1722d636` просмотрен: «Здание построено в 1848–1853 годах» и «Памятник истории и культуры федерального значения» полностью читаются. Исходные draft/source/selected IDs сохранены. Старый knowncompleted исход не повторялся вслепую.
+- Через обычный WSS product client первая попытка prepare не вызвала publication tool; вторая correctly requested continue_story stage=publication, но setup25763units получил RESOURCE_TOKEN_BUDGET. Обе сессии закрыты, publication state отсутствует. Владелец запрещает обход этого шага ручной отправкой: прямой API shortcut отменён **до любого publish call**.
+- Scoped prompt fix использует только текущий capability overlay, router остаётся доступен. Publication setup уменьшен до5617bytes; shared transport, sticky key и authority limits сохранены. Fact brief больше не обрезает утверждения на240chars и не пропускает выбранные факты после шестого. Неумещающийся обязательный список отклоняется до inference. **63 focused tests / Ruff passed**, runtime release этих дальнейших исправлений ещё требуется.
+- Natural Android37313882402 exact315e14c создал историю и завершился timeout5min needs_review. Headless работа продолжилась без Live/микрофона: actual OpenCode four calls13:15:00–13:15:22UTC, six URLs. Luna завершила MATCH0.91, но commonqueue отклонила reference provenance. Точный missing article/source binding исследуется; forced match и ручная правка БД запрещены. Retained read-only `natural-identity-315e14c-D2-readonly-evidence.json` содержит correlation и SHA проверки.
+
+## Порядок в checkout’ах
+
+Консолидация завершена: единственный Street Story checkout — `/home/dev/projects/street-story`. По требованию владельца проверены пять project checkout’ов и25 inactive Source Handoff worktree. Все124 изменённых handoff файла сохранены local-only refs `archive/street-story/src_*`, после чего штатный DevCoveer GC удалил25 clean inactive worktree. Ещё27 legacy local source files сохранены в двух archive refs; owner Telegram routing перенесён в текущий исходник. Старые Sackheim/POI/deploy/integration worktree убраны, commits и локальные исходники не потеряны. Диагностические данные перемещены в retained центральный artifact `20261005T132754Z-legacy-checkout-reconciliation-20261005`; `consolidation-final-readback.json` подтверждает один worktree,29 удалённых копий,151 сохранённый файл и27 доступных archive refs. Неиспользуемый checkout test venv/bytecode изолирован отдельно как temporary с минимальным поддерживаемым CLI сроком1day; production venv/data не затронуты. Archives не отправляются в remote автоматически.
+
+## Проверка сохранённого завершённого ответа
+
+`53187ea` сохраняет article/source provenance для Wikipedia illustrations, включая исходный URL, article SHA и SHA изображения после нормализации. `397c935` добавляет в существующую очередь повторную проверку только известного completed native MATCH, отклонённого из-за `reference_provenance_missing`. Проверяются исходная статья, извлечённый REF, SOURCE/REF sheet, catalog/schema logical unit, profile receipt, thread/turn, generation/control и lease; результат проходит прежний общий validator. Изменённые или отсутствующие доказательства сохраняют waiting без нового inference. **121 targeted tests / Ruff passed**, включая competing alternative, Stop и lease-loss.
+
+Read-only проверка реальной story_fc8a4ab765ce989c77e0179b подтвердила совпадение logical_id/request_id, retained native sheet SHA, source SHA, article SHA/title/original media и control scope. Запись runtime и новый model call для этой проверки не выполнялись. В полном локальном backend прогоне57f5204:929 passed /1 failed; единственная регрессия review phase prefix исправлена,18 review/control tests прошли. Полный CI окончательного commit и runtime recovery ещё требуются. D1–D12 остаются partial; публикация через полный продуктовый сценарий не подтверждена.

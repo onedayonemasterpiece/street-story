@@ -42,9 +42,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         template, _ = self._prompt_template()
         selected = context.get("selected_facts") if isinstance(context.get("selected_facts"), list) else []
         notes: list[str] = []
+        optional_notes: list[str] = []
         place = str(story.get("place_name") or context.get("place_name") or "").strip()
         if place:
-            notes.append(f"Место: {place}.")
+            optional_notes.append(f"Место: {place}.")
         visual_instruction = str(context.get("visual_instruction") or "").strip()
         if visual_instruction:
             notes.append("Текущая визуальная правка автора: " + visual_instruction[:600])
@@ -54,23 +55,27 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if isinstance(item, dict) and str(item.get("text") or "").strip()
         ]
         if facts:
+            notes.append("Проверенные факты: " + "\n".join(f"• {fact}" for fact in facts))
             notes.append(
-                "Проверенные факты: " + " ".join(f"• {fact[:240]}" for fact in facts[:6])
+                "Обязательное содержание инфографики: каждый выбранный факт должен быть "
+                "передан читаемой подписью. Сохрани смысл, даты и существенные уточнения "
+                "каждого факта; одни даты без пояснения или общий эпитет не заменяют факт. "
+                "Перед завершением проверь подписи по всему списку фактов."
             )
         concept = str(context.get("publication_concept") or "").strip()
         if concept:
-            notes.append("Концепция публикации: " + concept[:1200])
+            optional_notes.append("Концепция публикации: " + concept[:1200])
         intent = str(context.get("user_voice_intent") or "").strip()
         if intent:
-            notes.append("Авторское наблюдение: " + intent[:600])
-        if not notes:
+            optional_notes.append("Авторское наблюдение: " + intent[:600])
+        if not notes and not optional_notes:
             notes.append(
                 "Передай атмосферу и узнаваемую городскую среду без выдуманных исторических утверждений."
             )
 
         themes = "\n".join(notes)
         language_rule = ""
-        if re.search(r"[А-Яа-яЁё]", themes):
+        if re.search(r"[А-Яа-яЁё]", themes + "\n".join(optional_notes)):
             language_rule = (
                 "\n\nLanguage rule: all visible handwritten city notes and annotations in the "
                 "generated image must be in Russian. Keep them concise and legible."
@@ -84,7 +89,18 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "Street Story owner image prompt exceeds the VibePublish brief contract",
             )
         if len(themes) > dynamic_budget:
-            themes = themes[:dynamic_budget].rstrip()
+            raise InvalidStateError(
+                "visual_fact_annotations_too_long",
+                "Selected facts and the visual instruction exceed the image brief capacity; "
+                "revise the visual instruction or fact selection before generation.",
+            )
+        # Editorial context may be shortened. Selected evidence and the current
+        # author correction must reach the model intact, including late qualifiers.
+        for note in optional_notes:
+            remaining = dynamic_budget - len(themes) - (1 if themes else 0)
+            if remaining <= 0:
+                break
+            themes += ("\n" if themes else "") + note[:remaining]
 
         brief = template.replace(self.PROMPT_TOKEN, themes) + language_rule
         if len(brief) > self.VIBEPUBLISH_BRIEF_LIMIT:
