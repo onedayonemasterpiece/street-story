@@ -119,10 +119,14 @@ async def test_completed_native_pixels_reused_after_stop_resume_with_new_queue_i
     first = await adapter.visual_verdict(b'pixels', story, {}, canonical(context))
     stop_research(service, sid, purpose='identity')
     resume_research(service, sid, purpose='identity')
-    second = await adapter.visual_verdict(b'pixels', {**story, '_identity_research_control_revision': 2}, {},
+    with service.store.connection() as db:
+        import json
+        state = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+    resumed = {**story, '_identity_research_control_revision': state['research_controls']['identity']['revision']}
+    second = await adapter.visual_verdict(b'pixels', resumed, {},
                                           canonical({**context, 'comparison_id': 'new-lease', 'remaining_illustrations': 8}))
     assert first['result'] == second['result'] and len(calls) == 1
-    await adapter.visual_verdict(b'changed-pixels', story, {}, canonical(context))
+    await adapter.visual_verdict(b'changed-pixels', resumed, {}, canonical(context))
     assert len(calls) == 2
 
 

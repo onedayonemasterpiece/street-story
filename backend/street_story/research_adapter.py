@@ -457,6 +457,9 @@ class ProductResearchAdapter:
             binding, saved = self.attempt(story, 'vision_native', unit)
             if saved:
                 return {'result': saved['result'], 'receipt': saved}
+            reused = self.reuse_native_verdict(binding, unit, snapshot, schema, context)
+            if reused:
+                return {'result': reused['result'], 'receipt': reused}
             try:
                 result = await self.native_vision.compare_visual(snapshot, story, schema, context, binding)
                 result['receipt']['availability_failures'] = failures
@@ -473,6 +476,56 @@ class ProductResearchAdapter:
             output = io.BytesIO()
             image.save(output, format='PNG', optimize=True)
         return await self.compare_image(output.getvalue(), story, schema, context)
+
+    def reuse_native_verdict(self, binding, unit, snapshot, schema, context):
+        """Reuse completed exact comparisons; an unknown turn still reconciles.
+
+        The legacy logical digest includes the source story ID. Reconstruct it
+        with that ID to verify the complete pixels/context/schema unit without
+        treating a shared photo or POI name as sufficient proof.
+        """
+        from jsonschema import Draft202012Validator
+        from .native_vision import MODEL, TRANSPORT, visual_request
+        image_sha = hashlib.sha256(snapshot).hexdigest()
+        self.guard_binding(binding)
+        with self.service.store.tx() as db:
+            current = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                 (binding['attempt_id'],)).fetchone()
+            pending = json.loads(current['receipt_json']) if current else {}
+            if pending.get('phase') != 'created' or pending.get('thread_id') or pending.get('turn_id'):
+                return None
+            for row in db.execute("SELECT a.* FROM research_provider_attempts a JOIN stories s ON s.id=a.story_id "
+                                  "WHERE a.role='vision_native' AND s.photo_sha256=? AND a.story_id<>? ORDER BY a.updated_at DESC",
+                                  (binding['photo_sha256'], binding['story_id'])):
+                prior = json.loads(row['receipt_json'])
+                origin = prior.get('binding') or {}
+                expected = hashlib.sha256(canonical([row['story_id'], binding['photo_sha256'],
+                    origin.get('generation', 0), 'vision_native', unit]).encode()).hexdigest()
+                if (row['logical_id'] != expected or prior.get('phase') != 'completed'
+                        or prior.get('reused_from') or prior.get('model') != MODEL
+                        or prior.get('transport') != TRANSPORT or prior.get('provider') != 'codex_native'
+                        or prior.get('profile_verified') is not True or not prior.get('thread_id') or not prior.get('turn_id')
+                        or prior.get('photo_sha256') != binding['photo_sha256']
+                        or prior.get('model_image_sha256') != image_sha):
+                    continue
+                contract, prompt = visual_request(schema, json.loads(context))
+                prompt_sha = hashlib.sha256(prompt.encode()).hexdigest()
+                if (prior.get('prompt_sha256') != prompt_sha
+                        or not Draft202012Validator(contract).is_valid(prior.get('result'))):
+                    continue
+                receipt = {key: prior[key] for key in ('provider', 'model', 'transport', 'photo_sha256',
+                    'model_image_sha256', 'prompt_sha256', 'result', 'profile_verified')}
+                receipt.update(binding=dict(binding), phase='completed', generation=binding['generation'],
+                    inference_performed=False, usage={'totalTokens': 0, 'cost': 0},
+                    reused_from={'attempt_id': row['attempt_id'], 'story_id': row['story_id'],
+                                 'thread_id': prior['thread_id'], 'turn_id': prior['turn_id'],
+                                 'usage': prior.get('usage', {'cost': 'unknown'})})
+                db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                           (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+                LOG.info('street_story_native_comparison_reused story_id=%s attempt_id=%s origin_attempt_id=%s image_sha256=%s',
+                         binding['story_id'], binding['attempt_id'], row['attempt_id'], image_sha)
+                return receipt
+        return None
 
 
 def semantic_visual_context(context):
