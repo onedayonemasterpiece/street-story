@@ -1015,6 +1015,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self._persist_live_message(session, "assistant", text)
 
         if kind in {"error", "closed"}:
+            self._cancel_identity_waiter(session)
             self._pause_research(session, "live_" + kind + "_resume_required")
         if kind in {"turn_complete", "interrupted", "error", "closed"}:
             self._finalize_live_message(session)
@@ -1111,6 +1112,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         )
         self._send_visual_snapshot(session)
 
+        self._watch_identity_ready(session)
+
     def on_resumed(self, session) -> None:
         record_live_diagnostic(
             self.service,
@@ -1122,6 +1125,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         )
         self._send_visual_snapshot(session)
         self._send_pending_comparison(session)
+        self._watch_identity_ready(session)
         self.emit(session, {"type": "product_state", "state": self._compact_context(self._topic_state(session.resource_id))})
 
     def _pause_research(self, session, reason):
@@ -1136,6 +1140,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                                "WHERE run_id=? AND story_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (reason, self.service.store.now(), run_id, session.resource_id))
 
     def on_stopped(self, session) -> None:
+        self._cancel_identity_waiter(session)
         self._pause_research(session, "live_stopped_resume_required")
 
     @staticmethod

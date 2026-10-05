@@ -5,10 +5,12 @@ the source and references to one image; the Live tool records the model verdict.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
 import json
+import time
 import uuid
 
 from PIL import Image, ImageDraw, ImageOps
@@ -123,6 +125,8 @@ class LiveVisualComparisonMixin:
         return result
 
     def _continue_identity(self, session):
+        if getattr(session, 'closed', False):
+            return
         _story, research = self.service._identity_snapshot(session.resource_id)
         state = session.state.get('visual_comparison') or research.get('visual_search_operation') or {}
         if state.get('pending'):
@@ -132,15 +136,16 @@ class LiveVisualComparisonMixin:
             return
         now = self.service.store.now()
         pages = state.get('sources') or {}
-        available = (not state and any(c.get('reference_image_urls') for c in identity.get('candidates', []))) or bool(state.get('queue')) or any(p['status'] == 'pending' or
+        unread_candidates = [c for c in identity.get('candidates', [])
+            if c.get('reference_image_urls') and c.get('url') not in pages]
+        available = bool(unread_candidates) or bool(state.get('queue')) or any(p['status'] == 'pending' or
             (p['status'] == 'partial' and p.get('attempts', 0) < 10 and p.get('retry_at', 0) <= now)
-            for p in pages.values()) or any(c.get('discovery') == 'web_article_media' and c.get('url') not in pages
-                for c in identity.get('candidates', []))
+            for p in pages.values())
         if not available:
             return
         token = canonical([len(state.get('seen_images', [])), len(state.get('queue', [])),
             [(url, p.get('status'), p.get('attempts')) for url, p in pages.items()],
-            [c.get('candidate_id') or c.get('url') for c in identity.get('candidates', [])] if not state else [],
+            [c.get('candidate_id') or c.get('url') for c in unread_candidates],
             [(query, result.get('status'), result.get('retry_at')) for query, result in
                 (research.get('identity_article_discovery') or {}).get('queries', {}).items()]])
         if session.state.get('identity_continuation_token') == token:
@@ -149,6 +154,45 @@ class LiveVisualComparisonMixin:
         self.write(session, {'type': 'text', 'text': 'Continue the pending visual operation: saved illustrations remain. '
             'Call compare_place_images and record_place_comparison in this same conversation. '
             'Do not repeat search while usable saved references remain; stop on proved match.'})
+
+    def _cancel_identity_waiter(self, session):
+        task = session.state.pop('identity_wait_task', None)
+        if task is not None:
+            task.cancel()
+
+    def _watch_identity_ready(self, session):
+        """Wake the existing conversation after the existing photo job finishes."""
+        self._continue_identity(session)
+        task = session.state.get('identity_wait_task')
+        if task is not None and not task.done():
+            return
+        story, research = self.service._identity_snapshot(session.resource_id)
+        if story['state'] != 'identifying':
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        binding = (story['photo_sha256'], int(research.get('identity_generation') or 0))
+        async def wait():
+            started = time.monotonic()
+            def observed(status):
+                from .live import record_live_diagnostic
+                record_live_diagnostic(self.service, session.resource_id, session.id, 'backend',
+                    'identity_ready_continuation', {'generation': binding[1], 'status': status,
+                        'wait_ms': round((time.monotonic() - started) * 1000)})
+            while time.monotonic() - started < 90 and not getattr(session, 'closed', False):
+                await asyncio.sleep(0.5)
+                current, current_research = self.service._identity_snapshot(session.resource_id)
+                if (current['photo_sha256'], int(current_research.get('identity_generation') or 0)) != binding:
+                    observed('superseded')
+                    return
+                if current['state'] != 'identifying':
+                    self._continue_identity(session)
+                    observed('ready')
+                    return
+            observed('closed' if getattr(session, 'closed', False) else 'timeout')
+        session.state['identity_wait_task'] = loop.create_task(wait())
 
     def _comparison_result(self, pending):
         return with_live_tool_parts({**pending['reply'], 'image': {'$ref': 'comparison.jpg'}},
@@ -212,6 +256,11 @@ class LiveVisualComparisonMixin:
                      'browser_budget': {'remaining': 2}, 'sources': {}, 'searches': {}, 'fetch_failures': []}
             session.state['visual_comparison'] = state
         session.state['visual_comparison'] = state
+        progress = research.get('identity_progress') or {}
+        if progress.get('generation', generation) == generation:
+            # Background comparisons may finish after the first Live tool call.
+            state['seen_images'] = list(dict.fromkeys([*state['seen_images'],
+                *(progress.get('reviewed_image_sha256s') or [])]))
         # Accept later native/API URLs even after the first discovery portion.
         urls = args.get('article_urls') or []
         if not isinstance(urls, list) or any(not isinstance(url, str) for url in urls):
