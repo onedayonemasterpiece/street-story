@@ -402,12 +402,12 @@ class LiveGoldenInstrumentedTest {
                     "Продолжи именно дополнительное исследование. Сохрани новые факты с evidence через продуктовые инструменты; " +
                         "готовность в речи без сохранённых фактов недостаточна. Выбор, концепцию и текст публикации сохрани.",
                     allowedNeedsReviewCodes = setOf("visual_stale")) { candidate ->
-                    candidate.facts.any { fact -> fact.evidenceSupported &&
+                    candidate.facts.any { fact -> fact.eligibleForSelection &&
                         (fact.factId !in factsBeforeMore || fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } ||
                             fact.supportingEvidenceKeys.any { it !in evidenceBeforeMore.getValue(fact.factId) }) }
                 }
-                val addedFacts = story.facts.filter { it.evidenceSupported && it.factId !in factsBeforeMore }.map { it.factId }
-                val improvedFacts = story.facts.filter { fact -> fact.evidenceSupported && fact.factId in factsBeforeMore &&
+                val addedFacts = story.facts.filter { it.eligibleForSelection && it.factId !in factsBeforeMore }.map { it.factId }
+                val improvedFacts = story.facts.filter { fact -> fact.eligibleForSelection && fact.factId in factsBeforeMore &&
                     (fact.sources.any { it.url !in factsBeforeMore.getValue(fact.factId) } ||
                         fact.supportingEvidenceKeys.any { it !in evidenceBeforeMore.getValue(fact.factId) }) }.map { it.factId }
                 assertTrue("More returned no new supported fact or evidence", addedFacts.isNotEmpty() || improvedFacts.isNotEmpty())
@@ -513,7 +513,7 @@ class LiveGoldenInstrumentedTest {
             awaitAnswer(live, "publication confirmation")
             val scheduled = pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
                 rawStory(baseUrl, token, storyId)
-                    .getAsJsonObject("publication")?.get("state")?.asString in setOf("scheduled", "verified")
+                    .get("publication")?.takeIf { it.isJsonObject }?.asJsonObject?.get("state")?.asString in setOf("scheduled", "verified")
             }
             capture("08-test-publication-scheduled", scheduled)
             val rawScheduled = rawStory(baseUrl, token, storyId)
@@ -526,7 +526,7 @@ class LiveGoldenInstrumentedTest {
                 awaitAnswer(live, "publication cancel")
                 pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
                     rawStory(baseUrl, token, storyId)
-                        .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                        .get("publication")?.takeIf { it.isJsonObject }?.asJsonObject?.get("state")?.asString == "cancelled"
                 }
                 val result = rawStory(baseUrl, token, storyId).requireObject("publication")
                 assertEquals("cancelled", result.requireString("state"))
@@ -573,14 +573,14 @@ class LiveGoldenInstrumentedTest {
                         live.sendText("Аварийная очистка теста: отмени текущую запланированную публикацию.")
                         waitUntil(90_000, "Live cleanup cancel failed") {
                             rawStory(baseUrl, token, storyId)
-                                .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                                .get("publication")?.takeIf { it.isJsonObject }?.asJsonObject?.get("state")?.asString == "cancelled"
                         }
                         evidence["best_effort_live_cancel_confirmed"] = true
                     } else {
                         api.mutate(storyId, "cancel", "{}", newRequestKey("emergency-cleanup", local.clientStoryId))
                         pollStory(api, storyId, SOCIAL_TIMEOUT_MS) {
                             rawStory(baseUrl, token, storyId)
-                                .getAsJsonObject("publication")?.get("state")?.asString == "cancelled"
+                                .get("publication")?.takeIf { it.isJsonObject }?.asJsonObject?.get("state")?.asString == "cancelled"
                         }
                         evidence["best_effort_legacy_cleanup_only"] = true
                     }
