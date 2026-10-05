@@ -179,7 +179,7 @@ async def test_identity_entry_tools_deliver_frames_without_a_separate_read(tmp_p
 async def test_search_failure_survives_restart_then_retries_without_serp(tmp_path, monkeypatch):
     svc, adapter, story, session = prepared(tmp_path)
     calls = []
-    async def search(service, query, visual_query):
+    async def search(service, query, visual_query, **kwargs):
         calls.append(query)
         if len(calls) == 1:
             raise RetryableProviderError('temporary')

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 
 import base64
 import hashlib
@@ -8,6 +9,7 @@ import logging
 import math
 import os
 import re
+import time
 import uuid
 from urllib.parse import unquote
 from collections import deque
@@ -359,6 +361,7 @@ FUNCTIONS = [
         'Record YOUR visual comparison of the SOURCE/REF snapshot just received. This is model evidence, not author consent. Match requires distinctive repeated details and confidence >=0.90. On no match continue compare_place_images.',
         {'comparison_id': {'type': 'string'}, 'status': {'type': 'string', 'enum': ['match', 'uncertain', 'mismatch']},
          'candidate_id': {'type': 'string'}, 'object_name': {'type': 'string'}, 'confidence': {'type': 'number'},
+         'reference_subject_candidate_id': {'type': 'string', 'description': 'For a web article REF, explicitly identify its physical subject by an eligible OSM/Wiki candidate ID from the full shortlist. candidate_id remains the shown REF ID; page title alone is not subject proof.'},
          'observations': {'type': 'array', 'items': {'type': 'string'}},
          'alternative_candidate_ids': {'type': 'array', 'items': {'type': 'string'}}},
         ['comparison_id', 'status', 'candidate_id', 'confidence', 'observations', 'alternative_candidate_ids']),
@@ -447,6 +450,7 @@ FUNCTIONS = [
         "results and enrich already-known facts with new supporting sources. The result returns to this same Gemini "
         "Live conversation and never rewrites publication text by itself.",
         {
+            "extraction_scope": {"type": "string", "description": "Stable model-supplied coverage scope; preserve it when requesting more of the same aspect."},
             "confirmed_poi_id": {"type": "string", "description": "Copy candidate_id of the currently confirmed visual_identity."},
             "query_matches_poi": {"type": "boolean", "description": "Your semantic check of query and goal against confirmed canonical name, aliases and geography. False means correct the query before searching."},
             "query": {
@@ -781,8 +785,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     }
 
     def _capability_configuration(self, configuration, capability):
-        router = _tool_schema('continue_story', 'Continue the same story with tools for the requested stage. This changes capabilities only; it never edits, generates or publishes.',
-            {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS)}, 'intent': {'type': 'string'}}, ['stage', 'intent'])
+        router = _tool_schema('continue_story', 'Continue the same story at the requested stage. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained. Without research_action this changes capabilities only. Never edits, generates or publishes.',
+            {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS)}, 'intent': {'type': 'string'},
+             'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
+             'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
         configuration = dict(configuration)
         configuration['functions'] = [f for f in configuration['functions'] if f['name'] in self.CAPABILITY_TOOLS[capability]] + [router]
         configuration['search_enabled'] = False
@@ -794,10 +800,18 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 + '\nAfter a proved match use continue_story stage=research for facts, editor for concept/text, publication for visuals/post. Never invent facts or perform publication before the separate author confirmation.')
         else:
             configuration['system_instruction'] += '\nUse continue_story to access another stage: research, review, editor, publication or identity. Changing stage is not consent for mutations.'
+        configuration['system_instruction'] += ('\nOnly on an explicit author request, continue_story with research_action=stop/resume '
+            'and research_purpose=identity/facts/all controls the independent research queues and preserves progress. '
+            'Microphone Stop does not stop background research. An ambiguous "stop" needs clarification about research versus microphone. '
+            'After Resume read current checkpoints; never replay an old search, inference or save.')
         return configuration
 
     def resolve_capability(self, session, call):
         if call.get('name') != 'continue_story':
+            return None
+        # The framework resolver runs before validating a transition batch and
+        # must stay side-effect-free. Controls use its ordinary serialized tool path.
+        if 'research_action' in (call.get('args') or {}):
             return None
         stage = (call.get('args') or {}).get('stage')
         if stage not in self.CAPABILITY_TOOLS:
@@ -862,6 +876,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "literal": None,
                 "live_message_seq": 0,
                 "live_message": None,
+                "research_control_scope": {
+                    'expected_photo_sha256': state['story']['photo_sha256'],
+                    'expected_identity_generation': state['story']['identity_generation'],
+                },
             },
             "context": context,
             "configuration": {
@@ -1135,6 +1153,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             owned.add(session.state["research_run_id"])
         if owned:
             with self.service.store.tx() as db:
+                db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE lease_owner=?', (session.id,))
                 for run_id in owned:
                     db.execute("UPDATE research_runs SET state='partial',status_detail=?,updated_at=? "
                                "WHERE run_id=? AND story_id=? AND state NOT IN ('completed','cancelled','partial','failed')", (reason, self.service.store.now(), run_id, session.resource_id))
@@ -1275,6 +1294,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "run_id": session.state["research_run_id"], "tool": name, "research_input_active": False,
                 })
             return result
+        except asyncio.CancelledError:
+            self._pause_research(session, 'live_task_cancelled_resume_required')
+            raise
         except ConflictError as exc:
             record_live_diagnostic(self.service, session.resource_id, getattr(session, "id", ""), "backend", "live_tool_rejected", {
                 "tool": name, "code": exc.code, "run_id": session.state.get("research_run_id"),
@@ -1374,11 +1396,18 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name != "literal_finish":
             replay = self._command_replay(story_id, command_id, name, args)
             if replay is not None:
+                if name == 'continue_story' and 'research_action' in args:
+                    current = self.service.story(story_id)
+                    return self._model_result(name, {**replay, 'changed': [], 'story': current,
+                        'research_controls': current['research_controls'],
+                        'instruction': 'Команда уже обработана. Это текущее управление исследованием; повторного действия нет.'})
                 if name in {'resolve_place', 'reject_place'}:
                     return await self._next_visual_result(session, self._model_result(name, replay))
                 return self._model_result(name, replay)
 
-        if name == "compare_place_images":
+        if name == 'continue_story' and 'research_action' in args:
+            result = self._control_research(session, command_id, args)
+        elif name == "compare_place_images":
             result = await self._compare_place_images(session, args)
         elif name == "record_place_comparison":
             result = self._record_place_comparison(session, command_id, args)
@@ -1403,6 +1432,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         with self.service.store.tx() as db:
                             self._research_run_guard(db, session, run_id)
                             set_run_state(db, run_id, "partial", detail="invalid_batch_budget_exhausted", now=self.service.store.now(), completed=False)
+                            db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE lease_owner=?', (session.id,))
                             saved_count = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=?", (story_id,)).fetchone()[0]
                             source_count = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=?", (run_id,)).fetchone()[0]
                         session.state["research_cancelled"] = True
@@ -1459,6 +1489,66 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if name in {"save_research_facts", "finalize_fact_review"}:
             record_live_diagnostic(self.service, story_id, session.id, "backend", "research_reply_size", {"tool": name, "estimated_envelope_units": response_units(name, projected, command_id), "page_ceiling": PAGE_UNITS})
         return projected
+
+    def _control_research(self, session, command_id, args):
+        """Apply explicit research controls through the normal HTTP domain mutation.
+
+        Shared Live host serializes this with accepted tools. External HTTP Stop
+        never advances this session's epoch; only this explicit Resume can adopt it.
+        """
+        if session.state.get('literal') is not None:
+            raise ConflictError('live_research_control_dictation', 'Завершите дословную диктовку перед управлением исследованием.')
+        turn = session.state.get('author_turn') or {}
+        if (not str(turn.get('text') or '').strip() or turn.get('consumed')
+                or not 0 <= time.monotonic() - float(turn.get('at') or 0) <= 30):
+            raise ConflictError('live_research_control_owner_required', 'Нужна явная команда автора остановить или продолжить исследование.')
+        action, purpose = args.get('research_action'), args.get('research_purpose')
+        if purpose not in {'identity', 'facts', 'all'}:
+            raise InvalidStateError('research_control_invalid', 'Укажите research_purpose: identity, facts или all.')
+        with self.service.store.connection() as db:
+            row = self.service._story_row(db, session.resource_id)
+            research = json.loads(row['research_json'] or '{}')
+            scope = session.state.setdefault('research_control_scope', {
+                'expected_photo_sha256': row['photo_sha256'],
+                'expected_identity_generation': int(research.get('identity_generation') or 0),
+            })
+        key = 'ss-live-research-' + hashlib.sha256(f'{session.resource_id}:{command_id}'.encode()).hexdigest()[:48]
+        result = self.service.mutate_research_control(session.resource_id, key, {
+            'action': action, 'purpose': purpose, **scope,
+        })
+        turn['consumed'] = True
+        # Readback is authoritative even for an already stopped/running queue.
+        controls = result['story']['research_controls']
+        if purpose in {'facts', 'all'}:
+            stopped = controls['facts']['stopped']
+            session.state['research_cancelled'] = stopped
+            session.state['research_output_pending'] = False
+            if action == 'resume' and not stopped:
+                session.state['fact_research_control_revision'] = controls['facts']['revision']
+                session.state['research_author_interrupted'] = False
+                session.state['research_continuation_queued'] = False
+                for name in ('research_pending_page', 'research_page_cursor', 'research_chunk_receipts',
+                             'research_page_passage_ids', 'research_passages_seen', 'research_chunk_leases',
+                             'research_current_chunk_id'):
+                    session.state.pop(name, None)
+            self._emit_research_progress(session, stage='partial', active=False, query='',
+                source_count=result['story'].get('source_count', 0), fact_count=len(result['story'].get('facts', [])))
+        if purpose in {'identity', 'all'}:
+            if action == 'stop':
+                self._cancel_identity_waiter(session)
+            elif not controls['identity']['stopped']:
+                session.state.pop('visual_comparison', None)
+        result.update(research_controls=controls,
+            instruction=('Исследование остановлено; факты, текст и очереди сохранены.' if action == 'stop' else
+                         'Исследование продолжится с сохранённого прогресса. Сначала прочитайте актуальное состояние.'))
+        with self.service.store.tx() as db:
+            self._store_command(db, session.resource_id, command_id, 'continue_story', args, result)
+        record_live_diagnostic(self.service, session.resource_id, session.id, 'backend', 'research_control', {
+            'action': action, 'purpose': purpose, 'changed_count': len(result['changed']),
+            'identity_generation': result['story']['identity_generation'],
+            'facts_revision': controls['facts']['revision'], 'identity_revision': controls['identity']['revision'],
+        })
+        return result
 
     @staticmethod
     def _compact_identity(identity: Any) -> dict[str, Any] | None:
@@ -1971,6 +2061,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         compact_identity = StreetStoryLiveAdapter._compact_identity(identity)
         return {
             "story_id": story.get("id"),
+            "photo_sha256": story.get('photo_sha256'),
+            "identity_generation": story.get('identity_generation'),
+            "research_controls": story.get('research_controls', {}),
             "state": story.get("state"),
             "revision": story.get("revision"),
             "place_name": story.get("place_name"),
@@ -2287,6 +2380,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     async def _search_web(self, session, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         if getattr(session, "closed", False) or session.state.get("research_cancelled"):
             raise ConflictError("live_research_partial", "This Live research phase is paused. Resume the saved run in a new Live session.")
+        with self.service.store.connection() as db:
+            self._fact_research_control_guard(db, session)
         query = _bounded_text(args.get("query"), 1000, required=True)
         current_run = str(session.state.get("research_run_id") or "")
         if current_run:
@@ -2382,11 +2477,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         ).hexdigest()[:24]
         expected_identity_generation = int(research.get("identity_generation") or 0)
         with self.service.store.tx() as db:
+            self._fact_research_control_guard(db, session)
             begin_research_run(
                 db,
                 story_id=story_id,
                 poi_key=str(identity.get("candidate_id") or "") or None,
                 goal=coverage_goal,
+                scope=str(args.get('extraction_scope') or coverage_goal),
                 expected_story_revision=int(story.get("revision") or 0),
                 identity_generation=expected_identity_generation,
                 run_id=run_id,
@@ -2428,9 +2525,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             sources=prior_progress_sources,
         )
         try:
+            with self.service.store.connection() as db:
+                self._research_run_guard(db, session, run_id)
             grounded = await self.service.providers.gemini.search_web(query, topic_context)
         except Exception as exc:
             with self.service.store.tx() as db:
+                self._research_run_guard(db, session, run_id)
                 set_run_state(
                     db,
                     run_id,
@@ -2532,6 +2632,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         reconciler = getattr(self.service.providers.gemini, "reconcile_fact_identities", None)
         if raw_grounded_facts and all_story_facts and callable(reconciler):
             try:
+                with self.service.store.connection() as db:
+                    self._research_run_guard(db, session, run_id)
                 reconciliation = await reconciler(raw_grounded_facts, all_story_facts)
                 reconciliation_matches = {
                     int(index): str(fact_id)
@@ -2637,6 +2739,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         source_read_required = bool(grounding_sources) and not new_fact_candidates
 
         with self.service.store.connection() as db:
+            self._research_run_guard(db, session, run_id)
             current_story = dict(self.service._story_row(db, story_id))
             current_research = json.loads(current_story.get("research_json") or "{}")
         if (
@@ -2833,10 +2936,22 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
             return result
 
-    def _research_run_guard(self, db, session, run_id: str):
+    def _fact_research_control_guard(self, db, session):
+        from .research_control import research_stopped
         story = self.service._story_row(db, session.resource_id)
+        research = json.loads(story['research_json'] or '{}')
+        generation = int(research.get('identity_generation') or 0)
+        if research_stopped(research, 'facts', photo_sha256=story['photo_sha256'], identity_generation=generation):
+            raise ConflictError('live_research_stopped', 'Исследование фактов остановлено. Требуется явное возобновление.')
+        epoch = int(((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+        bound = session.state.setdefault('fact_research_control_revision', epoch)
+        if bound != epoch:
+            raise ConflictError('live_research_control_changed', 'Исследование было остановлено или возобновлено; старый запрос больше не действует.')
+        return story, research
+
+    def _research_run_guard(self, db, session, run_id: str):
+        story, research = self._fact_research_control_guard(db, session)
         run = db.execute("SELECT * FROM research_runs WHERE run_id=? AND story_id=?", (run_id, session.resource_id)).fetchone()
-        research = json.loads(story["research_json"] or "{}")
         if run is None:
             raise ConflictError("live_research_run_unknown", "Research run does not belong to this story.")
         if getattr(session, "closed", False) or session.state.get("research_cancelled") or str(run["state"]) in {"cancelled", "failed", "completed"}:
@@ -2918,7 +3033,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 progress = self._live_research_progress(db, session.resource_id, run_id)
             if source_url and progress['remaining'] and any(row['url'] == source_url and row['source_version_id'] for row in sources):
                 return await self._get_research_chunk(session, {'run_id': run_id})
-            bounded_stop = session.state.get('live_first_research') and progress['attempts'] >= 3
+            bounded_stop = session.state.get('live_first_research') and not session.state.get('headless_research') and progress['attempts'] >= 3
             source = None if bounded_stop else next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
             if source is None:
                 if session.state.get('live_first_research'):
@@ -2926,7 +3041,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         self._research_run_guard(db, session, run_id)
                         manifest = run_manifest(db, run_id)
                         unreviewed = db.execute("SELECT COUNT(DISTINCT a.assertion_id) FROM fact_assertions a JOIN fact_observations o ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed'", (session.resource_id, run_id)).fetchone()[0]
-                        complete = (manifest_complete(manifest) or bounded_stop) and not unreviewed
+                        complete = manifest_complete(manifest) and not unreviewed
                         set_run_state(db, run_id, 'completed' if complete else 'partial', detail='live_no_new_confirmed_facts' if not progress['observations'] else 'live_batches_complete' if complete else 'saved_findings_need_review', now=self.service.store.now(), completed=complete)
                     self._emit_research_progress(session, stage='completed' if complete else 'partial', active=False, query='', source_count=len(sources), fact_count=len(self._get_facts(session.resource_id, {})['facts']))
                     return {'research_run_id': run_id, 'all_chunks_processed': True, 'completed': complete, 'partial': not complete,
@@ -2938,6 +3053,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if not callable(fetch):
                 raise ConflictError("live_research_fetch_unavailable", "Document reader is unavailable; saved evidence is preserved.")
             self._emit_research_progress(session, stage="extracting", active=True, query=str(run["goal"]), source_count=len(sources), fact_count=0)
+            with self.service.store.connection() as db:
+                self._research_run_guard(db, session, run_id)
             documents = await fetch([source["url"]], {"research_run_id": run_id, "research_sources": sources})
             with self.service.store.tx() as db:
                 current, _ = self._research_run_guard(db, session, run_id)
@@ -2961,7 +3078,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 self._emit_research_progress(session, stage="partial", active=False, query="", source_count=len(sources), fact_count=saved_count)
                 return {"research_run_id": run_id, "partial": True, "reason": "source_fetch_failed", "next_tool": None, "resume_tool": "get_research_chunk", "saved_fact_count": saved_count}
             return await self._get_research_chunk(session, {**args, "source_url": source["url"]})
-        with self.service.store.connection() as db:
+        with self.service.store.tx() as db:
+            self._research_run_guard(db, session, run_id)
+            from .research_runs import acquire_chunk_lease
+            fence = acquire_chunk_lease(db, run_id=run_id, chunk_id=candidate['chunk_id'],
+                                        owner=session.id, now=self.service.store.now())
+            if fence is None:
+                from .errors import RetryableProviderError
+                raise RetryableProviderError('research_chunk_busy', retry_at=self.service.store.now()+10)
+            session.state.setdefault('research_chunk_leases', {})[candidate['chunk_id']] = fence
             checkpoint = chunk_checkpoint(db, run_id, candidate["chunk_id"])
             if checkpoint["terminal"]:
                 raise ConflictError("live_research_chunk_completed", "This core is already saved. Call get_research_chunk with run_id ONLY: omit chunk_id and passage_cursor to read the next unfinished core.")
@@ -2981,6 +3106,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "checkpoint": checkpoint, "next_tool": "save_research_facts",
         }
         passages = result["evidence_passages"]
+        with self.service.store.connection() as db:
+            self._research_run_guard(db, session, run_id)
         seen = session.state.setdefault("research_passages_seen", {}).setdefault(candidate["chunk_id"], set())
         seen.update(checkpoint.get('read_passage_ids') or [])
         recipe = {key: result[key] for key in ("chunk_id", "batch_id", "batch_index", "expected_story_revision")}
@@ -3171,6 +3298,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
             self._research_run_guard(db, session, run_id)
             if chunk_id:
+                from .research_runs import chunk_lease_owned
+                lease_fence = session.state.get('research_chunk_leases', {}).get(chunk_id)
+                if not chunk_lease_owned(db, run_id=run_id, chunk_id=chunk_id, owner=session.id,
+                                          fence=lease_fence, now=self.service.store.now()):
+                    raise ConflictError('live_research_chunk_lease_stale', 'The source extraction lease changed; read the current page again.')
                 chunk_row = db.execute(
                     "SELECT c.*,v.normalized_text,v.requested_url FROM research_chunk_runs r "
                     "JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id "
@@ -3520,6 +3652,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             and not session.state.get('live_first_research')
         ):
             try:
+                with self.service.store.connection() as db:
+                    self._research_run_guard(db, session, run_id)
                 reconciliation = await reconciler(
                     normalized_candidates,
                     known_facts,
@@ -3643,6 +3777,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         # Phase 2 commits only if the story/search snapshot has not changed while
         # semantic reconciliation was in flight.
         with self.service.store.tx() as db:
+            if chunk_id and not chunk_lease_owned(db, run_id=run_id, chunk_id=chunk_id, owner=session.id,
+                                                  fence=lease_fence, now=self.service.store.now()):
+                raise ConflictError('live_research_chunk_lease_stale', 'The source extraction lease changed before commit.')
             current_story = self.service._story_row(
                 db,
                 story_id,
@@ -3777,6 +3914,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     observation_count=len(chunk_checkpoint(db, run_id, chunk_id)["facts"]),
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
                     error_code='not_article_text' if args.get('source_content_valid') is False else None)
+                db.execute('UPDATE research_chunk_runs SET lease_owner=NULL,lease_until=0 WHERE run_id=? AND chunk_id=? AND lease_owner=? AND lease_fence=?',
+                           (run_id,chunk_id,session.id,lease_fence))
                 if args.get('source_content_valid') is False:
                     db.execute("UPDATE research_run_sources SET status='deferred',error_code='not_article_text' WHERE run_id=? AND source_version_id=?",
                                (run_id, chunk_row['source_version_id']))

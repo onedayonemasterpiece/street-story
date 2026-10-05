@@ -6,6 +6,7 @@ Public HTTP requests pin the validated DNS address and validate every redirect.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import ipaddress
 import json
@@ -14,6 +15,7 @@ import re
 import socket
 import shutil
 import uuid
+import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
@@ -28,6 +30,7 @@ MAX_PAGES = 20
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 CHROME = re.compile(r'(?:^|[\s_/-])(?:ad|ads|advert\w*|banner|logo\w*|icon|avatar|footer|header|sidebar|related|recommend\w*|cookie|social|share|tracking|poster-item|interest-slider|content-right|contact|similar|widget)(?:$|[\s_/-])', re.I)
 CONTENT = re.compile(r'(?:article|entry-content|post-content|news-detail|detail|articleBody|description|gallery|photo|content_container|mw-parser-output)', re.I)
+_PAGE_ACQUISITION_LOCKS = weakref.WeakKeyDictionary()
 
 
 def public_url(raw: str) -> str | None:
@@ -83,6 +86,36 @@ async def fetch_public(client, raw: str, maximum: int, *, resolver=resolve_publi
                 body.extend(chunk)
             return target, response.headers.get('content-type', '').split(';')[0].lower(), bytes(body)
     raise ValueError('article_media_redirect_limit')
+
+
+async def cached_public_page(store, client, raw, *, resolver=resolve_public):
+    """One bounded public acquisition for text and independent media purposes."""
+    target = public_url(raw)
+    if not target:
+        raise ValueError('article_media_unsafe_url')
+    key = 'public-article-acquisition-v1:' + hashlib.sha256(target.encode()).hexdigest()
+    # Both purposes use the same database/cache, even with distinct Store and
+    # HTTP client instances. Weak locks disappear after the acquisition/waiters;
+    # cancellation releases the lock without borrowing a closed owner's client.
+    locks = _PAGE_ACQUISITION_LOCKS.setdefault(asyncio.get_running_loop(), weakref.WeakValueDictionary())
+    lock_key = (str(store.path.resolve()), key)
+    lock = locks.get(lock_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[lock_key] = lock
+    async with lock:
+        saved = store.cache_get(key)
+        if saved:
+            body = base64.b64decode(saved['body'])
+            if hashlib.sha256(body).hexdigest() == saved['sha256']:
+                return saved['final_url'], saved['mime'], body
+        final_url, mime, body = await fetch_public(client, target, MAX_PAGE_BYTES, resolver=resolver)
+        if mime in {'text/html', 'application/xhtml+xml', 'text/plain'}:
+            entry = {'final_url': final_url, 'mime': mime, 'body': base64.b64encode(body).decode(),
+                     'sha256': hashlib.sha256(body).hexdigest(), 'acquired_at': store.now()}
+            store.cache_put(key, entry, 86400)
+            store.cache_put('public-article-acquisition-v1:' + hashlib.sha256(final_url.encode()).hexdigest(), entry, 86400)
+        return final_url, mime, body
 
 
 def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
@@ -333,16 +366,20 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
         nonlocal browser_slots
         raw = public_url(str(source.get('url') or ''))
         if not raw or (urlsplit(raw).hostname or '').endswith('wikimedia.org'):
+            if receipts is not None:
+                receipts.append({'url': str(source.get('url') or ''), 'status': 'excluded'})
             return None
         wiki = (urlsplit(raw).hostname or '').endswith('.wikipedia.org')
         wiki_id = str(source.get('candidate_id') or '')
         cid = wiki_id if wiki and re.fullmatch(r'wiki:\d{1,20}', wiki_id) else 'web:' + hashlib.sha256(raw.encode()).hexdigest()[:16]
         if cid in excluded:
+            if receipts is not None:
+                receipts.append({'url': raw, 'status': 'excluded'})
             return None
         async with semaphore:
             page_url, title, media, partial, body = raw, '', [], False, b''
             try:
-                page_url, mime, body = await fetch_public(client, raw, MAX_PAGE_BYTES, resolver=resolver)
+                page_url, mime, body = await cached_public_page(service.store, client, raw, resolver=resolver)
                 if mime not in {'text/html', 'application/xhtml+xml'}:
                     raise ValueError('article_media_not_html')
                 # BeautifulSoup honors declared HTML encoding (including CP1251).
@@ -375,7 +412,9 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     if (url := original_reference(item['image_url']))}.values())
             if not media:
                 if receipts is not None:
-                    receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure'})
+                    receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure',
+                        'gallery_cursor': source.get('gallery_cursor', 0),
+                        'gallery_slide_cursor': source.get('gallery_slide_cursor', 0)})
                 return None
             if receipts is not None:
                 receipts.append({'url': raw, 'final_url': page_url, 'status': 'partial' if partial else 'completed', 'image_count': len(media), 'gallery_cursor': source.get('gallery_cursor', 0), 'gallery_slide_cursor': source.get('gallery_slide_cursor', 0)})
@@ -387,12 +426,17 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 'enumeration_status': 'partial' if partial else 'completed', 'discovery_provenance': source}
     try:
         unique = {str(s.get('url')): s for s in sources if isinstance(s, dict)}
-        values = await asyncio.gather(*(read(source) for source in list(unique.values())[:MAX_PAGES]))
+        batch = list(unique.values())[:MAX_PAGES]
+        if receipts is not None:
+            receipts.extend({'url': str(source.get('url') or ''), 'status': 'deferred'}
+                            for source in list(unique.values())[MAX_PAGES:])
+        values = await asyncio.gather(*(read(source) for source in batch))
         candidates = [value for value in values if value]
     finally:
         if own:
             await client.aclose()
-    event('identity_web_media_candidates', {'page_count': min(len(unique), MAX_PAGES), 'candidate_count': len(candidates)})
+    event('identity_web_media_candidates', {'page_count': min(len(unique), MAX_PAGES),
+        'deferred_page_count': max(0, len(unique) - MAX_PAGES), 'candidate_count': len(candidates)})
     return candidates
 
 

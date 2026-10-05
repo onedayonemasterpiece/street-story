@@ -46,6 +46,10 @@ class LiveGoldenInstrumentedTest {
     private var stageDeadline = Long.MAX_VALUE
     private var routeStartedAt = 0L
     private var observedLive: LiveSessionController? = null
+    private var headlessIdentityActive = false
+    private var unexpectedHeadlessLive = false
+    private var headlessStoryId: String? = null
+    private var identityStoryReads = 0
     private val stageTimings = mutableListOf<Map<String, Any?>>()
     private val identityProgressSamples = mutableListOf<Map<String, Any?>>()
 
@@ -80,17 +84,37 @@ class LiveGoldenInstrumentedTest {
             "Stage watchdog failed: stage=$activeStage elapsed_ms=${System.currentTimeMillis() - stageStartedAt}"
         }
         observedLive?.snapshot()?.error?.let { error("Live failed: stage=$activeStage error=$it") }
-        observedLive?.snapshot()?.identityProgress?.let { progress ->
-            val sample = mapOf("elapsed_ms" to (System.currentTimeMillis() - routeStartedAt),
-                "reviewed" to progress.imagesReviewedCount, "verified" to progress.visualComparisonVerified,
-                "generation" to progress.generation)
-            val last = identityProgressSamples.lastOrNull()
-            if (last == null || last["reviewed"] != sample["reviewed"] || last["verified"] != sample["verified"] || last["generation"] != sample["generation"]) {
-                if (last != null && last["generation"] == sample["generation"]) {
-                    check(progress.imagesReviewedCount >= (last["reviewed"] as Int)) { "Identity counter went backwards" }
-                }
-                identityProgressSamples.add(sample)
+        if (headlessIdentityActive) assertHeadlessIdentity()
+        observedLive?.snapshot()?.identityProgress?.let(::sampleIdentityProgress)
+    }
+
+    private fun sampleIdentityProgress(progress: IdentityProgressWire) {
+        val sample = mapOf("elapsed_ms" to (System.currentTimeMillis() - routeStartedAt),
+            "reviewed" to progress.imagesReviewedCount, "verified" to progress.visualComparisonVerified,
+            "generation" to progress.generation)
+        val last = identityProgressSamples.lastOrNull()
+        if (last == null || last["reviewed"] != sample["reviewed"] || last["verified"] != sample["verified"] || last["generation"] != sample["generation"]) {
+            if (last != null && last["generation"] == sample["generation"]) {
+                check(progress.imagesReviewedCount >= (last["reviewed"] as Int)) { "Identity counter went backwards" }
             }
+            identityProgressSamples.add(sample)
+        }
+    }
+
+    private fun localVoiceSessionCount(): Int {
+        val id = headlessStoryId ?: error("Headless story is not bound")
+        return AppGraph.store(context).readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM voice_sessions WHERE story_id=?", arrayOf(id),
+        ).use { it.moveToFirst(); it.getInt(0) }
+    }
+
+    private fun assertHeadlessIdentity() {
+        val snapshot = requireNotNull(observedLive).snapshot()
+        check(!unexpectedHeadlessLive && !snapshot.active && !snapshot.connecting && snapshot.transport == null) {
+            "Photo identity unexpectedly started Live/microphone"
+        }
+        check(AppGraph.store(context).activeVoiceSession() == null && localVoiceSessionCount() == 0) {
+            "Photo identity unexpectedly started RecordingService"
         }
     }
 
@@ -105,13 +129,14 @@ class LiveGoldenInstrumentedTest {
         require(baseUrl.startsWith("https://") && token.isNotBlank())
         val keepPublication = InstrumentationRegistry.getArguments().getString("keepPublication") == "true"
         val identityOnly = InstrumentationRegistry.getArguments().getString("identityOnly") == "true"
+        require(!identityOnly || !keepPublication)
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
 
         beginStage("photo", 120_000)
         val photoFile = File(root, "photo.jpg")
         val pcmFiles = (1..6).map { File(root, "voice-$it.pcm") }
-        require(photoFile.isFile && pcmFiles.all(File::isFile))
+        require(photoFile.isFile && (identityOnly || pcmFiles.all(File::isFile)))
 
         val appConfig = AppGraph.config(context)
         appConfig.backendUrl = baseUrl
@@ -134,12 +159,27 @@ class LiveGoldenInstrumentedTest {
         val storyId = created.id
         val live = AppGraph.live(context)
         observedLive = live
+        headlessStoryId = local.clientStoryId
+        headlessIdentityActive = true
+        val headlessObserver: (LiveUiState) -> Unit = { state ->
+            if (headlessIdentityActive && (state.active || state.connecting || state.transport != null)) {
+                unexpectedHeadlessLive = true
+            }
+        }
+        live.addListener(headlessObserver)
         val evidence = linkedMapOf<String, Any?>(
             "server_story_id" to storyId,
             "client_story_id" to local.clientStoryId,
             "fixture_photo_sha256" to photoSha,
             "destination_alias" to safeAlias,
             "physical_mic" to false,
+            "prepared_owner_photo" to true,
+            "photo_coordinates_source" to "embedded_exif",
+            "discovery_seeded" to false,
+            "owner_name_hint" to false,
+            "seed_urls_supplied" to false,
+            "prepared_pcm_after_capture_boundary" to false,
+            "legacy_voice_endpoint_used" to false,
         )
         var publicationScheduled = false
         var cancelConfirmed = false
@@ -153,7 +193,83 @@ class LiveGoldenInstrumentedTest {
 
         try {
             beginStage("identity", 5L * 60 * 1000)
+            assertHeadlessIdentity()
             capture("01-photo-before-research", api.getStory(storyId))
+            var story = pollStory(api, storyId, stageDeadline - System.currentTimeMillis(),
+                allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale")) {
+                it.visualIdentity?.status == "match"
+            }
+            assertEquals("Photo must be identified automatically without Live", "match", story.visualIdentity?.status)
+            val rawIdentityStory = rawStory(baseUrl, token, storyId)
+            val identity = rawIdentityStory.requireObject("visual_identity")
+            assertEquals(photoSha, rawIdentityStory.requireString("photo_sha256"))
+            assertEquals(photoSha, identity.requireString("photo_sha256"))
+            assertEquals(story.visualIdentity?.candidateId, identity.requireString("candidate_id"))
+            assertEquals(rawIdentityStory.get("identity_generation").asInt, identity.get("generation").asInt)
+            assertTrue("Match lacks actual visual reference proof", identity.get("visual_reference_verified")?.asBoolean == true)
+            val references = identity.getAsJsonArray("reference_evidence")?.map { it.asJsonObject }.orEmpty()
+            assertTrue("Match has no retained decoded reference images", references.isNotEmpty())
+            val modelImageHashes = references.map { reference ->
+                val hash = reference.requireString("model_image_sha256")
+                check(hash.matches(Regex("[0-9a-f]{64}"))) { "Invalid visual proof image digest" }
+                check(reference.requireString("source_url").startsWith("https://")) { "Reference source provenance missing" }
+                hash
+            }.distinct()
+            val sourceUrls = (references.map { it.requireString("source_url") } +
+                identity.getAsJsonArray("source_links")?.mapNotNull { item ->
+                    item.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.startsWith("https://") }
+                }.orEmpty()).distinct()
+            assertTrue("Visual progress lacks verified reference readback", story.identityProgress?.visualComparisonVerified == true)
+            val identityProof = JsonObject().apply {
+                for (key in listOf("status", "candidate_id", "candidate_name", "confidence", "policy", "photo_sha256",
+                    "generation", "visual_reference_verified", "comparison_model", "comparison_id", "reference_subject_binding")) {
+                    identity.get(key)?.let { add(key, it.deepCopy()) }
+                }
+                add("reference_evidence", identity.get("reference_evidence").deepCopy())
+            }
+            val providerReceipt = JsonObject().apply {
+                identity.get("provider_receipt")?.takeIf { it.isJsonObject }?.asJsonObject?.let { receipt ->
+                    for (key in listOf("provider", "model", "model_id", "operation_id", "request_id", "status", "protocol",
+                        "http_status", "input_tokens", "output_tokens", "total_tokens")) {
+                        receipt.get(key)?.takeIf { it.isJsonPrimitive }?.let { add(key, it.deepCopy()) }
+                    }
+                }
+            }
+            evidence.putAll(mapOf(
+                "automatic_identity" to true,
+                "identity_without_live" to true,
+                "identity_transport" to "headless_https_poll",
+                "identity_scope" to mapOf("photo_sha256" to photoSha, "identity_generation" to story.identityGeneration),
+                "visual_identity" to identityProof,
+                "identity_reference_count" to references.size,
+                "identity_model_image_count" to modelImageHashes.size,
+                "identity_source_url_count" to sourceUrls.size,
+                "identity_source_urls" to sourceUrls,
+                "identity_progress" to story.identityProgress,
+                "identity_candidate_count" to story.visualIdentity?.candidates?.size,
+                "identity_article_candidate_count" to identity.getAsJsonArray("candidates")?.count {
+                    it.asJsonObject.get("discovery")?.takeIf { value -> value.isJsonPrimitive }?.asString == "web_article_media"
+                },
+                "identity_provider_receipt" to providerReceipt,
+                "identity_http_read_count" to identityStoryReads,
+                "backend_live_message_count" to story.liveMessages.size,
+                "backend_voice_message_count" to story.voiceMessages.size,
+            ))
+            assertTrue("Identity used owner voice or Live messages", story.liveMessages.isEmpty() && story.voiceMessages.isEmpty())
+            capture("02-object-identified", story)
+            assertHeadlessIdentity()
+            evidence["no_live_or_recording_started"] = true
+            evidence["local_voice_session_count"] = localVoiceSessionCount()
+            if (identityOnly) {
+                evidence["identity_only"] = true
+                finishStage("passed")
+                return
+            }
+
+            // Full social acceptance explicitly starts the existing voice path
+            // only AFTER the independent server identification has succeeded.
+            headlessIdentityActive = false
+            beginStage("live", 120_000)
             val ready = CountDownLatch(1)
             var liveError: String? = null
             live.start(local.clientStoryId) { ok, error ->
@@ -166,42 +282,13 @@ class LiveGoldenInstrumentedTest {
             assertEquals("wss", live.snapshot().transport)
             evidence["transport"] = live.transportEvidence()
 
+            beginStage("research", 5L * 60 * 1000)
             speak(live, pcmFiles[0])
             awaitAnswer(live, "initial context")
 
             speak(live, pcmFiles[1])
             awaitAnswer(live, "research request")
-            var story = pollStory(
-                api,
-                storyId,
-                RESEARCH_TIMEOUT_MS,
-                allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale"),
-            ) {
-                it.visualIdentity?.status in setOf("match", "uncertain", "owner_confirmed")
-            }
-
-            if (story.visualIdentity?.status != "match") {
-                ownerText(live,
-                    "Помоги узнать, что за здание на фотографии. Я не знаю его названия.",
-                    "automatic identity retry")
-                story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_identity_uncertain", "visual_stale")) {
-                    it.visualIdentity?.status == "match"
-                }
-            }
-            assertEquals("Golden photo must be identified automatically", "match", story.visualIdentity?.status)
-            evidence["automatic_identity"] = true
-            capture("02-object-identified", story)
-            if (identityOnly) {
-                evidence["identity_only"] = true
-                evidence["discovery_seeded"] = false
-                evidence["prepared_pcm_after_capture_boundary"] = true
-                evidence["legacy_voice_endpoint_used"] = false
-                evidence["identity_progress"] = live.snapshot().identityProgress
-                evidence["visual_identity"] = story.visualIdentity
-                finishStage("passed")
-                return
-            }
-            beginStage("research", 5L * 60 * 1000)
+            story = readStory(api, storyId)
             // Identity confirmation precedes research. Do not wait for facts before
             // allowing the author to confirm an uncertain photo match.
             if (story.sourceCount == 0) {
@@ -418,9 +505,21 @@ class LiveGoldenInstrumentedTest {
             evidence["last_live_error"] = live.snapshot().error
             evidence["completed_live_turns"] = live.snapshot().completedTurns
             evidence["transport_final"] = live.transportEvidence()
-            live.stopLocal(sendRemote = true)
+            if (identityOnly) {
+                evidence["record_audio_permission_granted"] = context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                val noLive = runCatching { assertHeadlessIdentity() }
+                evidence["no_live_or_recording_started"] = noLive.isSuccess
+                evidence["local_voice_session_count"] = runCatching { localVoiceSessionCount() }.getOrNull()
+                noLive.exceptionOrNull()?.let { evidence["headless_identity_error"] = it.message }
+            } else {
+                live.stopLocal(sendRemote = true)
+            }
+            live.removeListener(headlessObserver)
             File(root, "evidence.json").writeText(gson.toJson(evidence))
             store.close()
+            if (identityOnly) check(evidence["no_live_or_recording_started"] == true) {
+                "Headless identity started Live or recording; retained evidence contains the failure"
+            }
         }
         assertTrue(if (keepPublication) publicationScheduled else cancelConfirmed)
     }
@@ -438,7 +537,7 @@ class LiveGoldenInstrumentedTest {
         store.replaceFacts(clientStoryId, story.facts.map { it.local() })
         ResearchProjectionStore(context).replace(clientStoryId, story)
         context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
-            .putString("active_story_id", clientStoryId).putBoolean("identity_live_attempted:$clientStoryId", true).commit()
+            .putString("active_story_id", clientStoryId).commit()
         if (story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()) {
             val image = File(root, "screenshot-visual.img")
             val config = AppGraph.config(context)
@@ -449,6 +548,7 @@ class LiveGoldenInstrumentedTest {
         val device = UiDevice.getInstance(instrumentation)
         val directory = File(root, "screenshots").apply { mkdirs() }
         val (detailDescription, detailSuffix) = when {
+            stage.contains("photo-before") || stage.contains("object-identified") -> "identity-progress" to "identity"
             stage.contains("publication-concept") -> "concept-island-expanded" to "concept"
             stage.contains("publication-text") -> "publication-preview-chat" to "text"
             stage.contains("generated-visual") -> "publication-image" to "image"
@@ -494,6 +594,10 @@ class LiveGoldenInstrumentedTest {
         if (liveWasActive) assertTrue("Activity navigation stopped Live at $stage", live.isActiveFor(clientStoryId))
         screenshots.add(mapOf("stage" to stage, "story_revision" to story.revision,
             "fact_count" to story.facts.size, "selected_count" to story.facts.count { it.selected },
+            "identity_candidate_id" to story.visualIdentity?.candidateId,
+            "identity_generation" to story.identityGeneration,
+            "identity_images_reviewed_count" to story.identityProgress?.imagesReviewedCount,
+            "identity_visual_comparison_verified" to story.identityProgress?.visualComparisonVerified,
             "files" to listOf("$stage.png", "$stage-$detailSuffix.png")))
     }
 
@@ -596,7 +700,13 @@ class LiveGoldenInstrumentedTest {
     private fun readStory(api: ApiClient, storyId: String): StoryWire {
         for (attempt in 0..3) {
             try {
-                return api.getStory(storyId)
+                val story = api.getStory(storyId)
+                if (headlessIdentityActive) {
+                    identityStoryReads += 1
+                    story.identityProgress?.let(::sampleIdentityProgress)
+                    assertHeadlessIdentity()
+                }
+                return story
             } catch (failure: ApiException) {
                 if (failure.status !in setOf(502, 503, 504) || attempt == 3) throw failure
                 transientStoryReadRetries += 1

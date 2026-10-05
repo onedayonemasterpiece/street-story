@@ -257,7 +257,7 @@ async def test_worker_restart_during_research_resumes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_retry_budget_terminalizes_without_more_provider_work(tmp_path):
+async def test_worker_failure_budget_terminalizes_without_more_provider_work(tmp_path):
     svc, _, vp = service(tmp_path)
     story = create(svc)
     open_voice(svc, story["id"])
@@ -265,7 +265,7 @@ async def test_retry_budget_terminalizes_without_more_provider_work(tmp_path):
     finish(svc, story["id"], "voice-1", [sha])
     with svc.store.tx() as db:
         db.execute(
-            "UPDATE jobs SET state='retry',attempts=?,available_at=0,lease_until=0 WHERE kind='research'",
+            "UPDATE jobs SET state='retry',attempts=?,available_at=0,lease_until=0,last_error='worker_failure:RuntimeError' WHERE kind='research'",
             (MAX_JOB_ATTEMPTS,),
         )
     gemini = FakeGemini()
@@ -280,7 +280,7 @@ async def test_retry_budget_terminalizes_without_more_provider_work(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_retryable_provider_failure_terminalizes_on_last_attempt(tmp_path):
+async def test_retryable_provider_failure_keeps_research_waiting_after_old_attempt_limit(tmp_path):
     gemini = FakeGemini(temporary_fail=True)
     svc, _, _ = service(tmp_path, gemini=gemini)
     story = create(svc)
@@ -295,8 +295,9 @@ async def test_retryable_provider_failure_terminalizes_on_last_attempt(tmp_path)
     await svc.run_once()
     with svc.store.connection() as db:
         job = db.execute("SELECT state,attempts FROM jobs WHERE kind='research'").fetchone()
-    assert (job["state"], job["attempts"]) == ("failed", MAX_JOB_ATTEMPTS)
-    assert svc.story(story["id"])["error"]["code"] == "provider_retry_exhausted"
+    assert (job["state"], job["attempts"]) == ("retry", MAX_JOB_ATTEMPTS)
+    assert svc.story(story["id"])["error"] is None
+    assert svc.recover_jobs() == 0
 
 
 @pytest.mark.asyncio

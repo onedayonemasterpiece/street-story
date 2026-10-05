@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -53,9 +54,14 @@ HOST_ENV = Path("/home/dev/.env")
 VIBE_SOURCE = Path("/home/dev/projects/vibepublish")
 VIBE_PY = Path("/home/dev/.local/opt/vibepublish/bin/python")
 BRIDGE_PYTHON = Path("/home/dev/.local/share/openai-codex-mcp/bridge-venv/bin/python")
-AI_RESOURCE_CONTROL_VERSION = "0.1.11"
-AI_RESOURCE_CONTROL_RELEASE_SHA = "8f5a0dc9aed257515d2ed5dd71ba1dc866d8b1fe"
+AI_RESOURCE_CONTROL_VERSION = "0.1.14"
+AI_RESOURCE_CONTROL_RELEASE_SHA = "a82a97147d697c3fbf0ba0748d6e49be196d0a7a"
+AI_RESOURCE_CONTROL_WHEEL_SHA256 = "186273b4d49c1fb8b6060f885b4c7edbe8a7eaf2f76e23eafbaddb6d90597662"
 AI_RESOURCE_CONTROL_REPO = Path("/home/dev/projects/ai-resource-control")
+RESEARCH_ROOT = STATE_ROOT / 'research'
+RESEARCH_DIRECTORY = RESEARCH_ROOT / 'opencode'
+RESEARCH_QUALIFICATION = RESEARCH_ROOT / 'qualification.json'
+RESEARCH_CA = RESEARCH_ROOT / 'russian-root-ca.crt'
 VIBE_DB = Path("/home/dev/.local/state/vibepublish/vibepublish.sqlite3")
 VIBE_OWNER_TOKEN_FILE = Path("/home/dev/.local/state/vibepublish/owner-token.txt")
 
@@ -309,53 +315,23 @@ def install_ai_resource_control(target_python: Path) -> None:
         timeout=30,
     )
 
-    stage = Path(tempfile.mkdtemp(prefix=".street-story-ai-resource-"))
-    try:
-        source = stage / "source"
-        source.mkdir(mode=0o700)
-        archive = stage / "source.tar"
-        wheels = stage / "wheels"
-        wheels.mkdir(mode=0o700)
-        run(
-            ["git", "-C", str(repo), "archive", "--format=tar", "-o", str(archive), AI_RESOURCE_CONTROL_RELEASE_SHA],
-            timeout=120,
-        )
-        run(["tar", "-xf", str(archive), "-C", str(source)], timeout=120)
-        archive.unlink(missing_ok=True)
-        run(
-            [
-                str(target_python),
-                "-m",
-                "pip",
-                "wheel",
-                "--no-deps",
-                "--wheel-dir",
-                str(wheels),
-                str(source),
-            ],
-            timeout=300,
-        )
-        expected = list(
-            wheels.glob(
-                f"ai_resource_control-{AI_RESOURCE_CONTROL_VERSION}-py3-none-any.whl"
-            )
-        )
-        if len(expected) != 1:
-            raise DeployError("private ai-resource-control wheel was not produced")
-        run(
-            [
-                str(target_python),
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--no-deps",
-                str(expected[0]),
-            ],
-            timeout=300,
-        )
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
+    # This is a canonical runtime dependency cache, not a second source tree or
+    # an OpenCode installation. Keep the private wheel out of the public repo.
+    wheels = STATE_ROOT / 'private-wheels'
+    wheels.mkdir(parents=True, exist_ok=True, mode=0o700)
+    wheel = wheels / f'ai_resource_control-{AI_RESOURCE_CONTROL_VERSION}-py3-none-any.whl'
+    if not wheel.exists():
+        run(['gh', 'release', 'download', 'v' + AI_RESOURCE_CONTROL_VERSION,
+             '--repo', 'onedayonemasterpiece/ai-resource-control', '--pattern', wheel.name,
+             '--dir', str(wheels)], timeout=180)
+    verify_private_resource_wheel(wheel)
+    run([str(target_python), '-m', 'pip', 'install', '--disable-pip-version-check',
+         '--no-deps', str(wheel)], timeout=180)
+
+
+def verify_private_resource_wheel(wheel: Path) -> None:
+    if wheel.is_symlink() or hashlib.sha256(wheel.read_bytes()).hexdigest() != AI_RESOURCE_CONTROL_WHEEL_SHA256:
+        raise DeployError('private ai-resource-control wheel digest mismatch')
 
 def ensure_venv(release: Path) -> Path:
     source = release / "source"
@@ -520,6 +496,11 @@ def configure_provider_env() -> None:
     ledger_id = host.get("AI_RESOURCE_LEDGER_ID", "").strip()
     if ledger_id:
         values["AI_RESOURCE_LEDGER_ID"] = ledger_id
+    giga_key = host.get('GIGACHAT_API_KEY') or host.get('STREET_STORY_GIGACHAT_KEY')
+    if giga_key and RESEARCH_CA.is_file():
+        values['STREET_STORY_GIGACHAT_KEY'] = giga_key
+        values['STREET_STORY_GIGACHAT_CA'] = str(RESEARCH_CA)
+        values['STREET_STORY_GIGACHAT_SCOPE'] = host.get('GIGACHAT_SCOPE', 'GIGACHAT_API_PERS')
     private_write(PROVIDERS_ENV, render_env(values))
 
 
@@ -951,9 +932,76 @@ def write_service_env(device: str, vibe: str, sha: str) -> None:
                 ),
                 "WORKER_POLL_SECONDS": "1",
                 "PROCESSING_DELAYED_AFTER_SECONDS": "1800",
+                "STREET_STORY_RESEARCH_ENDPOINT": "http://127.0.0.1:4097",
+                "STREET_STORY_RESEARCH_DIRECTORY": str(RESEARCH_DIRECTORY),
+                "STREET_STORY_RESEARCH_MODEL": "mimo-v2.6-flash-free",
+                "STREET_STORY_NATIVE_VISION_RESERVE": "true" if RESEARCH_QUALIFICATION.is_file() else "false",
             }
         ),
     )
+
+
+def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
+    """Install only the small scoped profile on the existing OpenCode service.
+
+    Qualification is retained operator evidence, never a model catalog flag.
+    This helper performs read-only attestation and seeds verified route metadata;
+    it dispatches no inference and creates no server or dependency tree.
+    """
+    require_mode(RESEARCH_QUALIFICATION, 0o600)
+    qualification = json.loads(RESEARCH_QUALIFICATION.read_text())
+    evidence = qualification.get('evidence')
+    if not isinstance(evidence, list) or not evidence:
+        raise DeployError('research qualification evidence unavailable')
+    for item in evidence:
+        path = Path(item['path'])
+        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != item['sha256']:
+            raise DeployError('research qualification evidence digest mismatch')
+    caches = qualification.get('caches') or {}
+    native = caches.get('native-vision-verification-v1') or {}
+    text = caches.get('research-text-verification-v1') or {}
+    if (set(caches) != {'native-vision-verification-v1', 'research-text-verification-v1'}
+            or native.get('model') != 'gpt-6-luna' or native.get('transport') != 'native_codex_app_server'
+            or native.get('controls') != {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}
+            or not native.get('common_acceptance_verified') or text.get('gigachat_model') != 'GigaChat-2'
+            or not text.get('semantic_contract_verified')):
+        raise DeployError('research semantic qualification incomplete')
+    RESEARCH_DIRECTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
+    source = release / 'source'
+    guard = source / 'backend/deploy/research_guard.mjs'
+    digest = hashlib.sha256(guard.read_bytes()).hexdigest()
+    installed_guard = RESEARCH_DIRECTORY / ('research-guard-' + digest + '.mjs')
+    if installed_guard.exists() and installed_guard.read_bytes() != guard.read_bytes():
+        raise DeployError('research immutable guard changed')
+    if not installed_guard.exists():
+        private_write(installed_guard, guard.read_text())
+    env = {**os.environ, 'PYTHONPATH': str(source / 'backend')}
+    program = '''
+import asyncio,json,sys
+from pathlib import Path
+from street_story.shared_devcoveer_research import SharedDevCoveerResearch,scoped_research_config
+directory=Path(sys.argv[1]);model='mimo-v2.6-flash-free'
+config=scoped_research_config(model,directory=directory)
+profile=directory/'opencode.json'
+if profile.exists() and json.loads(profile.read_text())!=config:
+ raise RuntimeError('existing scoped profile differs; reconcile its active attempts before changing it')
+if not profile.exists():
+ profile.write_text(json.dumps(config));profile.chmod(0o600)
+async def main():
+ client=SharedDevCoveerResearch(str(directory),model_id=model)
+ result=await client._attest(None,'search')
+ print(json.dumps({'endpoint':client.endpoint,'directory':client.directory,'guard_sha256':result['guard_sha256'],
+  'tool_boundary_enforced':result['tool_boundary_enforced'],'search_call_limit':result['search_call_limit']}))
+asyncio.run(main())
+'''
+    attestation = json.loads(run([str(venv / 'bin/python'), '-c', program, str(RESEARCH_DIRECTORY)], env=env, timeout=45))
+    with sqlite3.connect(DATA_ROOT / 'street-story.sqlite3') as db:
+        now = time.time()
+        for key, value in caches.items():
+            db.execute('INSERT OR REPLACE INTO cache(key,value_json,expires_at,created_at) VALUES(?,?,?,?)',
+                       (key, json.dumps(value), now + 30 * 86400, now))
+    return {**attestation, 'qualified_native_model': native['model'], 'qualified_text_model': text['gigachat_model'],
+            'qualification_sha256': hashlib.sha256(RESEARCH_QUALIFICATION.read_bytes()).hexdigest(), 'new_inference': False}
 
 
 def systemd_env() -> dict[str, str]:
@@ -998,7 +1046,7 @@ def install_service(release: Path, venv: Path) -> None:
             "PrivateTmp=true",
             "ProtectSystem=strict",
             "ProtectHome=read-only",
-            f"ReadWritePaths={STATE_ROOT}",
+            f"ReadWritePaths={STATE_ROOT} {Path('/home/dev/.codex').resolve()}",
             "UMask=0077",
             "",
             "[Install]",
@@ -1107,6 +1155,7 @@ def main() -> int:
     os.chmod(STATE_ROOT, 0o700)
     configure_provider_env()
     resource_preflight = verify_live_resource_control(venv)
+    research_preflight = install_research_runtime(release, venv)
     device, token_created = device_token()
     principal, vibe_token = ensure_vibe_principal(sha)
     preflight = preview_preflight(vibe_token, sha)
@@ -1134,6 +1183,7 @@ def main() -> int:
         },
         "capabilities": capabilities,
         "live_resource_control": resource_preflight,
+        "research_preflight": research_preflight,
         "vibepublish": {
             "principal": principal,
             "preflight": preflight,

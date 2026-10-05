@@ -31,6 +31,9 @@ data class ResearchProjectionSnapshot(
     val publicationState: String? = null,
     val publicationChannels: List<String> = emptyList(),
     val publicationScheduledFor: String? = null,
+    val photoSha256: String? = null,
+    val identityGeneration: Int? = null,
+    val researchControls: Map<String, ResearchControlWire>? = null,
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -58,6 +61,9 @@ class ResearchProjectionStore(context: Context) {
             publicationState = wire.publication?.state?.takeIf { it.isNotBlank() },
             publicationChannels = wire.publication?.destinations?.filter { it.isNotBlank() } ?: emptyList(),
             publicationScheduledFor = wire.publication?.scheduledFor?.takeIf { !it.isNullOrBlank() },
+            photoSha256 = wire.photoSha256,
+            identityGeneration = wire.identityGeneration,
+            researchControls = wire.researchControls,
         )
         check(prefs.edit().putString(key(storyId), gson.toJson(snapshot)).commit()) {
             "research projection was not persisted"

@@ -2,19 +2,28 @@
 set -euo pipefail
 
 PKG=com.onedayonemasterpiece.streetstory
-ARTIFACT_DIR=backend/live-e2e-artifacts
-FIXTURE_DIR=live-android-fixtures
+ARTIFACT_DIR="${LIVE_E2E_ARTIFACT_DIR:-backend/live-e2e-artifacts}"
+FIXTURE_DIR="${LIVE_E2E_FIXTURE_DIR:-live-android-fixtures}"
 KEEP_PUBLICATION="${LIVE_E2E_KEEP_PUBLICATION:-false}"
 IDENTITY_ONLY="${LIVE_E2E_IDENTITY_ONLY:-false}"
 [[ "$KEEP_PUBLICATION" == true || "$KEEP_PUBLICATION" == false ]]
+[[ "$IDENTITY_ONLY" == true || "$IDENTITY_ONLY" == false ]]
+[[ "$IDENTITY_ONLY" != true || "$KEEP_PUBLICATION" != true ]]
+export LIVE_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
 
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell pm path "$PKG" >/dev/null
-adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
+if [[ "$IDENTITY_ONLY" == true ]]; then
+  adb shell pm revoke "$PKG" android.permission.RECORD_AUDIO || true
+else
+  adb shell pm grant "$PKG" android.permission.RECORD_AUDIO || true
+fi
 adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
 adb shell "run-as $PKG mkdir -p files/live-golden"
-for name in config.json token.txt photo.jpg voice-{1..6}.pcm; do
+fixture_names=(config.json token.txt photo.jpg)
+if [[ "$IDENTITY_ONLY" != true ]]; then fixture_names+=(voice-{1..6}.pcm); fi
+for name in "${fixture_names[@]}"; do
   test -s "$FIXTURE_DIR/$name"
   adb exec-in "run-as $PKG sh -c 'cat > files/live-golden/$name'" < "$FIXTURE_DIR/$name"
 done
@@ -43,16 +52,59 @@ python - <<'PY'
 import json
 import os
 import pathlib
+import re
 
-evidence = json.loads(pathlib.Path('backend/live-e2e-artifacts/android-golden-evidence.json').read_text())
+evidence = json.loads((pathlib.Path(os.environ['LIVE_E2E_ARTIFACT_DIR']) / 'android-golden-evidence.json').read_text())
 if os.environ.get('LIVE_E2E_IDENTITY_ONLY', 'false') == 'true':
     if evidence.get('identity_only') is not True or evidence.get('automatic_identity') is not True:
         raise SystemExit('Android ordinary photo identity not proved')
-    if evidence.get('discovery_seeded') is not False or evidence.get('physical_mic') is not False:
+    if (evidence.get('discovery_seeded') is not False or evidence.get('physical_mic') is not False
+            or evidence.get('prepared_owner_photo') is not True or evidence.get('owner_name_hint') is not False
+            or evidence.get('seed_urls_supplied') is not False):
         raise SystemExit('Android identity provenance is incorrect')
+    if (evidence.get('identity_without_live') is not True
+            or evidence.get('identity_transport') != 'headless_https_poll'
+            or evidence.get('no_live_or_recording_started') is not True
+            or evidence.get('prepared_pcm_after_capture_boundary') is not False
+            or evidence.get('record_audio_permission_granted') is not False
+            or evidence.get('legacy_voice_endpoint_used') is not False):
+        raise SystemExit('Android identity requires Live, microphone or owner input')
+    for name in ('local_voice_session_count', 'backend_live_message_count', 'backend_voice_message_count', 'completed_live_turns'):
+        if evidence.get(name) != 0:
+            raise SystemExit('Android identity unexpectedly created voice/Live evidence: ' + name)
     transport = evidence.get('transport_final') or {}
-    if transport.get('transport') != 'wss' or transport.get('http_audio_fallback') is not False:
-        raise SystemExit('Android identity did not use WSS')
+    if (transport.get('transport') != 'off' or int(transport.get('received_pcm_bytes') or 0) != 0
+            or int(transport.get('output_audio_chunks') or 0) != 0 or int(transport.get('event_cursor') or 0) != 0):
+        raise SystemExit('Android headless identity unexpectedly used a Live transport')
+    identity = evidence.get('visual_identity') or {}
+    scope = evidence.get('identity_scope') or {}
+    if (identity.get('status') != 'match' or identity.get('visual_reference_verified') is not True
+            or identity.get('photo_sha256') != evidence.get('fixture_photo_sha256')
+            or identity.get('photo_sha256') != scope.get('photo_sha256')
+            or type(scope.get('identity_generation')) is not int
+            or identity.get('generation') != scope.get('identity_generation')):
+        raise SystemExit('Android headless identity lacks current visual proof')
+    for name in ('identity_reference_count', 'identity_model_image_count', 'identity_source_url_count', 'identity_http_read_count'):
+        if type(evidence.get(name)) is not int or evidence[name] < 1:
+            raise SystemExit('Android headless identity provenance count missing: ' + name)
+    references = identity.get('reference_evidence') or []
+    if (not isinstance(references, list) or any(not isinstance(item, dict)
+            or not re.fullmatch('[0-9a-f]{64}', str(item.get('model_image_sha256') or ''))
+            or not str(item.get('source_url') or '').startswith('https://')
+            or item.get('subject_candidate_id', item.get('candidate_id')) != identity.get('candidate_id')
+            for item in references)):
+        raise SystemExit('Android headless identity decoded reference provenance is invalid')
+    if (len(references) != evidence['identity_reference_count']
+            or len({item['model_image_sha256'] for item in references}) != evidence['identity_model_image_count']):
+        raise SystemExit('Android headless identity reference counts disagree with retained proof')
+    source_urls = evidence.get('identity_source_urls') or []
+    if (not isinstance(source_urls, list) or any(not isinstance(url, str) or not url.startswith('https://') for url in source_urls)
+            or len(set(source_urls)) != evidence['identity_source_url_count']):
+        raise SystemExit('Android headless identity source URL count disagrees with retained proof')
+    if (evidence.get('identity_progress') or {}).get('visual_comparison_verified') is not True:
+        raise SystemExit('Android headless identity progress lacks verified comparison')
+    if not any(item.get('stage') == '02-object-identified' for item in evidence.get('stage_screenshots', [])):
+        raise SystemExit('Android headless identity lacks current UI readback')
     raise SystemExit(0)
 keep = os.environ.get('LIVE_E2E_KEEP_PUBLICATION', 'false') == 'true'
 if evidence.get('publication_kept') is not keep:

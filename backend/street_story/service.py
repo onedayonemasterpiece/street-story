@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import Settings
+from .config import Settings, reveal
 from .db import Store
 from .providers import (
     GeminiClient,
@@ -30,6 +30,7 @@ from .providers import (
 MAX_JOB_ATTEMPTS = 8
 RETRY_EXHAUSTED_ERROR = "provider_retry_exhausted"
 RETRY_EXHAUSTED_MESSAGE = "Automatic processing stopped after repeated provider failures. Review and retry manually."
+RESEARCH_JOB_KINDS = {'identity', 'identity_visual', 'research', 'refinement'}
 
 
 class ConflictError(RuntimeError):
@@ -86,6 +87,7 @@ class ProviderBundle:
     wikipedia: Any
     gemini: Any
     vibepublish: Any
+    research: Any = None
 
 
 class StreetStoryService:
@@ -100,6 +102,10 @@ class StreetStoryService:
             VibePublishClient(settings),
         )
 
+        if self.providers.research is None and (settings.research_endpoint or settings.native_vision_reserve or reveal(settings.research_gigachat_key)):
+            from .research_adapter import ProductResearchAdapter
+            self.providers.research = ProductResearchAdapter(self)
+
     def recover_jobs(self) -> int:
         now = self.store.now()
         with self.store.tx() as db:
@@ -107,14 +113,22 @@ class StreetStoryService:
                 "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
                 (MAX_JOB_ATTEMPTS,),
             )]
+            changed = 0
             for job in exhausted:
+                if job["kind"] in RESEARCH_JOB_KINDS and not str(job.get('last_error') or '').startswith('worker_failure:'):
+                    continue
                 self._fail_retry_exhausted(db, job, "retry_budget_exhausted")
-            changed = len(exhausted)
+                changed += 1
             changed += db.execute(
                 "UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=COALESCE(last_error,'worker_restart_recovery'),updated_at=? "
-                "WHERE state='running' AND lease_until<=? AND attempts<?",
-                (now, now, now, MAX_JOB_ATTEMPTS),
+                "WHERE state='running' AND lease_until<=?",
+                (now, now, now),
             ).rowcount
+            # A crash can leave a joined request after the preceding job became
+            # terminal. Never start it alongside a recovered active attempt.
+            for story in db.execute("SELECT id FROM stories WHERE research_json LIKE ?",
+                                    ('%"pending_fact_request"%',)):
+                changed += int(self._resume_joined_fact_request(db, story['id']))
         return changed
 
     def _idem(self, db, key: str, action: str, request_digest: str, resource_type: str, resource_id: str) -> str | None:
@@ -207,6 +221,20 @@ class StreetStoryService:
 
     def _story_repr(self, db, row) -> dict[str, Any]:
         from .fact_ledger import assertion_state, backfill_legacy_fact_ledger
+        from .research_control import KINDS, PURPOSES, research_stopped
+        research = json.loads(row['research_json'] or '{}')
+        generation = int(research.get('identity_generation') or 0)
+        controls = research.get('research_controls') or {}
+        pending_research = {purpose: False for purpose in PURPOSES}
+        for job in db.execute("SELECT kind,payload_json FROM jobs WHERE story_id=? AND state IN ('ready','retry','running')", (row['id'],)):
+            payload = json.loads(job['payload_json'] or '{}')
+            if (payload.get('photo_sha256', row['photo_sha256']) != row['photo_sha256']
+                    or payload.get('identity_generation', generation) != generation):
+                continue
+            for purpose in PURPOSES:
+                if job['kind'] in KINDS[purpose] and not research_stopped(
+                        research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation):
+                    pending_research[purpose] = True
         backfill_legacy_fact_ledger(db, self.store.now())
         assertion_rows = assertion_state(db, row["id"])
         facts = []
@@ -243,9 +271,20 @@ class StreetStoryService:
             delayed = pending and self.store.now()-pending["created_at"] >= self.settings.processing_delayed_after_seconds
             processing = {"status": "processing_delayed" if delayed else "researching", "message": "Обработка займёт немного больше времени" if delayed else "Исследуем", "automatic_retry": True}
             error = None
+        processing_purpose = {'identifying': 'identity', 'researching': 'facts'}.get(row['state'])
+        if processing_purpose and research_stopped(research, processing_purpose,
+                photo_sha256=row['photo_sha256'], identity_generation=generation):
+            processing = {'status': 'research_paused', 'message': 'Исследование приостановлено', 'automatic_retry': False}
         return {
             "processing": processing,
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
+            "photo_sha256": row['photo_sha256'], "identity_generation": generation,
+            "research_controls": {purpose: {
+                'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
+                'revision': int((controls.get(purpose) or {}).get('revision') or 0),
+                'photo_sha256': row['photo_sha256'], 'identity_generation': generation,
+            } for purpose in PURPOSES},
+            "research_pending": pending_research,
             "place_name": row["place_name"], "summary": row["summary"], "draft_text": row["draft_text"],
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
@@ -416,6 +455,31 @@ class StreetStoryService:
             set_owner_selection(db, story_id, list(selected_ids), self.store.now())
             return self._story_repr(db, self._story_row(db, story_id))
 
+    def mutate_research_control(self, story_id: str, key: str, body: dict[str, Any]):
+        from .research_control import resume_research, stop_research
+        if not isinstance(body, dict) or body.get('action') not in {'stop', 'resume'}:
+            raise InvalidStateError('research_control_invalid', 'Укажите action: stop или resume.')
+        purpose = body.get('purpose', 'all')
+        if purpose not in {'all', 'identity', 'facts'}:
+            raise InvalidStateError('research_control_invalid', 'Укажите purpose: identity, facts или all.')
+        generation = body.get('expected_identity_generation')
+        if generation is not None and (type(generation) is not int or generation < 0):
+            raise InvalidStateError('research_control_invalid', 'Поколение объекта должно быть целым неотрицательным числом.')
+        with self.store.tx() as db:
+            self._story_row(db, story_id)
+            if self._idem(db, key, 'research_control', digest({'story_id': story_id, **body}), 'story', story_id):
+                return {'action': body['action'], 'purposes': ['identity', 'facts'] if purpose == 'all' else [purpose],
+                        'changed': [], 'story': self._story_repr(db, self._story_row(db, story_id))}
+            operation = stop_research if body['action'] == 'stop' else resume_research
+            return operation(self, story_id, purpose=purpose, expected_photo_sha256=body.get('expected_photo_sha256'),
+                             expected_identity_generation=generation, _db=db)
+
+    async def close(self):
+        researcher = getattr(self.providers, 'research', None)
+        close = getattr(researcher, 'close', None)
+        if callable(close):
+            await close()
+
     def mutate_refinement(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         session_id = str(body.get("voice_session_id", ""))
         req_digest = digest({"story_id": story_id, **body})
@@ -566,15 +630,31 @@ class StreetStoryService:
 
     def _fail_retry_exhausted(self, db, job: dict[str, Any], last_error: str) -> None:
         now = self.store.now()
-        db.execute(
-            "UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=?",
-            (last_error, now, job["id"]),
-        )
+        changed = db.execute(
+            "UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=? AND state=? AND attempts=?",
+            (last_error, now, job["id"], job['state'], job['attempts']),
+        ).rowcount
+        if not changed:
+            return
         db.execute(
             "UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? "
             "WHERE id=? AND (state!='needs_review' OR COALESCE(error_code,'')!=?)",
             (RETRY_EXHAUSTED_ERROR, RETRY_EXHAUSTED_MESSAGE, now, job["story_id"], RETRY_EXHAUSTED_ERROR),
         )
+        if job['kind'] in {'research', 'refinement'}:
+            self._resume_joined_fact_request(db, job['story_id'])
+
+    def _resume_joined_fact_request(self, db, story_id: str) -> bool:
+        scheduler = getattr(self, '_schedule_joined_fact_request', None)
+        if not callable(scheduler):
+            return False
+        active = db.execute(
+            "SELECT 1 FROM jobs WHERE story_id=? AND kind IN ('research','refinement') "
+            "AND state IN ('ready','retry','running') LIMIT 1", (story_id,)
+        ).fetchone()
+        if active:
+            return False
+        return bool(scheduler(db, story_id))
 
     def _enqueue_job(self, db, story_id: str, kind: str, semantic_key: str, payload: dict[str, Any]) -> str:
         existing = db.execute("SELECT id FROM jobs WHERE semantic_key=?", (semantic_key,)).fetchone()
@@ -600,7 +680,60 @@ class StreetStoryService:
             db.execute("UPDATE jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE id=?", (now + 90, now, row["id"]))
             return dict(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
 
+    def _schedule_identity_visual(self):
+        researcher = getattr(self.providers, 'research', None)
+        if researcher is None or not researcher.vision_available:
+            return
+        with self.store.tx() as db:
+            for row in db.execute("SELECT * FROM stories WHERE state IN ('needs_review','identifying','photo_ready') LIMIT 20"):
+                research = json.loads(row['research_json'] or '{}')
+                identity = research.get('visual_identity') or {}
+                generation = int(research.get('identity_generation') or 0)
+                from .research_control import research_stopped
+                if (identity.get('status') in {'match','owner_confirmed'} or not identity.get('candidates')
+                        or research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation)):
+                    continue
+                self._enqueue_job(db,row['id'],'identity_visual',f"identity-visual:{row['id']}:{generation}:{row['photo_sha256']}",
+                    {'identity_generation':generation})
+
+    def _schedule_confirmed_facts(self):
+        """After visual confirmation, collect evidence without requiring voice.
+
+        One frozen initial request uses the existing jobs/run intake. Subsequent
+        scopes are model-owned; selection, concept and draft remain editorial.
+        """
+        researcher = getattr(self.providers, 'research', None)
+        if researcher is None or not getattr(researcher, 'facts_available', False):
+            return
+        from .research_control import research_stopped
+        with self.store.tx() as db:
+            for row in db.execute("SELECT * FROM stories WHERE state='identity_ready' LIMIT 20"):
+                research = json.loads(row['research_json'] or '{}')
+                identity = research.get('visual_identity') or {}
+                generation = int(research.get('identity_generation') or 0)
+                automatic = research.get('automatic_fact_request') or {}
+                if (identity.get('status') not in {'match', 'owner_confirmed'} or research.get('input_revision')
+                        or automatic.get('photo_sha256') == row['photo_sha256'] and automatic.get('identity_generation') == generation
+                        or research_stopped(research, 'facts', photo_sha256=row['photo_sha256'], identity_generation=generation)
+                        or db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind IN ('research','refinement') "
+                                      "AND state IN ('ready','retry','running')", (row['id'],)).fetchone()):
+                    continue
+                revision = 'automatic-facts:' + digest([row['id'], row['photo_sha256'], generation, identity.get('candidate_id')])
+                payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'],
+                    'identity_generation': generation, 'voice_session_ids': [], 'mode': 'initial',
+                    'coverage_goal': 'Найди проверенные сведения о подтверждённом объекте для будущей публикации. '
+                                     'Переиспользуй известные факты; исследуй недостающие полезные аспекты. '
+                                     'Сохрани источники, не выбирай факты и не изменяй концепцию или текст автора.',
+                    'extraction_scope': 'initial-confirmed-poi-v1'}
+                self._enqueue_job(db, row['id'], 'research', revision, payload)
+                research['automatic_fact_request'] = {'input_revision': revision, 'identity_generation': generation,
+                                                      'photo_sha256': row['photo_sha256']}
+                db.execute("UPDATE stories SET research_json=?,state='researching',revision=revision+1,updated_at=? WHERE id=?",
+                           (canonical(research), self.store.now(), row['id']))
+
     async def run_once(self) -> bool:
+        self._schedule_identity_visual()
+        self._schedule_confirmed_facts()
         job = self._claim()
         if not job:
             quota = getattr(self.providers.gemini, 'quota', None)
@@ -618,7 +751,10 @@ class StreetStoryService:
 
         lease_task = asyncio.create_task(heartbeat())
         try:
-            if job["kind"] == "identity":
+            if job["kind"] == "identity_visual":
+                from .headless_identity import HeadlessIdentity
+                await HeadlessIdentity(self).run(job)
+            elif job["kind"] == "identity":
                 handler = getattr(self, "_run_identity", None)
                 if not callable(handler):
                     raise PermanentProviderError("Identity worker is unavailable")
@@ -632,30 +768,45 @@ class StreetStoryService:
             else:
                 raise PermanentProviderError(f"Unknown job kind {job['kind']}")
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='done',lease_until=0,last_error=NULL,updated_at=? WHERE id=?", (self.store.now(), job["id"]))
+                changed = db.execute("UPDATE jobs SET state='done',lease_until=0,last_error=NULL,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now(), job["id"], job['attempts'])).rowcount
+                if not changed:
+                    return True
+                if job['kind'] in {'research', 'refinement'}:
+                    self._resume_joined_fact_request(db, job['story_id'])
         except RetryableProviderError as exc:
             with self.store.tx() as db:
+                if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
+                    return True
                 error = self.settings.redact(str(exc))
-                if job["attempts"] >= MAX_JOB_ATTEMPTS:
+                if job["kind"] in {'identity', 'identity_visual', 'research', 'refinement'}:
+                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?",
+                        (max(self.store.now()+1, exc.retry_at or self.store.now()+60), error,self.store.now(),job["id"], job['attempts']))
+                elif job["attempts"] >= MAX_JOB_ATTEMPTS:
                     self._fail_retry_exhausted(db, job, error)
                 else:
                     backoff = min(300, 2 ** min(job["attempts"], 8))
                     available_at = max(self.store.now()+1, exc.retry_at) if exc.retry_at is not None else self.store.now()+backoff
-                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (available_at, error, self.store.now(), job["id"]))
+                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (available_at, error, self.store.now(), job["id"], job['attempts']))
             return True
         except (PermanentProviderError, ConflictError, InvalidStateError) as exc:
             with self.store.tx() as db:
-                db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.settings.redact(str(exc)), self.store.now(), job["id"]))
+                changed = db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.settings.redact(str(exc)), self.store.now(), job["id"], job['attempts'])).rowcount
+                if not changed:
+                    return True
                 if job["kind"] != "visual":
                     db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?", ("provider_permanent_error", "Не удалось выполнить обработку. Требуется проверка настроек сервиса.", self.store.now(), job["story_id"]))
+                if job['kind'] in {'research', 'refinement'}:
+                    self._resume_joined_fact_request(db, job['story_id'])
             return True
         except Exception as exc:
             with self.store.tx() as db:
+                if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
+                    return True
                 error = f"worker_failure:{type(exc).__name__}"
                 if job["attempts"] >= MAX_JOB_ATTEMPTS:
                     self._fail_retry_exhausted(db, job, error)
                 else:
-                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=?", (self.store.now()+5, error, self.store.now(), job["id"]))
+                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+5, error, self.store.now(), job["id"], job['attempts']))
             return True
         finally:
             lease_task.cancel()

@@ -10,6 +10,9 @@ from pathlib import Path
 
 async def identify_nearest(service, story, transcript, candidates):
     story = dict(story)
+    # Keep semantic alternatives available even when this attempt only sends a
+    # bounded subset of reference pixels (or targets one promising hypothesis).
+    story['_identity_shortlist'] = candidates
     if '_camera_hints' not in story:
         story['_camera_hints'] = read_camera_hints(Path(story['photo_path'])) if story.get('photo_path') else {}
     def trace(event, fields):
@@ -38,7 +41,7 @@ async def identify_nearest(service, story, transcript, candidates):
         if time.monotonic() - started >= 60:
             break
         result = await evaluate(batch, min(2, remaining_refs))
-        if result.get('_references_rate_limited') and not visual_match(result, batch):
+        if result.get('_references_rate_limited') and not visual_match(result, batch, candidates):
             trace( 'identity_batch_finished', {
                 'batch': number, 'batch_candidate_count': len(batch), 'candidate_id': result.get('candidate_id'),
                 'status': 'uncertain', 'reference_ids_sent': result.get('_references_sent', []),
@@ -69,7 +72,7 @@ async def identify_nearest(service, story, transcript, candidates):
             # A failed reference verification cannot preserve an earlier claim
             # that the same object was already confirmed.
             result = targeted
-        accepted = visual_match(result, batch)
+        accepted = visual_match(result, batch, candidates)
         trace( 'identity_batch_finished', {
             'batch': number, 'batch_candidate_count': len(batch), 'candidate_id': result.get('candidate_id'), 'status': result.get('status'),
             'confidence': confidence(result), 'reference_ids_sent': result.get('_references_sent', []),

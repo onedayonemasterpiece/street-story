@@ -317,6 +317,7 @@ CREATE TABLE IF NOT EXISTS research_runs(
   story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
   poi_key TEXT,
   goal TEXT NOT NULL,
+  extraction_scope TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL CHECK(state IN (
     'planned','discovering','fetching','extracting','reconciling','verifying',
     'completed','partial','failed','cancelled'
@@ -330,6 +331,17 @@ CREATE TABLE IF NOT EXISTS research_runs(
 );
 CREATE INDEX IF NOT EXISTS idx_research_runs_story_time
  ON research_runs(story_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_provider_attempts(
+  attempt_id TEXT PRIMARY KEY,
+  logical_id TEXT NOT NULL,
+  story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  receipt_json TEXT NOT NULL DEFAULT '{}',
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_provider_logical ON research_provider_attempts(logical_id,created_at);
 
 CREATE TABLE IF NOT EXISTS source_documents(
   document_id TEXT PRIMARY KEY,
@@ -350,6 +362,7 @@ CREATE TABLE IF NOT EXISTS source_versions(
   redirect_chain_json TEXT NOT NULL,
   normalized_text TEXT NOT NULL,
   read_status TEXT NOT NULL,
+  access_scope TEXT NOT NULL DEFAULT 'story',
   char_count INTEGER NOT NULL,
   created_at REAL NOT NULL
 );
@@ -399,6 +412,9 @@ CREATE TABLE IF NOT EXISTS research_chunk_runs(
   prompt_version TEXT NOT NULL DEFAULT '',
   reuse_from_run_id TEXT,
   reuse_kind TEXT NOT NULL DEFAULT '',
+  lease_owner TEXT,
+  lease_until REAL NOT NULL DEFAULT 0,
+  lease_fence INTEGER NOT NULL DEFAULT 0,
   updated_at REAL NOT NULL,
   PRIMARY KEY(run_id,chunk_id)
 );
@@ -734,6 +750,13 @@ class Store:
             db.executescript(SCHEMA)
             db.executescript(RELIABILITY_SCHEMA)
             db.executescript(POI_SCHEMA)
+            for table, name, declaration in (
+                ('research_runs', 'extraction_scope', "TEXT NOT NULL DEFAULT ''"),
+                ('source_versions', 'access_scope', "TEXT NOT NULL DEFAULT 'story'"),
+            ):
+                columns = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+                if name not in columns:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {declaration}')
             scan_columns = {row[1] for row in db.execute("PRAGMA table_info(fact_conflict_scans)")}
             for name, sql in (
                 ("coverage_complete", "INTEGER NOT NULL DEFAULT 0"),
@@ -756,7 +779,9 @@ class Store:
                 row[1] for row in db.execute("PRAGMA table_info(research_chunk_batches)")
             }
             chunk_columns = {row[1] for row in db.execute('PRAGMA table_info(research_chunk_runs)')}
-            for name, sql in (("reuse_from_run_id", "TEXT"), ("reuse_kind", "TEXT NOT NULL DEFAULT ''")):
+            for name, sql in (("reuse_from_run_id", "TEXT"), ("reuse_kind", "TEXT NOT NULL DEFAULT ''"),
+                              ("lease_owner", "TEXT"), ("lease_until", "REAL NOT NULL DEFAULT 0"),
+                              ("lease_fence", "INTEGER NOT NULL DEFAULT 0")):
                 if name not in chunk_columns:
                     db.execute(f'ALTER TABLE research_chunk_runs ADD COLUMN {name} {sql}')
             for name in ("payload_json", "payload_sha256"):

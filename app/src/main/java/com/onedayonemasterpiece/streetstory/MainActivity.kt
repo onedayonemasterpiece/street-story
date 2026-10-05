@@ -66,8 +66,6 @@ class MainActivity : Activity() {
     private var pendingPhotoRecoveryStoryId: String? = null
     private var photoRecoveryButton: Button? = null
     private var identityLinkView: TextView? = null
-    private var pendingLiveAutoIdentity = false
-    private var autoIdentityLiveStartingStoryId: String? = null
     private var receiverRegistered = false
     private var pendingUpdate: UpdateInfo? = null
     private var waitingForInstallPermission = false
@@ -105,6 +103,7 @@ class MainActivity : Activity() {
     private var identityProgressView: TextView? = null
     private var lastLiveIdentityProgress: IdentityProgressWire? = null
     private var factsBlock: LinearLayout? = null
+    private var researchControlBlock: LinearLayout? = null
     private var conceptBlock: TextView? = null
     private var publicationEventView: TextView? = null
     private var renderedMessages: List<LiveChatMessage> = emptyList()
@@ -317,7 +316,7 @@ class MainActivity : Activity() {
         renderedResearchProgress = null
         stickyIsland = null; stickyImage = null; stickyTitle = null
         stickyFacts = null; stickyConcept = null; stickyComparison = null; stickyVisible = false
-        factsBlock = null; conceptBlock = null; publicationEventView = null
+        factsBlock = null; researchControlBlock = null; conceptBlock = null; publicationEventView = null
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
@@ -405,6 +404,13 @@ class MainActivity : Activity() {
             contentDescription = "live-chat-status"
         }
         chatBox?.addView(chatStatus)
+
+        researchControlBlock = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            contentDescription = "research-control"
+            setPadding(dp(4), dp(10), dp(4), dp(8))
+        }
+        chatBox?.addView(researchControlBlock)
 
         factsBlock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -567,6 +573,7 @@ class MainActivity : Activity() {
 
         photoRecoveryButton?.visibility = if ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW) View.VISIBLE else View.GONE
         val projection = research.get(id)
+        renderResearchControls(id, projection)
         renderFactsIsland(id)
         conceptBlock?.apply {
             val concept = projection?.publicationConcept.orEmpty()
@@ -575,7 +582,8 @@ class MainActivity : Activity() {
         }
         val liveProgress = live.snapshot().takeIf { it.storyId == id }?.identityProgress
         renderIdentityProgress(newestIdentityProgress(projection?.identityProgress, liveProgress),
-            story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING))
+            story.stage in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING) &&
+                projection?.researchControls?.get("identity")?.stopped != true)
         val identified = projection?.candidates?.firstOrNull { it.candidateId == projection.candidateId }
         identityLinkView?.apply {
             val accepted = projection?.identityStatus in setOf("match", "owner_confirmed")
@@ -612,7 +620,6 @@ class MainActivity : Activity() {
             visibility = if (text.isBlank()) View.GONE else View.VISIBLE
         }
         updateStickyPhoto()
-        maybeAutoStartIdentityLive(story, projection)
 
         publishButton?.apply {
             val hasResult = !story.draftText.isNullOrBlank() &&
@@ -760,7 +767,6 @@ class MainActivity : Activity() {
         }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             pendingLiveStoryId = storyId
-            pendingLiveAutoIdentity = false
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
             return
         }
@@ -769,20 +775,15 @@ class MainActivity : Activity() {
 
     private fun stopLiveForOwner(storyId: String) {
         // Stop does not depend on an archive, successful handshake or server reply.
-        prefs.edit().putBoolean("identity_live_attempted:$storyId", true).apply()
         pendingLiveStoryId = null
-        pendingLiveAutoIdentity = false
-        autoIdentityLiveStartingStoryId = null
         live.stopLocal()
         RecordingService.command(this, RecordingService.ACTION_TRANSPORT_FINISH)
     }
 
-    private fun startLive(storyId: String, autoIdentity: Boolean = false) {
+    private fun startLive(storyId: String) {
         pendingLiveStoryId = null
-        if (!autoIdentity) pendingLiveAutoIdentity = false
         live.start(storyId) { ready, error ->
             runOnUiThread {
-                if (autoIdentity) autoIdentityLiveStartingStoryId = null
                 if (ready && live.isActiveFor(storyId) && !live.snapshot().connecting) {
                     RecordingService.start(this, storyId, RecordingKind.LIVE_ARCHIVE)
                 } else if (!error.isNullOrBlank()) {
@@ -790,33 +791,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-    }
-
-    private fun maybeAutoStartIdentityLive(
-        story: StorySnapshot,
-        projection: ResearchProjectionSnapshot?,
-    ) {
-        val status = projection?.identityStatus ?: return
-        if (status !in setOf("match", "owner_confirmed", "uncertain", "mismatch")) return
-        if (status !in setOf("match", "owner_confirmed") && projection.candidates.isEmpty()) return
-        if (!config.configured) return
-
-        val current = live.snapshot()
-        if (current.active || current.connecting) return
-        if (autoIdentityLiveStartingStoryId != null) return
-
-        val attemptKey = "identity_live_attempted:${story.clientStoryId}"
-        if (prefs.getBoolean(attemptKey, false)) return
-        prefs.edit().putBoolean(attemptKey, true).apply()
-        autoIdentityLiveStartingStoryId = story.clientStoryId
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            pendingLiveStoryId = story.clientStoryId
-            pendingLiveAutoIdentity = true
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
-            return
-        }
-        startLive(story.clientStoryId, autoIdentity = true)
     }
 
     override fun onRequestPermissionsResult(
@@ -831,14 +805,11 @@ class MainActivity : Activity() {
         }
         if (requestCode != REQUEST_MIC) return
         val storyId = pendingLiveStoryId
-        val autoIdentity = pendingLiveAutoIdentity
         pendingLiveStoryId = null
-        pendingLiveAutoIdentity = false
         if (storyId == null) return
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED && storyId != null) {
-            startLive(storyId, autoIdentity = autoIdentity)
+            startLive(storyId)
         } else {
-            if (autoIdentity) autoIdentityLiveStartingStoryId = null
             Toast.makeText(this, "Для Live нужен микрофон", Toast.LENGTH_LONG).show()
         }
     }
@@ -1171,7 +1142,7 @@ class MainActivity : Activity() {
         floatingImageProxy = null
         stickyIsland = null; stickyImage = null; stickyTitle = null
         stickyFacts = null; stickyConcept = null; stickyComparison = null; stickyVisible = false
-        factsBlock = null; conceptBlock = null; publicationEventView = null
+        factsBlock = null; researchControlBlock = null; conceptBlock = null; publicationEventView = null
         identityProgressView = null
         lastLiveIdentityProgress = null
         renderedMessages = emptyList()
@@ -1232,7 +1203,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun topicStatus(story: StorySnapshot): String = when (story.stage) {
+    private fun topicStatus(story: StorySnapshot): String {
+        val controls = research.get(story.clientStoryId)?.researchControls.orEmpty()
+        if (story.stage == StoryStage.IDENTIFYING && controls["identity"]?.stopped == true) return "Поиск объекта приостановлен"
+        if (story.stage == StoryStage.RESEARCHING && controls["facts"]?.stopped == true) return "Поиск фактов приостановлен"
+        return when (story.stage) {
         StoryStage.SCHEDULED -> "Запланировано · ${story.scheduledFor.orEmpty()}"
         StoryStage.PUBLISHED -> "Опубликовано"
         StoryStage.NEEDS_REVIEW, StoryStage.VISUAL_BLOCKED -> "Нужно внимание"
@@ -1242,6 +1217,7 @@ class MainActivity : Activity() {
         StoryStage.VISUAL_PROCESSING -> "Готовим изображение"
         StoryStage.SCHEDULING -> "Планируем публикацию"
         else -> "В работе"
+        }
     }
 
     private fun statusColor(stage: String): Int =
@@ -1493,6 +1469,56 @@ class MainActivity : Activity() {
             current = current.parent as? View
         }
         scroll.smoothScrollTo(0, (top - dp(12)).coerceAtLeast(0))
+    }
+
+    private fun renderResearchControls(storyId: String, projection: ResearchProjectionSnapshot?) {
+        val host = researchControlBlock ?: return
+        host.removeAllViews()
+        host.addView(label("Исследование · прогресс сохраняется", 13, MUTED, Typeface.DEFAULT))
+        val story = store.story(storyId) ?: return
+        val controls = projection?.researchControls.orEmpty()
+        val scoped = projection?.photoSha256 == story.photoSha256 && projection?.identityGeneration != null &&
+            controls.keys.containsAll(setOf("identity", "facts")) && controls.values.all {
+                it.photoSha256 == story.photoSha256 && it.identityGeneration == projection.identityGeneration
+            }
+        val pending = store.pendingOperations(storyId).any { it.kind == "research-control" }
+        if (pending) host.addView(label("Применяю команду…", 12, MUTED, Typeface.DEFAULT))
+        val identityStopped = controls["identity"]?.stopped == true
+        val factsStopped = controls["facts"]?.stopped == true
+        for ((purpose, title) in listOf("identity" to "Объект", "facts" to "Факты", "all" to "Всё")) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val stopped = when (purpose) { "identity" -> identityStopped; "facts" -> factsStopped; else -> identityStopped && factsStopped }
+            val resumable = when (purpose) { "identity" -> identityStopped; "facts" -> factsStopped; else -> identityStopped || factsStopped }
+            row.addView(label(if (stopped) "$title · пауза" else title, 13, INK, Typeface.DEFAULT),
+                LinearLayout.LayoutParams(0, -2, 1f))
+            for ((action, caption) in listOf("stop" to "Стоп", "resume" to "Продолжить")) {
+                row.addView(secondaryButton(caption) { queueResearchControl(storyId, action, purpose) }.apply {
+                    contentDescription = "research-$action-$purpose"
+                    isEnabled = scoped && !pending && !story.serverStoryId.isNullOrBlank() &&
+                        (if (action == "stop") !stopped else resumable)
+                }, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(5) })
+            }
+            host.addView(row)
+        }
+    }
+
+    private fun queueResearchControl(storyId: String, action: String, purpose: String) {
+        val story = store.story(storyId) ?: return
+        val projection = research.get(storyId) ?: return
+        val photo = projection.photoSha256 ?: return
+        val generation = projection.identityGeneration ?: return
+        if (photo != story.photoSha256 || story.serverStoryId.isNullOrBlank()) return
+        if (store.pendingOperations(storyId).any { it.kind == "research-control" }) return
+        val payload = researchControlPayload(action, purpose, photo, generation)
+        // Reuse the durable outbox and exact idempotency key after a lost HTTP reply.
+        // No voice input, Live restart or microphone permission is needed.
+        store.enqueueOperation(storyId, "research-control",
+            newRequestKey("research-ui", "$storyId-${java.util.UUID.randomUUID()}"), gson.toJson(payload))
+        SyncScheduler.enqueue(this)
+        renderResearchControls(storyId, projection)
     }
 
     private fun renderFactsIsland(storyId: String) {

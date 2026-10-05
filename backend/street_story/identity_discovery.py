@@ -226,6 +226,11 @@ def merge_candidates(candidates, entity_name):
     if len(candidates) < 2:
         return candidates
     parent = list(range(len(candidates)))
+    # Shared illustration/category membership is weaker than two conflicting
+    # explicit entities. Track whole components so an unlabelled Commons file
+    # cannot bridge them transitively.
+    entity_ids = [{str(item['wikidata'])} if re.fullmatch(r'Q[1-9]\d*', str(item.get('wikidata') or ''))
+                  else set() for item in candidates]
     def find(index):
         while parent[index] != index:
             parent[index] = parent[parent[index]]
@@ -234,7 +239,11 @@ def merge_candidates(candidates, entity_name):
     def union(left, right):
         left, right = find(left), find(right)
         if left != right:
+            combined = entity_ids[left] | entity_ids[right]
+            if len(combined) > 1:
+                return
             parent[right] = left
+            entity_ids[left] = combined
     refs = [{root for url in item.get('reference_image_urls', [])
              if (root := original_reference(str(url)))} for item in candidates]
     keys = [set(item.get('entity_keys') or []) for item in candidates]
@@ -269,8 +278,10 @@ def merge_candidates(candidates, entity_name):
         aliases = list(dict.fromkeys(
             str(item.get('name') or '') for item in members if item.get('name')))[:8]
         merged_name = best.get('name')
+        explicit_entities = {item['wikidata'] for item in members if item.get('wikidata')}
         merged.append({
             **best, 'name': merged_name, 'reference_image_urls': references,
+            **({'wikidata': next(iter(explicit_entities))} if len(explicit_entities) == 1 else {}),
             'source_urls': sources, 'entity_aliases': aliases,
             'alias_candidate_ids': [item['candidate_id'] for item in members
                                     if item['candidate_id'] != best['candidate_id']],
@@ -335,7 +346,7 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
             headers={'User-Agent': WIKIPEDIA_USER_AGENT}) as client:
         jobs = [api(service, client, WIKI, {
             'generator': 'search', 'gsrsearch': query, 'gsrlimit': 3, 'gsrnamespace': 0,
-            'prop': 'extracts|info|pageimages|images', 'exintro': 1, 'explaintext': 1,
+            'prop': 'extracts|info|pageimages|images|pageprops', 'exintro': 1, 'explaintext': 1,
             'exchars': 1200, 'inprop': 'url', 'piprop': 'name|original|thumbnail',
             'pithumbsize': 1280, 'imlimit': 10}) for query in wiki_queries]
         responses = await asyncio.gather(*jobs, return_exceptions=True)
@@ -410,7 +421,8 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
                     'extract': description, 'reference_image_urls': refs,
                     'entity_keys': _entity_keys(page, commons_query),
                     'discovery': 'commons_text_search'})
-        return merge_candidates(candidates, entity_name)[:10]
+        from .identity_entity_aliases import enrich_entity_links
+        return merge_candidates(enrich_entity_links(candidates, {}, selected), entity_name)[:10]
 
 
 async def web_search_hints(service, visual_query):
@@ -433,20 +445,105 @@ async def web_search_hints(service, visual_query):
     ))[:3]
 
 
-async def web_image_sources(service, entity_name, visual_query):
-    """Only Google grounding provenance can supply discovered article URLs.
+async def web_image_sources(service, entity_name, visual_query, *, story=None):
+    """Independent grounded search before confirmation, with saved provenance.
 
-    Failure propagates to the operation; an unavailable search is not an empty
-    completed search and must not permanently close the illustration queue.
+    Google and OpenCode retain independent availability. URL discovery never
+    implies physical identity and never extracts publication facts.
     """
-    search = getattr(service.providers.gemini, 'discover_article_urls', None)
-    if not callable(search):
-        from .errors import RetryableProviderError
-        raise RetryableProviderError('article_url_discovery_not_configured')
+    from .errors import RetryableProviderError
+    from .gemini import GeminiUnavailable
     query = (f'{entity_name} {REGION_HINT} фотографии разные ракурсы' if entity_name
              else f'{visual_query} {REGION_HINT} фото').strip()
-    result = await asyncio.wait_for(search(query), timeout=45)
-    return list(getattr(result, 'grounding_sources', None) or [])[:20]
+    routes, failures = [], []
+    researcher = getattr(service.providers, 'research', None)
+    if researcher is not None and story is not None:
+        routes.append(('opencode', lambda: researcher.search_articles(query, story)))
+    google = getattr(service.providers.gemini, 'discover_article_urls', None)
+    if callable(google):
+        routes.append(('google', lambda: asyncio.wait_for(google(query), timeout=45)))
+    for provider, call in routes:
+        try:
+            result = await call()
+            sources = (result.get('sources') or []) if isinstance(result, dict) else (getattr(result, 'grounding_sources', None) or [])
+            if sources:
+                return sources
+        except Exception as exc:
+            failures.append(exc)
+            if story:
+                record_identity_event(service, story['id'], 'identity_search_route_unavailable', {
+                    'provider': provider, 'code': getattr(exc, 'code', type(exc).__name__),
+                    'retry_at': getattr(exc, 'retry_at', None)})
+    if failures:
+        retry = [exc.retry_at for exc in failures if getattr(exc, 'retry_at', None)]
+        raise GeminiUnavailable(min(retry) if retry else service.store.now() + 30, 'all_article_search_routes_unavailable')
+    if not routes:
+        raise RetryableProviderError('article_url_discovery_not_configured')
+    return []
+
+
+def _retain_article_discovery(service, story, sources, *, receipts=(), articles=()):
+    """Keep every URL and fetched media outside the bounded identity catalog."""
+    from .article_media import public_url
+    from .research_control import research_stopped
+    from .service import ConflictError, canonical
+    captured = json.loads(story.get('research_json') or '{}')
+    generation = int(story.get('_identity_generation', captured.get('identity_generation') or 0))
+    def revision(research):
+        control = (research.get('research_controls') or {}).get('identity') or {}
+        return int(control.get('revision') or 0) if (control.get('photo_sha256') == story['photo_sha256']
+            and control.get('identity_generation') == generation) else 0
+    with service.store.tx() as db:
+        row = service._story_row(db, story['id'])
+        research = json.loads(row['research_json'] or '{}')
+        if (row['photo_sha256'] != story['photo_sha256'] or int(research.get('identity_generation') or 0) != generation
+                or revision(research) != revision(captured)
+                or research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation)):
+            raise ConflictError('visual_comparison_changed', 'Фото или управление исследованием изменилось.')
+        history = research.get('identity_article_discovery') or {}
+        if history.get('generation') != generation or history.get('photo_sha256') != story['photo_sha256']:
+            history = {'generation': generation, 'photo_sha256': story['photo_sha256'], 'queries': {}, 'sources': []}
+        unique = {source['url']: source for source in history.get('sources', [])}
+        for source in sources:
+            if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
+                unique[url] = {**unique.get(url, {}), **source, 'url': url}
+        history['sources'] = list(unique.values())
+        pages = history.setdefault('pages', {})
+        for receipt in receipts:
+            url = receipt.get('url')
+            if url not in unique or receipt.get('status') == 'deferred':
+                continue
+            page = pages.setdefault(url, {'source': dict(unique[url]), 'attempts': 0})
+            page['status'] = receipt['status']
+            page['attempts'] += 1
+            page['source'].update({key: receipt[key] for key in ('gallery_cursor', 'gallery_slide_cursor') if key in receipt})
+            media = [item for item in articles if item.get('discovery_provenance', {}).get('url') == url
+                     or item.get('url') == receipt.get('final_url', url)]
+            if media:
+                page['candidates'] = media
+        research['identity_article_discovery'] = history
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+    return history
+
+
+def next_visual_query(identity, seed, searches):
+    """Explore existing physical hypotheses/views; never synthesize an identity.
+
+    The seed stays fixed in the durable operation, preventing a suffix chain.
+    Completed equivalent queries are skipped across reconnects. Each actual
+    call still needs the existing search admission and visual acceptance gate.
+    """
+    from .identity_candidate_policy import candidate_identity_eligible
+    def normalized(value):
+        return ' '.join(str(value or '').split()).casefold()
+    completed = {normalized(query) for query, result in searches.items() if result.get('status') == 'completed'}
+    bases = list(dict.fromkeys(plain(value, 120) for value in [seed, *(
+        candidate.get('name') for candidate in identity.get('candidates', [])
+        if not str(candidate.get('candidate_id') or '').startswith('web:')
+        and candidate_identity_eligible(candidate))] if value))
+    variants = [*bases, *(f'{base} другие ракурсы фасад вход' for base in bases),
+                *(f'{base} вид сбоку сзади детали здания' for base in bases)]
+    return next((query for query in variants if normalized(query) not in completed), '')
 
 
 async def recover(service, story, transcript, candidates, excluded):
@@ -459,8 +556,22 @@ async def recover(service, story, transcript, candidates, excluded):
             service, story, transcript, candidates)
         from .article_media import article_candidates
         record_identity_event(service, story['id'], 'identity_web_media_started', {'generation': story.get('_identity_generation', 0)})
-        sources = await web_image_sources(service, entity_name, visual_query)
-        articles = await article_candidates(service, story, sources, excluded)
+        sources = await web_image_sources(service, entity_name, visual_query, story=story)
+        history = _retain_article_discovery(service, story, sources)
+        pages = history.get('pages') or {}
+        cached, unread = [], []
+        for source in history['sources']:
+            page = pages.get(source['url']) or {}
+            if page.get('status') == 'completed':
+                cached.extend(page.get('candidates', []))
+            elif page.get('status') != 'excluded':
+                unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
+                    if key in {'gallery_cursor', 'gallery_slide_cursor'}}})
+        unread.sort(key=lambda source: pages.get(source['url'], {}).get('attempts', 0))
+        receipts = []
+        fetched = await article_candidates(service, story, unread, excluded, receipts=receipts)
+        _retain_article_discovery(service, story, sources, receipts=receipts, articles=fetched)
+        articles = [*cached, *fetched]
         # Third-party illustrations belong to the current Live conversation.
         # Prepare the queue here; never start another provider conversation.
         if articles:

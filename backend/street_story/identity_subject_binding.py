@@ -1,0 +1,131 @@
+"""Mechanical, evidence-bound article subject resolution; names are never identity keys."""
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from .identity_candidate_policy import candidate_identity_eligible
+
+
+def article_candidate(candidate: dict[str, Any]) -> bool:
+    return str(candidate.get('candidate_id') or '').startswith('web:')
+
+
+def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[str, str] | None = None) -> dict[str, set[str]]:
+    """Exact entity links or established registry/cluster memberships only.
+
+    ``poi_aliases`` must come from the existing registry's candidate namespace,
+    not model output or name aliases. Article addresses do not identify entities.
+    """
+    parent: dict[str, str] = {}
+
+    def find(value: str) -> str:
+        parent.setdefault(value, value)
+        if parent[value] != value:
+            parent[value] = find(parent[value])
+        return parent[value]
+
+    def join(left: str, right: str) -> None:
+        parent[find(right)] = find(left)
+
+    owners: dict[tuple[str, str], str] = {}
+    for candidate in candidates:
+        cid = str(candidate.get('candidate_id') or '')
+        if not cid or article_candidate(candidate):
+            continue
+        find(cid)
+        keys = [('wikidata', candidate.get('wikidata')), ('osm_id', candidate.get('osm_id')),
+                ('wikipedia_url', candidate.get('wikipedia_url'))]
+        if cid.startswith('wiki:'):
+            keys.append(('wikipedia_url', candidate.get('url')))
+        if cid.startswith('osm:'):
+            keys.append(('osm_id', cid))
+        if poi_aliases and poi_aliases.get(cid):
+            keys.append(('registry_poi', poi_aliases[cid]))
+        for namespace, raw in keys:
+            value = str(raw or '').strip()
+            if not value:
+                continue
+            key = namespace, value
+            if key in owners:
+                join(cid, owners[key])
+            else:
+                owners[key] = cid
+        if candidate.get('discovery') == 'wikimedia_entity_cluster':
+            for alias in candidate.get('alias_candidate_ids') or []:
+                if isinstance(alias, str) and alias and not alias.startswith('web:'):
+                    join(cid, alias)
+    groups: dict[str, set[str]] = {}
+    for cid in parent:
+        groups.setdefault(find(cid), set()).add(cid)
+    return {cid: groups[find(cid)] for cid in parent}
+
+
+def reference_binding_valid(result: dict[str, Any], candidates: list[dict[str, Any]]) -> bool:
+    """Check the host receipt produced below; never accept this field from a model."""
+    binding = result.get('_reference_subject_binding')
+    if not isinstance(binding, dict) or binding.get('proof') != 'model_reference_subject_resolution':
+        return False
+    subject = result.get('candidate_id')
+    reference = binding.get('reference_candidate_id')
+    by_id = {item.get('candidate_id'): item for item in candidates}
+    candidate = by_id.get(subject)
+    source = by_id.get(reference)
+    image_hash = binding.get('model_image_sha256')
+    return bool(candidate and not article_candidate(candidate) and candidate_identity_eligible(candidate)
+                and source and article_candidate(source)
+                and binding.get('subject_candidate_id') == subject
+                and isinstance(reference, str) and reference.startswith('web:')
+                and reference in result.get('_references_sent', [])
+                and binding.get('article_url') == source.get('url')
+                and binding.get('image_url') in (source.get('reference_image_urls') or [])
+                and isinstance(image_hash, str) and len(image_hash) == 64
+                and all(character in '0123456789abcdef' for character in image_hash))
+
+
+def bind_reference_subject(
+    result: dict[str, Any], sent_candidates: list[dict[str, Any]], full_shortlist: list[dict[str, Any]],
+    reference_evidence: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve a matched article illustration to an existing eligible hypothesis.
+
+    The model selects a sent reference via ``candidate_id`` and explicitly names
+    ``reference_subject_candidate_id`` from the supplied shortlist. Matching a
+    page's title alone cannot create a physical POI. This helper does not itself
+    assert visual match: the caller still applies the unchanged confidence,
+    observations, alternatives and generation/photo acceptance checks.
+    """
+    # Internal proof is exclusively host-owned, including on unresolved output.
+    raw = {key: value for key, value in result.items() if key != '_reference_subject_binding'}
+    selected = next((item for item in sent_candidates if item.get('candidate_id') == raw.get('candidate_id')), None)
+
+    def unresolved(reason: str) -> dict[str, Any]:
+        return {'status': 'unresolved', 'reason': reason,
+                'result': {**raw, 'status': 'uncertain' if raw.get('status') == 'match' else raw.get('status')}}
+
+    if not selected or selected.get('candidate_id') not in raw.get('_references_sent', []):
+        return unresolved('reference_not_sent')
+    if not article_candidate(selected):
+        return {'status': 'not_required', 'candidate': selected, 'result': raw,
+                'reference_evidence': reference_evidence}
+    subject_id = raw.get('reference_subject_candidate_id')
+    candidate = next((item for item in full_shortlist if item.get('candidate_id') == subject_id), None)
+    if not candidate or article_candidate(candidate) or not candidate_identity_eligible(candidate):
+        return unresolved('subject_not_eligible_shortlist_candidate')
+    cid = selected['candidate_id']
+    evidence = next((item for item in reference_evidence
+                     if item.get('candidate_id') == cid
+                     and item.get('source_url') in (selected.get('reference_image_urls') or [])
+                     and item.get('article_url') == selected.get('url')
+                     and isinstance(item.get('model_image_sha256'), str)
+                     and len(item['model_image_sha256']) == 64
+                     and all(character in '0123456789abcdef' for character in item['model_image_sha256'])), None)
+    if not evidence:
+        return unresolved('reference_provenance_missing')
+    binding = {'proof': 'model_reference_subject_resolution', 'reference_candidate_id': cid,
+               'subject_candidate_id': subject_id, 'article_url': evidence['article_url'],
+               'image_url': evidence['source_url'], 'model_image_sha256': evidence['model_image_sha256']}
+    return {'status': 'bound', 'candidate': candidate, 'binding': binding,
+            'result': {**raw, 'candidate_id': subject_id, '_reference_subject_binding': binding},
+            'reference_evidence': [{**item, 'subject_candidate_id': subject_id}
+                                   for item in reference_evidence if item.get('candidate_id') == cid]}

@@ -31,7 +31,9 @@ async def test_discovery_uses_fetched_records_and_respects_rejections(monkeypatc
     async def api(service, client, endpoint, params):
         calls.append((endpoint, params))
         if endpoint == discovery.WIKI:
+            assert 'pageprops' in params['prop'].split('|')
             return [{'pageid': 1, 'title': 'Named tower', 'index': 1, 'extract': 'A documented tower',
+                     'pageprops': {'wikibase_item': 'Q123'},
                      'images': [{'title': 'Файл:Tower.jpg'}]}]
         if params.get('generator') == 'search' and params.get('gsrnamespace') == 14:
             return []
@@ -43,6 +45,7 @@ async def test_discovery_uses_fetched_records_and_respects_rejections(monkeypatc
     assert len(candidates) == 1
     assert candidates[0]['candidate_id'] == 'wiki:1'
     assert candidates[0]['name'] == 'Named tower'
+    assert candidates[0]['wikidata'] == 'Q123'
     assert candidates[0]['reference_image_urls'] == ['https://upload.wikimedia.org/tower.jpg']
     assert await discovery.retrieve(SimpleNamespace(), ['Tower'], '', {'wiki:1'}) == []
     assert {endpoint for endpoint, _ in calls} == {discovery.WIKI, discovery.COMMONS}
@@ -154,3 +157,32 @@ def test_wikipedia_current_use_page_clusters_with_explicit_building_alias():
         'https://ru.wikipedia.org/wiki/church',
         'https://ru.wikipedia.org/wiki/hall',
     }
+
+
+def test_distinct_explicit_entities_cannot_merge_through_shared_commons_bridge():
+    shared = 'https://upload.wikimedia.org/shared.jpg'
+    candidates = [
+        {'candidate_id': 'commons:1', 'name': 'Shared view', 'reference_image_urls': [shared]},
+        {'candidate_id': 'wiki:2', 'name': 'Physical building', 'wikidata': 'Q123',
+         'reference_image_urls': [shared], 'discovery': 'wikipedia_text_search'},
+        {'candidate_id': 'wiki:3', 'name': 'Institution using the building', 'wikidata': 'Q456',
+         'reference_image_urls': [shared], 'discovery': 'wikipedia_text_search'},
+    ]
+    for ordering in (candidates, list(reversed(candidates))):
+        merged = discovery.merge_candidates(ordering, 'Physical building')
+        assert len(merged) == 2
+        assert {item.get('wikidata') for item in merged} == {'Q123', 'Q456'}
+        assert all(not ({'wiki:2', 'wiki:3'} <= {item['candidate_id'], *item.get('alias_candidate_ids', [])})
+                   for item in merged)
+
+
+def test_known_entity_metadata_survives_selection_of_a_commons_representative():
+    shared = 'https://upload.wikimedia.org/shared.jpg'
+    merged = discovery.merge_candidates([
+        {'candidate_id': 'commons:1', 'name': 'Exact target name', 'reference_image_urls': [shared]},
+        {'candidate_id': 'wiki:2', 'name': 'Alternate documented name', 'wikidata': 'Q123',
+         'reference_image_urls': [shared], 'discovery': 'wikipedia_text_search'},
+    ], 'Exact target name')
+    assert len(merged) == 1
+    assert merged[0]['candidate_id'] == 'commons:1'
+    assert merged[0]['wikidata'] == 'Q123'
