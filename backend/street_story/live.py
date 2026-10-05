@@ -726,7 +726,7 @@ _save_parameters['properties'] = {key: _save_parameters['properties'][key]
 _save_parameters['required'] = ['facts', 'batch_reviewed', 'source_matches_poi']
 
 SYSTEM_INSTRUCTION = """
-You are Street Story's voice editor Mira. Work only on the current topic and its visible image/text publication. Support iterative edits; keep replies brief and useful, in Russian rather than long work reports.
+You are Street Story's assistant Mira for object identification, sourced facts, publication text, image creation/editing and authorized publishing. These operations are available through the product's stage-specific tools. Work only on the current topic and its visible image/text publication. Support iterative edits; keep replies brief and useful, in Russian rather than long work reports.
 
 Voice and intent:
 - Keep один стабильный голосовой образ Миры: calm natural delivery, steady pace and character; no impersonation, accents or switching voices. Moderate emotion only when appropriate.
@@ -768,6 +768,7 @@ Concept, editing and publication:
 - Persist an owner's publication angle with set_concept. If relevance changes selection, call select_facts separately and briefly disclose the change. select_facts otherwise changes only on the owner's explicit request. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
+- On an explicit image creation/editing request, call generate_visual using the original photo, saved concept and all selected eligible facts; preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
 - публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
 - Admit Live/provider delay or unavailability. The legacy async voice path remains a compatibility contract, not an automatic fallback.
@@ -778,15 +779,16 @@ Answer briefly and concretely in Russian.
 class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     CAPABILITY_TOOLS = {
         'identity': {'find_place_articles', 'compare_place_images', 'record_place_comparison', 'read_topic', 'resolve_place', 'confirm_place', 'reject_place'},
-        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'select_facts', 'set_concept', 'edit_text'},
+        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'select_facts', 'set_concept', 'edit_text', 'generate_visual'},
         'review': {'read_topic', 'get_facts', 'get_review_packet', 'get_review_context', 'assess_review_packet', 'repair_research_fact', 'finalize_fact_review', 'resolve_fact_conflict'},
-        'editor': {'read_topic', 'get_facts', 'select_facts', 'set_concept', 'edit_text', 'literal_begin', 'literal_finish', 'literal_cancel'},
+        'editor': {'read_topic', 'get_facts', 'select_facts', 'set_concept', 'edit_text', 'generate_visual', 'literal_begin', 'literal_finish', 'literal_cancel'},
         'publication': {'read_topic', 'generate_visual', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
     }
 
     def _capability_configuration(self, configuration, capability):
-        router = _tool_schema('continue_story', 'Continue the same story at the requested stage. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained. Without research_action this changes capabilities only. Never edits, generates or publishes.',
-            {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS)}, 'intent': {'type': 'string'},
+        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For image creation or image editing, choose publication; it opens the image-generation tools. For text/concept changes choose editor; for facts choose research. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
+            {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS),
+                       'description': 'identity: identify the object; research: facts; review: evidence review; editor: fact selection, concept and text; publication: image creation/editing and preparing/confirming a post.'}, 'intent': {'type': 'string'},
              'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
              'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
         configuration = dict(configuration)
@@ -830,10 +832,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if capability == 'research':
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
-            + '\nIf the request needs another stage, call continue_story first, rather than declaring '
-              'the function unavailable. Stages: identity (object), research (facts), review (evidence), '
+            + '\nAll these stages are your supported product capabilities. If the request needs another '
+              'stage, call continue_story first. Use available image tools directly; if they are absent, '
+              'switch to publication for image creation/editing. Do not say you cannot '
+              'create/edit images just because those tools are absent from the current stage. '
+              'After switching, execute the same author request with the new tools; do not ask the '
+              'author to repeat it. Stages: identity (object), research (facts), review (evidence), '
               'editor (selection/concept/text), publication (image/post). '
-              'Changing stage is not consent for mutations.')
+              'Changing stage is not consent for new mutations or confirmation of a publication.')
         if capability == 'review':
             configuration['system_instruction'] = (
                 'Current phase: independent verification of unverified candidates. '
