@@ -20,7 +20,7 @@ on:
         default: false
         type: boolean
       story_id:
-        description: 'Existing test story to export; readback performs no model calls or publication writes'
+        description: 'readback: export only; full_social/more: continue saved test story through normal Android (not a fresh full pass)'
         required: false
         type: string
   pull_request:
@@ -351,6 +351,7 @@ jobs:
         env:
           LIVE_E2E_KEEP_PUBLICATION: ${{ inputs.keep_publication && 'true' || 'false' }}
           LIVE_E2E_MORE_ONLY: ${{ inputs.acceptance == 'more' && 'true' || 'false' }}
+          LIVE_E2E_RESUME_STORY_ID: ${{ inputs.story_id }}
           LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
         if: >-
           (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||

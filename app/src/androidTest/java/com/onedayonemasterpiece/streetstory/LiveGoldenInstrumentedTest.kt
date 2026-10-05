@@ -130,6 +130,8 @@ class LiveGoldenInstrumentedTest {
         val keepPublication = InstrumentationRegistry.getArguments().getString("keepPublication") == "true"
         val identityOnly = InstrumentationRegistry.getArguments().getString("identityOnly") == "true"
         val moreOnly = InstrumentationRegistry.getArguments().getString("moreOnly") == "true"
+        val resumeStoryId = InstrumentationRegistry.getArguments().getString("resumeStoryId").orEmpty().trim()
+        require(resumeStoryId.isEmpty() || (Regex("story_[a-zA-Z0-9]{8,64}").matches(resumeStoryId) && !identityOnly))
         require(!identityOnly || !keepPublication)
         require(!moreOnly || (!identityOnly && !keepPublication))
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
@@ -153,9 +155,21 @@ class LiveGoldenInstrumentedTest {
         assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - config.get("longitude").asDouble) < 0.0025)
 
         val store = AppGraph.store(context)
-        val local = store.createStory(imported)
         val api = ApiClient(baseUrl, token)
-        val created = api.createStory(local)
+        val resumed = if (resumeStoryId.isBlank()) null else api.getStory(resumeStoryId)
+        if (resumed != null) {
+            assertEquals("Resume photo differs from saved story", photoSha, resumed.photoSha256)
+            require(resumed.clientStoryId.isNotBlank())
+            val raw = rawStory(baseUrl, token, resumeStoryId)
+            val publication = raw.get("publication")
+            require(publication == null || publication.isJsonNull ||
+                (publication.isJsonObject && publication.asJsonObject.entrySet().isEmpty())) {
+                "Resume must reconcile an existing publication separately; never schedule it twice"
+            }
+            require(resumed.state != StoryStage.VISUAL_PROCESSING) { "Read back the existing generation before continuing" }
+        }
+        val local = store.createStory(if (resumed == null) imported else imported.copy(clientStoryId = resumed.clientStoryId))
+        val created = resumed ?: api.createStory(local)
         require(created.id.isNotBlank())
         store.setServerIdentity(local.clientStoryId, created.id)
         val storyId = created.id
@@ -184,6 +198,8 @@ class LiveGoldenInstrumentedTest {
             "legacy_voice_endpoint_used" to false,
             "acceptance" to if (moreOnly) "more" else if (identityOnly) "identity" else "full_social",
             "more_acceptance_status" to "not_run",
+            "resumed_story_id" to resumeStoryId.takeIf { it.isNotEmpty() },
+            "fresh_full_pass" to (resumeStoryId.isEmpty() && !moreOnly && !identityOnly),
         )
         var publicationScheduled = false
         var cancelConfirmed = false
@@ -259,7 +275,13 @@ class LiveGoldenInstrumentedTest {
                 "backend_live_message_count" to story.liveMessages.size,
                 "backend_voice_message_count" to story.voiceMessages.size,
             ))
-            assertTrue("Identity used owner voice or Live messages", story.liveMessages.isEmpty() && story.voiceMessages.isEmpty())
+            if (resumed == null) {
+                assertTrue("Identity used owner voice or Live messages", story.liveMessages.isEmpty() && story.voiceMessages.isEmpty())
+            } else {
+                assertEquals("Resume started Live before opening the saved topic", resumed.liveMessages.size, story.liveMessages.size)
+                assertEquals("Resume recorded new voice during identity readback", resumed.voiceMessages.size, story.voiceMessages.size)
+                evidence["identity_history_reused"] = true
+            }
             capture("02-object-identified", story)
             assertHeadlessIdentity()
             evidence["no_live_or_recording_started"] = true

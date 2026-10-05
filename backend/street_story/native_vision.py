@@ -213,10 +213,17 @@ class NativeVisionProvider:
                             receipt['turn_id'] = turns[0]['id']
                             await self._save(binding, receipt)
                         turn = next((t for t in turns if t.get('id') == receipt['turn_id']), None)
-                        if turn and turn.get('status') != 'inProgress':
+                        if turn and turn.get('status') in {'completed', 'failed', 'interrupted'}:
                             if not input_verified(turn):
-                                receipt['phase'] = 'unknown'
-                                raise RetryableProviderError('native_turn_input_unverified', retry_at=self.service.store.now() + 300)
+                                if not receipt.get('input_readback_pending'):
+                                    receipt['input_readback_pending'] = True
+                                    await self._save(binding, receipt)
+                                    logger.info('native_visual_readback_pending story_id=%s attempt_id=%s thread_id=%s turn_id=%s reason=input_not_yet_verified',
+                                                story['id'], binding['attempt_id'], receipt['thread_id'], receipt['turn_id'])
+                                # Terminal metadata may precede durable input
+                                # projection. Read this same turn; never resend.
+                                await asyncio.sleep(self.poll_seconds)
+                                continue
                             items = turn.get('items') or []
                             if any(item.get('type') not in {'userMessage', 'reasoning', 'agentMessage'} for item in items):
                                 receipt['phase'] = 'failed'
@@ -228,6 +235,10 @@ class NativeVisionProvider:
                                 raise RetryableProviderError('native_turn_failed', retry_at=self.service.store.now() + 60)
                             receipt['phase'] = 'response_completed'
                             text = [item.get('text', '') for item in items if item.get('type') == 'agentMessage']
+                            if not text or not text[-1].strip():
+                                receipt['phase'] = 'submitted'
+                                await asyncio.sleep(self.poll_seconds)
+                                continue
                             result = json.loads(text[-1])
                             Draft202012Validator(contract).validate(result)
                             receipt.update(phase='completed', result=result, elapsed_ms=round((time.monotonic() - started) * 1000))

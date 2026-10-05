@@ -203,10 +203,38 @@ async def test_lost_turn_start_response_reconciles_exact_input_without_another_t
 async def test_wrong_turn_image_is_never_accepted_or_blindly_repeated(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     client.wrong_image = True
-    with pytest.raises(RetryableProviderError, match='input_unverified'):
+    provider.timeout = .03
+    with pytest.raises(RetryableProviderError, match='outcome_unknown'):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert receipts[-1]['phase'] == 'unknown' and finalized[-1][1] == 'unknown'
     assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pending_shape', ['missing_status', 'missing_input', 'missing_output'])
+async def test_partial_native_readback_waits_on_same_turn_without_new_send(tmp_path, pending_shape):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    reads = 0
+    async def request(method, params, timeout=30):
+        nonlocal reads
+        result = await original(method, params, timeout)
+        if method == 'thread/read':
+            reads += 1
+            if reads == 1:
+                turn = result['thread']['turns'][0]
+                if pending_shape == 'missing_status':
+                    turn['status'] = None
+                elif pending_shape == 'missing_input':
+                    turn['items'] = []
+                else:
+                    turn['items'] = turn['items'][:1]
+        return result
+    client.request = request
+    result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
+    assert result['receipt']['phase'] == 'completed' and reads == 2
+    assert len(sends) == 1 and sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
 
 
 @pytest.mark.asyncio
