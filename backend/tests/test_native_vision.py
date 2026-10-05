@@ -123,11 +123,16 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
 
 @pytest.mark.asyncio
 async def test_resource_denial_preserves_dispatch_phase_and_authority_retry(tmp_path, caplog):
-    from ai_resource_control.client import ResourceError
+    # The public consumer CI does not install the private resource SDK. Exercise
+    # its documented exception contract without making the suite depend on it.
+    class ResourceError(RuntimeError):
+        resource_failure = True
+        code = 'RESOURCE_DAILY_BUDGET'
+        retry_after_ms = 120000
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     @asynccontextmanager
     async def denied(binding, workload):
-        raise ResourceError('RESOURCE_DAILY_BUDGET', retry_after_ms=120000)
+        raise ResourceError('RESOURCE_DAILY_BUDGET')
         yield
     provider.admission = denied
     binding = {'attempt_id': 'denied', 'phase': 'created'}
