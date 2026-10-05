@@ -254,6 +254,28 @@ async def test_live_first_search_skips_only_fresh_completed_scope_and_keeps_snip
 
 
 @pytest.mark.asyncio
+async def test_completed_early_cache_page_does_not_hide_late_unread_sources(tmp_path):
+    from street_story.errors import RetryableProviderError
+    store = Store(tmp_path / 'search-late.sqlite3')
+    client = GeminiClient(config(tmp_path), store)
+    async def unavailable(*args, **kwargs):
+        raise RetryableProviderError('controlled_search_outage')
+    client._public_web_search = unavailable
+    sources = [{'url': f'https://archive.example/source-{index}', 'supports': [{'text': 'Saved source snippet'}],
+        'extraction_coverage': [{'scope': 'all facts', 'completed': True, 'checked_at': store.now()}]}
+        for index in range(30)]
+    for source in sources[-5:]:
+        source['extraction_coverage'][0]['completed'] = False
+    result = await client.search_web('more facts', {'live_first': True, 'coverage_goal': 'All facts',
+                                                   'previously_processed_sources': sources})
+    assert result.payload['search_provider'] == 'poi_cache_fallback'
+    assert result.payload['completed_source_exclusions'] == 25
+    assert [source['url'] for source in result.grounding_sources] == [source['url'] for source in sources[-5:]]
+    assert not result.payload['facts'] and result.payload['semantic_status'] == 'live_model_required'
+    assert client.search_http is None  # Controlled failure opened no HTTP client.
+
+
+@pytest.mark.asyncio
 async def test_same_literal_evidence_is_reused_not_reported_as_new_fact_or_evidence(tmp_path):
     svc, adapter, session, _, _, _, reader = await fallback(tmp_path)
     session.state['live_first_research'] = True
