@@ -299,12 +299,23 @@ class ProductResearchAdapter:
             return {'result':saved['result'],'receipt':saved}
         if binding.get('phase') not in {None,'created'}:
             raise RetryableProviderError('gigachat_attempt_outcome_unknown',retry_at=self.service.store.now()+300)
-        receipt={'binding':binding,'phase':'submitted','model_id':'GigaChat-2','provider_id':'gigachat'}
-        await self.checkpoint(binding,receipt)
+        receipt={'binding':binding,'phase':'created','model_id':'GigaChat-2','provider_id':'gigachat',
+                 'provider_send_state':'not_sent'}
+        async def before_inference(metadata):
+            self.guard_binding(binding)
+            receipt.update(phase='submitted', provider_send_state='possibly_sent', retry_safe=False)
+            receipt.setdefault('inference_sends', []).append({key:metadata[key] for key in
+                ('attempt_id','operation','purpose','estimated_input_tokens','output_allowance','images','request_body_sha256')
+                if key in metadata})
+            await self.checkpoint(binding,receipt)
         try:
+            receipt['input_sha256']=hashlib.sha256(canonical({
+                'query':context.get('coverage_goal',''),'capsule':capsule,'max_tool_calls':2}).encode()).hexdigest()
+            await self.checkpoint(binding,receipt)
             token = self._active_binding.set(binding)
             try:
-                result=await self.giga.research(context.get('coverage_goal',''),capsule=capsule,max_tool_calls=2)
+                result=await self.giga.research(context.get('coverage_goal',''),capsule=capsule,
+                                              max_tool_calls=2,before_inference=before_inference)
             finally:
                 self._active_binding.reset(token)
             payload=dict(result['payload'])
@@ -317,14 +328,25 @@ class ProductResearchAdapter:
             receipt.update(receipts=result['receipts'],result=payload,actual_model=result.get('actual_model'),cost='unknown')
             if not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(payload):
                 raise MalformedProviderResponse('gigachat:fact_page_schema_invalid')
-            receipt['phase']='completed'
+            receipt.update(phase='completed',provider_send_state='response_closed')
             await self.checkpoint(binding,receipt)
             return {'result':payload,'receipt':receipt}
         except Exception as exc:
-            known_closed = isinstance(exc,MalformedProviderResponse) or getattr(exc,'status',None) is not None or getattr(exc,'resource_failure',False)
-            receipt.update(phase='failed' if known_closed else 'unknown',error_type=type(exc).__name__)
+            not_sent = receipt['phase']=='created'
+            known_closed = not_sent or isinstance(exc,MalformedProviderResponse) or getattr(exc,'status',None) is not None or getattr(exc,'resource_failure',False)
+            receipt.update(phase='failed' if known_closed else 'unknown',error_type=type(exc).__name__,
+                           retry_safe=known_closed,provider_send_state='not_sent' if not_sent else
+                           'response_closed' if known_closed else 'possibly_sent')
+            if isinstance(exc,ValueError):
+                safe_codes={'gigachat:bounded_request_required','gigachat:inventory_invalid','gigachat:capsule_too_large',
+                            'gigachat:frozen_sources_required','gigachat:frozen_passages_invalid'}
+                receipt['error_code']=str(exc) if not_sent and str(exc) in safe_codes else 'gigachat:local_validation_failed'
+            else:
+                receipt['error_code']=_failure_code(exc)
             await self.checkpoint(binding,receipt)
-            if not known_closed or getattr(exc,'resource_failure',False):
+            LOG.warning('street_story_fact_provider_failure story_id=%s attempt_id=%s provider=gigachat phase=%s not_sent=%s code=%s error_type=%s',
+                        story['id'],binding['attempt_id'],receipt['phase'],not_sent,receipt['error_code'],receipt['error_type'])
+            if not_sent or not known_closed or getattr(exc,'resource_failure',False):
                 raise RetryableProviderError('gigachat_research_waiting',retry_at=self.service.store.now()+300) from exc
             raise
 

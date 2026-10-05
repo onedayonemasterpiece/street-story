@@ -204,6 +204,23 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "prompt_version": self.PROMPT_VERSION,
                 "prompt_sha256": template_sha,
             }
+            if body.get('reuse_generated_art') is True:
+                observed = previous_receipt or {}
+                same_inputs = ('source_photo_sha256', 'fact_revision_bundle', 'publication_concept',
+                               'prompt_version', 'prompt_sha256', 'visual_instruction')
+                if (observed.get('state') != 'verified'
+                        or observed.get('visual_job_id') != previous.get('visual_job_id')
+                        or observed.get('selected_sha256') != previous.get('selected_sha256')
+                        or not previous.get('candidate_id')
+                        or type(observed.get('visual_revision')) is not int
+                        or any(previous.get(field) != frozen.get(field) for field in same_inputs)):
+                    raise ConflictError('visual_recompose_input_changed',
+                                        'Recomposition requires the same verified art and unchanged visual inputs.')
+                frozen['recompose_source'] = {
+                    'job_id': previous['visual_job_id'], 'candidate_id': previous['candidate_id'],
+                    'expected_visual_revision': observed['visual_revision'],
+                    'expected_sha256': previous['selected_sha256'], 'format': 'post_4_5',
+                }
             if previous.get('operation_id'):
                 frozen['generation_attempt'] = digest([story_id, key, previous['operation_id']])
             content_revision = digest(frozen)
@@ -221,6 +238,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 history[-1]['outcome'] = previous_receipt
                 context['attempt_history'] = history
             context["brief"] = self._visual_brief(dict(story), context)
+            if frozen.get('recompose_source'):
+                context['source_asset_ref'] = previous.get('source_asset_ref')
             now = self.store.now()
             db.execute(
                 "UPDATE stories SET state='visual_processing',visual_context_json=?,"
@@ -303,6 +322,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                         "copy": {},
                     }
                 }
+                if context.get('recompose_source'):
+                    command = {'command': {'kind': 'recompose', **context['recompose_source']}}
                 visual_key = "ss-vp-visual-" + hashlib.sha256(
                     canonical([story_id, content_revision, source_asset, command]).encode()
                 ).hexdigest()[:48]

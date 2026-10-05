@@ -8,6 +8,7 @@ must wrap the product's existing shared resource control, not per-key quotas.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import ssl
@@ -176,14 +177,17 @@ class GigaChatResearchClient:
             self._token, self._expires = token, expires
             return token
 
-    async def _completion(self, lease, body, receipts, purpose):
+    async def _completion(self, lease, body, receipts, purpose, before_inference=None):
         for auth_attempt in range(2):
             token = await self._access_token()
             estimate = len(_json(body).encode('utf-8')) + int(body['max_tokens'])
             attempt_id = 'giga_' + uuid.uuid4().hex
             metadata = {**self.binding, 'operation': 'text_research', 'purpose': purpose, 'attempt_id': attempt_id,
                         'estimated_input_tokens': estimate - int(body['max_tokens']),
-                        'output_allowance': body['max_tokens'], 'estimated_tokens': estimate, 'images': 0}
+                        'output_allowance': body['max_tokens'], 'estimated_tokens': estimate, 'images': 0,
+                        'request_body_sha256': hashlib.sha256(_json(body).encode('utf-8')).hexdigest()}
+            if before_inference is not None:
+                await before_inference(metadata)
             await lease.before_send(metadata)
             started = self._clock()
             receipt = {**self.binding, 'attempt_id': attempt_id, 'purpose': purpose,
@@ -228,7 +232,8 @@ class GigaChatResearchClient:
             return message, payload['choices'][0].get('finish_reason')
 
     async def research(self, query: str, *, capsule: dict, purpose='fact_research',
-                       modality='text', max_output_tokens=1500, max_tool_calls=2) -> dict[str, Any]:
+                       modality='text', max_output_tokens=1500, max_tool_calls=2,
+                       before_inference=None) -> dict[str, Any]:
         if modality != 'text' or purpose not in {'fact_research', 'query_formulation', 'evidence_extraction'}:
             raise PermanentProviderError('gigachat:text_only_route')
         _text_only(capsule)
@@ -277,7 +282,7 @@ class GigaChatResearchClient:
                             'function_call': {'name': 'get_evidence'} if turn == 0 else 'auto' if turn < max_tool_calls else 'none'}
                     if turn == max_tool_calls:
                         body['response_format'] = {'type': 'json_schema', 'schema': FINDINGS_SCHEMA, 'strict': True}
-                    message, reason = await self._completion(lease, body, receipts, purpose)
+                    message, reason = await self._completion(lease, body, receipts, purpose, before_inference)
                     call = message.get('function_call')
                     if call:
                         if reason != 'function_call' or turn >= max_tool_calls or call.get('name') not in {'get_evidence', 'get_known_facts'}:

@@ -205,6 +205,89 @@ def previous_visual(svc, story_id):
     return context
 
 
+def verified_visual(svc, story_id):
+    before = previous_visual(svc, story_id)
+    before.update(candidate_id='original-candidate', selected_sha256=PROCESSED_SHA,
+                  selected_asset_ref='original-asset', source_asset_ref='source-asset')
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET visual_context_json=?,state='ready_to_publish' WHERE id=?",
+                   (json.dumps(before), story_id))
+    return before
+
+
+@pytest.mark.asyncio
+async def test_recompose_uses_verified_saved_art_without_new_generation_or_ingress(tmp_path):
+    vp = RecoverableVisualVibePublish()
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    before = verified_visual(svc, sid)
+    calls = []
+
+    async def status(operation):
+        return {'receipts': [{'operation_id': operation, 'state': 'verified',
+            'visual_job_id': 'original-job' if operation == 'visual-op' else 'recomposed-job',
+            'visual_revision': 4, 'selected_sha256': PROCESSED_SHA, 'selected_asset_ref': 'processed-asset'}]}
+
+    async def visual(command, key):
+        calls.append(command)
+        assert command['command'] == {'kind': 'recompose', 'job_id': 'original-job',
+            'candidate_id': 'original-candidate', 'expected_visual_revision': 4,
+            'expected_sha256': PROCESSED_SHA, 'format': 'post_4_5'}
+        return {'operation_id': 'recomposed-op', 'visual_job_id': 'recomposed-job', 'state': 'verified'}
+
+    async def no_ingress(*args):
+        pytest.fail('verified art must not ingress another source image')
+
+    vp.status, vp.visual, vp.ingress_asset = status, visual, no_ingress
+    await svc.request_visual(sid, 'no-crop-recompose', {'selected_fact_ids': [], 'reuse_generated_art': True})
+    assert await svc.run_once()
+    result = svc.story(sid)
+    assert result['state'] == 'ready_to_publish' and result['draft_text'] == 'Original draft'
+    assert result['visual']['operation_id'] == 'recomposed-op'
+    assert result['visual']['content_revision'] != before['content_revision']
+    assert vp.tune_calls == 0 and len(calls) == 1
+    assert svc._merge_visual_context(sid, before['content_revision'], {'operation_id': 'late-old'}) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('changed', ['photo', 'facts', 'concept', 'instruction', 'sha', 'job', 'revision', 'state'])
+async def test_recompose_rejects_changed_content_or_unverified_art_without_context_reset(tmp_path, changed):
+    from street_story.service import ConflictError
+    vp = RecoverableVisualVibePublish()
+    svc = service(tmp_path, vp)
+    sid = create_story(svc)['id']
+    before = verified_visual(svc, sid)
+    fields = {'photo': 'source_photo_sha256', 'facts': 'fact_revision_bundle', 'concept': 'publication_concept'}
+    if changed in fields:
+        before[fields[changed]] = 'changed'
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET visual_context_json=? WHERE id=?', (json.dumps(before), sid))
+    receipt = {'operation_id': 'visual-op', 'state': 'verified', 'visual_job_id': 'original-job',
+               'visual_revision': 4, 'selected_sha256': PROCESSED_SHA}
+    if changed == 'sha':
+        receipt['selected_sha256'] = 'a' * 64
+    if changed == 'job':
+        receipt['visual_job_id'] = 'another-job'
+    if changed == 'revision':
+        receipt.pop('visual_revision')
+    if changed == 'state':
+        receipt.update(state='failed', retry_safe=True)
+
+    async def status(operation):
+        return {'receipts': [receipt]}
+
+    vp.status = status
+    body = {'selected_fact_ids': [], 'reuse_generated_art': True}
+    if changed == 'instruction':
+        body['visual_instruction'] = 'Change the generated art'
+    with pytest.raises(ConflictError, match='same verified art'):
+        await svc.request_visual(sid, 'unsafe-recompose', body)
+    with svc.store.connection() as db:
+        after = json.loads(db.execute('SELECT visual_context_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        assert not db.execute("SELECT 1 FROM jobs WHERE semantic_key='visual:unsafe-recompose'").fetchone()
+    assert before == after and vp.tune_calls == 0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state,retry_safe', [('outcome_unknown', False), ('running', False), ('failed', False)])
 async def test_repeat_visual_keeps_original_context_when_outcome_unsafe(tmp_path, state, retry_safe):
