@@ -378,15 +378,17 @@ async def test_web_search_semantically_completes_discovery_snippets_with_researc
     assert set(fact["evidence_refs"]) <= refs
 
 
-class RoutingSearchHTTP:
+class RoutingSearchHTTP(httpx.AsyncClient):
     def __init__(self, search_html: str, pages: dict[str, str]):
         self.search_html = search_html
         self.pages = pages
         self.calls = []
+        super().__init__(transport=httpx.MockTransport(self._response))
 
-    async def get(self, url, **kwargs):
-        self.calls.append((url, kwargs))
-        request = httpx.Request("GET", url)
+    def _response(self, request):
+        # Public acquisition pins DNS; fixture routing uses the original Host.
+        url = str(request.url.copy_with(host=request.headers.get('host', request.url.host)))
+        self.calls.append((url, {}))
         if "duckduckgo.com" in url:
             return httpx.Response(200, text=self.search_html, headers={"content-type": "text/html"}, request=request)
         if url in self.pages:

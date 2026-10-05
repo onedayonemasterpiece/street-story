@@ -29,6 +29,8 @@ def distance(candidate: dict[str, Any]) -> float:
 
 
 def confidence(result: dict[str, Any]) -> float:
+    if isinstance(result.get('confidence'), bool):
+        return 0.0
     try:
         value = float(result.get('confidence') or 0)
         return max(0.0, min(1.0, value)) if math.isfinite(value) else 0.0
@@ -36,17 +38,36 @@ def confidence(result: dict[str, Any]) -> float:
         return 0.0
 
 
-def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]]) -> bool:
-    by_id = {item.get('candidate_id'): item for item in candidates}
-    ids = set(by_id)
+def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
+                 full_shortlist: list[dict[str, Any]] | None = None, *,
+                 poi_aliases: dict[str, str] | None = None) -> bool:
+    from .identity_subject_binding import article_candidate, reference_binding_valid, subject_aliases
+    catalog = [*(full_shortlist or []), *candidates]
+    by_id = {item.get('candidate_id'): item for item in catalog}
     selected = result.get('candidate_id')
+    if not isinstance(selected, str) or not selected:
+        return False
     selected_candidate = by_id.get(selected) or {}
-    return (result.get('status') == 'match' and selected in ids
+    aliases = subject_aliases(catalog, poi_aliases=poi_aliases).get(selected, {selected})
+    alternatives = result.get('alternative_candidate_ids', [])
+    if not isinstance(alternatives, list) or any(not isinstance(item, str) for item in alternatives):
+        return False
+    observations = result.get('observations')
+    references_sent = result.get('_references_sent')
+    if (not isinstance(observations, list) or not observations
+            or any(not isinstance(item, str) or not item.strip() for item in observations)
+            or not isinstance(references_sent, list)
+            or any(not isinstance(item, str) for item in references_sent)):
+        return False
+    disagreement = [item for item in alternatives if item and item not in aliases
+                    and candidate_identity_eligible(by_id.get(item) or {})]
+    sent = selected in {item.get('candidate_id') for item in candidates} and selected in references_sent
+    return (result.get('status') == 'match' and selected in by_id
             and candidate_identity_eligible(selected_candidate)
+            and not article_candidate(selected_candidate)
             and confidence(result) >= 0.90
-            and selected in result.get('_references_sent', [])
-            and bool(result.get('observations'))
-            and not [item for item in result.get('alternative_candidate_ids', []) if item in ids and item != selected])
+            and (sent or reference_binding_valid(result, catalog))
+            and not disagreement)
 
 
 class IdentityLifecycleMixin:
@@ -80,15 +101,19 @@ class IdentityLifecycleMixin:
 
     async def _run_identity(self, job: dict[str, Any]) -> None:
         generation = json.loads(job.get('payload_json') or '{}').get('identity_generation', 0)
-        await self.resolve_identity(job['story_id'], expected_generation=generation, job_id=job['id'])
+        await self.resolve_identity(job['story_id'], expected_generation=generation, job_id=job['id'], job_attempt=job['attempts'])
 
-    async def resolve_identity(self, story_id: str, transcript: str = '', *, expected_generation=None, job_id=None):
+    async def resolve_identity(self, story_id: str, transcript: str = '', *, expected_generation=None, job_id=None, job_attempt=None):
         if not hasattr(self, '_identity_locks'):
             self._identity_locks = weakref.WeakValueDictionary()
         lock = self._identity_locks.setdefault(story_id, asyncio.Lock())
         async with lock:
             story, prior = self._identity_snapshot(story_id)
             generation = int(prior.get('identity_generation') or 0)
+            from .research_control import research_stopped
+            control_revision = int(((prior.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
+            if research_stopped(prior, 'identity', photo_sha256=story['photo_sha256'], identity_generation=generation):
+                return self.story(story_id)
             previous = prior.get('visual_identity') or {}
             if expected_generation is not None and expected_generation != generation:
                 record_identity_event(self, story_id, 'identity_stale_job', {'generation': generation, 'job_generation': expected_generation})
@@ -110,6 +135,9 @@ class IdentityLifecycleMixin:
                 binding = {'photo_sha256': story['photo_sha256'], 'source': 'source_photo_exif', 'metadata': hints}
             story['_camera_hints'] = hints
             story['_identity_generation'] = generation
+            story['_identity_research_control_revision'] = control_revision
+            story['_research_job_id'] = job_id
+            story['_research_job_attempt'] = job_attempt
             if lat is None or lon is None:
                 lat, lon = metadata['latitude'], metadata['longitude']
             valid = lat is not None and lon is not None and math.isfinite(float(lat)) and math.isfinite(float(lon)) and -90 <= float(lat) <= 90 and -180 <= float(lon) <= 180
@@ -185,7 +213,7 @@ class IdentityLifecycleMixin:
                         item.get('candidate_id') for item in discovered
                     }
                     recovery_is_better = (
-                        visual_match(recovered_raw, discovered)
+                        visual_match(recovered_raw, discovered, [*candidates, *discovered])
                         or (raw.get('status') == 'mismatch' and recovered_has_candidate
                             and recovered_raw.get('status') != 'mismatch')
                         or (not raw.get('candidate_id') and recovered_has_candidate)
@@ -193,7 +221,11 @@ class IdentityLifecycleMixin:
                             and confidence(recovered_raw) >= confidence(raw)
                             and recovered_raw.get('_references_sent'))
                     )
-                    if recovered_raw.get('_article_media_pending'):
+                    if (recovered_raw.get('_article_media_pending')
+                            or recovered_raw.get('_comparison_deferred')):
+                        # The shared visual queue must receive expanded physical
+                        # hypotheses even when no model has selected one yet.
+                        # Retaining references does not replace the current verdict.
                         ids = {item['candidate_id'] for item in discovered}
                         candidates = ([item for item in candidates if item['candidate_id'] not in ids] + discovered)[:36]
                     if recovery_is_better:
@@ -226,7 +258,11 @@ class IdentityLifecycleMixin:
                 current = self._story_row(db, story_id)
                 latest = json.loads(current['research_json'] or '{}')
                 if (int(latest.get('identity_generation') or 0) != generation or current['photo_sha256'] != story['photo_sha256']
+                    or research_stopped(latest, 'identity', photo_sha256=current['photo_sha256'], identity_generation=generation)
+                    or int(((latest.get('research_controls') or {}).get('identity') or {}).get('revision') or 0) != control_revision
                     or (latest.get('visual_identity') or {}).get('status') == 'owner_confirmed'):
+                    return self._story_repr(db, current)
+                if job_id and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job_id, job_attempt)).fetchone():
                     return self._story_repr(db, current)
                 latest.update({'visual_identity': identity, 'identity_attempted_generation': generation, 'osm': osm, 'wikipedia': wikipedia, 'photo_camera_hints': binding})
                 if matched:

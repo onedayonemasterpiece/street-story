@@ -49,6 +49,10 @@ class PublicationWire {
 }
 
 class StoryWire {
+    @SerializedName("photo_sha256") var photoSha256: String? = null
+    @SerializedName("identity_generation") var identityGeneration: Int? = null
+    @SerializedName("research_controls") var researchControls: Map<String, ResearchControlWire> = emptyMap()
+    @SerializedName("research_pending") var researchPending: Map<String, Boolean> = emptyMap()
     @SerializedName("identity_progress") var identityProgress: IdentityProgressWire? = null
     @SerializedName("publication_concept") var publicationConcept: String? = null
     var publication: PublicationWire? = null
@@ -72,6 +76,20 @@ class StoryWire {
     @SerializedName("source_count") var sourceCount: Int = 0
     @SerializedName("research_revision") var researchRevision: String? = null
     @SerializedName("research_voice_ids") var researchVoiceIds: ArrayList<String> = arrayListOf()
+}
+
+class ResearchControlWire {
+    var stopped: Boolean = false
+    var revision: Int = 0
+    @SerializedName("photo_sha256") var photoSha256: String = ""
+    @SerializedName("identity_generation") var identityGeneration: Int = 0
+}
+
+class ResearchControlReceiptWire {
+    var action: String = ""
+    var purposes: List<String> = emptyList()
+    var changed: List<String> = emptyList()
+    var story: StoryWire? = null
 }
 
 class VoiceMessageWire {
@@ -287,7 +305,12 @@ class ApiClient(private val baseUrl: String, private val token: String) {
     }
 
     fun mutate(serverStoryId: String, endpoint: String, payloadJson: String, requestKey: String): StoryWire {
-        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel"))
+        require(endpoint in setOf("facts", "refinements", "visual", "publish", "cancel", "research-control"))
+        if (endpoint == "research-control") {
+            val receipt = requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey,
+                ResearchControlReceiptWire::class.java)
+            return receipt.story ?: throw ApiProtocolException("Research control has no authoritative story readback")
+        }
         return requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey, StoryWire::class.java)
     }
 

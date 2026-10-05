@@ -192,9 +192,10 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
         loaded.append(url)
         data = jpeg((300 + len(loaded), 400))
         evidence.append({'candidate_id': candidate['candidate_id'], 'source_url': url,
-                         'model_image_sha256': hashlib.sha256(data).hexdigest()})
+                         'model_image_sha256': hashlib.sha256(data).hexdigest(),
+                         **({'article_url': candidate['url']} if candidate['candidate_id'].startswith('web:') else {})})
         return [(candidate['candidate_id'], 'image/jpeg', data)]
-    async def search(service, query, visual_query):
+    async def search(service, query, visual_query, **kwargs):
         searched.append(query)
         return [{'url': article['url']}]
     async def articles(*_args, receipts):
@@ -211,6 +212,7 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
         assert len(searched) == (0 if index == 1 else 1)
         await adapter.execute_tool(session, {'name': 'record_place_comparison', 'id': f'verdict-{index}', 'args': {
             'comparison_id': reply['comparison_id'], 'candidate_id': reply['references'][0]['candidate_id'],
+            'reference_subject_candidate_id': wiki['candidate_id'],
             'status': status, 'confidence': .99, 'observations': ['Visible detail comparison'], 'alternative_candidate_ids': []}})
         current = svc.story(story['id'])
         assert current['identity_progress']['images_reviewed_count'] == index
@@ -220,3 +222,10 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
         assert pushed['visual_comparison_verified'] == (status == 'match')
         assert 'reviewed_image_sha256s' not in pushed
     assert loaded == [wiki['reference_image_urls'][0], *article['reference_image_urls']]
+    assert current['visual_identity']['candidate_id'] == wiki['candidate_id']
+    assert current['visual_identity']['candidate_name'] == wiki['name']
+    assert current['visual_identity']['reference_subject_binding']['reference_candidate_id'] == article['candidate_id']
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 1
+        assert not db.execute("SELECT 1 FROM poi_aliases WHERE namespace='street_story_candidate' AND value=?",
+                              (article['candidate_id'],)).fetchone()

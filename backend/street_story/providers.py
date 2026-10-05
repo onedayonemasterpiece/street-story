@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
@@ -1199,9 +1199,9 @@ class GeminiClient:
         try:
             for requested_url in selected:
                 if run_id:
-                    from .research_runs import saved_run_document
+                    from .research_runs import reusable_source_document
                     with self.store.connection() as db:
-                        saved = saved_run_document(db, run_id, requested_url)
+                        saved = reusable_source_document(db, run_id=run_id, url=requested_url, now=self.store.now())
                     if saved is not None:
                         documents[requested_url] = saved
                         continue
@@ -1221,29 +1221,12 @@ class GeminiClient:
                 response = None
                 error_code = None
                 try:
-                    for _ in range(4):
-                        response = await client.get(
-                            current_url,
-                            headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.8"},
-                        )
-                        if 300 <= response.status_code < 400:
-                            location = str(response.headers.get("location") or "").strip()
-                            if not location:
-                                error_code = "redirect_missing_location"
-                                response = None
-                                break
-                            next_url = urljoin(current_url, location).rstrip("/")
-                            if not self._safe_page_url(next_url):
-                                error_code = "redirect_target_rejected"
-                                response = None
-                                break
-                            redirect_chain.append(next_url)
-                            current_url = next_url
-                            continue
-                        break
-                    else:
-                        error_code = "redirect_limit_exceeded"
-                        response = None
+                    from .article_media import cached_public_page
+                    current_url, public_mime, public_body = await cached_public_page(self.store, client, requested_url)
+                    # Public reader pins DNS and validates every redirect/TLS/size.
+                    response = httpx.Response(200, content=public_body,
+                        headers={'content-type': public_mime}, request=httpx.Request('GET', current_url))
+                    redirect_chain = [current_url] if current_url != requested_url else []
 
                     if response is None:
                         raise ValueError(error_code or "page_fetch_failed")
@@ -1291,6 +1274,7 @@ class GeminiClient:
                                 redirect_chain=redirect_chain,
                                 normalized_text=normalized_text,
                                 read_status=read_status,
+                                access_scope='public',
                                 now=self.store.now(),
                             )
                     else:
@@ -1326,7 +1310,9 @@ class GeminiClient:
                         "normalized_text": normalized_text,
                         "redirect_chain": redirect_chain,
                     }
-                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, ValueError, UnicodeError) as exc:
+                except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, OSError, ValueError, UnicodeError) as exc:
+                    if isinstance(exc,httpx.HTTPStatusError):
+                        error_code = f'http_{exc.response.status_code}'
                     error_code = error_code or type(exc).__name__
                     if run_id:
                         with self.store.tx() as db:

@@ -79,7 +79,7 @@ def ensure_poi_identity(
     """
     key = poi_key(identity)
     name = str(identity.get("candidate_name") or "").strip()
-    if not key or not name:
+    if not key or not name or key.startswith('web:'):
         return None
     ts = float(now or 0.0)
 
@@ -111,18 +111,24 @@ def ensure_poi_identity(
         ).fetchone()
         return str(row["poi_id"]) if row else None
 
-    poi_id = alias_owner("street_story_candidate", key)
+    # Exact registry entity aliases and model-verified clusters may point to
+    # an already accumulated physical POI. Names/proximity never merge objects.
+    owners = {alias_owner(namespace, value) for namespace, value in aliases
+              if namespace in {'street_story_candidate', 'wikidata', 'wikipedia_url', 'osm_id'}} - {None}
+    if chosen and identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
+        from .identity_subject_binding import subject_aliases
+        proved = subject_aliases(identity.get('candidates') or []).get(key, {key})
+        owners.update(owner for alias in proved if (owner := alias_owner('street_story_candidate', alias)))
+    primary_owner = alias_owner('street_story_candidate', key)
+    cluster_proved = chosen and identity.get('status')=='match' and identity.get('visual_reference_verified') is True and chosen.get('discovery')=='wikimedia_entity_cluster'
+    if len(owners) > 1 and not (cluster_proved and primary_owner):
+        logger.warning('street_story_poi_binding_conflict candidate_id=%s owners=%s', key, len(owners))
+        return None
+    poi_id = primary_owner or next(iter(owners), None)
     if poi_id is None:
-        entity_owner = alias_owner("wikidata", str(chosen.get('wikidata'))) if chosen and chosen.get('wikidata') else None
-        if entity_owner:
-            poi_id = entity_owner
-        else:
-            poi_id = "poi_ss_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
-            db.execute(
-                "INSERT OR IGNORE INTO pois(id,status,canonical_name,latitude,longitude,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (poi_id, "candidate", name[:300], latitude, longitude, ts, ts),
-            )
+        poi_id = "poi_ss_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+        db.execute("INSERT OR IGNORE INTO pois(id,status,canonical_name,latitude,longitude,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (poi_id, "candidate", name[:300], latitude, longitude, ts, ts))
 
     db.execute(
         "UPDATE pois SET canonical_name=CASE WHEN status='candidate' THEN ? ELSE canonical_name END,"

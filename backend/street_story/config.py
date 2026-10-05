@@ -73,11 +73,18 @@ class Settings:
     gemini_grounded_research_rpm: int = 0
     processing_delayed_after_seconds: float = 1800.0
     publication_test_alias: str | None = None
+    research_endpoint: str | None = None
+    research_directory: Path | None = None
+    research_model: str = 'mimo-v2.6-flash-free'
+    native_vision_reserve: bool = False
+    research_gigachat_key: SecretStr | str | None = field(default=None, repr=False)
+    research_gigachat_ca: str | None = None
+    research_gigachat_scope: str = 'GIGACHAT_API_PERS'
 
     def __post_init__(self):
         if self.publication_test_alias and not re.fullmatch(r"street_story_e2e_[a-zA-Z0-9_]{1,80}", self.publication_test_alias):
             raise ValueError("Test destination must be an explicit Street Story E2E alias")
-        for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key'):
+        for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key','research_gigachat_key'):
             object.__setattr__(self, name, secret(getattr(self, name)))
         object.__setattr__(self, 'gemini_api_keys', tuple(secret(k) for k in self.gemini_api_keys))
 
@@ -153,6 +160,13 @@ class Settings:
             osm_user_agent=os.getenv('STREET_STORY_OSM_USER_AGENT', 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)'),
             worker_poll_seconds=_number('WORKER_POLL_SECONDS', 1, .01, 60),
             publication_test_alias=os.getenv('STREET_STORY_TEST_DESTINATION_ALIAS', '').strip() or None,
+            research_endpoint=os.getenv('STREET_STORY_RESEARCH_ENDPOINT', '').strip() or None,
+            research_directory=Path(os.environ['STREET_STORY_RESEARCH_DIRECTORY']) if os.getenv('STREET_STORY_RESEARCH_DIRECTORY') else None,
+            research_model=os.getenv('STREET_STORY_RESEARCH_MODEL', 'mimo-v2.6-flash-free'),
+            native_vision_reserve=os.getenv('STREET_STORY_NATIVE_VISION_RESERVE', '').lower() in {'1', 'true', 'yes'},
+            research_gigachat_key=os.getenv('STREET_STORY_GIGACHAT_KEY') or None,
+            research_gigachat_ca=os.getenv('STREET_STORY_GIGACHAT_CA') or None,
+            research_gigachat_scope=os.getenv('STREET_STORY_GIGACHAT_SCOPE', 'GIGACHAT_API_PERS'),
             gemini_call_timeout_seconds=_number('GEMINI_CALL_TIMEOUT_SECONDS', 20, .1, 120),
             gemini_attempt_timeout_seconds=_number('GEMINI_ATTEMPT_TIMEOUT_SECONDS', 60, .1, 300),
             gemini_transcription_rpm=int(_number('GEMINI_TRANSCRIPTION_RPM', 0, 0, 10000)),

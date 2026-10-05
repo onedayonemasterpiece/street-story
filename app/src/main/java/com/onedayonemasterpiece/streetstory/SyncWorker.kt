@@ -20,6 +20,12 @@ import java.util.concurrent.TimeUnit
 internal fun effectiveSnapshotDraft(state: String, localDraft: String?, remoteDraft: String?): String? =
     if (state in setOf(StoryStage.SCHEDULED, StoryStage.PUBLISHED) && localDraft != null) localDraft else remoteDraft
 
+internal fun shouldPollStory(wire: StoryWire): Boolean =
+    listOf("identity", "facts").any { wire.researchPending[it] == true && wire.researchControls[it]?.stopped != true } ||
+        wire.state in setOf(StoryStage.QUEUED, StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING) ||
+        (wire.state == StoryStage.IDENTIFYING && wire.researchControls["identity"]?.stopped != true) ||
+        (wire.state == StoryStage.RESEARCHING && wire.researchControls["facts"]?.stopped != true)
+
 object SyncScheduler {
     private const val UNIQUE_WORK = "street-story-sync"
     fun enqueue(context: Context, delaySeconds: Long = 0L) {
@@ -81,7 +87,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         var story = store.story(initial.clientStoryId) ?: return false
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
-        val identityBackfillEligible = remote.visualIdentity == null &&
+        val identityBackfillEligible = remote.visualIdentity == null && remote.researchControls["identity"]?.stopped != true &&
             remote.state !in setOf(
                 StoryStage.IDENTIFYING,
                 StoryStage.SCHEDULED,
@@ -137,13 +143,10 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             api.downloadAsset(assetUrl, target)
             store.setProcessedImagePath(story.clientStoryId, target.absolutePath)
         }
-        return current.stage in setOf(
-            StoryStage.QUEUED,
-            StoryStage.IDENTIFYING,
-            StoryStage.RESEARCHING,
-            StoryStage.VISUAL_PROCESSING,
-            StoryStage.SCHEDULING,
-        )
+        // The visual queue can remain active in needs_review after an uncertain
+        // first result. Its authoritative job projection, not a microphone, keeps
+        // readback polling alive. Explicitly paused research stops polling.
+        return shouldPollStory(remote)
     }
 
     private fun syncVoice(store: StoryStore, api: ApiClient, serverStoryId: String, session: VoiceSessionSnapshot) {

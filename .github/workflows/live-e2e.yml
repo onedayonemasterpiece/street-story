@@ -256,6 +256,7 @@ jobs:
           STREET_STORY_LIVE_BASE_URL: https://street-story.kenigevents.ru
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
           SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
+          LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           test -n "$STREET_STORY_LIVE_BASE_URL"
@@ -299,7 +300,7 @@ jobs:
               'Сделай текст короче и живее, без канцелярита. Факты сохрани.',
               'Сделай картинку чуть теплее, а текст оставь без изменений.',
           ]
-          for ordinal, speech in enumerate(texts, 1):
+          for ordinal, speech in enumerate(texts if os.environ.get('LIVE_E2E_IDENTITY_ONLY') != 'true' else [], 1):
               wav = root / f'voice-{ordinal}.wav'
               pcm = root / f'voice-{ordinal}.pcm'
               subprocess.run(['espeak', '-v', 'ru', '-s', '165', '-w', str(wav), speech], check=True)
@@ -316,7 +317,7 @@ jobs:
             -GPSLongitude="$LON" -GPSLongitudeRef=E \
             live-android-fixtures/photo.jpg >/dev/null
           python - <<'PY'
-          import hashlib, json, pathlib
+          import hashlib, json, os, pathlib
           meta = json.loads(pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928/fixture.json').read_text(encoding='utf-8'))
           derived = pathlib.Path('live-android-fixtures/photo.jpg').read_bytes()
           public = {
@@ -329,7 +330,7 @@ jobs:
               'derived_photo_sha256': hashlib.sha256(derived).hexdigest(),
               'latitude': meta['latitude'],
               'longitude': meta['longitude'],
-              'prepared_audio': True,
+              'prepared_audio': os.environ.get('LIVE_E2E_IDENTITY_ONLY') != 'true',
               'physical_mic': False,
           }
           pathlib.Path('backend/live-e2e-artifacts/android-fixture-provenance.json').write_text(

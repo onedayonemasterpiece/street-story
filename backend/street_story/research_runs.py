@@ -14,19 +14,23 @@ def extraction_scope(goal: str) -> str:
     return ' '.join(str(goal or '').split()).casefold()
 
 
+def _run_scope(row) -> str:
+    return extraction_scope(row['extraction_scope'] if 'extraction_scope' in row.keys() and row['extraction_scope'] else row['goal'])
+
+
 def source_coverage(db, poi_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
     """Only frozen, checked chunk receipts establish completed source coverage."""
     if not poi_keys:
         return {}
     placeholders = ','.join('?' for _ in poi_keys)
     rows = db.execute(
-        f"SELECT s.*,r.goal,r.state AS run_state,v.final_url,v.read_status FROM research_run_sources s "
+        f"SELECT s.*,r.goal,r.extraction_scope,r.state AS run_state,v.final_url,v.read_status FROM research_run_sources s "
         "JOIN research_runs r ON r.run_id=s.run_id JOIN source_versions v ON v.source_version_id=s.source_version_id "
         f"WHERE r.poi_key IN ({placeholders}) ORDER BY s.updated_at DESC", tuple(poi_keys))
     result: dict[str, list[dict[str, Any]]] = {}
     seen: set[tuple[str, str]] = set()
     for row in rows:
-        scope = extraction_scope(row['goal'])
+        scope = _run_scope(row)
         urls = {str(row['url']), str(row['final_url'])}
         chunks = list(db.execute(
             'SELECT c.chunk_id,r.status,r.error_code,r.prompt_version FROM source_chunks c LEFT JOIN research_chunk_runs r '
@@ -72,14 +76,16 @@ def _valid_checkpoint(db, run_id: str, chunk_id: str) -> dict[str, Any]:
 def reuse_chunk_checkpoint(db, run_id: str, chunk_id: str, now: float,
                           prompt_version: str = 'live-chunk-findings-v1') -> bool:
     """Attach an immutable checkpoint snapshot; never copy observations or review decisions."""
-    run = db.execute('SELECT poi_key,goal FROM research_runs WHERE run_id=?', (run_id,)).fetchone()
+    run = db.execute('SELECT * FROM research_runs WHERE run_id=?', (run_id,)).fetchone()
     if not run or not run['poi_key']:
         return False
     from .poi_memory import memory_keys
     keys = memory_keys(db, {'candidate_id': run['poi_key']})
     placeholders = ','.join('?' for _ in keys)
     donors = db.execute(
-        "SELECT c.*,r.goal FROM research_chunk_runs c JOIN research_runs r ON r.run_id=c.run_id "
+        "SELECT c.*,r.goal,r.extraction_scope,r.story_id,v.access_scope FROM research_chunk_runs c "
+        "JOIN research_runs r ON r.run_id=c.run_id JOIN source_chunks sc ON sc.chunk_id=c.chunk_id "
+        "JOIN source_versions v ON v.source_version_id=sc.source_version_id "
         f"WHERE c.chunk_id=? AND c.run_id<>? AND r.poi_key IN ({placeholders}) "
         "AND c.prompt_version=? AND c.error_code IS NULL AND c.status IN ('extracted','no_claims','deferred','extracting') "
         "AND r.state NOT IN ('cancelled','failed') "
@@ -89,7 +95,13 @@ def reuse_chunk_checkpoint(db, run_id: str, chunk_id: str, now: float,
         "ORDER BY CASE WHEN c.status IN ('extracted','no_claims') THEN 0 ELSE 1 END,c.updated_at DESC",
         (chunk_id, run_id, *keys, prompt_version))
     for donor in donors:
-        if extraction_scope(donor['goal']) != extraction_scope(run['goal']):
+        if donor['story_id'] != run['story_id'] and donor['access_scope'] != 'public':
+            continue
+        if donor['story_id'] != run['story_id']:
+            donor_run = db.execute('SELECT * FROM research_runs WHERE run_id=?', (donor['run_id'],)).fetchone()
+            if not _confirmed_run_keys(db, run).intersection(_confirmed_run_keys(db, donor_run)):
+                continue
+        if _run_scope(donor) != _run_scope(run):
             continue
         checkpoint = _valid_checkpoint(db, donor['run_id'], chunk_id)
         if not checkpoint:
@@ -230,6 +242,29 @@ def plan_text_chunks(text: str, *, target_chars: int = 6000, overlap_chars: int 
     return chunks
 
 
+def acquire_chunk_lease(db, *, run_id, chunk_id, owner, now, ttl=180):
+    """Fence one frozen core/scope shared by Live and background extractors."""
+    row = db.execute('SELECT r.*,x.extraction_scope,x.poi_key FROM research_chunk_runs r '
+                     'JOIN research_runs x ON x.run_id=r.run_id WHERE r.run_id=? AND r.chunk_id=?',
+                     (run_id,chunk_id)).fetchone()
+    if row is None:
+        return None
+    held = db.execute('SELECT r.run_id,r.lease_owner FROM research_chunk_runs r JOIN research_runs x ON x.run_id=r.run_id '
+                      'WHERE r.chunk_id=? AND x.extraction_scope=? AND x.poi_key IS ? AND r.lease_until>? '
+                      'AND r.lease_owner IS NOT NULL', (chunk_id,row['extraction_scope'],row['poi_key'],now)).fetchall()
+    if any(item['lease_owner'] != owner or item['run_id'] != run_id for item in held):
+        return None
+    fence = int(row['lease_fence']) + (0 if row['lease_owner'] == owner and row['lease_until'] > now else 1)
+    db.execute('UPDATE research_chunk_runs SET lease_owner=?,lease_until=?,lease_fence=? WHERE run_id=? AND chunk_id=?',
+               (owner,now+ttl,fence,run_id,chunk_id))
+    return fence
+
+
+def chunk_lease_owned(db, *, run_id, chunk_id, owner, fence, now):
+    return fence is not None and db.execute('SELECT 1 FROM research_chunk_runs WHERE run_id=? AND chunk_id=? '
+        'AND lease_owner=? AND lease_fence=? AND lease_until>?', (run_id,chunk_id,owner,fence,now)).fetchone() is not None
+
+
 def begin_research_run(
     db,
     *,
@@ -240,18 +275,20 @@ def begin_research_run(
     identity_generation: int,
     run_id: str | None,
     now: float,
+    scope: str | None = None,
 ) -> str:
     value = str(run_id or "").strip() or "research_" + uuid.uuid4().hex[:24]
     db.execute(
         "INSERT OR IGNORE INTO research_runs("
-        "run_id,story_id,poi_key,goal,state,status_detail,expected_story_revision,"
+        "run_id,story_id,poi_key,goal,extraction_scope,state,status_detail,expected_story_revision,"
         "identity_generation,created_at,updated_at"
-        ") VALUES(?,?,?,?,?,'',?,?,?,?)",
+        ") VALUES(?,?,?,?,?,?,'',?,?,?,?)",
         (
             value,
             story_id,
             poi_key,
             str(goal or "")[:2000],
+            extraction_scope(scope if scope is not None else goal)[:2000],
             "planned",
             int(expected_story_revision),
             int(identity_generation),
@@ -332,7 +369,10 @@ def persist_source_version(
     now: float,
     target_chars: int = 6000,
     overlap_chars: int = 400,
+    access_scope: str = 'story',
 ) -> dict[str, Any]:
+    if access_scope not in {'story', 'public'}:
+        raise ValueError('research_source_access_scope_invalid')
     clean_final = str(final_url or "").rstrip("/")
     document_id = _digest("doc_", clean_final, 24)
     content_sha = hashlib.sha256(str(normalized_text or "").encode("utf-8")).hexdigest()
@@ -343,6 +383,8 @@ def persist_source_version(
                 "final_url": clean_final,
                 "content_sha256": content_sha,
                 "content_type": str(content_type or ""),
+                "read_status": str(read_status or 'complete'),
+                "access_scope": access_scope,
             }
         ),
         24,
@@ -362,8 +404,8 @@ def persist_source_version(
     db.execute(
         "INSERT OR IGNORE INTO source_versions("
         "source_version_id,document_id,requested_url,final_url,content_sha256,content_type,"
-        "http_status,redirect_chain_json,normalized_text,read_status,char_count,created_at"
-        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "http_status,redirect_chain_json,normalized_text,read_status,char_count,created_at,access_scope"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             source_version_id,
             document_id,
@@ -377,14 +419,22 @@ def persist_source_version(
             str(read_status or "complete")[:80],
             len(str(normalized_text or "")),
             now,
+            access_scope,
         ),
     )
 
-    chunks = plan_text_chunks(
-        str(normalized_text or ""),
-        target_chars=target_chars,
-        overlap_chars=overlap_chars,
-    )
+    # Source bytes and the partition used for their receipts are immutable.
+    # A different consumer's window size must not add overlapping chunks to a
+    # snapshot that already has checked extraction coverage.
+    chunks = [dict(row) for row in db.execute(
+        'SELECT ordinal,core_start,core_end,context_start,context_end,chunk_text AS text '
+        'FROM source_chunks WHERE source_version_id=? ORDER BY ordinal', (source_version_id,))]
+    if not chunks:
+        chunks = plan_text_chunks(
+            str(normalized_text or ""),
+            target_chars=target_chars,
+            overlap_chars=overlap_chars,
+        )
     for item in chunks:
         chunk_id = _digest(
             "chunk_",
@@ -516,6 +566,99 @@ def record_chunk_batch(
     )
     return batch_id
 
+
+
+def _confirmed_run_keys(db, run) -> set[str]:
+    story = db.execute('SELECT research_json FROM stories WHERE id=?', (run['story_id'],)).fetchone()
+    if not story:
+        return set()
+    research = json.loads(story['research_json'] or '{}')
+    identity = research.get('visual_identity') or {}
+    if (identity.get('status') not in {'match', 'owner_confirmed'}
+            or int(research.get('identity_generation') or 0) != int(run['identity_generation'])
+            or not identity.get('candidate_id')):
+        return set()
+    from .poi_memory import memory_keys
+    keys = set(memory_keys(db, identity))
+    return keys if run['poi_key'] in keys else set()
+
+
+def attach_source_version(db, *, run_id: str, source_version_id: str,
+                          requested_url: str, now: float) -> dict[str, Any] | None:
+    """Attach authorized frozen text; media enumeration/comparison stay separate.
+
+    A URL's appearance in another story grants no access to that story. Only
+    explicitly public article text for the same confirmed physical POI may
+    cross story boundaries. No private image, voice, draft or verdict is copied.
+    """
+    target = db.execute('SELECT * FROM research_runs WHERE run_id=?', (run_id,)).fetchone()
+    if not target or target['state'] in {'cancelled', 'failed', 'completed'}:
+        return None
+    story = db.execute('SELECT research_json FROM stories WHERE id=?', (target['story_id'],)).fetchone()
+    if not story or int(json.loads(story['research_json'] or '{}').get('identity_generation') or 0) != int(target['identity_generation']):
+        return None
+    url = str(requested_url or '').rstrip('/')
+    version = db.execute('SELECT v.*,d.title FROM source_versions v JOIN source_documents d '
+                         'ON d.document_id=v.document_id WHERE v.source_version_id=?', (source_version_id,)).fetchone()
+    if (not version or not url.startswith('https://') or not version['normalized_text'].strip()
+            or int(version['http_status']) != 200
+            or version['read_status'] not in {'complete', 'partial', 'partial_text_limit'}):
+        return None
+    if hashlib.sha256(version['normalized_text'].encode('utf-8')).hexdigest() != version['content_sha256']:
+        logger.warning('street_story_source_snapshot_rejected run_id=%s source_version_id=%s reason=content_digest_mismatch',
+                       run_id, source_version_id)
+        return None
+    existing = db.execute('SELECT source_version_id FROM research_run_sources WHERE run_id=? AND url=?', (run_id, url)).fetchone()
+    if existing and existing['source_version_id'] and existing['source_version_id'] != source_version_id:
+        return None  # A run's already acquired version is frozen.
+    donors = list(db.execute('SELECT r.*,s.url AS source_url FROM research_run_sources s '
+                            'JOIN research_runs r ON r.run_id=s.run_id WHERE s.source_version_id=? '
+                            "AND s.error_code IS NULL AND s.status IN ('fetched','partial')", (source_version_id,)))
+    target_keys = _confirmed_run_keys(db, target) if version['access_scope'] == 'public' else set()
+    authorized = any(
+        url in {donor['source_url'], version['requested_url'], version['final_url']}
+        and (donor['story_id'] == target['story_id']
+             or (target_keys and target_keys.intersection(_confirmed_run_keys(db, donor))))
+        for donor in donors
+    )
+    if not authorized:
+        return None
+    register_discovered_source(db, run_id=run_id, url=url, title=version['title'],
+                              status='fetched' if version['read_status'] == 'complete' else 'partial',
+                              source_version_id=source_version_id, now=now)
+    for chunk in db.execute('SELECT chunk_id FROM source_chunks WHERE source_version_id=? ORDER BY ordinal', (source_version_id,)):
+        added = db.execute("INSERT OR IGNORE INTO research_chunk_runs(run_id,chunk_id,status,updated_at) VALUES(?,?,'planned',?)",
+                           (run_id, chunk['chunk_id'], now)).rowcount
+        if added:
+            reuse_chunk_checkpoint(db, run_id, chunk['chunk_id'], now)
+    logger.info('street_story_source_snapshot_reuse run_id=%s source_version_id=%s access_scope=%s read_status=%s',
+                run_id, source_version_id, version['access_scope'], version['read_status'])
+    return saved_run_document(db, run_id, url)
+
+
+def reusable_source_document(db, *, run_id: str, url: str, now: float,
+                             max_age_seconds: float = 86400) -> dict[str, Any] | None:
+    """Reuse an authorized fresh snapshot, independently of extraction scope."""
+    target = db.execute('SELECT r.*,s.research_json FROM research_runs r JOIN stories s ON s.id=r.story_id WHERE run_id=?',
+                        (run_id,)).fetchone()
+    if (not target or target['state'] in {'cancelled', 'failed', 'completed'}
+            or int(json.loads(target['research_json'] or '{}').get('identity_generation') or 0) != int(target['identity_generation'])):
+        return None
+    saved = saved_run_document(db, run_id, url)
+    if saved is not None:
+        return saved
+    clean_url = str(url or '').rstrip('/')
+    rows = db.execute('SELECT DISTINCT v.source_version_id,v.created_at FROM source_versions v '
+                      'LEFT JOIN research_run_sources s ON s.source_version_id=v.source_version_id '
+                      'WHERE (v.requested_url=? OR v.final_url=? OR s.url=?) '
+                      'AND v.created_at<=? AND v.created_at>=? ORDER BY v.created_at DESC',
+                      (clean_url, clean_url, clean_url, now, now - max(0, float(max_age_seconds))))
+    for row in rows:
+        document = attach_source_version(db, run_id=run_id, source_version_id=row['source_version_id'],
+                                         requested_url=clean_url, now=now)
+        if document is not None:
+            return document
+    return None
 
 
 def saved_run_document(db, run_id: str, url: str) -> dict[str, Any] | None:

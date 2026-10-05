@@ -141,6 +141,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             story = self._story_row(db, story_id)
             if self._idem(db, key, "research", req_digest, "story", story_id):
                 return self._story_repr(db, self._story_row(db, story_id))
+            research = json.loads(story["research_json"] or "{}")
+            identity = research.get("visual_identity") or {}
             sessions = list(
                 db.execute(
                     "SELECT session_id,kind,manifest_json,created_at FROM voice_sessions "
@@ -148,11 +150,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     (story_id,),
                 )
             )
-            if not sessions:
+            if not sessions and identity.get("status") not in {"match", "owner_confirmed"}:
                 raise InvalidStateError(
                     "research_voice_required", "At least one completed voice message is required"
                 )
             ordered_ids = [row["session_id"] for row in sessions]
+            request_revision = int(research.get("fact_request_revision") or 0) + 1
+            request_goal = str(body.get("coverage_goal") or body.get("goal") or "").strip()[:1600]
+            request_scope = str(body.get("extraction_scope") or "").strip()[:1600] or None
             revision_basis = {
                 "photo_sha256": story["photo_sha256"],
                 "voices": [
@@ -164,26 +169,94 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     for row in sessions
                 ],
                 "candidate_id": candidate_id,
+                "request_revision": request_revision,
+                "identity_generation": int(research.get("identity_generation") or 0),
+                "coverage_goal": request_goal,
+                "extraction_scope": request_scope,
             }
             input_revision = digest(revision_basis)
+            request_payload = {
+                "voice_session_ids": ordered_ids,
+                "input_revision": input_revision,
+                "confirmed_candidate_id": candidate_id,
+                "coverage_goal": request_goal,
+                "extraction_scope": request_scope,
+                "request_revision": request_revision,
+                "identity_generation": revision_basis["identity_generation"],
+                "photo_sha256": story["photo_sha256"],
+            }
+            if not ordered_ids:
+                request_payload["live_transcript"] = request_goal or "Найди пригодные новые факты о подтверждённом объекте."
+            research["fact_request_revision"] = request_revision
+            active = db.execute(
+                "SELECT id FROM jobs WHERE story_id=? AND kind='research' "
+                "AND state IN ('ready','retry','running') ORDER BY created_at LIMIT 1", (story_id,)
+            ).fetchone()
+            if active:
+                # Keep the running attempt's frozen input/checkpoints intact.
+                # Its terminal commit (or recovery scheduler) consumes this
+                # bounded follow-up. Distinct requested aspects remain queued;
+                # exact repeated goals join the same follow-up.
+                pending = research.get("pending_fact_request")
+                if isinstance(pending, dict):
+                    queued = pending.pop("queued_requests", [])
+                    requests = [pending, *queued]
+                    def request_key(item):
+                        return (item.get("coverage_goal"), item.get("extraction_scope"), item.get("confirmed_candidate_id"))
+                    same = next((i for i, item in enumerate(requests) if request_key(item) == request_key(request_payload)), None)
+                    if same is None:
+                        requests.append(request_payload)
+                    else:
+                        requests[same] = request_payload
+                    pending = requests[0]
+                    if len(requests) > 1:
+                        pending["queued_requests"] = requests[1:]
+                    research["pending_fact_request"] = pending
+                else:
+                    research["pending_fact_request"] = request_payload
+                db.execute("UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
+                           (canonical(research), self.store.now(), story_id))
+                return self._story_repr(db, self._story_row(db, story_id))
             self._enqueue_job(
                 db,
                 story_id,
                 "research",
                 f"research-explicit:{input_revision}",
-                {
-                    "voice_session_ids": ordered_ids,
-                    "input_revision": input_revision,
-                    "confirmed_candidate_id": candidate_id,
-                },
+                request_payload,
             )
             now = self.store.now()
             db.execute(
-                "UPDATE stories SET state='researching',revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? "
+                "UPDATE stories SET state='researching',research_json=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? "
                 "WHERE id=?",
-                (now, story_id),
+                (canonical(research), now, story_id),
             )
             return self._story_repr(db, self._story_row(db, story_id))
+
+    def _schedule_joined_fact_request(self, db, story_id: str) -> bool:
+        """Consume one durable joined request after an attempt becomes terminal.
+
+        Recovery may call this once no active research job remains. The normal
+        worker calls it after its final commit, before marking its job done.
+        """
+        story = self._story_row(db, story_id)
+        research = json.loads(story["research_json"] or "{}")
+        pending = research.pop("pending_fact_request", None)
+        if not isinstance(pending, dict):
+            return False
+        queued = pending.pop("queued_requests", [])
+        current_generation = int(research.get("identity_generation") or 0)
+        valid = (int(pending.get("identity_generation") or 0) == current_generation
+                 and pending.get("photo_sha256") == story["photo_sha256"]
+                 and not research.get("fact_research_cancelled"))
+        if valid:
+            self._enqueue_job(db, story_id, "research", f"research-explicit:{pending['input_revision']}", pending)
+            if queued:
+                research["pending_fact_request"] = queued[0]
+                if len(queued) > 1:
+                    research["pending_fact_request"]["queued_requests"] = queued[1:]
+        db.execute("UPDATE stories SET research_json=?,state=CASE WHEN ? THEN 'researching' ELSE state END,updated_at=? WHERE id=?",
+                   (canonical(research), int(valid), self.store.now(), story_id))
+        return valid
 
     def _mark_visual_stale(self, db, story, selected_ids: list[str]) -> None:
         context = json.loads(story["visual_context_json"] or "{}")
@@ -438,14 +511,25 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         )
         take(remaining, 16 - len(shortlist), "fill")
         shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
-        return shortlist[:16]
+        from .identity_entity_aliases import enrich_entity_links
+        return enrich_entity_links(shortlist[:16], osm, wikipedia)
 
     async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None, evidence=None):
         from .identity_references import reference_images
         return await reference_images(self, candidates, limit, story_id=story_id, evidence=evidence)
 
     async def _identify_photo(self, story, transcript, candidates):
+        if getattr(self.providers, 'research', None) is not None:
+            return self._deferred_visual_assignment()
         return await identify_nearest(self, story, transcript, candidates)
+
+    @staticmethod
+    def _deferred_visual_assignment():
+        # Hypotheses are retained by identity_lifecycle. Actual pixels and a
+        # verified model verdict belong to the shared durable visual queue.
+        return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': [], 'alternative_candidate_ids': [],
+                '_references_sent': [], '_comparison_deferred': True}
 
     async def _identify_photo_batch(
         self,
@@ -454,6 +538,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         candidates: list[dict[str, Any]],
         reference_limit: int = 2,
     ) -> dict[str, Any]:
+        if getattr(self.providers, 'research', None) is not None:
+            return self._deferred_visual_assignment()
         custom = getattr(self.providers.gemini, "identify_photo", None)
         if callable(custom):
             return await custom(Path(story["photo_path"]), story["photo_mime_type"], transcript, candidates)
@@ -491,6 +577,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             "явно несовпавшие эталоны или современное/историческое имя того же здания. "
             "Кратко, по-русски перечисли видимые признаки, на которых основано решение.\n"
             + json.dumps({"voice_context": transcript, "candidates": candidates,
+                          "physical_alternatives": story.get('_identity_shortlist') or candidates,
                           "capture_hints": model_camera_hints(story.get('_camera_hints') or {})}, ensure_ascii=False)
         )
         config = types.GenerateContentConfig(
@@ -894,7 +981,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         session_ids = [str(value) for value in payload.get("voice_session_ids", [])]
         live_transcript = str(payload.get("live_transcript") or "").strip()
         input_revision = str(payload.get("input_revision") or "")
-        if (not session_ids and not live_transcript) or not input_revision:
+        if not input_revision:
             raise PermanentProviderError("Explicit research snapshot is incomplete")
 
         with self.store.connection() as db:
@@ -918,6 +1005,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                     (story_id,),
                 )
             ]
+        if (payload.get("photo_sha256") is not None and payload["photo_sha256"] != story["photo_sha256"]
+                or payload.get("identity_generation") is not None
+                and int(payload["identity_generation"]) != int(prior.get("identity_generation") or 0)):
+            return
+        if prior.get('fact_research_cancelled'):
+            return
+        if not session_ids and not live_transcript and (prior.get('visual_identity') or {}).get('status') not in {'match','owner_confirmed'}:
+            raise PermanentProviderError('Explicit unidentified research requires initial author context')
 
         if live_transcript:
             transcript = live_transcript[:12000]
@@ -926,6 +1021,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             for session_id in session_ids:
                 transcripts.append(await self._transcribe_session(session_id))
             transcript = "\n\n".join(text.strip() for text in transcripts if text.strip())
+        request_goal = str(payload.get("coverage_goal") or "").strip()
+        if request_goal and request_goal != transcript:
+            transcript += "\n\nТекущий запрос исследования: " + request_goal
 
         lat, lon = story["latitude"], story["longitude"]
         osm: dict[str, Any] = {"reverse": {}, "nearby": []}
@@ -1016,6 +1114,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 latest = json.loads(self._story_row(db, story_id)["research_json"] or "{}")
                 if int(latest.get("identity_generation") or 0) != int(prior.get("identity_generation") or 0):
                     return
+                # A request joined while identity was in flight must remain
+                # visible to the recovery scheduler even when identification
+                # needs more evidence and this legacy attempt stops here.
+                for field in ("fact_request_revision", "pending_fact_request"):
+                    if field in latest:
+                        research[field] = latest[field]
                 db.execute(
                     "UPDATE stories SET state='needs_review',research_json=?,error_code='visual_identity_uncertain',"
                     "error_message='Выберите подходящий объект перед поиском фактов.',revision=revision+1,updated_at=? WHERE id=?",
@@ -1034,10 +1138,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 story_id=story_id,
                 poi_key=str(identity.get("candidate_id") or "") or None,
                 goal=(
-                    str(prior.get("publication_concept") or "").strip()
+                    str(payload.get("coverage_goal") or "").strip()
+                    or str(prior.get("publication_concept") or "").strip()
                     or transcript[:1600]
                     or "source-backed research"
                 ),
+                scope=payload.get("extraction_scope"),
                 expected_story_revision=expected_story_revision,
                 identity_generation=expected_identity_generation,
                 run_id=run_id,
@@ -1054,6 +1160,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         with self.store.connection() as db:
             poi_history = prior_facts(db, identity, story_id)
             processed_source_history = processed_sources(db, identity)
+        researcher = getattr(self.providers, 'research', None)
+        if callable(getattr(researcher, 'extract_fact_page', None)) and getattr(researcher, 'facts_available', False):
+            from .headless_facts import HeadlessFacts
+            await HeadlessFacts(self).run(job, run_id, request_goal or 'source-backed research',
+                str(payload.get('extraction_scope') or request_goal or 'source-backed research'))
+            with self.store.tx() as db:
+                current = self._story_row(db, story_id)
+                latest = json.loads(current['research_json'] or '{}')
+                if current['photo_sha256'] != story['photo_sha256'] or int(latest.get('identity_generation') or 0) != expected_identity_generation:
+                    return
+                latest['input_revision'] = input_revision
+                db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN \'facts_ready\' ELSE state END,updated_at=? WHERE id=?',
+                           (canonical(latest),self.store.now(),story_id))
+            return
         saved = self.store.checkpoint_get(job["id"], "grounded_research_v3")
         if saved is None:
             saved = await self._research_claims(
@@ -1212,7 +1332,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         elif incoming and previous:
             reconciliation_meta["status"] = "compatibility_unavailable"
 
-        is_refinement = bool(prior.get("input_revision"))
+        # Live-created drafts and hydrated POI facts do not necessarily have a
+        # legacy voice research input_revision. Their owner decisions still
+        # make this an accumulating request rather than a new publication.
+        is_refinement = bool(prior.get("input_revision") or previous or story.get("draft_text")
+                             or prior.get("publication_concept"))
         old_decisions = {
             row["fact_id"]: bool(row["selected"])
             for row in previous
@@ -1337,22 +1461,30 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             for fact in inventory
             if fact.get("selected") and fact.get("evidence_supported")
         ]
-        compose = getattr(self.providers.gemini, "compose_publication", None)
-        if not callable(compose):
-            raise PermanentProviderError("Gemini publication composition capability is unavailable")
-        composition = await compose(
-            place_name=place_name,
-            concept=str(prior.get("publication_concept") or ""),
-            author_note=author_note,
-            facts=selected_for_draft,
-        )
-        draft = str(composition.get("draft_text") or "").strip()
-        if not draft:
-            raise PermanentProviderError("Gemini publication composition returned empty draft")
-        publication_concept = (
-            str(prior.get("publication_concept") or "").strip()
-            or str(composition.get("concept") or "").strip()
-        )
+        preserve_draft = (is_refinement and previous_identity is not None
+                          and previous_identity.get("candidate_id") == identity.get("candidate_id"))
+        if preserve_draft:
+            # Research adds evidence. The author controls when an existing
+            # publication draft/concept is recomposed from the expanded pool.
+            draft = story.get("draft_text")
+            publication_concept = prior.get("publication_concept")
+        else:
+            compose = getattr(self.providers.gemini, "compose_publication", None)
+            if not callable(compose):
+                raise PermanentProviderError("Gemini publication composition capability is unavailable")
+            composition = await compose(
+                place_name=place_name,
+                concept=str(prior.get("publication_concept") or ""),
+                author_note=author_note,
+                facts=selected_for_draft,
+            )
+            draft = str(composition.get("draft_text") or "").strip()
+            if not draft:
+                raise PermanentProviderError("Gemini publication composition returned empty draft")
+            publication_concept = (
+                str(prior.get("publication_concept") or "").strip()
+                or str(composition.get("concept") or "").strip()
+            )
         image_notes = "\n".join(str(fact["text"]) for fact in selected_for_draft[:6])
         if place_name and image_notes:
             image_notes = f"{place_name}:\n{image_notes}"
@@ -1415,7 +1547,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 for item in selected_for_draft
                 if str(item.get("fact_id") or "")
             ]
-            draft_fact_revisions = fact_revision_bundle(db, story_id, draft_fact_ids)
+            draft_fact_revisions = (prior.get("draft_fact_revisions", []) if preserve_draft
+                                    else fact_revision_bundle(db, story_id, draft_fact_ids))
             source_urls = {
                 source["url"]
                 for row in all_fact_rows
@@ -1423,7 +1556,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 if isinstance(source, dict) and source.get("url")
             }
             research = {
-                **prior,
+                **latest,
                 "content_identity_changed": False,
                 "input_revision": input_revision,
                 "ordered_voice_ids": session_ids,
@@ -1434,10 +1567,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "grounding_sources": grounding_sources,
                 "source_count": len(source_urls),
                 "author_note": author_note,
-                "publication_concept": publication_concept[:1200] or None,
-                "draft_composed_by": "gemini_model",
-                "draft_needs_refresh": False,
-                "draft_stale_reason": None,
+                "publication_concept": publication_concept if preserve_draft else publication_concept[:1200] or None,
+                "draft_composed_by": prior.get("draft_composed_by") if preserve_draft else "gemini_model",
+                "draft_needs_refresh": prior.get("draft_needs_refresh", False) if preserve_draft else False,
+                "draft_stale_reason": prior.get("draft_stale_reason") if preserve_draft else None,
                 "draft_fact_revisions": draft_fact_revisions,
                 "image_notes": image_notes,
                 "poi_key": str(identity.get("candidate_id") or "") or None,

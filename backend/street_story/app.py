@@ -67,6 +67,7 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             await live_host.stop_all()
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            await service.close()
 
     app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)
     app.state.service = service
@@ -283,6 +284,11 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.post("/v1/stories/{story_id}/facts", dependencies=[Depends(auth)])
     async def facts(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
         return await mutation(story_id, request, "facts", idempotency_key)
+
+    @app.post('/v1/stories/{story_id}/research-control', dependencies=[Depends(auth)])
+    async def research_control(story_id: str, request: Request,
+                               idempotency_key: str | None = Header(default=None, alias='Idempotency-Key')):
+        return service.mutate_research_control(story_id, idem(idempotency_key), await request.json())
 
     @app.post("/v1/stories/{story_id}/refinements", dependencies=[Depends(auth)])
     async def refinements(story_id: str, request: Request, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):

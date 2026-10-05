@@ -360,8 +360,8 @@ def test_provider_env_writes_shared_live_contract(monkeypatch, tmp_path) -> None
 
 def test_private_resource_release_is_pinned() -> None:
     module = _load_installer()
-    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.11"
-    assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "8f5a0dc9aed257515d2ed5dd71ba1dc866d8b1fe"
+    assert module.AI_RESOURCE_CONTROL_VERSION == "0.1.14"
+    assert module.AI_RESOURCE_CONTROL_RELEASE_SHA == "a82a97147d697c3fbf0ba0748d6e49be196d0a7a"
     assert module.AI_RESOURCE_CONTROL_REPO.name == "ai-resource-control"
 
 
@@ -389,6 +389,22 @@ def test_private_resource_commit_peel_is_literal(monkeypatch, tmp_path) -> None:
 
     peel = next(argv for argv in calls if "cat-file" in argv)
     assert peel[-1] == module.AI_RESOURCE_CONTROL_RELEASE_SHA + "^{commit}"
+
+
+def test_private_resource_wheel_digest_rejects_corrupt_or_symlink_artifact(monkeypatch, tmp_path):
+    import hashlib
+    module = _load_installer()
+    wheel = tmp_path / 'private.whl'
+    wheel.write_bytes(b'exact private wheel')
+    monkeypatch.setattr(module, 'AI_RESOURCE_CONTROL_WHEEL_SHA256', hashlib.sha256(wheel.read_bytes()).hexdigest())
+    module.verify_private_resource_wheel(wheel)
+    link = tmp_path / 'other.whl'
+    link.symlink_to(wheel)
+    with pytest.raises(module.DeployError, match='digest mismatch'):
+        module.verify_private_resource_wheel(link)
+    wheel.write_bytes(b'corrupt wheel')
+    with pytest.raises(module.DeployError, match='digest mismatch'):
+        module.verify_private_resource_wheel(wheel)
 
 
 def test_ensure_venv_uses_only_release_python_for_pip(monkeypatch, tmp_path) -> None:

@@ -14,6 +14,23 @@ from street_story.providers import GeminiClient, GroundedResearch
 from street_story.research_runs import begin_research_run, manifest_complete, run_manifest
 
 
+@pytest.fixture(autouse=True)
+def public_article_network(monkeypatch):
+    """Keep public-reader validation while isolating reserved test-domain DNS."""
+    from street_story import article_media
+    cached_page = article_media.cached_public_page
+
+    async def resolve_fixture(host):
+        assert host == 'history.example'
+        return '93.184.216.34'
+
+    async def fixture_page(store, client, raw, **kwargs):
+        kwargs.setdefault('resolver', resolve_fixture)
+        return await cached_page(store, client, raw, **kwargs)
+
+    monkeypatch.setattr(article_media, 'cached_public_page', fixture_page)
+
+
 def settings(tmp_path):
     return Settings(
         data_dir=tmp_path,
@@ -58,15 +75,21 @@ class ResearchExecutor:
         return await call("key-a",20)
 
 
-class PageHTTP:
+class PageHTTP(httpx.AsyncClient):
     def __init__(self,url,html):
         self.url=url
         self.html=html
         self.calls=0
-    async def get(self,url,**kwargs):
+        super().__init__(transport=httpx.MockTransport(self.page_response), follow_redirects=False)
+
+    async def page_response(self,request):
         self.calls+=1
-        request=httpx.Request("GET",url)
-        if url==self.url:
+        # fetch_public must retain its DNS pin, logical host and TLS identity.
+        assert request.url.host == '93.184.216.34'
+        assert request.headers['host'] == 'history.example'
+        assert request.extensions['sni_hostname'] == 'history.example'
+        logical_url = str(request.url.copy_with(host=request.headers['host']))
+        if logical_url==self.url:
             return httpx.Response(
                 200,
                 text=self.html,

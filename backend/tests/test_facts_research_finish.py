@@ -340,7 +340,7 @@ async def test_live_first_skips_failed_source_and_reads_another_saved_source(tmp
         register_discovered_source(db, run_id=run_id, url=bad_url, title='Unavailable', status='snippet_only', now=0)
     await reader.search_http.aclose()
     reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
-        502 if str(request.url) == bad_url else 200,
+        502 if str(request.url.copy_with(host=request.headers.get('host', request.url.host))) == bad_url else 200,
         headers={'content-type': 'text/html'}, text='<main><p>' + ' '.join(QUOTES) + '</p></main>')))
     chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id, 'source_url': bad_url}})
     assert chunk['source_url'] == URL and chunk['evidence_passages']
@@ -742,7 +742,7 @@ async def test_live_full_source_attempts_are_bounded_to_three(tmp_path):
     svc.providers.gemini._fetch_page_documents = empty
     result = await adapter._get_research_chunk(session, {'run_id': run_id, 'source_url': URL})
     assert len(calls) == 3
-    assert result['completed'] and result['full_source_attempts'] == 3
+    assert result['partial'] and not result['completed'] and result['full_source_attempts'] == 3
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['status_detail'] == 'live_no_new_confirmed_facts'
     await reader.search_http.aclose()
