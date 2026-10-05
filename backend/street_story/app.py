@@ -271,6 +271,9 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         if kind == "refinements":
             return service.mutate_refinement(story_id, actual_key, body)
         if kind == "visual":
+            request_visual = getattr(service, 'request_visual', None)
+            if callable(request_visual):
+                return await request_visual(story_id, actual_key, body)
             return service.mutate_visual(story_id, actual_key, body)
         if kind == "publish":
             return service.mutate_publish(story_id, actual_key, body)

@@ -103,13 +103,44 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 visual[key] = context[key]
         return result
 
-    def mutate_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def request_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        # Observe the original operation before replacing its frozen context.
+        # A new key expresses a new author request, never an unknown-outcome retry.
+        with self.store.connection() as db:
+            row = self._story_row(db, story_id)
+            if db.execute("SELECT 1 FROM idempotency WHERE key=?", (key,)).fetchone():
+                return self.mutate_visual(story_id, key, body)
+            revision = row['revision']
+            previous = json.loads(row['visual_context_json'] or '{}')
+        operation = previous.get('operation_id')
+        observed = None
+        if operation:
+            observed = _receipt(await self.providers.vibepublish.status(operation), operation)
+            if observed.get('operation_id') != operation or not (
+                observed.get('state') in {'verified', 'needs_selection'}
+                or (observed.get('state') in {'failed', 'cancelled'} and observed.get('retry_safe') is True)
+            ):
+                raise ConflictError('visual_outcome_unresolved',
+                                    'Observe the original generation outcome before requesting another visual.')
+        return self.mutate_visual(story_id, key, body, expected_revision=revision, previous_receipt=observed)
+
+    def mutate_visual(self, story_id: str, key: str, body: dict[str, Any], *,
+                      expected_revision: int | None = None, previous_receipt: dict | None = None) -> dict[str, Any]:
         req_digest = digest({"story_id": story_id, **body})
         _, template_sha = self._prompt_template()
         with self.store.tx() as db:
             story = self._story_row(db, story_id)
             if self._idem(db, key, "visual", req_digest, "story", story_id):
                 return self._story_repr(db, story)
+            if expected_revision is not None and story['revision'] != expected_revision:
+                raise ConflictError('visual_input_changed', 'Story changed while observing the original generation.')
+            previous = json.loads(story['visual_context_json'] or '{}')
+            if previous and not previous.get('operation_id') and (
+                story['state'] == 'visual_processing' or previous.get('visual_request_key')
+            ):
+                raise ConflictError('visual_outcome_unresolved', 'The previous visual request is still being dispatched.')
+            if previous.get('operation_id') and (previous_receipt or {}).get('operation_id') != previous['operation_id']:
+                raise ConflictError('visual_outcome_unresolved', 'The original generation must be observed first.')
 
             selected_ids = [str(value) for value in body.get("selected_fact_ids", [])]
             from .fact_ledger import eligibility_issues_for_ids, fact_revision_bundle
@@ -173,6 +204,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "prompt_version": self.PROMPT_VERSION,
                 "prompt_sha256": template_sha,
             }
+            if previous.get('operation_id'):
+                frozen['generation_attempt'] = digest([story_id, key, previous['operation_id']])
             content_revision = digest(frozen)
             context = {
                 **frozen,
@@ -181,6 +214,12 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 "place_name": story["place_name"],
                 "user_voice_intent": research.get("transcript", ""),
             }
+            if previous.get('operation_id'):
+                history = list(previous.get('attempt_history') or [])
+                history.append({k: previous.get(k) for k in ('operation_id', 'visual_job_id', 'content_revision',
+                                                            'visual_request_key', 'candidate_id', 'asset_ref')})
+                history[-1]['outcome'] = previous_receipt
+                context['attempt_history'] = history
             context["brief"] = self._visual_brief(dict(story), context)
             now = self.store.now()
             db.execute(

@@ -191,3 +191,88 @@ async def test_visual_operation_is_persisted_and_reconciled_without_second_paid_
     assert ready["visual"]["selected_sha256"] == PROCESSED_SHA
     assert vp.tune_calls == 1
     assert svc.asset(story["id"])[0] == PROCESSED
+
+
+def previous_visual(svc, story_id):
+    svc.mutate_visual(story_id, 'original-visual', {'selected_fact_ids': []})
+    with svc.store.tx() as db:
+        row = db.execute('SELECT visual_context_json FROM stories WHERE id=?', (story_id,)).fetchone()
+        context = json.loads(row[0])
+        context.update(operation_id='visual-op', visual_job_id='original-job', visual_request_key='original-key')
+        db.execute("UPDATE stories SET visual_context_json=?,state='needs_review',draft_text='Original draft' WHERE id=?",
+                   (json.dumps(context), story_id))
+        db.execute("UPDATE jobs SET state='done' WHERE story_id=?", (story_id,))
+    return context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state,retry_safe', [('outcome_unknown', False), ('running', False), ('failed', False)])
+async def test_repeat_visual_keeps_original_context_when_outcome_unsafe(tmp_path, state, retry_safe):
+    from street_story.service import ConflictError
+    vp = RecoverableVisualVibePublish()
+    svc = service(tmp_path, vp)
+    story = create_story(svc)
+    before = previous_visual(svc, story['id'])
+    async def status(operation):
+        return {'receipts': [{'operation_id': operation, 'state': state, 'retry_safe': retry_safe}]}
+    vp.status = status
+    with pytest.raises(ConflictError, match='original generation'):
+        await svc.request_visual(story['id'], 'new-attempt', {'selected_fact_ids': []})
+    with svc.store.connection() as db:
+        after = json.loads(db.execute('SELECT visual_context_json FROM stories WHERE id=?', (story['id'],)).fetchone()[0])
+        assert not db.execute("SELECT 1 FROM idempotency WHERE key='new-attempt'").fetchone()
+    assert after == before and vp.tune_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_safe_retry_same_story_preserves_history_and_fences_previous_worker(tmp_path):
+    vp = RecoverableVisualVibePublish()
+    svc = service(tmp_path, vp)
+    story = create_story(svc)
+    before = previous_visual(svc, story['id'])
+    async def status(operation):
+        return {'receipts': [{'operation_id': operation, 'state': 'failed', 'retry_safe': True,
+                              'generation_dispatch': 'not_sent', 'revision': 2}]}
+    vp.status = status
+    result = await svc.request_visual(story['id'], 'new-attempt', {'selected_fact_ids': []})
+    with svc.store.connection() as db:
+        row = db.execute('SELECT * FROM stories WHERE id=?', (story['id'],)).fetchone()
+        after = json.loads(row['visual_context_json'])
+    assert after['content_revision'] != before['content_revision']
+    assert after['brief'] == before['brief'] and after['source_photo_sha256'] == PHOTO_SHA
+    assert after['attempt_history'][0]['operation_id'] == 'visual-op'
+    assert after['attempt_history'][0]['outcome']['generation_dispatch'] == 'not_sent'
+    assert not after.get('operation_id') and row['draft_text'] == 'Original draft'
+    assert svc._merge_visual_context(story['id'], before['content_revision'], {'operation_id': 'late-old'}) is None
+    assert (await svc.request_visual(story['id'], 'new-attempt', {'selected_fact_ids': []}))['revision'] == result['revision']
+    assert vp.tune_calls == 0
+    calls = []
+    async def visual(payload, key):
+        calls.append(key)
+        return {'operation_id': 'retry-op', 'state': 'accepted', 'visual_job_id': 'retry-job'}
+    async def retry_status(operation):
+        assert operation == 'retry-op'
+        return {'receipts': [{'operation_id': operation, 'state': 'verified', 'visual_job_id': 'retry-job',
+                              'selected_asset_ref': 'processed-asset', 'selected_sha256': PROCESSED_SHA}]}
+    vp.visual = visual
+    vp.status = retry_status
+    assert await svc.run_once()
+    assert len(calls) == 1 and calls[0] != before['visual_request_key']
+    assert svc.story(story['id'])['visual']['operation_id'] == 'retry-op'
+
+
+@pytest.mark.asyncio
+async def test_repeat_visual_rejects_story_changed_during_authoritative_read(tmp_path):
+    from street_story.service import ConflictError
+    vp = RecoverableVisualVibePublish()
+    svc = service(tmp_path, vp)
+    story = create_story(svc)
+    before = previous_visual(svc, story['id'])
+    async def status(operation):
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (story['id'],))
+        return {'operation_id': operation, 'state': 'verified'}
+    vp.status = status
+    with pytest.raises(ConflictError, match='Story changed'):
+        await svc.request_visual(story['id'], 'new-attempt', {'selected_fact_ids': []})
+    assert svc.story(story['id'])['visual']['content_revision'] == before['content_revision']

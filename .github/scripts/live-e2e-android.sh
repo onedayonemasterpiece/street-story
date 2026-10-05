@@ -11,6 +11,54 @@ IDENTITY_ONLY="${LIVE_E2E_IDENTITY_ONLY:-false}"
 [[ "$IDENTITY_ONLY" != true || "$KEEP_PUBLICATION" != true ]]
 export LIVE_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
 
+# Check guest DNS before any story/provider operation. Emulator DNS is configured
+# at launch with -dns-server; keep the real HTTPS hostname and normal TLS checks.
+mkdir -p "$ARTIFACT_DIR"
+BACKEND_HOST=$(python - "$FIXTURE_DIR/config.json" <<'PY'
+import ipaddress
+import json
+import re
+import sys
+from urllib.parse import urlsplit
+
+with open(sys.argv[1], encoding='utf-8') as source:
+    parsed = urlsplit(json.load(source)['backend_url'])
+host = parsed.hostname or ''
+if parsed.scheme != 'https' or parsed.username or parsed.password or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', host):
+    raise SystemExit('E2E backend must use its real HTTPS hostname')
+try:
+    ipaddress.ip_address(host)
+except ValueError:
+    print(host)
+else:
+    raise SystemExit('E2E backend hostname must not be replaced by an IP address')
+PY
+)
+DNS_READY=false
+: > "$ARTIFACT_DIR/android-dns-readiness.txt"
+for attempt in {1..8}; do
+  probe=$(timeout 5s adb shell ping -4 -c 1 -W 1 "$BACKEND_HOST" 2>&1 || true)
+  printf 'attempt=%s\n%s\n' "$attempt" "${probe:0:1600}" >> "$ARTIFACT_DIR/android-dns-readiness.txt"
+  # Successful name resolution is sufficient; remote ICMP may be blocked.
+  if [[ "$probe" == "PING $BACKEND_HOST ("* ]]; then DNS_READY=true; break; fi
+  if [[ "$attempt" -lt 8 ]]; then sleep 2; fi
+done
+python - "$ARTIFACT_DIR/android-dns-readiness.json" "$BACKEND_HOST" "$DNS_READY" "$attempt" <<'PY'
+import json
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    'schema_version': 1, 'hostname': sys.argv[2], 'guest_dns_resolved': sys.argv[3] == 'true',
+    'attempts': int(sys.argv[4]), 'max_attempts': 8, 'real_hostname_preserved': True,
+    'tls_verification_unchanged': True, 'story_creation_started_at_preflight': False,
+}, indent=2) + '\n', encoding='utf-8')
+PY
+if [[ "$DNS_READY" != true ]]; then
+  echo 'Emulator DNS not ready; check launch -dns-server before retrying E2E.' >&2
+  exit 1
+fi
+
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell pm path "$PKG" >/dev/null

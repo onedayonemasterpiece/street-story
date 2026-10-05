@@ -175,3 +175,20 @@ a failed test; it can never make acceptance green.
 
 The long-lived async voice endpoints remain available for compatibility and possible future development, but a Live
 failure is surfaced as a Live/resource error. There is no automatic route switch to those endpoints.
+
+## Headless queue fairness and explicit visual retries — 2026-10-05
+
+Identity and confirmed-fact schedulers stream stories in stable creation/id order.
+Each worker pass admits at most twenty new eligible jobs; skipped stories and
+already persisted semantic jobs do not consume that portion. The next pass
+continues remaining work. This does not limit total searches, sources or facts.
+
+The MVP visual HTTP command observes the previous VibePublish operation before
+replacing frozen visual inputs. Unknown/running outcomes and failures without
+`retry_safe=true` return a conflict and preserve the original binding. A separate
+author request after a verified generation or authoritative safe failure gets
+a distinct durable generation attempt and content revision. Previous operation
+receipts remain in its attempt history; duplicate HTTP keys remain idempotent,
+and a previous worker cannot overwrite the new attempt. Fact selection, concept
+and draft text are retained. VibePublish reconciliation alone never submits
+generation; a fresh explicit product command is required.
