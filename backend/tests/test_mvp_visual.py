@@ -136,7 +136,7 @@ def test_visual_brief_bounds_dynamic_context_and_keeps_current_edit(tmp_path):
             "selected_facts": [
                 {
                     "fact_id": f"f{index}",
-                    "text": "Проверенный исторический факт с источником. " * 20,
+                    "text": "Проверенный исторический факт с источником.",
                     "sources": [],
                 }
                 for index in range(6)
@@ -149,6 +149,31 @@ def test_visual_brief_bounds_dynamic_context_and_keeps_current_edit(tmp_path):
     assert "Текущая визуальная правка автора:" in brief
     assert "Калининград" in brief
     assert "{{CITY_NOTE_THEMES}}" not in brief
+
+
+def test_visual_brief_keeps_every_selected_fact_and_its_qualifiers(tmp_path):
+    svc = service(tmp_path)
+    facts = [f"Факт {index}: историческое здание." for index in range(6)]
+    facts.append("Закхаймские ворота — " + "важный памятник " * 16
+                 + "истории и культуры федерального значения.")
+    brief = svc._visual_brief({}, {
+        "selected_facts": [{"fact_id": str(i), "text": text} for i, text in enumerate(facts)],
+        "publication_concept": "Редакционный контекст. " * 100,
+    })
+    assert all(fact in brief for fact in facts)
+    assert "каждый выбранный факт" in brief
+    assert len(brief) <= svc.VIBEPUBLISH_BRIEF_LIMIT
+
+
+def test_visual_brief_rejects_overflow_instead_of_silently_losing_facts(tmp_path):
+    from street_story.service import InvalidStateError
+
+    svc = service(tmp_path)
+    with pytest.raises(InvalidStateError) as failure:
+        svc._visual_brief({}, {
+            "selected_facts": [{"fact_id": "long", "text": "Факт с уточнением. " * 400}],
+        })
+    assert failure.value.code == "visual_fact_annotations_too_long"
 
 
 def test_visual_request_freezes_content_snapshot(tmp_path):

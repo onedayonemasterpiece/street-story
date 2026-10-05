@@ -55,6 +55,13 @@ def main() -> int:
                 started = smoke._json(client.post(f"/v1/stories/{args.story_id}/live-sessions"), "start")
                 session = str(started["session_id"])
                 cursor = 0
+                cursor, stage = smoke.send_tool_turn(
+                    client, args.story_id, session, cursor, expected_tool="continue_story",
+                    text=("Перейди к этапу publication в этой сохранённой истории: вызови "
+                          "continue_story со stage=publication и intent='Перейти к публикации; "
+                          "ждать следующей команды'. Сейчас ничего не генерируй, не готовь "
+                          "и не отправляй. После переключения сообщи готовность."))
+                receipt["publication_stage"] = stage
                 if args.phase == "visual":
                     cursor, turn = smoke.send_tool_turn(
                         client, args.story_id, session, cursor, expected_tool="generate_visual",
@@ -81,9 +88,12 @@ def main() -> int:
                     confirmation = prepared.get("confirmation") or {}
                     if confirmation.get("state") != "prepared" or confirmation.get("destinations") != [DESTINATION]:
                         raise smoke.ProductSmokeError("test_confirmation_required")
+                    confirmation_id = str(confirmation['confirmation_id'])
                     cursor, confirmed = smoke.send_tool_turn(
                         client, args.story_id, session, cursor, expected_tool="confirm_publication",
-                        text="Подтверждаю показанную карточку: отправь этот текст и изображение в указанную тестовую группу.")
+                        text=("Подтверждаю показанную карточку: отправь этот текст и изображение "
+                              "в указанную тестовую группу. Вызови confirm_publication с "
+                              f"confirmation_id {confirmation_id}."))
                     final, cursor = smoke.wait_publication(client, args.story_id, session, cursor,
                                                            {"scheduled", "verified", "published"})
                     receipt.update(status="publication_scheduled", publication=final.get("publication"),

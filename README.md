@@ -1,5 +1,7 @@
 # Street Story
 
+Application chat: [Street Story in Telegram](https://t.me/c/4488229487/2). Agent delivery details: [Telegram routing](docs/telegram-routing.md).
+
 Street Story is a small Android product for the reliable path **city photo → long voice context → source-backed facts → VibePublish visual → provider-native scheduled publication**.
 
 The Android client on `work/street-story-mvp-20260908` uses one dense messenger-like vertical feed rather than a wizard. It renders the latest 10 durable story sessions while older sessions remain in SQLite/backend storage. Each thread keeps the original photo, cleaned owner voice/refinements, research status, inline fact review, processed image state, collapsible editable publication text, destinations and provider status together. A fixed microphone dock targets the explicitly selected story; `+ Новая история` uses Photo Picker and can start while older stories keep processing in the background.

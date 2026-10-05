@@ -123,3 +123,30 @@ def test_every_bundle_exposes_controls_without_growing_tool_count(tmp_path):
         properties = router['parameters']['properties']
         assert properties['research_purpose']['enum'] == ['identity', 'facts', 'all']
         assert properties['research_action']['enum'] == ['stop', 'resume']
+
+
+def test_stage_prompts_advertise_only_available_tools_and_leave_room_for_transition(tmp_path):
+    import json
+    import re
+    from live_interaction.provider import setup_config
+    from street_story.live import FUNCTIONS
+    from street_story.review_packets import EXTRACTION_CHECKS, REVIEW_CHECKS
+
+    _, adapter, session, _ = prepared(tmp_path)
+    full = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled',
+                              full_configuration=True)['configuration']
+    for capability, tools in adapter.CAPABILITY_TOOLS.items():
+        bundle = adapter._capability_configuration(full, capability)
+        instruction = bundle['system_instruction']
+        for name in {f['name'] for f in FUNCTIONS} - tools:
+            assert not re.search(r'\b' + re.escape(name) + r'\b', instruction), (capability, name)
+        assert 'continue_story first' in instruction
+        if capability not in {'research', 'review'}:
+            assert EXTRACTION_CHECKS not in instruction and REVIEW_CHECKS not in instruction
+    publication = adapter._capability_configuration(full, 'publication')
+    setup = setup_config('gemini-3.8-live', {}, configuration=publication, search=False)['setup']
+    # Previously the publication setup included all research/review/editor rules
+    # (25,763 estimated units) and exhausted the unchanged rolling grant.
+    assert len(json.dumps(setup, ensure_ascii=False, separators=(',', ':')).encode()) < 10_000
+    assert 'separate unambiguous author confirmation' in publication['system_instruction']
+    assert 'all selected facts' in publication['system_instruction']
