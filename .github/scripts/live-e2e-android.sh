@@ -35,15 +35,21 @@ else:
 PY
 )
 DNS_READY=false
+DNS_PROBE_ERROR=''
 : > "$ARTIFACT_DIR/android-dns-readiness.txt"
 for attempt in {1..8}; do
-  probe=$(timeout 5s adb shell ping -4 -c 1 -W 1 "$BACKEND_HOST" 2>&1 || true)
+  # Android's IPv4 ping has no -4 option; use its supported count/timeout flags.
+  probe=$(timeout 5s adb shell ping -c 1 -W 1 "$BACKEND_HOST" 2>&1 || true)
   printf 'attempt=%s\n%s\n' "$attempt" "${probe:0:1600}" >> "$ARTIFACT_DIR/android-dns-readiness.txt"
+  if [[ "$probe" == *'invalid option'* || "$probe" == *'unknown option'* ]]; then
+    DNS_PROBE_ERROR=unsupported_ping_command
+    break
+  fi
   # Successful name resolution is sufficient; remote ICMP may be blocked.
   if [[ "$probe" == "PING $BACKEND_HOST ("* ]]; then DNS_READY=true; break; fi
   if [[ "$attempt" -lt 8 ]]; then sleep 2; fi
 done
-python - "$ARTIFACT_DIR/android-dns-readiness.json" "$BACKEND_HOST" "$DNS_READY" "$attempt" <<'PY'
+python - "$ARTIFACT_DIR/android-dns-readiness.json" "$BACKEND_HOST" "$DNS_READY" "$attempt" "$DNS_PROBE_ERROR" <<'PY'
 import json
 import pathlib
 import sys
@@ -51,11 +57,16 @@ import sys
 pathlib.Path(sys.argv[1]).write_text(json.dumps({
     'schema_version': 1, 'hostname': sys.argv[2], 'guest_dns_resolved': sys.argv[3] == 'true',
     'attempts': int(sys.argv[4]), 'max_attempts': 8, 'real_hostname_preserved': True,
+    'probe_error': sys.argv[5] or None,
     'tls_verification_unchanged': True, 'story_creation_started_at_preflight': False,
 }, indent=2) + '\n', encoding='utf-8')
 PY
 if [[ "$DNS_READY" != true ]]; then
-  echo 'Emulator DNS not ready; check launch -dns-server before retrying E2E.' >&2
+  if [[ -n "$DNS_PROBE_ERROR" ]]; then
+    echo "Emulator DNS probe failed: $DNS_PROBE_ERROR; see android-dns-readiness.txt." >&2
+  else
+    echo 'Emulator hostname resolution not ready; see android-dns-readiness.txt before retrying E2E.' >&2
+  fi
   exit 1
 fi
 

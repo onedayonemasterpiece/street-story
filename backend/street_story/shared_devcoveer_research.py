@@ -61,7 +61,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     """
 
     def __init__(self, directory: str, *, backend=None, abort_timeout_seconds: float = 10,
-                 supported_version: str = '1.18.31', require_guard: bool = True, **kwargs):
+                 require_guard: bool = True, **kwargs):
         path = Path(directory)
         if not path.is_absolute() or '..' in path.parts or path.resolve() != path or not path.is_dir():
             raise ValueError('research_capsule_directory_invalid')
@@ -80,7 +80,6 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         self.require_guard = require_guard
         self.shared_backend = backend
         self.abort_timeout_seconds = abort_timeout_seconds
-        self.supported_version = supported_version
         self._deadline: ContextVar[float | None] = ContextVar('research_deadline', default=None)
         self._receipt: ContextVar[dict | None] = ContextVar('research_receipt', default=None)
 
@@ -146,8 +145,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
 
     async def _attest(self, client, role):
         health = await self._request(client, 'GET', '/global/health')
-        if health.get('healthy') is not True or health.get('version') != self.supported_version:
-            raise ResearchUnavailable('research_shared_contract_version_unverified')
+        if not isinstance(health, dict) or health.get('healthy') is not True:
+            raise ResearchUnavailable('research_shared_unhealthy')
         guard_verified = False
         if self.require_guard:
             if role != 'search':
@@ -189,7 +188,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_model_output_not_bounded')
         if type(tool_bytes) is not int or not 1 <= tool_bytes <= self.limits.max_search_context_chars:
             raise ResearchUnavailable('research_search_context_not_bounded')
-        return {'agent': 'plan', 'directory': self.directory, 'runtime_version': health['version'],
+        return {'agent': 'plan', 'directory': self.directory, 'runtime_version': health.get('version'),
                 'steps': steps, 'steps_enforcement': 'controller_observed_abort', 'atomic_tool_call_cap': False,
                 'tool_boundary_enforced': guard_verified, 'search_call_limit': None,
                 'allowed_tools': ['websearch'] if role == 'search' else [], 'deny_default': True,

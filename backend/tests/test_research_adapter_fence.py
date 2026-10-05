@@ -10,6 +10,51 @@ from test_research_control import fixture
 
 
 @pytest.mark.asyncio
+async def test_all_search_routes_blocked_retains_independent_and_google_failures(tmp_path):
+    from types import SimpleNamespace
+    from street_story.errors import RetryableProviderError
+    from street_story.gemini import GeminiUnavailable
+    service, sid, _photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+
+    async def independent(query, story):
+        raise RetryableProviderError('RESOURCE_NO_CAPACITY', retry_at=120)
+
+    async def google(query):
+        raise GeminiUnavailable(240, 'article_url_discovery_unavailable')
+
+    adapter.search_articles = independent
+    service.providers = SimpleNamespace(gemini=SimpleNamespace(discover_article_urls=google))
+    with pytest.raises(RetryableProviderError) as error:
+        await adapter.search_fact_articles('place history', {'id': sid})
+    assert error.value.route_failures == {'opencode': 'RESOURCE_NO_CAPACITY',
+                                         'google': 'gemini:article_url_discovery_unavailable'}
+    assert error.value.retry_at == 120
+    assert 'RESOURCE_NO_CAPACITY' in str(error.value)
+
+
+@pytest.mark.parametrize('phase', ['created', 'submitted', 'abort_outcome_unknown'])
+def test_route_failure_diagnostics_never_reset_unknown_dispatch_phase(tmp_path, phase):
+    import json
+    from street_story.service import canonical
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    binding, _ = adapter.attempt({'id': sid, 'photo_sha256': photo}, 'search', 'query')
+    before = {'binding': binding, 'phase': phase, 'session_id': 'saved-session', 'message_id': 'saved-message'}
+    with service.store.tx() as db:
+        db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                   (canonical(before), binding['attempt_id']))
+    adapter._record_route_failure(binding, 'search', 'RESOURCE_NO_CAPACITY', 120)
+    with service.store.connection() as db:
+        after = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                     (binding['attempt_id'],)).fetchone()[0])
+    assert {key: after[key] for key in before} == before
+    assert after['route_failure']['code'] == 'RESOURCE_NO_CAPACITY'
+
+
+@pytest.mark.asyncio
 async def test_admission_wait_cannot_send_old_worker_after_stop_resume(tmp_path):
     service, sid, photo = fixture(tmp_path)
     adapter = object.__new__(ProductResearchAdapter)
