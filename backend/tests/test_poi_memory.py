@@ -1,11 +1,13 @@
 from street_story.db import Store
 from street_story.poi_memory import (
+    backfill_poi_assertion_review_state,
     persist_research_memory,
     poi_key,
     prior_facts,
     processed_sources,
     sync_poi_review_from_story,
 )
+import json
 
 
 class FakeDB:
@@ -46,6 +48,139 @@ def test_prior_facts_are_unique():
     facts = prior_facts(FakeDB(), {"candidate_id": "wiki:1"}, "current")
     assert [item["fact_id"] for item in facts] == ["architect", "built"]
     assert facts[0]["sources"][0]["type"] == "official"
+
+
+def _bind_memory_aliases(db):
+    db.execute("INSERT INTO pois(id,status,canonical_name,created_at,updated_at) VALUES('gate','verified','Gate',1,1)")
+    for key in ('wiki:memory', 'osm:way:memory'):
+        db.execute("INSERT INTO poi_aliases(poi_id,namespace,value,normalized_value,created_at) VALUES('gate','street_story_candidate',?,?,1)", (key, key))
+
+
+def _memory_story(db, story_id, key, updated_at):
+    db.execute(
+        "INSERT INTO stories(id,client_story_id,photo_sha256,photo_mime_type,photo_path,voice_protocol,state,research_json,created_at,updated_at) VALUES(?,?,?,'image/jpeg','fixture','voice-chunks-v2','identity_ready',?,1,?)",
+        (story_id, story_id, 'a' * 64, json.dumps({'visual_identity': {'candidate_id': key, 'status': 'match'}}), updated_at),
+    )
+
+
+def _memory_assertion(db, key, fact_id, status='eligible', eligibility='eligible', reviewed_at=10, updated_at=10):
+    db.execute(
+        "INSERT INTO poi_research_assertions(poi_key,assertion_id,semantic_key,text,confidence,sources_json,created_at,updated_at,review_status,eligibility,reviewed_at) VALUES(?,?,?,'Факт.',.9,'[{\"url\":\"https://source.example/fact\"}]',1,?,?,?,?)",
+        (key, fact_id, fact_id, updated_at, status, eligibility, reviewed_at),
+    )
+
+
+def _memory_review_fact(db, story_id, fact_id):
+    db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) VALUES(?,?,'Факт.',.9,1,0,'[{\"url\":\"https://source.example/fact\"}]')", (story_id, fact_id))
+
+
+def test_alias_review_blocks_older_story_resurrection_and_preserves_newer_decisions(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    with store.tx() as db:
+        _bind_memory_aliases(db)
+        _memory_story(db, 'accepted-old', 'wiki:memory', 1)
+        _memory_story(db, 'review-new', 'osm:way:memory', 30)
+        _memory_assertion(db, 'wiki:memory', 'blocked')
+        _memory_assertion(db, 'osm:way:memory', 'blocked', updated_at=40)
+        _memory_review_fact(db, 'review-new', 'blocked')
+        db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) VALUES('accepted-old','blocked','Факт.',.9,1,0,'[]')")
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,owner_selected,review_status,eligibility,created_at,updated_at) VALUES('review-new','blocked','blocked','Факт.',0,'disputed','withheld',1,30)")
+        assert sync_poi_review_from_story(db, 'review-new', 30) == 2
+        assert prior_facts(db, {'candidate_id': 'wiki:memory'}, 'next') == []
+        db.execute("UPDATE fact_assertions SET review_status='eligible',eligibility='eligible',updated_at=20 WHERE story_id='review-new'")
+        assert sync_poi_review_from_story(db, 'review-new', 40) == 0
+        assert prior_facts(db, {'candidate_id': 'osm:way:memory'}, 'next') == []
+
+
+def test_backfill_reviews_exact_alias_family_and_reader_honors_latest_review(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    with store.tx() as db:
+        _bind_memory_aliases(db)
+        _memory_story(db, 'review-new', 'osm:way:memory', 30)
+        _memory_assertion(db, 'wiki:memory', 'blocked')
+        _memory_review_fact(db, 'review-new', 'blocked')
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,owner_selected,review_status,eligibility,created_at,updated_at) VALUES('review-new','blocked','blocked','Факт.',0,'disputed','withheld',1,30)")
+        assert backfill_poi_assertion_review_state(db, 30) == 1
+        # A later acquisition under another alias cannot undo a reviewed dispute.
+        _memory_assertion(db, 'osm:way:memory', 'blocked', updated_at=50)
+        assert prior_facts(db, {'candidate_id': 'wiki:memory'}, 'next') == []
+
+
+def test_prior_story_duplicates_do_not_exhaust_unique_fact_limit(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    with store.tx() as db:
+        for i, fact_id in enumerate(('older-unique', 'repeated', 'repeated', 'repeated')):
+            _memory_story(db, f'story-{i}', 'wiki:legacy', i + 1)
+            db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) VALUES(?,?,?,.9,1,0,'[]')", (f'story-{i}', fact_id, fact_id))
+        facts = prior_facts(db, {'candidate_id': 'wiki:legacy'}, 'next', limit=2)
+        assert [item['fact_id'] for item in facts] == ['repeated', 'older-unique']
+
+
+def test_processed_sources_merges_alias_evidence_before_unique_url_limit(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    with store.tx() as db:
+        _bind_memory_aliases(db)
+        for key, url, timestamp, text in (
+            ('wiki:memory', 'https://source.example/a', 20, 'старый отрывок'),
+            ('osm:way:memory', 'https://source.example/a', 30, 'новый отрывок'),
+            ('wiki:memory', 'https://source.example/b', 10, 'другой источник'),
+        ):
+            db.execute("INSERT INTO poi_research_sources(poi_key,url,title,last_query,supports_json,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,1,?)", (key, url, text, text, json.dumps([{'kind': 'verified_page_span', 'text': text, 'source_url': url}]), timestamp))
+        sources = processed_sources(db, {'candidate_id': 'wiki:memory'}, limit=2)
+        assert [source['url'] for source in sources] == ['https://source.example/a', 'https://source.example/b']
+        assert sources[0]['last_query'] == 'новый отрывок'
+        assert {support['text'] for support in sources[0]['supports']} == {'старый отрывок', 'новый отрывок'}
+
+
+def test_review_projection_rejects_changed_literal_and_evidence_snapshot(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    with store.tx() as db:
+        _bind_memory_aliases(db)
+        _memory_story(db, 'review-new', 'osm:way:memory', 30)
+        _memory_assertion(db, 'wiki:memory', 'claim')
+        _memory_review_fact(db, 'review-new', 'claim')
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,owner_selected,review_status,eligibility,created_at,updated_at) VALUES('review-new','claim','claim','Другой факт.',0,'eligible','eligible',1,30)")
+        assert sync_poi_review_from_story(db, 'review-new', 30) == 0
+        assert backfill_poi_assertion_review_state(db, 30) == 1
+        assert db.execute("SELECT eligibility FROM poi_research_assertions").fetchone()[0] == 'unreviewed'
+        db.execute("UPDATE fact_assertions SET display_text='Факт.' WHERE story_id='review-new'")
+        db.execute("UPDATE facts SET sources_json='[{\"url\":\"https://different.example/fact\"}]' WHERE story_id='review-new'")
+        assert sync_poi_review_from_story(db, 'review-new', 30) == 0
+        db.execute("UPDATE facts SET sources_json='[{\"url\":\"https://source.example/fact\"}]' WHERE story_id='review-new'")
+        assert sync_poi_review_from_story(db, 'review-new', 30) == 1
+
+
+def test_new_memory_evidence_invalidates_review_without_losing_observations(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    identity = {'candidate_id': 'wiki:memory'}
+    source = {'url': 'https://source.example/fact', 'supports': [{'text': 'Факт.', 'kind': 'verified_page_span'}]}
+    fact = {'fact_id': 'claim', 'text': 'Факт.', 'confidence': .9, 'sources': [source]}
+    with store.tx() as db:
+        _bind_memory_aliases(db)
+        persist_research_memory(db, identity, [fact], [source], 'initial', 10)
+        _memory_story(db, 'old-review', 'wiki:memory', 20)
+        db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) VALUES('old-review','claim','Факт.',.9,1,0,?)", (json.dumps([source]),))
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,owner_selected,review_status,eligibility,created_at,updated_at) VALUES('old-review','claim','claim','Факт.',0,'eligible','eligible',1,20)")
+        db.execute("UPDATE poi_research_assertions SET review_status='eligible',eligibility='eligible',reviewed_at=20,review_story_id='old-review'")
+        # Replaying the identical snapshot preserves its decision.
+        persist_research_memory(db, identity, [fact], [source], 'replay', 30)
+        assert db.execute("SELECT eligibility FROM poi_research_assertions").fetchone()[0] == 'eligible'
+        enriched = {'url': source['url'], 'supports': [{'text': 'Новый отрывок.', 'kind': 'verified_page_span'}]}
+        persist_research_memory(db, {'candidate_id': 'osm:way:memory'}, [{**fact, 'sources': [enriched]}], [enriched], 'enrichment', 40)
+        assert {row[0] for row in db.execute("SELECT eligibility FROM poi_research_assertions")} == {'unreviewed'}
+        assert db.execute("SELECT COUNT(*) FROM poi_research_observations").fetchone()[0] == 3
+        # A legacy review of the older alias cannot requalify an enriched
+        # canonical assertion's current evidence revision on the next backfill.
+        assert backfill_poi_assertion_review_state(db, 50) == 0
+        assert {row[0] for row in db.execute("SELECT eligibility FROM poi_research_assertions")} == {'unreviewed'}
+        _memory_story(db, 'fresh-review', 'osm:way:memory', 55)
+        db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) VALUES('fresh-review','claim','Факт.',.9,1,0,?)", (json.dumps([enriched]),))
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,owner_selected,review_status,eligibility,created_at,updated_at) VALUES('fresh-review','claim','claim','Факт.',0,'eligible','eligible',1,55)")
+        assert sync_poi_review_from_story(db, 'fresh-review', 55) == 1
+        persist_research_memory(db, {'candidate_id': 'osm:way:memory'}, [{**fact, 'sources': [enriched]}], [enriched], 'same-latest-replay', 60)
+        current = db.execute("SELECT eligibility,review_story_id FROM poi_research_assertions WHERE poi_key='osm:way:memory'").fetchone()
+        assert tuple(current) == ('eligible', 'fresh-review')
+        assert db.execute("SELECT COUNT(*) FROM poi_research_observations").fetchone()[0] == 4
 
 
 def test_poi_research_memory_is_independent_of_story_rows(tmp_path):

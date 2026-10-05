@@ -226,6 +226,17 @@ class OpenCodeResearch:
 
     @asynccontextmanager
     async def _admitted(self, binding, workload, receipt):
+        if (binding.get('session_id') and binding.get('message_id')
+                and binding.get('phase') in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'}):
+            # Reconcile a durable addressed request even when its inference
+            # budget is exhausted. No new dispatch and no refund of unknown
+            # usage: that original reservation remains authoritative.
+            class ReadbackLease:
+                async def before_send(self, metadata):
+                    raise ResearchUnavailable('research_readback_only', receipt)
+            receipt['readback_only'] = True
+            yield ReadbackLease()
+            return
         async with self.admission(binding, workload) as lease:
             if not callable(getattr(lease, 'before_send', None)) or not callable(getattr(lease, 'finalize', None)):
                 raise ResearchUnavailable('research_admission_lease_invalid', receipt)

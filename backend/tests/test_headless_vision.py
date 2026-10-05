@@ -51,6 +51,14 @@ def setup(status='match', usage=None):
     return HeadlessVisionProvider(service), verdict, context, calls, first, second
 
 
+def test_qualified_web_route_is_available_without_duplicate_executor():
+    provider, _verdict, _context, _calls, _first, _second = setup()
+    routes = provider.client.research_routes
+    provider.client.web_search_routes = routes[:]
+    provider.client.research_routes = routes[:1]
+    assert provider._verified_routes() == routes
+
+
 @pytest.mark.asyncio
 async def test_native_image_transport_schema_admission_full_shortlist_and_receipt():
     usage = SimpleNamespace(prompt_token_count=800, candidates_token_count=140,

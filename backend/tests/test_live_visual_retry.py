@@ -29,6 +29,9 @@ async def test_live_safe_visual_retry_observes_receipt_and_replays_without_repea
     assert 'generate_visual' in tools
     assert ('prepare_publication' in tools) is (capability == 'publication')
     assert ('confirm_publication' in tools) is (capability == 'publication')
+    router = next(function for function in bundle['functions'] if function['name'] == 'continue_story')
+    assert 'image creation does not require switching out of research or editor' in router['parameters']['properties']['stage']['description']
+    assert 'If the required tool is already available, use it without switching stages.' in bundle['system_instruction']
     before = previous_visual(service, session.resource_id)
     observed = []
 

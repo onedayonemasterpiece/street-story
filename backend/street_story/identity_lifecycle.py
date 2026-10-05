@@ -41,7 +41,7 @@ def confidence(result: dict[str, Any]) -> float:
 def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
                  full_shortlist: list[dict[str, Any]] | None = None, *,
                  poi_aliases: dict[str, str] | None = None) -> bool:
-    from .identity_subject_binding import article_candidate, reference_binding_valid, subject_aliases
+    from .identity_subject_binding import article_candidate, physical_alternative_id, reference_binding_valid, subject_aliases
     catalog = [*(full_shortlist or []), *candidates]
     by_id = {item.get('candidate_id'): item for item in catalog}
     selected = result.get('candidate_id')
@@ -59,8 +59,8 @@ def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
             or not isinstance(references_sent, list)
             or any(not isinstance(item, str) for item in references_sent)):
         return False
-    disagreement = [item for item in alternatives if item and item not in aliases
-                    and candidate_identity_eligible(by_id.get(item) or {})]
+    physical_alternatives = [physical_alternative_id(item, by_id) for item in alternatives if item]
+    disagreement = [item for item in physical_alternatives if item and item not in aliases]
     sent = selected in {item.get('candidate_id') for item in candidates} and selected in references_sent
     return (result.get('status') == 'match' and selected in by_id
             and candidate_identity_eligible(selected_candidate)

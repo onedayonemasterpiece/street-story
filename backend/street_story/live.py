@@ -788,7 +788,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     def _capability_configuration(self, configuration, capability):
         router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For image creation or image editing, choose publication; it opens the image-generation tools. For text/concept changes choose editor; for facts choose research. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
             {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS),
-                       'description': 'identity: identify the object; research: facts; review: evidence review; editor: fact selection, concept and text; publication: image creation/editing and preparing/confirming a post.'}, 'intent': {'type': 'string'},
+                       'description': 'identity: identify the object; research: facts, selection, concept, text and image; review: evidence review; editor: fact selection, concept, text and image; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
              'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
              'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
         configuration = dict(configuration)
@@ -833,7 +833,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
             + '\nAll these stages are your supported product capabilities. If the request needs another '
-              'stage, call continue_story first. Use available image tools directly; if they are absent, '
+              'stage, call continue_story first. If the required tool is already available, use it '
+              'without switching stages. Use available image tools directly; if they are absent, '
               'switch to publication for image creation/editing. Do not say you cannot '
               'create/edit images just because those tools are absent from the current stage. '
               'After switching, execute the same author request with the new tools; do not ask the '

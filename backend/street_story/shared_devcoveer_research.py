@@ -89,7 +89,7 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             limits=self.limits, directory=Path(self.directory) if self.require_guard else None), sort_keys=True).encode()).hexdigest()
 
     async def _request(self, client, method, path, **kwargs):
-        allowed = ((method == 'GET' and path in {'/global/health', '/config', '/agent', '/experimental/tool/ids'})
+        allowed = ((method == 'GET' and path in {'/global/health', '/config', '/config/providers', '/agent', '/experimental/tool/ids'})
                    or (method == 'POST' and path == '/session')
                    or re.fullmatch(r'/session/ses[A-Za-z0-9_-]+/(message|prompt_async|abort)', path)
                    and ((method == 'GET' and path.endswith('/message'))
@@ -149,8 +149,8 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_shared_unhealthy')
         guard_verified = False
         if self.require_guard:
-            if role not in {'search', 'facts'}:
-                raise ResearchUnavailable('research_shared_search_only')
+            if role not in {'search', 'facts', 'vision'}:
+                raise ResearchUnavailable('research_shared_role_unverified')
             profile = guard_profile(Path(self.directory), self.limits)
             guard = Path(self.directory) / Path(profile[0]).name
             if not guard.is_file() or guard.is_symlink() or guard.read_bytes() != GUARD_SOURCE.read_bytes():
@@ -188,6 +188,12 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ResearchUnavailable('research_model_output_not_bounded')
         if type(tool_bytes) is not int or not 1 <= tool_bytes <= self.limits.max_search_context_chars:
             raise ResearchUnavailable('research_search_context_not_bounded')
+        if role == 'vision':
+            catalog = await self._request(client, 'GET', '/config/providers')
+            provider = next((p for p in catalog.get('providers', []) if p.get('id') == self.provider_id), {})
+            capability = (provider.get('models', {}).get(self.model_id, {}).get('capabilities') or {})
+            if capability.get('attachment') is not True or (capability.get('input') or {}).get('image') is not True:
+                raise ResearchUnavailable('research_model_image_input_unverified')
         return {'agent': 'plan', 'directory': self.directory, 'runtime_version': health.get('version'),
                 'steps': steps, 'steps_enforcement': 'controller_observed_abort', 'atomic_tool_call_cap': False,
                 'tool_boundary_enforced': guard_verified, 'search_call_limit': None,

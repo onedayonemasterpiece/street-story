@@ -5,10 +5,25 @@ import json
 import logging
 from typing import Any
 
-from .fact_ledger import merge_source_payloads
+from .fact_ledger import _evidence_rows, merge_source_payloads
 from .model_facts import normalized_claim_key
 
 logger = logging.getLogger(__name__)
+
+
+def _review_snapshot(text: str, sources_json: str) -> tuple[str, str]:
+    """Literal claim and evidence profile; IDs alone never attest a revision."""
+    sources = merge_source_payloads(json.loads(sources_json or '[]'))
+    spans = _evidence_rows('poi-memory-review', sources)
+    evidence = sorted({json.dumps(
+        [row[field] for field in ('source_url', 'source_version_id', 'support_kind',
+                                 'span_sha256', 'chunk_id', 'span_start', 'span_end', 'relation')],
+        ensure_ascii=False, separators=(',', ':'),
+    ) for row in spans})
+    # A URL without a passage is still part of the snapshot, never evidence
+    # that two different source lists are interchangeable.
+    urls = sorted({str(source.get('url') or '').rstrip('/') for source in sources})
+    return text, json.dumps([urls, evidence], ensure_ascii=False, separators=(',', ':'))
 
 
 def _canonical_poi_owner(db, owner: str) -> str | None:
@@ -343,23 +358,37 @@ def backfill_poi_assertion_review_state(db, now: float) -> int:
     Immutable POI observations remain untouched.
     """
     rows = list(db.execute(
-        "SELECT poi_key,assertion_id,reviewed_at FROM poi_research_assertions "
+        "SELECT poi_key,assertion_id,text,sources_json,reviewed_at,review_status,eligibility FROM poi_research_assertions "
         "ORDER BY poi_key,assertion_id"
     ))
     updated = 0
     for row in rows:
+        keys = memory_keys(db, {"candidate_id": str(row["poi_key"])})
+        placeholders = ','.join('?' for _ in keys)
+        latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
         reviewed = db.execute(
-            "SELECT a.story_id,a.review_status,a.eligibility,a.updated_at "
+            "SELECT a.story_id,a.review_status,a.eligibility,a.updated_at,a.display_text,f.sources_json "
             "FROM fact_assertions a JOIN stories s ON s.id=a.story_id "
+            "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
             "WHERE a.assertion_id=? "
-            "AND json_extract(s.research_json,'$.visual_identity.candidate_id')=? "
+            f"AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN ({placeholders}) "
             "AND a.review_status<>'unreviewed' "
             "ORDER BY a.updated_at DESC LIMIT 1",
-            (str(row["assertion_id"]), str(row["poi_key"])),
+            (str(row["assertion_id"]), *keys),
         ).fetchone()
         if not reviewed:
             continue
         reviewed_at = float(reviewed["updated_at"] or now)
+        if row['reviewed_at'] is not None and float(row['reviewed_at']) > reviewed_at:
+            continue
+        reviewed_snapshot = _review_snapshot(reviewed['display_text'], reviewed['sources_json'])
+        if (_review_snapshot(row['text'], row['sources_json']) != reviewed_snapshot
+                or _review_snapshot(latest['text'], latest['sources_json']) != reviewed_snapshot):
+            if row['review_status'] != 'unreviewed' or row['eligibility'] != 'unreviewed':
+                db.execute("UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL WHERE poi_key=? AND assertion_id=?", (row['poi_key'], row['assertion_id']))
+                logger.info('street_story_poi_review_invalidated candidate_id=%s assertion_id=%s reason=review_snapshot_mismatch', row['poi_key'], row['assertion_id'])
+                updated += 1
+            continue
         current_reviewed_at = row["reviewed_at"]
         if current_reviewed_at is not None and float(current_reviewed_at) >= reviewed_at:
             continue
@@ -397,39 +426,45 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
     key = poi_key(identity if isinstance(identity, dict) else {})
     if not key:
         return 0
+    keys = memory_keys(db, identity)
+    placeholders = ','.join('?' for _ in keys)
 
     updated = 0
     rows = list(db.execute(
-        "SELECT assertion_id,review_status,eligibility,updated_at "
-        "FROM fact_assertions WHERE story_id=? AND review_status<>'unreviewed'",
+        "SELECT a.assertion_id,a.review_status,a.eligibility,a.updated_at,a.display_text,f.sources_json "
+        "FROM fact_assertions a JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+        "WHERE a.story_id=? AND a.review_status<>'unreviewed'",
         (story_id,),
     ))
     for row in rows:
         reviewed_at = float(row["updated_at"] or now)
-        current = db.execute(
-            "SELECT reviewed_at FROM poi_research_assertions "
-            "WHERE poi_key=? AND assertion_id=?",
-            (key, str(row["assertion_id"])),
-        ).fetchone()
-        if not current:
+        latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
+        if not latest or _review_snapshot(latest['text'], latest['sources_json']) != _review_snapshot(row['display_text'], row['sources_json']):
             continue
-        if current["reviewed_at"] is not None and float(current["reviewed_at"]) > reviewed_at:
+        matching_keys = [str(memory['poi_key']) for memory in db.execute(
+            f"SELECT poi_key,text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=?",
+            (*keys, row['assertion_id']),
+        ) if _review_snapshot(memory['text'], memory['sources_json']) == _review_snapshot(row['display_text'], row['sources_json'])]
+        if not matching_keys:
             continue
-        db.execute(
+        matching_placeholders = ','.join('?' for _ in matching_keys)
+        changed = db.execute(
             "UPDATE poi_research_assertions SET review_status=?,eligibility=?,"
             "review_story_id=?,reviewed_at=?,updated_at=MAX(updated_at,?) "
-            "WHERE poi_key=? AND assertion_id=?",
+            f"WHERE poi_key IN ({matching_placeholders}) AND assertion_id=? "
+            "AND (reviewed_at IS NULL OR reviewed_at<=?)",
             (
                 str(row["review_status"]),
                 str(row["eligibility"]),
                 story_id,
                 reviewed_at,
                 reviewed_at,
-                key,
+                *matching_keys,
                 str(row["assertion_id"]),
+                reviewed_at,
             ),
         )
-        updated += 1
+        updated += changed.rowcount
     return updated
 
 
@@ -534,7 +569,7 @@ def _research_memory_facts(
     rows = list(db.execute(
         "SELECT assertion_id,semantic_key,text,confidence,sources_json,"
         "review_status,eligibility,updated_at FROM (SELECT *,ROW_NUMBER() OVER "
-        "(PARTITION BY assertion_id ORDER BY updated_at DESC,reviewed_at DESC) AS rank "
+        "(PARTITION BY assertion_id ORDER BY COALESCE(reviewed_at,0) DESC,updated_at DESC,poi_key) AS rank "
         f"FROM poi_research_assertions WHERE poi_key IN ({placeholders})) WHERE rank=1 AND {where} "
         "ORDER BY updated_at DESC" + (' LIMIT ?' if limit is not None else ''),
         (*keys, max(1, int(limit))) if limit is not None else tuple(keys),
@@ -562,9 +597,12 @@ def processed_sources(db, identity: dict[str, Any], limit: int = 80) -> list[dic
         return []
     placeholders = ','.join('?' for _ in keys)
     rows = db.execute(
+        "WITH selected_urls AS (SELECT url FROM poi_research_sources "
+        f"WHERE poi_key IN ({placeholders}) GROUP BY url ORDER BY MAX(last_seen_at) DESC,url LIMIT ?) "
         "SELECT url,title,last_query,supports_json,last_seen_at "
-        f"FROM poi_research_sources WHERE poi_key IN ({placeholders}) ORDER BY last_seen_at DESC LIMIT ?",
-        (*keys, max(1, min(int(limit), 200))),
+        f"FROM poi_research_sources WHERE poi_key IN ({placeholders}) "
+        "AND url IN (SELECT url FROM selected_urls) ORDER BY last_seen_at DESC,url,poi_key",
+        (*keys, max(1, min(int(limit), 200)), *keys),
     )
     result = [
         {
@@ -578,7 +616,15 @@ def processed_sources(db, identity: dict[str, Any], limit: int = 80) -> list[dic
     ]
     from .research_runs import source_coverage
     coverage = source_coverage(db, keys)
-    by_url = {item['url']: item for item in result}
+    by_url: dict[str, dict[str, Any]] = {}
+    for item in result:
+        existing = by_url.get(item['url'])
+        if existing is None:
+            by_url[item['url']] = item
+        else:
+            # Rows are newest first. Preserve their query/title while retaining
+            # all acquired evidence from exact aliases of the same POI.
+            existing['supports'] = merge_source_payloads([existing], [item])[0]['supports']
     for url, scopes in coverage.items():
         item = by_url.setdefault(url, {'url': url, 'title': url, 'supports': [], 'last_query': ''})
         item['extraction_coverage'] = scopes
@@ -703,6 +749,16 @@ def persist_research_memory(
         )
         merged_sources = merge_source_payloads(prior_sources, fact_sources)
         created_at = float(current["created_at"]) if current else now
+        keys = memory_keys(db, identity)
+        placeholders = ','.join('?' for _ in keys)
+        incoming_snapshot = _review_snapshot(text[:1200], json.dumps(merged_sources, ensure_ascii=False, separators=(',', ':')))
+        latest_snapshot = db.execute(
+            f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1",
+            (*keys, assertion_id),
+        ).fetchone()
+        changed_snapshot = bool(latest_snapshot and _review_snapshot(
+            latest_snapshot['text'], latest_snapshot['sources_json'],
+        ) != incoming_snapshot)
 
         observation_id = _research_observation_id(
             key,
@@ -750,6 +806,9 @@ def persist_research_memory(
                 now,
             ),
         )
+        if changed_snapshot:
+            db.execute(f"UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL WHERE poi_key IN ({placeholders}) AND assertion_id=?", (*keys, assertion_id))
+            logger.info('street_story_poi_review_invalidated candidate_id=%s assertion_id=%s reason=changed_snapshot', key, assertion_id)
 
         # Compatibility snapshot only. Never update by semantic key: this table
         # is intentionally lossy and no longer authoritative.
@@ -841,7 +900,7 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
 
 def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> list[dict[str, Any]]:
     key = poi_key(identity)
-    if not key:
+    if not key or limit <= 0:
         return []
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -859,16 +918,26 @@ def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) ->
         if len(result) >= limit:
             return result
 
+    keys = memory_keys(db, identity)
+    placeholders = ','.join('?' for _ in keys)
+    # Canonical memory owns these IDs even when an explicit review withholds
+    # them. Older story projections must never resurrect a rejected assertion.
+    seen.update(str(row['assertion_id']) for row in db.execute(
+        f"SELECT DISTINCT assertion_id FROM poi_research_assertions WHERE poi_key IN ({placeholders})",
+        tuple(keys),
+    ))
     rows = db.execute(
+        "SELECT * FROM ("
         "SELECT f.fact_id,f.text,f.confidence,f.evidence_supported,f.selected,f.sources_json,s.updated_at "
+        ",ROW_NUMBER() OVER (PARTITION BY f.fact_id ORDER BY s.updated_at DESC,f.rowid DESC) AS rank "
         "FROM facts f JOIN stories s ON s.id=f.story_id "
         "LEFT JOIN fact_assertions a "
         "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
-        "WHERE s.id<>? AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN (" + ','.join('?' for _ in memory_keys(db, identity)) + ") "
+        f"WHERE s.id<>? AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN ({placeholders}) "
         "AND COALESCE(a.eligibility,'unreviewed')<>'withheld' "
         "AND COALESCE(a.review_status,'unreviewed')<>'quarantined' "
-        "ORDER BY s.updated_at DESC,f.rowid LIMIT ?",
-        (story_id, *memory_keys(db, identity), limit),
+        ") WHERE rank=1 ORDER BY updated_at DESC,fact_id",
+        (story_id, *keys),
     )
     for row in rows:
         fact_id = str(row["fact_id"])

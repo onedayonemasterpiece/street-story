@@ -66,7 +66,13 @@ class HeadlessVisionProvider:
                     and controls.get('positive') == 'match' and controls.get('negative') == 'mismatch'
                     and controls.get('pixel_transport_verified') is True):
                 verified.add(item.get('model'))
-        return [route for route in getattr(self.client, 'research_routes', []) if route[0] in verified]
+        configured = [*getattr(self.client, 'research_routes', []),
+                      *getattr(self.client, 'web_search_routes', [])]
+        routes = []
+        for route in configured:
+            if route[0] in verified and route not in routes:
+                routes.append(route)
+        return routes
 
     @property
     def available(self):

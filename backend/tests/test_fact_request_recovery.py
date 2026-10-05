@@ -48,6 +48,7 @@ async def test_terminal_failure_schedules_joined_request(failure, last_attempt, 
     if last_attempt:
         with svc.store.tx() as db:
             db.execute('UPDATE jobs SET attempts=? WHERE id=?', (MAX_JOB_ATTEMPTS - 1, jid))
+        svc.store.checkpoint_put(jid, 'worker_non_wait_failures', {'count': MAX_JOB_ATTEMPTS - 1})
 
     async def fail(job):
         raise failure
@@ -99,6 +100,7 @@ def test_restart_worker_failure_exhaustion_schedules_followup_after_terminalizin
     svc, sid, jid = pending_request(tmp_path)
     with svc.store.tx() as db:
         db.execute("UPDATE jobs SET state='running',attempts=?,lease_until=0,last_error='worker_failure:RuntimeError' WHERE id=?", (MAX_JOB_ATTEMPTS, jid))
+    svc.store.checkpoint_put(jid, 'worker_non_wait_failures', {'count': MAX_JOB_ATTEMPTS})
     assert svc.recover_jobs() == 1
     assert_followup(svc, sid, jid)
 
