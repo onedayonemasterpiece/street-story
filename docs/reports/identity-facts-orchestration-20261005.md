@@ -1,6 +1,6 @@
 # Street Story: идентификация и накопительное исследование, 5 октября 2026
 
-Интеграционный владелец один. База — проверенный релиз `57df972617494ca93a808b7c6a5b783969886655`, ветка поставки `work/street-story-mvp-20260908`. Этот срез составлен **до интеграционного deploy**; компонентные проверки не являются сквозной Android-приёмкой.
+Интеграционный владелец один. База — проверенный релиз `57df972617494ca93a808b7c6a5b783969886655`, ветка поставки `work/street-story-mvp-20260908`. Интеграционный релиз `95a8f6bd090e3b32fd7b737d4ed8d49a6f9e2dce` выпущен и подтверждён обоими health endpoints; сохранность выбранных фактов, draft/source SHA исходной истории проверена. Компонентные проверки не являются сквозной Android-приёмкой.
 
 Уточнения владельца имеют приоритет над прежними пилотными ограничениями: нет лимита «два поиска» и общего потолка источников. Ограничены ресурсные порции, сохраняются все найденные URL, unfinished cursors и завершённые scopes. История помогает модели расширять поиск, а не повторять обработанное. При Stop/Resume сохраняются очереди и результаты. Остановка микрофона управляет разговором, явная остановка исследования — отдельными назначениями identity/facts.
 
@@ -10,18 +10,18 @@
 
 | ID | Статус этого среза | Доказательство и оставшаяся проверка |
 |---|---|---|
-| D1 | partial | Текущая база и истории сохранены; один интеграционный worktree. Deploy ещё не выполнен. |
+| D1 | verified | Текущая база и истории сохранены; один интеграционный владелец, exact95a8 runtime health и readback исходных историй. |
 | D2 | partial | Реальный независимый OpenCode search: 4 вызова, 26 URL; та же завершённая сессия прочитана без нового inference. Natural Android flow ещё требуется. |
 | D3 | partial | Реальные SOURCE/REF Luna-контроли: парк mismatch, полезный поздний кадр match; недоставленные pixels отклоняются регрессиями. Требуется новый runtime readback счётчиков. |
 | D4 | partial | Общий acceptance проверяет альтернативы всего shortlist, доказанные aliases и article→physical subject. Native enriched-catalog replay прошёл без нового inference; natural canonical POI требуется. |
 | D5 | partial | Принудительного owner_confirmed, снижения порога или seed URL нет. Natural Android automatic match ещё не подтверждён. |
 | D6 | partial | Image-capable Luna реально проверена; quota permission и durable native attempt встроены. Runtime fallback той же единицы после deploy требуется. |
 | D7 | partial | Durable waiting, route/account health и общий admission интегрированы; exhausted provider retries не уничтожают исследование. Требуется runtime recovery. |
-| D8 | partial | Scoped Stop/Resume, epochs, stale-worker fencing, unknown readback, Android outbox/polling внедрены. Требуются Android build и runtime readback. |
+| D8 | partial | Scoped Stop/Resume, epochs, stale-worker fencing, unknown readback, Android outbox/polling внедрены. Android build/unit/lint/smoke прошли; scoped runtime readback ещё требуется. |
 | D9 | partial | Общий frozen acquisition и single-flight text/media fetch; scopes сохраняют complete/partial раздельно. Component regression проходит; реальная cross-purpose трасса требуется. |
 | D10 | partial | GigaChat прошёл реальные modality/subject/known-claim контроли; 71-фактный POI-memory regression сохраняет выбор, концепцию и draft. Natural «ещё» с Android-проекцией требуется. |
 | D11 | partial | SDK 0.1.14 и additive migrations 009–010 поставлены в общую authority; private wheel зафиксирован digest. Provider/source/usage receipts сохраняются. Принятые runtime batches ещё требуются. |
-| D12 | blocked | Исходная infographic operation остаётся authoritative outcome_unknown, retry_safe=false. Ни повторная генерация, ни публикация не запускались. Требуется reconciliation исполнителя, затем review, retained test Telegram post/readback и подписанный APK. |
+| D12 | partial | VibePublish74960c выпущен; оригинальная operation авторитетно закрыта failed/imagegen_not_dispatched, retry_safe=true, generation_dispatch=not_sent; исходный receipt неизменён, fence sealed. Signed APK exact95a8 CI прошёл. Повторная генерация и тестовая публикация ещё не выполнены. |
 
 ## Проверки и доказательства
 
@@ -35,4 +35,14 @@ Retained evidence находится в `/home/dev/artifacts/street-story/202610
 
 Natural time-to-identity / first-accepted-fact / more пока **не измерены для нового интегрированного релиза**. Ни стоимость по каталогу, ни тестовый seeded snapshot не подменяют эти измерения.
 
-Original operation `op_0e1b0da62a134dd5af541b0e2fdf8ae8`, executor `visual_e84325ad257646a3848db8c5f81f2771`, story `story_32e30819bb9d933c496688e1`: свежий original-principal readback по-прежнему unknown. `thread_start_pending` с null native IDs сам по себе не является разрешением повторить generation. Сохранены выбранные факты, source/draft hashes и исходный operation binding. Единственное разрешённое назначение публикации — `street_story_e2e_20260928_tg`.
+Original operation `op_0e1b0da62a134dd5af541b0e2fdf8ae8`, executor `visual_e84325ad257646a3848db8c5f81f2771`, story `story_32e30819bb9d933c496688e1`: original-principal reconcile_dispatch завершён на той же operation/job: revision2, visual_revision2, failed/imagegen_not_dispatched, retry_safe=true, generation_dispatch=not_sent. `thread_start_pending` с null native IDs сам по себе не является разрешением повторить generation. Сохранены выбранные факты, source/draft hashes и исходный operation binding. Единственное разрешённое назначение публикации — `street_story_e2e_20260928_tg`.
+
+## Узкие runtime исправления после первой поставки
+
+- Backend CI exact7f759d7: **866 passed, 3 skipped**; Android unit/lint/build, Android15 smoke и signed release exact95a8 успешны.
+- Natural identity-only run37303563480 exact95a8 остановился до createStory из-за guest DNS/EAI_NODATA; моделей и генерации не касался. Подготовлены штатный emulator `-dns-server` и проверка DNS до любых эффектов. Новый natural run ещё требуется.
+- Runtime доказал starvation: первые20 eligible-for-state историй все пропущены, нужная история на позиции75. Scheduler теперь применяет размер порции20 после проверки пригодности и существующих задач; skipped/completed истории не задерживают следующие. Это размер порции, не общий лимит исследования.
+- Новый запрос visual в существующей истории сначала читает исходную VibePublish operation. Unknown/running или unsafe failure сохраняют прежний context и блокируют повтор. Подтверждённый исход допускает отдельный авторский запрос: новый durable attempt, новая content revision и история предыдущих receipts; поздний старый worker не может записать новый context. Факты и draft сохраняются. Эти изменения ещё ожидают нового integration deploy.
+- VibePublish PR37 (тот же tested commit87a1799, CI37302519375) merged74960c; существующие server/worker обновлены без второй среды. Последующий preflight выявил installed Codex0.160 versus исторический hard pin0.153 до app-server/thread start; совместимость проверяется до повторной генерации.
+
+Последующая узкая проверка очереди: active identity и явные more/refinement/visual/publish получают приоритет перед backfill; visual continuation наследует interactive marker, FIFO и due/lease сохраняются. **45 targeted tests passed**. Предыдущий полный backend прогон после fairness/retry/DNS: **879 passed**, CI backend и Android unit/lint/build/emulator smoke exactdad343d успешны. Native CLI version pin будет полностью удалён по последнему указанию владельца; версия только диагностическое наблюдение, допуск проверяет необходимый протокол.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -671,8 +672,15 @@ class StreetStoryService:
     def _claim(self):
         now = self.store.now()
         with self.store.tx() as db:
+            # Owner actions and their visual continuation precede speculative
+            # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
             row = db.execute(
-                "SELECT * FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) ORDER BY created_at LIMIT 1",
+                "SELECT * FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) "
+                "ORDER BY CASE WHEN kind IN ('identity','refinement','visual','publish') THEN 0 "
+                "WHEN json_extract(payload_json,'$.queue_priority')='interactive' THEN 0 "
+                "WHEN kind='research' AND semantic_key NOT LIKE 'automatic-facts:%' "
+                "AND coalesce(json_extract(payload_json,'$.queue_priority'),'')<>'background' THEN 0 "
+                "ELSE 1 END,created_at,id LIMIT 1",
                 (now, now),
             ).fetchone()
             if not row:
@@ -684,8 +692,17 @@ class StreetStoryService:
         researcher = getattr(self.providers, 'research', None)
         if researcher is None or not researcher.vision_available:
             return
+        scheduled = 0
         with self.store.tx() as db:
-            for row in db.execute("SELECT * FROM stories WHERE state IN ('needs_review','identifying','photo_ready') LIMIT 20"):
+            # Bound new work, not the stories inspected before eligibility checks.
+            # Skipped and already queued stories must not hide later hypotheses.
+            for row in db.execute(
+                "SELECT stories.*,EXISTS(SELECT 1 FROM jobs origin WHERE origin.story_id=stories.id "
+                "AND origin.kind='identity' AND json_extract(origin.payload_json,'$.identity_generation')="
+                "coalesce(json_extract(stories.research_json,'$.identity_generation'),0) "
+                "AND json_extract(origin.payload_json,'$.queue_priority')='interactive') AS interactive_identity "
+                "FROM stories WHERE state IN ('needs_review','identifying','photo_ready') "
+                "ORDER BY interactive_identity DESC,created_at,id"):
                 research = json.loads(row['research_json'] or '{}')
                 identity = research.get('visual_identity') or {}
                 generation = int(research.get('identity_generation') or 0)
@@ -693,8 +710,18 @@ class StreetStoryService:
                 if (identity.get('status') in {'match','owner_confirmed'} or not identity.get('candidates')
                         or research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation)):
                     continue
-                self._enqueue_job(db,row['id'],'identity_visual',f"identity-visual:{row['id']}:{generation}:{row['photo_sha256']}",
-                    {'identity_generation':generation})
+                semantic = f"identity-visual:{row['id']}:{generation}:{row['photo_sha256']}"
+                if db.execute('SELECT 1 FROM jobs WHERE semantic_key=?', (semantic,)).fetchone():
+                    continue
+                self._enqueue_job(db,row['id'],'identity_visual',semantic,
+                    {'identity_generation':generation,
+                     'queue_priority': 'interactive' if row['interactive_identity'] else 'background'})
+                scheduled += 1
+                if scheduled >= 20:
+                    break
+        if scheduled:
+            logging.getLogger(__name__).info('research_scheduler %s', canonical({
+                'component': 'research_scheduler', 'stage': 'identity_visual', 'scheduled': scheduled}))
 
     def _schedule_confirmed_facts(self):
         """After visual confirmation, collect evidence without requiring voice.
@@ -706,8 +733,9 @@ class StreetStoryService:
         if researcher is None or not getattr(researcher, 'facts_available', False):
             return
         from .research_control import research_stopped
+        scheduled = 0
         with self.store.tx() as db:
-            for row in db.execute("SELECT * FROM stories WHERE state='identity_ready' LIMIT 20"):
+            for row in db.execute("SELECT * FROM stories WHERE state='identity_ready' ORDER BY created_at,id"):
                 research = json.loads(row['research_json'] or '{}')
                 identity = research.get('visual_identity') or {}
                 generation = int(research.get('identity_generation') or 0)
@@ -719,7 +747,9 @@ class StreetStoryService:
                                       "AND state IN ('ready','retry','running')", (row['id'],)).fetchone()):
                     continue
                 revision = 'automatic-facts:' + digest([row['id'], row['photo_sha256'], generation, identity.get('candidate_id')])
-                payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'],
+                if db.execute('SELECT 1 FROM jobs WHERE semantic_key=?', (revision,)).fetchone():
+                    continue
+                payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'], 'queue_priority': 'background',
                     'identity_generation': generation, 'voice_session_ids': [], 'mode': 'initial',
                     'coverage_goal': 'Найди проверенные сведения о подтверждённом объекте для будущей публикации. '
                                      'Переиспользуй известные факты; исследуй недостающие полезные аспекты. '
@@ -730,6 +760,12 @@ class StreetStoryService:
                                                       'photo_sha256': row['photo_sha256']}
                 db.execute("UPDATE stories SET research_json=?,state='researching',revision=revision+1,updated_at=? WHERE id=?",
                            (canonical(research), self.store.now(), row['id']))
+                scheduled += 1
+                if scheduled >= 20:
+                    break
+        if scheduled:
+            logging.getLogger(__name__).info('research_scheduler %s', canonical({
+                'component': 'research_scheduler', 'stage': 'confirmed_facts', 'scheduled': scheduled}))
 
     async def run_once(self) -> bool:
         self._schedule_identity_visual()
