@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from dataclasses import replace
@@ -335,7 +336,7 @@ async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allo
                 'images_reviewed_count': wiki_count}}), story['id']))
     s = session()
     s.state['visual_comparison'] = {'generation': 0, 'photo_sha256': svc._identity_snapshot(story['id'])[0]['photo_sha256'],
-        'queue': [], 'query': 'Gate' if named else '', 'seen_images': seen, 'sources': {}, 'searches': {},
+        'queue': [], 'query': 'Gate' if named else '', 'seen_images': [], 'sources': {}, 'searches': {},
         'fetch_failures': [], 'browser_budget': {'remaining': 2}, 'web_searched': False}
     pages, searches = [], []
     broad = {'candidate_id': 'broad', 'name': 'Gate', 'url': 'https://example.com/broad',
@@ -366,6 +367,60 @@ async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allo
     else:
         assert not searches and reply['partial']
         assert sum(p['status'] == 'pending' for p in s.state['visual_comparison']['sources'].values()) == 4
+
+
+@pytest.mark.asyncio
+async def test_early_read_does_not_hide_late_wiki_candidates(tmp_path):
+    svc, adapter, story, session = prepared(tmp_path)
+    s = session()
+    early = await adapter.execute_tool(s, {'name': 'read_topic', 'id': 'early', 'args': {}})
+    assert early['query_required'] and not s.state['visual_comparison']['sources']
+    candidate = {'candidate_id': 'wiki:381537', 'name': 'Gate',
+        'url': 'https://ru.wikipedia.org/wiki/Gate', 'reference_image_urls': ['https://upload.wikimedia.org/lead.jpg']}
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidates': [candidate]}}), story['id']))
+    writes = []
+    adapter.write = lambda session, message: writes.append(message)
+    adapter._continue_identity(s)
+    adapter._continue_identity(s)
+    assert len(writes) == 1 and 'compare_place_images' in writes[0]['text']
+    # A newly discovered candidate must change the continuation token as well.
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
+            'visual_identity': {'status': 'uncertain', 'candidates': [candidate,
+                {**candidate, 'candidate_id': 'wiki:2', 'url': candidate['url'] + '_2'}]}}), story['id']))
+    adapter._continue_identity(s)
+    assert len(writes) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['ready', 'stopped', 'new_generation'])
+async def test_identity_waiter_wakes_same_live_session_and_respects_stop_binding(tmp_path, outcome):
+    svc, adapter, story, session = prepared(tmp_path)
+    with svc.store.tx() as db:
+        db.execute("UPDATE stories SET state='identifying' WHERE id=?", (story['id'],))
+    s = session()
+    writes = []
+    adapter.write = lambda session, message: writes.append(message)
+    adapter._watch_identity_ready(s)
+    task = s.state['identity_wait_task']
+    adapter._watch_identity_ready(s)
+    assert s.state['identity_wait_task'] is task
+    if outcome == 'stopped':
+        adapter.on_stopped(s)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        candidate = {'candidate_id': 'wiki:381537', 'name': 'Gate',
+            'url': 'https://ru.wikipedia.org/wiki/Gate', 'reference_image_urls': ['https://upload.wikimedia.org/lead.jpg']}
+        with svc.store.tx() as db:
+            db.execute("UPDATE stories SET state='needs_review',research_json=? WHERE id=?", (json.dumps({
+                'identity_generation': 1 if outcome == 'new_generation' else 0,
+                'visual_identity': {'status': 'uncertain', 'candidates': [candidate]}}), story['id']))
+        await asyncio.wait_for(task, timeout=2)
+    assert len(writes) == (1 if outcome == 'ready' else 0)
+    assert svc.story(story['id']).get('identity_progress', {}).get('images_reviewed_count', 0) == 0
 
 
 def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
