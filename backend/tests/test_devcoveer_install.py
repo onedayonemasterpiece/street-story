@@ -92,8 +92,13 @@ def test_environment_retention_skips_when_process_verification_fails(monkeypatch
 
 def test_previous_release_comes_from_live_unit(monkeypatch, tmp_path):
     module = _load_installer()
+    bus_env = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=test-bus"}
+    monkeypatch.setattr(module, "systemd_env", lambda: bus_env)
     monkeypatch.setattr(module, "RELEASES_ROOT", tmp_path)
-    monkeypatch.setattr(module, "run", lambda *args, **kwargs: str(tmp_path / ("b" * 40) / "source"))
+    def unit(*args, **kwargs):
+        assert kwargs['env'] == bus_env
+        return str(tmp_path / ("b" * 40) / "source")
+    monkeypatch.setattr(module, "run", unit)
     assert module.deployed_release_sha() == "b" * 40
     monkeypatch.setattr(module, "run", lambda *args, **kwargs: "/some/unrelated/source")
     assert module.deployed_release_sha() is None

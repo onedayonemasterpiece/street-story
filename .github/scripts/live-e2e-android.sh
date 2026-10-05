@@ -7,6 +7,9 @@ FIXTURE_DIR="${LIVE_E2E_FIXTURE_DIR:-live-android-fixtures}"
 KEEP_PUBLICATION="${LIVE_E2E_KEEP_PUBLICATION:-false}"
 IDENTITY_ONLY="${LIVE_E2E_IDENTITY_ONLY:-false}"
 MORE_ONLY="${LIVE_E2E_MORE_ONLY:-false}"
+RESUME_STORY_ID="${LIVE_E2E_RESUME_STORY_ID:-}"
+[[ -z "$RESUME_STORY_ID" || "$RESUME_STORY_ID" =~ ^story_[a-zA-Z0-9]{8,64}$ ]]
+[[ -z "$RESUME_STORY_ID" || "$IDENTITY_ONLY" == false ]]
 [[ "$KEEP_PUBLICATION" == true || "$KEEP_PUBLICATION" == false ]]
 [[ "$IDENTITY_ONLY" == true || "$IDENTITY_ONLY" == false ]]
 [[ "$MORE_ONLY" == true || "$MORE_ONLY" == false ]]
@@ -95,6 +98,7 @@ adb shell am instrument -w \
   -e keepPublication "$KEEP_PUBLICATION" \
   -e identityOnly "$IDENTITY_ONLY" \
   -e moreOnly "$MORE_ONLY" \
+  -e resumeStoryId "$RESUME_STORY_ID" \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
   | tee "$ARTIFACT_DIR/android-instrumentation.txt"
 # Preserve bounded evidence on failure; never export token/configuration stores.
@@ -118,6 +122,10 @@ import pathlib
 import re
 
 evidence = json.loads((pathlib.Path(os.environ['LIVE_E2E_ARTIFACT_DIR']) / 'android-golden-evidence.json').read_text())
+resume_id = os.environ.get('LIVE_E2E_RESUME_STORY_ID', '')
+if resume_id:
+    if evidence.get('resumed_story_id') != resume_id or evidence.get('fresh_full_pass') is not False:
+        raise SystemExit('Saved-story continuation must not claim a fresh full pass')
 if os.environ.get('LIVE_E2E_IDENTITY_ONLY', 'false') == 'true':
     if evidence.get('identity_only') is not True or evidence.get('automatic_identity') is not True:
         raise SystemExit('Android ordinary photo identity not proved')

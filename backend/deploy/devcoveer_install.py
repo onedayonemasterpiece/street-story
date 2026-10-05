@@ -277,6 +277,7 @@ def deployed_release_sha() -> str | None:
     """Read the actual unit, rather than trusting a historical current symlink."""
     directory = run(
         ["systemctl", "--user", "show", SERVICE, "-p", "WorkingDirectory", "--value"],
+        env=systemd_env(),
         timeout=30,
     ).strip()
     path = Path(directory)
