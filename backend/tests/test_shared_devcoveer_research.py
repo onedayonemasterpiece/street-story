@@ -25,6 +25,7 @@ class Backend:
         self.extra_calls = 0
         self.guard_loaded = True
         self.tool_ids = sorted(NATIVE_TOOL_IDS)
+        self.health = {'healthy': True, 'version': '1.18.31'}
         self.agent_permission = [{'permission': '*', 'pattern': '*', 'action': 'allow'}]
 
     async def request(self, method, path, *, directory=None, payload=None, timeout=30):
@@ -32,7 +33,7 @@ class Backend:
         assert directory == self.directory
         clean_path = urlsplit(path).path
         if clean_path == '/global/health':
-            return {'healthy': True, 'version': '1.18.31'}
+            return self.health
         if clean_path == '/agent':
             return [{'name': 'plan', 'native': True, 'mode': 'primary',
                      'steps': self.h.config['agent']['plan']['steps'], 'permission': self.agent_permission}]
@@ -233,6 +234,28 @@ async def test_loaded_guard_attested_before_prompt_with_native_tool_schemas(tmp_
     assert result['receipt']['isolation']['permission_authority'] == 'attested_pre_execution_guard'
     assert backend.session['permission'] == adapter._session_permissions('search')
     assert not any(rule['permission'] == '*' for rule in backend.session['permission'])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('version', ['999.0.0', 'custom-build', None])
+async def test_runtime_version_is_diagnostic_and_required_contract_still_attested(tmp_path, version):
+    h, backend, adapter = guarded_setup(tmp_path)
+    backend.health = {'healthy': True}
+    if version is not None:
+        backend.health['version'] = version
+    result = await adapter.search_articles('Facade', {'request_id': 'r'})
+    assert result['receipt']['isolation']['runtime_version'] == version
+    assert result['receipt']['isolation']['tool_boundary_enforced'] is True
+    assert h.sends
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_runtime_does_not_dispatch_even_with_familiar_version(tmp_path):
+    h, backend, adapter = guarded_setup(tmp_path)
+    backend.health = {'healthy': False, 'version': '1.18.31'}
+    with pytest.raises(ResearchUnavailable, match='research_shared_unhealthy'):
+        await adapter.search_articles('Facade', {'request_id': 'r'})
+    assert not h.sends
 
 
 @pytest.mark.asyncio

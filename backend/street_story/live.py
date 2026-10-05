@@ -1465,7 +1465,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         elif name == "undo":
             result = self._undo(story_id, command_id)
         elif name == "generate_visual":
-            result = self._generate_visual(story_id, command_id, args)
+            result = await self._generate_visual(story_id, command_id, args)
         elif name == "prepare_publication":
             result = await self._prepare_publication(story_id, command_id, args)
             self.emit(session, {"type": "publication_confirmation", **result["confirmation"]})
@@ -4871,7 +4871,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self._store_command(db, story_id, command_id, "undo", args, result)
             return result
 
-    def _generate_visual(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def _generate_visual(self, story_id: str, command_id: str, args: dict[str, Any]) -> dict[str, Any]:
         with self.service.store.connection() as db:
             row = self.service._story_row(db, story_id)
             research = json.loads(row["research_json"] or "{}")
@@ -4903,7 +4903,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     )
         body = {"selected_fact_ids": ids, "visual_instruction": instruction}
         key = "ss-live-visual-" + hashlib.sha256(f"{story_id}:{command_id}".encode()).hexdigest()[:48]
-        story = self.service.mutate_visual(story_id, key, body)
+        request = getattr(self.service, 'request_visual', None)
+        if callable(request):
+            story = await request(story_id, key, body)
+        else:
+            previous = json.loads(row['visual_context_json'] or '{}')
+            if (previous.get('operation_id') or previous.get('visual_request_key')
+                    or row['state'] == 'visual_processing'):
+                raise ConflictError('visual_outcome_unresolved',
+                    'The original generation must be observed through request_visual before another request.')
+            story = self.service.mutate_visual(story_id, key, body)
         with self.service.store.connection() as db:
             job = db.execute(
                 "SELECT id FROM jobs WHERE story_id=? AND kind='visual' ORDER BY created_at DESC LIMIT 1",

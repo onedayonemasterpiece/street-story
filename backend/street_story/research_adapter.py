@@ -6,12 +6,21 @@ credential hopping or new POI/job system is involved.
 from __future__ import annotations
 import hashlib
 import json
+import logging
+import re
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import RetryableProviderError
 from .service import ConflictError, canonical
 from .config import reveal
+
+LOG = logging.getLogger(__name__)
+
+
+def _failure_code(exc):
+    value = getattr(exc, 'code', None) or str(exc)
+    return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', value) else type(exc).__name__
 
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
     'research_sufficient':{'type':'boolean'},
@@ -168,15 +177,33 @@ class ProductResearchAdapter:
             except (TypeError,ValueError):
                 pass
             retry_at = self.service.store.now()+delay
+            self._record_route_failure(binding, role, category, retry_at)
             if status:
                 self.service.store.cache_put(quota_key if status == 429 else route_key,
                     {'category':category,'status':status,'retry_at':retry_at},delay)
             raise RetryableProviderError(category, retry_at=retry_at) from exc
         except Exception as exc:
             if getattr(exc, 'resource_failure', False):
-                raise RetryableProviderError(getattr(exc, 'code', 'research_admission_unavailable'),
-                    retry_at=self.service.store.now()+max(3, getattr(exc, 'retry_after_ms', 30000)/1000)) from exc
+                retry_at = self.service.store.now()+max(3, getattr(exc, 'retry_after_ms', 30000)/1000)
+                code = _failure_code(exc)
+                self._record_route_failure(binding, role, code, retry_at)
+                raise RetryableProviderError(code, retry_at=retry_at) from exc
             raise
+
+    def _record_route_failure(self, binding, role, code, retry_at):
+        # Preserve the dispatch/recovery phase. An admission failure does not
+        # prove that an older submitted request was never sent.
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding['attempt_id'],)).fetchone()
+            if row:
+                receipt = json.loads(row['receipt_json'] or '{}')
+                receipt['route_failure'] = {'code': code, 'retry_at': retry_at,
+                                            'observed_at': self.service.store.now()}
+                db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                           (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+        LOG.warning('street_story_research_route story_id=%s role=%s attempt_id=%s code=%s retry_at=%s',
+                    binding.get('story_id'), role, binding['attempt_id'], code, retry_at)
 
     async def search_articles(self, query, story):
         unit = canonical([query,story.get('_research_run_id')])
@@ -235,9 +262,19 @@ class ProductResearchAdapter:
             direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
             if not callable(direct):
                 raise
-            found = await direct(query)
+            try:
+                found = await direct(query)
+            except RetryableProviderError as fallback:
+                codes = {'opencode': _failure_code(exc), 'google': _failure_code(fallback)}
+                retry = [error.retry_at for error in (exc, fallback) if error.retry_at is not None]
+                LOG.warning('street_story_fact_search_waiting story_id=%s routes=%s',
+                            story['id'], canonical(codes))
+                failure = RetryableProviderError('all_fact_search_routes_unavailable:' + ':'.join(codes.values()),
+                    retry_at=min(retry) if retry else self.service.store.now()+30)
+                failure.route_failures = codes
+                raise failure from fallback
             return {'sources':found.grounding_sources,'receipt':{
-                'provider':'gemini_google_search','backend':'google_search','independent_failure':str(exc)}}
+                'provider':'gemini_google_search','backend':'google_search','independent_failure':_failure_code(exc)}}
 
     @property
     def facts_available(self):
