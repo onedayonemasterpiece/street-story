@@ -45,6 +45,27 @@ def verdict(comparison_id, status='match'):
 
 
 @pytest.mark.asyncio
+async def test_low_confidence_match_records_uncertain_and_continues_same_queue(tmp_path):
+    svc, adapter, session, story = setup(tmp_path)
+    reply = await adapter._compare_place_images(session, {})
+    result = adapter._record_place_comparison(session, 'low-confidence',
+        {**verdict(reply['comparison_id']), 'confidence': .78})
+    assert not result['matched'] and result['continue_comparison']
+    research = state(svc, story['id'])
+    assert research['visual_identity']['status'] == 'uncertain'
+    assert not research.get('poi_id')
+    queue = research['visual_search_operation']
+    assert queue.get('pending') is None and queue['lease_owner'] is None
+    assert len(queue['queue']) == 1 and len(queue['seen_images']) == 1
+    assert queue['verdict_history'][-1]['status'] == 'uncertain'
+    assert queue['verdict_history'][-1]['model_status'] == 'match'
+    assert queue['verdict_history'][-1]['confidence'] == .78
+    assert research['identity_progress']['images_reviewed_count'] == 1
+    # The worker follows its ordinary retry path, rather than a terminal
+    # product ConflictError, while the acceptance threshold remains .90.
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('resume', [False, True])
 @pytest.mark.parametrize('status', ['match', 'mismatch'])
 async def test_late_verdict_cannot_record_seen_or_clear_retained_queue(tmp_path, resume, status):

@@ -122,6 +122,52 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resource_denial_preserves_dispatch_phase_and_authority_retry(tmp_path, caplog):
+    from ai_resource_control.client import ResourceError
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    @asynccontextmanager
+    async def denied(binding, workload):
+        raise ResourceError('RESOURCE_DAILY_BUDGET', retry_after_ms=120000)
+        yield
+    provider.admission = denied
+    binding = {'attempt_id': 'denied', 'phase': 'created'}
+    with pytest.raises(RetryableProviderError, match='RESOURCE_DAILY_BUDGET') as exc:
+        await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+    assert exc.value.retry_at == provider.service.store.now() + 120
+    assert receipts[-1]['phase'] == 'created'
+    assert receipts[-1]['route_failure']['code'] == 'RESOURCE_DAILY_BUDGET'
+    assert receipts[-1]['thread_id'] == binding.get('thread_id')
+    assert receipts[-1]['turn_id'] == binding.get('turn_id')
+    assert not client.calls and not sends and not finalized
+    assert 'native_visual_resource_wait' in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_existing_turn_readback_never_reserves_or_sends_another_inference(tmp_path):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    first = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
+    admission_calls = []
+    @asynccontextmanager
+    async def unavailable(binding, workload):
+        admission_calls.append(binding)
+        raise AssertionError('Readback must not acquire fresh inference capacity')
+        yield
+    provider.admission = unavailable
+    binding = {key: first['receipt'][key] for key in ('thread_id', 'turn_id', 'profile_verified', 'quota_permission')}
+    binding.update(attempt_id='first', phase='unknown')
+    provider.service.store.time = 2000
+    resumed = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+    assert resumed['receipt']['phase'] == 'completed'
+    assert resumed['receipt']['quota_permission'] == first['receipt']['quota_permission']
+    assert resumed['receipt']['usage']['totalTokens'] == 321
+    assert resumed['receipt']['resource_reconciliation'] == 'readback_only_original_reservation_unchanged'
+    assert not admission_calls
+    assert len(sends) == len(finalized) == 1
+    assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_native_rejection_invalidates_quota_grant_before_expiry(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     client.reject = True
