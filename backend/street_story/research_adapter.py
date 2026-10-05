@@ -487,13 +487,15 @@ class ProductResearchAdapter:
         from jsonschema import Draft202012Validator
         from .native_vision import MODEL, TRANSPORT, visual_request
         image_sha = hashlib.sha256(snapshot).hexdigest()
-        self.guard_binding(binding)
         with self.service.store.tx() as db:
             current = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
                                  (binding['attempt_id'],)).fetchone()
             pending = json.loads(current['receipt_json']) if current else {}
-            if pending.get('phase') != 'created' or pending.get('thread_id') or pending.get('turn_id'):
+            addresses = {**(pending.get('binding') or {}), **binding}
+            if (pending.get('phase') != 'created' or pending.get('thread_id') or pending.get('turn_id')
+                    or addresses.get('thread_id') or addresses.get('turn_id')):
                 return None
+            self.guard_binding(binding)
             for row in db.execute("SELECT a.* FROM research_provider_attempts a JOIN stories s ON s.id=a.story_id "
                                   "WHERE a.role='vision_native' AND s.photo_sha256=? AND a.story_id<>? ORDER BY a.updated_at DESC",
                                   (binding['photo_sha256'], binding['story_id'])):
