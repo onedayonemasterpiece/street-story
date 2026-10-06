@@ -65,6 +65,8 @@ async def test_redirect_and_dns_are_validated_before_network_access():
             await fetch_public(client, 'https://example.com/image', 1000, resolver=resolver)
         assert len(calls) == 1 and calls[0].url.host == '93.184.216.34'
         assert calls[0].headers['host'] == 'example.com'
+        assert calls[0].headers['user-agent'] == (
+            'StreetStory/0.1 (https://github.com/onedayonemasterpiece/street-story)')
         async def private(host):
             return '10.0.0.1'
         with pytest.raises(ValueError, match='private_address'):

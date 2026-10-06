@@ -25,6 +25,7 @@ from bs4 import BeautifulSoup
 
 from .identity_telemetry import record_identity_event
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
+PUBLIC_MEDIA_USER_AGENT = 'StreetStory/0.1 (https://github.com/onedayonemasterpiece/street-story)'
 
 MAX_PAGES = 20
 MAX_PAGE_BYTES = 2 * 1024 * 1024
@@ -71,7 +72,8 @@ async def fetch_public(client, raw: str, maximum: int, *, resolver=resolve_publi
             raise ValueError('article_media_private_address')
         authority = f'[{ip}]' if ':' in ip else ip
         pinned = urlunsplit(('https', authority, parsed.path, parsed.query, ''))
-        async with client.stream('GET', pinned, headers={'Host': parsed.hostname},
+        async with client.stream('GET', pinned,
+                headers={'Host': parsed.hostname, 'User-Agent': PUBLIC_MEDIA_USER_AGENT},
                 extensions={'sni_hostname': parsed.hostname}) as response:
             if response.status_code in (301, 302, 303, 307, 308):
                 target = public_url(urljoin(target, response.headers.get('location', '')))

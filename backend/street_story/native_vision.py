@@ -74,6 +74,24 @@ async def native_readback():
     yield ReadbackLease()
 
 
+def native_rpc_error(exc):
+    """Record an authoritative RPC response, never infer rejection from silence.
+
+    Invalid-request/params codes reject turn/start.
+    Internal/server errors remain unknown. Private error data is never retained.
+    """
+    if type(exc).__name__ != 'NativeAppServerError':
+        return None
+    code = getattr(exc, 'code', None)
+    if not isinstance(code, int) or isinstance(code, bool):
+        return {'response_received': True, 'category': 'unclassified_rpc_error'}
+    categories = {-32600: 'invalid_request', -32601: 'method_not_found',
+                  -32602: 'invalid_params'}
+    return {'response_received': True, 'code': code,
+            'category': categories.get(code, 'unclassified_rpc_error'),
+            'turn_rejected': code in categories}
+
+
 def platform_client():
     # Reuse the installed platform and its dependencies. Loading its public
     # transport does not start MCP, OpenCode, or a task writer.
@@ -199,9 +217,20 @@ class NativeVisionProvider:
                         await lease.before_send({'thread_id': receipt['thread_id'], 'quota_expires_at': grant['expires_at']})
                         receipt['phase'] = 'prompt_intent'
                         await self._save(binding, receipt)
-                        response = await client.request('turn/start', {'threadId': receipt['thread_id'], 'model': MODEL, 'effort': 'medium',
-                            'approvalPolicy': 'never', 'sandboxPolicy': {'type': 'readOnly', 'networkAccess': False},
-                            'input': input_parts, 'outputSchema': contract})
+                        try:
+                            response = await client.request('turn/start', {'threadId': receipt['thread_id'], 'model': MODEL, 'effort': 'medium',
+                                'approvalPolicy': 'never', 'sandboxPolicy': {'type': 'readOnly', 'networkAccess': False},
+                                'input': input_parts, 'outputSchema': contract})
+                        except Exception as exc:
+                            error = native_rpc_error(exc)
+                            if error:
+                                receipt['rpc_error'] = {**error, 'method': 'turn/start'}
+                                if error.get('turn_rejected'):
+                                    receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True)
+                                logger.warning('native_visual_rpc_error story_id=%s attempt_id=%s thread_id=%s code=%s category=%s rejected=%s',
+                                               story['id'], binding['attempt_id'], receipt['thread_id'],
+                                               error.get('code'), error['category'], error.get('turn_rejected', False))
+                            raise
                         receipt.update(turn_id=response['turn']['id'], phase='submitted')
                         await self._save(binding, receipt)
                     while time.monotonic() - started < self.timeout:
