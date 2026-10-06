@@ -5433,10 +5433,23 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
             setup = setup_config(start['model'], start.get('context') or {}, start.get('history'),
                 configuration=configuration, search=bool(configuration.get('search_enabled')))
             requested = estimate_input_tokens(setup)
-            config = replace(Config.from_env('street-story', environment), grant_tokens=requested)
-            control = Control(config)
+            config = Config.from_env('street-story', environment)
+
+            class SetupAdmissionControl(Control):
+                async def acquire(self, *args, **kwargs):
+                    # Scope selection must fit setup, including startup failover.
+                    # The lease then uses the SDK's small recurring audio quantum,
+                    # not the (potentially large) prompt/tool setup reservation.
+                    self.config = replace(config, grant_tokens=max(requested, config.grant_tokens))
+                    try:
+                        return await super().acquire(*args, **kwargs)
+                    finally:
+                        self.config = config
+
+            control = SetupAdmissionControl(config)
             logger.info('street_story_live_setup_admission %s', canonical({
-                'session_id': session.id, 'estimated_units': requested, 'model': start['model']}))
+                'session_id': session.id, 'estimated_units': requested,
+                'audio_grant_units': config.grant_tokens, 'model': start['model']}))
             await run_guarded(
                 consumer="street-story",
                 environment=environment,
