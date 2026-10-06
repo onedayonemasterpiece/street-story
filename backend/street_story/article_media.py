@@ -246,6 +246,10 @@ async def article_browser(page_url: str):
             await context.close()
 
 
+class ArticleMediaBrowserError(ValueError):
+    """Known acquisition failure; no visual inference was dispatched."""
+
+
 class RenderedMedia(list):
     def __init__(self, values, cursor, partial, slide_cursor=0):
         super().__init__(values)
@@ -324,14 +328,16 @@ async def browser_reference(descriptor):
             if not exact:
                 continue
             await image.scroll_into_view_if_needed(timeout=3000)
-            await image.evaluate("i => i.decode()")
+            decoded = await image.evaluate("async i => { try { await i.decode(); return true; } catch { return false; } }")
+            if not decoded:
+                continue
             if not await image.evaluate('i => i.naturalWidth >= 160 && i.naturalHeight >= 160'):
                 continue
             data = await image.screenshot(type='jpeg', quality=85, timeout=5000)
             if len(data) > MAX_DOWNLOAD_BYTES:
                 raise ValueError('article_media_size')
             return data
-    raise ValueError('article_media_render_unavailable')
+    raise ArticleMediaBrowserError('article_media_render_unavailable')
 
 
 def browser_executable(default: str) -> str:
@@ -455,7 +461,14 @@ async def load_article_reference(client, candidate, raw, *, resolver=resolve_pub
         if budget.get('remaining', 0) <= 0:
             raise
         budget['remaining'] -= 1
-        data = await asyncio.wait_for(browser_reference(descriptor), timeout=20)
+        from playwright.async_api import Error as BrowserError
+        try:
+            data = await asyncio.wait_for(browser_reference(descriptor), timeout=20)
+        except BrowserError as exc:
+            # A detached element, failed decode or screenshot is a known read
+            # failure, not an unknown provider result. The common queue skips
+            # this authorized reference and keeps its bounded fallback policy.
+            raise ArticleMediaBrowserError('article_media_browser_unavailable') from exc
         image = await asyncio.to_thread(normalize_reference, data)
         target, method = raw, 'article_browser_element'
 
