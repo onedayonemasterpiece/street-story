@@ -155,8 +155,13 @@ class MainActivity : Activity() {
         if (sharedIntent.action != Intent.ACTION_SEND) return
         // Consume this delivery, not the photo: recreation must not import again,
         // but a second explicit share of the same URI must create another story.
-        setIntent(Intent(this, MainActivity::class.java))
-        runCatching { PhotoIntake.sharedPhotos(sharedIntent) }.onSuccess { photos ->
+        val intake = runCatching { PhotoIntake.sharedPhotos(sharedIntent) }
+        // Keep action/type/component stable for Android lifecycle observers.
+        // Only consume the payload, after reading it into pending intake state.
+        sharedIntent.removeExtra(Intent.EXTRA_STREAM)
+        sharedIntent.clipData = null
+        setIntent(sharedIntent)
+        intake.onSuccess { photos ->
             if (photos.isEmpty()) {
                 Toast.makeText(this, "Передайте одно фото из Галереи", Toast.LENGTH_LONG).show()
                 return@onSuccess
