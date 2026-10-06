@@ -251,6 +251,16 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
         candidates = await article_media.article_candidates(svc, {'id': 'unknown'}, [
             {'url': 'https://example.com/article'}], set(), http=http, resolver=resolver,
             browser=browser, receipts=receipts)
+        assert calls == []
+        assert candidates[0]['reference_image_urls'] == ['https://example.com/lead.jpg']
+        assert receipts[0]['static_media_delivered'] is True
+        resumed_source = {'url': 'https://example.com/article',
+            'static_media_delivered': receipts[0]['static_media_delivered'],
+            'gallery_cursor': receipts[0]['gallery_cursor'],
+            'gallery_slide_cursor': receipts[0]['gallery_slide_cursor']}
+        receipts = []
+        candidates = await article_media.article_candidates(svc, {'id': 'unknown'}, [resumed_source],
+            set(), http=http, resolver=resolver, browser=browser, receipts=receipts)
     assert calls == ['https://example.com/article']
     assert candidates[0]['reference_image_urls'] == ['https://example.com/lead.jpg', 'https://example.com/late.jpg']
     assert receipts[0]['status'] == 'partial' and receipts[0]['gallery_cursor'] == 12
