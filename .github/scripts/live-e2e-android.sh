@@ -19,8 +19,8 @@ RESUME_IDENTITY_RESEARCH="${LIVE_E2E_RESUME_IDENTITY_RESEARCH:-false}"
 [[ "$IDENTITY_ONLY" != true || "$KEEP_PUBLICATION" != true ]]
 export LIVE_E2E_ARTIFACT_DIR="$ARTIFACT_DIR"
 
-# Check guest DNS before any story/provider operation. Emulator DNS is configured
-# at launch with -dns-server; keep the real HTTPS hostname and normal TLS checks.
+# Check guest DNS before any story/provider operation. Use the emulator's detected
+# host resolvers; keep the real HTTPS hostname and normal TLS checks.
 mkdir -p "$ARTIFACT_DIR"
 BACKEND_HOST=$(python - "$FIXTURE_DIR/config.json" <<'PY'
 import ipaddress
