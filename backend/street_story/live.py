@@ -611,7 +611,9 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "select_facts",
-        "Change selected evidence-backed facts without rewriting the current publication text.",
+        "Change selected evidence-backed facts only when the author explicitly asks to choose or change facts. "
+        "A concept, draft or visual request does not authorize changing the saved selection. "
+        "When the author asks to preserve the selection, do not call this tool.",
         {
             "fact_ids": {"type": "array", "items": {"type": "string"}},
         },
@@ -620,8 +622,9 @@ FUNCTIONS = [
     _tool_schema(
         "set_concept",
         "Store or replace the current publication concept/angle without silently rewriting the draft. "
-        "Use when the author says what the story should focus on; if this changes selected facts, "
-        "call select_facts separately and tell the author what changed.",
+        "Use when the author says what the story should focus on. Preserve the saved fact selection; "
+        "a new angle does not authorize choosing different facts. If other facts would help, "
+        "ask the author before changing selection.",
         {"concept": {"type": "string"}},
         ["concept"],
     ),
@@ -768,7 +771,7 @@ Research and durable evidence:
 - Before lengthy research briefly say "Ищу факты"; the app shows progress. Do not read the inventory aloud: end with counts, remaining gaps and at most 1-2 important saved findings. A research-only request must not select facts or draft a publication.
 
 Concept, editing and publication:
-- Persist an owner's publication angle with set_concept. If relevance changes selection, call select_facts separately and briefly disclose the change. select_facts otherwise changes only on the owner's explicit request. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
+- Persist an owner's publication angle with set_concept while preserving the saved fact selection. A concept, draft or visual request does not authorize choosing different facts to fit the angle. If other facts would help, ask the author before changing selection. Call select_facts only when the author explicitly asks to choose or change facts; an explicit instruction to preserve the selection takes precedence. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Before edit_text, check that every factual assertion follows from the currently selected facts, with their qualifications intact. Unselected inventory and previous-story context do not authorize extra draft claims. Narrative connections may improve the prose but must not add factual classifications or events.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
