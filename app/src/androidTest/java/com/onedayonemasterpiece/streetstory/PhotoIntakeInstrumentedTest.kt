@@ -184,12 +184,21 @@ class PhotoIntakeInstrumentedTest {
                 }
                 // Package visibility can hide DocumentsUI from resolveActivity,
                 // even though startActivity opens it. Observe the actual UI.
-                val pickerUi = device.wait(Until.findObject(By.pkg(Pattern.compile(".*\\.documentsui")).depth(0)), 5000)
+                val pickerUi = device.wait(Until.findObject(By.pkg(Pattern.compile(".*\\.documentsui")).depth(0)), 15000)
+                if (pickerUi == null) {
+                    device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
+                    device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
+                }
                 assertNotNull("Original-photo DocumentsUI must open", pickerUi)
                 val pickerPackage = pickerUi!!.applicationPackage
                 // Images root can show camera albums first, rather than a flat
                 // Recent list. Open the exact folder seeded by this fixture.
-                device.wait(Until.findObject(By.pkg(pickerPackage).text("Camera")), 2000)?.click()
+                // The provider window appears before its MediaStore query has
+                // populated the albums. Wait for actual content, not an optional
+                // two-second folder lookup followed by a file lookup at the root.
+                val entry = device.wait(Until.findObject(By.pkg(pickerPackage).text(
+                    Pattern.compile("^(Camera|street-story-month-old-test\\.jpg)$"))), 10000)
+                if (entry?.text == "Camera") entry.click()
                 // The grid exposes a separate "Preview the file …" child.
                 // Select the file card itself; a substring selector hits Preview.
                 val item = device.wait(Until.findObject(By.pkg(pickerPackage).descStartsWith("street-story-month-old-test.jpg,")), 5000)
