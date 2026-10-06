@@ -205,8 +205,12 @@ else:
         raise SystemExit('Android golden run did not confirm native cancellation cleanup')
     if evidence.get('more_acceptance_status') != 'not_run':
         raise SystemExit('Full publication misrepresents independent MORE acceptance')
-if evidence.get('physical_mic') is not False or evidence.get('prepared_pcm_after_capture_boundary') is not True:
+pcm_turns = evidence.get('prepared_pcm_turn_count')
+if (evidence.get('physical_mic') is not False or type(pcm_turns) is not int or pcm_turns < 0
+        or evidence.get('prepared_pcm_after_capture_boundary') is not (pcm_turns > 0)):
     raise SystemExit('Android golden evidence misrepresents prepared PCM acceptance')
+if not resume_id and pcm_turns == 0:
+    raise SystemExit('Fresh Android golden acceptance lacks prepared owner speech')
 if evidence.get('legacy_voice_endpoint_used') is not False:
     raise SystemExit('Android golden run unexpectedly used the legacy voice endpoint')
 transport = evidence.get('transport_final') or {}

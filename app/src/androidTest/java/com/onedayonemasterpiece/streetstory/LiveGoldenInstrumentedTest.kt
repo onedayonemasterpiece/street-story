@@ -40,6 +40,7 @@ class LiveGoldenInstrumentedTest {
     private val root = File(context.filesDir, "live-golden")
     private val gson = Gson()
     private var awaitingTurnAfter = 0
+    private var preparedPcmTurnCount = 0
     private var transientStoryReadRetries = 0
     private var activeStage = "setup"
     private var stageStartedAt = 0L
@@ -541,7 +542,7 @@ class LiveGoldenInstrumentedTest {
                     "server_story_id" to storyId,
                     "fixture_photo_sha256" to photoSha,
                     "live_provider" to "gemini-3.8-live",
-                    "prepared_pcm_after_capture_boundary" to true,
+                    "prepared_pcm_after_capture_boundary" to (preparedPcmTurnCount > 0),
                     "physical_mic" to false,
                     "legacy_voice_endpoint_used" to false,
                     "research_revision" to scheduled.researchRevision,
@@ -590,6 +591,8 @@ class LiveGoldenInstrumentedTest {
             evidence["transient_story_read_retries"] = transientStoryReadRetries
             evidence["last_live_error"] = live.snapshot().error
             evidence["completed_live_turns"] = live.snapshot().completedTurns
+            evidence["prepared_pcm_turn_count"] = preparedPcmTurnCount
+            evidence["prepared_pcm_after_capture_boundary"] = preparedPcmTurnCount > 0
             evidence["transport_final"] = live.transportEvidence()
             if (identityOnly) {
                 evidence["record_audio_permission_granted"] = context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -731,6 +734,7 @@ class LiveGoldenInstrumentedTest {
             Thread.sleep(PCM_CHUNK_SLEEP_MS)
         }
         live.endSpeech()
+        preparedPcmTurnCount++
     }
 
     private fun awaitAnswer(live: LiveSessionController, label: String) {

@@ -386,6 +386,28 @@ class ProductResearchAdapter:
         capsule = fact_page_capsule(page, context)
         if self.giga is None:
             return await self._extract_opencode_page(capsule, page, story)
+        input_sha256=hashlib.sha256(canonical({
+            'query':context.get('coverage_goal',''),'capsule':capsule,'max_tool_calls':2}).encode()).hexdigest()
+        logical=hashlib.sha256(canonical([story['id'],story['photo_sha256'],
+            story.get('_identity_generation',0),'facts_gigachat',page['_unit_id']]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            prior=[json.loads(row['receipt_json']) for row in db.execute(
+                'SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC,rowid DESC',
+                (logical,))]
+        # An unknown current send keeps its existing wait fence. A closed
+        # malformed response does not authorize paying for an unchanged unit.
+        unknown=bool(prior and (prior[0].get('phase') not in {'created','aborted','failed','completed'}
+            or (prior[0].get('phase')=='aborted' and not prior[0].get('abort_acknowledged'))))
+        repeated_closed=not unknown and not (prior and prior[0].get('phase')=='completed') and any(
+            old.get('phase')=='failed' and old.get('provider_send_state')=='response_closed'
+            and old.get('error_type')=='MalformedProviderResponse'
+            and old.get('input_sha256')==input_sha256 for old in prior)
+        if repeated_closed:
+            LOG.warning('street_story_fact_closed_unit_reused story_id=%s logical_id=%s input_sha256=%s fallback=%s',
+                        story['id'],logical,input_sha256,self.opencode_facts_available)
+            if self.opencode_facts_available:
+                return await self._extract_opencode_page(capsule,page,story)
+            raise PermanentProviderError('gigachat:closed_semantic_unit_requires_live')
         binding,saved = self.attempt(story,'facts_gigachat',page['_unit_id'])
         if saved:
             return {'result':saved['result'],'receipt':saved}
@@ -403,8 +425,7 @@ class ProductResearchAdapter:
         receipt['capsule_component_bytes'] = {key: len(canonical(value).encode('utf-8'))
             for key, value in capsule.items() if key != '_known_fact_inventory'}
         try:
-            receipt['input_sha256']=hashlib.sha256(canonical({
-                'query':context.get('coverage_goal',''),'capsule':capsule,'max_tool_calls':2}).encode()).hexdigest()
+            receipt['input_sha256']=input_sha256
             await self.checkpoint(binding,receipt)
             token = self._active_binding.set(binding)
             try:
