@@ -46,7 +46,7 @@ fi
 adb install -r "$test_apk"
 adb shell pm grant "$pkg" android.permission.RECORD_AUDIO || true
 adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS || true
-trap 'adb logcat -d -s StreetStoryProvisioning:I "*:S" > provisioning-logcat.txt; adb logcat -d -s AndroidRuntime:E "*:S" > instrumentation-crash-logcat.txt' EXIT
+trap 'adb logcat -d -s StreetStoryProvisioning:I "*:S" > provisioning-logcat.txt; adb logcat -d -s AndroidRuntime:E "*:S" > instrumentation-crash-logcat.txt; mkdir -p ui-evidence; for evidence in original-picker-ui.xml original-picker-ui.png; do adb pull "/sdcard/Android/data/$pkg/files/$evidence" "ui-evidence/$evidence" || true; done' EXIT
 adb shell am instrument -w -r "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tee instrumentation.txt
 grep -q 'OK (' instrumentation.txt
 mkdir -p ui-evidence
