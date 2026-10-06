@@ -238,6 +238,10 @@ class StreetStoryService:
                 if item["path"]
             )
             story_dir = self.settings.data_dir / "stories" / story_id
+            # Keep exact model admission with the POI before deleting its origin.
+            from .poi_memory import backfill_poi_review_proofs, sync_poi_review_from_story
+            sync_poi_review_from_story(db, story_id, self.store.now())
+            backfill_poi_review_proofs(db)
             db.execute("DELETE FROM stories WHERE id=?", (story_id,))
         root = self.settings.data_dir.resolve()
         self._temporary_photos.discard(story_id)

@@ -498,6 +498,7 @@ CREATE TABLE IF NOT EXISTS poi_research_assertions(
     CHECK(eligibility IN ('unreviewed','eligible','withheld')),
   review_story_id TEXT,
   reviewed_at REAL,
+  review_proof_json TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
   PRIMARY KEY(poi_key,assertion_id)
@@ -817,6 +818,7 @@ class Store:
                 ("eligibility", "TEXT NOT NULL DEFAULT 'unreviewed'"),
                 ("review_story_id", "TEXT"),
                 ("reviewed_at", "REAL"),
+                ("review_proof_json", "TEXT"),
             ):
                 if name not in poi_assertion_columns:
                     db.execute(
@@ -825,10 +827,12 @@ class Store:
             from .poi_memory import (
                 backfill_legacy_research_memory,
                 backfill_poi_assertion_review_state,
+                backfill_poi_review_proofs,
             )
             now = self.now()
             backfill_legacy_research_memory(db, now)
             backfill_poi_assertion_review_state(db, now)
+            backfill_poi_review_proofs(db)
 
     def connection(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None, factory=ScopedConnection)

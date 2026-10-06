@@ -2059,6 +2059,12 @@ async def test_research_output_requires_durable_save_or_bounded_exhaustion(tmp_p
         'review_required': False, 'facts': [{'fact_id': 'saved', 'text': 'Saved finding',
             'evidence_supported': True, 'live_review': {'verdict': 'supported'}}],
     })
+    replies['save_research_facts']['next_tool'] = 'get_research_chunk'
+    await adapter.execute_tool(session, {'name': 'save_research_facts'})
+    _forward_committed_output(svc, session, {'type': 'output_transcript', 'text': 'Extra unsaved detail from the same page'}, delivered.append)
+    assert session.state['research_output_pending'] is True
+    assert delivered == [{'type': 'turn_complete'}]
+    replies['save_research_facts']['next_tool'] = None
     await adapter.execute_tool(session, {'name': 'save_research_facts'})
     saved = {'type': 'output_transcript', 'text': 'Saved finding'}
     _forward_committed_output(svc, session, saved, delivered.append)
