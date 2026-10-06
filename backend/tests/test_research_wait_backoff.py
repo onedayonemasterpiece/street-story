@@ -5,13 +5,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from ai_resource_control.client import ResourceError
 from street_story.errors import RetryableProviderError, research_retry_at
 from street_story.opencode_research import ResearchUnavailable
 from street_story.research_adapter import ProductResearchAdapter
 from street_story.service import canonical
 from test_fact_request_recovery import pending_request
 from test_research_control import fixture
+
+
+class ResourceRefusal(RuntimeError):
+    """Shared control boundary contract; these tests do not require its private SDK."""
+    resource_failure = True
+
+    def __init__(self, code, retry_after_ms=0):
+        self.code = code
+        self.retry_after_ms = retry_after_ms
+        super().__init__(code)
 
 
 def setup_adapter(tmp_path):
@@ -63,7 +72,7 @@ async def test_daily_cooldown_has_one_admission_probe_per_resume_or_profile_chan
     probes, sends = [], []
     async def admission_denied(binding):
         probes.append(binding['control_revision'])
-        raise ResourceError('RESOURCE_DAILY_BUDGET', 60000)
+        raise ResourceRefusal('RESOURCE_DAILY_BUDGET', 60000)
         sends.append('unreachable')
     midnight = (int(clock[0]) // 86400 + 1) * 86400
     for _ in range(3):
@@ -184,7 +193,7 @@ async def test_identity_visual_retry_without_hint_preserves_default_deadline(tmp
 async def test_capacity_or_minute_refusal_does_not_poison_other_binding_route(tmp_path, code):
     adapter, service, story, _clock = setup_adapter(tmp_path)
     async def refused(binding):
-        raise ResourceError(code, 60000)
+        raise ResourceRefusal(code, 60000)
     with pytest.raises(RetryableProviderError):
         await adapter.run(story, 'search', 'large-or-busy-binding', refused)
     called = []
@@ -200,7 +209,7 @@ async def test_capacity_or_minute_refusal_does_not_poison_other_binding_route(tm
 async def test_resource_unavailable_profile_change_can_recheck_healthy_route(tmp_path):
     adapter, service, story, _clock = setup_adapter(tmp_path)
     async def refused(binding):
-        raise ResourceError('RESOURCE_POLICY_UNAVAILABLE', 30000)
+        raise ResourceRefusal('RESOURCE_POLICY_UNAVAILABLE', 30000)
     with pytest.raises(RetryableProviderError):
         await adapter.run(story, 'search', 'same-unit', refused)
     adapter.client.profile_fingerprint = 'corrected-profile'
