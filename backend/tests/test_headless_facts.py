@@ -4,12 +4,15 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-
 from street_story.errors import RetryableProviderError
 from street_story.fact_ledger import set_owner_selection
 from street_story.headless_facts import HeadlessFacts
 from street_story.providers import GeminiClient
-from street_story.research_runs import begin_research_run, chunk_checkpoint, run_manifest
+from street_story.research_runs import (
+    begin_research_run,
+    chunk_checkpoint,
+    run_manifest,
+)
 from test_live_editor import make_service, mark_identity_ready
 
 URL = 'https://archive.example/gate-history'
@@ -100,21 +103,77 @@ async def fixture(tmp_path, *, text=CLAIM + ' This is an inspectable public arti
     return svc, job, researcher, reader, fetches
 
 
+async def review_candidates(svc, sid, run_id):
+    """Controlled Live semantic decisions, distinct from extractor candidates."""
+    with svc.store.connection() as db:
+        if run_manifest(db, run_id)['run']['state'] == 'completed':
+            return
+    adapter = HeadlessFacts(svc).adapter
+    session = SimpleNamespace(id='live_1234567890abcdef', resource_id=sid,
+                              model='gemini-3.8-live', state={})
+    number = 0
+    while True:
+        with svc.store.connection() as db:
+            pending = db.execute("SELECT 1 FROM fact_assertions WHERE story_id=? AND eligibility='unreviewed' LIMIT 1", (sid,)).fetchone()
+        if not pending:
+            break
+        page = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'allow_partial_review': True}})
+        rows = []
+        while True:
+            rows.extend(page['items'])
+            if not page['has_more']:
+                break
+            page = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': page['next_args']})
+        decisions = []
+        for f in sorted({item['fact'] for item in rows}):
+            item = next(row for row in rows if row['fact'] == f)
+            # The controlled reader fixture records each proposition literally.
+            assert item['text'] in ''.join(row['passage'] for row in rows if row['fact'] == f)
+            decision = {'fact': f, 'verdict': 'supported', 'evidence': [item['evidence']],
+                        'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+                        'claims': [item['text']], 'basis_quotes': [item['text']],
+                        'reason': 'Controlled Live review checked this exact proposition against its own frozen passage.'}
+            duplicate = next((claim for claim in page.get('nearby_existing_claims', []) if claim['text'] == item['text']), None)
+            if duplicate:
+                decision['equivalent_to_existing'] = duplicate['fact_id']
+            decisions.append(decision)
+        result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': f'controlled-live-{run_id}-{number}', 'args': {
+            'packet_ref': page['packet_ref'], 'decisions': decisions, 'relations_complete': True,
+            'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}})
+        assert result['unreviewed_count'] < 100 and result['complete'] is False
+        number += 1
+    # Closing an extraction scope is a separate explicit Live coverage decision.
+    facts = adapter._get_facts(sid, {'eligibility': 'all', 'limit': 50})['facts']
+    if any(f['eligibility'] == 'withheld' for f in facts):
+        # Duplicate candidate arbitration stays partial; never revive withheld rows.
+        return
+    return await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': f'controlled-coverage-{run_id}', 'args': {
+        'run_id': run_id, 'reviewed_assertions': [
+            {'fact_id': f['fact_id'], 'revision_digest': f['revision_digest'],
+             'supporting_evidence_ids': [e['evidence_id'] for e in adapter._get_evidence(sid, {'fact_ids': [f['fact_id']]})['evidence']]}
+            for f in facts if f['eligibility'] == 'eligible'],
+        'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}})
+
+
 @pytest.mark.asyncio
-async def test_no_audio_headless_page_is_immediately_eligible_in_story_and_poi_ledger(tmp_path):
+async def test_no_audio_headless_page_requires_live_review_in_story_and_poi_ledger(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
     try:
         facts = svc.story(job['story_id'])['facts']
-        assert len(facts) == 1 and facts[0]['evidence_supported'] and not facts[0]['selected']
+        assert len(facts) == 1 and facts[0]['eligibility'] == 'unreviewed' and not facts[0]['selected']
         assert facts[0]['supporting_evidence_keys']
         with svc.store.connection() as db:
             assert db.execute('SELECT COUNT(*) FROM voice_sessions').fetchone()[0] == 0
-            assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'eligible'
-            assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'eligible'
+            assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'unreviewed'
+            assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'unreviewed'
             assert db.execute('SELECT model_name FROM fact_observations').fetchone()[0] == 'actual-controlled-model'
             assert db.execute('SELECT COUNT(*) FROM fact_evidence_spans').fetchone()[0] >= 1
-            assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
+        await review_candidates(svc, job['story_id'], 'headless-run')
+        with svc.store.connection() as db:
+            assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'eligible'
+            assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'eligible'
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         assert svc.story(job['story_id'])['facts'][0]['supporting_evidence_keys'] == facts[0]['supporting_evidence_keys']
         assert researcher.searches == 1 and len(researcher.model_units) == 1 and len(fetches) == 1
@@ -142,7 +201,7 @@ async def test_next_attempt_resumes_unread_passages_from_frozen_snapshot(tmp_pat
                 continue
             break
         with svc.store.connection() as db:
-            assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
             assert db.execute('SELECT COUNT(*) FROM facts').fetchone()[0] == 1
         passage_sets = [{p['passage_id'] for p in page['evidence_passages']} for page in researcher.pages]
         assert len(passage_sets) > 1 and passage_sets[0].isdisjoint(passage_sets[1])
@@ -156,6 +215,7 @@ async def test_completed_scope_reuses_bytes_and_checked_extraction_without_model
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     try:
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await review_candidates(svc, job['story_id'], 'headless-run')
         with svc.store.tx() as db:
             story = svc._story_row(db, job['story_id'])
             begin_research_run(db, story_id=job['story_id'], poi_key='wiki:77', goal='More historical facts', scope='history',
@@ -176,6 +236,7 @@ async def test_new_scope_adds_support_without_changing_owner_selection_concept_o
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     try:
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await review_candidates(svc, job['story_id'], 'headless-run')
         with svc.store.tx() as db:
             fact_id = db.execute('SELECT fact_id FROM facts').fetchone()[0]
             set_owner_selection(db, job['story_id'], [fact_id], svc.store.now())
@@ -192,7 +253,7 @@ async def test_new_scope_adds_support_without_changing_owner_selection_concept_o
             story = svc._story_row(db, job['story_id'])
             assert story['draft_text'] == 'Owner draft'
             assert json.loads(story['research_json'])['publication_concept'] == 'Owner concept'
-            assert db.execute('SELECT COUNT(*) FROM facts').fetchone()[0] == 1
+            assert db.execute('SELECT COUNT(*) FROM facts').fetchone()[0] == 2
             assert db.execute('SELECT COUNT(*) FROM fact_observations').fetchone()[0] == 2
         assert len(fetches) == 1 and len(researcher.model_units) == 2
     finally:
@@ -228,7 +289,7 @@ async def test_stale_or_stopped_model_result_cannot_commit(tmp_path, guard):
 
 
 @pytest.mark.asyncio
-async def test_late_owner_edit_is_preserved_and_page_can_retry_with_fresh_recipe(tmp_path):
+async def test_late_owner_edit_defers_durable_result_without_resending(tmp_path):
     svc, job, researcher, reader, _ = await fixture(tmp_path)
 
     def edit(story):
@@ -240,17 +301,16 @@ async def test_late_owner_edit_is_preserved_and_page_can_retry_with_fresh_recipe
 
     researcher.after_extract = edit
     try:
-        with pytest.raises(RetryableProviderError, match='research_fact_owner_revision_changed'):
+        with pytest.raises(RetryableProviderError, match='research_fact_source_coverage_partial'):
             await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
         assert svc.story(job['story_id'])['facts'] == []
         researcher.after_extract = None
-        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-        with svc.store.tx() as db:
-            fact_id = db.execute('SELECT fact_id FROM facts').fetchone()[0]
-            set_owner_selection(db, job['story_id'], [fact_id], svc.store.now())
+        with pytest.raises(RetryableProviderError, match='research_fact_source_coverage_partial'):
+            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert svc.story(job['story_id'])['facts'] == []
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
-        assert len(researcher.model_units) == 1
+        assert len(researcher.pages) == len(researcher.model_units) == 1
     finally:
         await reader.search_http.aclose()
 
@@ -268,12 +328,12 @@ async def test_owner_edit_during_fetch_preserves_acquisition_and_retries_fresh_p
 
     svc.providers.gemini._fetch_page_documents = changed_fetch
     try:
-        with pytest.raises(RetryableProviderError, match='research_fact_owner_revision_changed'):
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-        assert not researcher.pages
-        assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
-        svc.providers.gemini._fetch_page_documents = original_fetch
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
+        # Acquisition completes before the extractor freezes its owner fence.
+        assert len(researcher.pages) == 1
+        assert svc.story(job['story_id'])['facts'][0]['eligibility'] == 'unreviewed'
+        svc.providers.gemini._fetch_page_documents = original_fetch
         assert len(fetches) == 1 and len(researcher.model_units) == 1
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
     finally:
@@ -287,15 +347,11 @@ async def test_wrong_subject_or_unreadable_source_never_imports_claims(tmp_path,
     researcher.source_matches = invalid != 'wrong_poi'
     researcher.content_valid = invalid != 'navigation'
     try:
-        if invalid == 'navigation':
-            with pytest.raises(RetryableProviderError):
-                await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-        else:
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         with svc.store.connection() as db:
             assert db.execute('SELECT COUNT(*) FROM facts').fetchone()[0] == 0
             if invalid == 'navigation':
-                assert run_manifest(db, 'headless-run')['run']['state'] == 'partial'
+                assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
     finally:
         await reader.search_http.aclose()
 
@@ -312,8 +368,8 @@ async def test_known_poi_article_is_read_without_fresh_search_when_search_is_una
     try:
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         assert researcher.searches == 0 and len(fetches) == 1
-        assert svc.story(job['story_id'])['facts'][0]['evidence_supported']
+        assert svc.story(job['story_id'])['facts'][0]['eligibility'] == 'unreviewed'
         with svc.store.connection() as db:
-            assert run_manifest(db, 'headless-run')['run']['state'] == 'completed'
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
     finally:
         await reader.search_http.aclose()

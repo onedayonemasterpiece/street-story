@@ -23,11 +23,16 @@ from .opencode_research import OpenCodeResearch, ResearchLimits, ResearchUnavail
 
 # The connected MiMo route shares its finite ceiling across reasoning and JSON.
 MIMO_MAX_OUTPUT_TOKENS = 8192
+NEMOTRON_MAX_OUTPUT_TOKENS = 8192
 
 
 def shared_output_limit(model_id: str, provider_id: str = 'opencode') -> int:
-    return MIMO_MAX_OUTPUT_TOKENS if (provider_id, model_id) == (
-        'opencode', 'mimo-v2.6-flash-free') else ResearchLimits().max_output_tokens
+    if provider_id == 'opencode':
+        if model_id == 'mimo-v2.6-flash-free':
+            return MIMO_MAX_OUTPUT_TOKENS
+        if model_id == 'nemotron-3-ultra-free':
+            return NEMOTRON_MAX_OUTPUT_TOKENS
+    return ResearchLimits().max_output_tokens
 
 GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'research_guard.mjs'
 NATIVE_TOOL_IDS = {'invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write',
@@ -94,6 +99,14 @@ class SharedDevCoveerResearch(OpenCodeResearch):
         self.abort_timeout_seconds = abort_timeout_seconds
         self._deadline: ContextVar[float | None] = ContextVar('research_deadline', default=None)
         self._receipt: ContextVar[dict | None] = ContextVar('research_receipt', default=None)
+
+    def fact_extractor(self, model_id):
+        """One extra model on the existing scoped server; no profile writes."""
+        if model_id != 'nemotron-3-ultra-free':
+            raise ValueError('research_fact_extractor_not_approved')
+        return SharedDevCoveerResearch(self.directory, model_id=model_id, provider_id='opencode',
+            admission=self.admission, checkpoint=self.checkpoint, backend=self.shared_backend,
+            abort_timeout_seconds=self.abort_timeout_seconds, require_guard=self.require_guard)
 
     @property
     def profile_fingerprint(self):

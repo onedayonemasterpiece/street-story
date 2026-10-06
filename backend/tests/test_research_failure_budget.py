@@ -115,7 +115,7 @@ async def test_failed_optional_page_keeps_eligible_facts_and_editorial_state(tmp
     assert job_state(svc, jid)['last_error'] == 'gigachat:closed_semantic_unit_requires_live'
     with svc.store.connection() as db:
         story = db.execute('SELECT state,error_code,research_json,draft_text FROM stories WHERE id=?', (sid,)).fetchone()
-        assert story['state'] == ('facts_ready' if initial_state == 'researching' else initial_state)
+        assert story['state'] == ('review' if initial_state == 'researching' else initial_state)
         assert story['error_code'] is None
         assert story['draft_text'] == 'Owner draft'
         assert json.loads(story['research_json'])['publication_concept'] == 'Owner concept'
@@ -125,7 +125,6 @@ async def test_failed_optional_page_keeps_eligible_facts_and_editorial_state(tmp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('priority,eligibility,identity_status', [
-    ('interactive', 'eligible', 'match'),
     ('background', 'unreviewed', 'match'),
     ('background', 'withheld', 'match'),
     ('background', 'eligible', 'uncertain'),
