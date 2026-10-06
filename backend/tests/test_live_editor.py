@@ -1795,17 +1795,15 @@ def test_live_transcripts_are_retained_as_bounded_diagnostics(tmp_path):
     ]
 
 
-def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):
+def test_live_start_prepares_source_orientation_and_budget_in_ram(tmp_path):
     from PIL import Image
-
     svc, _adapter, session, events = make_service(tmp_path)
-    with svc.store.connection() as db:
-        row = db.execute("SELECT photo_path FROM stories WHERE id=?", (session.resource_id,)).fetchone()
-        photo_path = Path(row["photo_path"])
-    image = Image.new("RGB", (80, 40), "white")
+    image = Image.new('RGB', (80, 40), 'white')
     exif = image.getexif()
     exif[274] = 6
-    image.save(photo_path, "JPEG", exif=exif)
+    buffer = io.BytesIO()
+    image.save(buffer, 'JPEG', exif=exif)
+    svc._temporary_photos.put(session.resource_id, buffer.getvalue())
 
     writes = []
     adapter = StreetStoryLiveAdapter(
@@ -1821,12 +1819,12 @@ def test_live_start_queues_orientation_correct_source_photo_snapshot(tmp_path):
     assert snapshot["mime_type"] == "image/jpeg"
     assert snapshot["optional"] is True
     data = base64.b64decode(snapshot["data"])
-    assert len(data) <= 480 * 1024
-    with Image.open(io.BytesIO(data)) as normalized:
-        assert normalized.size == (40, 80)
+    assert len(data) <= 220 * 1024
+    with Image.open(io.BytesIO(data)) as prepared:
+        assert prepared.size == (40, 80)
     visual = [event for event in events if event.get("type") == "visual_context"][-1]
     assert visual["status"] == "ready"
-    assert (visual["width"], visual["height"]) == (40, 80)
+    assert (visual['width'], visual['height']) == (40, 80)
     with svc.store.connection() as db:
         row = db.execute(
             "SELECT payload_json FROM live_diagnostics WHERE story_id=? AND session_id=? AND event_type='voice_profile' ORDER BY id DESC LIMIT 1",

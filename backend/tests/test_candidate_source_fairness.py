@@ -16,7 +16,7 @@ def setup(tmp_path):
     story = svc.create_story(
         key="fairness",
         client_story_id="fairness",
-        photo_sha256=hashlib.sha256(photo).hexdigest(),
+        photo_sha256="opaque-upload-token",
         photo_mime_type="image/jpeg",
         photo_bytes=photo,
         voice_protocol="voice-chunks-v2",
@@ -45,7 +45,7 @@ def setup(tmp_path):
         "photo_sha256": story["photo_sha256"],
         "control_revision": 0,
         "queue": gallery,
-        "seen_images": ["finished-image"],
+        "reviewed_reference_ids": ["finished-ref"],
         "browser_budget": {"remaining": 2},
         "sources": {
             "https://city.example/gallery": {"source": {"url": "https://city.example/gallery"}, "status": "partial", "attempts": 1},
@@ -76,7 +76,7 @@ def setup(tmp_path):
             ),
         )
     adapter = StreetStoryLiveAdapter(svc, lambda *_: None, lambda *_: None)
-    session = SimpleNamespace(id="live_1234567890abcdef", resource_id=story["id"], model="gemini-3.8-live", state={})
+    session = SimpleNamespace(id="headless:fairness", resource_id=story["id"], model="gemini-3.8-live", state={})
     return svc, story, physical, gallery, adapter, session
 
 
@@ -100,16 +100,14 @@ async def test_unread_exact_article_preempts_broad_gallery_without_discarding_fr
     async def images(candidates, limit, *, story_id, evidence):
         candidate = candidates[0]
         loaded.append(candidate)
-        data = jpeg((320, 240))
         evidence.append(
             {
                 "candidate_id": candidate["candidate_id"],
                 "source_url": candidate["reference_image_urls"][0],
                 "article_url": candidate["url"],
-                "model_image_sha256": hashlib.sha256(data).hexdigest(),
             }
         )
-        return [(candidate["candidate_id"], "image/jpeg", data)]
+        return [(candidate["candidate_id"], "image/jpeg", candidate["reference_image_urls"][0])]
 
     monkeypatch.setattr(article_media, "article_candidates", articles)
     svc._candidate_reference_images = images
@@ -123,14 +121,14 @@ async def test_unread_exact_article_preempts_broad_gallery_without_discarding_fr
     assert current["identity_progress"].get("images_reviewed_count", 0) == 0
     state = session.state["visual_comparison"]
     assert state["queue"] == gallery
-    assert state["seen_images"] == ["finished-image"]
+    assert state["reviewed_reference_ids"] == ["finished-ref"]
     assert state["verdict_history"] == [{"comparison_id": "completed", "status": "mismatch"}]
     with svc.store.connection() as db:
         saved = json.loads(db.execute("SELECT research_json FROM stories WHERE id=?", (story["id"],)).fetchone()[0])[
             "visual_search_operation"
         ]
-    assert saved["queue"][1:] == gallery
-    assert saved["queue"][0]["reference_image_urls"] == new["reference_image_urls"]
+    assert saved["queue"] == gallery
+    assert saved["pending_descriptor"]["candidates"][0]["reference_image_urls"] == new["reference_image_urls"]
 
 
 @pytest.mark.asyncio
@@ -149,26 +147,17 @@ async def test_unknown_receipt_preserves_front_and_does_not_prefetch(tmp_path, m
 
     monkeypatch.setattr(article_media, "article_candidates", forbidden)
 
-    async def images(candidates, limit, *, story_id, evidence):
-        assert candidates[0]["reference_image_urls"] == gallery[0]["reference_image_urls"]
-        data = jpeg((320, 240))
-        evidence.append(
-            {
-                "candidate_id": "web:city",
-                "source_url": gallery[0]["reference_image_urls"][0],
-                "model_image_sha256": hashlib.sha256(data).hexdigest(),
-            }
-        )
-        return [("web:city", "image/jpeg", data)]
-
-    svc._candidate_reference_images = images
-    await adapter._compare_place_images(session, {})
+    from street_story.errors import RetryableProviderError
+    svc._candidate_reference_images = forbidden
+    with pytest.raises(RetryableProviderError, match='research_visual_outcome_unknown'):
+        await adapter._compare_place_images(session, {})
     with svc.store.connection() as db:
         assert (
             db.execute("SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?", ("rattempt_unknown",)).fetchone()[0]
             == receipt
         )
-    assert session.state["visual_comparison"]["pending"]["candidates"][0]["reference_image_urls"] == gallery[0]["reference_image_urls"]
+    assert session.state["visual_comparison"]["queue"] == gallery
+    assert not session.state["visual_comparison"].get("pending")
 
 
 @pytest.mark.asyncio
@@ -184,15 +173,13 @@ async def test_failed_priority_page_keeps_gallery_and_respects_page_budget(tmp_p
     monkeypatch.setattr(article_media, "article_candidates", unavailable)
 
     async def images(candidates, limit, *, story_id, evidence):
-        data = jpeg((320, 240))
         evidence.append(
             {
                 "candidate_id": "web:city",
                 "source_url": gallery[0]["reference_image_urls"][0],
-                "model_image_sha256": hashlib.sha256(data).hexdigest(),
             }
         )
-        return [("web:city", "image/jpeg", data)]
+        return [("web:city", "image/jpeg", gallery[0]["reference_image_urls"][0])]
 
     svc._candidate_reference_images = images
     await adapter._compare_place_images(session, {}, page_budget=1)
@@ -263,15 +250,13 @@ async def test_linked_cached_acquisition_priority_is_outcome_neutral_and_hash_fe
     monkeypatch.setattr(article_media, "article_candidates", articles)
 
     async def images(candidates, limit, *, story_id, evidence):
-        data = jpeg((320, 240))
         evidence.append(
             {
                 "candidate_id": "web:linked",
                 "source_url": "https://z.example/media.jpg",
-                "model_image_sha256": hashlib.sha256(data).hexdigest(),
             }
         )
-        return [("web:linked", "image/jpeg", data)]
+        return [("web:linked", "image/jpeg", "https://z.example/media.jpg")]
 
     svc._candidate_reference_images = images
     await adapter._compare_place_images(session, {})

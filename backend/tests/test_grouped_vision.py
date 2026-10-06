@@ -1,5 +1,4 @@
 import base64
-import hashlib
 from copy import deepcopy
 from types import SimpleNamespace
 import pytest
@@ -14,8 +13,7 @@ from street_story.gemini import GeminiUnavailable
 def grouped():
     provider, verdict, context, calls, first, second = setup()
     images = [jpeg((320, 240)), jpeg((400, 240)), jpeg((420, 240))]
-    refs = [{'label': f'REF {i}', 'candidate_id': 'web:gallery', 'reference_id': f'frame-{i}',
-             'model_image_sha256': hashlib.sha256(images[i]).hexdigest()} for i in (1, 2)]
+    refs = [{'label': f'REF {i}', 'candidate_id': 'web:gallery', 'reference_id': f'frame-{i}'} for i in (1, 2)]
     context['references'] = refs
     story = {'_visual_reference_mapping': refs,
              '_visual_image_parts': [{'label': label, 'mime_type': 'image/jpeg',
@@ -49,12 +47,10 @@ async def test_partial_invalid_group_element_is_left_for_common_host_gate():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fault', ['wrong_hash', 'permuted_labels', 'duplicate_id', 'bad_base64', 'different_mapping', 'duplicate_pixels'])
+@pytest.mark.parametrize('fault', ['permuted_labels', 'duplicate_id', 'bad_base64', 'different_mapping'])
 async def test_invalid_group_transport_rejected_before_admission(fault):
     provider, verdict, context, calls, first, second, story, images = grouped()
-    if fault == 'wrong_hash':
-        story['_visual_reference_mapping'][0]['model_image_sha256'] = '0' * 64
-    elif fault == 'permuted_labels':
+    if fault == 'permuted_labels':
         story['_visual_image_parts'][1:3] = story['_visual_image_parts'][2:0:-1]
     elif fault == 'duplicate_id':
         story['_visual_reference_mapping'][1]['reference_id'] = 'frame-1'
@@ -63,16 +59,13 @@ async def test_invalid_group_transport_rejected_before_admission(fault):
     elif fault == 'different_mapping':
         story['_visual_reference_mapping'] = deepcopy(context['references'])
         story['_visual_reference_mapping'][0]['candidate_id'] = 'web:other'
-    elif fault == 'duplicate_pixels':
-        story['_visual_image_parts'][2]['data'] = story['_visual_image_parts'][1]['data']
-        story['_visual_reference_mapping'][1]['model_image_sha256'] = story['_visual_reference_mapping'][0]['model_image_sha256']
-    with pytest.raises(PermanentProviderError, match='invalid_grouped_pixels'):
+    with pytest.raises(PermanentProviderError, match='visual_direct_attachments_invalid'):
         await provider.compare_visual(jpeg(), story, grouped_verdict_schema()[0], context)
     assert not calls and not first.operations and not second.operations
 
 
 @pytest.mark.asyncio
-async def test_group_fallback_requests_pair_without_cache_or_native_send():
+async def test_group_fallback_requests_pair_without_native_send(tmp_path):
     provider, verdict, context, calls, first, second, story, images = grouped()
     first.failure = second.failure = GeminiUnavailable(1200, 'blocked')
     adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
@@ -81,37 +74,39 @@ async def test_group_fallback_requests_pair_without_cache_or_native_send():
     adapter.service = provider.service
     adapter.client = None
     story.update(id='story', photo_sha256='a' * 64)
-    install_ledger(adapter)
+    install_ledger(adapter, story, tmp_path)
     with pytest.raises(PermanentProviderError, match='research_visual_group_pair_required'):
         await adapter.visual_verdict(jpeg(), story, grouped_verdict_schema()[0], context)
     assert not calls
 
 
-def install_ledger(adapter):
-    durable = {'phase': 'created'}
-    adapter.guard_binding = lambda scope: None
-    def attempt(story, role, unit):
-        assert role == 'vision_google_group'
-        binding = {'attempt_id': 'group-attempt', 'phase': durable['phase']}
-        return (None, durable) if durable['phase'] == 'completed' else (binding, None)
+def install_ledger(adapter, story, tmp_path):
+    from test_research_control import fixture
+    service, sid, photo = fixture(tmp_path)
+    adapter.service = service
+    story['id'] = sid
+    durable = {}
+    saved_checkpoint = adapter.checkpoint
     async def checkpoint(binding, receipt):
+        await saved_checkpoint(binding, receipt)
         durable.clear()
         durable.update(receipt)
-    adapter.attempt, adapter.checkpoint = attempt, checkpoint
+    adapter.checkpoint = checkpoint
     return durable
 
 
 @pytest.mark.asyncio
-async def test_unknown_grouped_send_is_durable_and_never_becomes_pair_fallback():
+async def test_unknown_grouped_send_is_durable_and_never_becomes_pair_fallback(tmp_path):
     provider, verdict, context, calls, first, second, story, images = grouped()
     story.update(id='story', photo_sha256='a' * 64)
     async def timed_out(*args, **kwargs):
+        kwargs['before_provider_send']()
         calls.append('sent')
         raise TimeoutError
     provider.client._generate = timed_out
     adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
     adapter.primary_vision, adapter.native_vision, adapter.service, adapter.client = provider, None, provider.service, None
-    durable = install_ledger(adapter)
+    durable = install_ledger(adapter, story, tmp_path)
     with pytest.raises(RetryableProviderError, match='group_outcome_unknown'):
         await adapter.visual_verdict(jpeg(), story, grouped_verdict_schema()[0], context)
     assert durable['phase'] == 'unknown' and durable['provider_send_state'] == 'possibly_sent'
@@ -147,6 +142,7 @@ async def test_group_executor_does_not_retry_unknown_timeout_on_another_key_or_m
     pool = Pool()
     provider.client.research_routes[0] = ('gemini-primary', pool, 'quota-primary', GeminiExecutor(pool))
     async def timed_out(*args, **kwargs):
+        kwargs['before_provider_send']()
         calls.append('sent')
         raise TimeoutError
     provider.client._generate = timed_out
@@ -174,10 +170,18 @@ async def test_valid_source_above_legacy_collage_cap_keeps_group_pixels():
 
 
 @pytest.mark.asyncio
-async def test_normalization_oversize_downgrades_group_before_any_send():
-    from street_story.reference_image_codec import MAX_MODEL_BYTES
+async def test_too_many_group_parts_are_rejected_before_admission():
     provider, verdict, context, calls, first, second, story, images = grouped()
-    story['_visual_image_parts'][0]['data'] = base64.b64encode(b'x' * (MAX_MODEL_BYTES + 1)).decode()
-    with pytest.raises(PermanentProviderError, match='research_visual_group_pair_required'):
-        await provider.compare_visual(jpeg(), story, grouped_verdict_schema()[0], context)
+    story['_visual_image_parts'] *= 2
+    with pytest.raises(PermanentProviderError, match='visual_direct_attachments_invalid'):
+        await provider.compare_visual(None, story, grouped_verdict_schema()[0], context)
     assert not calls and not first.operations and not second.operations
+
+
+@pytest.mark.asyncio
+async def test_identical_reference_bytes_with_distinct_ids_are_not_pixel_filtered():
+    provider, verdict, context, calls, first, second, story, images = grouped()
+    story['_visual_image_parts'][2]['data'] = story['_visual_image_parts'][1]['data']
+    response = await provider.compare_visual(None, story, grouped_verdict_schema()[0], context)
+    assert response['receipt']['image_attachments'] == 3
+    assert response['receipt']['reference_mapping'] == context['references']

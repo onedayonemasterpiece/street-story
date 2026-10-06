@@ -285,52 +285,62 @@ def test_event_error_fails_closed(event, code) -> None:
     assert module.event_error(event) == code
 
 
-def test_cached_fixture_reads_only_matching_story_path(tmp_path) -> None:
+def test_fixture_download_uses_raw_ram_without_image_hash_or_database_cache(monkeypatch, tmp_path) -> None:
     module = load_module()
-    data_root = tmp_path / "data"
-    data_root.mkdir()
-    photo = b"x" * 12000
-    source = data_root / "stories" / "story_fixture" / "source.jpg"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(photo)
-    import hashlib
-    meta = {
-        "source_sha1": hashlib.sha1(photo).hexdigest(),
-        "source_sha256": hashlib.sha256(photo).hexdigest(),
-    }
-    import sqlite3
-    with sqlite3.connect(data_root / "street-story.sqlite3") as db:
-        db.execute(
-            "CREATE TABLE stories(photo_sha256 TEXT, photo_path TEXT, created_at REAL)"
-        )
-        db.execute(
-            "INSERT INTO stories VALUES(?,?,?)",
-            (meta["source_sha256"], str(source), 1.0),
-        )
-    assert module.cached_fixture(meta, data_root) == photo
+    photo = b"updated-approved-source" * 1200
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return httpx.Response(200, content=photo, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(module.httpx, "get", fetch)
+    meta = {"download_url": "https://example.com/source.jpg", "source_sha256": "obsolete"}
+    loaded, provenance = module.load_fixture(meta, tmp_path / "unused-data",
+                                             metadata_path=tmp_path / "fixture.json")
+    assert loaded == photo
+    assert calls == [meta["download_url"]]
+    assert provenance == "wikimedia"
+    assert not list(tmp_path.iterdir())
 
 
-def test_repository_fixture_is_loaded_from_exact_committed_file(tmp_path) -> None:
+def test_repository_fixture_is_read_to_ram_without_new_image_file(monkeypatch, tmp_path) -> None:
     module = load_module()
-    import hashlib
     photo = b"owner-fixture" * 1200
-    fixture_dir = tmp_path / "fixture"
-    fixture_dir.mkdir()
-    (fixture_dir / "source.jpg").write_bytes(photo)
-    meta = {
-        "source_file": "source.jpg",
-        "source_sha1": hashlib.sha1(photo).hexdigest(),
-        "source_sha256": hashlib.sha256(photo).hexdigest(),
-        "latitude": 54.709614,
-        "longitude": 20.538257,
-        "expected_object": "Закхаймские ворота",
-    }
-    metadata_path = fixture_dir / "fixture.json"
-    metadata_path.write_text("{}", encoding="utf-8")
+    candidate = (tmp_path / "source.png").resolve()
+    # Emulate an already committed fixture without writing an image test artifact.
+    monkeypatch.setattr(Path, "is_file", lambda self: self == candidate)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: photo if self == candidate else b"")
     loaded, provenance = module.load_fixture(
-        meta,
-        tmp_path / "unused-data",
-        metadata_path=metadata_path,
+        {"source_file": "source.png"}, tmp_path / "unused-data",
+        metadata_path=tmp_path / "fixture.json",
     )
     assert loaded == photo
     assert provenance == "repository_fixture"
+    assert not list(tmp_path.iterdir())
+
+
+def test_visual_review_receipt_uses_lineage_and_never_downloads_image() -> None:
+    module = load_module()
+
+    class MetadataOnlyClient:
+        def get(self, *args, **kwargs):
+            raise AssertionError("Image bytes must not be fetched for a metadata receipt")
+
+    visual = {"source_asset_ref": "source-1", "operation_id": "operation-1",
+              "selected_asset_ref": "asset-1", "prompt_version": "owner",
+              "prompt_sha256": module.OWNER_PROMPT_SHA256, "content_revision": 7}
+    current = {"draft_text": "approved", "visual": visual,
+               "visual_identity": {"identity_generation": 3},
+               "processed_image_url": "https://images.example/asset-1.png"}
+    receipt = module.validate_visual(MetadataOnlyClient(), current, "approved")
+    assert receipt["selected_asset_ref"] == "asset-1"
+    assert receipt["operation_id"] == "operation-1"
+    assert receipt["identity_generation"] == 3
+    assert receipt["image_url"] == current["processed_image_url"]
+    assert "selected_sha256" not in receipt
+    with pytest.raises(module.ProductSmokeError, match="visual_changed_text"):
+        module.validate_visual(MetadataOnlyClient(), current, "stale draft")
+    current["visual"].pop("selected_asset_ref")
+    with pytest.raises(module.ProductSmokeError, match="visual_receipt_incomplete"):
+        module.validate_visual(MetadataOnlyClient(), current, "approved")

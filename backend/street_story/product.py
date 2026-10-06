@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,7 +15,6 @@ from .service import (
     InvalidStateError,
     ProviderBundle,
     StreetStoryService,
-    _durable_write,
     canonical,
     digest,
 )
@@ -499,7 +497,7 @@ class ProductStreetStoryService(StreetStoryService):
             with self.store.connection() as db:
                 story = dict(self._story_row(db, story_id))
             context = json.loads(story["visual_context_json"] or "{}")
-            photo = Path(story["photo_path"]).read_bytes()
+            photo = self._source_photo_for_job(story_id)
             ingress_key = "ss-vp-asset-" + hashlib.sha256(
                 f"{story_id}:{story['photo_sha256']}".encode()
             ).hexdigest()[:48]
@@ -507,9 +505,8 @@ class ProductStreetStoryService(StreetStoryService):
                 photo, story["photo_mime_type"], ingress_key
             )
             source_asset = str(ingress.get("asset_id") or "")
-            source_sha = str(ingress.get("source_sha256") or "").lower()
-            if not source_asset or source_sha != story["photo_sha256"].lower():
-                raise PermanentProviderError("VibePublish asset ingress identity mismatch")
+            if not source_asset:
+                raise PermanentProviderError("VibePublish asset ingress returned no asset ID")
 
             command = {
                 "command": {
@@ -575,16 +572,8 @@ class ProductStreetStoryService(StreetStoryService):
                 )
             selected_asset = str(selected.get("selected_asset_ref") or "")
             selected_sha = str(selected.get("selected_sha256") or "").lower()
-            if not selected_asset or not re.fullmatch(r"[0-9a-f]{64}", selected_sha):
+            if not selected_asset:
                 raise PermanentProviderError("VibePublish verified visual lacks immutable asset identity")
-            processed, mime = await self.providers.vibepublish.read_asset(selected_asset)
-            if hashlib.sha256(processed).hexdigest() != selected_sha:
-                raise PermanentProviderError("VibePublish processed asset readback hash mismatch")
-            if mime not in {"image/png", "image/jpeg", "image/webp"}:
-                raise PermanentProviderError("VibePublish processed asset has an unsupported mime type")
-            suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}[mime]
-            target = self.settings.data_dir / "stories" / story_id / f"processed{suffix}"
-            _durable_write(target, processed)
             context.update(
                 {
                     "source_asset_ref": source_asset,
@@ -600,7 +589,7 @@ class ProductStreetStoryService(StreetStoryService):
                     "UPDATE stories SET state='ready_to_publish',processed_image_path=?,processed_image_url=?,"
                     "vibepublish_asset_ref=?,visual_context_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                     (
-                        str(target),
+                        None,
                         f"/v1/assets/{story_id}/processed",
                         selected_asset,
                         canonical(context),

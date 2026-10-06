@@ -1,6 +1,9 @@
 package com.onedayonemasterpiece.streetstory
 
+import android.content.Context
 import android.graphics.Bitmap
+import java.io.File
+import java.io.InputStream
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import androidx.exifinterface.media.ExifInterface
@@ -10,21 +13,25 @@ import androidx.exifinterface.media.ExifInterface
  *
  * Photo Picker frequently returns JPEG pixels in sensor orientation plus an
  * EXIF orientation tag. BitmapFactory deliberately doesn't apply that tag.
- * Keep the original bytes untouched for upload/hash identity; normalize only
+ * Keep the original bytes untouched for upload; normalize only
  * the UI bitmap at decode time.
  */
 internal object ImagePreviewDecoder {
     fun decode(path: String, targetWidth: Int, targetHeight: Int): Bitmap? =
+        decodeStream({ File(path).inputStream() }, targetWidth, targetHeight)
+
+    fun decode(context: Context, path: String, targetWidth: Int, targetHeight: Int): Bitmap? =
+        decodeStream({ PhotoAssets.open(context, path) }, targetWidth, targetHeight)
+
+    private fun decodeStream(open: () -> InputStream, targetWidth: Int, targetHeight: Int): Bitmap? =
         runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
+            open().use { BitmapFactory.decodeStream(it, null, bounds) }
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
 
             val orientation = runCatching {
-                ExifInterface(path).getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL,
-                )
+                open().use { ExifInterface(it).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }
             }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
             val swapsAxes = orientation in setOf(
                 ExifInterface.ORIENTATION_TRANSPOSE,
@@ -41,10 +48,9 @@ internal object ImagePreviewDecoder {
             ) {
                 sample *= 2
             }
-            val decoded = BitmapFactory.decodeFile(
-                path,
-                BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) },
-            ) ?: return@runCatching null
+            val decoded = open().use { BitmapFactory.decodeStream(it, null,
+                BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) })
+            } ?: return@runCatching null
 
             val matrix = Matrix()
             when (orientation) {

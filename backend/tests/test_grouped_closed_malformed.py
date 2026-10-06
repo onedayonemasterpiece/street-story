@@ -1,4 +1,5 @@
 import json
+import base64
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -21,16 +22,16 @@ def adapter_fixture(tmp_path, receipt):
     adapter.service, adapter.native_vision, adapter.client = service, None, None
     sends = []
     async def compare(snapshot, story, schema, context):
-        sends.append('group' if story.get('_visual_image_parts') else 'pair')
-        if not story.get('_visual_image_parts'):
+        sends.append('group' if len(story['_visual_image_parts']) > 2 else 'pair')
+        if len(story['_visual_image_parts']) == 2:
             return {'result': {'status': 'uncertain'}, 'receipt': {'provider': 'google'}}
         error = GeminiUnavailable(1200, 'all_keys_unavailable')
         error.receipt = receipt
         raise error
     adapter.primary_vision = SimpleNamespace(available=True, compare_visual=compare)
     story = {'id': sid, 'photo_sha256': photo,
-        '_visual_image_parts': [{'label': 'SOURCE', 'data': 'source'}, {'label': 'REF 1', 'data': 'ref1'}, {'label': 'REF 2', 'data': 'ref2'}],
-        '_visual_reference_mapping': [{'reference_id': 'r1'}, {'reference_id': 'r2'}]}
+        '_visual_image_parts': [{'label': 'SOURCE', 'mime_type': 'image/jpeg', 'data': base64.b64encode(b'opaque-original-source').decode()}, {'label': 'REF 1', 'url': 'https://example.org/r1.jpg'}, {'label': 'REF 2', 'url': 'https://example.org/r2.jpg'}],
+        '_visual_reference_mapping': [{'label': 'REF 1', 'reference_id': 'r1', 'candidate_id': 'wiki:1'}, {'label': 'REF 2', 'reference_id': 'r2', 'candidate_id': 'wiki:1'}]}
     context = json.dumps({'references': story['_visual_reference_mapping']})
     return adapter, service, story, context, sends
 
@@ -51,13 +52,17 @@ async def test_closed_malformed_group_permits_different_pair_without_repeating_g
     # The identical closed group stays fenced, including after a new adapter call.
     with pytest.raises(PermanentProviderError, match='group_pair_required'):
         await adapter.visual_verdict(b'snapshot', story, {}, context)
-    pair = {key: value for key, value in story.items() if not key.startswith('_visual_')}
-    result = await adapter.visual_verdict(b'different-pair-snapshot', pair, {}, context)
+    pair = {**story, '_visual_image_parts': story['_visual_image_parts'][:2],
+            '_visual_reference_mapping': story['_visual_reference_mapping'][:1]}
+    pair_context = json.dumps({'references': pair['_visual_reference_mapping']})
+    result = await adapter.visual_verdict(None, pair, {}, pair_context)
     assert result['result']['status'] == 'uncertain'
     assert sends == ['group', 'pair']
     with service.store.connection() as db:
         after = [dict(row) for row in db.execute('SELECT * FROM research_provider_attempts WHERE story_id=?', (story['id'],))]
-    assert after == before
+    assert [row for row in after if row['role'] == 'vision_google_group'] == before
+    pairs = [row for row in after if row['role'] == 'vision_google_pair']
+    assert len(pairs) == 1 and json.loads(pairs[0]['receipt_json'])['phase'] == 'completed'
 
 
 @pytest.mark.asyncio

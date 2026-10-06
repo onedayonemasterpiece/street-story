@@ -45,7 +45,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         val base = config.backendUrl
         val token = config.deviceToken
         if (base.isNullOrBlank() || token.isNullOrBlank()) return@withContext Result.success()
-        val api = ApiClient(base, token)
+        val api = ApiClient(base, token) { PhotoAssets.open(applicationContext, it) }
         val store = AppGraph.store(applicationContext)
         val feed = FeedProjectionStore(applicationContext)
         val research = ResearchProjectionStore(applicationContext)
@@ -87,6 +87,15 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         var story = store.story(initial.clientStoryId) ?: return false
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
+        val needsSource = remote.state in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING, StoryStage.VISUAL_PROCESSING) ||
+            remote.researchPending["identity"] == true ||
+            store.pendingOperations(story.clientStoryId).any { it.kind == "visual" }
+        if (remote.sourceAvailable == false && needsSource) {
+            // The backend keeps only RAM bytes. Rehydrate the same immutable upload
+            // from its persisted gallery grant, preserving jobs and editorial state.
+            remote = api.createStory(story)
+            validateStoryIdentity(story, remote)
+        }
         val identityBackfillEligible = remote.visualIdentity == null && remote.researchControls["identity"]?.stopped != true &&
             remote.state !in setOf(
                 StoryStage.IDENTIFYING,
@@ -138,10 +147,9 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         }
         val current = requireNotNull(store.story(story.clientStoryId))
         val assetUrl = current.processedImageUrl
-        if (!assetUrl.isNullOrBlank() && (current.processedImagePath.isNullOrBlank() || previousUrl != assetUrl || !File(current.processedImagePath).isFile)) {
-            val target = File(applicationContext.filesDir, "stories/${story.clientStoryId}/processed.img")
-            api.downloadAsset(assetUrl, target)
-            store.setProcessedImagePath(story.clientStoryId, target.absolutePath)
+        if (!assetUrl.isNullOrBlank() && (current.processedImagePath.isNullOrBlank() || previousUrl != assetUrl || !PhotoAssets.available(current.processedImagePath))) {
+            current.processedImagePath?.let(PhotoAssets::releaseTemporary)
+            store.setProcessedImagePath(story.clientStoryId, PhotoAssets.retainTemporary(api.readAsset(assetUrl)))
         }
         // The visual queue can remain active in needs_review after an uncertain
         // first result. Its authoritative job projection, not a microphone, keeps

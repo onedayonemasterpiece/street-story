@@ -2,10 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import hashlib
-import io
 import json
 import logging
 import math
@@ -13,12 +9,11 @@ import time
 from copy import deepcopy
 from datetime import datetime, timezone
 
-from PIL import Image
 from jsonschema import Draft202012Validator, ValidationError
 
 from .errors import MalformedProviderResponse, PermanentProviderError
 from .gemini import GeminiUnavailable, classify_error
-from .reference_image_codec import MAX_MODEL_BYTES
+from .visual_attachments import direct_visual_parts, visual_context_without_image_hashes
 
 logger = logging.getLogger('uvicorn.error.street_story.headless_vision')
 TRANSPORT = 'gemini_generate_content'
@@ -44,53 +39,12 @@ def _usage(response):
             'image_tokens': image_tokens, 'cost': 'unknown'}
 
 
-def _grouped_pixels(story, supplied):
-    """Validate the caller's immutable labels and hashes before admission/send."""
-    parts = story.get('_visual_image_parts')
-    if parts is None:
-        return None
-    mapping = story.get('_visual_reference_mapping')
-    if (not isinstance(parts, list) or not 3 <= len(parts) <= 5
-            or not isinstance(mapping, list) or len(mapping) != len(parts) - 1
-            or mapping != supplied.get('references')):
-        raise PermanentProviderError('headless_vision:invalid_grouped_pixels')
-    labels = ['SOURCE', *[f'REF {i}' for i in range(1, len(parts))]]
-    decoded = []
-    seen_ids = set()
-    seen_hashes = set()
-    for i, (part, label) in enumerate(zip(parts, labels)):
-        try:
-            if not isinstance(part, dict) or part.get('label') != label:
-                raise ValueError
-            pixels = base64.b64decode(part['data'], validate=True)
-            if len(pixels) > MAX_MODEL_BYTES:
-                raise PermanentProviderError('research_visual_group_pair_required')
-            if not pixels or part['mime_type'] not in {'image/jpeg', 'image/png'}:
-                raise ValueError
-            with Image.open(io.BytesIO(pixels)) as image:
-                if image.format != {'image/jpeg': 'JPEG', 'image/png': 'PNG'}[part['mime_type']]:
-                    raise ValueError
-                image.verify()
-            image_hash = hashlib.sha256(pixels).hexdigest()
-            if i:
-                ref = mapping[i-1]
-                if (not isinstance(ref, dict) or ref.get('label') != label
-                        or not isinstance(ref.get('reference_id'), str) or not ref['reference_id']
-                        or ref['reference_id'] in seen_ids or image_hash in seen_hashes
-                        or ref.get('model_image_sha256') != image_hash):
-                    raise ValueError
-                seen_ids.add(ref['reference_id'])
-                seen_hashes.add(image_hash)
-            decoded.append((label, part['mime_type'], pixels, image_hash))
-        except (KeyError, ValueError, TypeError, OSError, binascii.Error):
-            raise PermanentProviderError('headless_vision:invalid_grouped_pixels') from None
-    return decoded
 
 
 class HeadlessVisionProvider:
     """One semantic verdict, with bounded availability failover only.
 
-    Actual SOURCE/REF JPEG comes from the existing comparison_sheet. This
+    Actual SOURCE and REF arrive as separate RAM or public-URL attachments. This
     adapter does not crop images, acquire references, commit identity, create
     POIs, or start another queue. The first valid verdict is returned even when
     uncertain/mismatch; changing models to obtain a positive is not failover.
@@ -124,23 +78,31 @@ class HeadlessVisionProvider:
     def available(self):
         return bool(self._verified_routes())
 
+    async def _load_public_reference(self, url):
+        # Reuse the existing validated public HTTP reader. Raw bytes live only
+        # for this operation; GenerateContent receives separate inline parts.
+        import httpx
+        from .article_media import fetch_public
+        from .reference_image_codec import MAX_DOWNLOAD_BYTES
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False,
+                headers={'User-Agent': 'StreetStory/0.1 visual-reference'}) as client:
+            _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+        if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
+            raise PermanentProviderError('headless_vision:reference_not_image')
+        return mime, data
+
     async def compare_visual(self, snapshot, story, schema, context, *, verification_probe=False):
         from google.genai import types
 
-        if not isinstance(snapshot, bytes) or not snapshot or len(snapshot) > 480 * 1024:
-            raise PermanentProviderError('headless_vision:invalid_image_attachment')
         try:
-            with Image.open(io.BytesIO(snapshot)) as image:
-                if image.format != 'JPEG':
-                    raise ValueError
-                image.verify()
             supplied = json.loads(context) if isinstance(context, str) else context
             if not isinstance(supplied, dict) or not supplied.get('references'):
                 raise ValueError
-        except (ValueError, TypeError, OSError):
+        except (ValueError, TypeError):
             raise PermanentProviderError('headless_vision:invalid_comparison_context') from None
-
-        image_parts = _grouped_pixels(story, supplied)
+        image_parts = direct_visual_parts(story, supplied)
+        supplied = visual_context_without_image_hashes(supplied)
+        grouped = len(image_parts) > 2
         sent_ids = [item.get('candidate_id') for item in supplied['references']]
         physical_ids = [item.get('candidate_id') for item in supplied.get('physical_candidates', [])]
         if any(not isinstance(cid, str) or not cid for cid in sent_ids):
@@ -158,7 +120,7 @@ class HeadlessVisionProvider:
                 'required': ['source_detail', 'reference_detail'], 'additionalProperties': False}})
         contract['required'] += ['shared_distinctive_geometry', 'observable_correspondences']
         validator = Draft202012Validator(deepcopy(contract))
-        if image_parts:
+        if grouped:
             # Google needs a typed object schema. Validation at receipt time
             # intentionally leaves individual items to the shared host gate.
             item = deepcopy(contract)
@@ -168,7 +130,7 @@ class HeadlessVisionProvider:
             item['required'] = [*item['required'], 'reference_id']
             contract['properties']['reference_verdicts']['items'] = item
         prompt = (
-            'Ты визуальный проверяющий Street Story. Передан настоящий JPEG: SOURCE — фото автора, '
+            'Ты визуальный проверяющий Street Story. Переданы отдельные изображения: SOURCE — фото автора, '
             'REF 1 и далее — изображения для сравнения. Сравни реальные пиксели по различительным '
             'деталям формы, кладки, проёмов и расположения частей. География, подпись, URL, название '
             'или общая похожесть не доказывают совпадение. Другой фасад сам по себе не mismatch. '
@@ -200,7 +162,7 @@ class HeadlessVisionProvider:
             'Ответ только JSON по заданной схеме. Данные сравнения:\n'
             + json.dumps(supplied, ensure_ascii=False)
         )
-        if image_parts:
+        if grouped:
             prompt += (
                 '\nSOURCE и каждый REF переданы отдельными подписанными изображениями. '
                 'reference_verdicts — результаты только реально рассмотренных REF; '
@@ -211,36 +173,43 @@ class HeadlessVisionProvider:
                 'Не выдумывай отсутствующие результаты. Верхний результат — краткий итог, '
                 'а подтверждение хост принимает по отдельным элементам reference_verdicts.'
             )
-        image_hash = hashlib.sha256(snapshot).hexdigest()
         attempts = []
         model_attempts = []
+        resolved_parts = None
         retry_at = []
         routes = self.client.research_routes if verification_probe is True else self._verified_routes()
         for model, _pool, quota, executor in routes:
             started = time.monotonic()
             started_at = datetime.now(timezone.utc).isoformat()
             fields = {'story_id': story.get('id'), 'generation': story.get('_identity_generation', 0),
-                      'model': model, 'comparison_id': supplied.get('comparison_id'), 'image_sha256': image_hash}
+                      'model': model, 'comparison_id': supplied.get('comparison_id')}
 
             async def call(key, timeout, *, _model=model, _quota=quota):
+                nonlocal resolved_parts
                 response = None
                 attempt_started = time.monotonic()
                 attempt = {'model': _model, 'started_at': datetime.now(timezone.utc).isoformat(),
-                           'attempt': len(model_attempts) + 1, 'model_image_sha256': image_hash,
-                           'usage': _usage(None)}
+                           'attempt': len(model_attempts) + 1,
+                           'usage': _usage(None), 'provider_send_state': 'not_sent'}
                 model_attempts.append(attempt)
                 try:
-                    contents = [types.Part.from_bytes(data=snapshot, mime_type='image/jpeg'), prompt]
-                    if image_parts:
-                        contents = []
-                        for label, mime, pixels, _digest in image_parts:
-                            contents.extend([label, types.Part.from_bytes(data=pixels, mime_type=mime)])
-                        contents.append(prompt)
+                    if resolved_parts is None:
+                        materialized = []
+                        for part in image_parts:
+                            mime, data = (part['mime_type'], part['bytes']) if part['bytes'] is not None else await self._load_public_reference(part['url'])
+                            materialized.append({**part, 'mime_type': mime, 'bytes': data})
+                        resolved_parts = materialized
+                    contents = []
+                    for part in resolved_parts:
+                        contents.extend([part['label'], types.Part.from_bytes(data=part['bytes'], mime_type=part['mime_type'])])
+                    contents.append(prompt)
                     response = await self.client._generate(key, timeout,
                         contents,
                         types.GenerateContentConfig(response_mime_type='application/json', response_json_schema=contract),
-                        operation='grounded_research', model=_model, quota=_quota)
-                    attempt.update(usage=_usage(response), provider_request_id=getattr(response, 'response_id', None))
+                        operation='grounded_research', model=_model, quota=_quota,
+                        before_provider_send=lambda: attempt.update(provider_send_state='possibly_sent'))
+                    attempt.update(usage=_usage(response), provider_request_id=getattr(response, 'response_id', None),
+                                   provider_send_state='response_closed')
                     result = json.loads(response.text or '')
                     validator.validate(result)
                     if (not math.isfinite(result['confidence'])
@@ -259,15 +228,25 @@ class HeadlessVisionProvider:
                 except (ValueError, TypeError, ValidationError) as exc:
                     if response is None:
                         attempt['category'] = classify_error(exc, now=self.service.store.now()).category
+                        exc.receipt = {'provider': 'google', 'transport': TRANSPORT, 'model_attempts': model_attempts}
                         raise
                     attempt['category'] = 'malformed_response'
-                    raise MalformedProviderResponse('headless_vision:malformed_verdict') from None
-                except asyncio.CancelledError:
+                    malformed = MalformedProviderResponse('headless_vision:malformed_verdict')
+                    malformed.receipt = {'provider': 'google', 'transport': TRANSPORT,
+                                         'model_attempts': model_attempts}
+                    raise malformed from None
+                except asyncio.CancelledError as exc:
                     attempt['category'] = 'cancelled'
+                    exc.receipt = {'provider': 'google', 'transport': TRANSPORT, 'model_attempts': model_attempts}
                     raise
                 except Exception as exc:
+                    failure = classify_error(exc, now=self.service.store.now())
+                    attempt['provider_status'] = failure.code
+                    if attempt['provider_send_state'] == 'possibly_sent' and failure.code in {400, 401, 403, 404, 429}:
+                        attempt['provider_send_state'] = 'response_closed'
                     attempt['category'] = (str(exc) if isinstance(exc, GeminiUnavailable)
                                            else classify_error(exc, now=self.service.store.now()).category)
+                    exc.receipt = {'provider': 'google', 'transport': TRANSPORT, 'model_attempts': model_attempts}
                     raise
                 finally:
                     attempt.setdefault('category', 'success')
@@ -278,9 +257,9 @@ class HeadlessVisionProvider:
             logger.info('headless_vision_attempt_started %s', json.dumps(fields, sort_keys=True))
             try:
                 effective_executor = executor
-                if image_parts and getattr(executor, 'pool', None) is not None:
+                if getattr(executor, 'pool', None) is not None:
                     # Reuse the same pool, health/admission and executor. A view
-                    # limits this grouped unit to one send per route, without
+                    # limits each visual unit to one send per route, without
                     # changing shared policy for concurrent pair requests.
                     from dataclasses import replace
                     from .gemini import GeminiExecutor
@@ -291,12 +270,17 @@ class HeadlessVisionProvider:
                     effective_executor = GeminiExecutor(PoolView())
                 result, response = await effective_executor.execute('grounded_research', call)
             except GeminiUnavailable as exc:
-                if image_parts and any(attempt.get('category') in {
+                if any(attempt.get('category') in {
                         'timeout', 'network', 'sdk_transient', 'cancelled'} for attempt in model_attempts):
                     exc.receipt = {'provider': 'google', 'transport': TRANSPORT,
                                    'workload': 'identity_comparison', 'category': 'visual_outcome_unknown',
-                                   'model_image_sha256': image_hash, 'model_attempts': model_attempts,
+                                   'model_attempts': model_attempts,
                                    'provider_send_state': 'possibly_sent'}
+                    raise
+                if any(attempt.get('category') == 'malformed_response' for attempt in model_attempts):
+                    exc.receipt = {'provider': 'google', 'transport': TRANSPORT,
+                                   'workload': 'identity_comparison', 'category': 'visual_malformed_response',
+                                   'model_attempts': model_attempts}
                     raise
                 when = exc.retry_at
                 if when is not None:
@@ -305,7 +289,8 @@ class HeadlessVisionProvider:
                 logger.info('headless_vision_attempt_waiting %s', json.dumps({**fields, 'category': str(exc), 'retry_at': when}, sort_keys=True))
                 continue
             except PermanentProviderError as exc:
-                if str(exc) != 'gemini:unsupported_model':
+                exc.receipt = {'provider': 'google', 'transport': TRANSPORT, 'model_attempts': model_attempts}
+                if model_attempts or str(exc) != 'gemini:unsupported_model':
                     raise
                 attempts.append({'model': model, 'category': 'unsupported_model'})
                 continue
@@ -314,20 +299,18 @@ class HeadlessVisionProvider:
                        'finished_at': datetime.now(timezone.utc).isoformat(),
                        'duration_ms': round((time.monotonic() - started) * 1000),
                        'comparison_id': supplied.get('comparison_id'),
-                       'photo_sha256': story.get('photo_sha256'), 'generation': story.get('_identity_generation', 0),
-                       'model_image_sha256': image_hash, 'model_image_bytes': len(snapshot), 'image_attachments': 1,
+                       'generation': story.get('_identity_generation', 0),
                        'reference_candidate_ids': [item.get('candidate_id') for item in supplied['references']],
                        'reference_evidence': supplied.get('reference_evidence', []),
                        'provider_request_id': getattr(response, 'response_id', None),
                        'usage': _usage(response), 'availability_failures': attempts,
                        'model_attempts': model_attempts, 'verification_probe': verification_probe is True}
             receipt['semantic_visual_contract'] = 'observable_geometry_v1'
-            if image_parts:
-                receipt.update(image_attachments=len(image_parts),
-                    model_image_bytes=sum(len(pixels) for _label, _mime, pixels, _digest in image_parts),
-                    image_parts=[{'label': label, 'mime_type': mime, 'model_image_sha256': digest,
-                                  'model_image_bytes': len(pixels)} for label, mime, pixels, digest in image_parts],
-                    reference_mapping=deepcopy(story['_visual_reference_mapping']))
+            receipt.update(image_attachments=len(resolved_parts),
+                model_image_bytes=sum(len(part['bytes']) for part in resolved_parts),
+                image_parts=[{'label': part['label'], 'mime_type': part['mime_type'],
+                              'transport': 'inline_data'} for part in resolved_parts],
+                reference_mapping=visual_context_without_image_hashes(deepcopy(story['_visual_reference_mapping'])))
             logger.info('headless_vision_attempt_finished %s', json.dumps({**fields, 'status': result['status'],
                 'duration_ms': receipt['duration_ms']}, sort_keys=True))
             return {'result': result, 'receipt': receipt}
@@ -336,7 +319,7 @@ class HeadlessVisionProvider:
                                   'all_headless_vision_models_unavailable')
         error.receipt = {'provider': 'google', 'transport': TRANSPORT,
                          'workload': 'identity_comparison', 'status': 'waiting', 'retry_at': error.retry_at,
-                         'model_image_sha256': image_hash, 'availability_failures': attempts, 'usage': {'cost': 'unknown'},
+                         'availability_failures': attempts, 'usage': {'cost': 'unknown'},
                          'model_attempts': model_attempts,
                          'category': ('no_verified_route' if not routes else 'probe_routes_unavailable'
                                       if verification_probe is True else 'verified_routes_unavailable')}

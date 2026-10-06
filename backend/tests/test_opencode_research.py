@@ -1,4 +1,5 @@
 from __future__ import annotations
+from direct_visual_fixture import opencode_args
 
 import base64
 import copy
@@ -131,8 +132,8 @@ async def test_unstructured_search_summary_does_not_discard_actual_tool_sources(
 async def test_vision_inline_actual_pixels_readback_and_no_search():
     h = Harness()
     h.result = {'status': 'mismatch'}
-    result = await h.adapter().compare_image(sheet(), {'request_id': 'photo0', 'photo_sha256': 'owner'},
-                                            {'type': 'object'}, 'SOURCE owner / REF park')
+    result = await h.adapter().compare_image(*opencode_args(sheet(), {'request_id': 'photo0', 'photo_sha256': 'owner'},
+                                            {'type': 'object'}, 'SOURCE owner / REF park'))
     image = next(part for part in h.parts if part['type'] == 'file')
     assert image['mime'] == 'image/png'
     assert base64.b64decode(image['url'].split(',', 1)[1]) == sheet()
@@ -148,7 +149,7 @@ async def test_missing_attachment_does_not_accept_textual_verdict():
     h = Harness()
     h.drop_image = True
     with pytest.raises(ResearchUnavailable, match='research_image_delivery_unverified'):
-        await h.adapter().compare_image(sheet(), {'request_id': 'photo0'}, {'type': 'object'})
+        await h.adapter().compare_image(*opencode_args(sheet(), {'request_id': 'photo0'}, {'type': 'object'}))
 
 
 @pytest.mark.asyncio

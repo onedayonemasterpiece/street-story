@@ -75,7 +75,7 @@ async def test_server_fallback_reads_real_photo_and_reopen_never_researches(tmp_
 
 
 @pytest.mark.asyncio
-async def test_recover_same_original_keeps_story_and_rejects_other_image(tmp_path):
+async def test_recover_original_metadata_keeps_story_and_checks_upload_scope(tmp_path):
     service, _ = make_service(tmp_path)
     story = create_photo(service, photo(redacted=True))
     service.ensure_identity(story['id'])
@@ -83,8 +83,8 @@ async def test_recover_same_original_keeps_story_and_rejects_other_image(tmp_pat
     assert service.story(story['id'])['error']['code'] == 'identity_location_missing'
     original_hash = hashlib.sha256(photo(redacted=True)).hexdigest()
     with pytest.raises(ConflictError) as wrong:
-        service.recover_photo_location(story['id'], original_hash, photo(shade=20))
-    assert wrong.value.code == 'photo_recovery_mismatch'
+        service.recover_photo_location(story['id'], 'different-upload', photo())
+    assert wrong.value.code == 'photo_identity_changed'
     recovered = service.recover_photo_location(story['id'], original_hash, photo())
     assert recovered['id'] == story['id'] and recovered['state'] == 'identifying'
     await service.run_once()

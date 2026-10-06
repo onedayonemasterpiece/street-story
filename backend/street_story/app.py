@@ -6,8 +6,10 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 
 from .buildinfo import checkout_source_sha
 from .config import Settings, reveal
@@ -24,6 +26,45 @@ def error_response(status: int, code: str, message: str) -> JSONResponse:
 
 LIVE_PROVIDER_AUDIO_CHARS = 16_000
 LIVE_HTTP_AUDIO_CHARS = 48_000
+
+
+class MemoryPhotoParser(MultiPartParser):
+    # The stream limit is smaller than the spool threshold: no image can spill
+    # onto disk, including a rejected oversized upload.
+    spool_max_size = 32 * 1024 * 1024
+    max_file_size = spool_max_size
+
+
+async def photo_form(request: Request):
+    async def bounded_stream():
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > 17 * 1024 * 1024:
+                raise MultiPartException('Selected photo exceeds the upload limit')
+            yield chunk
+    parser = MemoryPhotoParser(request.headers, bounded_stream(), max_files=1, max_fields=8)
+    try:
+        form = await parser.parse()
+    except MultiPartException as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    try:
+        photo = form.get('photo')
+        if not isinstance(photo, UploadFile):
+            raise HTTPException(status_code=422, detail='Photo is required')
+        data = await photo.read()
+        if len(data) > 16 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail='Selected photo exceeds the upload limit')
+        return dict(form), data, photo.content_type or 'application/octet-stream'
+    finally:
+        await form.close()
+
+
+def required_photo_field(form, field):
+    value = form.get(field)
+    if not isinstance(value, str) or not value:
+        raise HTTPException(status_code=422, detail=f'{field} is required')
+    return value
 
 
 def live_input_messages(message):
@@ -109,21 +150,24 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.post("/v1/stories", dependencies=[Depends(auth)])
     async def create_story(
-        photo: UploadFile = File(...),
-        client_story_id: str = Form(...),
-        photo_sha256: str = Form(...),
-        voice_protocol: str = Form(...),
-        lat: float | None = Form(default=None),
-        lon: float | None = Form(default=None),
+        request: Request,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         x_photo_sha256: str | None = Header(default=None, alias="X-Photo-SHA256"),
     ):
+        form, data, mime = await photo_form(request)
+        client_story_id = required_photo_field(form, 'client_story_id')
+        photo_sha256 = required_photo_field(form, 'photo_sha256')
+        voice_protocol = required_photo_field(form, 'voice_protocol')
+        try:
+            lat = float(form['lat']) if form.get('lat') else None
+            lon = float(form['lon']) if form.get('lon') else None
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail='Invalid photo coordinates') from exc
         if x_photo_sha256 and x_photo_sha256.lower() != photo_sha256.lower():
-            raise ConflictError("photo_digest_header_conflict", "X-Photo-SHA256 disagrees with multipart photo_sha256")
-        data = await photo.read()
+            raise ConflictError("photo_upload_token_conflict", "Upload token header disagrees with multipart upload token")
         created = service.create_story(
             key=idem(idempotency_key), client_story_id=client_story_id, photo_sha256=photo_sha256,
-            photo_mime_type=photo.content_type or "application/octet-stream", photo_bytes=data,
+            photo_mime_type=mime, photo_bytes=data,
             voice_protocol=voice_protocol, lat=lat, lon=lon,
         )
         ensure_identity = getattr(service, "ensure_identity", None)
@@ -149,13 +193,10 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         return ensure_identity(story_id)
 
     @app.post("/v1/stories/{story_id}/photo-location", dependencies=[Depends(auth)])
-    async def recover_photo_location(story_id: str, photo: UploadFile = File(...), expected_photo_sha256: str = Form(...)):
-        original = bytearray()
-        while chunk := await photo.read(65536):
-            original.extend(chunk)
-            if len(original) > 16 * 1024 * 1024:
-                raise HTTPException(status_code=413, detail="Selected original exceeds the photo limit")
-        return service.recover_photo_location(story_id, expected_photo_sha256, bytes(original))
+    async def recover_photo_location(story_id: str, request: Request):
+        form, original, _ = await photo_form(request)
+        token = required_photo_field(form, 'expected_photo_sha256')
+        return service.recover_photo_location(story_id, token, original)
 
     @app.post("/v1/stories/{story_id}/diagnostics", dependencies=[Depends(auth)])
     async def photo_diagnostics(story_id: str, request: Request):
@@ -311,8 +352,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     @app.get("/v1/assets/{story_id}/processed", dependencies=[Depends(auth)])
     async def asset(story_id: str):
-        data, mime, sha = service.asset(story_id)
-        return Response(data, media_type=mime, headers={"Cache-Control": "no-store", "X-Content-SHA256": sha, "X-Content-Type-Options": "nosniff"})
+        data, mime = await service.asset(story_id)
+        return Response(data, media_type=mime, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.get("/v1/capabilities", dependencies=[Depends(auth)])
     async def capabilities():

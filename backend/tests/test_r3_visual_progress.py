@@ -1,6 +1,5 @@
 """Ready references and completed negatives preserve current scope and evidence."""
 import json
-import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +20,7 @@ async def test_new_source_uses_accepted_poi_reference_before_new_search(tmp_path
         'visual_reference_verified':True, 'reference_evidence':[{
             'candidate_id':'web:accepted', 'subject_candidate_id':'wiki:77',
             'article_url':'https://archive.example/gate', 'image_url':'https://archive.example/gate.jpg',
-            'article_source_sha256':'a'*64, 'model_image_sha256':'b'*64}]}
+            'figcaption':'Illustrated gate'}]}
     with svc.store.tx() as db:
         ensure_poi_identity(db, accepted, now=1)
         db.execute('UPDATE stories SET research_json=? WHERE id=?',
@@ -29,7 +28,7 @@ async def test_new_source_uses_accepted_poi_reference_before_new_search(tmp_path
     current = create(svc, client='new-source')
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET photo_sha256=? WHERE id=?',
-            (hashlib.sha256(b'new-source-pixels').hexdigest(), current['id']))
+            ('new-source-upload-token', current['id']))
     async def deferred(*args, **kwargs):
         return {'status':'uncertain', 'candidate_id':'', 'confidence':0,
                 'observations':[], '_comparison_deferred':True}
@@ -67,14 +66,16 @@ def test_accepted_reference_lookup_is_indexed_and_never_name_joined(tmp_path):
         'visual_reference_verified': True, 'reference_evidence': [{
             'candidate_id': 'web:article', 'subject_candidate_id': 'wiki:77',
             'article_url': 'https://archive.example/gate', 'image_url': 'https://archive.example/gate.jpg',
-            'article_source_sha256': 'a'*64, 'model_image_sha256': 'b'*64}]}
+            'figcaption': 'Illustrated gate'}]}
     with svc.store.tx() as db:
         ensure_poi_identity(db, identity, now=1)
         db.execute('UPDATE stories SET research_json=? WHERE id=?',
             (canonical({'visual_identity': identity}), story['id']))
         refs = candidate_reference_images(db, [{'candidate_id': 'wiki:77'}])
         assert refs[0]['reference_reuse']['story_id'] == story['id']
-        assert refs[0]['article_media'][0]['model_image_sha256'] == 'b'*64
+        assert refs[0]['reference_image_urls'] == ['https://archive.example/gate.jpg']
+        assert refs[0]['article_media'][0]['figcaption'] == 'Illustrated gate'
+        assert not any('sha' in key for key in refs[0]['article_media'][0])
         assert not candidate_reference_images(db, [{'candidate_id': 'wiki:999', 'name': 'Gate'}])
         assert not candidate_reference_images(db, [{'candidate_id': 'wiki:77', 'identity_eligible': False}])
         plan = list(db.execute("EXPLAIN QUERY PLAN SELECT id FROM stories WHERE "

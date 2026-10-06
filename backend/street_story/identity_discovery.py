@@ -7,13 +7,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
-from io import BytesIO
 import json
 import re
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps
 
 from .gemini import GeminiUnavailable
 from .identity_candidate_policy import wikipedia_identity_eligible
@@ -51,11 +49,8 @@ async def suggest(service, story, transcript, candidates):
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
         'visual_query': {'type': 'string'},
         'commons_query': {'type': 'string'}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query']}
-    with Image.open(story['photo_path']) as original:
-        image = ImageOps.exif_transpose(original).convert('RGB')
-        image.thumbnail((1000, 1000))
-        output = BytesIO()
-        image.save(output, format='JPEG', quality=80)
+    source_bytes = service._source_photo_bytes(story['id'])
+    source_mime = story.get('photo_mime_type') or 'image/jpeg'
     prompt = (
         'Определи, что следует искать для установления конкретного физического объекта на фото. '
         'Это только поисковые гипотезы, не доказательство. Не выбирай заведомо неподходящее '
@@ -81,7 +76,7 @@ async def suggest(service, story, transcript, candidates):
     gemini = service.providers.gemini
     async def call(key, timeout, *, model=None, quota=None):
         response = await gemini._generate(key, timeout, [
-            types.Part.from_bytes(data=output.getvalue(), mime_type='image/jpeg'), prompt], config,
+            types.Part.from_bytes(data=source_bytes, mime_type=source_mime), prompt], config,
             operation='grounded_research', model=model, quota=quota)
         return queries_from(json.loads(response.text or '{}'))
     routes = getattr(gemini, 'research_routes', None)

@@ -23,6 +23,10 @@ on:
         description: 'readback: export only; identity/full_social/more: inspect or continue saved story (not a fresh full pass)'
         required: false
         type: string
+      photo_url:
+        description: 'Approved public SOURCE URL; identity angle tests only unless explicitly approved for a saved story'
+        required: false
+        type: string
       resume_identity_research:
         description: 'identity + saved story only: explicit scoped Resume of stopped research'
         required: false
@@ -52,7 +56,7 @@ jobs:
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
         run: |
           python - <<'PYCODE'
-          import hashlib, json, os, pathlib, re, shutil, urllib.request
+          import json, os, pathlib, re, shutil, urllib.request
           story_id = os.environ['READBACK_STORY_ID']
           if not re.fullmatch(r'story_[a-zA-Z0-9]{8,64}', story_id):
               raise SystemExit('invalid test story id')
@@ -81,28 +85,17 @@ jobs:
               and [item.get('alias') for item in caps.get('destinations', [])] == ['street_story_e2e_20260928_tg'])
           if not canary_preview and (not aliases or not all(alias.startswith('street_story_e2e_') for alias in aliases)):
               raise SystemExit('test publication binding missing')
-          image = fetch('/v1/assets/' + story_id + '/processed', 30_000_000)
-          actual = hashlib.sha256(image).hexdigest()
           visual = story.get('visual') or {}
-          expected = visual.get('selected_sha256')
-          if expected and actual != expected:
-              raise SystemExit('selected image checksum mismatch')
           out = pathlib.Path('backend/live-e2e-artifacts')
           out.mkdir(parents=True, exist_ok=True)
-          suffix = '.png' if image.startswith(b'\x89PNG') else '.jpg'
-          (out / ('generated' + suffix)).write_bytes(image)
           keys = ('id', 'state', 'place_name', 'draft_text', 'source_count', 'sources', 'facts', 'publication')
           receipt = {key: story.get(key) for key in keys}
-          receipt['image_sha256'] = actual
-          receipt['image_bytes'] = len(image)
-          receipt['visual'] = {key: visual.get(key) for key in ('prompt_version', 'content_revision', 'selected_sha256')}
+          receipt['image_url'] = story.get('processed_image_url')
+          receipt['visual'] = {key: visual.get(key) for key in ('prompt_version', 'content_revision', 'operation_id', 'selected_asset_ref')}
           receipt['read_only'] = True
           receipt['secrets_disclosed'] = False
           (out / 'owner-readback.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')
-          fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
-          shutil.copyfile(fixture / 'source.png', out / 'owner-source.png')
-          shutil.copyfile(fixture / 'reference-generated.png', out / 'owner-reference.png')
-          print(json.dumps({'story_id': story_id, 'state': story.get('state'), 'image_bytes': len(image), 'image_sha256': actual}))
+          print(json.dumps({'story_id': story_id, 'state': story.get('state'), 'image_url': story.get('processed_image_url'), 'visual_operation_id': visual.get('operation_id')}))
           PYCODE
       - uses: actions/upload-artifact@v4
         with:
@@ -186,7 +179,7 @@ jobs:
       - name: Install live media tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends espeak ffmpeg libimage-exiftool-perl
+          sudo apt-get install -y --no-install-recommends espeak ffmpeg
 
       - name: Install live client dependency
         working-directory: backend
@@ -263,6 +256,8 @@ jobs:
           STREET_STORY_LIVE_TOKEN: ${{ secrets.STREET_STORY_LIVE_TOKEN }}
           SAFE_TEST_DESTINATION_ALIAS: street_story_e2e_20260928_tg
           LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
+          LIVE_E2E_SOURCE_URL: ${{ inputs.photo_url }}
+          LIVE_E2E_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test -n "$STREET_STORY_LIVE_BASE_URL"
@@ -271,7 +266,6 @@ jobs:
           rm -rf live-android-fixtures
           mkdir -p live-android-fixtures backend/live-e2e-artifacts
           python - <<'PY'
-          import hashlib
           import json
           import os
           import pathlib
@@ -281,18 +275,16 @@ jobs:
           root = pathlib.Path('live-android-fixtures')
           fixture = pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928')
           meta = json.loads((fixture / 'fixture.json').read_text(encoding='utf-8'))
-          photo = (fixture / meta['source_file']).read_bytes()
-          actual_sha1 = hashlib.sha1(photo).hexdigest()
-          if actual_sha1 != meta['source_sha1']:
-              raise SystemExit(f"Owner fixture SHA-1 mismatch: {actual_sha1}")
-          (root / 'photo-source.png').write_bytes(photo)
-          subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-                          '-i', str(root / 'photo-source.png'), '-frames:v', '1',
-                          '-q:v', '2', str(root / 'photo.jpg')], check=True)
+          source_url = os.environ.get('LIVE_E2E_SOURCE_URL') or (
+              'https://raw.githubusercontent.com/onedayonemasterpiece/street-story/' +
+              os.environ['LIVE_E2E_SOURCE_SHA'] + '/backend/tools/fixtures/zachheim-owner-20260928/' + meta['source_file'])
+          if not source_url.startswith('https://'):
+              raise SystemExit('SOURCE must use an approved public HTTPS URL')
           (root / 'config.json').write_text(
               json.dumps({
                   'backend_url': os.environ['STREET_STORY_LIVE_BASE_URL'].rstrip('/'),
                   'safe_alias': os.environ['SAFE_TEST_DESTINATION_ALIAS'],
+                  'photo_url': source_url,
                   'latitude': meta['latitude'], 'longitude': meta['longitude'],
               }),
               encoding='utf-8',
@@ -316,24 +308,20 @@ jobs:
               ], check=True)
               wav.unlink()
           PY
-          LAT=$(python -c "import json; print(json.load(open('live-android-fixtures/config.json'))['latitude'])")
-          LON=$(python -c "import json; print(json.load(open('live-android-fixtures/config.json'))['longitude'])")
-          exiftool -overwrite_original -n \
-            -GPSLatitude="$LAT" -GPSLatitudeRef=N \
-            -GPSLongitude="$LON" -GPSLongitudeRef=E \
-            live-android-fixtures/photo.jpg >/dev/null
           python - <<'PY'
-          import hashlib, json, os, pathlib
+          import json, os, pathlib
           meta = json.loads(pathlib.Path('backend/tools/fixtures/zachheim-owner-20260928/fixture.json').read_text(encoding='utf-8'))
-          derived = pathlib.Path('live-android-fixtures/photo.jpg').read_bytes()
           public = {
               'schema_version': 1,
               'fixture_id': meta['fixture_id'],
               'source': 'owner-supplied repository fixture',
               'object': meta['expected_object'],
               'license': meta['license'],
-              'source_sha1': meta['source_sha1'],
-              'derived_photo_sha256': hashlib.sha256(derived).hexdigest(),
+              'photo_input_mode': 'public_url_raw_ram',
+              'photo_url': json.loads(pathlib.Path('live-android-fixtures/config.json').read_text())['photo_url'],
+              'photo_coordinates_source': 'owner_fixture_metadata',
+              'photo_pixel_transforms': False,
+              'photo_disk_copies': False,
               'latitude': meta['latitude'],
               'longitude': meta['longitude'],
               'prepared_audio': os.environ.get('LIVE_E2E_IDENTITY_ONLY') != 'true',

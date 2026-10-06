@@ -16,7 +16,6 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
-import sqlite3
 import time
 import uuid
 from typing import Any
@@ -83,7 +82,7 @@ def fixture_meta(path: Path | None = None) -> tuple[dict[str, Any], Path]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProductSmokeError("fixture_metadata_invalid") from exc
-    required = ("source_sha1", "source_sha256", "latitude", "longitude", "expected_object")
+    required = ("latitude", "longitude", "expected_object")
     if not isinstance(payload, dict) or any(not payload.get(name) for name in required):
         raise ProductSmokeError("fixture_metadata_incomplete")
     if not payload.get("source_file") and not payload.get("download_url"):
@@ -106,33 +105,9 @@ def fixture_path(value: str | None) -> Path | None:
 
 
 def validate_fixture_bytes(meta: dict[str, Any], data: bytes) -> bytes:
-    if hashlib.sha1(data).hexdigest().lower() != str(meta["source_sha1"]).lower():
-        raise ProductSmokeError("fixture_sha1_mismatch")
-    if hashlib.sha256(data).hexdigest().lower() != str(meta["source_sha256"]).lower():
-        raise ProductSmokeError("fixture_sha256_mismatch")
-    if len(data) < 10_000:
-        raise ProductSmokeError("fixture_too_small")
+    if len(data) < 10_000 or len(data) > 16 * 1024 * 1024:
+        raise ProductSmokeError("fixture_size_invalid")
     return data
-
-
-def cached_fixture(meta: dict[str, Any], data_root: Path) -> bytes | None:
-    database = data_root / "street-story.sqlite3"
-    if not database.is_file():
-        return None
-    try:
-        with sqlite3.connect(database) as db:
-            row = db.execute(
-                "SELECT photo_path FROM stories WHERE photo_sha256=? ORDER BY created_at DESC LIMIT 1",
-                (str(meta["source_sha256"]).lower(),),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        raise ProductSmokeError("fixture_cache_lookup_failed") from exc
-    if not row:
-        return None
-    path = Path(str(row[0]))
-    if not path.is_file():
-        raise ProductSmokeError("fixture_cache_path_missing")
-    return validate_fixture_bytes(meta, path.read_bytes())
 
 
 def load_fixture(
@@ -147,9 +122,6 @@ def load_fixture(
         if candidate.parent != metadata_path.parent.resolve() or not candidate.is_file():
             raise ProductSmokeError("fixture_local_source_invalid")
         return validate_fixture_bytes(meta, candidate.read_bytes()), "repository_fixture"
-    cached = cached_fixture(meta, data_root)
-    if cached is not None:
-        return cached, "production_cache"
     try:
         response = httpx.get(
             str(meta["download_url"]),
@@ -475,7 +447,6 @@ def validate_visual(client: httpx.Client, current: dict[str, Any], draft_before:
         "source_asset_ref",
         "operation_id",
         "selected_asset_ref",
-        "selected_sha256",
         "prompt_version",
         "prompt_sha256",
         "content_revision",
@@ -483,23 +454,18 @@ def validate_visual(client: httpx.Client, current: dict[str, Any], draft_before:
     missing = [name for name in required if not visual.get(name)]
     if missing:
         raise ProductSmokeError("visual_receipt_incomplete")
-    selected_sha = str(visual["selected_sha256"]).lower()
     image_url = str(current.get("processed_image_url") or "")
-    if not image_url:
+    if not image_url.startswith(("https://", "/v1/")):
         raise ProductSmokeError("processed_image_url_missing")
-    image = client.get(image_url)
-    if image.status_code != 200:
-        raise ProductSmokeError(f"processed_image_http_{image.status_code}")
-    actual_sha = hashlib.sha256(image.content).hexdigest()
-    header_sha = str(image.headers.get("x-content-sha256") or "").lower()
-    if actual_sha != selected_sha or header_sha != selected_sha:
-        raise ProductSmokeError("processed_asset_hash_mismatch")
+    # The immutable operation/asset lineage is the review identity. Do not fetch,
+    # hash or persist image bytes merely to produce an acceptance receipt.
     return {
         "operation_id": visual["operation_id"],
         "content_revision": visual["content_revision"],
         "selected_asset_ref": visual["selected_asset_ref"],
-        "selected_sha256": selected_sha,
-        "image_bytes": len(image.content),
+        "source_asset_ref": visual["source_asset_ref"],
+        "identity_generation": (current.get("visual_identity") or {}).get("identity_generation"),
+        "image_url": image_url,
     }
 
 
@@ -536,7 +502,7 @@ def run(
     }
     meta, metadata_path = fixture_meta(fixture_json)
     photo, fixture_source = load_fixture(meta, installer.DATA_ROOT, metadata_path=metadata_path)
-    photo_sha = hashlib.sha256(photo).hexdigest()
+    photo_upload_id = uuid.uuid4().hex + uuid.uuid4().hex
     session_id = ""
     stopped = False
     publication_scheduled = False
@@ -580,7 +546,7 @@ def run(
                 },
                 data={
                     "client_story_id": f"live-product-{tag}",
-                    "photo_sha256": photo_sha,
+                    "photo_sha256": photo_upload_id,
                     "voice_protocol": "voice-chunks-v2",
                     "lat": str(meta["latitude"]),
                     "lon": str(meta["longitude"]),
@@ -588,7 +554,7 @@ def run(
                 headers={
                     **headers,
                     "Idempotency-Key": f"live-product-create-{tag}",
-                    "X-Photo-SHA256": photo_sha,
+                    "X-Photo-SHA256": photo_upload_id,
                 },
             ),
             "create_story",
@@ -885,8 +851,8 @@ def run(
                 "central_authority_fallback": False,
                 "fixture": {
                     "object": meta["expected_object"],
-                    "photo_sha256": photo_sha,
-                    "reference_sha256": meta.get("reference_sha256"),
+                    "photo_upload_id": photo_upload_id,
+                    "source_url": meta.get("download_url"),
                     "fixture_id": meta.get("fixture_id"),
                     "license": meta.get("license"),
                     "source": fixture_source,

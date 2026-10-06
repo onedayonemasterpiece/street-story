@@ -4,7 +4,6 @@ import hashlib
 import json
 import math
 import re
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -542,7 +541,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             return self._deferred_visual_assignment()
         custom = getattr(self.providers.gemini, "identify_photo", None)
         if callable(custom):
-            return await custom(Path(story["photo_path"]), story["photo_mime_type"], transcript, candidates)
+            return await custom(self._source_photo_bytes(story["id"]), story["photo_mime_type"], transcript, candidates)
         gemini = self.providers.gemini
         if not hasattr(gemini, "_generate") or not hasattr(gemini, "executor"):
             raise PermanentProviderError("Gemini visual identity capability is unavailable")
@@ -584,14 +583,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             response_mime_type="application/json", response_json_schema=schema,
             system_instruction="Все observations пиши по-русски. Название города или района само по себе не является идентификацией конкретного здания. Несколько изображений одного объекта — не разные альтернативные объекты."
         )
-        from PIL import Image, ImageOps
-        import io
-        with Image.open(story["photo_path"]) as source:
-            image = ImageOps.exif_transpose(source).convert("RGB")
-            image.thumbnail((1280, 1280))
-            output = io.BytesIO()
-            image.save(output, format="JPEG", quality=82, optimize=True)
-            photo = output.getvalue()
+        photo = self._source_photo_bytes(story["id"])
         reference_candidates = reference_order(candidates)
         reference_evidence = []
         reference_images = await self._candidate_reference_images(
@@ -604,7 +596,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             'alignment_available_count': sum('camera_alignment' in item for item in candidates),
         })
         parts: list[Any] = [
-            types.Part.from_bytes(data=photo, mime_type="image/jpeg"),
+            types.Part.from_bytes(data=photo, mime_type=story["photo_mime_type"]),
             prompt,
         ]
         for candidate_id, mime_type, data in reference_images:
@@ -634,7 +626,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             considered = [x["candidate_id"] for x in reference_candidates if x.get("reference_image_urls")][:reference_limit]
             record_identity_event(self, story['id'], 'identity_images_reviewed', {
                 'generation': story.get('_identity_generation', 0),
-                'image_sha256s': [item['model_image_sha256'] for item in reference_evidence],
+                'reference_urls': [item['source_url'] for item in reference_evidence],
                 'image_count': len(reference_images), 'comparison_model': model or self.settings.gemini_model,
             })
             return {**payload, "_references_unavailable_ids": [cid for cid in considered if cid not in {x[0] for x in reference_images}],
@@ -676,7 +668,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
     ) -> dict[str, Any]:
         custom = getattr(self.providers.gemini, "research_v2", None)
         if callable(custom):
-            return await custom(Path(story["photo_path"]), story["photo_mime_type"], transcript, identity, previous)
+            return await custom(self._source_photo_bytes(story["id"]), story["photo_mime_type"], transcript, identity, previous)
         gemini = self.providers.gemini
         if not hasattr(gemini, "_generate") or not hasattr(gemini, "executor"):
             raise PermanentProviderError("Gemini grounded research capability is unavailable")

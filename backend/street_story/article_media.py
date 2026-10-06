@@ -24,7 +24,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .identity_telemetry import record_identity_event
-from .reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference
+MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 
 MAX_PAGES = 20
 MAX_PAGE_BYTES = 2 * 1024 * 1024
@@ -339,29 +339,7 @@ async def browser_media(page_url: str, cursor=0, slide_cursor=0) -> tuple[str, l
 
 
 async def browser_reference(descriptor):
-    """Extract only the authorized article's rendered illustration, never the page."""
-    raw = descriptor['image_url']
-    async with article_browser(descriptor['article_url']) as page:
-        _title, media = await rendered_media(page, descriptor['article_url'], stop_image=raw)
-        if raw not in {item['image_url'] for item in media}:
-            raise ValueError('article_media_not_extracted')
-        images = page.locator('img')
-        for index in range(await images.count()):
-            image = images.nth(index)
-            exact = await image.evaluate("(i, url) => [i.currentSrc, i.src, i.dataset.src, i.dataset.original, i.closest('a')?.href].includes(url)", raw)
-            if not exact:
-                continue
-            await image.scroll_into_view_if_needed(timeout=3000)
-            decoded = await image.evaluate("async i => { try { await i.decode(); return true; } catch { return false; } }")
-            if not decoded:
-                continue
-            if not await image.evaluate('i => i.naturalWidth >= 160 && i.naturalHeight >= 160'):
-                continue
-            data = await image.screenshot(type='jpeg', quality=85, timeout=5000)
-            if len(data) > MAX_DOWNLOAD_BYTES:
-                raise ValueError('article_media_size')
-            return data
-    raise ArticleMediaBrowserError('article_media_render_unavailable')
+    raise ArticleMediaBrowserError('direct_public_reference_required')
 
 
 def browser_executable(default: str) -> str:
@@ -507,35 +485,11 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
 
 
 async def load_article_reference(client, candidate, raw, *, resolver=resolve_public):
+    """Mechanical public byte transport for Live; keep original MIME and bytes in RAM."""
     descriptor = next((item for item in candidate.get('article_media', []) if item.get('image_url') == raw), None)
     if not descriptor:
         raise ValueError('article_media_not_extracted')
-    method = 'http'
-    try:
-        target, mime, data = await fetch_public(client, raw, MAX_DOWNLOAD_BYTES, resolver=resolver)
-        if mime not in {'image/jpeg', 'image/png', 'image/webp'}:
-            raise ValueError('article_media_not_image')
-        image = await asyncio.to_thread(normalize_reference, data)
-    except (httpx.HTTPError, ValueError, OSError):
-        budget = candidate.get('_browser_budget') or {}
-        if budget.get('remaining', 0) <= 0:
-            raise
-        budget['remaining'] -= 1
-        from playwright.async_api import Error as BrowserError
-        try:
-            data = await asyncio.wait_for(browser_reference(descriptor), timeout=20)
-        except BrowserError as exc:
-            # A detached element, failed decode or screenshot is a known read
-            # failure, not an unknown provider result. The common queue skips
-            # this authorized reference and keeps its bounded fallback policy.
-            raise ArticleMediaBrowserError('article_media_browser_unavailable') from exc
-        image = await asyncio.to_thread(normalize_reference, data)
-        target, method = raw, 'article_browser_element'
-
-    # Exclude tiny tracking pixels even if mislabelled as article illustrations.
-    from PIL import Image
-    from io import BytesIO
-    with Image.open(BytesIO(image[1])) as decoded:
-        if min(decoded.size) < 160:
-            raise ValueError('article_media_too_small')
-    return image, {**descriptor, 'resolved_image_url': target, 'retrieval_method': method}
+    target, mime, data = await fetch_public(client, raw, MAX_DOWNLOAD_BYTES, resolver=resolver)
+    if mime not in {'image/jpeg', 'image/png', 'image/webp'} or not data:
+        raise ValueError('article_media_not_image')
+    return (mime, data), {**descriptor, 'resolved_image_url': target, 'retrieval_method': 'http_raw_ram'}

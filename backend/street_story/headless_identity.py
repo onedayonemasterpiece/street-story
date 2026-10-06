@@ -126,8 +126,6 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             raise
         if unit.get('already_resolved'):
             return True
-        if unit.get('reconciled_completed'):
-            return bool(unit['matched'])
         pending = (session.state.get('visual_comparison') or {}).get('pending')
         if not pending:
             record_identity_event(self.service,story['id'],'identity_background_waiting',{
@@ -139,12 +137,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         except ConflictError:
             return True
         grouped = len(pending['candidates']) > 1
-        extra = {'_visual_image_parts': pending['image_parts'], '_visual_reference_mapping': [
-            {**reference, 'model_image_sha256': evidence['model_image_sha256'],
-             'source_url': evidence.get('source_url'), 'article_url': evidence.get('article_url')}
-            for reference, evidence in zip(pending['reply']['references'], pending['evidence'])]} if grouped else {}
+        extra = {'_visual_image_parts': pending['image_parts'],
+                 '_visual_reference_mapping': list(pending['reply']['references'])}
         try:
-            result = await provider.visual_verdict(pending['snapshot'],{**story, **extra, '_identity_generation':generation,
+            result = await provider.visual_verdict(None,{**story, **extra, '_identity_generation':generation,
                 '_identity_research_control_revision': scope['control_revision'],
                 '_research_job_id': job['id'], '_research_job_attempt': job['attempts']},
                 grouped_verdict_schema()[0] if grouped else VERDICT_SCHEMA,canonical(pending['reply']))
