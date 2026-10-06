@@ -876,7 +876,7 @@ class MainActivity : Activity() {
 
     @Suppress("DEPRECATION")
     private fun openOriginalPhotoPicker() {
-        val picker = PhotoIntake.originalPickerIntent(this)
+        val picker = PhotoIntake.documentIntent()
         startActivityForResult(picker, REQUEST_PHOTO)
     }
 

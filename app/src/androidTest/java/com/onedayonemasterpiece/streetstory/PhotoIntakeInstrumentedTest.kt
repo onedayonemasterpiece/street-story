@@ -148,8 +148,8 @@ class PhotoIntakeInstrumentedTest {
 
     @Test fun originalPickerSelectsMonthOldPhotoWithGpsAndFutureContractAcceptsNineWithoutDeduplication() {
         assertTrue("Android 15 emulator must have Photo Picker", PickVisualMedia.isPhotoPickerAvailable(context))
-        val intent = PhotoIntake.originalPickerIntent(context)
-        assertTrue(intent.action in listOf(Intent.ACTION_PICK, Intent.ACTION_OPEN_DOCUMENT))
+        val intent = PhotoIntake.documentIntent()
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
         assertEquals("image/*", intent.type)
         val future = PhotoIntake.pickerIntent(context, PhotoIntake.FUTURE_LIMIT)
         assertEquals(9, future.getIntExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 0))
@@ -165,13 +165,6 @@ class PhotoIntakeInstrumentedTest {
         }
         grant(context.packageName, Manifest.permission.ACCESS_MEDIA_LOCATION)
         val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
-        val declared = context.packageManager.getPackageInfo(pickerPackage,
-            android.content.pm.PackageManager.GET_PERMISSIONS).requestedPermissions.orEmpty()
-        // CI's fresh Gallery has not had a user grant or camera roll yet.
-        // This prepares that Gallery only, not Street Story's permissions.
-        for (permission in listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_EXTERNAL_STORAGE)) {
-            if (permission in declared) grant(pickerPackage, permission)
-        }
         val store = AppGraph.store(context)
         val previous = store.stories().map { it.clientStoryId }.toSet()
         val takenAt = System.currentTimeMillis() - 28L * 24 * 60 * 60 * 1000
