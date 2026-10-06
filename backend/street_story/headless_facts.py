@@ -430,6 +430,10 @@ class HeadlessFacts:
     async def _prepare_units(self, job, run_id, model, control_revision):
         units, visited, prepared = [], set(), set()
         while len(units) < 3:
+            # Frozen reads can complete without an async suspension. A backlog
+            # of fenced pages must still let Live sockets receive/ACK speech
+            # between page preparations, even when no model route is ready.
+            await asyncio.sleep(0)
             snapshot = self._snapshot(job, run_id, control_revision)
             if snapshot is None:
                 break
