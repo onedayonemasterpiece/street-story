@@ -1,13 +1,16 @@
 """Only checked model recommendations can create a new factual research scope."""
 import json
+from types import SimpleNamespace
 
 import pytest
-
-from street_story.headless_facts import HeadlessFacts
 from street_story.errors import RetryableProviderError
-from street_story.fact_ledger import set_owner_selection
+from street_story.fact_conflicts import record_fact_review_scan
+from street_story.fact_ledger import refresh_review_status, set_owner_selection
+from street_story.headless_facts import HeadlessFacts
+from street_story.poi_memory import sync_poi_review_from_story
 from street_story.research_runs import begin_research_run
-from test_headless_facts import controlled_public_dns as controlled_public_dns, fixture
+from test_headless_facts import controlled_public_dns as controlled_public_dns
+from test_headless_facts import fixture, review_candidates
 
 QUERY = 'Gate municipal archive museum opening chronology'
 GOAL = 'Find the missing documented museum chronology'
@@ -33,6 +36,7 @@ async def test_model_owned_continuation_uses_existing_joined_job_and_exact_query
             research['publication_concept'] = 'Owner concept'
             db.execute('UPDATE stories SET draft_text=?,research_json=? WHERE id=?', ('Owner draft', json.dumps(research), row['id']))
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await review_candidates(svc, job['story_id'], 'headless-run')
         with svc.store.tx() as db:
             row = svc._story_row(db, job['story_id'])
             research = json.loads(row['research_json'])
@@ -44,7 +48,9 @@ async def test_model_owned_continuation_uses_existing_joined_job_and_exact_query
             # This is the existing terminal worker hook, not a new scheduler.
             db.execute("UPDATE jobs SET state='done' WHERE id=?", (job['id'],))
             assert svc._resume_joined_fact_request(db, job['story_id'])
-            next_job = dict(db.execute('SELECT * FROM jobs WHERE id<>?', (job['id'],)).fetchone())
+            next_id = db.execute('SELECT id FROM jobs WHERE id<>?', (job['id'],)).fetchone()[0]
+            db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (next_id,))
+            next_job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (next_id,)).fetchone())
             payload = json.loads(next_job['payload_json'])
             assert payload == pending
             begin_research_run(db, story_id=job['story_id'], poi_key='wiki:77', goal=GOAL, scope=payload['extraction_scope'],
@@ -59,6 +65,10 @@ async def test_model_owned_continuation_uses_existing_joined_job_and_exact_query
             return await original_search(query, story)
 
         researcher.search_articles = searched
+        # Extraction produces candidates; discovery continues after separate Live review.
+        await HeadlessFacts(svc).run(next_job, 'next-scope', GOAL, payload['extraction_scope'])
+        assert queries == []
+        await review_candidates(svc, job['story_id'], 'next-scope')
         with pytest.raises(RetryableProviderError, match='controlled_search_wait'):
             await HeadlessFacts(svc).run(next_job, 'next-scope', GOAL, payload['extraction_scope'])
         pages_before_retry = len(researcher.pages)
@@ -120,6 +130,7 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
     sid = job['story_id']
     try:
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await review_candidates(svc, sid, 'headless-run')
         with svc.store.tx() as db:
             seed = db.execute('SELECT fact_id FROM facts WHERE story_id=?', (sid,)).fetchone()[0]
             set_owner_selection(db, sid, [seed], svc.store.now())
@@ -136,6 +147,24 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
             for i in range(95):
                 db.execute("INSERT INTO poi_research_sources(poi_key,url,title,supports_json,last_query,first_seen_at,last_seen_at) "
                            "VALUES('wiki:77',?,'Memory','[]','Previous query',0,0)", (f'https://archive.example/source-{i}',))
+            svc._hydrate_poi_memory(db, svc._story_row(db, sid))
+            # Construct the saved reviewed-memory fixture through the regular ledger.
+            # Exact revisions and literal own evidence are required, not eligibility flags.
+            reviewed = list(db.execute('SELECT a.assertion_id,a.revision_digest,f.text,f.sources_json '
+                                       'FROM fact_assertions a JOIN facts f ON f.story_id=a.story_id '
+                                       'AND f.fact_id=a.assertion_id WHERE a.story_id=?', (sid,)))
+            assert len(reviewed) == 71
+            for fact in reviewed:
+                assert any(fact['text'] in support.get('text', '')
+                           for source in json.loads(fact['sources_json'])
+                           for support in source.get('supports', []))
+            record_fact_review_scan(svc, sid, 'wiki:77', detector='controlled_saved_memory_fixture',
+                                    run_id='memory-fixture-review',
+                                    revision_bundle={f['assertion_id']: f['revision_digest'] for f in reviewed},
+                                    conflict_ids=[], coverage_complete=True, missing_aspects=[], connection=db)
+            refresh_review_status(db, sid, svc.store.now())
+            sync_poi_review_from_story(db, sid, svc.store.now())
+            row = svc._story_row(db, sid)
             begin_research_run(db, story_id=sid, poi_key='wiki:77', goal='Museum details', scope='museum details',
                                expected_story_revision=row['revision'], identity_generation=0, run_id='memory-run', now=svc.store.now())
         captured = []
@@ -147,7 +176,7 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
 
         researcher.extract_fact_page = inspect
         # All remembered unread sources are now attached before new discovery;
-        # one model page is committed and the existing cursor continues later.
+        # three independent model pages become candidates; the cursor continues later.
         with pytest.raises(RetryableProviderError, match='research_fact_next_page'):
             await HeadlessFacts(svc).run(job, 'memory-run', 'Museum details', 'museum details')
         context = captured[0]
@@ -158,7 +187,36 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
         assert context['prior_poi_ledger_omitted_count'] == 11
         assert context['previously_processed_sources_omitted_count'] >= 15
         with svc.store.connection() as db:
-            assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 71
+            assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 74
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='unreviewed'", (sid,)).fetchone()[0] == 3
+        # Review only the three new candidates; do not close the unread research scope.
+        adapter = HeadlessFacts(svc).adapter
+        session = SimpleNamespace(id='live_1234567890abcdef', resource_id=sid,
+                                  model='gemini-3.8-live', state={})
+        page = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': 'memory-run'}})
+        rows, nearby = [], page['nearby_existing_claims']
+        while True:
+            rows.extend(page['items'])
+            if not page['has_more']:
+                break
+            page = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': page['next_args']})
+        assert any(claim['fact_id'] == seed for claim in nearby)
+        decisions = []
+        for item in rows:
+            assert item['text'] in item['passage']
+            assert item['text'] == next(claim['text'] for claim in nearby if claim['fact_id'] == seed)
+            decisions.append({'fact': item['fact'], 'verdict': 'supported', 'evidence': [item['evidence']],
+                              'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+                              'claims': [item['text']], 'basis_quotes': [item['text']],
+                              'equivalent_to_existing': seed, 'reason': 'Same literal proposition as the checked owner fact.'})
+        assert len(decisions) == 3
+        reviewed = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-memory-duplicates', 'args': {
+            'packet_ref': page['packet_ref'], 'decisions': decisions, 'relations_complete': True,
+            'coverage_complete': False, 'missing_aspects': [], 'conflicts': []}})
+        assert reviewed['complete'] is False and reviewed['unreviewed_count'] == 0
+        with svc.store.connection() as db:
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'", (sid,)).fetchone()[0] == 71
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='withheld'", (sid,)).fetchone()[0] == 3
             assert db.execute('SELECT owner_selected FROM fact_assertions WHERE story_id=? AND assertion_id=?', (sid, seed)).fetchone()[0] == 1
             assert db.execute('SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND owner_selected=1', (sid,)).fetchone()[0] == 1
             row = svc._story_row(db, sid)

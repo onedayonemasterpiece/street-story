@@ -3,12 +3,12 @@ import json
 
 import httpx
 import pytest
-
 from street_story.errors import RetryableProviderError
 from street_story.fact_ledger import set_owner_selection
 from street_story.headless_facts import HeadlessFacts
 from street_story.research_runs import begin_research_run, run_manifest
-from test_headless_facts import URL, controlled_public_dns as controlled_public_dns, fixture
+from test_headless_facts import URL, fixture, review_candidates
+from test_headless_facts import controlled_public_dns as controlled_public_dns
 
 QUERY = 'Gate archive accession newly digitized exhibit records'
 NEW_URL = 'https://archive.example/new-exhibit-records'
@@ -19,6 +19,7 @@ async def requested_cached_scope(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
     sid = job['story_id']
+    await review_candidates(svc, sid, 'headless-run')
     with svc.store.tx() as db:
         seed = db.execute('SELECT fact_id FROM facts WHERE story_id=?', (sid,)).fetchone()[0]
         set_owner_selection(db, sid, [seed], svc.store.now())
@@ -76,6 +77,11 @@ async def test_requested_query_after_complete_scope_reuse_finds_new_eligible_fac
         await HeadlessFacts(svc).run(job, 'requested-run', 'Find missing archive details', 'history')
         assert queries == [QUERY] and len(fetches) == 2
         assert len(researcher.pages) == 2
+        with svc.store.connection() as db:
+            assert run_manifest(db, 'requested-run')['run']['state'] == 'verifying'
+            assert db.execute("SELECT a.eligibility FROM fact_assertions a JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id WHERE a.story_id=? AND f.text=?", (job['story_id'], NEW_CLAIM)).fetchone()[0] == 'unreviewed'
+            assert db.execute("SELECT eligibility FROM poi_research_assertions WHERE text=?", (NEW_CLAIM,)).fetchone()[0] == 'unreviewed'
+        await review_candidates(svc, job['story_id'], 'requested-run')
         with svc.store.connection() as db:
             manifest = run_manifest(db, 'requested-run')
             assert manifest['run']['state'] == 'completed'

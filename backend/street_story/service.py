@@ -684,44 +684,60 @@ class StreetStoryService:
         ).rowcount
         if not changed:
             return
-        db.execute(
-            "UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? "
-            "WHERE id=? AND (state!='needs_review' OR COALESCE(error_code,'')!=?)",
-            (RETRY_EXHAUSTED_ERROR, RETRY_EXHAUSTED_MESSAGE, now, job["story_id"], RETRY_EXHAUSTED_ERROR),
-        )
+        if not self._preserve_background_fact_value(db, job, error=last_error):
+            db.execute(
+                "UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? "
+                "WHERE id=? AND (state!='needs_review' OR COALESCE(error_code,'')!=?)",
+                (RETRY_EXHAUSTED_ERROR, RETRY_EXHAUSTED_MESSAGE, now, job["story_id"], RETRY_EXHAUSTED_ERROR),
+            )
         if job['kind'] in {'research', 'refinement'}:
             self._resume_joined_fact_request(db, job['story_id'])
 
-    def _preserve_background_fact_value(self, db, job: dict[str, Any]) -> bool:
-        """An optional failed research page must not block usable editorial state."""
-        payload = json.loads(job['payload_json'] or '{}')
-        if job['kind'] != 'research' or payload.get('queue_priority') != 'background':
+    def _preserve_background_fact_value(self, db, job: dict[str, Any], *,
+                                        error: str = 'provider_failure', terminal: bool = True) -> bool:
+        """A failed fact worker cannot discard usable confirmed editorial value."""
+        if job['kind'] not in {'research', 'refinement'}:
             return False
+        payload = json.loads(job['payload_json'] or '{}')
         story = self._story_row(db, job['story_id'])
         research = json.loads(story['research_json'] or '{}')
         identity = research.get('visual_identity') or {}
         generation = int(research.get('identity_generation') or 0)
-        if (identity.get('status') not in {'match', 'owner_confirmed'}
-                or payload.get('identity_generation', generation) != generation
+        if (payload.get('identity_generation', generation) != generation
                 or payload.get('photo_sha256', story['photo_sha256']) != story['photo_sha256']):
-            return False
-        usable = db.execute(
+            return True  # A superseded worker cannot damage the current story.
+        usable = identity.get('status') in {'match', 'owner_confirmed'} and db.execute(
             "SELECT 1 FROM facts f JOIN fact_assertions a "
             "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
             "WHERE f.story_id=? AND f.evidence_supported=1 AND a.eligibility='eligible' LIMIT 1",
             (job['story_id'],),
-        ).fetchone()
+        ).fetchone() is not None
+        reason = error if re.fullmatch(r'[A-Za-z0-9._:-]{1,120}', error) else 'provider_failure'
+        # The research worker already addresses its run by this frozen job/input.
+        # Mark only that existing run; never change completed source coverage or
+        # a different worker, and retain chunk/provider receipts for later work.
+        if payload.get('input_revision'):
+            run_id = 'research_' + hashlib.sha256(
+                f"{job['id']}:{payload['input_revision']}".encode('utf-8')).hexdigest()[:24]
+            db.execute("UPDATE research_runs SET state=?,status_detail=?,updated_at=? "
+                       "WHERE run_id=? AND story_id=? AND identity_generation=? "
+                       "AND state NOT IN ('completed','cancelled')",
+                       ('partial' if usable or not terminal else 'failed', reason, self.store.now(),
+                        run_id, job['story_id'], generation))
         if not usable:
             return False
+        # Research enqueue may have replaced the stage with 'researching'. A
+        # retained draft is still reviewable; all other product stages stay put.
         db.execute(
-            "UPDATE stories SET state='facts_ready',revision=revision+1,updated_at=? "
+            "UPDATE stories SET state=CASE WHEN draft_text IS NULL OR trim(draft_text)='' "
+            "THEN 'facts_ready' ELSE 'review' END,revision=revision+1,updated_at=? "
             "WHERE id=? AND state='researching' AND error_code IS NULL",
             (self.store.now(), job['story_id']),
         )
-        logging.getLogger('uvicorn.error').info('street_story_background_research_failed_partial_value %s', canonical({
+        logging.getLogger('uvicorn.error').info('street_story_research_failed_partial_value %s', canonical({
             'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
             'kind': job['kind'], 'attempt': job['attempts'], 'eligible_facts_retained': True,
-            'editorial_state_preserved': True,
+            'editorial_state_preserved': True, 'reason': reason, 'terminal': terminal,
         }))
         return True
 
@@ -905,6 +921,7 @@ class StreetStoryService:
                 if job["kind"] in {'identity', 'identity_visual', 'research', 'refinement'}:
                     db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?",
                         (retry_at, error,self.store.now(),job["id"], job['attempts']))
+                    self._preserve_background_fact_value(db, job, error=reason, terminal=False)
                 elif job["attempts"] >= MAX_JOB_ATTEMPTS:
                     self._fail_retry_exhausted(db, job, error)
                 else:
@@ -917,7 +934,7 @@ class StreetStoryService:
                 changed = db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.settings.redact(str(exc)), self.store.now(), job["id"], job['attempts'])).rowcount
                 if not changed:
                     return True
-                if job["kind"] != "visual" and not self._preserve_background_fact_value(db, job):
+                if job["kind"] != "visual" and not self._preserve_background_fact_value(db, job, error=self.settings.redact(str(exc))):
                     db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?", ("provider_permanent_error", "Не удалось выполнить обработку. Требуется проверка настроек сервиса.", self.store.now(), job["story_id"]))
                 if job['kind'] in {'research', 'refinement'}:
                     self._resume_joined_fact_request(db, job['story_id'])
@@ -953,6 +970,7 @@ class StreetStoryService:
                     self._fail_retry_exhausted(db, job, error)
                 else:
                     db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+5, error, self.store.now(), job["id"], job['attempts']))
+                    self._preserve_background_fact_value(db, job, error=error, terminal=False)
             return True
         finally:
             lease_task.cancel()

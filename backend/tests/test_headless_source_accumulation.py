@@ -3,12 +3,12 @@ import json
 
 import httpx
 import pytest
-
 from street_story.errors import RetryableProviderError
 from street_story.fact_ledger import set_owner_selection
 from street_story.headless_facts import HeadlessFacts
 from street_story.research_runs import begin_research_run, run_manifest
-from test_headless_facts import URL, controlled_public_dns as controlled_public_dns, fixture
+from test_headless_facts import URL, fixture, review_candidates
+from test_headless_facts import controlled_public_dns as controlled_public_dns
 
 
 @pytest.mark.asyncio
@@ -20,6 +20,7 @@ async def test_more_than_three_sources_accumulate_and_completed_scope_reuses_his
     try:
         # Preserve an existing owner-selected fact and publication before more research.
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await review_candidates(svc, sid, 'headless-run')
         with svc.store.tx() as db:
             seed = db.execute('SELECT fact_id FROM facts WHERE story_id=?', (sid,)).fetchone()[0]
             set_owner_selection(db, sid, [seed], svc.store.now())
@@ -78,20 +79,23 @@ async def test_more_than_three_sources_accumulate_and_completed_scope_reuses_his
                     await HeadlessFacts(svc).run(job, run_id, goal, scope)
                 except RetryableProviderError:
                     pass
-                assert len(researcher.pages) - before <= 1
+                assert len(researcher.pages) - before <= 3
                 with svc.store.connection() as db:
                     manifest = run_manifest(db, run_id)
                     stored = [r['url'] for r in db.execute('SELECT url FROM research_run_sources WHERE run_id=?', (run_id,))]
                     assert set(stored) == set(sources)  # All URLs are durable after the first discovery.
                     assert manifest['run']['extraction_scope'] == scope
-                    if manifest['run']['state'] == 'completed':
-                        return attempt + 1, manifest
+                    ready = manifest['run']['state'] in {'completed', 'verifying'}
+                if ready:
+                    await review_candidates(svc, sid, run_id)
+                    with svc.store.connection() as db:
+                        return attempt + 1, run_manifest(db, run_id)
             pytest.fail('Unread discovered sources never completed')
 
         attempts, manifest = await finish('missing-history-run', 'Fill missing exhibit history aspects', 'history')
-        assert attempts >= 4 and manifest['counts']['chunks_skipped_completed'] == 1
+        assert attempts >= 2 and manifest['counts']['chunks_skipped_completed'] == 1
         with svc.store.connection() as db:
-            assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 5
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'", (sid,)).fetchone()[0] == 5
             assert db.execute('SELECT owner_selected FROM fact_assertions WHERE story_id=? AND assertion_id=?', (sid, seed)).fetchone()[0] == 1
             assert db.execute('SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND owner_selected=1', (sid,)).fetchone()[0] == 1
             assert db.execute('SELECT COUNT(*) FROM source_versions').fetchone()[0] == 5
@@ -107,7 +111,7 @@ async def test_more_than_three_sources_accumulate_and_completed_scope_reuses_his
         assert len(researcher.model_units) == before[0] + 5
         assert len(fetches) == before[1]
         with svc.store.connection() as db:
-            assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 5
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'", (sid,)).fetchone()[0] == 5
             assert db.execute('SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND owner_selected=1', (sid,)).fetchone()[0] == 1
             current = svc._story_row(db, sid)
             assert current['draft_text'] == 'Owner draft'

@@ -1,6 +1,7 @@
 """Bounded fact pages through the existing frozen Live research intake."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -11,14 +12,19 @@ from .identity_telemetry import record_identity_event
 from .live import StreetStoryLiveAdapter, _search_source_ref
 from .poi_memory import memory_keys, prior_facts, processed_sources
 from .research_control import research_stopped
-from .research_runs import manifest_complete, register_discovered_source, run_manifest, set_run_state
+from .research_runs import (
+    manifest_complete,
+    register_discovered_source,
+    run_manifest,
+    set_run_state,
+)
 from .service import ConflictError, canonical
 
 LOG = logging.getLogger(__name__)
 
 
 class HeadlessFacts:
-    """One logical attempt processes one page; saved cursors survive restart."""
+    """Up to three independent frozen cores; durable commits remain serial."""
 
     def __init__(self, service):
         self.service = service
@@ -34,7 +40,9 @@ class HeadlessFacts:
             payload = json.loads(job.get('payload_json') or '{}')
             generation = int(research.get('identity_generation') or 0)
             epoch = int(((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
-            if (run is None or run['state'] in {'cancelled', 'failed'}
+            job_owned = db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?",
+                                   (job['id'], job.get('attempts', 0))).fetchone()
+            if (not job_owned or run is None or run['state'] in {'cancelled', 'failed'}
                     or research_stopped(research, 'facts', photo_sha256=story['photo_sha256'], identity_generation=generation)
                     or research.get('research_cancelled')
                     or (control_revision is not None and epoch != control_revision)
@@ -261,44 +269,29 @@ class HeadlessFacts:
             return
         story, research, _ = snapshot
         configured_model = getattr(getattr(provider, 'client', None), 'model_id', None) or 'unknown'
-        session = SimpleNamespace(id=f"headless-facts:{job['id']}", resource_id=story['id'], closed=False,
-                                  model=configured_model, state={'research_run_id': run_id,
-                                                               'fact_research_control_revision': control_revision,
-                                                               'live_first_research': True, 'headless_research': True})
-        with self.service.store.connection() as db:
-            pending_chunk = db.execute("SELECT 1 FROM research_chunk_runs WHERE run_id=? "
-                                       "AND status NOT IN ('extracted','no_claims') LIMIT 1", (run_id,)).fetchone()
-            source = None if pending_chunk else db.execute('SELECT url FROM research_run_sources WHERE run_id=? '
-                "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url LIMIT 1", (run_id,)).fetchone()
-        args = {'run_id': run_id}
-        # This is a bounded acquisition order, never a semantic competence rank.
-        # The model must check the chosen article's subject before importing it.
-        if source:
-            args['source_ref'] = _search_source_ref(source['url'])
-        discovery_pending = snapshot[2]['status_detail'] == 'research_fact_discovery_pending'
-        try:
-            page = await self.adapter._get_research_chunk(session, args)
-        except ConflictError as exc:
-            if self._snapshot(job, run_id, control_revision) is None:
-                return
-            if exc.code == 'live_research_run_stale':
-                self._partial(run_id, 'research_fact_owner_revision_changed')
-            raise
+        units = await self._prepare_units(job, run_id, configured_model, control_revision)
         snapshot = self._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return
-        if page.get('all_chunks_processed'):
+        if not units:
             with self.service.store.connection() as db:
                 complete = manifest_complete(run_manifest(db, run_id))
-            if page.get('completed') and complete:
+                unreviewed = db.execute("SELECT 1 FROM fact_assertions a JOIN fact_observations o "
+                    "ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
+                    "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed' LIMIT 1",
+                    (story['id'], run_id)).fetchone()
+            if complete and unreviewed:
+                # Restarted intake must exit while Mira owns semantic review.
+                with self.service.store.tx() as db:
+                    if self._snapshot(job, run_id, control_revision) is not None:
+                        set_run_state(db, run_id, 'verifying', detail='awaiting_live_semantic_review',
+                                      now=self.service.store.now(), completed=False)
+                return
+            if complete and not unreviewed:
                 payload = json.loads(job.get('payload_json') or '{}')
-                requested_query = str(payload.get('research_query') or '').strip()
                 cached_only = any(item.get('research_run_id') == run_id and item.get('search_provider') == 'poi_memory'
                                   for item in snapshot[1].get('live_web_searches') or [] if isinstance(item, dict))
-                # Complete checked extraction satisfies this scope on the known
-                # pages, but cannot silently consume an explicit new query. No
-                # model page runs in the skip path to make another recommendation.
-                if discovery_pending or (requested_query and cached_only):
+                if snapshot[2]['status_detail'] == 'research_fact_discovery_pending' or (payload.get('research_query') and cached_only):
                     await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return
             self._partial(run_id, 'research_fact_source_coverage_partial')
@@ -338,68 +331,231 @@ class HeadlessFacts:
                 'previously_processed_sources': source_window,
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
-        unit = [run_id, page['source_version_id'], page['chunk_id'], page['batch_index'],
-                [passage['passage_id'] for passage in page['evidence_passages']], scope]
-        page['_unit_id'] = 'factpage_' + hashlib.sha256(canonical(unit).encode()).hexdigest()[:24]
+        suggestions = []
+        tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
+        try:
+            for ready in asyncio.as_completed(tasks):
+                unit, extracted, error = await ready
+                if self._snapshot(job, run_id, control_revision) is None:
+                    continue
+                if error is not None:
+                    LOG.warning('street_story_headless_fact_unit_partial story_id=%s run_id=%s chunk_id=%s reason=%s',
+                                story['id'], run_id, unit['page']['chunk_id'], type(error).__name__)
+                    continue
+                try:
+                    committed = await self._commit_unit(unit, extracted, job, run_id, goal, scope, control_revision)
+                    if committed:
+                        suggestions.append(extracted['result'])
+                except (ConflictError, MalformedProviderResponse) as exc:
+                    LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
+                             story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self._snapshot(job, run_id, control_revision) is not None:
+            for result in suggestions:
+                self._queue_model_continuation(job, run_id, goal, scope, result, control_revision)
+            with self.service.store.tx() as db:
+                unfinished = [row[0] for row in db.execute("SELECT chunk_id FROM research_chunk_runs WHERE run_id=? "
+                    "AND status NOT IN ('extracted','no_claims')", (run_id,))]
+                pending = bool(unfinished)
+                unread = db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? "
+                    "AND source_version_id IS NULL AND status!='failed' LIMIT 1", (run_id,)).fetchone()
+                set_run_state(db, run_id, 'partial' if pending or unread else 'verifying',
+                              detail='research_fact_units_partial' if pending or unread else 'awaiting_live_semantic_review',
+                              now=self.service.store.now(), completed=False)
+            if pending or unread:
+                unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
+                self._partial(run_id, 'research_fact_next_page' if unread or unvisited
+                              else 'research_fact_source_coverage_partial')
+
+    def _owner_fence(self, db, story, research):
+        """Candidate additions may change revision, never these author inputs."""
+        selected = [row[0] for row in db.execute(
+            'SELECT assertion_id FROM fact_assertions WHERE story_id=? AND owner_selected=1 ORDER BY assertion_id',
+            (story['id'],))]
+        voices = [list(row) for row in db.execute('SELECT session_id,recording_finished,transcript FROM voice_sessions '
+                                                'WHERE story_id=? ORDER BY session_id', (story['id'],))]
+        return {'photo': story['photo_sha256'], 'generation': story['_identity_generation'],
+                'controls': research.get('research_controls'), 'input_revision': research.get('input_revision'),
+                'fact_request_revision': research.get('fact_request_revision'), 'transcript': research.get('transcript'),
+                'latitude': story['latitude'], 'longitude': story['longitude'], 'draft': story['draft_text'],
+                'concept': research.get('publication_concept'), 'selected': selected, 'voices': voices}
+
+    def _unit_phase(self, job, unit_id, phase, **detail):
+        with self.service.store.tx() as db:
+            db.execute('INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) '
+                       'ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json',
+                       (job['id'], 'headless_fact_unit:' + unit_id, canonical({'phase': phase, **detail}),
+                        self.service.store.now()))
+
+    def _boundary_closed(self, story, unit_id):
+        """Provider attempt receipts are authoritative about a prior send."""
+        with self.service.store.connection() as db:
+            attempts = list(db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
+                                       "WHERE story_id=? AND role LIKE 'facts%' ORDER BY created_at DESC,rowid DESC",
+                                       (story['id'],)))
+        latest = {}
+        for row in attempts:
+            expected = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+                story['_identity_generation'], row['role'], unit_id]).encode()).hexdigest()
+            if row['logical_id'] == expected:
+                latest.setdefault(expected, json.loads(row['receipt_json']))
+        return bool(latest) and all(
+            receipt.get('phase') in {'created', 'completed'}
+            or receipt.get('phase') == 'failed' and (receipt.get('provider_send_state') in {'not_sent', 'response_closed'}
+                                                    or receipt.get('retry_safe') is True)
+            or receipt.get('phase') == 'aborted' and receipt.get('abort_acknowledged') is True
+            for receipt in latest.values())
+
+    async def _prepare_units(self, job, run_id, model, control_revision):
+        units, visited, prepared = [], set(), set()
+        while len(units) < 3:
+            snapshot = self._snapshot(job, run_id, control_revision)
+            if snapshot is None:
+                break
+            story, research, _ = snapshot
+            with self.service.store.connection() as db:
+                rows = list(db.execute("SELECT r.chunk_id FROM research_chunk_runs r "
+                    "JOIN source_chunks c ON c.chunk_id=r.chunk_id WHERE r.run_id=? "
+                    "AND r.status NOT IN ('extracted','no_claims') ORDER BY c.source_version_id,c.ordinal", (run_id,)))
+                candidate = next((row for row in rows if row['chunk_id'] not in visited), None)
+                source = None if candidate else db.execute("SELECT url FROM research_run_sources WHERE run_id=? "
+                    "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url LIMIT 1", (run_id,)).fetchone()
+                owner = self._owner_fence(db, story, research)
+            if candidate is None and source is None:
+                break
+            key = candidate['chunk_id'] if candidate else source['url']
+            if key in visited:
+                break
+            visited.add(key)
+            session = SimpleNamespace(id=f"headless-facts:{job['id']}:{key}", resource_id=story['id'], closed=False,
+                model=model, state={'research_run_id': run_id, 'fact_research_control_revision': control_revision,
+                                    'live_first_research': True, 'headless_research': True})
+            args = {'run_id': run_id, **({'chunk_id': key} if candidate else {'source_ref': _search_source_ref(key)})}
+            try:
+                page = await self.adapter._get_research_chunk(session, args)
+            except (ConflictError, RetryableProviderError) as exc:
+                LOG.info('street_story_headless_fact_prepare_deferred story_id=%s run_id=%s reason=%s',
+                         story['id'], run_id, getattr(exc, 'code', None) or type(exc).__name__)
+                continue
+            if page.get('all_chunks_processed') or not page.get('chunk_id'):
+                continue
+            if page['chunk_id'] in prepared:
+                continue
+            prepared.add(page['chunk_id'])
+            visited.add(page['chunk_id'])
+            # The source is fetched serially, then its actual frozen core owns the task.
+            chunk_owner = f"headless-facts:{job['id']}:{page['chunk_id']}"
+            if session.id != chunk_owner:
+                with self.service.store.tx() as db:
+                    db.execute('UPDATE research_chunk_runs SET lease_owner=? WHERE run_id=? AND chunk_id=? '
+                               'AND lease_owner=? AND lease_fence=?',
+                               (chunk_owner, run_id, page['chunk_id'], session.id,
+                                session.state['research_chunk_leases'][page['chunk_id']]))
+                session.id = chunk_owner
+            identity = [run_id, page['source_version_id'], page['chunk_id'], page['batch_index'],
+                        [passage['passage_id'] for passage in page['evidence_passages']],
+                        snapshot[2]['extraction_scope']]
+            page['_unit_id'] = 'factpage_' + hashlib.sha256(canonical(identity).encode()).hexdigest()[:24]
+            old = self.service.store.checkpoint_get(job['id'], 'headless_fact_unit:' + page['_unit_id']) or {}
+            saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_result:' + page['_unit_id'])
+            if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
+                self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'])
+                continue
+            if saved and saved['owner'] != owner:
+                old_owner = saved['owner']
+                current_control = (owner.get('controls') or {}).get('facts') or {}
+                old_control = (old_owner.get('controls') or {}).get('facts') or {}
+                same_inputs = {k: v for k, v in old_owner.items() if k != 'controls'} == {k: v for k, v in owner.items() if k != 'controls'}
+                explicitly_resumed = (current_control.get('stopped') is False
+                    and current_control.get('resumed_at', 0) > old_control.get('resumed_at', 0))
+                if not same_inputs or not explicitly_resumed:
+                    self._unit_phase(job, page['_unit_id'], 'deferred', chunk_id=page['chunk_id'])
+                    continue
+                # A new claimed Resume may import the known result as unreviewed
+                # candidates. The interrupted attempt never commits or sends again.
+                saved = {**saved, 'owner': owner}
+                self.service.store.checkpoint_put(job['id'], 'headless_fact_result:' + page['_unit_id'], saved)
+            units.append({'page': page, 'session': session, 'owner': saved['owner'] if saved else owner,
+                          'saved': saved})
+        with self.service.store.connection() as db:
+            ordered = [row[0] for row in db.execute(
+                "SELECT r.chunk_id FROM research_chunk_runs r JOIN source_chunks c ON c.chunk_id=r.chunk_id "
+                "JOIN research_run_sources s ON s.run_id=r.run_id AND s.source_version_id=c.source_version_id "
+                "WHERE r.run_id=? GROUP BY r.chunk_id ORDER BY MIN(s.discovered_at),MIN(s.url),c.ordinal", (run_id,))]
+        for unit in units:
+            unit['page']['_extractor_ordinal'] = ordered.index(unit['page']['chunk_id'])
+        return units
+
+    async def _extract_unit(self, unit, provider, story, context, job):
+        page = unit['page']
+        if unit['saved']:
+            return unit, unit['saved']['extracted'], None
+        self._unit_phase(job, page['_unit_id'], 'started', chunk_id=page['chunk_id'])
+        try:
+            extracted = await provider.extract_fact_page(page, dict(story), dict(context))
+            if not isinstance(extracted, dict):
+                raise MalformedProviderResponse('research_fact_page_contract_invalid')
+            result = extracted.get('result')
+            if (not isinstance(result, dict) or not isinstance(result.get('facts'), list)
+                    or any(type(result.get(flag)) is not bool for flag in
+                           ('source_matches_poi', 'source_content_valid', 'continuation_needed'))):
+                raise MalformedProviderResponse('research_fact_page_contract_invalid')
+            if any(not isinstance(fact, dict) for fact in result['facts']):
+                raise MalformedProviderResponse('research_fact_page_claim_invalid')
+            self.service.store.checkpoint_put(job['id'], 'headless_fact_result:' + page['_unit_id'],
+                {'extracted': extracted, 'owner': unit['owner']})
+            self._unit_phase(job, page['_unit_id'], 'result', chunk_id=page['chunk_id'])
+            return unit, extracted, None
+        except asyncio.CancelledError:
+            self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'])
+            raise
+        except (RuntimeError, OSError, ValueError) as exc:
+            known = isinstance(exc, MalformedProviderResponse) or self._boundary_closed(story, page['_unit_id'])
+            self._unit_phase(job, page['_unit_id'], 'closed_error' if known else 'unknown',
+                             chunk_id=page['chunk_id'], error_type=type(exc).__name__)
+            return unit, None, exc
+
+    async def _commit_unit(self, unit, extracted, job, run_id, goal, scope, control_revision):
+        from .research_runs import chunk_lease_owned
+        page, session = unit['page'], unit['session']
+        snapshot = self._snapshot(job, run_id, control_revision)
+        if snapshot is None:
+            return
+        story, research, _ = snapshot
         with self.service.store.connection() as db:
             self.adapter._research_run_guard(db, session, run_id)
-        extracted = await provider.extract_fact_page(page, story, context)
-        if self._snapshot(job, run_id, control_revision) is None:
-            return
-        result = extracted.get('result')
-        if (not isinstance(result, dict) or not isinstance(result.get('facts'), list)
-                or any(type(result.get(flag)) is not bool for flag in ('source_matches_poi', 'source_content_valid', 'continuation_needed'))):
-            raise MalformedProviderResponse('research_fact_page_contract_invalid')
+            if (unit['owner'] != self._owner_fence(db, story, research)
+                    or not chunk_lease_owned(db, run_id=run_id, chunk_id=page['chunk_id'], owner=session.id,
+                        fence=session.state['research_chunk_leases'][page['chunk_id']], now=self.service.store.now())):
+                raise ConflictError('live_research_save_stale', 'Owner inputs or the extraction lease changed; saved result is deferred.')
+        # Only candidate additions can rebase the frozen recipe while owner inputs remain identical.
+        session.state['research_chunk_receipts'][page['chunk_id']]['expected_story_revision'] = int(story['revision'])
+        result = extracted['result']
         claims = result['facts'] if result['source_matches_poi'] and result['source_content_valid'] else []
-        facts = []
-        for fact in claims:
-            if not isinstance(fact, dict):
-                raise MalformedProviderResponse('research_fact_page_claim_invalid')
-            facts.append({**fact, 'selected': False})
+        if any(not isinstance(fact, dict) for fact in claims):
+            raise MalformedProviderResponse('research_fact_page_claim_invalid')
         receipt = extracted.get('receipt') or {}
         actual_models = [usage.get('model_id') for usage in receipt.get('assistants') or []
                          if isinstance(usage, dict) and usage.get('model_id')]
-        session.model = str(actual_models[-1] if actual_models else receipt.get('model_id') or configured_model)
-        save_args = {
-            'facts': facts, 'batch_reviewed': True, 'inventory_reviewed': False,
+        session.model = str(actual_models[-1] if actual_models else receipt.get('model_id') or session.model)
+        committed = await self.adapter._save_research_facts(session, page['_unit_id'], {
+            'facts': [{**fact, 'selected': False} for fact in claims], 'batch_reviewed': False,
+            'extractor_candidates': True, 'inventory_reviewed': False,
             'source_matches_poi': result['source_matches_poi'], 'source_content_valid': result['source_content_valid'],
             'continuation_needed': result['continuation_needed'],
-        }
-        try:
-            committed = await self.adapter._save_research_facts(session, page['_unit_id'], save_args)
-        except ConflictError as exc:
-            if self._snapshot(job, run_id, control_revision) is None:
-                return
-            if exc.code == 'live_research_save_stale':
-                self._partial(run_id, 'research_fact_owner_revision_changed')
-            raise
-        continued = self._queue_model_continuation(job, run_id, goal, scope, result, control_revision)
+        })
+        self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'])
         record_identity_event(self.service, story['id'], 'fact_background_batch', {
             'generation': story['_identity_generation'], 'run_id': run_id, 'source_version_id': page['source_version_id'],
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],
             'model_id': session.model, 'provider_id': receipt.get('provider_id', 'unknown'),
-            'backend': receipt.get('backend', 'unknown'), 'usage': receipt.get('usage', 'unknown'),
-            'assistants': [{key: usage.get(key, 'unknown') for key in ('provider_id', 'model_id', 'tokens', 'time', 'cost')}
-                           for usage in receipt.get('assistants') or [] if isinstance(usage, dict)],
-            'cost': receipt.get('cost', 'unknown'), 'audit': committed.get('save_research_audit') or {},
-            'model_research_continuation_queued': continued,
+            'backend': receipt.get('backend', 'unknown'), 'audit': committed.get('save_research_audit') or {},
+            'candidate_only': True,
         }, source='fact_research')
-        LOG.info('street_story_headless_fact_batch story_id=%s run_id=%s chunk_id=%s batch=%s completed=%s',
-                 story['id'], run_id, page['chunk_id'], page['batch_index'], committed.get('completed'))
-        if not committed.get('completed'):
-            self._partial(run_id, 'research_fact_next_page' if result['source_content_valid'] else 'research_fact_source_unreadable')
-        elif (result.get('research_sufficient') is False and result['source_matches_poi']
-              and result['source_content_valid'] and not continued):
-            # A model can request the current explicit discovery recipe after
-            # exhausting remembered pages. Cache-first must not become cache-only.
-            payload = json.loads(job.get('payload_json') or '{}')
-            query = str(payload.get('research_query') or '').strip()
-            def normalize(value):
-                return ' '.join(str(value or '').split()).casefold()
-            with self.service.store.connection() as db:
-                latest = json.loads(self.service._story_row(db, story['id'])['research_json'])
-                cached_only = any(item.get('research_run_id') == run_id and item.get('search_provider') == 'poi_memory'
-                                  for item in latest.get('live_web_searches') or [] if isinstance(item, dict))
-            if (query and cached_only and normalize(result.get('next_research_query')) == normalize(query)
-                    and normalize(result.get('next_research_goal')) == normalize(goal)):
-                await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
+        LOG.info('street_story_headless_fact_candidate_saved story_id=%s run_id=%s chunk_id=%s batch=%s',
+                 story['id'], run_id, page['chunk_id'], page['batch_index'])
+        return committed

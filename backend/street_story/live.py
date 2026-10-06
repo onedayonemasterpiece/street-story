@@ -579,6 +579,8 @@ FUNCTIONS = [
                 "claims": {"type": "array", "items": {"type": "string"}, "description": "Enumerate independently selectable assertions actually present in the candidate; each depicted person is independently selectable. Multiple entries require repair/split before supported."},
                 "basis_quotes": {"type": "array", "items": {"type": "string"}, "description": "Literal short quotations from this fact's selected attached evidence. Every substantive attribute must follow; never quote another candidate's passage. Empty only for unsupported decisions."},
                 "evidence": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based evidence numbers within THIS fact, from packet items."},
+                "equivalent_to_existing": {"type": "string", "description": "For extractor candidate packets only: ID from nearby_existing_claims for a supported semantic duplicate. Existing owner claims remain unchanged."},
+                "conflicts_with_existing": {"type": "array", "items": {"type": "string"}, "description": "IDs from nearby_existing_claims contradicted by this candidate; candidate stays withheld pending an explicit later arbitration."},
                 "equivalent_to": {"type": "integer", "description": "Optional canonical fact number for a semantic duplicate. Still return an explicit support verdict for EVERY fact including the canonical one. A supported canonical may reference itself."}}, "required": ["fact", "verdict", "evidence", "reason", "atomic", "support_complete", "qualifiers_preserved", "claims", "basis_quotes"]}},
             "relations_complete": {"type": "boolean", "description": "True only after comparing ALL packet pages for equivalence and conflicts."},
             "conflicts": {"type": "array", "items": {"type": "object", "properties": {
@@ -902,7 +904,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "reuse its exact existing_fact_id for known claims. It contains assertions, not proof. "
             "If truncated, read all get_facts pages. Read get_facts/get_evidence for selection or verification."
         )
-        reviewing = (state.get('research_run') or {}).get('state') == 'verifying'
+        reviewing = ((state.get('research_run') or {}).get('state') == 'verifying'
+                     or bool((state.get('research_run') or {}).get('pending_extractor_candidates')))
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
         # duplicating it on every setup consumes the same lease as bootstrap.
@@ -1251,6 +1254,19 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             return
         with self.service.store.connection() as db:
             run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?", (run_id, session.resource_id)).fetchone()
+            candidate_ids = review_packets.pending_candidates(db, session.resource_id, run_id) if run else []
+            if candidate_ids and run['state'] not in {'failed', 'cancelled', 'completed'}:
+                key = tuple(candidate_ids[:3])
+                if session.state.get('extractor_review_queued') != key:
+                    session.state['extractor_review_queued'] = key
+                    session.state['research_continuation_queued'] = True
+                    self.write(session, {'type': 'text', 'text':
+                        'Server context: saved source-backed extractor candidates are ready in run ' + run_id +
+                        '. Use continue_story(stage=review), then get_review_packet(run_id). Review only that small '
+                        'packet against its exact passages and nearby existing claims, then finalize_fact_review '
+                        'with partial coverage. Other research branches may continue. Preserve all owner choices, '
+                        'concept and draft; already eligible facts are sufficient for publication. No new search required.'})
+                return
             if not run or run["state"] in {"completed", "partial", "failed", "cancelled"}:
                 return
             pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
@@ -1985,6 +2001,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             'status': source['status'], 'source_version_id': source['source_version_id'],
                             'identity_article_source_sha256': reference.get('article_source_sha256')})
                 latest_run['identity_article_sources'] = identity_sources
+                pending_candidates = review_packets.pending_candidates(db, story_id, latest_run['run_id'])
+                if pending_candidates:
+                    latest_run['pending_extractor_candidates'] = len(pending_candidates)
+                    latest_run['candidate_review_instruction'] = ('Use continue_story(stage=review), then get_review_packet with this run_id. '
+                        'Review the bounded candidates and nearby existing claims. Partial review is sufficient; '
+                        'do not reread documents or delay publication using already eligible facts.')
             confirmation = db.execute(
                 "SELECT * FROM live_publication_confirmations WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
                 (story_id,),
@@ -3370,6 +3392,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 expanded.append(group)  # Legacy receipts remain replayable.
         if len(expanded) > 32:
             raise ConflictError('live_research_facts_invalid', 'Save at most 32 claims per batch and continue the same core.')
+        extractor_candidates = bool(session.state.get('headless_research') or args.get('extractor_candidates'))
+        extractor_existing_hints = [str(item.get('existing_fact_id') or '') for item in expanded if isinstance(item, dict)] if extractor_candidates else []
+        if extractor_candidates:
+            # Extractor equivalence is advice, never authority over an existing claim.
+            expanded = [{**item, 'existing_fact_id': '', 'selected': False,
+                         'claim_key': 'extractor-candidate:' + hashlib.sha256(
+                             canonical([explicit_batch_id or command_id, index]).encode()).hexdigest()[:24]}
+                        if isinstance(item, dict) else item for index, item in enumerate(expanded)]
         raw_facts = expanded
 
         # Phase 1 is read-only. Never hold a SQLite write transaction while the
@@ -3798,6 +3828,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             normalized_candidates
             and known_facts
             and callable(reconciler)
+            and not extractor_candidates
             and args.get("inventory_reviewed") is not True
             and not session.state.get('live_first_research')
         ):
@@ -4030,7 +4061,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 ),
                 now=now,
             )
-            batch_verified = session.state.get('live_first_research') and args.get('batch_reviewed') is True
+            batch_verified = not extractor_candidates and session.state.get('live_first_research') and args.get('batch_reviewed') is True
             if batch_verified:
                 accepted_bundle = {}
                 for fact in normalized:
@@ -4055,7 +4086,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     accepted_fact_count=len(normalized), continuation_needed=continuation_needed,
                     continuation_reason="mira_live_remaining_findings" if continuation_needed else "",
                     model_name=str(session.model), prompt_version="live-chunk-findings-v1", now=now,
-                    payload={"facts": normalized, "no_claims": not normalized, "official_source_urls": [],
+                    payload={"facts": normalized, "extractor_candidates": extractor_candidates, "extractor_existing_fact_ids": extractor_existing_hints, "no_claims": not normalized, "official_source_urls": [],
                              "source_content_valid": args.get('source_content_valid') is not False,
                              "next_passage_cursor": session.state.get('research_pending_page', {}).get(chunk_id, 0) if continuation_needed else 0,
                              "read_passage_ids": sorted(session.state.get('research_passages_seen', {}).get(chunk_id, set()))})
@@ -4147,7 +4178,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     selected_ids,
                 )
 
-            latest_search["semantic_completion"] = "mira_live"
+            latest_search["semantic_completion"] = "extractor_candidates" if extractor_candidates else "mira_live"
             latest_search["mira_saved_fact_ids"] = [
                 item["fact_id"]
                 for item in normalized
@@ -4170,8 +4201,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 completed=batches_complete,
             )
             db.execute(
-                "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,"
-                "revision=revision+1,updated_at=? WHERE id=?",
+                ("UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?"
+                 if extractor_candidates else
+                 "UPDATE stories SET research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?"),
                 (
                     canonical(research),
                     self.service.store.now(),
@@ -4188,8 +4220,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "review_required": not bool(batch_verified),
                 "completed": batches_complete,
                 "continuation_required": not batches_complete,
-                "next_tool": None if batches_complete else "get_research_chunk" if chunk_id or batch_verified else "get_review_packet",
-                "next_args": {"run_id": run_id},
+                "next_tool": "get_review_packet" if extractor_candidates and normalized else None if batches_complete else "get_research_chunk" if chunk_id or batch_verified else "get_review_packet",
+                "next_args": {"run_id": run_id, **({"allow_partial_review": True} if extractor_candidates else {})},
                 "chunk_id": chunk_id or None,
                 "payload_saved": True,
                 "facts": normalized,
@@ -4346,6 +4378,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "Object identity changed; this research review is stale.",
                 )
             current_bundle = review_packets.bundle(db, story_id)
+            candidate_scope = args.get('_candidate_scope') if packet_rejected is not None else None
+            if candidate_scope is not None:
+                current_bundle = {fid: current_bundle[fid] for fid in candidate_scope if fid in current_bundle}
             current_items = [
                 {
                     "fact_id": row["fact_id"],
@@ -4387,6 +4422,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 + json.dumps(issues[:20], ensure_ascii=False),
             )
 
+        if candidate_scope is not None:
+            current_items = [item for item in current_items if item["fact_id"] in current_bundle]
         model_items = conflict_scan_items(current_items)
         normalized_input = []
         for item in raw_conflicts:
@@ -4434,6 +4471,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "Research identity changed before review commit.",
                 )
             current_after = review_packets.bundle(db, story_id)
+            if candidate_scope is not None:
+                current_after = {fid: current_after[fid] for fid in candidate_scope if fid in current_after}
             if current_after != current_bundle:
                 raise ConflictError(
                     "live_fact_review_stale",
@@ -4496,9 +4535,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self._research_run_guard(db, session, run_id)
             now = self.service.store.now()
             refresh_review_status(db, story_id, now)
+            from .poi_memory import sync_poi_review_from_story
+            sync_poi_review_from_story(db, story_id, now)
             manifest = run_manifest(db, run_id)
             complete = bool(
-                coverage_complete
+                candidate_scope is None
+                and coverage_complete
                 and not missing_aspects
                 and manifest_complete(manifest)
             )

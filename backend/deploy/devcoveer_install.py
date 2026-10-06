@@ -1137,6 +1137,30 @@ def write_service_env(device: str, vibe: str, sha: str) -> None:
     )
 
 
+def qualified_fact_pool_models(text: Mapping[str, Any]) -> list[str]:
+    """Opt-in pool qualification; a catalog/recent response is insufficient."""
+    if 'extractors' not in text:
+        return ['mimo-v2.6-flash-free']
+    entries = text['extractors']
+    expected = {('gigachat', 'GigaChat-2'), ('opencode', 'mimo-v2.6-flash-free'),
+                ('opencode', 'nemotron-3-ultra-free')}
+    if not isinstance(entries, list) or len(entries) != 3:
+        raise DeployError('fact extractor pool qualification incomplete')
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise DeployError('fact extractor pool qualification incomplete')
+        pair = (entry.get('provider_id'), entry.get('model_id'))
+        if (pair not in expected or pair in seen or not all(entry.get(flag) is True for flag in (
+                'semantic_contract_verified', 'source_subject_negative_verified',
+                'planned_modality_verified', 'known_claim_reuse_verified'))
+                or pair[0] == 'opencode' and entry.get('endpoint') != 'http://127.0.0.1:4097'
+                or entry.get('directory') and entry['directory'] != str(RESEARCH_DIRECTORY)):
+            raise DeployError('fact extractor pool qualification incomplete')
+        seen.add(pair)
+    return ['mimo-v2.6-flash-free', 'nemotron-3-ultra-free']
+
+
 def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
     """Install only the small scoped profile on the existing OpenCode service.
 
@@ -1163,6 +1187,7 @@ def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
             or not native.get('common_acceptance_verified') or text.get('gigachat_model') != 'GigaChat-2'
             or not text.get('semantic_contract_verified')):
         raise DeployError('research semantic qualification incomplete')
+    fact_models = qualified_fact_pool_models(text)
     direct = caches.get('headless-vision-verification-v1')
     if direct is not None:
         models = direct.get('models') if isinstance(direct, dict) else None
@@ -1191,8 +1216,10 @@ def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
 import asyncio,json,sys
 from pathlib import Path
 from street_story.shared_devcoveer_research import SharedDevCoveerResearch,scoped_research_config
-directory=Path(sys.argv[1]);model='mimo-v2.6-flash-free'
+directory=Path(sys.argv[1]);model='mimo-v2.6-flash-free';models=json.loads(sys.argv[2])
 config=scoped_research_config(model,directory=directory)
+for selected in models:
+ config['provider']['opencode']['models'].update(scoped_research_config(selected,directory=directory)['provider']['opencode']['models'])
 profile=directory/'opencode.json'
 if profile.exists() and json.loads(profile.read_text())!=config:
  raise RuntimeError('existing scoped profile differs; reconcile its active attempts before changing it')
@@ -1201,17 +1228,22 @@ if not profile.exists():
 async def main():
  client=SharedDevCoveerResearch(str(directory),model_id=model)
  result=await client._attest(None,'search')
+ if len(models)>1:
+  for selected in models:
+   await SharedDevCoveerResearch(str(directory),model_id=selected)._attest(None,'facts')
  print(json.dumps({'endpoint':client.endpoint,'directory':client.directory,'guard_sha256':result['guard_sha256'],
   'tool_boundary_enforced':result['tool_boundary_enforced'],'search_call_limit':result['search_call_limit']}))
 asyncio.run(main())
 '''
-    attestation = json.loads(run([str(venv / 'bin/python'), '-c', program, str(RESEARCH_DIRECTORY)], env=env, timeout=45))
+    attestation = json.loads(run([str(venv / 'bin/python'), '-c', program, str(RESEARCH_DIRECTORY), json.dumps(fact_models)], env=env, timeout=90 if len(fact_models)>1 else 45))
     with sqlite3.connect(DATA_ROOT / 'street-story.sqlite3') as db:
         now = time.time()
         for key, value in caches.items():
             db.execute('INSERT OR REPLACE INTO cache(key,value_json,expires_at,created_at) VALUES(?,?,?,?)',
                        (key, json.dumps(value), now + 30 * 86400, now))
     return {**attestation, 'qualified_native_model': native['model'], 'qualified_text_model': text['gigachat_model'],
+            **({'qualified_fact_extractors': [entry['model_id'] for entry in text['extractors']]}
+               if 'extractors' in text else {}),
             'qualification_sha256': hashlib.sha256(RESEARCH_QUALIFICATION.read_bytes()).hexdigest(), 'new_inference': False}
 
 

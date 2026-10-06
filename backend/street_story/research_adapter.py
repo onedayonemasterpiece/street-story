@@ -4,11 +4,13 @@ Logical attempts persist in the product DB. No coding-agent task endpoint,
 credential hopping or new POI/job system is involved.
 """
 from __future__ import annotations
+import asyncio
 import hashlib
 import json
 import logging
 import math
 import re
+from weakref import WeakValueDictionary
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from .opencode_research import OpenCodeResearch, ResearchUnavailable
@@ -227,18 +229,22 @@ class ProductResearchAdapter:
                 'purpose': 'identity' if visual else ('facts' if role.startswith('facts') or '_fact_research_control_revision' in story else 'identity'),
                 'control_revision': story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+            if story.get('_fact_pool_unit_id'):
+                binding.update(fact_unit_id=story['_fact_pool_unit_id'],
+                               fact_input_sha256=story.get('_fact_pool_input_sha256'))
             now = self.service.store.now()
             db.execute('INSERT OR IGNORE INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
                 (attempt, logical, story['id'], role, canonical({'binding': binding, 'phase': 'created'}), now, now))
             return binding, None
 
-    async def run(self, story, role, unit, invoke):
-        if self.client is None:
+    async def run(self, story, role, unit, invoke, *, client=None):
+        client = client if client is not None else self.client
+        if client is None:
             raise RetryableProviderError('research_opencode_unconfigured',retry_at=self.service.store.now()+300)
         route_key = 'research-route-health:' + hashlib.sha256(canonical([
-            self.client.endpoint, self.client.model_id, getattr(self.client, 'directory', None),
-            getattr(self.client, 'profile_fingerprint', None)]).encode()).hexdigest()
-        quota_key = 'research-quota-health:' + self.client.provider_id + ':' + self.client.model_id
+            client.endpoint, client.model_id, getattr(client, 'directory', None),
+            getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
+        quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
         binding, saved = self.attempt(story, role, unit)
         if saved:
             return {'result': saved.get('result'), 'sources': saved.get('sources', []), 'receipt': saved}
@@ -266,6 +272,13 @@ class ProductResearchAdapter:
             if health.get('retry_at', 0) > self.service.store.now() and not resumed_probe:
                 raise RetryableProviderError(health.get('category','research_route_waiting'), retry_at=health['retry_at'])
         try:
+            if story.get('_fact_pool_unit_id'):
+                current = {**binding, 'job_id': story.get('_research_job_id'),
+                           'job_attempt': story.get('_research_job_attempt')}
+                self.guard_binding(current)
+                result = await invoke(binding)
+                self.guard_binding(current)
+                return result
             return await invoke(binding)
         except ResearchUnavailable as exc:
             status = exc.receipt.get('provider_status')
@@ -395,6 +408,8 @@ class ProductResearchAdapter:
     @property
     def facts_available(self):
         proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        if isinstance(proof.get('extractors'), list):
+            return any(route['qualified'] for route in self._fact_pool_routes())
         return (self.giga is not None and proof.get('gigachat_model')=='GigaChat-2'
                 and proof.get('semantic_contract_verified') is True) or self.opencode_facts_available
 
@@ -417,7 +432,171 @@ class ProductResearchAdapter:
         return await self.run(story, 'facts', page['_unit_id'], lambda binding:
                               self.client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding))
 
+    def _fact_pool_routes(self):
+        """Build only the configured primary and one approved extra transport.
+
+        All clients use the existing server, admission, checkpoint and capsule.
+        Qualification belongs to the existing verification receipt, not catalog.
+        """
+        primary = getattr(self, 'client', None)
+        routes = [{'role': 'facts_gigachat', 'provider_id': 'gigachat',
+                   'model_id': 'GigaChat-2', 'client': getattr(self, 'giga', None)}]
+        if primary is not None:
+            routes.append({'role': 'facts', 'provider_id': getattr(primary, 'provider_id', 'opencode'),
+                           'model_id': primary.model_id, 'endpoint': primary.endpoint,
+                           'client': primary})
+            extra = (getattr(self, '_fact_extractor_clients', {}) or {}).get('nemotron-3-ultra-free')
+            if extra is None and hasattr(primary, 'fact_extractor'):
+                extra = primary.fact_extractor('nemotron-3-ultra-free')
+                if not hasattr(self, '_fact_extractor_clients'):
+                    self._fact_extractor_clients = {}
+                self._fact_extractor_clients['nemotron-3-ultra-free'] = extra
+            if (extra is not None and extra.model_id == 'nemotron-3-ultra-free'
+                    and extra.provider_id == 'opencode' and extra.endpoint == primary.endpoint):
+                routes.append({'role': 'facts_opencode_nemotron', 'provider_id': extra.provider_id,
+                               'model_id': extra.model_id, 'endpoint': extra.endpoint, 'client': extra})
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        entries = proof.get('extractors') or []
+        for route in routes:
+            route['qualified'] = route['client'] is not None and any(
+                isinstance(entry, dict)
+                and all(entry.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                and all(entry.get(key) is True for key in (
+                    'semantic_contract_verified', 'source_subject_negative_verified',
+                    'planned_modality_verified', 'known_claim_reuse_verified'))
+                and (not entry.get('directory') or entry['directory'] == getattr(route['client'], 'directory', None))
+                for entry in entries)
+            route['available'] = route['qualified']
+            if route.get('endpoint') and route['client'] is not None:
+                client = route['client']
+                route_key = 'research-route-health:' + hashlib.sha256(canonical([
+                    client.endpoint, client.model_id, getattr(client, 'directory', None),
+                    getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
+                quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
+                route['available'] = route['qualified'] and all(
+                    (self.service.store.cache_get(key) or {}).get('retry_at', 0) <= self.service.store.now()
+                    for key in (route_key, quota_key))
+        return routes
+
+    def _fact_pool_receipts(self, story, unit):
+        roles = ('facts_gigachat', 'facts', 'facts_opencode_nemotron')
+        logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+            story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
+        latest = {}
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
+                              "WHERE story_id=? AND role IN ('facts_gigachat','facts','facts_opencode_nemotron') "
+                              "ORDER BY created_at DESC,rowid DESC", (story['id'],))
+            for row in rows:
+                receipt = json.loads(row['receipt_json'] or '{}')
+                binding = receipt.get('binding') or {}
+                if (row['logical_id'] not in logicals
+                        and not (binding.get('fact_unit_id') == unit
+                                 and binding.get('photo_sha256') == story['photo_sha256']
+                                 and binding.get('generation') == story.get('_identity_generation', 0))):
+                    continue
+                latest.setdefault(row['role'], receipt)
+        return latest
+
+    @staticmethod
+    def _fact_pool_unknown(receipt):
+        return (receipt.get('phase') not in {'created', 'failed', 'completed', 'aborted'}
+                or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged'))
+
+    async def _extract_fact_route(self, route, capsule, page, story, context):
+        if route['role'] == 'facts_gigachat':
+            return await self._extract_giga_page(page, story, context, allow_fallback=False)
+        client = route['client']
+        public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
+        public['known_fact_inventory'] = capsule['_known_fact_inventory']
+        public['context'] = {**public['context'], 'known_inventory_complete': True,
+                             'known_inventory_omitted_count': 0}
+        return await self.run(story, route['role'], page['_unit_id'], lambda binding:
+                              client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding), client=client)
+
     async def extract_fact_page(self, page, story, context):
+        """Serialize only duplicate units; independent chunks remain concurrent."""
+        if not hasattr(self, '_fact_unit_locks'):
+            self._fact_unit_locks = WeakValueDictionary()
+        key = (story['id'], story['photo_sha256'], story.get('_identity_generation', 0), page['_unit_id'])
+        lock = self._fact_unit_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._fact_unit_locks[key] = lock
+        async with lock:
+            return await self._extract_fact_page_locked(page, story, context)
+
+    async def _extract_fact_page_locked(self, page, story, context):
+        """One qualified extractor per independent chunk; unknowns never reroute."""
+        from jsonschema import Draft202012Validator
+        from .errors import MalformedProviderResponse
+        unit = page['_unit_id']
+        prior = self._fact_pool_receipts(story, unit)
+        unknown = next(((role, receipt) for role, receipt in prior.items()
+                        if self._fact_pool_unknown(receipt)), None)
+        proof = self.service.store.cache_get('research-text-verification-v1') or {}
+        if (unknown and not isinstance(proof.get('extractors'), list)
+                and not (unknown[1].get('binding') or {}).get('fact_unit_id')):
+            return await self._extract_giga_page(page, story, context)
+        if unknown:
+            role, receipt = unknown
+            # Recovery is readback on exactly the old route even if qualification
+            # or capacity changed. Neither missing IDs nor silence permits a send.
+            if role == 'facts_gigachat' or not receipt.get('session_id') or not receipt.get('message_id'):
+                raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
+            routes = self._fact_pool_routes()
+            route = next((r for r in routes if r['role'] == role and r['client'] is not None
+                          and r['model_id'] == receipt.get('model_id', r['model_id'])), None)
+            if route is None:
+                raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
+            return await self._extract_fact_route(route, fact_page_capsule(page, context), page,
+                {**story, '_fact_pool_unit_id': unit}, context)
+        if not isinstance(proof.get('extractors'), list):
+            # Preserve legacy single-client installations until explicit rollout.
+            return await self._extract_giga_page(page, story, context)
+        for receipt in prior.values():
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        capsule = fact_page_capsule(page, context)
+        digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
+        owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest}
+        routes = [route for route in self._fact_pool_routes() if route['available']]
+        if not routes:
+            raise RetryableProviderError('research_fact_pool_unverified', retry_at=self.service.store.now()+300)
+        ordinal = page.get('_extractor_ordinal', page.get('page_ordinal', page.get('batch_index')))
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
+            ordinal = int(hashlib.sha256(unit.encode()).hexdigest()[:8], 16)
+        offset = ordinal % len(routes)
+        routes = routes[offset:] + routes[:offset]
+        failures = []
+        for route in routes:
+            old = prior.get(route['role']) or {}
+            old_input = (old.get('binding') or {}).get('fact_input_sha256')
+            if old.get('phase') in {'failed', 'aborted'} and (old_input == digest or old_input is None):
+                continue  # A known closed unit is not paid for again unchanged.
+            try:
+                result = await self._extract_fact_route(route, capsule, page, owned, context)
+                if not Draft202012Validator(FACT_PAGE_SCHEMA).is_valid(result.get('result')):
+                    receipt = {**result['receipt'], 'phase': 'failed', 'provider_send_state': 'response_closed',
+                               'retry_safe': True, 'error_type': 'MalformedProviderResponse'}
+                    await self.checkpoint(receipt['binding'], receipt)
+                    raise MalformedProviderResponse('research_fact_page_schema_invalid')
+                LOG.info('street_story_fact_pool_completed story_id=%s unit_id=%s route=%s ordinal=%s',
+                         story['id'], unit, route['role'], ordinal)
+                return result
+            except ConflictError:
+                raise
+            except Exception as exc:
+                current = self._fact_pool_receipts(story, unit).get(route['role']) or {}
+                if self._fact_pool_unknown(current):
+                    raise RetryableProviderError('research_fact_unit_outcome_unknown',
+                                                 retry_at=self.service.store.now()+300) from exc
+                failures.append(_failure_code(exc))
+                LOG.warning('street_story_fact_pool_fallback story_id=%s unit_id=%s route=%s code=%s',
+                            story['id'], unit, route['role'], failures[-1])
+        raise RetryableProviderError('research_fact_pool_waiting', retry_at=self.service.store.now()+300)
+
+    async def _extract_giga_page(self, page, story, context, *, allow_fallback=True):
         from jsonschema import Draft202012Validator
         from .errors import MalformedProviderResponse
         capsule = fact_page_capsule(page, context)
@@ -442,7 +621,7 @@ class ProductResearchAdapter:
         if repeated_closed:
             LOG.warning('street_story_fact_closed_unit_reused story_id=%s logical_id=%s input_sha256=%s fallback=%s',
                         story['id'],logical,input_sha256,self.opencode_facts_available)
-            if self.opencode_facts_available:
+            if allow_fallback and self.opencode_facts_available:
                 return await self._extract_opencode_page(capsule,page,story)
             raise PermanentProviderError('gigachat:closed_semantic_unit_requires_live')
         binding,saved = self.attempt(story,'facts_gigachat',page['_unit_id'])
@@ -500,7 +679,7 @@ class ProductResearchAdapter:
                         story['id'],binding['attempt_id'],receipt['phase'],not_sent,receipt['error_code'],receipt['error_type'])
             if not_sent and isinstance(exc, ValueError):
                 raise PermanentProviderError(receipt['error_code']) from exc
-            if known_closed and self.opencode_facts_available:
+            if allow_fallback and known_closed and self.opencode_facts_available:
                 return await self._extract_opencode_page(capsule, page, story)
             if not_sent or not known_closed or getattr(exc,'resource_failure',False):
                 raise RetryableProviderError('gigachat_research_waiting',retry_at=self.service.store.now()+300) from exc

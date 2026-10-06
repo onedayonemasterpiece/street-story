@@ -76,6 +76,17 @@ def bundle(db, story_id):
         'ORDER BY a.assertion_id', (story_id,))}
 
 
+def pending_candidates(db, story_id, run_id):
+    ids = []
+    for row in db.execute('SELECT payload_json FROM research_chunk_batches WHERE run_id=? ORDER BY created_at,batch_index', (run_id,)):
+        saved = json.loads(row['payload_json'] or '{}')
+        if saved.get('extractor_candidates'):
+            ids.extend(str(f['fact_id']) for f in saved.get('facts', []) if f.get('fact_id'))
+    return [fid for fid in dict.fromkeys(ids) if db.execute(
+        "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
+        (story_id, fid)).fetchone()]
+
+
 def load(adapter, session, db, ref):
     row = db.execute('SELECT * FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                      (ref, session.resource_id)).fetchone()
@@ -89,7 +100,14 @@ def load(adapter, session, db, ref):
     story, _ = adapter._research_run_guard(db, session, row['run_id'])
     research = json.loads(story['research_json'] or '{}')
     payload = json.loads(row['payload_json'])
-    if int(story['revision']) != row['story_revision'] or int(research.get('identity_generation') or 0) != row['identity_generation'] or bundle(db, session.resource_id) != payload['bundle']:
+    current = bundle(db, session.resource_id)
+    if payload.get('candidate_scope') is not None:
+        current = {fid: current[fid] for fid in payload['candidate_scope'] if fid in current}
+        for claim in payload.get('nearby_existing_claims', []):
+            existing = db.execute("SELECT revision_digest,eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?", (session.resource_id, claim['fact_id'])).fetchone()
+            if not existing or existing['eligibility'] != 'eligible' or existing['revision_digest'] != claim['revision_digest']:
+                raise ConflictError('live_review_packet_stale', 'Nearby existing claim changed; request a fresh packet.')
+    if int(story['revision']) != row['story_revision'] or int(research.get('identity_generation') or 0) != row['identity_generation'] or current != payload['bundle']:
         raise ConflictError('live_review_packet_stale', 'Revisions changed; request a new packet. No decision applied.')
     actual = {r['evidence_id']: dict(r) for r in db.execute(
         "SELECT e.evidence_id,e.span_sha256,o.assertion_id FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.status='accepted'", (session.resource_id,))}
@@ -121,9 +139,23 @@ def read(adapter, session, args):
                 affected = {old['items'][n]['id'] for n in numbers}
                 db.execute("UPDATE research_runs SET state='verifying',completed_at=NULL WHERE run_id=? AND story_id=? AND state='completed'", (run_id, session.resource_id))
             story, run = adapter._research_run_guard(db, session, run_id)
+            candidate_ids, existing_hints = [], []
+            for batch in db.execute('SELECT payload_json FROM research_chunk_batches WHERE run_id=? ORDER BY created_at,batch_index', (run_id,)):
+                saved = json.loads(batch['payload_json'] or '{}')
+                if saved.get('extractor_candidates'):
+                    existing_hints.extend(str(fid) for fid in saved.get('extractor_existing_fact_ids', []) if fid)
+                    candidate_ids.extend(str(f['fact_id']) for f in saved.get('facts', []) if f.get('fact_id'))
+            candidate_mode = bool(candidate_ids) and not supersedes
+            if candidate_mode:
+                candidate_ids = [fid for fid in dict.fromkeys(candidate_ids) if db.execute(
+                    "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
+                    (session.resource_id, fid)).fetchone()][:3]
+                if not candidate_ids:
+                    return {'run_id': run_id, 'review_available': False, 'pending_candidates': 0,
+                            'instruction': 'All saved extractor candidates already have semantic decisions. Existing publication choices remain unchanged.'}
             pending = db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE run_id=? AND status NOT IN ('extracted','no_claims')", (run_id,)).fetchone()[0]
             unfetched = db.execute("SELECT COUNT(*) FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL", (run_id,)).fetchone()[0]
-            if (pending or unfetched) and args.get('allow_partial_review') is not True:
+            if (pending or unfetched) and not candidate_mode and args.get('allow_partial_review') is not True:
                 for chunk_id, receipt in session.state.get('research_chunk_receipts', {}).items():
                     active = db.execute("SELECT r.status,c.core_start,c.core_end,v.normalized_text FROM research_chunk_runs r JOIN source_chunks c ON c.chunk_id=r.chunk_id JOIN source_versions v ON v.source_version_id=c.source_version_id WHERE r.run_id=? AND r.chunk_id=?", (run_id, chunk_id)).fetchone()
                     if active and active['status'] not in {'extracted', 'no_claims'}:
@@ -136,6 +168,17 @@ def read(adapter, session, args):
                         'next_tool': 'get_research_chunk', 'next_args': {'run_id': run_id},
                         'instruction': 'Finish remaining source cores before full review. Call get_research_chunk with run_id ONLY: omit prior chunk_id and passage_cursor so the server selects the next unfinished core.'}
             exact = bundle(db, session.resource_id)
+            nearby = []
+            if candidate_mode:
+                exact = {fid: exact[fid] for fid in candidate_ids if fid in exact}
+                hints = list(dict.fromkeys(existing_hints))
+                hint_slots = ','.join('?' for _ in hints) or "''"
+                nearby = [dict(row) for row in db.execute(
+                    "SELECT f.fact_id,f.text,a.revision_digest FROM facts f JOIN fact_assertions a "
+                    "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                    "WHERE f.story_id=? AND f.evidence_supported=1 AND a.eligibility='eligible' "
+                    f"AND length(f.text)<=500 ORDER BY CASE WHEN f.fact_id IN ({hint_slots}) THEN 0 ELSE 1 END, "
+                    "a.owner_selected DESC,f.rowid DESC LIMIT 8", (session.resource_id, *hints))]
             items = []
             for fact_id in exact:
                 text = db.execute('SELECT text FROM facts WHERE story_id=? AND fact_id=?', (session.resource_id, fact_id)).fetchone()[0]
@@ -176,6 +219,8 @@ def read(adapter, session, args):
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
             payload = {'bundle': exact, 'items': items}
+            if candidate_mode:
+                payload.update(candidate_scope=list(exact), nearby_existing_claims=nearby)
             db.execute("UPDATE live_review_attempts SET state='superseded' WHERE state='pending' AND packet_ref IN (SELECT packet_ref FROM live_review_packets WHERE story_id=? AND binding=?)", (session.resource_id, binding(session)))
             db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
                        (ref, session.resource_id, run_id, binding(session), int(story['revision']), int(run['identity_generation']), canonical(payload), canonical(reused)))
@@ -201,6 +246,16 @@ def read(adapter, session, args):
                                'saved_verdict': json.loads(row['decisions_json']).get(str(f), {}).get('verdict')})
     page = {'packet_ref': ref, 'run_id': row['run_id'], 'policy_version': POLICY_VERSION, 'review_checks': REVIEW_CHECKS, 'items': [], 'total_facts': len(payload['items']),
             'next_cursor': None, 'has_more': False, 'next_tool': 'finalize_fact_review'}
+    if payload.get('candidate_scope') is not None:
+        page['nearby_existing_claims'] = payload.get('nearby_existing_claims', [])
+        page['review_checks'] += (' Compare against nearby_existing_claims without changing them: '
+            'equivalent_to_existing marks a supported duplicate; conflicts_with_existing withholds '
+            'the new candidate pending later arbitration. Require explicit atomic, support_complete '
+            'and qualifiers_preserved checks plus own literal basis_quotes. This is partial candidate '
+            'review; coverage_complete=false is sufficient. Never reread large documents for this operation.')
+    if page.get('nearby_existing_claims') and cursor < len(slices):
+        while page['nearby_existing_claims'] and response_units('get_review_packet', {**page, 'items': [slices[cursor]]}) > PAGE_UNITS - 100:
+            page['nearby_existing_claims'] = page['nearby_existing_claims'][:-1]
     while cursor < len(slices):
         candidate = {**page, 'items': [*page['items'], slices[cursor]], 'next_cursor': cursor + 1, 'has_more': cursor + 1 < len(slices)}
         if candidate['has_more']:
@@ -241,6 +296,14 @@ def prepare(adapter, session, args):
                 other = decision['equivalent_to']
                 if type(other) is not int or not 0 <= other < len(payload['items']):
                     raise ConflictError('live_review_decisions_invalid', 'equivalent_to must be a canonical fact number from this packet.')
+            if payload.get('candidate_scope') is not None:
+                nearby_ids = {claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])}
+                duplicate = decision.get('equivalent_to_existing')
+                conflicts_existing = decision.get('conflicts_with_existing', [])
+                if (duplicate is not None and duplicate not in nearby_ids) or not isinstance(conflicts_existing, list) or any(fid not in nearby_ids for fid in conflicts_existing):
+                    raise ConflictError('live_review_decisions_invalid', 'Use only nearby_existing_claims IDs for candidate relations.')
+                if verdict == 'supported' and (any(decision.get(flag) is not True for flag in ('atomic', 'support_complete', 'qualifiers_preserved')) or not decision.get('claims') or not decision.get('basis_quotes')):
+                    raise ConflictError('live_review_decisions_invalid', 'Positive candidate review requires explicit checks, one claim and own basis quotes.')
             refs = decision.get('evidence')
             evs = payload['items'][decision['fact']]['evidence']
             if not isinstance(refs, list) or (verdict == 'supported' and not refs) or any(type(e) is not int or not 0 <= e < len(evs) for e in refs):
@@ -286,7 +349,10 @@ def prepare(adapter, session, args):
             canonical_decision = decisions[str(canonical_fact)]
             if canonical_fact != f and (canonical_decision['verdict'] != 'supported' or canonical_decision.get('equivalent_to', canonical_fact) != canonical_fact):
                 raise ConflictError('live_review_canonical_invalid', 'Choose one explicitly supported canonical fact per equivalence group; do not form chains or cycles.')
-            if d['verdict'] != 'supported' or canonical_fact != f:
+            if d['verdict'] != 'supported' or canonical_fact != f or d.get('equivalent_to_existing') or d.get('conflicts_with_existing'):
                 rejected.append(item['id'])
         expanded = {**args, '_packet_request': args, 'run_id': row['run_id'], 'reviewed_assertions': reviewed, 'conflicts': conflicts}
+        expanded['_candidate_scope'] = payload.get('candidate_scope')
+        if payload.get('candidate_scope') is not None:
+            expanded['coverage_complete'] = False
         return None, expanded, rejected
