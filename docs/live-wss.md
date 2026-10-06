@@ -156,3 +156,7 @@ existing 600 ms preroll preserves the beginning of real speech after admission.
 The regression suite includes a high-energy screenshot-like transient that must
 produce zero admitted frames. Provider playback suppression remains separate.
 
+
+### Saved identity articles in research context
+
+The current research-run projection includes up to five server-owned article references from the confirmed visual comparison. References require the current photo/generation and a source already registered in the same current run. Mira can address these acquisition hints through the ordinary research reader without another search or an owner-supplied URL. An identity article reference does not validate a factual claim; the existing frozen-source, evidence-span and common-intake checks remain required.

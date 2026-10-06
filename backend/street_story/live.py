@@ -1958,6 +1958,31 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             ]
             fact_conflict_state = conflict_rows(db, story_id, limit=20)
             latest_run = db.execute("SELECT run_id,state,goal,status_detail,identity_generation FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)).fetchone()
+            # The model must be able to address the exact already-discovered
+            # article used for identity without inventing a URL or searching again.
+            # These are acquisition hints, not a factual or identity verdict.
+            if latest_run:
+                latest_run = dict(latest_run)
+                research = json.loads(row['research_json'] or '{}')
+                identity = research.get('visual_identity') or {}
+                references = {}
+                if (identity.get('status') == 'match'
+                        and identity.get('photo_sha256') == row['photo_sha256']
+                        and int(identity.get('generation') or 0) == int(research.get('identity_generation') or 0)
+                        and latest_run['identity_generation'] == int(research.get('identity_generation') or 0)):
+                    references = {str(ref.get('article_url') or '').rstrip('/'): ref
+                        for ref in (identity.get('reference_evidence') or [])[:5]
+                        if isinstance(ref, dict) and ref.get('article_url')}
+                identity_sources = []
+                for url, reference in references.items():
+                    source = db.execute('SELECT url,title,status,source_version_id FROM research_run_sources '
+                        "WHERE run_id=? AND rtrim(url,'/')=?", (latest_run['run_id'], url)).fetchone()
+                    if source:
+                        identity_sources.append({'source_ref': _search_source_ref(source['url']),
+                            'url': source['url'], 'title': str(source['title'] or '')[:100],
+                            'status': source['status'], 'source_version_id': source['source_version_id'],
+                            'identity_article_source_sha256': reference.get('article_source_sha256')})
+                latest_run['identity_article_sources'] = identity_sources
             confirmation = db.execute(
                 "SELECT * FROM live_publication_confirmations WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
                 (story_id,),
