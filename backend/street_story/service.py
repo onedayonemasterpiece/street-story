@@ -692,6 +692,39 @@ class StreetStoryService:
         if job['kind'] in {'research', 'refinement'}:
             self._resume_joined_fact_request(db, job['story_id'])
 
+    def _preserve_background_fact_value(self, db, job: dict[str, Any]) -> bool:
+        """An optional failed research page must not block usable editorial state."""
+        payload = json.loads(job['payload_json'] or '{}')
+        if job['kind'] != 'research' or payload.get('queue_priority') != 'background':
+            return False
+        story = self._story_row(db, job['story_id'])
+        research = json.loads(story['research_json'] or '{}')
+        identity = research.get('visual_identity') or {}
+        generation = int(research.get('identity_generation') or 0)
+        if (identity.get('status') not in {'match', 'owner_confirmed'}
+                or payload.get('identity_generation', generation) != generation
+                or payload.get('photo_sha256', story['photo_sha256']) != story['photo_sha256']):
+            return False
+        usable = db.execute(
+            "SELECT 1 FROM facts f JOIN fact_assertions a "
+            "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+            "WHERE f.story_id=? AND f.evidence_supported=1 AND a.eligibility='eligible' LIMIT 1",
+            (job['story_id'],),
+        ).fetchone()
+        if not usable:
+            return False
+        db.execute(
+            "UPDATE stories SET state='facts_ready',revision=revision+1,updated_at=? "
+            "WHERE id=? AND state='researching' AND error_code IS NULL",
+            (self.store.now(), job['story_id']),
+        )
+        logging.getLogger('uvicorn.error').info('street_story_background_research_failed_partial_value %s', canonical({
+            'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
+            'kind': job['kind'], 'attempt': job['attempts'], 'eligible_facts_retained': True,
+            'editorial_state_preserved': True,
+        }))
+        return True
+
     def _resume_joined_fact_request(self, db, story_id: str) -> bool:
         scheduler = getattr(self, '_schedule_joined_fact_request', None)
         if not callable(scheduler):
@@ -884,7 +917,7 @@ class StreetStoryService:
                 changed = db.execute("UPDATE jobs SET state='failed',lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.settings.redact(str(exc)), self.store.now(), job["id"], job['attempts'])).rowcount
                 if not changed:
                     return True
-                if job["kind"] != "visual":
+                if job["kind"] != "visual" and not self._preserve_background_fact_value(db, job):
                     db.execute("UPDATE stories SET state='needs_review',error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?", ("provider_permanent_error", "Не удалось выполнить обработку. Требуется проверка настроек сервиса.", self.store.now(), job["story_id"]))
                 if job['kind'] in {'research', 'refinement'}:
                     self._resume_joined_fact_request(db, job['story_id'])
