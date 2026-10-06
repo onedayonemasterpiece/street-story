@@ -3266,6 +3266,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 self._emit_research_progress(session, stage="partial", active=False, query="", source_count=len(sources), fact_count=saved_count)
                 return {"research_run_id": run_id, "partial": True, "reason": "source_fetch_failed", "next_tool": None, "resume_tool": "get_research_chunk", "saved_fact_count": saved_count}
             return await self._get_research_chunk(session, {**args, "source_url": source["url"]})
+        # Frozen page projection and ledger I/O can exceed the native audio
+        # ACK window. Keep this bounded synchronous work off the Live loop;
+        # provider fetches above stay on their existing async transport.
+        return await asyncio.to_thread(
+            self._read_frozen_research_chunk, session, args, run_id, candidate, snapshot_revision,
+        )
+
+    def _read_frozen_research_chunk(self, session, args, run_id, candidate, snapshot_revision):
         with self.service.store.tx() as db:
             self._research_run_guard(db, session, run_id)
             from .research_runs import acquire_chunk_lease
