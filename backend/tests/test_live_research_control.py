@@ -250,4 +250,5 @@ def test_stage_prompts_advertise_only_available_tools_and_leave_room_for_transit
     # (25,763 estimated units) and exhausted the unchanged rolling grant.
     assert len(json.dumps(setup, ensure_ascii=False, separators=(',', ':')).encode()) < 10_000
     assert 'separate unambiguous author confirmation' in publication['system_instruction']
-    assert 'all selected facts' in publication['system_instruction']
+    assert 'a readable subset of owner-selected eligible facts' in publication['system_instruction']
+    assert 'never use unselected facts' in publication['system_instruction']

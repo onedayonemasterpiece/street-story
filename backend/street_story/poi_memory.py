@@ -939,6 +939,32 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
     return result
 
 
+def previous_editorial_context(db, identity: dict[str, Any], story_id: str) -> list[dict[str, Any]]:
+    """Small exact-POI publication history, not recommendations or fact authority."""
+    if identity.get('status') not in {'match', 'owner_confirmed'}:
+        return []
+    keys = memory_keys(db, identity)
+    if not keys:
+        return []
+    rows = db.execute(
+        "SELECT id,research_json FROM stories WHERE id<>? AND "
+        "json_extract(research_json,'$.visual_identity.status') IN ('match','owner_confirmed') AND "
+        "json_extract(research_json,'$.visual_identity.candidate_id') IN ("
+        + ','.join('?' for _ in keys) + ") AND "
+        "COALESCE(json_extract(research_json,'$.publication_concept'),'')<>'' "
+        "ORDER BY updated_at DESC,id LIMIT 3", (story_id, *keys),
+    )
+    result = []
+    for row in rows:
+        selected = [str(item['assertion_id']) for item in db.execute(
+            "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND owner_selected=1 "
+            "ORDER BY created_at,assertion_id LIMIT 20", (row['id'],))]
+        result.append({'story_id': row['id'],
+            'concept': str(json.loads(row['research_json']).get('publication_concept') or '')[:600],
+            'selected_fact_ids': selected})
+    return result
+
+
 def prior_facts(db, identity: dict[str, Any], story_id: str, limit: int = 60) -> list[dict[str, Any]]:
     key = poi_key(identity)
     if not key or limit <= 0:
