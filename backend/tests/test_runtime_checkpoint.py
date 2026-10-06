@@ -27,7 +27,7 @@ def settings(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_real_boundary_replays_same_asset_ingress_identity(tmp_path):
+async def test_real_boundary_uploads_once_with_operation_idempotency(tmp_path):
     calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -49,7 +49,7 @@ async def test_real_boundary_replays_same_asset_ingress_identity(tmp_path):
         boundary = ReplayCheckingVibePublishBoundary(settings(tmp_path), client)
         receipt = await boundary.ingress_asset(PHOTO, "image/jpeg", "asset-replay-key")
     assert receipt["asset_id"] == "asset_1"
-    assert calls == 2
+    assert calls == 1
 
 
 class Dummy:

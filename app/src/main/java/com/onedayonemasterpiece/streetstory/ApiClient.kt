@@ -6,7 +6,7 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataOutputStream
 import java.io.File
-import java.io.FileOutputStream
+import java.io.InputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -50,6 +50,7 @@ class PublicationWire {
 
 class StoryWire {
     @SerializedName("photo_sha256") var photoSha256: String? = null
+    @SerializedName("source_available") var sourceAvailable: Boolean? = null
     @SerializedName("identity_generation") var identityGeneration: Int? = null
     @SerializedName("research_controls") var researchControls: Map<String, ResearchControlWire> = emptyMap()
     @SerializedName("research_pending") var researchPending: Map<String, Boolean> = emptyMap()
@@ -179,7 +180,8 @@ class WireError {
     var message: String = ""
 }
 
-class ApiClient(private val baseUrl: String, private val token: String) {
+class ApiClient(private val baseUrl: String, private val token: String,
+                private val photoInput: (String) -> InputStream = { File(it).inputStream() }) {
     private val gson = Gson()
 
     fun createStory(story: StorySnapshot): StoryWire {
@@ -204,7 +206,7 @@ class ApiClient(private val baseUrl: String, private val token: String) {
             out.writeBytes("--$boundary\r\n")
             out.writeBytes("Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\n")
             out.writeBytes("Content-Type: ${story.photoMimeType}\r\n\r\n")
-            File(story.photoPath).inputStream().use { input -> input.copyTo(out, 64 * 1024) }
+            photoInput(story.photoPath).use { input -> input.copyTo(out, 64 * 1024) }
             out.writeBytes("\r\n--$boundary--\r\n")
         }
         return readJson(connection, StoryWire::class.java)
@@ -232,7 +234,7 @@ class ApiClient(private val baseUrl: String, private val token: String) {
             out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"expected_photo_sha256\"\r\n\r\n$expectedHash\r\n")
             out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"original\"\r\n")
             out.writeBytes("Content-Type: ${photo.mimeType}\r\n\r\n")
-            File(photo.path).inputStream().use { it.copyTo(out, 64 * 1024) }
+            photoInput(photo.path).use { it.copyTo(out, 64 * 1024) }
             out.writeBytes("\r\n--$boundary--\r\n")
         }
         return readJson(connection, StoryWire::class.java)
@@ -316,20 +318,19 @@ class ApiClient(private val baseUrl: String, private val token: String) {
         return requestJson("POST", "/v1/stories/${segment(serverStoryId)}/$endpoint", payloadJson, requestKey, StoryWire::class.java)
     }
 
-    fun downloadAsset(relativePath: String, target: File): File {
-        require(relativePath.startsWith("/")) { "asset URL must be backend-relative" }
-        require(!relativePath.contains("..")) { "asset URL traversal is forbidden" }
-        val connection = open("GET", relativePath, null)
+    fun readAsset(relativePath: String): ByteArray {
+        val connection = if (relativePath.startsWith("https://")) {
+            (URL(relativePath).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000; readTimeout = 35_000
+            }
+        } else {
+            require(relativePath.startsWith("/") && !relativePath.startsWith("//")) { "asset URL must be HTTPS or backend-relative" }
+            require(!relativePath.contains("..")) { "asset URL traversal is forbidden" }
+            open("GET", relativePath, null)
+        }
         val status = connection.responseCode
         if (status !in 200..299) throw apiError(connection, status)
-        target.parentFile?.mkdirs()
-        val part = File(target.parentFile, target.name + ".part")
-        part.delete()
-        BufferedInputStream(connection.inputStream).use { input ->
-            FileOutputStream(part).use { out -> input.copyTo(out, 64 * 1024); out.fd.sync() }
-        }
-        check(part.renameTo(target) || runCatching { part.copyTo(target, overwrite = true); part.delete(); true }.getOrDefault(false))
-        return target
+        return BufferedInputStream(connection.inputStream).use(::readPhotoBytes)
     }
 
     private fun <T> requestJson(method: String, path: String, body: String?, key: String?, type: Class<T>): T {

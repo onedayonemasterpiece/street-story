@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import copy
 import io
 import json
@@ -47,9 +48,9 @@ class NativeClient:
                 await asyncio.Event().wait()
             content = copy.deepcopy(self.inputs[params['threadId']])
             content[0]['text_elements'] = []
-            content[1]['detail'] = None
+            content[2]['detail'] = None
             if self.wrong_image:
-                content[1]['path'] = 'foreign.jpg'
+                content[2]['url'] = 'https://example.org/foreign.jpg'
             result = {'status': 'mismatch', 'candidate_id': 'web:reference',
                       'reference_subject_candidate_id': '', 'reference_subject_observations': [],
                       'confidence': .99, 'observations': ['Distinct facade'], 'alternative_candidate_ids': []}
@@ -85,9 +86,13 @@ def setup(tmp_path):
     provider.poll_seconds = .001
     output = io.BytesIO()
     Image.new('RGB', (40, 40), 'red').save(output, format='JPEG')
-    context = {'comparison_id': 'comparison', 'references': [{'candidate_id': 'web:reference'}],
+    context = {'comparison_id': 'comparison', 'references': [{'label': 'REF 1', 'reference_id': 'ref-1', 'candidate_id': 'web:reference'}],
                'physical_candidates': [{'candidate_id': 'osm:way:1'}]}
-    story = {'id': 'story', 'photo_sha256': 'source', '_identity_generation': 0}
+    story = {'id': 'story', '_identity_generation': 0,
+             '_visual_image_parts': [{'label': 'SOURCE', 'mime_type': 'image/jpeg',
+                                      'data': base64.b64encode(output.getvalue()).decode()},
+                                     {'label': 'REF 1', 'url': 'https://example.org/ref.jpg'}],
+             '_visual_reference_mapping': context['references']}
     return provider, client, output.getvalue(), story, context, receipts, sends, finalized
 
 

@@ -28,7 +28,7 @@ class StoryLifecycleTest {
         val storyId = "story-delete-${System.nanoTime()}"
         val png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII=")
         val imported = PhotoImporter.importStream(context, ByteArrayInputStream(png), "image/png", storyId)
-        val photo = File(imported.path)
+        val photo = imported.path
         val audio: File
 
         StoryStore(context).use { store ->
@@ -50,19 +50,15 @@ class StoryLifecycleTest {
                 AudioProfile.MIME_M4A,
             )
             store.discardVoiceSession(voice.sessionId)
-            // discard removes its chunk file; use an owned processed file as a second
-            // durable file to prove story-directory cleanup as well.
-            val processed = File(context.filesDir, "stories/$storyId/processed.img").apply {
-                parentFile?.mkdirs()
-                writeBytes(byteArrayOf(4, 5, 6))
-            }
-            store.setProcessedImagePath(storyId, processed.absolutePath)
+            // Generated preview bytes are transient RAM; deletion releases that entry too.
+            val processed = PhotoAssets.retainTemporary(byteArrayOf(4, 5, 6))
+            store.setProcessedImagePath(storyId, processed)
             store.deleteStory(storyId)
             assertNull(store.story(storyId))
             assertTrue(store.facts(storyId).isEmpty())
         }
 
-        assertFalse(photo.exists())
+        assertFalse(PhotoAssets.available(photo))
         assertFalse(File(context.filesDir, "stories/$storyId").exists())
     }
 
@@ -71,8 +67,8 @@ class StoryLifecycleTest {
         val storyId = "story-test-${System.nanoTime()}"
         val png = Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlJkAAAAASUVORK5CYII=")
         val imported = PhotoImporter.importStream(context, ByteArrayInputStream(png), "image/png", storyId)
-        assertTrue(File(imported.path).isFile)
-        assertTrue(File(imported.path).absolutePath.startsWith(context.filesDir.absolutePath))
+        assertTrue(PhotoAssets.available(imported.path))
+        assertFalse(File(context.filesDir, "stories/$storyId").exists())
         assertEquals(64, imported.sha256.length)
 
         StoryStore(context).use { store -> store.createStory(imported) }

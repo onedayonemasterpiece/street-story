@@ -6,9 +6,7 @@ checkpoints belong to the product's existing resource control/job adapters.
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
-import io
 import json
 import re
 import time
@@ -19,7 +17,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from PIL import Image
 
 
 class ResearchUnavailable(RuntimeError):
@@ -261,20 +258,19 @@ class OpenCodeResearch:
             raise ResearchUnavailable('research_input_too_large')
         if not isinstance(binding, dict) or not binding:
             raise ResearchUnavailable('research_binding_required')
-        if snapshot is not None and (not isinstance(snapshot, bytes) or not snapshot or len(snapshot) > self.limits.max_image_bytes):
-            raise ResearchUnavailable('research_image_invalid')
+        direct_parts = []
         if snapshot is not None:
+            from .visual_attachments import direct_visual_parts
             try:
-                with Image.open(io.BytesIO(snapshot)) as image:
-                    if image.format != 'PNG':
-                        raise ValueError('contact_sheet_must_be_png')
-                    image.verify()
-            except (ValueError, OSError):
+                supplied = json.loads(prompt.split('Context:\n', 1)[1])
+                direct_parts = direct_visual_parts({'_visual_image_parts': snapshot,
+                    '_visual_reference_mapping': supplied.get('references')}, supplied)
+            except (ValueError, KeyError, IndexError, TypeError):
                 raise ResearchUnavailable('research_image_invalid') from None
         prompt += '\nResponse JSON schema (validate locally, no retries):\n' + json.dumps(schema, ensure_ascii=False)
         operation = json.dumps({'role': role, 'binding': {k: v for k, v in binding.items()
                                     if k not in {'session_id', 'message_id', 'phase'}}, 'prompt': prompt,
-                                'image_sha256': hashlib.sha256(snapshot).hexdigest() if snapshot else None}, sort_keys=True)
+                                'reference_ids': [item.get('reference_id') for item in supplied['references']] if direct_parts else []}, sort_keys=True)
         logical_hash = hashlib.sha256(operation.encode()).hexdigest()
         # Match the installed client's public Identifier format. Retain the
         # original timestamp in the durable binding for crash reconciliation.
@@ -283,15 +279,16 @@ class OpenCodeResearch:
         if binding.get('message_id') and binding['message_id'] != message_id:
             raise ResearchUnavailable('research_attempt_binding_changed')
         receipt = {'role': role, 'message_id': message_id, 'session_id': binding.get('session_id'),
-                   'phase': binding.get('phase', 'created'), 'input_image_sha256': hashlib.sha256(snapshot).hexdigest() if snapshot else None,
-                   'input_image_bytes': len(snapshot) if snapshot else 0, 'image_usage': 'unknown',
+                   'phase': binding.get('phase', 'created'),
+                   'input_image_bytes': sum(len(part['bytes'] or b'') for part in direct_parts),
+                   'image_attachments': len(direct_parts), 'image_usage': 'unknown',
                    'created_at': time.time(), 'model_id': self.model_id, 'provider_id': self.provider_id}
         receipt['binding'] = dict(binding)
         client = self.client
         started = time.monotonic()
         try:
             receipt['isolation'] = await self._attest(client, role)
-            workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': len(snapshot) if snapshot else 0,
+            workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': receipt['input_image_bytes'],
                         'max_steps': receipt['isolation']['steps'], 'max_output_chars': self.limits.max_output_chars,
                         'max_output_tokens': receipt['isolation']['max_output_tokens'],
                         'max_search_context_chars': self.limits.max_search_context_chars}
@@ -324,13 +321,14 @@ class OpenCodeResearch:
                     raise ResearchUnavailable('research_submit_outcome_unknown', receipt)
                 if not already_submitted:
                     parts = [{'type': 'text', 'text': prompt}]
-                    if snapshot:
-                        parts.append({'type': 'file', 'mime': 'image/png', 'filename': 'source-and-references.png',
-                                      'url': 'data:image/png;base64,' + base64.b64encode(snapshot).decode()})
+                    for part in direct_parts:
+                        parts.extend([{'type': 'text', 'text': part['label']},
+                                      {'type': 'file', 'mime': part['mime_type'],
+                                       'filename': part['label'], 'url': part['url']}])
                     receipt['phase'] = 'prompt_intent'
                     await self._checkpoint(binding, receipt)
                     await lease.before_send({**workload, 'session_id': sid, 'message_id': message_id,
-                                             'input_image_sha256': receipt['input_image_sha256']})
+                                             'image_attachments': receipt['image_attachments']})
                     await self._request(client, 'POST', f'/session/{sid}/prompt_async', json={
                         'messageID': message_id, 'model': {'providerID': self.provider_id, 'modelID': self.model_id},
                         'agent': self.agents[role],
@@ -397,11 +395,12 @@ class OpenCodeResearch:
                                 result = {'summary': ''}
                             if info.get('providerID') != self.provider_id or info.get('modelID') != self.model_id:
                                 raise ResearchUnavailable('research_provider_changed', receipt)
-                            if snapshot:
+                            if direct_parts:
                                 user = next((message for message in messages if message.get('info', {}).get('id') == message_id), {})
-                                expected = 'data:image/png;base64,' + base64.b64encode(snapshot).decode()
-                                if not any(part.get('type') == 'file' and part.get('mime') == 'image/png' and part.get('url') == expected
-                                           for part in user.get('parts', [])):
+                                delivered = [part for part in user.get('parts', []) if part.get('type') == 'file']
+                                if (len(delivered) != len(direct_parts) or any(
+                                        actual.get('mime') != expected['mime_type'] or actual.get('url') != expected['url']
+                                        for actual, expected in zip(delivered, direct_parts))):
                                     raise ResearchUnavailable('research_image_delivery_unverified', receipt)
                                 receipt['image_attachment_readback_verified'] = True
                             if role == 'search' and not any(call['status'] == 'completed' for call in calls):
@@ -463,7 +462,10 @@ class OpenCodeResearch:
         return await self._run('search', prompt, binding, SEARCH_SCHEMA)
 
     async def compare_image(self, snapshot, binding, jsonschema, context=''):
-        prompt = ('Compare actual SOURCE and REF pixels in the attached labelled contact sheet. '
+        from .visual_attachments import visual_context_without_image_hashes
+        supplied = json.loads(context) if isinstance(context, str) else context
+        context = json.dumps(visual_context_without_image_hashes(supplied), ensure_ascii=False)
+        prompt = ('Compare actual SOURCE and REF pixels in separate directly attached labelled images. '
                   'A missing/illegible image cannot be match. Consider all supplied physical alternatives and proven aliases. '
                   'Article title/alt/name is context, not proof. Match requires distinctive visible corroboration; '
                   'rear/front view alone is not contradiction. Name the exact sent reference and eligible subject candidate. '

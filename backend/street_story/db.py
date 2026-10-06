@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS cache(
   expires_at REAL NOT NULL,
   created_at REAL NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_stories_accepted_reference_candidate
+ ON stories(json_extract(research_json,'$.visual_identity.candidate_id'),updated_at DESC)
+ WHERE json_extract(research_json,'$.visual_identity.status')='match'
+ AND json_extract(research_json,'$.visual_identity.visual_reference_verified')=1;
 CREATE TABLE IF NOT EXISTS publish_intents(
   id TEXT PRIMARY KEY,
   story_id TEXT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,

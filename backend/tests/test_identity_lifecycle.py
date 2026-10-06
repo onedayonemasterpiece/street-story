@@ -252,10 +252,12 @@ def test_delete_story_cascades_and_scheduled_story_is_blocked(tmp_path):
     service, _ = make_service(tmp_path)
     story = create(service, client="delete-me")
     photo_path = tmp_path / "stories" / story["id"] / "source.jpg"
-    assert photo_path.is_file()
+    assert service._source_photo_bytes(story["id"])
+    assert not photo_path.exists()
 
     assert service.delete_story(story["id"]) == {"ok": True, "story_id": story["id"]}
     assert not photo_path.exists()
+    assert service._temporary_photos.get(story["id"]) is None
     with pytest.raises(NotFoundError):
         service.story(story["id"])
 

@@ -63,7 +63,7 @@ def test_discovery_does_not_turn_a_search_hit_or_model_memory_into_proof():
 async def test_test_double_without_live_provider_does_not_start_external_discovery():
     assert await discovery.recover(SimpleNamespace(providers=SimpleNamespace(gemini=object())), {}, '', [], set()) is None
 
-def test_same_physical_object_aliases_are_clustered_by_reference_or_specific_category():
+def test_shared_reference_and_category_keep_unlinked_wikipedia_subjects_separate():
     shared = 'https://upload.wikimedia.org/wikipedia/commons/a/ab/shared.jpg'
     candidates = [
         {'candidate_id':'wiki:1','name':'Кирха памяти королевы Луизы',
@@ -74,10 +74,9 @@ def test_same_physical_object_aliases_are_clustered_by_reference_or_specific_cat
          'entity_keys':['category:queen church kaliningrad'],'discovery':'wikipedia_text_search'},
     ]
     merged = discovery.merge_candidates(candidates, 'Кирха памяти королевы Луизы')
-    assert len(merged) == 1
-    assert merged[0]['candidate_id'] == 'wiki:1'
-    assert merged[0]['multi_view'] is False
-    assert set(merged[0]['source_urls']) == {'https://ru.wikipedia.org/wiki/a','https://ru.wikipedia.org/wiki/b'}
+    assert len(merged) == 2
+    assert {item['candidate_id'] for item in merged} == {'wiki:1', 'wiki:2'}
+    assert all(not item.get('alias_candidate_ids') for item in merged)
 
 
 def test_commons_views_of_one_object_become_one_multiview_candidate():
@@ -137,7 +136,7 @@ async def test_web_search_titles_expand_visual_discovery_without_becoming_proof(
 
 
 
-def test_wikipedia_current_use_page_clusters_with_explicit_building_alias():
+def test_wikipedia_current_use_prose_remains_a_hint_without_entity_link():
     candidates = [
         {'candidate_id':'wiki:church','name':'Кирха Святого Семейства (Калининград)',
          'url':'https://ru.wikipedia.org/wiki/church',
@@ -151,12 +150,9 @@ def test_wikipedia_current_use_page_clusters_with_explicit_building_alias():
          'discovery':'wikipedia_text_search'},
     ]
     merged = discovery.merge_candidates(candidates, 'Кирха Святого Семейства')
-    assert len(merged) == 1
-    assert merged[0]['candidate_id'] == 'wiki:church'
-    assert set(merged[0]['source_urls']) == {
-        'https://ru.wikipedia.org/wiki/church',
-        'https://ru.wikipedia.org/wiki/hall',
-    }
+    assert len(merged) == 2
+    assert {item['candidate_id'] for item in merged} == {'wiki:church', 'wiki:hall'}
+    assert all(not item.get('alias_candidate_ids') for item in merged)
 
 
 def test_distinct_explicit_entities_cannot_merge_through_shared_commons_bridge():
@@ -186,3 +182,30 @@ def test_known_entity_metadata_survives_selection_of_a_commons_representative():
     assert len(merged) == 1
     assert merged[0]['candidate_id'] == 'commons:1'
     assert merged[0]['wikidata'] == 'Q123'
+
+
+def test_unlinked_wikipedia_subjects_do_not_merge_through_commons_bridge():
+    from itertools import permutations
+    shared = 'https://upload.wikimedia.org/shared.jpg'
+    candidates = [
+        {'candidate_id': 'commons:1', 'name': 'Street view', 'reference_image_urls': [shared]},
+        {'candidate_id': 'wiki:2', 'name': 'North Tower', 'extract': 'Nearby stands South Tower.',
+         'reference_image_urls': [shared], 'discovery': 'wikipedia_text_search'},
+        {'candidate_id': 'wiki:3', 'name': 'South Tower', 'extract': 'Nearby stands North Tower.',
+         'reference_image_urls': [shared], 'discovery': 'wikipedia_text_search'},
+    ]
+    for ordering in permutations(candidates):
+        merged = discovery.merge_candidates(ordering, 'Street tower')
+        assert len(merged) == 2
+        assert all(not ({'wiki:2', 'wiki:3'} <= {item['candidate_id'], *item.get('alias_candidate_ids', [])})
+                   for item in merged)
+
+
+def test_exact_entity_still_merges_pages_despite_missing_alias_prose():
+    candidates = [
+        {'candidate_id': 'wiki:2', 'name': 'North Tower', 'wikidata': 'Q123',
+         'discovery': 'wikipedia_text_search'},
+        {'candidate_id': 'wiki:3', 'name': 'Nordturm', 'wikidata': 'Q123',
+         'discovery': 'wikipedia_text_search'},
+    ]
+    assert len(discovery.merge_candidates(candidates, 'North Tower')) == 1

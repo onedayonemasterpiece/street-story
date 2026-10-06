@@ -268,7 +268,7 @@ class MainActivity : Activity() {
         }
         val image = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            ImagePreviewDecoder.decode(story.processedImagePath ?: story.photoPath, 240, 240)?.let(::setImageBitmap)
+            ImagePreviewDecoder.decode(this@MainActivity, story.processedImagePath ?: story.photoPath, 240, 240)?.let(::setImageBitmap)
             background = rounded(SAGE_DARK, 14)
             clipToOutline = true
         }
@@ -558,11 +558,11 @@ class MainActivity : Activity() {
             visibility = if (meaningful) View.VISIBLE else View.GONE
         }
 
-        val imagePath = story.processedImagePath?.takeIf { File(it).isFile } ?: story.photoPath
+        val imagePath = story.processedImagePath?.takeIf(PhotoAssets::available) ?: story.photoPath
         if (shownImagePath != imagePath) {
             shownImagePath = imagePath
-            previewImage?.setImageBitmap(ImagePreviewDecoder.decode(imagePath, 1200, 1000))
-            stickyImage?.setImageBitmap(ImagePreviewDecoder.decode(imagePath, 240, 320))
+            previewImage?.setImageBitmap(ImagePreviewDecoder.decode(this, imagePath, 1200, 1000))
+            stickyImage?.setImageBitmap(ImagePreviewDecoder.decode(this, imagePath, 240, 320))
         }
 
         previewText?.apply {
@@ -835,7 +835,7 @@ class MainActivity : Activity() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "image/*"
             addCategory(Intent.CATEGORY_OPENABLE)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }, REQUEST_PHOTO)
     }
 
@@ -855,7 +855,7 @@ class MainActivity : Activity() {
                 if (recoveryId != null) {
                     val existing = requireNotNull(store.story(recoveryId)) { "Тема уже удалена" }
                     val server = requireNotNull(existing.serverStoryId) { "Дождитесь синхронизации темы" }
-                    val api = ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken))
+                    val api = ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken)) { PhotoAssets.open(this, it) }
                     val restored = api.recoverPhotoLocation(server, existing.photoSha256, photo)
                     check(restored.id == server) { "Backend вернул другую тему" }
                     PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { payload ->
@@ -875,7 +875,7 @@ class MainActivity : Activity() {
                 runOnUiThread { Toast.makeText(this, "Не удалось прочитать оригинал: ${exc.message}", Toast.LENGTH_LONG).show() }
             }
             if (recoveryId != null) imported?.let { photo ->
-                File(photo.path).delete()
+                PhotoAssets.releaseTemporary(photo.path)
                 PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(this, photo.clientStoryId, it) }
             }
         }.start()

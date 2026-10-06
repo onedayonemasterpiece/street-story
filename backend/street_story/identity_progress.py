@@ -85,9 +85,10 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         progress['article_page_count'] = int(fields.get('page_count', 0))
         step('web_media', f"Статьи: {progress['article_page_count']} страниц · проверяю иллюстрации", 'working')
     elif event == 'identity_images_reviewed':
-        seen = set(progress.get('reviewed_image_sha256s') or [])
-        seen.update(str(value) for value in fields.get('image_sha256s', []) if value)
-        progress['reviewed_image_sha256s'] = sorted(seen)
+        seen = set(progress.get('reviewed_reference_ids') or [])
+        seen.update(str(value) for value in fields.get('reference_ids', []) if value)
+        progress['reviewed_reference_ids'] = sorted(seen)
+        progress.pop('reviewed_image_sha256s', None)
         progress['images_reviewed_count'] = len(seen)
         step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {len(seen)}", 'working')
     elif event == 'identity_live_comparison_sent':

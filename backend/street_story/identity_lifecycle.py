@@ -6,13 +6,12 @@ import json
 import math
 import time
 import weakref
-from pathlib import Path
 from typing import Any
 
 from .identity_telemetry import record_identity_event
 from .identity_candidate_policy import candidate_identity_eligible
 from .camera_hints import read_camera_hints, metadata_summary, annotate_camera_alignment
-from .photo_metadata import inspect_gps, pixel_digest
+from .photo_metadata import inspect_gps
 from .service import ConflictError, canonical, digest
 
 ACCEPTED = {'match', 'owner_confirmed'}
@@ -53,6 +52,14 @@ def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
     if not isinstance(alternatives, list) or any(not isinstance(item, str) for item in alternatives):
         return False
     observations = result.get('observations')
+    if result.get('_observable_geometry_required') is True:
+        correspondences = result.get('observable_correspondences')
+        if (result.get('shared_distinctive_geometry') is not True
+                or not isinstance(correspondences, list) or not correspondences
+                or any(not isinstance(item, dict) or any(not isinstance(item.get(key), str)
+                       or not item[key].strip() for key in ('source_detail', 'reference_detail'))
+                       for item in correspondences)):
+            return False
     references_sent = result.get('_references_sent')
     if (not isinstance(observations, list) or not observations
             or any(not isinstance(item, str) or not item.strip() for item in observations)
@@ -125,13 +132,13 @@ class IdentityLifecycleMixin:
             started = time.monotonic()
             record_identity_event(self, story_id, 'identity_started', {'generation': generation, 'job_id': job_id, 'policy': POLICY})
             lat, lon = story.get('latitude'), story.get('longitude')
-            metadata = inspect_gps(Path(story['photo_path']))
+            source = self._source_photo_for_job(story_id)
+            metadata = inspect_gps(source)
             binding = prior.get('photo_camera_hints') or {}
             recovered_hints = (binding.get('photo_sha256') == story['photo_sha256']
                 and binding.get('source') == 'selected_original_exif'
-                and (prior.get('location_provenance') or {}).get('kind') == 'selected_original_exif'
-                and (prior.get('location_provenance') or {}).get('same_pixels_verified') is True)
-            hints = binding['metadata'] if recovered_hints else read_camera_hints(Path(story['photo_path']))
+                and (prior.get('location_provenance') or {}).get('kind') == 'selected_original_exif')
+            hints = binding['metadata'] if recovered_hints else read_camera_hints(source)
             if not recovered_hints:
                 binding = {'photo_sha256': story['photo_sha256'], 'source': 'source_photo_exif', 'metadata': hints}
             story['_camera_hints'] = hints
@@ -206,8 +213,22 @@ class IdentityLifecycleMixin:
             if not visual_match(raw, candidates):
                 from .identity_discovery import recover
                 rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
-                recovery = await recover(self, {**story, 'latitude': lat if valid else None,
-                    'longitude': lon if valid else None}, transcript, candidates, rejected)
+                known_sources = []
+                if raw.get('_comparison_deferred') and candidates:
+                    from .poi_memory import candidate_article_sources, candidate_reference_images
+                    with self.store.connection() as db:
+                        known_sources = [*candidate_reference_images(db, candidates),
+                                         *candidate_article_sources(db, candidates)]
+                if known_sources:
+                    # New photos still require a new comparison. Deliver the
+                    # existing queue first; searching is not a prerequisite for
+                    # addressing an already accumulated physical POI reference.
+                    record_identity_event(self, story_id, 'identity_memory_acquisition_ready', {
+                        'generation': generation, 'source_count': len(known_sources), 'identity_proof_reused': False})
+                    recovery = None
+                else:
+                    recovery = await recover(self, {**story, 'latitude': lat if valid else None,
+                        'longitude': lon if valid else None}, transcript, candidates, rejected)
                 if recovery:
                     recovered_raw, discovered = recovery
                     recovered_has_candidate = recovered_raw.get('candidate_id') in {
@@ -337,12 +358,7 @@ class IdentityLifecycleMixin:
         if gps['status'] != 'gps_present':
             record_identity_event(self, story_id, 'photo_location_recovery_failed', {'gps_status': gps['status']})
             raise ConflictError('photo_original_gps_unavailable', 'В выбранной копии GPS недоступен. Выберите исходный файл и разрешите чтение геометок.')
-        try:
-            same = pixel_digest(Path(story['photo_path'])) == pixel_digest(original)
-        except Exception:
-            same = False
-        if not same:
-            raise ConflictError('photo_recovery_mismatch', 'Выбрано другое изображение. Для этой темы нужен оригинал того же фото.')
+        self._temporary_photos.put(story_id, original)
         camera_binding = {'photo_sha256': expected_photo_sha256, 'source': 'selected_original_exif',
                           'metadata': read_camera_hints(original)}
         with self.store.tx() as db:
@@ -360,11 +376,11 @@ class IdentityLifecycleMixin:
                 db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
                 return self._story_repr(db, self._story_row(db, story_id))
             generation = int(prior.get('identity_generation') or 0) + 1
-            prior.update({'identity_generation': generation, 'photo_camera_hints': camera_binding, 'location_provenance': {'kind': 'selected_original_exif', 'same_pixels_verified': True}})
+            prior.update({'identity_generation': generation, 'photo_camera_hints': camera_binding, 'location_provenance': {'kind': 'selected_original_exif', 'selected_original_metadata': True}})
             prior.pop('visual_identity', None)
             prior.pop('osm', None)
             prior.pop('wikipedia', None)
             db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=?,state='photo_ready',error_code=NULL,error_message=NULL,"
                        'revision=revision+1,updated_at=? WHERE id=?', (gps['latitude'], gps['longitude'], canonical(prior), self.store.now(), story_id))
-        record_identity_event(self, story_id, 'photo_location_recovered', {'generation': generation, 'same_pixels_verified': True})
+        record_identity_event(self, story_id, 'photo_location_recovered', {'generation': generation, 'selected_original_metadata': True})
         return self.ensure_identity(story_id)

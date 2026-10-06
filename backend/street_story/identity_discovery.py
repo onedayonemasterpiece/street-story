@@ -7,13 +7,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
-from io import BytesIO
 import json
 import re
 from urllib.parse import quote
 
 import httpx
-from PIL import Image, ImageOps
 
 from .gemini import GeminiUnavailable
 from .identity_candidate_policy import wikipedia_identity_eligible
@@ -51,11 +49,8 @@ async def suggest(service, story, transcript, candidates):
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
         'visual_query': {'type': 'string'},
         'commons_query': {'type': 'string'}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query']}
-    with Image.open(story['photo_path']) as original:
-        image = ImageOps.exif_transpose(original).convert('RGB')
-        image.thumbnail((1000, 1000))
-        output = BytesIO()
-        image.save(output, format='JPEG', quality=80)
+    source_bytes = service._source_photo_bytes(story['id'])
+    source_mime = story.get('photo_mime_type') or 'image/jpeg'
     prompt = (
         'Определи, что следует искать для установления конкретного физического объекта на фото. '
         'Это только поисковые гипотезы, не доказательство. Не выбирай заведомо неподходящее '
@@ -81,7 +76,7 @@ async def suggest(service, story, transcript, candidates):
     gemini = service.providers.gemini
     async def call(key, timeout, *, model=None, quota=None):
         response = await gemini._generate(key, timeout, [
-            types.Part.from_bytes(data=output.getvalue(), mime_type='image/jpeg'), prompt], config,
+            types.Part.from_bytes(data=source_bytes, mime_type=source_mime), prompt], config,
             operation='grounded_research', model=model, quota=quota)
         return queries_from(json.loads(response.text or '{}'))
     routes = getattr(gemini, 'research_routes', None)
@@ -206,6 +201,9 @@ def _alias_stems(value):
 
 
 def _explicit_page_alias(left, right):
+    entity = str(left.get('wikidata') or '')
+    if not re.fullmatch(r'Q[1-9]\d*', entity) or entity != right.get('wikidata'):
+        return False  # Mere mentions/current-use prose are retrieval hints, not entity links.
     left_name = _alias_phrase(left.get('name'))
     right_name = _alias_phrase(right.get('name'))
     left_extract = _alias_phrase(left.get('extract'))
@@ -231,6 +229,12 @@ def merge_candidates(candidates, entity_name):
     # cannot bridge them transitively.
     entity_ids = [{str(item['wikidata'])} if re.fullmatch(r'Q[1-9]\d*', str(item.get('wikidata') or ''))
                   else set() for item in candidates]
+    # Keep distinct Wikipedia subjects separate even through an unlabelled
+    # Commons bridge. Shared pixels/categories do not establish subject identity.
+    page_ids = [{str(item['candidate_id'])} if item.get('discovery') == 'wikipedia_text_search'
+                else set() for item in candidates]
+    strong_keys = [{str(key) for key in item.get('entity_keys') or []
+                    if str(key).startswith('heritage:')} for item in candidates]
     def find(index):
         while parent[index] != index:
             parent[index] = parent[parent[index]]
@@ -242,8 +246,14 @@ def merge_candidates(candidates, entity_name):
             combined = entity_ids[left] | entity_ids[right]
             if len(combined) > 1:
                 return
+            combined_pages = page_ids[left] | page_ids[right]
+            if (len(combined_pages) > 1
+                    and not (entity_ids[left] & entity_ids[right] or strong_keys[left] & strong_keys[right])):
+                return
             parent[right] = left
             entity_ids[left] = combined
+            page_ids[left] = combined_pages
+            strong_keys[left] |= strong_keys[right]
     refs = [{root for url in item.get('reference_image_urls', [])
              if (root := original_reference(str(url)))} for item in candidates]
     keys = [set(item.get('entity_keys') or []) for item in candidates]
@@ -260,7 +270,8 @@ def merge_candidates(candidates, entity_name):
                 and candidates[right].get('discovery') == 'wikipedia_text_search'
                 and _explicit_page_alias(candidates[left], candidates[right])
             )
-            if refs[left] & refs[right] or keys[left] & keys[right] or source_membership or explicit_alias:
+            if (entity_ids[find(left)] & entity_ids[find(right)] or refs[left] & refs[right]
+                    or keys[left] & keys[right] or source_membership or explicit_alias):
                 union(left, right)
     grouped = {}
     for index, item in enumerate(candidates):
@@ -516,7 +527,7 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
             page = pages.setdefault(url, {'source': dict(unique[url]), 'attempts': 0})
             page['status'] = receipt['status']
             page['attempts'] += 1
-            page['source'].update({key: receipt[key] for key in ('gallery_cursor', 'gallery_slide_cursor') if key in receipt})
+            page['source'].update({key: receipt[key] for key in ('gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered') if key in receipt})
             media = [item for item in articles if item.get('discovery_provenance', {}).get('url') == url
                      or item.get('url') == receipt.get('final_url', url)]
             if media:
@@ -562,14 +573,18 @@ async def recover(service, story, transcript, candidates, excluded):
         cached, unread = [], []
         for source in history['sources']:
             page = pages.get(source['url']) or {}
-            if page.get('status') == 'completed':
+            if page.get('status') in {'completed', 'partial'}:
                 cached.extend(page.get('candidates', []))
-            elif page.get('status') != 'excluded':
+            if page.get('status') not in {'completed', 'excluded'}:
                 unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
-                    if key in {'gallery_cursor', 'gallery_slide_cursor'}}})
+                    if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}})
         unread.sort(key=lambda source: pages.get(source['url'], {}).get('attempts', 0))
+        if cached:
+            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': ['Сохранённые иллюстрации готовы для визуального сравнения.'],
+                '_article_media_pending': True, '_references_sent': []}, cached
         receipts = []
-        fetched = await article_candidates(service, story, unread, excluded, receipts=receipts)
+        fetched = await article_candidates(service, story, unread, excluded, receipts=receipts, first_ready=True)
         _retain_article_discovery(service, story, sources, receipts=receipts, articles=fetched)
         articles = [*cached, *fetched]
         # Third-party illustrations belong to the current Live conversation.

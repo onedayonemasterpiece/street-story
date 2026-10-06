@@ -8,8 +8,10 @@ KEEP_PUBLICATION="${LIVE_E2E_KEEP_PUBLICATION:-false}"
 IDENTITY_ONLY="${LIVE_E2E_IDENTITY_ONLY:-false}"
 MORE_ONLY="${LIVE_E2E_MORE_ONLY:-false}"
 RESUME_STORY_ID="${LIVE_E2E_RESUME_STORY_ID:-}"
+RESUME_IDENTITY_RESEARCH="${LIVE_E2E_RESUME_IDENTITY_RESEARCH:-false}"
 [[ -z "$RESUME_STORY_ID" || "$RESUME_STORY_ID" =~ ^story_[a-zA-Z0-9]{8,64}$ ]]
-[[ -z "$RESUME_STORY_ID" || "$IDENTITY_ONLY" == false ]]
+[[ "$RESUME_IDENTITY_RESEARCH" == true || "$RESUME_IDENTITY_RESEARCH" == false ]]
+[[ "$RESUME_IDENTITY_RESEARCH" != true || ( "$IDENTITY_ONLY" == true && -n "$RESUME_STORY_ID" ) ]]
 [[ "$KEEP_PUBLICATION" == true || "$KEEP_PUBLICATION" == false ]]
 [[ "$IDENTITY_ONLY" == true || "$IDENTITY_ONLY" == false ]]
 [[ "$MORE_ONLY" == true || "$MORE_ONLY" == false ]]
@@ -86,7 +88,7 @@ else
 fi
 adb shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS || true
 adb shell "run-as $PKG mkdir -p files/live-golden"
-fixture_names=(config.json token.txt photo.jpg)
+fixture_names=(config.json token.txt)
 if [[ "$IDENTITY_ONLY" != true ]]; then fixture_names+=(voice-{1..6}.pcm); fi
 for name in "${fixture_names[@]}"; do
   test -s "$FIXTURE_DIR/$name"
@@ -103,6 +105,7 @@ adb shell am instrument -w \
   -e class com.onedayonemasterpiece.streetstory.LiveGoldenInstrumentedTest \
   -e keepPublication "$KEEP_PUBLICATION" \
   -e identityOnly "$IDENTITY_ONLY" \
+  -e resumeIdentityResearch "$RESUME_IDENTITY_RESEARCH" \
   -e moreOnly "$MORE_ONLY" \
   "${resume_args[@]}" \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
@@ -110,17 +113,9 @@ adb shell am instrument -w \
 # Preserve bounded evidence on failure; never export token/configuration stores.
 adb exec-out "run-as $PKG cat files/live-golden/stage-progress.json" > "$ARTIFACT_DIR/android-stage-progress.json" || true
 adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json" || true
-mkdir -p "$ARTIFACT_DIR/stage-screenshots"
-for name in $(adb shell "run-as $PKG ls files/live-golden/screenshots" 2>/dev/null | tr -d '\r'); do
-  [[ "$name" =~ ^[0-9][0-9]-[a-z-]+\.png$ ]] || continue
-  adb exec-out "run-as $PKG cat files/live-golden/screenshots/$name" > "$ARTIFACT_DIR/stage-screenshots/$name"
-done
-grep -q 'OK (1 test)'  "$ARTIFACT_DIR/android-instrumentation.txt"
+adb exec-out "run-as $PKG cat files/live-golden/identity-resume-intent.json" > "$ARTIFACT_DIR/android-identity-resume-intent.json" || true
+grep -q 'OK (1 test)' "$ARTIFACT_DIR/android-instrumentation.txt"
 test -s "$ARTIFACT_DIR/android-golden-evidence.json"
-adb shell am start -W -n "$PKG/.MainActivity" >/dev/null
-sleep 3
-adb exec-out screencap -p > "$ARTIFACT_DIR/android-preview.png"
-test -s "$ARTIFACT_DIR/android-preview.png"
 python - <<'PY'
 import json
 import os
@@ -170,13 +165,13 @@ if os.environ.get('LIVE_E2E_IDENTITY_ONLY', 'false') == 'true':
             raise SystemExit('Android headless identity provenance count missing: ' + name)
     references = identity.get('reference_evidence') or []
     if (not isinstance(references, list) or any(not isinstance(item, dict)
-            or not re.fullmatch('[0-9a-f]{64}', str(item.get('model_image_sha256') or ''))
+            or not str(item.get('image_url') or item.get('model_image_url') or '').startswith('https://')
             or not str(item.get('source_url') or '').startswith('https://')
             or item.get('subject_candidate_id', item.get('candidate_id')) != identity.get('candidate_id')
             for item in references)):
         raise SystemExit('Android headless identity decoded reference provenance is invalid')
     if (len(references) != evidence['identity_reference_count']
-            or len({item['model_image_sha256'] for item in references}) != evidence['identity_model_image_count']):
+            or len({item.get('image_url') or item.get('model_image_url') for item in references}) != evidence['identity_model_image_count']):
         raise SystemExit('Android headless identity reference counts disagree with retained proof')
     source_urls = evidence.get('identity_source_urls') or []
     if (not isinstance(source_urls, list) or any(not isinstance(url, str) or not url.startswith('https://') for url in source_urls)
@@ -184,7 +179,7 @@ if os.environ.get('LIVE_E2E_IDENTITY_ONLY', 'false') == 'true':
         raise SystemExit('Android headless identity source URL count disagrees with retained proof')
     if (evidence.get('identity_progress') or {}).get('visual_comparison_verified') is not True:
         raise SystemExit('Android headless identity progress lacks verified comparison')
-    if not any(item.get('stage') == '02-object-identified' for item in evidence.get('stage_screenshots', [])):
+    if not any(item.get('stage') == '02-object-identified' for item in evidence.get('stage_ui_receipts', [])):
         raise SystemExit('Android headless identity lacks current UI readback')
     raise SystemExit(0)
 if os.environ.get('LIVE_E2E_MORE_ONLY', 'false') == 'true':

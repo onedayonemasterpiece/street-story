@@ -11,7 +11,8 @@ from test_identity_lifecycle import make_service
 def verdict(candidate_id='wiki:1', **values):
     return {'status': 'match', 'candidate_id': candidate_id, 'confidence': .97,
             'observations': ['Same distinctive tower openings and brick arch.'],
-            'alternative_candidate_ids': [], '_references_sent': [candidate_id], **values}
+            'alternative_candidate_ids': [], '_references_sent': [candidate_id],
+            '_reference_ids_sent': ['ref_article'], **values}
 
 
 def subject(candidate_id='wiki:1', **values):
@@ -22,12 +23,12 @@ def subject(candidate_id='wiki:1', **values):
 def article():
     return {'candidate_id': 'web:article', 'name': 'A misleading overview title',
             'url': 'https://example.org/article', 'discovery': 'web_article_media',
-            'reference_image_urls': ['https://example.org/rear.jpg']}
+            'reference_image_urls': ['https://example.org/rear.jpg'], 'reference_id': 'ref_article'}
 
 
 def image_evidence(**values):
     return {'candidate_id': 'web:article', 'article_url': 'https://example.org/article',
-            'source_url': 'https://example.org/rear.jpg', 'model_image_sha256': 'a' * 64, **values}
+            'source_url': 'https://example.org/rear.jpg', 'reference_id': 'ref_article', **values}
 
 
 def test_genuine_alternative_outside_sent_reference_batch_blocks_match():
@@ -106,7 +107,7 @@ def test_article_binding_requires_eligible_existing_physical_subject(candidate_i
 
 
 @pytest.mark.parametrize('alteration', [{'candidate_id': 'web:other'}, {'article_url': 'https://example.org/other'},
-                                      {'source_url': 'https://example.org/banner.jpg'}, {'model_image_sha256': ''}])
+                                      {'source_url': 'https://example.org/banner.jpg'}, {'reference_id': 'not_sent'}])
 def test_article_binding_requires_exact_actual_sent_image_receipt(alteration):
     resolved = bind_reference_subject(verdict('web:article', reference_subject_candidate_id='wiki:1'),
                                       [article()], [subject()], [image_evidence(**alteration)])

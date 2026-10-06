@@ -1,5 +1,4 @@
 from copy import deepcopy
-import hashlib
 from types import SimpleNamespace
 
 import httpx
@@ -8,7 +7,6 @@ import pytest
 from street_story.identity_progress import advance, current_projection
 from street_story.identity_references import reference_images
 from street_story.live import SYSTEM_INSTRUCTION
-from test_reference_image_codec import jpeg
 
 
 def test_old_durable_copy_is_refreshed_without_mutation_or_new_work():
@@ -40,22 +38,18 @@ def test_uncertainty_is_not_an_order_to_name_the_object():
 
 
 @pytest.mark.asyncio
-async def test_receipts_describe_actual_normalized_bytes_not_proposed_urls():
-    fixture = jpeg()
+async def test_receipts_describe_direct_public_addresses_without_fetch_or_verdict_cache():
     calls = []
-    async def handler(request):
+    async def forbidden(request):
         calls.append(str(request.url))
-        return httpx.Response(200, headers={'content-type': 'image/jpeg'}, content=fixture)
-    service = SimpleNamespace()
-    candidates = [{'candidate_id': 'wiki:1', 'reference_image_urls': [
-        'https://evil.invalid/not-authorized.jpg', 'https://upload.wikimedia.org/real.jpg']}]
-    receipts = []
-    cached_receipts = []
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        images = await reference_images(service, candidates, http=client, evidence=receipts)
-        await reference_images(service, candidates, http=client, evidence=cached_receipts)
-    assert len(calls) == len(images) == len(receipts) == 1
-    assert receipts[0]['source_url'] == calls[0]
-    assert receipts[0]['model_image_sha256'] == hashlib.sha256(images[0][2]).hexdigest()
-    assert receipts[0]['model_image_bytes'] == len(images[0][2])
-    assert not receipts[0]['cache_hit'] and cached_receipts[0]['cache_hit']
+        raise AssertionError('URL selection must not fetch images')
+    candidates = [{'candidate_id':'wiki:1', 'reference_image_urls':[
+        'https://127.0.0.1/private.jpg','https://upload.wikimedia.org/real.jpg']}]
+    first, second = [], []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as client:
+        images = await reference_images(SimpleNamespace(), candidates,http=client,evidence=first)
+        repeated = await reference_images(SimpleNamespace(), candidates,http=client,evidence=second)
+    assert not calls and images == repeated == [('wiki:1','image/jpeg','https://upload.wikimedia.org/real.jpg')]
+    assert first == second and first[0]['source_url'] == images[0][2]
+    assert first[0]['delivery'] == 'direct_public_url'
+    assert not any('sha' in key or 'cache' in key for key in first[0])

@@ -73,6 +73,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
             addAll(chunkPaths)
         }
         ownedFiles.forEach { raw ->
+            PhotoAssets.releaseTemporary(raw)
             runCatching {
                 val file = File(raw).canonicalFile
                 if (file.path.startsWith(filesRoot.path + File.separator) && file.isFile) file.delete()

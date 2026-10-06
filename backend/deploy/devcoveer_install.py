@@ -324,7 +324,8 @@ def prune_release_environments(current_sha: str, previous_sha: str | None) -> di
     protected = {current_sha, *([previous_sha] if previous_sha else [])}
     try:
         protected.update(release_process_references())
-    except DeployError:
+        protected = protect_environment_owners(protected)
+    except (DeployError, OSError, ValueError, KeyError):
         return {"status": "skipped", "reason": "process_references_unverified", "removed": []}
     removed: list[str] = []
     skipped: list[str] = []
@@ -351,9 +352,9 @@ def prune_release_environments(current_sha: str, previous_sha: str | None) -> di
             continue
         # Refresh before each removal so a newly started rollback/worker is protected.
         try:
-            if release.name in release_process_references():
+            if release.name in protect_environment_owners(protected | release_process_references()):
                 continue
-        except DeployError:
+        except (DeployError, OSError, ValueError, KeyError):
             return {"status": "partial", "reason": "process_references_unverified", "removed": removed}
         try:
             shutil.rmtree(environment)
@@ -437,11 +438,102 @@ def verify_private_resource_wheel(wheel: Path) -> None:
     if wheel.is_symlink() or hashlib.sha256(wheel.read_bytes()).hexdigest() != AI_RESOURCE_CONTROL_WHEEL_SHA256:
         raise DeployError('private ai-resource-control wheel digest mismatch')
 
+def dependency_fingerprint(release: Path) -> dict[str, Any]:
+    """Exact declared inputs; a source SHA alone does not require another env."""
+    source = release / 'source'
+    requirements = source / 'backend/requirements.txt'
+    lock_path = source / 'live-framework.lock.json'
+    lock = json.loads(lock_path.read_text())
+    archive = source / lock['archive']
+    if (archive.is_symlink() or not archive.resolve().is_relative_to((source / 'vendor').resolve())
+            or hashlib.sha256(archive.read_bytes()).hexdigest() != lock['sha256']):
+        raise DeployError('Live dependency archive digest mismatch')
+    return {'python': [3, 12], 'requirements_sha256': hashlib.sha256(requirements.read_bytes()).hexdigest(),
+            'live_lock_sha256': hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+            'live_archive_sha256': lock['sha256'], 'live_python_version': lock['python_version'],
+            'resource_version': AI_RESOURCE_CONTROL_VERSION,
+            'resource_wheel_sha256': AI_RESOURCE_CONTROL_WHEEL_SHA256}
+
+
+def _verified_environment_owner(environment: Path) -> Path:
+    target = environment.resolve(strict=True)
+    owner = target.parent
+    if (target.name != 'venv' or owner.parent != RELEASES_ROOT or owner.is_symlink()
+            or not SHA_RE.fullmatch(owner.name) or not (target / 'bin/python').is_file()):
+        raise DeployError('dependency environment owner is unverified')
+    manifest = json.loads((owner / '.street-story-release.json').read_text())
+    if (manifest.get('repository') != REPOSITORY or manifest.get('release_sha') != owner.name
+            or not (owner / 'source/backend/street_story').is_dir()):
+        raise DeployError('dependency environment release manifest mismatch')
+    return owner
+
+
+def attest_dependency_environment(environment: Path, fingerprint: dict[str, Any]) -> None:
+    """Read installed archive provenance, interpreter version and dependency health."""
+    program = '''
+import importlib.metadata as metadata,json,sys
+expected=json.loads(sys.argv[1])
+assert list(sys.version_info[:2])==expected['python']
+for name,version,digest in [
+ ('live-interaction',expected['live_python_version'],expected['live_archive_sha256']),
+ ('ai-resource-control',expected['resource_version'],expected['resource_wheel_sha256'])]:
+ distribution=metadata.distribution(name)
+ assert distribution.version==version
+ provenance=json.loads(distribution.read_text('direct_url.json') or '{}')
+ archive=provenance.get('archive_info',{})
+ assert archive.get('hashes',{}).get('sha256')==digest or archive.get('hash')=='sha256='+digest
+import ai_resource_control,fastapi,httpx,live_interaction,pydantic,uvicorn
+'''
+    python = str(environment / 'bin/python')
+    run([python, '-c', program, json.dumps(fingerprint, sort_keys=True)], timeout=30)
+    run([python, '-m', 'pip', 'check'], timeout=30)
+
+
+def reuse_compatible_environment(release: Path, fingerprint: dict[str, Any]) -> Path | None:
+    """Point directly to a verified physical env; never pip-install through a link."""
+    environment = release / 'venv'
+    candidates = [environment] if environment.exists() or environment.is_symlink() else []
+    candidates.extend(item / 'venv' for item in sorted(RELEASES_ROOT.iterdir())
+                      if item != release and SHA_RE.fullmatch(item.name) and not item.is_symlink())
+    for candidate in candidates:
+        try:
+            owner = _verified_environment_owner(candidate)
+            if dependency_fingerprint(owner) != fingerprint:
+                continue
+            attest_dependency_environment(owner / 'venv', fingerprint)
+        except (DeployError, OSError, ValueError, KeyError, TypeError):
+            continue
+        if candidate == environment:
+            return environment
+        if environment.exists() or environment.is_symlink():
+            # Existing noncompatible/incomplete content belongs to the normal installer.
+            return None
+        environment.symlink_to(owner / 'venv', target_is_directory=True)
+        return environment
+    if environment.is_symlink():
+        raise DeployError('existing dependency symlink is incompatible; refusing to mutate its owner')
+    return None
+
+
+def protect_environment_owners(protected: set[str]) -> set[str]:
+    """Current/rollback/process release aliases protect their resolved env owners."""
+    owners = set(protected)
+    for sha in protected:
+        environment = RELEASES_ROOT / sha / 'venv'
+        if environment.is_symlink():
+            owners.add(_verified_environment_owner(environment).name)
+    return owners
+
+
 def ensure_venv(release: Path) -> Path:
     source = release / "source"
     requirements = source / "backend/requirements.txt"
     if not requirements.is_file():
         raise DeployError("backend requirements are missing from exact release")
+    fingerprint = dependency_fingerprint(release)
+    reused = reuse_compatible_environment(release, fingerprint)
+    if reused is not None:
+        return reused
     venv = release / "venv"
     python = _python_312_runtime()
 
@@ -1301,6 +1393,8 @@ def main() -> int:
         "tree_sha": tree_sha,
         "release_root": str(release),
         "environment_cleanup": environment_cleanup,
+        "dependency_environment": {"path": str(venv), "resolved_path": str(venv.resolve()),
+                                   "reused": venv.is_symlink()},
         "listener": f"127.0.0.1:{PORT}",
         "service": status,
         "local_health": {

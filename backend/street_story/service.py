@@ -97,6 +97,8 @@ class StreetStoryService:
         self.settings = settings
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(settings.data_dir / "street-story.sqlite3")
+        from .temporary_photos import TemporaryPhotos
+        self._temporary_photos = TemporaryPhotos()
         self.providers = providers or ProviderBundle(
             OSMClient(self.store, settings.osm_user_agent),
             WikipediaClient(self.store),
@@ -165,6 +167,26 @@ class StreetStoryService:
             row = self._story_row(db, story_id)
             return self._story_repr(db, row)
 
+    def _source_photo_bytes(self, story_id: str) -> bytes:
+        data = self._temporary_photos.get(story_id)
+        if data is None:
+            raise ConflictError('source_unavailable', 'Временное фото недоступно. Загрузите его повторно из галереи.')
+        return data
+
+    def _source_photo_for_job(self, story_id: str) -> bytes:
+        try:
+            return self._source_photo_bytes(story_id)
+        except ConflictError as exc:
+            raise RetryableProviderError('source_unavailable', retry_at=self.store.now()+300) from exc
+
+    def _restore_source_photo(self, db, story_id: str, data: bytes):
+        self._temporary_photos.put(story_id, data)
+        # A normal reupload wakes only tasks waiting for ephemeral photo bytes.
+        # Unknown external operations keep their existing reconciliation state.
+        db.execute("UPDATE jobs SET available_at=?,updated_at=? WHERE story_id=? AND state='retry' "
+                   "AND last_error IN ('source_unavailable','identity_source_unavailable')",
+                   (self.store.now(), self.store.now(), story_id))
+
     def _hydrate_poi_memory(self, db, row) -> int:
         from .poi_memory import ensure_poi_identity, hydrate_story_facts, memory_keys
         research = json.loads(row['research_json'] or '{}')
@@ -218,6 +240,7 @@ class StreetStoryService:
             story_dir = self.settings.data_dir / "stories" / story_id
             db.execute("DELETE FROM stories WHERE id=?", (story_id,))
         root = self.settings.data_dir.resolve()
+        self._temporary_photos.discard(story_id)
         for path in durable_paths:
             try:
                 resolved = path.resolve()
@@ -298,6 +321,8 @@ class StreetStoryService:
             "processing": processing,
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "photo_sha256": row['photo_sha256'], "identity_generation": generation,
+            "source_available": self._temporary_photos.get(row['id']) is not None,
+            "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {
                 'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
                 'revision': int((controls.get(purpose) or {}).get('revision') or 0),
@@ -322,9 +347,9 @@ class StreetStoryService:
         lat: float | None,
         lon: float | None,
     ) -> dict[str, Any]:
-        actual = hashlib.sha256(photo_bytes).hexdigest()
-        if actual.lower() != photo_sha256.lower():
-            raise ConflictError("photo_digest_mismatch", "Uploaded photo does not match photo_sha256")
+        # Legacy API field is an opaque upload token, never an image checksum.
+        if not photo_bytes:
+            raise ConflictError('photo_empty', 'Uploaded photo is empty')
         if voice_protocol != "voice-chunks-v2":
             raise ConflictError("voice_protocol_unsupported", "voice-chunks-v2 is required")
         identity = {
@@ -334,29 +359,30 @@ class StreetStoryService:
         req_digest = digest(identity)
         story_id = "story_" + hashlib.sha256(client_story_id.encode()).hexdigest()[:24]
         with self.store.tx() as db:
-            replay = self._idem(db, key, "create_story", req_digest, "story", story_id)
             existing_client = db.execute("SELECT * FROM stories WHERE client_story_id=?", (client_story_id,)).fetchone()
             if existing_client:
                 if existing_client["photo_sha256"].lower() != photo_sha256.lower():
-                    raise ConflictError("client_story_photo_conflict", "client_story_id is bound to another photo digest")
-                if digest({
-                    "client_story_id": existing_client["client_story_id"], "photo_sha256": existing_client["photo_sha256"],
-                    "photo_mime_type": existing_client["photo_mime_type"], "voice_protocol": existing_client["voice_protocol"],
-                    "lat": existing_client["latitude"], "lon": existing_client["longitude"],
-                }) != req_digest:
-                    raise ConflictError("client_story_payload_conflict", "client_story_id is bound to different metadata")
-                return self._story_repr(db, existing_client)
+                    raise ConflictError("client_story_photo_conflict", "client_story_id is bound to another upload token")
+                prior = db.execute('SELECT * FROM idempotency WHERE key=?', (key,)).fetchone()
+                if prior and prior['action'] == 'create_story' and prior['resource_id'] == story_id:
+                    req_digest = prior['request_digest']
+                self._idem(db, key, 'create_story', req_digest, 'story', story_id)
+                self._restore_source_photo(db, story_id, photo_bytes)
+                # Reupload refreshes only ephemeral transport, including a new
+                # encoding; accumulated editorial/location state is authoritative.
+                db.execute('UPDATE stories SET photo_mime_type=? WHERE id=?', (photo_mime_type, story_id))
+                return self._story_repr(db, self._story_row(db, story_id))
+            replay = self._idem(db, key, "create_story", req_digest, "story", story_id)
             if replay:
                 row = self._story_row(db, replay)
+                self._restore_source_photo(db, story_id, photo_bytes)
                 return self._story_repr(db, row)
-            suffix = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(photo_mime_type, ".img")
-            photo_path = self.settings.data_dir / "stories" / story_id / ("source" + suffix)
-            _durable_write(photo_path, photo_bytes)
+            self._temporary_photos.put(story_id, photo_bytes)
             now = self.store.now()
             db.execute(
                 "INSERT INTO stories(id,client_story_id,photo_sha256,photo_mime_type,photo_path,latitude,longitude,voice_protocol,state,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, str(photo_path), lat, lon, voice_protocol, "photo_ready", now, now),
+                (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, '', lat, lon, voice_protocol, "photo_ready", now, now),
             )
             return self._story_repr(db, self._story_row(db, story_id))
 
@@ -481,6 +507,9 @@ class StreetStoryService:
         purpose = body.get('purpose', 'all')
         if purpose not in {'all', 'identity', 'facts'}:
             raise InvalidStateError('research_control_invalid', 'Укажите purpose: identity, facts или all.')
+        control_revision = body.get('expected_control_revision')
+        if control_revision is not None and (type(control_revision) is not int or control_revision < 0):
+            raise InvalidStateError('research_control_invalid', 'Ревизия управления должна быть целым неотрицательным числом.')
         generation = body.get('expected_identity_generation')
         if generation is not None and (type(generation) is not int or generation < 0):
             raise InvalidStateError('research_control_invalid', 'Поколение объекта должно быть целым неотрицательным числом.')
@@ -491,7 +520,7 @@ class StreetStoryService:
                         'changed': [], 'story': self._story_repr(db, self._story_row(db, story_id))}
             operation = stop_research if body['action'] == 'stop' else resume_research
             return operation(self, story_id, purpose=purpose, expected_photo_sha256=body.get('expected_photo_sha256'),
-                             expected_identity_generation=generation, _db=db)
+                             expected_identity_generation=generation, expected_control_revision=control_revision, _db=db)
 
     async def close(self):
         researcher = getattr(self.providers, 'research', None)
@@ -950,7 +979,7 @@ class StreetStoryService:
         saved = self.store.checkpoint_get(job['id'], 'grounded_research')
         if saved is None:
             grounded = await self.providers.gemini.research(
-                Path(story["photo_path"]), story["photo_mime_type"], transcript, osm, wikipedia, previous_facts
+                self._source_photo_for_job(story_id), story["photo_mime_type"], transcript, osm, wikipedia, previous_facts
             )
             self.store.checkpoint_put(job['id'], 'grounded_research', {'payload': grounded.payload, 'grounding_sources': grounded.grounding_sources})
         else:
@@ -1087,11 +1116,10 @@ class StreetStoryService:
         else:
             raise RetryableProviderError(f"VibePublish operation is {state or 'pending'}")
 
-    def asset(self, story_id: str) -> tuple[bytes, str, str]:
+    async def asset(self, story_id: str) -> tuple[bytes, str]:
         with self.store.connection() as db:
             row = self._story_row(db, story_id)
-            path = row["processed_image_path"]
-            if not path:
+            asset_ref = row['vibepublish_asset_ref']
+            if not asset_ref:
                 raise NotFoundError("processed asset not found")
-            data = Path(path).read_bytes()
-            return data, "image/png", hashlib.sha256(data).hexdigest()
+        return await self.providers.vibepublish.read_asset(asset_ref)

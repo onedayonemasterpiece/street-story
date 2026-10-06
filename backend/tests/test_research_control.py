@@ -194,3 +194,38 @@ def test_unknown_purpose_fails_without_mutation(tmp_path, purpose):
     with pytest.raises(ValueError):
         stop_research(svc, sid, purpose=purpose)
     assert rows(svc, sid) == before
+
+
+def test_control_revision_fences_same_photo_stop_resume_stop_race(tmp_path):
+    svc, sid, sha = fixture(tmp_path)
+    first = stop_research(svc, sid, purpose='identity')
+    stale = first['research_control_revision']
+    resume_research(svc, sid, purpose='identity', expected_control_revision=stale)
+    current = stop_research(svc, sid, purpose='identity')
+    before = rows(svc, sid)
+    with pytest.raises(ConflictError):
+        svc.mutate_research_control(sid, 'stale-harness-resume', {
+            'action': 'resume', 'purpose': 'identity', 'expected_photo_sha256': sha,
+            'expected_identity_generation': 0, 'expected_control_revision': stale})
+    assert rows(svc, sid) == before
+    assert research(svc, sid)['research_controls']['identity']['stopped'] is True
+    result = svc.mutate_research_control(sid, 'current-harness-resume', {
+        'action': 'resume', 'purpose': 'identity', 'expected_photo_sha256': sha,
+        'expected_identity_generation': 0, 'expected_control_revision': current['research_control_revision']})
+    assert result['changed'] == ['identity']
+    assert result['story']['research_control_revision'] > current['research_control_revision']
+    after = rows(svc, sid)
+    assert svc.mutate_research_control(sid, 'current-harness-resume', {
+        'action': 'resume', 'purpose': 'identity', 'expected_photo_sha256': sha,
+        'expected_identity_generation': 0, 'expected_control_revision': current['research_control_revision']})['changed'] == []
+    assert rows(svc, sid) == after
+
+
+@pytest.mark.parametrize('revision', [-1, True, '1', 1.0])
+def test_invalid_control_revision_rejected_without_state_change(tmp_path, revision):
+    svc, sid, _ = fixture(tmp_path)
+    before = rows(svc, sid)
+    with pytest.raises(Exception) as exc:
+        svc.mutate_research_control(sid, 'invalid-cas', {'action': 'stop', 'expected_control_revision': revision})
+    assert exc.value.code == 'research_control_invalid'
+    assert rows(svc, sid) == before

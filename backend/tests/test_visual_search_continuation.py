@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from visual_queue_fixture import prepare_live_parts, reference_receipt
 from pydantic import SecretStr
 
 from street_story import article_media, identity_discovery
@@ -58,6 +59,7 @@ def prepared(tmp_path):
         db.execute('UPDATE stories SET research_json=? WHERE id=?',
                    (json.dumps({'visual_identity': {'status': 'uncertain', 'candidates': []}}), story['id']))
     adapter = StreetStoryLiveAdapter(svc, lambda *args: None, lambda *args: None)
+    prepare_live_parts(adapter, photo)
     def session():
         return SimpleNamespace(id='live_test', resource_id=story['id'], model='gemini-3.8-live', state={})
     return svc, adapter, story, session
@@ -99,8 +101,8 @@ async def test_read_topic_delivers_frame_and_negative_verdict_delivers_next(tmp_
             'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': [candidate]}}), story['id']))
     async def images(candidates, limit, *, story_id, evidence):
         url = candidates[0]['reference_image_urls'][0]
-        evidence.append({'candidate_id': 'gate', 'model_image_sha256': hashlib.sha256(url.encode()).hexdigest()})
-        return [('gate', 'image/jpeg', jpeg())]
+        evidence.append(reference_receipt(candidates[0]))
+        return [('gate', 'image/jpeg', url)]
     svc._candidate_reference_images = images
     s = session()
     first = await adapter.execute_tool(s, {'name': 'read_topic', 'id': 'read', 'args': {}})
@@ -161,8 +163,8 @@ async def test_identity_entry_tools_deliver_frames_without_a_separate_read(tmp_p
         return result
     setattr(adapter, '_' + name, identity_tool)
     async def images(candidates, limit, *, story_id, evidence):
-        evidence.append({'candidate_id': 'gate', 'model_image_sha256': 'front'})
-        return [('gate', 'image/jpeg', jpeg())]
+        evidence.append(reference_receipt(candidates[0]))
+        return [('gate', 'image/jpeg', candidates[0]['reference_image_urls'][0])]
     svc._candidate_reference_images = images
     s = session()
     call = {'name': name, 'id': 'entry', 'args': {}}
@@ -209,9 +211,8 @@ async def test_late_urls_partial_and_completed_verdict_resume(tmp_path, monkeypa
         candidate = candidates[0]
         url = candidate['reference_image_urls'][0]
         loaded.append(url)
-        data = jpeg((300 + len(url), 401))
-        evidence.append({'candidate_id': candidate['candidate_id'], 'model_image_sha256': hashlib.sha256(url.encode()).hexdigest()})
-        return [(candidate['candidate_id'], 'image/jpeg', data)]
+        evidence.append(reference_receipt(candidate))
+        return [(candidate['candidate_id'], 'image/jpeg', url)]
     monkeypatch.setattr(article_media, 'article_candidates', articles)
     svc._candidate_reference_images = images
     first = session()
@@ -251,6 +252,16 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
         candidates = await article_media.article_candidates(svc, {'id': 'unknown'}, [
             {'url': 'https://example.com/article'}], set(), http=http, resolver=resolver,
             browser=browser, receipts=receipts)
+        assert calls == []
+        assert candidates[0]['reference_image_urls'] == ['https://example.com/lead.jpg']
+        assert receipts[0]['static_media_delivered'] is True
+        resumed_source = {'url': 'https://example.com/article',
+            'static_media_delivered': receipts[0]['static_media_delivered'],
+            'gallery_cursor': receipts[0]['gallery_cursor'],
+            'gallery_slide_cursor': receipts[0]['gallery_slide_cursor']}
+        receipts = []
+        candidates = await article_media.article_candidates(svc, {'id': 'unknown'}, [resumed_source],
+            set(), http=http, resolver=resolver, browser=browser, receipts=receipts)
     assert calls == ['https://example.com/article']
     assert candidates[0]['reference_image_urls'] == ['https://example.com/lead.jpg', 'https://example.com/late.jpg']
     assert receipts[0]['status'] == 'partial' and receipts[0]['gallery_cursor'] == 12
@@ -292,7 +303,7 @@ async def test_reviewed_wiki_lead_advances_to_article_queue_before_api_search(tm
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
             'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate', 'candidates': [candidate]},
-            'identity_progress': {'generation': 0, 'reviewed_image_sha256s': [lead], 'images_reviewed_count': 1}}), story['id']))
+            'identity_progress': {'generation': 0, 'reviewed_reference_ids': [next(adapter._image_entries(candidate))['reference_id']], 'images_reviewed_count': 1}}), story['id']))
     calls = []
     async def articles(service, topic, sources, excluded, *, receipts):
         calls.append(sources[0]['url'])
@@ -300,8 +311,8 @@ async def test_reviewed_wiki_lead_advances_to_article_queue_before_api_search(tm
         return [{**candidate, 'reference_image_urls': [lead, rear], 'discovery': 'wikipedia_article_media'}]
     async def images(candidates, limit, *, story_id, evidence):
         value = candidates[0]['reference_image_urls'][0]
-        evidence.append({'candidate_id': 'wiki:381537', 'model_image_sha256': value})
-        return [('wiki:381537', 'image/jpeg', jpeg())]
+        evidence.append(reference_receipt(candidates[0]))
+        return [('wiki:381537', 'image/jpeg', value)]
     async def forbidden(*args):
         pytest.fail('Broad API search must wait for the Wiki article queue')
     monkeypatch.setattr(article_media, 'article_candidates', articles)
@@ -328,15 +339,15 @@ async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allo
     candidates = [{'candidate_id': f'wiki:{i}', 'name': 'Gate',
         'url': f'https://ru.wikipedia.org/wiki/Gate_{i}',
         'reference_image_urls': [f'https://upload.wikimedia.org/lead_{i}.jpg']} for i in range(wiki_count)]
-    seen = [c['reference_image_urls'][0] for c in candidates]
+    seen = [next(adapter._image_entries(c))['reference_id'] for c in candidates]
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({
             'visual_identity': {'status': 'uncertain', 'candidate_name': 'Gate' if named else None, 'candidates': candidates},
-            'identity_progress': {'generation': 0, 'reviewed_image_sha256s': seen,
+            'identity_progress': {'generation': 0, 'reviewed_reference_ids': seen,
                 'images_reviewed_count': wiki_count}}), story['id']))
     s = session()
     s.state['visual_comparison'] = {'generation': 0, 'photo_sha256': svc._identity_snapshot(story['id'])[0]['photo_sha256'],
-        'queue': [], 'query': 'Gate' if named else '', 'seen_images': [], 'sources': {}, 'searches': {},
+        'queue': [], 'query': 'Gate' if named else '', 'reviewed_reference_ids': [], 'sources': {}, 'searches': {},
         'fetch_failures': [], 'browser_budget': {'remaining': 2}, 'web_searched': False}
     pages, searches = [], []
     broad = {'candidate_id': 'broad', 'name': 'Gate', 'url': 'https://example.com/broad',
@@ -351,8 +362,8 @@ async def test_reviewed_article_leads_continue_to_api_with_one_bounded_page_allo
         return {'status': 'completed', 'sources': [{'url': broad['url']}]}
     async def images(candidates, limit, *, story_id, evidence):
         c = candidates[0]
-        evidence.append({'candidate_id': c['candidate_id'], 'model_image_sha256': c['reference_image_urls'][0]})
-        return [(c['candidate_id'], 'image/jpeg', jpeg())]
+        evidence.append(reference_receipt(c))
+        return [(c['candidate_id'], 'image/jpeg', c['reference_image_urls'][0])]
     monkeypatch.setattr(article_media, 'article_candidates', articles)
     adapter._find_place_articles = search
     svc._candidate_reference_images = images
@@ -489,7 +500,7 @@ def test_identity_continuation_does_not_spin_or_discard_queued_refs(tmp_path):
     svc, adapter, story, session = prepared(tmp_path)
     s = session()
     s.state['visual_comparison'] = {'queue': [{'reference_image_urls': ['https://example.com/late.jpg']}],
-        'pending': None, 'seen_images': ['done'], 'sources': {}}
+        'pending': None, 'reviewed_reference_ids': ['done'], 'sources': {}}
     writes = []
     adapter.write = lambda session, data: writes.append(data)
     adapter._continue_identity(s)

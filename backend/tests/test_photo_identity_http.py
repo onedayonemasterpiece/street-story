@@ -1,4 +1,3 @@
-import hashlib
 import json
 
 import httpx
@@ -40,13 +39,13 @@ async def test_same_photo_gps_recovery_route_keeps_original_story_hash(tmp_path)
     story = create_photo(service, redacted)
     app = create_app(settings=service.settings, service=service)
     url = f"/v1/stories/{story['id']}/photo-location"
-    payload = {'expected_photo_sha256': hashlib.sha256(redacted).hexdigest()}
+    payload = {'expected_photo_sha256': story['photo_sha256']}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
         assert (await client.post(url, data=payload, files={'photo': ('original.jpg', photo(), 'image/jpeg')})).status_code == 401
         client.headers['Authorization'] = 'Bearer ' + reveal(service.settings.device_token)
-        wrong = await client.post(url, data=payload, files={'photo': ('other.jpg', photo(shade=5), 'image/jpeg')})
+        wrong = await client.post(url, data={'expected_photo_sha256': 'different-upload'}, files={'photo': ('other.jpg', photo(), 'image/jpeg')})
         assert wrong.status_code == 409
-        assert wrong.json()['error']['code'] == 'photo_recovery_mismatch'
+        assert wrong.json()['error']['code'] == 'photo_identity_changed'
         result = await client.post(url, data=payload, files={'photo': ('original.jpg', photo(), 'image/jpeg')})
         assert result.status_code == 200, result.text
         assert result.json()['id'] == story['id']

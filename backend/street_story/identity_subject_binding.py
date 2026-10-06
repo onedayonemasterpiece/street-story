@@ -27,7 +27,7 @@ def documented_physical_subject(candidate: dict[str, Any], candidates: Mapping[s
         source = urlparse(str(evidence.get('source_url') or ''))
     except ValueError:
         return None
-    image_hash = evidence.get('source_sha256')
+    article_hash = evidence.get('source_sha256')
     quote = evidence.get('source_quote')
     if (candidate.get('identity_role') != 'institution_at_physical_subject'
             or candidate.get('identity_eligible') is not False
@@ -39,8 +39,8 @@ def documented_physical_subject(candidate: dict[str, Any], candidates: Mapping[s
             or article_candidate(subject) or not candidate_identity_eligible(subject)
             or source.scheme not in {'http', 'https'} or not source.hostname
             or not isinstance(quote, str) or not quote.strip()
-            or not isinstance(image_hash, str) or len(image_hash) != 64
-            or any(character not in '0123456789abcdef' for character in image_hash)):
+            or not isinstance(article_hash, str) or len(article_hash) != 64
+            or any(character not in '0123456789abcdef' for character in article_hash)):
         return None
     return subject_id
 
@@ -121,7 +121,6 @@ def reference_binding_valid(result: dict[str, Any], candidates: list[dict[str, A
     by_id = {item.get('candidate_id'): item for item in candidates}
     candidate = by_id.get(subject)
     source = by_id.get(reference)
-    image_hash = binding.get('model_image_sha256')
     return bool(candidate and not article_candidate(candidate) and candidate_identity_eligible(candidate)
                 and source and article_candidate(source)
                 and binding.get('subject_candidate_id') == subject
@@ -129,8 +128,7 @@ def reference_binding_valid(result: dict[str, Any], candidates: list[dict[str, A
                 and reference in result.get('_references_sent', [])
                 and binding.get('article_url') == source.get('url')
                 and binding.get('image_url') in (source.get('reference_image_urls') or [])
-                and isinstance(image_hash, str) and len(image_hash) == 64
-                and all(character in '0123456789abcdef' for character in image_hash))
+                and binding.get('reference_id') in result.get('_reference_ids_sent', []))
 
 
 def bind_reference_subject(
@@ -167,14 +165,13 @@ def bind_reference_subject(
                      if item.get('candidate_id') == cid
                      and item.get('source_url') in (selected.get('reference_image_urls') or [])
                      and item.get('article_url') == selected.get('url')
-                     and isinstance(item.get('model_image_sha256'), str)
-                     and len(item['model_image_sha256']) == 64
-                     and all(character in '0123456789abcdef' for character in item['model_image_sha256'])), None)
+                     and item.get('reference_id') == selected.get('reference_id')
+                     and item.get('reference_id') in raw.get('_reference_ids_sent', [])), None)
     if not evidence:
         return unresolved('reference_provenance_missing')
     binding = {'proof': 'model_reference_subject_resolution', 'reference_candidate_id': cid,
                'subject_candidate_id': subject_id, 'article_url': evidence['article_url'],
-               'image_url': evidence['source_url'], 'model_image_sha256': evidence['model_image_sha256']}
+               'image_url': evidence['source_url'], 'reference_id': evidence['reference_id']}
     return {'status': 'bound', 'candidate': candidate, 'binding': binding,
             'result': {**raw, 'candidate_id': subject_id, '_reference_subject_binding': binding},
             'reference_evidence': [{**item, 'subject_candidate_id': subject_id}

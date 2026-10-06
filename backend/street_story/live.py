@@ -3,7 +3,6 @@ import asyncio
 
 import base64
 import hashlib
-import io
 import json
 import logging
 import math
@@ -1144,29 +1143,24 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             )
 
     def _visual_snapshot(self, story_id: str) -> tuple[bytes, int, int] | None:
-        with self.service.store.connection() as db:
-            story = self.service._story_row(db, story_id)
-            path = str(story["photo_path"] or "")
+        # Budget preparation stays in RAM. It is not visual identification.
         try:
+            import io
             from PIL import Image, ImageOps
-
-            with Image.open(path) as opened:
-                image = ImageOps.exif_transpose(opened)
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
+            source = self.service._source_photo_bytes(story_id)
+            with Image.open(io.BytesIO(source)) as opened:
+                image = ImageOps.exif_transpose(opened).convert('RGB')
                 image.thumbnail((768, 768), Image.Resampling.LANCZOS)
                 width, height = image.size
                 for quality in (76, 68, 60, 52):
                     buffer = io.BytesIO()
-                    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+                    image.save(buffer, format='JPEG', quality=quality, optimize=True)
                     data = buffer.getvalue()
                     if len(data) <= 220 * 1024:
                         return data, width, height
         except Exception as exc:
-            logger.warning(
-                "street_story_live_snapshot_prepare_failed %s",
-                canonical({"story_id": story_id, "type": type(exc).__name__}),
-            )
+            logger.warning('street_story_live_snapshot_prepare_failed %s',
+                           canonical({'story_id': story_id, 'type': type(exc).__name__}))
         return None
 
     def _send_visual_snapshot(self, session) -> None:

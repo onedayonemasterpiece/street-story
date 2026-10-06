@@ -16,7 +16,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--story-id", required=True)
     parser.add_argument("--phase", choices=("visual", "publication"), required=True)
-    parser.add_argument("--reviewed-sha256")
+    parser.add_argument("--reviewed-asset-ref")
+    parser.add_argument("--reviewed-operation-id")
     parser.add_argument("--expected-sha", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -49,7 +50,8 @@ def main() -> int:
             smoke.telegram_destination(client, requested=DESTINATION, require_test=True)
             if args.phase == "publication":
                 visual = smoke.validate_visual(client, before, before["draft_text"])
-                if not args.reviewed_sha256 or visual["selected_sha256"] != args.reviewed_sha256:
+                if (visual["selected_asset_ref"] != args.reviewed_asset_ref
+                        or visual["operation_id"] != args.reviewed_operation_id):
                     raise smoke.ProductSmokeError("reviewed_visual_changed")
             try:
                 started = smoke._json(client.post(f"/v1/stories/{args.story_id}/live-sessions"), "start")
@@ -73,9 +75,6 @@ def main() -> int:
                         timeout_seconds=180)
                     final, cursor = smoke.wait_visual(client, args.story_id, session, cursor)
                     visual = smoke.validate_visual(client, final, final["draft_text"])
-                    image = client.get(final['processed_image_url'])
-                    image.raise_for_status()
-                    (args.output_dir / "infographic.png").write_bytes(image.content)
                     receipt.update(status="visual_ready_for_review", visual=visual, turn=turn)
                 else:
                     scheduled = smoke.publication_schedule(keep_publication=True, delay_minutes=2).isoformat()

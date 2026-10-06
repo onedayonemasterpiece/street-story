@@ -758,6 +758,7 @@ class GeminiClient:
         operation: str = "grounded_research",
         model: str | None = None,
         quota=None,
+        before_provider_send=None,
     ):
         from google.genai import types
         config = config or types.GenerateContentConfig()
@@ -781,12 +782,12 @@ class GeminiClient:
         else:
             quota = quota or self.quota
             model = model or self.settings.gemini_model
-        return await quota.run(
-            key,
-            timeout,
-            size,
-            lambda: self._provider_request(key, timeout, contents, config, model=model),
-        )
+        async def invoke():
+            if before_provider_send is not None:
+                before_provider_send()
+            return await self._provider_request(key, timeout, contents, config, model=model)
+
+        return await quota.run(key, timeout, size, invoke)
 
     async def _provider_request(self, key: str, timeout: float, contents, config=None, *, model: str | None = None):
         # Async transport is cancellable: no orphan to_thread SDK calls after failover.
@@ -3758,7 +3759,7 @@ class GeminiClient:
 
     async def research(
         self,
-        photo_path: Path,
+        photo_path: bytes,
         photo_mime: str,
         transcript: str,
         place_context: dict[str, Any],
@@ -3779,7 +3780,7 @@ class GeminiClient:
             "draft_text должен быть короткой публикацией, а не research dump. Structured context:\n"
             + json.dumps(context, ensure_ascii=False)
         )
-        data = photo_path.read_bytes()
+        data = photo_path
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             response_mime_type="application/json",

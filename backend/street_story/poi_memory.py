@@ -104,6 +104,47 @@ def candidate_article_sources(db, candidates: list[dict[str, Any]]) -> list[dict
     return list(sources.values())
 
 
+def candidate_reference_images(db, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reuse accepted public REF addresses; every current SOURCE requires a new model comparison."""
+    keys = set()
+    for candidate in candidates:
+        if candidate.get('identity_eligible') is not False and candidate.get('candidate_id'):
+            keys.update(memory_keys(db, candidate))
+    if not keys:
+        return []
+    rows = db.execute("SELECT id,research_json FROM stories WHERE "
+        "json_extract(research_json,'$.visual_identity.status')='match' AND "
+        "json_extract(research_json,'$.visual_identity.visual_reference_verified')=1 AND "
+        "json_extract(research_json,'$.visual_identity.candidate_id') IN ("
+        + ','.join('?' for _ in keys) + ') ORDER BY updated_at DESC', tuple(sorted(keys)))
+    from .article_media import public_url
+    from urllib.parse import urlsplit
+    result, seen = [], set()
+    for row in rows:
+        identity = json.loads(row['research_json']).get('visual_identity') or {}
+        for supplied in identity.get('reference_evidence') or []:
+            article_url = public_url(supplied.get('article_url') or '')
+            image_url = public_url(supplied.get('image_url') or supplied.get('source_url') or '')
+            subject = supplied.get('subject_candidate_id', supplied.get('candidate_id'))
+            if not article_url or not image_url or subject not in keys or not supplied.get('candidate_id'):
+                continue
+            address = (article_url, image_url)
+            if address in seen:
+                continue
+            seen.add(address)
+            allowed = ('kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title')
+            descriptor = {key: supplied[key] for key in allowed if key in supplied}
+            descriptor.update(candidate_id=supplied['candidate_id'], image_url=image_url,
+                              article_url=article_url, source_url=image_url)
+            title = supplied.get('article_title') or identity.get('candidate_name') or ''
+            result.append({'candidate_id': supplied['candidate_id'], 'name': str(title)[:300],
+                'url': article_url, 'source_urls': [article_url], 'reference_image_urls': [image_url],
+                'article_media': [descriptor],
+                'discovery': 'wikipedia_article_media' if (urlsplit(article_url).hostname or '').endswith('.wikipedia.org') else 'web_article_media',
+                'reference_batch': True, 'reference_reuse': {'story_id': row['id'], 'subject_candidate_id': subject}})
+    return result
+
+
 def _identity_alias_values(identity: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for raw in (

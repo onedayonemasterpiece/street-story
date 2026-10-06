@@ -1,4 +1,5 @@
 from __future__ import annotations
+from direct_visual_fixture import opencode_args
 
 import asyncio
 import ast
@@ -271,7 +272,7 @@ async def test_guarded_facts_refuse_lost_session_policy_before_inference(tmp_pat
 async def test_guarded_vision_uses_actual_attachment_same_server_and_no_search(tmp_path):
     h, backend, adapter = guarded_setup(tmp_path)
     h.result = {'status': 'mismatch'}
-    result = await adapter.compare_image(sheet(), {'request_id': 'vision'}, {'type': 'object'}, 'SOURCE / REF park')
+    result = await adapter.compare_image(*opencode_args(sheet(), {'request_id': 'vision'}, {'type': 'object'}, 'SOURCE / REF park'))
     assert result['receipt']['image_attachment_readback_verified'] is True
     assert result['receipt']['isolation']['allowed_tools'] == []
     assert {'permission': 'websearch', 'pattern': '*', 'action': 'deny'} in backend.session['permission']
@@ -285,7 +286,7 @@ async def test_guarded_vision_rejects_text_only_or_unverified_image_transport_be
     h, backend, adapter = guarded_setup(tmp_path)
     backend.image_capabilities = capabilities
     with pytest.raises(ResearchUnavailable, match='research_model_image_input_unverified'):
-        await adapter.compare_image(sheet(), {'request_id': 'vision'}, {'type': 'object'}, 'SOURCE / REF park')
+        await adapter.compare_image(*opencode_args(sheet(), {'request_id': 'vision'}, {'type': 'object'}, 'SOURCE / REF park'))
     assert not h.sends
 
 

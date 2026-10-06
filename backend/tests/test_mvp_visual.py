@@ -215,7 +215,7 @@ async def test_visual_operation_is_persisted_and_reconciled_without_second_paid_
     assert ready["visual"]["selected_asset_ref"] == "processed-asset"
     assert ready["visual"]["selected_sha256"] == PROCESSED_SHA
     assert vp.tune_calls == 1
-    assert svc.asset(story["id"])[0] == PROCESSED
+    assert (await svc.asset(story["id"]))[0] == PROCESSED
 
 
 def previous_visual(svc, story_id):
@@ -251,7 +251,7 @@ async def test_recompose_uses_verified_saved_art_without_new_generation_or_ingre
     async def status(operation):
         return {'receipts': [{'operation_id': operation, 'state': 'verified',
             'visual_job_id': 'original-job' if operation == 'visual-op' else 'recomposed-job',
-            'visual_revision': 4, 'selected_sha256': PROCESSED_SHA, 'selected_asset_ref': 'processed-asset'}]}
+            'visual_revision': 4, 'selected_sha256': PROCESSED_SHA, 'selected_asset_ref': 'original-asset' if operation == 'visual-op' else 'processed-asset'}]}
 
     async def visual(command, key):
         calls.append(command)

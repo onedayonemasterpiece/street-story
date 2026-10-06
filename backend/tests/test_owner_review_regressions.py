@@ -57,41 +57,18 @@ def test_stale_user_turn_or_new_audio_turn_cannot_confirm():
 
 
 @pytest.mark.asyncio
-async def test_wikimedia_429_is_visible_and_does_not_repeat_for_targeted_or_other_images(tmp_path):
+async def test_reference_addresses_are_selected_without_fetch_or_verdict(tmp_path):
     service, _, session, _ = make_service(tmp_path)
-    requests = []
     async def handler(request):
-        requests.append(str(request.url))
-        return httpx.Response(429, headers={'Retry-After':'90'})
+        pytest.fail('Vision input URL selection must not fetch images')
     candidates = [{'candidate_id':'c1','reference_image_urls':['https://upload.wikimedia.org/one.jpg?utm_source=wiki']},
                   {'candidate_id':'c2','reference_image_urls':['https://upload.wikimedia.org/two.jpg']}]
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        assert await reference_images(service, candidates, story_id=session.resource_id, http=client) == []
-        assert await reference_images(service, candidates, story_id=session.resource_id, http=client) == []
-    assert requests == ['https://upload.wikimedia.org/one.jpg']
-    with service.store.connection() as db:
-        payload = json.loads(db.execute("SELECT payload_json FROM live_diagnostics WHERE event_type='identity_reference_unavailable' ORDER BY id LIMIT 1").fetchone()[0])
-    assert payload['http_status'] == 429 and payload['reason'] == 'rate_limited'
-
-
-@pytest.mark.asyncio
-async def test_failed_first_reference_tries_second_bounded_url_and_refuses_foreign_redirect(tmp_path):
-    service, _, _, _ = make_service(tmp_path)
-    from test_reference_image_codec import jpeg
-    from street_story.reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference
-    fixture = jpeg()
-    async def handler(request):
-        if request.url.path == '/original.jpg':
-            return httpx.Response(200, headers={'content-type':'image/jpeg', 'content-length':str(MAX_DOWNLOAD_BYTES + 1)})
-        if request.url.path == '/redirect.jpg':
-            return httpx.Response(302, headers={'Location':'https://another.invalid/image.jpg'})
-        return httpx.Response(200, headers={'content-type':'image/jpeg'}, content=fixture)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        images = await reference_images(service, [{'candidate_id':'c','reference_image_urls':[
-            'https://upload.wikimedia.org/original.jpg', 'https://upload.wikimedia.org/thumbnail.jpg']}], http=client)
-        assert images == [('c', *normalize_reference(fixture))]
-        assert await reference_images(service,[{'candidate_id':'r','reference_image_urls':['https://upload.wikimedia.org/redirect.jpg']}], http=client) == []
+        refs = await reference_images(service, candidates, story_id=session.resource_id, http=client)
+    assert [item[0] for item in refs] == ['c1', 'c2']
+    assert all(isinstance(item[2], str) and item[2].startswith('https://') for item in refs)
     assert canonical_reference('https://user:pass@upload.wikimedia.org/a.jpg') is None
+    assert service.story(session.resource_id).get('visual_identity') is None
 
 
 @pytest.mark.asyncio

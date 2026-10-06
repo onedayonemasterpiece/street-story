@@ -1,11 +1,10 @@
 """Read selected-photo GPS; never substitute the phone's current position or (0, 0)."""
 from __future__ import annotations
-import hashlib
 import io
 import math
 from pathlib import Path
 from typing import Any
-from PIL import Image, ImageOps
+from PIL import Image
 
 
 def inspect_gps(source: bytes | Path) -> dict[str, Any]:
@@ -34,14 +33,3 @@ def inspect_gps(source: bytes | Path) -> dict[str, Any]:
         return {'status': 'gps_present', 'latitude': coords[0], 'longitude': coords[1]}
     except Exception as exc:
         return {**result, 'status': 'gps_unreadable', 'error_type': type(exc).__name__}
-
-
-def pixel_digest(source: bytes | Path) -> str:
-    """Exact decoded visual identity; EXIF-only privacy redaction may change file hash."""
-    with Image.open(io.BytesIO(source) if isinstance(source, bytes) else source) as image:
-        if image.width * image.height > 24_000_000:
-            raise ValueError('Selected photo exceeds recovery pixel limit')
-        normalized = ImageOps.exif_transpose(image).convert('RGB')
-        h = hashlib.sha256(str(normalized.size).encode('ascii'))
-        h.update(normalized.tobytes())
-        return h.hexdigest()

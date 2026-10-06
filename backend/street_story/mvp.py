@@ -8,7 +8,7 @@ from typing import Any
 
 from .product import ProductStreetStoryService, _receipt
 from .providers import PermanentProviderError, RetryableProviderError
-from .service import ConflictError, InvalidStateError, _durable_write, canonical, digest
+from .service import ConflictError, InvalidStateError, canonical, digest
 
 
 class MvpProductStreetStoryService(ProductStreetStoryService):
@@ -269,7 +269,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                                'prompt_version', 'prompt_sha256', 'visual_instruction')
                 if (observed.get('state') != 'verified'
                         or observed.get('visual_job_id') != previous.get('visual_job_id')
-                        or observed.get('selected_sha256') != previous.get('selected_sha256')
+                        or observed.get('selected_asset_ref') != previous.get('selected_asset_ref')
                         or not previous.get('candidate_id')
                         or type(observed.get('visual_revision')) is not int
                         or any(previous.get(field) != frozen.get(field) for field in same_inputs)):
@@ -347,7 +347,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
 
             source_asset = str(context.get("source_asset_ref") or "")
             if not source_asset:
-                photo = Path(story["photo_path"]).read_bytes()
+                photo = self._source_photo_for_job(story_id)
                 ingress_key = "ss-vp-asset-" + hashlib.sha256(
                     f"{story_id}:{story['photo_sha256']}".encode()
                 ).hexdigest()[:48]
@@ -355,9 +355,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     photo, story["photo_mime_type"], ingress_key
                 )
                 source_asset = str(ingress.get("asset_id") or "")
-                source_sha = str(ingress.get("source_sha256") or "").lower()
-                if not source_asset or source_sha != story["photo_sha256"].lower():
-                    raise PermanentProviderError("VibePublish asset ingress identity mismatch")
+                if not source_asset:
+                    raise PermanentProviderError("VibePublish asset ingress returned no asset ID")
                 merged = self._merge_visual_context(
                     story_id,
                     content_revision,
@@ -498,7 +497,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 )
             selected_asset = str(selected.get("selected_asset_ref") or "")
             selected_sha = str(selected.get("selected_sha256") or "").lower()
-            if not selected_asset or not re.fullmatch(r"[0-9a-f]{64}", selected_sha):
+            if not selected_asset:
                 raise PermanentProviderError(
                     "VibePublish verified visual lacks immutable asset identity"
                 )
@@ -515,20 +514,6 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             if merged is None:
                 return
 
-            processed, mime = await self.providers.vibepublish.read_asset(selected_asset)
-            if hashlib.sha256(processed).hexdigest() != selected_sha:
-                raise PermanentProviderError("VibePublish processed asset readback hash mismatch")
-            if mime not in {"image/png", "image/jpeg", "image/webp"}:
-                raise PermanentProviderError(
-                    "VibePublish processed asset has an unsupported mime type"
-                )
-            suffix = {
-                "image/png": ".png",
-                "image/jpeg": ".jpg",
-                "image/webp": ".webp",
-            }[mime]
-            target = self.settings.data_dir / "stories" / story_id / f"processed{suffix}"
-            _durable_write(target, processed)
             with self.store.tx() as db:
                 current_row = self._story_row(db, story_id)
                 latest = json.loads(current_row["visual_context_json"] or "{}")
@@ -539,7 +524,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     "processed_image_url=?,vibepublish_asset_ref=?,error_code=NULL,error_message=NULL,"
                     "revision=revision+1,updated_at=? WHERE id=?",
                     (
-                        str(target),
+                        None,
                         f"/v1/assets/{story_id}/processed",
                         selected_asset,
                         self.store.now(),

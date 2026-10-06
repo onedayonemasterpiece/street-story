@@ -1,3 +1,4 @@
+from direct_visual_fixture import visual_args
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
@@ -128,7 +129,7 @@ def test_search_history_retains_source_reuse_context_without_search_call_ceiling
 
 
 @pytest.mark.asyncio
-async def test_completed_native_pixels_reused_after_stop_resume_with_new_queue_id(tmp_path):
+async def test_new_comparison_id_after_stop_resume_requires_new_native_observation(tmp_path):
     from types import SimpleNamespace
     from street_story.service import canonical
     service, sid, photo = fixture(tmp_path)
@@ -148,17 +149,18 @@ async def test_completed_native_pixels_reused_after_stop_resume_with_new_queue_i
     story = {'id': sid, 'photo_sha256': photo, '_identity_generation': 0}
     context = {'comparison_id': 'old-lease', 'remaining_illustrations': 3,
                'references': [{'candidate_id': 'wiki:1'}], 'physical_candidates': [{'candidate_id': 'wiki:1'}]}
-    first = await adapter.visual_verdict(b'pixels', story, {}, canonical(context))
+    first = await adapter.visual_verdict(*visual_args(b'pixels', story, {}, canonical(context)))
     stop_research(service, sid, purpose='identity')
     resume_research(service, sid, purpose='identity')
     with service.store.connection() as db:
         import json
         state = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
     resumed = {**story, '_identity_research_control_revision': state['research_controls']['identity']['revision']}
-    second = await adapter.visual_verdict(b'pixels', resumed, {},
-                                          canonical({**context, 'comparison_id': 'new-lease', 'remaining_illustrations': 8}))
-    assert first['result'] == second['result'] and len(calls) == 1
-    await adapter.visual_verdict(b'changed-pixels', resumed, {}, canonical(context))
+    second = await adapter.visual_verdict(*visual_args(b'pixels', resumed, {},
+                                          canonical({**context, 'comparison_id': 'new-lease', 'remaining_illustrations': 8})))
+    assert first['result'] == second['result'] and len(calls) == 2
+    # Reading the first operation's completed result does not submit a third turn.
+    await adapter.visual_verdict(*visual_args(b'pixels', resumed, {}, canonical(context)))
     assert len(calls) == 2
 
 
@@ -182,12 +184,12 @@ async def test_native_reserve_refusal_reaches_qualified_opencode_vision_fallback
     adapter.native_vision = SimpleNamespace(available=True, compare_visual=native)
     calls = []
     async def compare(pixels, *args):
-        assert pixels.startswith(b'\x89PNG')
+        assert pixels is None
         calls.append(pixels)
         return {'result': {'status': 'match'}, 'receipt': {'provider_id': 'qualified-vision'}}
     adapter.compare_image = compare
     output = io.BytesIO()
     Image.new('RGB', (32, 32)).save(output, format='JPEG')
-    result = await adapter.visual_verdict(output.getvalue(), {'id': sid, 'photo_sha256': photo}, {}, canonical({
-        'references': [{'candidate_id': 'wiki:1'}], 'physical_candidates': [{'candidate_id': 'wiki:1'}]}))
+    result = await adapter.visual_verdict(*visual_args(output.getvalue(), {'id': sid, 'photo_sha256': photo}, {}, canonical({
+        'references': [{'candidate_id': 'wiki:1'}], 'physical_candidates': [{'candidate_id': 'wiki:1'}]})))
     assert result['result']['status'] == 'match' and len(calls) == 1

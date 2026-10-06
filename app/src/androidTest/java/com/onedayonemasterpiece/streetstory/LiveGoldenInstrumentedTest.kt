@@ -1,11 +1,10 @@
 package com.onedayonemasterpiece.streetstory
 
-import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewGroup
-import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.uiautomator.UiDevice
@@ -26,7 +25,6 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.security.MessageDigest
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -132,34 +130,48 @@ class LiveGoldenInstrumentedTest {
         val identityOnly = InstrumentationRegistry.getArguments().getString("identityOnly") == "true"
         val moreOnly = InstrumentationRegistry.getArguments().getString("moreOnly") == "true"
         val resumeStoryId = InstrumentationRegistry.getArguments().getString("resumeStoryId").orEmpty().trim()
-        require(resumeStoryId.isEmpty() || (Regex("story_[a-zA-Z0-9]{8,64}").matches(resumeStoryId) && !identityOnly))
+        val resumeIdentityResearch = InstrumentationRegistry.getArguments().getString("resumeIdentityResearch") == "true"
+        require(resumeStoryId.isEmpty() || Regex("story_[a-zA-Z0-9]{8,64}").matches(resumeStoryId))
+        require(!resumeIdentityResearch || (identityOnly && resumeStoryId.isNotBlank()))
         require(!identityOnly || !keepPublication)
         require(!moreOnly || (!identityOnly && !keepPublication))
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
         require(isExplicitTestAlias(safeAlias))
 
         beginStage("photo", 120_000)
-        val photoFile = File(root, "photo.jpg")
+        val photoUri = config.get("photo_uri")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        val photoUrl = config.get("photo_url")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        require(photoUri.startsWith("content://") || photoUrl.startsWith("https://")) { "An approved gallery URI or public SOURCE URL is required" }
         val pcmFiles = (1..6).map { File(root, "voice-$it.pcm") }
-        require(photoFile.isFile && (identityOnly || pcmFiles.all(File::isFile)))
+        require(identityOnly || pcmFiles.all(File::isFile))
 
         val appConfig = AppGraph.config(context)
         appConfig.backendUrl = baseUrl
         appConfig.deviceToken = token
 
-        val photoSha = sha256(photoFile.readBytes())
-        val imported = PhotoImporter.import(context, insertIntoMediaStore(photoFile))
-        assertEquals(photoSha, imported.sha256)
+        val rawImported = if (photoUri.isNotBlank()) PhotoImporter.import(context, Uri.parse(photoUri)) else {
+            val connection = (URL(photoUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000; readTimeout = 35_000
+            }
+            require(connection.responseCode in 200..299)
+            connection.inputStream.use { PhotoImporter.importStream(context, it,
+                connection.contentType?.substringBefore(';') ?: "image/jpeg") }
+        }
+        // Raw repository owner fixtures lack the former artificially inserted GPS.
+        // Their already approved location is metadata, never a pixel transformation.
+        val fixtureCoordinates = rawImported.latitude == null || rawImported.longitude == null
+        val imported = if (fixtureCoordinates) rawImported.copy(latitude = config.get("latitude").asDouble,
+            longitude = config.get("longitude").asDouble) else rawImported
         assertNotNull(imported.latitude)
         assertNotNull(imported.longitude)
         assertTrue(kotlin.math.abs(requireNotNull(imported.latitude) - config.get("latitude").asDouble) < 0.0025)
         assertTrue(kotlin.math.abs(requireNotNull(imported.longitude) - config.get("longitude").asDouble) < 0.0025)
 
         val store = AppGraph.store(context)
-        val api = ApiClient(baseUrl, token)
+        val api = ApiClient(baseUrl, token) { PhotoAssets.open(context, it) }
         val resumed = if (resumeStoryId.isBlank()) null else api.getStory(resumeStoryId)
         if (resumed != null) {
-            assertEquals("Resume photo differs from saved story", photoSha, resumed.photoSha256)
+            require(!resumed.photoSha256.isNullOrBlank()) { "Saved upload identity missing" }
             require(resumed.clientStoryId.isNotBlank())
             val raw = rawStory(baseUrl, token, resumeStoryId)
             val publication = raw.get("publication")
@@ -169,8 +181,16 @@ class LiveGoldenInstrumentedTest {
             }
             require(resumed.state != StoryStage.VISUAL_PROCESSING) { "Read back the existing generation before continuing" }
         }
-        val local = store.createStory(if (resumed == null) imported else imported.copy(clientStoryId = resumed.clientStoryId))
-        val created = resumed ?: api.createStory(local)
+        val boundPhoto = if (resumed == null) imported else imported.copy(
+            clientStoryId = resumed.clientStoryId, sha256 = requireNotNull(resumed.photoSha256))
+        val photoSha = boundPhoto.sha256 // Opaque upload identity, not a hash of image bytes.
+        val local = store.createStory(boundPhoto)
+        val created = if (resumed == null || resumed.sourceAvailable == false) api.createStory(local) else resumed
+        if (resumed != null) {
+            assertEquals("Rehydration created a different story", resumed.id, created.id)
+            assertEquals(resumed.identityGeneration, created.identityGeneration)
+        }
+        require(created.sourceAvailable != false) { "Original upload was not restored in backend RAM" }
         require(created.id.isNotBlank())
         store.setServerIdentity(local.clientStoryId, created.id)
         val storyId = created.id
@@ -188,10 +208,13 @@ class LiveGoldenInstrumentedTest {
             "server_story_id" to storyId,
             "client_story_id" to local.clientStoryId,
             "fixture_photo_sha256" to photoSha,
+            "photo_identity_kind" to "opaque_upload_id",
+            "source_rehydrated_same_upload" to (resumed?.sourceAvailable == false),
             "destination_alias" to safeAlias,
             "physical_mic" to false,
             "prepared_owner_photo" to true,
-            "photo_coordinates_source" to "embedded_exif",
+            "photo_coordinates_source" to if (fixtureCoordinates) "owner_fixture_metadata" else "embedded_exif",
+            "source_input_uri_or_url" to photoUri.ifBlank { photoUrl },
             "discovery_seeded" to false,
             "owner_name_hint" to false,
             "seed_urls_supplied" to false,
@@ -205,7 +228,7 @@ class LiveGoldenInstrumentedTest {
         var publicationScheduled = false
         var cancelConfirmed = false
         val screenshots = mutableListOf<Map<String, Any?>>()
-        evidence["stage_screenshots"] = screenshots
+        evidence["stage_ui_receipts"] = screenshots
         evidence["stage_timings"] = stageTimings
         evidence["identity_progress_samples"] = identityProgressSamples
         fun capture(stage: String, story: StoryWire) {
@@ -214,6 +237,37 @@ class LiveGoldenInstrumentedTest {
 
         try {
             beginStage("identity", 5L * 60 * 1000)
+            if (resumeIdentityResearch) {
+                val before = rawStory(baseUrl, token, storyId)
+                assertEquals(photoSha, before.requireString("photo_sha256"))
+                val generation = before.get("identity_generation").asInt
+                val revision = before.get("research_control_revision").asInt
+                val control = before.requireObject("research_controls").requireObject("identity")
+                require(control.get("stopped").asBoolean) { "Explicit Resume requires a stopped saved scope" }
+                assertEquals(photoSha, control.requireString("photo_sha256"))
+                assertEquals(generation, control.get("identity_generation").asInt)
+                val payload = gson.toJson(mapOf(
+                    "action" to "resume", "purpose" to "identity",
+                    "expected_photo_sha256" to photoSha,
+                    "expected_identity_generation" to generation,
+                    "expected_control_revision" to revision,
+                ))
+                // The same addressed request survives a lost response; no new job or generation is created.
+                val requestKey = "golden-resume-identity-$storyId-$generation-$revision"
+                File(root, "identity-resume-intent.json").writeText(gson.toJson(mapOf(
+                    "story_id" to storyId, "request_key" to requestKey,
+                    "photo_sha256" to photoSha, "identity_generation" to generation,
+                    "research_control_revision" to revision,
+                )))
+                val after = api.mutate(storyId, "research-control", payload, requestKey)
+                assertEquals(photoSha, after.photoSha256)
+                assertEquals(generation, after.identityGeneration)
+                require(after.researchControls["identity"]?.stopped == false)
+                evidence["identity_explicit_resume"] = mapOf(
+                    "request_key" to requestKey, "control_revision_before" to revision,
+                    "photo_sha256" to photoSha, "identity_generation" to generation,
+                )
+            }
             assertHeadlessIdentity()
             capture("01-photo-before-research", api.getStory(storyId))
             var story = pollStory(api, storyId, stageDeadline - System.currentTimeMillis(),
@@ -229,12 +283,13 @@ class LiveGoldenInstrumentedTest {
             assertEquals(rawIdentityStory.get("identity_generation").asInt, identity.get("generation").asInt)
             assertTrue("Match lacks actual visual reference proof", identity.get("visual_reference_verified")?.asBoolean == true)
             val references = identity.getAsJsonArray("reference_evidence")?.map { it.asJsonObject }.orEmpty()
-            assertTrue("Match has no retained decoded reference images", references.isNotEmpty())
-            val modelImageHashes = references.map { reference ->
-                val hash = reference.requireString("model_image_sha256")
-                check(hash.matches(Regex("[0-9a-f]{64}"))) { "Invalid visual proof image digest" }
+            assertTrue("Match has no reference image URL evidence", references.isNotEmpty())
+            val modelImageUrls = references.map { reference ->
+                val imageUrl = reference.get("image_url")?.takeIf { !it.isJsonNull }?.asString
+                    ?: reference.requireString("model_image_url")
+                check(imageUrl.startsWith("https://")) { "Reference public image URL missing" }
                 check(reference.requireString("source_url").startsWith("https://")) { "Reference source provenance missing" }
-                hash
+                imageUrl
             }.distinct()
             val sourceUrls = (references.map { it.requireString("source_url") } +
                 identity.getAsJsonArray("source_links")?.mapNotNull { item ->
@@ -263,7 +318,7 @@ class LiveGoldenInstrumentedTest {
                 "identity_scope" to mapOf("photo_sha256" to photoSha, "identity_generation" to story.identityGeneration),
                 "visual_identity" to identityProof,
                 "identity_reference_count" to references.size,
-                "identity_model_image_count" to modelImageHashes.size,
+                "identity_model_image_count" to modelImageUrls.size,
                 "identity_source_url_count" to sourceUrls.size,
                 "identity_source_urls" to sourceUrls,
                 "identity_progress" to story.identityProgress,
@@ -435,6 +490,15 @@ class LiveGoldenInstrumentedTest {
             // consume real-provider budget before image/publication acceptance.
             beginStage("visual", 8L * 60 * 1000)
             val textBeforeVisual = requireNotNull(story.draftText)
+            val visualBefore = rawStory(baseUrl, token, storyId).getAsJsonObject("visual")
+            val previousImageOperation = visualBefore?.get("operation_id")?.takeIf { !it.isJsonNull }?.asString
+            val freshFullPass = resumed == null && !identityOnly && !moreOnly
+            if (freshFullPass) {
+                require(previousImageOperation.isNullOrBlank() && story.processedImageUrl.isNullOrBlank() &&
+                    story.state != StoryStage.VISUAL_PROCESSING) {
+                    "Fresh visual stage already has an operation; observe that operation before any new request"
+                }
+            }
             val savedVisualReady = resumed != null && savedDraftReady && story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()
             evidence["visual_history_reused"] = savedVisualReady
             if (!savedVisualReady) {
@@ -461,11 +525,15 @@ class LiveGoldenInstrumentedTest {
             assertEquals(OWNER_PROMPT_SHA256, visual.requireString("prompt_sha256"))
             val imageOperation = visual.requireString("operation_id")
             val imageAsset = visual.requireString("selected_asset_ref")
-            val imageSha = visual.requireString("selected_sha256")
+            if (freshFullPass) {
+                require(imageOperation != previousImageOperation)
+                evidence["fresh_visual_operation"] = true
+            }
+            assertEquals("Visual changed the selected facts", selectedFactIds.toSet(),
+                story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }.toSet())
 
-            val processed = File(root, "processed.img")
-            api.downloadAsset(requireNotNull(story.processedImageUrl), processed)
-            assertEquals(imageSha, sha256(processed.readBytes()))
+            val imageUrl = requireNotNull(story.processedImageUrl)
+            val processed = PhotoAssets.retainTemporary(api.readAsset(imageUrl))
             store.setServerSnapshot(
                 local.clientStoryId,
                 story.state,
@@ -480,7 +548,7 @@ class LiveGoldenInstrumentedTest {
             )
             store.replaceFacts(local.clientStoryId, story.facts.map { it.local() })
             ResearchProjectionStore(context).replace(local.clientStoryId, story)
-            store.setProcessedImagePath(local.clientStoryId, processed.absolutePath)
+            store.setProcessedImagePath(local.clientStoryId, processed)
             context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
                 .edit().putString("active_story_id", local.clientStoryId).apply()
             beginStage("publication", 8L * 60 * 1000)
@@ -524,6 +592,13 @@ class LiveGoldenInstrumentedTest {
             val confirmation = requireNotNull(live.snapshot().confirmation)
             assertEquals(story.draftText, confirmation.text)
             assertEquals(listOf(safeAlias), confirmation.destinations)
+            assertEquals("Publication card changed the reviewed image", story.processedImageUrl, confirmation.imageUrl)
+            assertEquals("Publication card changed the requested time", scheduledAt.toInstant(),
+                OffsetDateTime.parse(requireNotNull(confirmation.scheduledFor)).toInstant())
+            assertEquals("Europe/Kaliningrad", confirmation.timezone)
+            evidence["confirmation_id"] = confirmation.confirmationId
+            evidence["separate_confirmation_input"] = true
+            evidence["exact_card_text_image_destination_time_review"] = true
 
             live.sendText("Подтверждаю именно показанную карточку публикации.")
             awaitAnswer(live, "publication confirmation")
@@ -556,6 +631,8 @@ class LiveGoldenInstrumentedTest {
                     "client_story_id" to local.clientStoryId,
                     "server_story_id" to storyId,
                     "fixture_photo_sha256" to photoSha,
+            "photo_identity_kind" to "opaque_upload_id",
+            "source_rehydrated_same_upload" to (resumed?.sourceAvailable == false),
                     "live_provider" to "gemini-3.8-live",
                     "prepared_pcm_after_capture_boundary" to (preparedPcmTurnCount > 0),
                     "physical_mic" to false,
@@ -568,7 +645,8 @@ class LiveGoldenInstrumentedTest {
                     "prompt_sha256" to OWNER_PROMPT_SHA256,
                     "image_operation_id" to imageOperation,
                     "image_asset_ref" to imageAsset,
-                    "image_sha256" to imageSha,
+                    "image_url" to imageUrl,
+                    "image_identity_kind" to "operation_asset_url",
                     "publication_id" to publicationId,
                     "scheduled_for" to scheduled.scheduledFor,
                     "destination_alias" to safeAlias,
@@ -643,20 +721,21 @@ class LiveGoldenInstrumentedTest {
         context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE).edit()
             .putString("active_story_id", clientStoryId).commit()
         if (story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()) {
-            val image = File(root, "screenshot-visual.img")
             val config = AppGraph.config(context)
-            ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken)).downloadAsset(requireNotNull(story.processedImageUrl), image)
-            store.setProcessedImagePath(clientStoryId, image.absolutePath)
+            val current = store.story(clientStoryId)?.processedImagePath
+            if (current == null || !PhotoAssets.available(current)) {
+                val bytes = ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken)).readAsset(requireNotNull(story.processedImageUrl))
+                store.setProcessedImagePath(clientStoryId, PhotoAssets.retainTemporary(bytes))
+            }
         }
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
-        val directory = File(root, "screenshots").apply { mkdirs() }
-        val (detailDescription, detailSuffix) = when {
-            stage.contains("photo-before") || stage.contains("object-identified") -> "identity-progress" to "identity"
-            stage.contains("publication-concept") -> "concept-island-expanded" to "concept"
-            stage.contains("publication-text") -> "publication-preview-chat" to "text"
-            stage.contains("generated-visual") -> "publication-image" to "image"
-            else -> "facts-island-expanded" to "facts"
+        val detailDescription = when {
+            stage.contains("photo-before") || stage.contains("object-identified") -> "identity-progress"
+            stage.contains("publication-concept") -> "concept-island-expanded"
+            stage.contains("publication-text") -> "publication-preview-chat"
+            stage.contains("generated-visual") -> "publication-image"
+            else -> "facts-island-expanded"
         }
         val live = AppGraph.live(context)
         val liveWasActive = live.isActiveFor(clientStoryId)
@@ -668,7 +747,7 @@ class LiveGoldenInstrumentedTest {
             instrumentation.waitForIdleSync()
             // UiAutomator's click returns before the dialog dismissal frame.
             Thread.sleep(500)
-            assertTrue("Stage screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage.png")))
+            assertTrue("Stage UI missing: $stage", device.currentPackageName == context.packageName)
             scenario.onActivity { activity ->
                 fun find(view: View): View? {
                     if (view.contentDescription?.toString() == detailDescription) return view
@@ -683,7 +762,7 @@ class LiveGoldenInstrumentedTest {
             }
             instrumentation.waitForIdleSync()
             Thread.sleep(500)
-            assertTrue("Detail screenshot failed: $stage", device.takeScreenshot(File(directory, "$stage-$detailSuffix.png")))
+            assertTrue("Detail UI missing: $stage", device.currentPackageName == context.packageName)
             if (stage == "03-facts-after-research") {
                 scenario.onActivity { it.onBackPressed() }
                 instrumentation.waitForIdleSync()
@@ -709,7 +788,7 @@ class LiveGoldenInstrumentedTest {
             "identity_generation" to story.identityGeneration,
             "identity_images_reviewed_count" to story.identityProgress?.imagesReviewedCount,
             "identity_visual_comparison_verified" to story.identityProgress?.visualComparisonVerified,
-            "files" to listOf("$stage.png", "$stage-$detailSuffix.png")))
+            "media_artifacts_written" to false, "image_url" to story.processedImageUrl))
     }
 
     private fun dismissExternalLauncherAnr(device: UiDevice) {
@@ -850,23 +929,6 @@ class LiveGoldenInstrumentedTest {
         require(connection.responseCode in 200..299)
         return JsonParser.parseString(connection.inputStream.bufferedReader().use { it.readText() }).asJsonObject
     }
-
-    private fun insertIntoMediaStore(photo: File) = requireNotNull(
-        context.contentResolver.insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, "street-story-golden-${System.currentTimeMillis()}.jpg")
-                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                put(MediaStore.Images.Media.IS_PENDING, 1)
-            },
-        ),
-    ).also { uri ->
-        context.contentResolver.openOutputStream(uri, "w")!!.use { out -> photo.inputStream().use { it.copyTo(out) } }
-        context.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
-    }
-
-    private fun sha256(data: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
 
     private fun JsonObject.requireString(name: String): String =
         get(name)?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() } ?: error("Missing $name")

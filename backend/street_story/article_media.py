@@ -24,7 +24,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .identity_telemetry import record_identity_event
-from .reference_image_codec import MAX_DOWNLOAD_BYTES, normalize_reference
+MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 
 MAX_PAGES = 20
 MAX_PAGE_BYTES = 2 * 1024 * 1024
@@ -128,13 +128,37 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     roots.extend(node for node in content_roots if not any(parent in roots for parent in node.parents))
     media, seen = [], set()
 
-    def add(raw, kind, alt=''):
+    def local_context(node, root):
+        # Publisher text is retrieval context, never a subject/identity verdict.
+        def inside(value, scope):
+            return value is scope or any(parent is scope for parent in value.parents)
+        scope = node.find_parent('section')
+        if scope is None or not inside(scope, root):
+            scope = root
+        figure = node.find_parent('figure')
+        caption = figure.find('figcaption') if figure is not None and inside(figure, scope) else None
+        heading = node.find_previous(['h2', 'h3', 'h4', 'h5', 'h6'])
+        paragraph = node.find_parent('p') or node.find_previous('p')
+        values = {}
+        for key, value, limit in [('figcaption', caption, 300),
+                                  ('section_heading', heading, 180),
+                                  ('context_text', paragraph, 360)]:
+            if value is not None and inside(value, scope):
+                text = value.get_text(' ', strip=True)[:limit]
+                if text:
+                    values[key] = text
+        return values
+
+    def add(raw, kind, alt='', *, node=None, root=None):
         if not raw or not str(raw).strip():
             return
         url = public_url(urljoin(page_url, str(raw or '').strip()))
         if url and url not in seen and not urlsplit(url).path.lower().endswith('.svg') and not CHROME.search(urlsplit(url).path):
             seen.add(url)
-            media.append({'image_url': url, 'article_url': page_url, 'kind': kind, 'alt': alt[:220]})
+            descriptor = {'image_url': url, 'article_url': page_url, 'kind': kind, 'alt': alt[:220]}
+            if node is not None and root is not None:
+                descriptor.update(local_context(node, root))
+            media.append(descriptor)
 
     for root in roots:
         for image in root.find_all('img'):
@@ -153,7 +177,7 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
             parent = image.find_parent('a')
             if (parent and re.search(r'\.(?:jpe?g|png|webp)(?:\?|$)', str(parent.get('href')), re.I)
                     and not re.match(r'^/wiki/(?:File|Файл|Image|Изображение):', unquote(str(parent.get('href'))), re.I)):
-                add(parent.get('href'), 'article_image_link', alt)
+                add(parent.get('href'), 'article_image_link', alt, node=image, root=root)
                 continue
             if parent and parent.get('href') and not str(parent.get('href')).startswith('#'):
                 linked = public_url(urljoin(page_url, parent['href']))
@@ -171,16 +195,16 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
                         score = 0
                     variants.append((score, parts[0]))
             if variants:
-                add(max(variants)[1], 'article_srcset', alt)
+                add(max(variants)[1], 'article_srcset', alt, node=image, root=root)
                 continue
             add(image.get('data-original') or image.get('data-src') or image.get('data-lazy-src')
-                or image.get('src'), 'article_img', alt)
+                or image.get('src'), 'article_img', alt, node=image, root=root)
         for node in ([root] if root.has_attr('style') else []) + root.select('[style]'):
             if not CONTENT.search(' '.join(node.get('class', []))) or any(CHROME.search(
                     ' '.join([str(p.get('id', '')), *p.get('class', [])])) for p in [node, *node.parents]):
                 continue
             for raw in re.findall(r'url\([\'"]?([^\)\'"]+)', node.get('style', '')):
-                add(raw, 'article_gallery_background')
+                add(raw, 'article_gallery_background', node=node, root=root)
     # Structured Article/Place image is explicit publisher-selected main media.
     def structured(value):
         if isinstance(value, list):
@@ -315,29 +339,7 @@ async def browser_media(page_url: str, cursor=0, slide_cursor=0) -> tuple[str, l
 
 
 async def browser_reference(descriptor):
-    """Extract only the authorized article's rendered illustration, never the page."""
-    raw = descriptor['image_url']
-    async with article_browser(descriptor['article_url']) as page:
-        _title, media = await rendered_media(page, descriptor['article_url'], stop_image=raw)
-        if raw not in {item['image_url'] for item in media}:
-            raise ValueError('article_media_not_extracted')
-        images = page.locator('img')
-        for index in range(await images.count()):
-            image = images.nth(index)
-            exact = await image.evaluate("(i, url) => [i.currentSrc, i.src, i.dataset.src, i.dataset.original, i.closest('a')?.href].includes(url)", raw)
-            if not exact:
-                continue
-            await image.scroll_into_view_if_needed(timeout=3000)
-            decoded = await image.evaluate("async i => { try { await i.decode(); return true; } catch { return false; } }")
-            if not decoded:
-                continue
-            if not await image.evaluate('i => i.naturalWidth >= 160 && i.naturalHeight >= 160'):
-                continue
-            data = await image.screenshot(type='jpeg', quality=85, timeout=5000)
-            if len(data) > MAX_DOWNLOAD_BYTES:
-                raise ValueError('article_media_size')
-            return data
-    raise ArticleMediaBrowserError('article_media_render_unavailable')
+    raise ArticleMediaBrowserError('direct_public_reference_required')
 
 
 def browser_executable(default: str) -> str:
@@ -359,7 +361,7 @@ def browser_executable(default: str) -> str:
     raise ValueError('article_browser_unavailable')
 
 
-async def article_candidates(service, story, sources, excluded, *, http=None, resolver=resolve_public, browser=browser_media, receipts=None):
+async def article_candidates(service, story, sources, excluded, *, http=None, resolver=resolve_public, browser=browser_media, receipts=None, first_ready=False):
     own = http is None
     client = http or httpx.AsyncClient(timeout=8, follow_redirects=False,
         headers={'User-Agent': 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story) article-media'})
@@ -395,7 +397,11 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 partial = bool(document.select('[data-gallery], [data-fancybox], [data-swiper], .swiper, .slick-slider, .owl-carousel, [data-lazy-src]'))
             except (httpx.HTTPError, ValueError, OSError) as exc:
                 event('identity_article_unavailable', {'reason': type(exc).__name__})
-            if (not media or partial) and browser_slots > 0:
+            static_ready = bool(media) and partial and not source.get('static_media_delivered')
+            if static_ready:
+                source = dict(source, static_media_delivered=True)
+                event('identity_article_static_ready', {'image_count': len(media), 'partial': True})
+            if (not media or partial) and not static_ready and browser_slots > 0:
                 browser_slots -= 1
                 try:
                     render = browser(page_url, cursor=source.get('gallery_cursor', 0), slide_cursor=source.get('gallery_slide_cursor', 0)) if browser is browser_media else browser(page_url)
@@ -420,10 +426,12 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 if receipts is not None:
                     receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure',
                         'gallery_cursor': source.get('gallery_cursor', 0),
-                        'gallery_slide_cursor': source.get('gallery_slide_cursor', 0)})
+                        'gallery_slide_cursor': source.get('gallery_slide_cursor', 0),
+                        'static_media_delivered': bool(source.get('static_media_delivered'))})
                 return None
             if receipts is not None:
-                receipts.append({'url': raw, 'final_url': page_url, 'status': 'partial' if partial else 'completed', 'image_count': len(media), 'gallery_cursor': source.get('gallery_cursor', 0), 'gallery_slide_cursor': source.get('gallery_slide_cursor', 0)})
+                receipts.append({'url': raw, 'final_url': page_url, 'status': 'partial' if partial else 'completed', 'image_count': len(media), 'gallery_cursor': source.get('gallery_cursor', 0), 'gallery_slide_cursor': source.get('gallery_slide_cursor', 0),
+                        'static_media_delivered': bool(source.get('static_media_delivered'))})
             event('identity_article_media', {'candidate_id': cid, 'image_count': len(media)})
             return {'candidate_id': cid, 'name': title or str(source.get('title') or '')[:180],
                 'url': page_url, 'source_urls': [page_url], 'reference_image_urls': [item['image_url'] for item in media],
@@ -432,50 +440,56 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 'enumeration_status': 'partial' if partial else 'completed', 'discovery_provenance': source}
     try:
         unique = {str(s.get('url')): s for s in sources if isinstance(s, dict)}
-        batch = list(unique.values())[:MAX_PAGES]
+        # Existing four-reader prefetch is enough for a useful first portion.
+        # Unstarted/cancelled URLs remain deferred in the caller's source history.
+        batch = list(unique.values())[:4 if first_ready else MAX_PAGES]
         if receipts is not None:
             receipts.extend({'url': str(source.get('url') or ''), 'status': 'deferred'}
-                            for source in list(unique.values())[MAX_PAGES:])
-        values = await asyncio.gather(*(read(source) for source in batch))
-        candidates = [value for value in values if value]
+                            for source in list(unique.values())[len(batch):])
+        if not first_ready:
+            values = await asyncio.gather(*(read(source) for source in batch))
+            candidates = [value for value in values if value]
+        else:
+            tasks = [asyncio.create_task(read(source)) for source in batch]
+            pending = set(tasks)
+            try:
+                while pending and not candidates:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    for task in sorted(done, key=tasks.index):
+                        value = task.result()
+                        if value:
+                            candidates.append(value)
+            finally:
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                # A reader may have finished after wait's completion snapshot.
+                # Preserve its returned media alongside its completed receipt.
+                for task in sorted(pending, key=tasks.index):
+                    if not task.cancelled():
+                        value = task.result()
+                        if value:
+                            candidates.append(value)
+                if receipts is not None:
+                    completed_urls = {item['url'] for item in receipts if item.get('status') != 'deferred'}
+                    receipts.extend({'url': str(source.get('url') or ''), 'status': 'deferred'}
+                                    for source in batch if str(source.get('url') or '') not in completed_urls)
+
     finally:
         if own:
             await client.aclose()
-    event('identity_web_media_candidates', {'page_count': min(len(unique), MAX_PAGES),
-        'deferred_page_count': max(0, len(unique) - MAX_PAGES), 'candidate_count': len(candidates)})
+    event('identity_web_media_candidates', {'page_count': len(batch),
+        'deferred_page_count': max(0, len(unique) - len(batch)), 'candidate_count': len(candidates)})
     return candidates
 
 
 async def load_article_reference(client, candidate, raw, *, resolver=resolve_public):
+    """Mechanical public byte transport for Live; keep original MIME and bytes in RAM."""
     descriptor = next((item for item in candidate.get('article_media', []) if item.get('image_url') == raw), None)
     if not descriptor:
         raise ValueError('article_media_not_extracted')
-    method = 'http'
-    try:
-        target, mime, data = await fetch_public(client, raw, MAX_DOWNLOAD_BYTES, resolver=resolver)
-        if mime not in {'image/jpeg', 'image/png', 'image/webp'}:
-            raise ValueError('article_media_not_image')
-        image = await asyncio.to_thread(normalize_reference, data)
-    except (httpx.HTTPError, ValueError, OSError):
-        budget = candidate.get('_browser_budget') or {}
-        if budget.get('remaining', 0) <= 0:
-            raise
-        budget['remaining'] -= 1
-        from playwright.async_api import Error as BrowserError
-        try:
-            data = await asyncio.wait_for(browser_reference(descriptor), timeout=20)
-        except BrowserError as exc:
-            # A detached element, failed decode or screenshot is a known read
-            # failure, not an unknown provider result. The common queue skips
-            # this authorized reference and keeps its bounded fallback policy.
-            raise ArticleMediaBrowserError('article_media_browser_unavailable') from exc
-        image = await asyncio.to_thread(normalize_reference, data)
-        target, method = raw, 'article_browser_element'
-
-    # Exclude tiny tracking pixels even if mislabelled as article illustrations.
-    from PIL import Image
-    from io import BytesIO
-    with Image.open(BytesIO(image[1])) as decoded:
-        if min(decoded.size) < 160:
-            raise ValueError('article_media_too_small')
-    return image, {**descriptor, 'resolved_image_url': target, 'retrieval_method': method}
+    target, mime, data = await fetch_public(client, raw, MAX_DOWNLOAD_BYTES, resolver=resolver)
+    if mime not in {'image/jpeg', 'image/png', 'image/webp'} or not data:
+        raise ValueError('article_media_not_image')
+    return (mime, data), {**descriptor, 'resolved_image_url': target, 'retrieval_method': 'http_raw_ram'}

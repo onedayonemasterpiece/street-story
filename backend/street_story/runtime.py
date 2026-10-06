@@ -6,28 +6,13 @@ from typing import Any
 from .config import Settings
 from .mvp_location import MvpLocationStreetStoryService
 from .product import VibePublishBoundary
-from .providers import PermanentProviderError
 
 
 class ReplayCheckingVibePublishBoundary(VibePublishBoundary):
-    """Use the documented asset replay contract as a runtime reliability check."""
+    """Normal idempotent ingress; no duplicate upload for image comparison."""
 
     async def ingress_asset(self, data: bytes, mime_type: str, request_key: str) -> dict[str, Any]:
-        first = await super().ingress_asset(data, mime_type, request_key)
-        replay = await super().ingress_asset(data, mime_type, request_key)
-        first_identity = (
-            str(first.get("asset_id") or ""),
-            str(first.get("source_sha256") or "").lower(),
-        )
-        replay_identity = (
-            str(replay.get("asset_id") or ""),
-            str(replay.get("source_sha256") or "").lower(),
-        )
-        if first_identity != replay_identity:
-            raise PermanentProviderError(
-                "VibePublish same-key asset ingress replay changed immutable asset identity"
-            )
-        return first
+        return await super().ingress_asset(data, mime_type, request_key)
 
 
 class RuntimeStreetStoryService(MvpLocationStreetStoryService):

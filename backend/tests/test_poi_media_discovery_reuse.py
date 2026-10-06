@@ -1,5 +1,4 @@
 """Saved public article acquisition is useful before a new photo is identified."""
-import hashlib
 import json
 
 import pytest
@@ -76,20 +75,20 @@ async def test_new_photo_gets_fresh_verdict_and_uses_saved_articles_before_searc
     assert first['comparison_id'] and fetches[0]['discovery_provider'] == 'poi_memory'
     _, research = service._identity_snapshot(story['id'])
     assert research['visual_identity']['status'] == 'uncertain' and not research.get('poi_id')
-    assert not research['visual_search_operation']['seen_images']
+    assert not research['visual_search_operation']['reviewed_reference_ids']
     assert research['visual_search_operation']['sources'][fetches[0]['url']]['status'] == 'completed'
     reject(adapter, session, first)
     with service.store.tx() as db:
         research = json.loads(service._story_row(db, story['id'])['research_json'])
         research['identity_generation'] = 1
         db.execute('UPDATE stories SET photo_sha256=?,research_json=? WHERE id=?',
-                   (hashlib.sha256(b'different-source-photo').hexdigest(), canonical(research), story['id']))
+                   ('different-source-upload-token', canonical(research), story['id']))
     second = await adapter._compare_place_images(sessions(), {})
     assert second['comparison_id'] != first['comparison_id']
     assert len(fetches) == 2  # Media interpretation for photo B, not another search.
     _, research = service._identity_snapshot(story['id'])
     assert research['visual_identity']['status'] == 'uncertain'
-    assert not research['visual_search_operation']['seen_images']
+    assert not research['visual_search_operation']['reviewed_reference_ids']
 
 
 @pytest.mark.asyncio
@@ -108,4 +107,4 @@ async def test_memory_arriving_during_pending_unit_preserves_pending_pair(tmp_pa
     assert second['comparison_id'] == first['comparison_id']
     _, research = service._identity_snapshot(story['id'])
     assert len(research['visual_search_operation']['sources']) == 245
-    assert not research['visual_search_operation']['seen_images']
+    assert not research['visual_search_operation']['reviewed_reference_ids']

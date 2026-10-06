@@ -253,6 +253,8 @@ async def test_worker_restart_during_research_resumes(tmp_path):
     assert restarted.recover_jobs() == 1
     with restarted.store.tx() as db:
         db.execute("UPDATE jobs SET available_at=0")
+    assert restarted.story(story["id"])["source_available"] is False
+    assert create(restarted)["id"] == story["id"]
     await restarted.run_once()
     assert restarted.story(story["id"])["state"] == "review"
 

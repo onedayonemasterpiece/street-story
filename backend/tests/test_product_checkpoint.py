@@ -276,7 +276,7 @@ async def test_visual_uses_idempotent_ingress_select_and_verified_readback(tmp_p
     assert ready["visual"]["selected_asset_ref"] == "asset_processed_1"
     assert ready["visual"]["selected_sha256"] == PROCESSED_SHA
     assert len(vp.ingress_effects) == 1
-    assert service.asset(story["id"])[0] == PROCESSED
+    assert (await service.asset(story["id"]))[0] == PROCESSED
 
 
 @pytest.mark.asyncio
