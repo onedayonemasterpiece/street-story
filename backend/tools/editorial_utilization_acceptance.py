@@ -26,11 +26,11 @@ from street_story.live import create_live_host, ensure_live_schema
 from street_story.mvp_location import MvpLocationStreetStoryService
 
 RICH_REQUEST = (
-    'Прочитай весь доступный список подтверждённых фактов об этом объекте. '
     'Выбери несколько содержательно разных фактов, больше двух, которые вместе '
     'дадут интересный городской рассказ с иным углом, чем в предыдущих постах. '
     'Сам предложи и сохрани содержательную концепцию и выбранные факты, '
-    'затем сохрани текст поста только по этому выбору. Новое исследование, '
+    'затем сохрани текст поста только по этому выбору. Перед выбором прочитай '
+    'весь доступный подтверждённый список; зачитывать его мне не нужно. Новое исследование, '
     'картинка и публикация сейчас не нужны.'
 )
 SECOND_REQUEST = (
@@ -176,6 +176,7 @@ async def run(output: Path, corpus: dict, budget: int) -> dict:
             traces.append(active_trace)
             started = await host.start(resource_id=story_id, actor=None, model='gemini-3.8-live')
             session_id, cursor = started['session_id'], 0
+            clarification_sent = False
             try:
                 await host.input(session_id=session_id, resource_id=story_id, message={'text': prompt})
                 deadline = time.monotonic() + budget
@@ -188,6 +189,16 @@ async def run(output: Path, corpus: dict, budget: int) -> dict:
                     current = selected_state(service, story_id)
                     if current['draft'] and current['concept'] and len(current['selected_fact_ids']) > 2:
                         break
+                    if (not clarification_sent and any(e.get('type') == 'turn_complete' for e in events['events'])
+                            and not any('response' not in t and 'error' not in t for t in active_trace)):
+                        # One ordinary owner clarification after a known turn
+                        # boundary, never a replay of an unknown tool mutation.
+                        await host.input(session_id=session_id, resource_id=story_id, message={'text':
+                            'Список зачитывать не нужно. Мне нужен сохранённый пост: выбери несколько '
+                            'содержательно разных подтверждённых фактов, больше двух, сохрани выбор, '
+                            'свою концепцию и текст только по выбранным фактам. Не повторяй '
+                            'без необходимости угол предыдущего поста. Картинка и публикация не нужны.'})
+                        clarification_sent = True
                     if events['closed']:
                         raise RuntimeError('live_closed_before_editorial_result')
                     await asyncio.sleep(.25)
@@ -209,6 +220,7 @@ async def run(output: Path, corpus: dict, budget: int) -> dict:
                 scenario = {'story_id': story_id, 'owner_request': prompt, **before,
                     'model_read_eligible_ids': sorted(read_ids), 'full_inventory_read': read_ids == full_ids,
                     'whole_claims_delivered_in_ready_setup': sorted(setup_ids),
+                    'owner_clarification_sent': clarification_sent,
                     'previous_editorial_context': snapshot.get('previous_editorial_context'),
                     'selected_ids_preserved': selected_state(service, story_id)['selected_fact_ids'] == before['selected_fact_ids']}
                 scenarios.append(scenario)
