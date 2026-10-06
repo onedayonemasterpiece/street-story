@@ -1,10 +1,10 @@
 {
   "repository": "onedayonemasterpiece/live-interaction",
-  "version": "0.3.11-rc.1",
-  "python_version": "0.3.11rc1",
-  "source_sha": "b490c2a225ff8953b53275cdea9174d5e4e2e1a8",
-  "archive": "vendor/live-interaction-0.3.11-rc.1.tar.gz",
-  "sha256": "488b6a0becc1ee59c47f902fd6bb376d5992a8a1ba5e4bd50678d5554d51de18",
+  "version": "0.3.11-rc.2",
+  "python_version": "0.3.11rc2",
+  "source_sha": "262442b5572ce45b0b8ac0a65720b983fe9c5ef4",
+  "archive": "vendor/live-interaction-0.3.11-rc.2.tar.gz",
+  "sha256": "0c8a426d55105b9412518fb909c0b57daf70a8b38f8d8142b2aa82ec68c36a71",
   "protocol": "wl-live-v1",
   "release_status": "candidate"
 }
