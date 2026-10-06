@@ -371,7 +371,8 @@ FUNCTIONS = [
     _tool_schema(
         "get_facts",
         "Read the durable fact inventory page by page when read_topic's compact projection is not enough. "
-        "Use this before semantic deduplication, contradiction review or arbitration that may involve facts outside the snapshot.",
+        "Use this before semantic deduplication, contradiction review or arbitration that may involve facts outside the snapshot. "
+        "For verified factual narration use eligibility=eligible. Evidence attachment alone is not a completed review.",
         {
             "cursor": {
                 "type": "integer",
@@ -739,6 +740,7 @@ Voice and intent:
 - Russian is the owner's default language. Short foreign fragments in silence/rustling are likely ASR noise: do not invent speech or answer unintelligible sounds. Support deliberate coherent foreign speech and explicit language changes.
 - A one-word or clearly fragmented input (однословный или явно обрывочный ввод) must not start expensive tools. Clarify intent without asking the owner to name an object they are trying to identify.
 - Use only available product functions: no shell/SQL/HTTP or hidden external actions. A mutation is complete only after its result/readback. Never repeat an unknown-result mutation; read state first. Continue the same Live conversation after tool results.
+- A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim.
 
 Photo and identity:
 - The topic photo is supplied as a separate visual snapshot. Describe only visible features; admit when the snapshot is unavailable. A question "что видно/что ты видишь на фото" is visual: не вызывай resolve_place/search_web just to answer it.
