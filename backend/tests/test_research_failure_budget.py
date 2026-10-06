@@ -4,7 +4,7 @@ import json
 import pytest
 
 from test_fact_request_recovery import pending_request, assert_followup
-from street_story.errors import MalformedProviderResponse, RetryableProviderError
+from street_story.errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from street_story.service import MAX_JOB_ATTEMPTS
 
 
@@ -89,3 +89,65 @@ async def test_unknown_attempt_readback_never_resends_or_consumes_failure_budget
     assert sends == []
     assert svc.store.checkpoint_get(jid, 'worker_non_wait_failures') is None
     assert svc.store.checkpoint_get(jid, 'unknown_model_attempt') == frozen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('initial_state', ['researching', 'facts_ready', 'review', 'scheduling', 'published'])
+async def test_failed_optional_page_keeps_eligible_facts_and_editorial_state(tmp_path, initial_state):
+    svc, sid, jid = pending_request(tmp_path)
+    with svc.store.tx() as db:
+        # No joined owner request: this is the automatic optional research page.
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        research.pop('pending_fact_request', None)
+        db.execute('UPDATE stories SET state=?,research_json=? WHERE id=?', (initial_state, json.dumps(research), sid))
+        db.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps({'queue_priority': 'background'}), jid))
+        db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                   "VALUES(?,'saved','Saved fact',.9,1,1,'[{\"url\":\"https://example.com/history\"}]')", (sid,))
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,owner_selected,review_status,eligibility,created_at,updated_at) "
+                   "VALUES(?,'saved','saved','Saved fact',1,'eligible','eligible',1,1)", (sid,))
+
+    async def closed(job):
+        raise PermanentProviderError('gigachat:closed_semantic_unit_requires_live')
+
+    svc._run_research = closed
+    assert await svc.run_once()
+    assert job_state(svc, jid)['state'] == 'failed'
+    assert job_state(svc, jid)['last_error'] == 'gigachat:closed_semantic_unit_requires_live'
+    with svc.store.connection() as db:
+        story = db.execute('SELECT state,error_code,research_json,draft_text FROM stories WHERE id=?', (sid,)).fetchone()
+        assert story['state'] == ('facts_ready' if initial_state == 'researching' else initial_state)
+        assert story['error_code'] is None
+        assert story['draft_text'] == 'Owner draft'
+        assert json.loads(story['research_json'])['publication_concept'] == 'Owner concept'
+        assert db.execute('SELECT selected FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 1
+        assert db.execute('SELECT owner_selected,eligibility FROM fact_assertions WHERE story_id=?', (sid,)).fetchone()[:] == (1, 'eligible')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('priority,eligibility,identity_status', [
+    ('interactive', 'eligible', 'match'),
+    ('background', 'unreviewed', 'match'),
+    ('background', 'withheld', 'match'),
+    ('background', 'eligible', 'uncertain'),
+])
+async def test_failed_page_still_requires_review_without_usable_confirmed_partial_value(
+        tmp_path, priority, eligibility, identity_status):
+    svc, sid, jid = pending_request(tmp_path)
+    with svc.store.tx() as db:
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        research.pop('pending_fact_request', None)
+        research['visual_identity']['status'] = identity_status
+        db.execute("UPDATE stories SET state='researching',research_json=? WHERE id=?", (json.dumps(research), sid))
+        db.execute('UPDATE jobs SET payload_json=? WHERE id=?', (json.dumps({'queue_priority': priority}), jid))
+        db.execute("INSERT INTO facts(story_id,fact_id,text,confidence,evidence_supported,selected,sources_json) "
+                   "VALUES(?,'saved','Saved fact',.9,1,0,'[{\"url\":\"https://example.com/history\"}]')", (sid,))
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,semantic_key,display_text,review_status,eligibility,created_at,updated_at) "
+                   "VALUES(?,'saved','saved','Saved fact',?,?,1,1)", (sid, eligibility, eligibility))
+
+    async def closed(job):
+        raise PermanentProviderError('gigachat:closed_semantic_unit_requires_live')
+
+    svc._run_research = closed
+    assert await svc.run_once()
+    with svc.store.connection() as db:
+        assert db.execute('SELECT state,error_code FROM stories WHERE id=?', (sid,)).fetchone()[:] == ('needs_review', 'provider_permanent_error')
