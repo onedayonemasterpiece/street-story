@@ -16,10 +16,10 @@ object PhotoImporter {
     fun import(context: Context, uri: Uri, clientStoryId: String = newClientStoryId()): ImportedPhoto {
         require(clientStoryId.matches(Regex("[A-Za-z0-9_-]{1,120}"))) { "Invalid story identifier" }
         val resolver = context.contentResolver
-        if (uri.scheme == "content") {
+        val persistent = if (uri.scheme == "content") {
             // Persist the already selected provider grant; never enumerate or copy the gallery.
-            resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
+            runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }.isSuccess
+        } else false
         val mime = resolver.getType(uri) ?: "image/jpeg"
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED
         val started = SystemClock.elapsedRealtime()
@@ -40,7 +40,11 @@ object PhotoImporter {
         if (input == null) input = resolver.openInputStream(uri)
         val bytes = requireNotNull(input) { "Не удалось открыть выбранное фото" }.use(::readPhotoBytes)
         val exif = runCatching { ExifInterface(ByteArrayInputStream(bytes)) }.getOrNull()
-        val photo = imported(clientStoryId, uri.toString(), newPhotoUploadId(), mime, exif)
+        val uploadId = newPhotoUploadId()
+        // Share-sheet providers usually grant temporary access only. Read while
+        // that grant is alive and retain bytes in the existing bounded RAM store.
+        val path = if (persistent) uri.toString() else PhotoAssets.retainTemporary(bytes, uploadId)
+        val photo = imported(clientStoryId, path, uploadId, mime, exif)
         val gps = photo.latitude != null && photo.longitude != null
         val hasTags = exif?.getAttribute(ExifInterface.TAG_GPS_LATITUDE) != null || exif?.getAttribute(ExifInterface.TAG_GPS_LONGITUDE) != null
         PhotoImportTelemetry.record(context, clientStoryId, mapOf(
@@ -49,6 +53,7 @@ object PhotoImporter {
             "media_location_granted" to granted, "original_requested" to originalRequested,
             "original_opened" to originalOpened, "fallback_reason" to failure,
             "provider_kind" to if (uri.authority == "media") "media" else "document_or_cloud",
+            "persistent_uri_grant" to persistent,
             "gps_present" to gps,
             "gps_lat_tag" to (exif?.getAttribute(ExifInterface.TAG_GPS_LATITUDE) != null),
             "gps_lon_tag" to (exif?.getAttribute(ExifInterface.TAG_GPS_LONGITUDE) != null),

@@ -64,6 +64,8 @@ class MainActivity : Activity() {
     private var activeStoryId: String? = null
     private var pendingLiveStoryId: String? = null
     private var pendingPhotoRecoveryStoryId: String? = null
+    private var pendingSharedPhotos: ArrayList<Uri>? = null
+    private var photoLocationRequestInFlight = false
     private var photoRecoveryButton: Button? = null
     private var identityLinkView: TextView? = null
     private var receiverRegistered = false
@@ -133,9 +135,41 @@ class MainActivity : Activity() {
         window.statusBarColor = SAGE
         window.navigationBarColor = SAGE
         pendingPhotoRecoveryStoryId = savedInstanceState?.getString("photo_recovery_story")
+        @Suppress("DEPRECATION")
+        val restoredPhotos = savedInstanceState?.getParcelableArrayList<Uri>("shared_photos")
+        pendingSharedPhotos = restoredPhotos
+        photoLocationRequestInFlight = savedInstanceState?.getBoolean("photo_location_request") ?: false
         buildChrome()
         val active = activeStoryId
         if (active != null && store.story(active) != null) showTopic(active) else showTopics()
+        if (savedInstanceState == null) receiveSharedPhoto(intent)
+        else if (pendingSharedPhotos != null && !photoLocationRequestInFlight) launchPhotoPicker()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        receiveSharedPhoto(intent)
+    }
+
+    private fun receiveSharedPhoto(sharedIntent: Intent) {
+        if (sharedIntent.action != Intent.ACTION_SEND) return
+        // Consume this delivery, not the photo: recreation must not import again,
+        // but a second explicit share of the same URI must create another story.
+        val intake = runCatching { PhotoIntake.sharedPhotos(sharedIntent) }
+        // Keep action/type/component stable for Android lifecycle observers.
+        // Only consume the payload, after reading it into pending intake state.
+        sharedIntent.removeExtra(Intent.EXTRA_STREAM)
+        sharedIntent.clipData = null
+        setIntent(sharedIntent)
+        intake.onSuccess { photos ->
+            if (photos.isEmpty()) {
+                Toast.makeText(this, "Передайте одно фото из Галереи", Toast.LENGTH_LONG).show()
+                return@onSuccess
+            }
+            pendingPhotoRecoveryStoryId = null
+            pendingSharedPhotos = ArrayList(photos)
+            if (!photoLocationRequestInFlight) launchPhotoPicker()
+        }.onFailure { error -> Toast.makeText(this, error.message, Toast.LENGTH_LONG).show() }
     }
 
     override fun onStart() {
@@ -164,6 +198,8 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("active_story_id", activeStoryId)
         outState.putString("photo_recovery_story", pendingPhotoRecoveryStoryId)
+        pendingSharedPhotos?.let { outState.putParcelableArrayList("shared_photos", it) }
+        outState.putBoolean("photo_location_request", photoLocationRequestInFlight)
         super.onSaveInstanceState(outState)
     }
 
@@ -243,7 +279,7 @@ class MainActivity : Activity() {
         if (stories.isEmpty()) {
             column.addView(
                 label(
-                    "Выберите недавнее фото и расскажите голосом, какой пост хотите получить.",
+                    "Выберите фото за любую дату или поделитесь им из Галереи. Расскажите голосом, какой пост хотите получить.",
                     15,
                     MUTED,
                     Typeface.DEFAULT,
@@ -800,7 +836,8 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_PHOTO_LOCATION) {
-            openOriginalPhotoPicker()
+            photoLocationRequestInFlight = false
+            continuePhotoIntake()
             return
         }
         if (requestCode != REQUEST_MIC) return
@@ -816,27 +853,37 @@ class MainActivity : Activity() {
 
     private fun launchPhotoPicker() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            openOriginalPhotoPicker()
+            continuePhotoIntake()
             return
         }
         AlertDialog.Builder(this)
             .setTitle("Геометки выбранного фото")
             .setMessage("Для поиска объекта нужны координаты внутри исходного фото. Разрешение относится к метаданным выбранного файла, не к вашей текущей геопозиции.")
             .setPositiveButton("Продолжить") { _, _ ->
+                photoLocationRequestInFlight = true
                 requestPermissions(arrayOf(Manifest.permission.ACCESS_MEDIA_LOCATION), REQUEST_PHOTO_LOCATION)
             }
-            .setNegativeButton("Без геометок") { _, _ -> openOriginalPhotoPicker() }
+            .setNegativeButton("Без геометок") { _, _ -> continuePhotoIntake() }
+            .setOnCancelListener { pendingSharedPhotos = null; pendingPhotoRecoveryStoryId = null }
             .show()
+    }
+
+    private fun continuePhotoIntake() {
+        val shared = pendingSharedPhotos
+        pendingSharedPhotos = null
+        if (shared != null) importSelectedPhotos(shared, null) else openOriginalPhotoPicker()
     }
 
     @Suppress("DEPRECATION")
     private fun openOriginalPhotoPicker() {
-        // A single user-selected original, without access to the whole gallery.
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        // Keep the existing explicit original/GPS recovery entry point: some
+        // picker/cloud providers redact EXIF even when the image is readable.
+        val picker = if (pendingPhotoRecoveryStoryId != null) Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "image/*"
             addCategory(Intent.CATEGORY_OPENABLE)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }, REQUEST_PHOTO)
+        } else PhotoIntake.pickerIntent(this)
+        startActivityForResult(picker, REQUEST_PHOTO)
     }
 
     @Deprecated("Small standalone MVP activity result path")
@@ -846,7 +893,16 @@ class MainActivity : Activity() {
         val recoveryId = pendingPhotoRecoveryStoryId
         pendingPhotoRecoveryStoryId = null
         if (resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
+        runCatching { PhotoIntake.pickedPhotos(data) }
+            .onSuccess { photos -> if (photos.isNotEmpty()) importSelectedPhotos(photos, recoveryId) }
+            .onFailure { error -> Toast.makeText(this, error.message, Toast.LENGTH_LONG).show() }
+    }
+
+    private fun importSelectedPhotos(photos: List<Uri>, recoveryId: String?) {
+        // The intake contract already carries a list (future limit: nine). The
+        // current story/backend has one SOURCE, so do not fan out a multi-photo
+        // selection into unrelated stories or silently drop extra images.
+        val uri = PhotoIntake.checked(photos).single()
         Thread {
             var imported: ImportedPhoto? = null
             runCatching {

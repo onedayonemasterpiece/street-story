@@ -117,6 +117,7 @@ jobs:
           path: |
             instrumentation.txt
             provisioning-logcat.txt
+            instrumentation-crash-logcat.txt
             ui-evidence/
 
   release:

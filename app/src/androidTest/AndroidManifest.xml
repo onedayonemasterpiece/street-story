@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <provider
+            android:name="com.onedayonemasterpiece.streetstory.PhotoIntakeFixtureProvider"
+            android:authorities="com.onedayonemasterpiece.streetstory.test.photo-intake"
+            android:exported="true" />
+    </application>
+</manifest>
