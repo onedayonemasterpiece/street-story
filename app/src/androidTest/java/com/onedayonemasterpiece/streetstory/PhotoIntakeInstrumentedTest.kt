@@ -184,6 +184,9 @@ class PhotoIntakeInstrumentedTest {
                     MainActivity::class.java.getDeclaredMethod("openOriginalPhotoPicker").apply { isAccessible = true }.invoke(activity)
                 }
                 assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
+                // Images root can show camera albums first, rather than a flat
+                // Recent list. Open the exact folder seeded by this fixture.
+                device.wait(Until.findObject(By.pkg(pickerPackage).text("Camera")), 2000)?.click()
                 val item = device.wait(Until.findObject(By.text("street-story-month-old-test.jpg")), 5000)
                     ?: device.findObject(By.descContains("street-story-month-old-test"))
                     ?: device.findObject(By.res(Pattern.compile(".*:id/(icon_thumb|icon_thumbnail)")))
