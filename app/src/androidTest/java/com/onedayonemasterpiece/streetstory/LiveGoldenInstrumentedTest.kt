@@ -340,7 +340,7 @@ class LiveGoldenInstrumentedTest {
                 speak(live, pcmFiles[3])
                 awaitAnswer(live, "fact selection")
                 story = pollWithOwnerClarification(api, storyId, live, evidence, "fact selection",
-                    "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор через select_facts. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
+                    "Выбери для поста ровно два самых надёжных подтверждённых факта из текущего списка и сохрани этот выбор. Сейчас заверши именно выбор фактов; платформу публикации я укажу позже.") {
                     it.facts.count { fact -> fact.selected && fact.evidenceSupported } == 2
                 }
             }
@@ -366,7 +366,7 @@ class LiveGoldenInstrumentedTest {
             if (story.draftText.isNullOrBlank()) {
                 live.sendText(
                     "По уже выбранным подтверждённым фактам собери первый короткий городской пост. " +
-                        "Вызови edit_text; не ищи новые факты и не меняй выбранные источники.",
+                        "Сохрани текст; не ищи новые факты и не меняй выбранные источники.",
                 )
                 awaitAnswer(live, "initial draft")
                 story = pollStory(api, storyId, allowedNeedsReviewCodes = setOf("visual_stale")) {

@@ -217,5 +217,13 @@ transport = evidence.get('transport_final') or {}
 if transport.get('transport') != 'wss' or transport.get('http_audio_fallback') is not False or transport.get('event_polling') is not False:
     raise SystemExit('Android golden run did not prove WSS transport')
 if int(transport.get('received_pcm_bytes') or 0) <= 0:
-    raise SystemExit('Android golden run received no model audio')
+    saved_text_more = (os.environ.get('LIVE_E2E_MORE_ONLY', 'false') == 'true'
+                       and bool(resume_id) and pcm_turns == 0)
+    if not saved_text_more:
+        raise SystemExit('Android golden run received no model audio')
+    completed_turns = evidence.get('completed_live_turns')
+    event_cursor = transport.get('event_cursor')
+    if (type(completed_turns) is not int or completed_turns <= 0
+            or type(event_cursor) is not int or event_cursor <= 0):
+        raise SystemExit('Saved text MORE lacks completed Live turns or pushed WSS events')
 PY
