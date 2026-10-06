@@ -109,10 +109,22 @@ async def test_live_batch_exposes_good_facts_without_global_review_and_withholds
         with svc.store.tx() as db:
             hydrate_story_facts(db, identity, topic['id'])
         return topic['id']
+    # Delete the sole review origin before any other story can inherit its proof.
+    svc.delete_story(session.resource_id)
     reused_id = new_topic('reuse-exact')
     reused = adapter._get_facts(reused_id, {})['facts']
     assert len(reused) == 2 and all(f['eligibility'] == 'eligible' and not f['owner_selected'] for f in reused)
     adapter._select_facts(reused_id, 'choose-reused', {'fact_ids': [good[0]['fact_id']]})
+    # Reuse remains eligible across additional stories without the review origin.
+    after_delete_id = new_topic('reuse-after-delete')
+    after_delete = adapter._get_facts(after_delete_id, {})['facts']
+    assert {f['fact_id'] for f in after_delete} == {f['fact_id'] for f in good}
+    assert all(f['eligibility'] == 'eligible' and not f['owner_selected'] for f in after_delete)
+    with svc.store.tx() as db:
+        assert hydrate_story_facts(db, identity, after_delete_id) == 0
+        scans = db.execute('SELECT COUNT(*) FROM fact_conflict_scans WHERE story_id=?', (after_delete_id,)).fetchone()[0]
+        assert hydrate_story_facts(db, identity, after_delete_id) == 0
+        assert db.execute('SELECT COUNT(*) FROM fact_conflict_scans WHERE story_id=?', (after_delete_id,)).fetchone()[0] == scans
     with svc.store.tx() as db:
         assert hydrate_story_facts(db, identity, reused_id) == 0
         db.execute('UPDATE poi_research_assertions SET text=? WHERE assertion_id=?', ('Changed cache claim, not reviewed.', good[0]['fact_id']))

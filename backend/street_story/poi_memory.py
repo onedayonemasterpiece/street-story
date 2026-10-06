@@ -426,7 +426,7 @@ def backfill_poi_assertion_review_state(db, now: float) -> int:
         if (_review_snapshot(row['text'], row['sources_json']) != reviewed_snapshot
                 or _review_snapshot(latest['text'], latest['sources_json']) != reviewed_snapshot):
             if row['review_status'] != 'unreviewed' or row['eligibility'] != 'unreviewed':
-                db.execute("UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL WHERE poi_key=? AND assertion_id=?", (row['poi_key'], row['assertion_id']))
+                db.execute("UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL,review_proof_json=NULL WHERE poi_key=? AND assertion_id=?", (row['poi_key'], row['assertion_id']))
                 logger.info('street_story_poi_review_invalidated candidate_id=%s assertion_id=%s reason=review_snapshot_mismatch', row['poi_key'], row['assertion_id'])
                 updated += 1
             continue
@@ -448,6 +448,44 @@ def backfill_poi_assertion_review_state(db, now: float) -> int:
             ),
         )
         updated += 1
+    return updated
+
+
+def _review_proof(db, story_id: str, assertion_id: str, text: str, sources_json: str, key: str):
+    """Freeze a real model admission independently of the publication story."""
+    source = db.execute(
+        "SELECT a.display_text,a.revision_digest,f.sources_json,s.research_json FROM fact_assertions a "
+        "JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+        "JOIN stories s ON s.id=a.story_id "
+        "WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible'",
+        (story_id, assertion_id),
+    ).fetchone()
+    snapshot = _review_snapshot(text, sources_json)
+    if not source or _review_snapshot(source['display_text'], source['sources_json']) != snapshot:
+        return None
+    origin_identity = json.loads(source['research_json'] or '{}').get('visual_identity') or {}
+    if key not in memory_keys(db, origin_identity):
+        return None
+    for scan in db.execute(
+        "SELECT id,detector,revision_bundle_json,created_at FROM fact_conflict_scans "
+        "WHERE story_id=? AND status IN ('ok','no_candidates') AND coverage_complete=1 ORDER BY id DESC",
+        (story_id,),
+    ):
+        if json.loads(scan['revision_bundle_json'] or '{}').get(assertion_id) == source['revision_digest']:
+            return json.dumps({'snapshot': snapshot, 'source_story_id': story_id,
+                'scan_id': scan['id'], 'detector': scan['detector'], 'reviewed_at': scan['created_at']},
+                ensure_ascii=False, separators=(',', ':'))
+    return None
+
+
+def backfill_poi_review_proofs(db) -> int:
+    """Recover only exact retained model proofs; flags alone are not admission."""
+    updated = 0
+    for row in list(db.execute("SELECT * FROM poi_research_assertions WHERE eligibility='eligible' AND review_proof_json IS NULL")):
+        proof = _review_proof(db, str(row['review_story_id'] or ''), row['assertion_id'], row['text'], row['sources_json'], row['poi_key'])
+        if proof:
+            updated += db.execute('UPDATE poi_research_assertions SET review_proof_json=? WHERE poi_key=? AND assertion_id=?',
+                (proof, row['poi_key'], row['assertion_id'])).rowcount
     return updated
 
 
@@ -491,7 +529,7 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
         matching_placeholders = ','.join('?' for _ in matching_keys)
         changed = db.execute(
             "UPDATE poi_research_assertions SET review_status=?,eligibility=?,"
-            "review_story_id=?,reviewed_at=?,updated_at=MAX(updated_at,?) "
+            "review_story_id=?,reviewed_at=?,review_proof_json=?,updated_at=MAX(updated_at,?) "
             f"WHERE poi_key IN ({matching_placeholders}) AND assertion_id=? "
             "AND (reviewed_at IS NULL OR reviewed_at<=?)",
             (
@@ -499,6 +537,7 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
                 str(row["eligibility"]),
                 story_id,
                 reviewed_at,
+                _review_proof(db, story_id, row["assertion_id"], row["display_text"], row["sources_json"], key),
                 reviewed_at,
                 *matching_keys,
                 str(row["assertion_id"]),
@@ -552,40 +591,49 @@ def hydrate_story_facts(db, identity: dict[str, Any], story_id: str, limit: int 
                 json.dumps(sources, ensure_ascii=False, separators=(",", ":")),
             ),
         ).rowcount
+    from .fact_ledger import backfill_legacy_fact_ledger, refresh_review_status
+    restored = 0
+    now = float(db.execute("SELECT unixepoch('subsec')").fetchone()[0])
     if inserted:
-        from .fact_ledger import backfill_legacy_fact_ledger, refresh_review_status
-        now = float(db.execute("SELECT unixepoch('subsec')").fetchone()[0])
         backfill_legacy_fact_ledger(db, now)
-        refreshed: set[str] = set()
-        for item in candidates:
-            if item.get('origin') != 'poi_research':
-                continue
-            fact_id = str(item.get('fact_id') or '')
-            if fact_id in existing:
-                continue
-            keys = memory_keys(db, identity)
-            placeholders = ','.join('?' for _ in keys)
-            memory = db.execute(f'SELECT review_story_id FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY reviewed_at DESC LIMIT 1', (*keys, fact_id)).fetchone()
-            origin = str(memory['review_story_id'] or '') if memory else ''
-            if not origin or origin == story_id:
-                continue
-            if origin not in refreshed:
-                refresh_review_status(db, origin, now)
-                refreshed.add(origin)
-            source = db.execute(f"SELECT a.display_text,a.revision_digest FROM fact_assertions a JOIN stories s ON s.id=a.story_id WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible' AND json_extract(s.research_json,'$.visual_identity.candidate_id') IN ({placeholders})", (origin, fact_id, *keys)).fetchone()
-            target = db.execute('SELECT display_text,revision_digest FROM fact_assertions WHERE story_id=? AND assertion_id=?', (story_id, fact_id)).fetchone()
-            if not source or not target or tuple(source) != tuple(target):
-                continue
-            # Reuse an existing model decision only for the SAME literal claim
-            # and evidence revision. Never promote a changed cache snapshot.
-            for scan in db.execute("SELECT * FROM fact_conflict_scans WHERE story_id=? AND status IN ('ok','no_candidates') AND coverage_complete=1 ORDER BY id DESC", (origin,)):
-                if json.loads(scan['revision_bundle_json'] or '{}').get(fact_id) != source['revision_digest']:
-                    continue
-                db.execute("INSERT INTO fact_conflict_scans(story_id,poi_key,run_id,detector,status,pair_count,detected_count,coverage_complete,revision_bundle_json,conflict_ids_json,missing_aspects_json,error_type,created_at) VALUES(?,?,?,'poi_memory_reuse','no_candidates',0,0,1,?,'[]','[]',NULL,?)",
-                           (story_id, poi_key(identity), f"poi-memory:{origin}:{scan['id']}", json.dumps({fact_id: source['revision_digest']}, sort_keys=True), scan['created_at']))
-                break
+    keys = memory_keys(db, identity)
+    placeholders = ','.join('?' for _ in keys)
+    for item in candidates:
+        if item.get('origin') != 'poi_research':
+            continue
+        fact_id = str(item.get('fact_id') or '')
+        memory = db.execute(
+            f"SELECT * FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? "
+            "ORDER BY COALESCE(reviewed_at,0) DESC,updated_at DESC,poi_key LIMIT 1", (*keys, fact_id),
+        ).fetchone()
+        target = db.execute(
+            'SELECT a.display_text,a.revision_digest,f.sources_json FROM fact_assertions a '
+            'JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
+            'WHERE a.story_id=? AND a.assertion_id=?', (story_id, fact_id),
+        ).fetchone()
+        if not memory or memory['eligibility'] != 'eligible' or not target:
+            continue
+        try:
+            proof = json.loads(memory['review_proof_json'] or '{}')
+        except (TypeError, ValueError):
+            continue
+        snapshot = list(_review_snapshot(memory['text'], memory['sources_json']))
+        if (not isinstance(proof, dict) or not proof.get('scan_id') or proof.get('snapshot') != snapshot
+                or list(_review_snapshot(target['display_text'], target['sources_json'])) != snapshot):
+            continue
+        already_reviewed = any(json.loads(scan[0] or '{}').get(fact_id) == target['revision_digest'] for scan in db.execute(
+            "SELECT revision_bundle_json FROM fact_conflict_scans WHERE story_id=? "
+            "AND status IN ('ok','no_candidates') AND coverage_complete=1", (story_id,)))
+        if already_reviewed:
+            continue
+        db.execute("INSERT INTO fact_conflict_scans(story_id,poi_key,run_id,detector,status,pair_count,detected_count,coverage_complete,revision_bundle_json,conflict_ids_json,missing_aspects_json,error_type,created_at) VALUES(?,?,?,'poi_memory_reuse','no_candidates',0,0,1,?,'[]','[]',NULL,?)",
+            (story_id, poi_key(identity), f"poi-memory:{proof['source_story_id']}:{proof['scan_id']}",
+             json.dumps({fact_id: target['revision_digest']}, sort_keys=True), proof['reviewed_at']))
+        restored += 1
+    if inserted or restored:
         refresh_review_status(db, story_id, now)
-        logger.info('street_story_poi_hydration story_id=%s candidate_id=%s added=%s existing=%s', story_id, poi_key(identity), inserted, len(existing))
+        logger.info('street_story_poi_hydration story_id=%s candidate_id=%s added=%s review_restored=%s existing=%s',
+            story_id, poi_key(identity), inserted, restored, len(existing))
     return inserted
 
 
@@ -848,7 +896,7 @@ def persist_research_memory(
             ),
         )
         if changed_snapshot:
-            db.execute(f"UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL WHERE poi_key IN ({placeholders}) AND assertion_id=?", (*keys, assertion_id))
+            db.execute(f"UPDATE poi_research_assertions SET review_status='unreviewed',eligibility='unreviewed',review_story_id=NULL,reviewed_at=NULL,review_proof_json=NULL WHERE poi_key IN ({placeholders}) AND assertion_id=?", (*keys, assertion_id))
             logger.info('street_story_poi_review_invalidated candidate_id=%s assertion_id=%s reason=changed_snapshot', key, assertion_id)
 
         # Compatibility snapshot only. Never update by semantic key: this table

@@ -1379,7 +1379,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 fact.get("evidence_supported") or fact.get("verdict") == "supported"
                 for fact in result.get("facts", [])
             ):
-                session.state["research_output_pending"] = False
+                # A saved claim does not authorize a narrated summary of the
+                # other, still-uncommitted passages in this source page.
+                session.state["research_output_pending"] = bool(
+                    result.get("next_tool") or result.get("review_required")
+                    or result.get("continuation_required")
+                )
             elif name == "get_research_chunk" and result.get("all_chunks_processed") and result.get("next_tool") is None:
                 session.state["research_output_pending"] = False
             if session.state.get("research_run_id") and name in {"select_facts", "set_concept", "edit_text", "generate_visual", "prepare_publication"}:
