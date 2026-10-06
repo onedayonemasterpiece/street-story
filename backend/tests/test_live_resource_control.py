@@ -24,6 +24,8 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
 
     service, _adapter, _session, _events = make_service(tmp_path)
     host = create_live_host(service, settings(tmp_path))
+    from live_interaction.provider import TRANSITION_DEADLINE_SECONDS, FRESH_HANDLE_WAIT_SECONDS
+    assert host.reconfigure_timeout_ms >= (TRANSITION_DEADLINE_SECONDS + FRESH_HANDLE_WAIT_SECONDS + 10) * 1000
     calls: list[dict] = []
 
     async def guarded(**kwargs):

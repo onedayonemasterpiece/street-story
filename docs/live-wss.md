@@ -92,6 +92,11 @@ RESOURCE_TOKEN_BUDGET; that refusal no longer triggers a 900 ms reservation retr
 One existing story/photo, automatic evidence-backed resolve_place -> grounded
 search_web, optional author correction, independent text/image revisions, immutable reviewed visual, test
 Telegram-only destination and exact two-step publication confirmation remain.
+A saved story with a current finished image and draft opens the publication
+tool stage directly; this creates no confirmation card or publishing intent.
+Capability switches allow 120 seconds at the host boundary so the shared
+provider's 95-second rolling-budget recovery can finish. Provider limits,
+sticky model/key binding and separate owner confirmation are unchanged.
 No raw provider calls move to Android. No PostgreSQL, broker, new service or
 alternative credential path is introduced. The fixed image-v2 safe layout and
 FIT_CENTER preview are unchanged.
