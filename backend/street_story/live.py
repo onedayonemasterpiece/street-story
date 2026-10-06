@@ -658,7 +658,8 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "generate_visual",
-        "Generate the visual, or observe the existing operation without generating again. Use for explicit visual requests only.",
+        "Generate the visual, or observe the existing operation without generating again. Use for explicit visual requests only. "
+        "fact_ids may be a readable subset of the current owner-selected eligible facts; never include unselected facts.",
         {
             "visual_instruction": {
                 "type": "string",
@@ -771,7 +772,8 @@ Concept, editing and publication:
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
 - To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
-- On an explicit image creation/editing request, call generate_visual using the original photo, saved concept and all selected eligible facts; preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
+- Choose facts semantically from the full eligible inventory according to the owner's intent, not a fixed count or fixed angle. For another post use previous_editorial_context and the current selection/concept as compact history; vary the angle and selection when useful, without forcing novelty or selecting unapproved facts for an existing post.
+- On an explicit image creation/editing request, call generate_visual using the original photo and saved concept. For a rich owner-selected set, pass a small readable subset in fact_ids; every visual fact must be currently owner-selected and eligible. Preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
 - публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
 - Admit Live/provider delay or unavailability. The legacy async voice path remains a compatibility contract, not an automatic fallback.
@@ -819,7 +821,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "Use the saved confirmed identity, selected eligible facts, concept and draft. "
                 "Visual-only changes preserve the text; text changes need the editor stage. "
                 "generate_visual is only for an explicit request, using the original photo and "
-                "all selected facts; preserve dates and essential qualifications in readable annotations. "
+                "a readable subset of owner-selected eligible facts; never use unselected facts. "
+                "Preserve dates and essential qualifications in readable annotations. "
                 "Do not regenerate a reviewed image merely to publish it. "
                 "Publication is two-step: prepare_publication shows the exact text, image, destinations "
                 "and time; confirm_publication needs a separate unambiguous author confirmation "
@@ -1975,6 +1978,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 )
             ]
             fact_conflict_state = conflict_rows(db, story_id, limit=20)
+            from .poi_memory import previous_editorial_context
+            previous_editorial = previous_editorial_context(db, story.get('visual_identity') or {}, story_id)
             latest_run = db.execute("SELECT run_id,state,goal,status_detail,identity_generation FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)).fetchone()
             # The model must be able to address the exact already-discovered
             # article used for identity without inventing a URL or searching again.
@@ -2027,6 +2032,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "jobs": jobs,
             "confirmation": latest_confirmation,
             "fact_conflicts": fact_conflict_state,
+            "previous_editorial_context": previous_editorial,
             "research_run": dict(latest_run) if latest_run else None,
         }
 
@@ -2234,6 +2240,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "source_count": story.get("source_count", 0),
             "research_run": state.get("research_run"),
             "publication_concept": story.get("publication_concept"),
+            "previous_editorial_context": state.get("previous_editorial_context", []),
             "publication": story.get("publication"),
             "visual": {
                 "content_revision": visual.get("content_revision"),
@@ -5084,7 +5091,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         "Selected facts still need semantic review before final visual generation.",
                     )
                 ids = eligible_selected_fact_ids(db, story_id)
+                if args.get('observe_existing_visual') is True:
+                    saved_visual = json.loads(row['visual_context_json'] or '{}')
+                    frozen_ids = [str(item['fact_id']) for item in saved_visual.get('selected_facts', [])]
+                    if not set(frozen_ids).issubset(ids):
+                        raise InvalidStateError('visual_fact_not_selected',
+                            'The existing visual includes facts outside the current owner selection.')
+                    ids = frozen_ids
         else:
+            if not isinstance(supplied, list):
+                raise ConflictError('live_fact_ids_required', 'fact_ids must be an array')
             ids = [str(v) for v in supplied]
             with self.service.store.connection() as db:
                 issues = eligibility_issues_for_ids(db, story_id, ids)
@@ -5093,6 +5109,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         "fact_review_required",
                         "Requested facts still need semantic review before final visual generation.",
                     )
+                if not set(ids).issubset(eligible_selected_fact_ids(db, story_id)):
+                    raise InvalidStateError('visual_fact_not_selected',
+                        'Visual facts must be a subset of the current owner-selected eligible facts.')
         body = {"selected_fact_ids": ids, "visual_instruction": instruction}
         if args.get('observe_existing_visual') is True:
             body['observe_existing_visual'] = True
