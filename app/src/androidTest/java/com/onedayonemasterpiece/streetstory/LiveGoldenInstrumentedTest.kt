@@ -642,6 +642,7 @@ class LiveGoldenInstrumentedTest {
         }
         val live = AppGraph.live(context)
         val liveWasActive = live.isActiveFor(clientStoryId)
+        dismissExternalLauncherAnr(device)
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             instrumentation.waitForIdleSync()
             Thread.sleep(1_000)
@@ -671,7 +672,13 @@ class LiveGoldenInstrumentedTest {
                 assertTrue("Navigating to topics stopped Live", live.isActiveFor(clientStoryId))
                 scenario.recreate()
                 instrumentation.waitForIdleSync()
-                val topic = requireNotNull(device.findObject(By.text(requireNotNull(story.placeName)))) { "Topic missing after navigation" }
+                dismissExternalLauncherAnr(device)
+                val title = requireNotNull(story.placeName).trim().take(80)
+                waitUntil(10_000, "Topic missing after navigation") {
+                    dismissExternalLauncherAnr(device)
+                    device.findObject(By.text(title)) != null
+                }
+                val topic = requireNotNull(device.findObject(By.text(title)))
                 topic.click()
                 instrumentation.waitForIdleSync()
                 assertTrue("Returning to the photo stopped Live", live.isActiveFor(clientStoryId))
@@ -685,6 +692,16 @@ class LiveGoldenInstrumentedTest {
             "identity_images_reviewed_count" to story.identityProgress?.imagesReviewedCount,
             "identity_visual_comparison_verified" to story.identityProgress?.visualComparisonVerified,
             "files" to listOf("$stage.png", "$stage-$detailSuffix.png")))
+    }
+
+    private fun dismissExternalLauncherAnr(device: UiDevice) {
+        // The emulator launcher can show its own ANR above the healthy product.
+        // Never dismiss a Street Story ANR or any other application failure.
+        if (device.findObject(By.text("Pixel Launcher isn't responding")) == null) return
+        requireNotNull(device.findObject(By.text("Close app"))) {
+            "External launcher ANR has no close action"
+        }.click()
+        device.waitForIdle()
     }
 
     private fun speak(live: LiveSessionController, pcm: File) {

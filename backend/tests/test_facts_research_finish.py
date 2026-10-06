@@ -728,7 +728,7 @@ async def test_sufficient_snippet_save_preserves_future_cost_and_allows_partial(
 
 
 @pytest.mark.asyncio
-async def test_live_full_source_attempts_are_bounded_to_three(tmp_path):
+async def test_live_failed_sources_are_checked_without_a_total_three_source_cap(tmp_path):
     from street_story.research_runs import register_discovered_source
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     session.state['live_first_research'] = True
@@ -741,8 +741,8 @@ async def test_live_full_source_attempts_are_bounded_to_three(tmp_path):
         return []
     svc.providers.gemini._fetch_page_documents = empty
     result = await adapter._get_research_chunk(session, {'run_id': run_id, 'source_url': URL})
-    assert len(calls) == 3
-    assert result['partial'] and not result['completed'] and result['full_source_attempts'] == 3
+    assert len(calls) == 6
+    assert result['partial'] and not result['completed'] and result['full_source_attempts'] == 6
     with svc.store.connection() as db:
         assert run_manifest(db, run_id)['run']['status_detail'] == 'live_no_new_confirmed_facts'
     await reader.search_http.aclose()

@@ -750,7 +750,7 @@ Research and durable evidence:
 - discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
 - Attach only each claim's own supporting evidence refs. Semantically equivalent claims use exact existing_fact_id; enrich evidence rather than multiplying paraphrases.
 - get_research_chunk is paginated: check/save the current small page before following save receipt next_args to the next unread page. facts=[] means no useful claims on that page, not completed research. Do not skip an unread page to a new search. Do not reread saved pages.
-- After no_claims with zero new durable observations, continue get_research_chunk(run_id only), at most three full-source attempts. Only after bounded source exhaustion honestly say no new confirmed facts were found.
+- After no_claims with zero new durable observations, continue get_research_chunk(run_id only) through unread saved sources. Only after checked source coverage honestly say no new confirmed facts were found.
 - Choose competent full sources by URL/title/provenance: museum, protection catalog or encyclopedia before arbitrary tourist paraphrases. Copy the exact short source_ref; do not rewrite the URL or choose by row order. Check reliability and internal contradictions; a dubious date/style is not supported simply because a page says it.
 - Before saving each claim review its passage_ids: verdict, atomic, support_complete, qualifiers_preserved and brief review_reason. batch_reviewed checks only this small batch. Use insufficient/possible_conflict for doubtful claims; good supported claims are immediately durable and available. Preserve time and modality: a projected cost is not an incurred cost, a request is not its outcome. New facts remain selected=false; never select on behalf of the owner.
 - completed/partial describe source processing; partial must not hide good saved facts. Normal reviewed batches do not require get_review_packet/finalize_fact_review again.
@@ -786,7 +786,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     }
 
     def _capability_configuration(self, configuration, capability):
-        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For image creation or image editing, choose publication; it opens the image-generation tools. For text/concept changes choose editor; for facts choose research. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
+        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor; for facts choose research. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
             {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS),
                        'description': 'identity: identify the object; research: facts, selection, concept, text and image; review: evidence review; editor: fact selection, concept, text and image; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
              'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
@@ -834,7 +834,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
             + '\nAll these stages are your supported product capabilities. If the request needs another '
               'stage, call continue_story first. If the required tool is already available, use it '
-              'without switching stages. Use available image tools directly; if they are absent, '
+              'without switching stages. Preparation, confirmation and cancellation of a post '
+              'use the publication stage. Do not claim another supported product stage is unavailable '
+              'merely because its tools are absent from this bundle. Use available image tools directly; if they are absent, '
               'switch to publication for image creation/editing. Do not say you cannot '
               'create/edit images just because those tools are absent from the current stage. '
               'After switching, execute the same author request with the new tools; do not ask the '
@@ -951,7 +953,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             },
         }
         if not _args.get('full_configuration'):
-            capability = 'identity' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'} else 'review' if reviewing else 'research'
+            # Reopening an already prepared card must expose its normal confirm
+            # tool, without requiring another provider reconnect or new card.
+            # This restores capabilities only; owner confirmation stays separate.
+            publication_ready = (state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
+            capability = ('identity' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+                          else 'publication' if publication_ready else 'review' if reviewing else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
         return initialized
@@ -1258,7 +1265,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if session.state.get('live_first_research'):
             with self.service.store.connection() as db:
                 progress = self._live_research_progress(db, session.resource_id, run_id)
-            if pending or (progress['remaining'] and progress['attempts'] < 3):
+            if pending or progress['remaining']:
                 attempts = int(session.state.get("research_continuation_count") or 0)
                 if attempts < 12:
                     next_tool = (
@@ -1281,7 +1288,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                                 "source by title/provenance and copy its exact source_ref from "
                                 "the previous search result. For save_research_facts review "
                                 "the evidence already read and preserve every qualifier. "
-                                "After no_claims use get_research_chunk(run_id only) for the next source, at most three full-source attempts. "
+                                "After no_claims use get_research_chunk(run_id only) for the next unread source. "
                                 "If this work adds no new supported claim, report that honestly. Distinguish previously saved facts and added evidence from new eligible claims."
                             ),
                         },
@@ -1313,8 +1320,15 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Pending provider calls are excluded above; the saved cursor remains
             # writable for an explicit continuation in this same conversation.
             with self.service.store.tx() as db:
-                set_run_state(db, run_id, 'partial' if progress['observations'] or pending else 'completed', detail='live_answer_partial' if progress['observations'] else 'live_continuation_exhausted' if pending else 'live_no_new_confirmed_facts', now=self.service.store.now(), completed=not progress['observations'] and not pending)
-            self._emit_research_progress(session, stage='partial' if progress['observations'] else 'completed', active=False, query='', source_count=0, fact_count=facts)
+                manifest = run_manifest(db, run_id)
+                unreviewed = db.execute("SELECT 1 FROM fact_assertions a JOIN fact_observations o ON o.story_id=a.story_id "
+                    "AND o.assertion_id=a.assertion_id WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed' LIMIT 1",
+                    (session.resource_id, run_id)).fetchone()
+                complete = manifest_complete(manifest) and not unreviewed
+                detail = ('live_batches_complete' if progress['observations'] else 'live_no_new_confirmed_facts') if complete else 'live_answer_partial'
+                set_run_state(db, run_id, 'completed' if complete else 'partial', detail=detail,
+                              now=self.service.store.now(), completed=complete)
+            self._emit_research_progress(session, stage='completed' if complete else 'partial', active=False, query='', source_count=len(manifest['sources']), fact_count=facts)
             return
         attempts = int(session.state.get("research_continuation_count") or 0)
         if attempts >= 2:
@@ -1398,7 +1412,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 with self.service.store.connection() as db:
                     run = db.execute("SELECT state FROM research_runs WHERE run_id=? AND story_id=?", (run_id, story_id)).fetchone()
                     progress = self._live_research_progress(db, story_id, run_id)
-                if run and run['state'] not in {'completed', 'failed', 'cancelled'} and not progress['observations'] and progress['remaining'] and progress['attempts'] < 3:
+                if run and run['state'] not in {'completed', 'failed', 'cancelled'} and not progress['observations'] and progress['remaining']:
                     raise ConflictError('live_research_more_sources_required', 'Zero new durable observations. Next action: get_research_chunk with run_id only; save sufficient snippets before a factual answer.')
             return bounded_inventory(lambda page: self._get_facts(story_id, page), name, args, "facts")
         if name == "get_review_packet":
@@ -3143,8 +3157,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 progress = self._live_research_progress(db, session.resource_id, run_id)
             if source_url and progress['remaining'] and any(row['url'] == source_url and row['source_version_id'] for row in sources):
                 return await self._get_research_chunk(session, {'run_id': run_id})
-            bounded_stop = session.state.get('live_first_research') and not session.state.get('headless_research') and progress['attempts'] >= 3
-            source = None if bounded_stop else next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
+            source = next((row for row in sources if (not source_url or row["url"] == source_url) and not row["source_version_id"] and row['status'] != 'failed'), None)
             if source is None:
                 if session.state.get('live_first_research'):
                     with self.service.store.tx() as db:
@@ -4119,8 +4132,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             history[history_index] = latest_search
             research["live_web_searches"] = history[-12:]
             progress = self._live_research_progress(db, story_id, run_id)
-            more_sources_required = not progress['observations'] and progress['remaining'] and progress['attempts'] < 3
-            batches_complete = bool(batch_verified and manifest_complete(run_manifest(db, run_id)) and not more_sources_required and (not progress['remaining'] or progress['attempts'] >= 3))
+            more_sources_required = not progress['observations'] and progress['remaining']
+            batches_complete = bool(batch_verified and manifest_complete(run_manifest(db, run_id)) and not more_sources_required and not progress['remaining'])
             set_run_state(
                 db,
                 run_id,

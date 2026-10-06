@@ -16,6 +16,7 @@ from typing import Any
 
 from .config import Settings, reveal
 from .db import Store
+from .errors import research_retry_at
 from .providers import (
     GeminiClient,
     GroundedResearch,
@@ -828,11 +829,12 @@ class StreetStoryService:
                     self._resume_joined_fact_request(db, job['story_id'])
         except RetryableProviderError as exc:
             reason = str(getattr(exc, 'code', None) or exc)
+            retry_at = research_retry_at(reason, self.store.now(), exc.retry_at) if job['kind'] in RESEARCH_JOB_KINDS else exc.retry_at
             logging.getLogger('uvicorn.error').info('street_story_worker_waiting %s', canonical({
                 'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
                 'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
                 'reason': reason if re.fullmatch(r'[A-Za-z0-9._:-]{1,200}', reason) else type(exc).__name__,
-                'retry_at': exc.retry_at,
+                'retry_at': retry_at,
             }))
             with self.store.tx() as db:
                 if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
@@ -840,7 +842,7 @@ class StreetStoryService:
                 error = self.settings.redact(str(exc))
                 if job["kind"] in {'identity', 'identity_visual', 'research', 'refinement'}:
                     db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?",
-                        (max(self.store.now()+1, exc.retry_at or self.store.now()+60), error,self.store.now(),job["id"], job['attempts']))
+                        (retry_at, error,self.store.now(),job["id"], job['attempts']))
                 elif job["attempts"] >= MAX_JOB_ATTEMPTS:
                     self._fail_retry_exhausted(db, job, error)
                 else:

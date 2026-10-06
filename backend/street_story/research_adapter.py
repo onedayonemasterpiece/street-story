@@ -7,11 +7,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from .opencode_research import OpenCodeResearch, ResearchUnavailable
-from .errors import PermanentProviderError, RetryableProviderError
+from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
 from .service import ConflictError, canonical
 from .config import reveal
 
@@ -206,9 +207,26 @@ class ProductResearchAdapter:
             return {'result': saved.get('result'), 'sources': saved.get('sources', []), 'receipt': saved}
         readback = (binding.get('session_id') and binding.get('message_id')
                     and binding.get('phase') in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
+        # Existing receipt metadata is the durable wait fence. An explicit
+        # Resume changes the owner epoch and permits one new admission probe;
+        # it never authorizes a model send without the shared resource grant.
+        wait_scope = hashlib.sha256(canonical([route_key, story['id'], story['photo_sha256'],
+            story.get('_identity_generation', 0), binding.get('control_revision', 0)]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding['attempt_id'],)).fetchone()
+        prior_failure = (json.loads(row['receipt_json'] or '{}').get('route_failure') or {}) if row else {}
+        if (not readback and prior_failure.get('requires_binding_change')
+                and prior_failure.get('wait_scope') == wait_scope):
+            raise RetryableProviderError(prior_failure['code'], retry_at=research_retry_at(
+                prior_failure['code'], self.service.store.now(), self.service.store.now()+3600))
         for health_key in (() if readback else (route_key, quota_key)):
             health = self.service.store.cache_get(health_key) or {}
-            if health.get('retry_at', 0) > self.service.store.now():
+            resumed_probe = (health.get('category') == 'RESOURCE_DAILY_BUDGET'
+                and prior_failure.get('wait_scope') != wait_scope
+                and (int(binding.get('control_revision', 0)) > 0
+                     or prior_failure.get('code') == 'RESOURCE_DAILY_BUDGET' and prior_failure.get('wait_scope')))
+            if health.get('retry_at', 0) > self.service.store.now() and not resumed_probe:
                 raise RetryableProviderError(health.get('category','research_route_waiting'), retry_at=health['retry_at'])
         try:
             return await invoke(binding)
@@ -216,26 +234,41 @@ class ProductResearchAdapter:
             status = exc.receipt.get('provider_status')
             category = ('research_provider_credential_or_eligibility' if status in {401,403} else
                         'research_provider_quota' if status == 429 else exc.code)
-            delay = 3600 if status in {401,403} else 30
+            # Credential/eligibility rejection keeps the existing 1h cooldown;
+            # non-status unavailable routes use 5m, with longer provider hints.
+            delay = 3600 if status in {401,403} else 60 if status == 429 else 300
             try:
                 delay = max(delay,float(exc.receipt.get('provider_retry_after')))
             except (TypeError,ValueError):
                 pass
-            retry_at = self.service.store.now()+delay
-            self._record_route_failure(binding, role, category, retry_at)
-            if status:
+            retry_at = research_retry_at(category, self.service.store.now(), self.service.store.now()+delay)
+            binding_changed = category.endswith('binding_changed')
+            self._record_route_failure(binding, role, category, retry_at,
+                wait_scope=wait_scope, requires_binding_change=binding_changed)
+            route_unavailable = status in {401, 403, 429} or isinstance(status, int) and status >= 500 or category.lower().endswith('_unavailable')
+            if not binding_changed and route_unavailable:
                 self.service.store.cache_put(quota_key if status == 429 else route_key,
-                    {'category':category,'status':status,'retry_at':retry_at},delay)
+                    {'category':category,'status':status,'retry_at':retry_at},
+                    math.ceil(retry_at-self.service.store.now()))
             raise RetryableProviderError(category, retry_at=retry_at) from exc
         except Exception as exc:
             if getattr(exc, 'resource_failure', False):
-                retry_at = self.service.store.now()+max(3, getattr(exc, 'retry_after_ms', 30000)/1000)
                 code = _failure_code(exc)
-                self._record_route_failure(binding, role, code, retry_at)
+                retry_at = research_retry_at(code, self.service.store.now(),
+                    self.service.store.now()+max(3, getattr(exc, 'retry_after_ms', 30000)/1000))
+                self._record_route_failure(binding, role, code, retry_at, wait_scope=wait_scope,
+                    requires_binding_change=code.lower().endswith('binding_changed'))
+                # Per-binding/minute-capacity refusals may leave another smaller
+                # workload healthy. Cache only shared daily/configuration waits.
+                health_key = quota_key if code == 'RESOURCE_DAILY_BUDGET' else route_key if code in {
+                    'RESOURCE_CONTROL_UNAVAILABLE', 'RESOURCE_POLICY_UNAVAILABLE', 'RESOURCE_UNAVAILABLE'} else None
+                if health_key:
+                    self.service.store.cache_put(health_key, {'category':code,'retry_at':retry_at},
+                        math.ceil(retry_at-self.service.store.now()))
                 raise RetryableProviderError(code, retry_at=retry_at) from exc
             raise
 
-    def _record_route_failure(self, binding, role, code, retry_at):
+    def _record_route_failure(self, binding, role, code, retry_at, *, wait_scope=None, requires_binding_change=False):
         # Preserve the dispatch/recovery phase. An admission failure does not
         # prove that an older submitted request was never sent.
         with self.service.store.tx() as db:
@@ -244,7 +277,8 @@ class ProductResearchAdapter:
             if row:
                 receipt = json.loads(row['receipt_json'] or '{}')
                 receipt['route_failure'] = {'code': code, 'retry_at': retry_at,
-                                            'observed_at': self.service.store.now()}
+                                            'observed_at': self.service.store.now(),
+                                            'wait_scope': wait_scope, 'requires_binding_change': requires_binding_change}
                 db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
                            (canonical(receipt), self.service.store.now(), binding['attempt_id']))
         LOG.warning('street_story_research_route story_id=%s role=%s attempt_id=%s code=%s retry_at=%s',

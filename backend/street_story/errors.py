@@ -13,3 +13,27 @@ class PermanentProviderError(RuntimeError):
 
 class MalformedProviderResponse(RuntimeError):
     pass
+
+
+def research_retry_at(reason: str, now: float, requested: float | None = None) -> float:
+    """Local scheduler waits, not provider quota or a grant to send.
+
+    Shared workload daily accounting resets at UTC midnight. Binding failures
+    need changed owner epoch/profile; 1h bounds scheduler rechecks of that fence.
+    Configuration/control unavailable routes use a 5m operational cooldown.
+    A longer authoritative provider hint always wins. Unknown readback retains
+    its own retry deadline and is never reclassified as a fresh model attempt.
+    """
+    import math
+    requested = requested if isinstance(requested, (int, float)) and not isinstance(requested, bool) and math.isfinite(requested) else now + 60
+    code = str(reason).lower()
+    aggregate_wait = code.startswith('all_') or ':all_' in code or '.all_' in code
+    if code == 'resource_daily_budget':
+        minimum = (math.floor(now / 86400) + 1) * 86400
+    elif not aggregate_wait and code.endswith('binding_changed'):
+        minimum = now + 3600
+    elif not aggregate_wait and code.endswith('_unavailable'):
+        minimum = now + 300
+    else:
+        minimum = now + 1
+    return max(minimum, requested)

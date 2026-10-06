@@ -1682,6 +1682,15 @@ async def test_publication_confirmation_binds_exact_text_and_visual(tmp_path):
     assert card["visual_revision"] == "visual-r1"
     assert card["destinations"] == ["street_story_e2e_test"]
 
+    resumed = adapter.initialize(resource_id=story_id, actor=None, model=session.model)
+    assert resumed['capability'] == 'publication'
+    assert 'confirm_publication' in {tool['name'] for tool in resumed['configuration']['functions']}
+    assert resumed['context']['confirmation']['confirmation_id'] == card['confirmation_id']
+    with svc.store.connection() as db:
+        assert db.execute('SELECT state FROM live_publication_confirmations WHERE id=?',
+                          (card['confirmation_id'],)).fetchone()[0] == 'prepared'
+        assert db.execute("SELECT COUNT(*) FROM jobs WHERE story_id=? AND kind='publish'", (story_id,)).fetchone()[0] == 0
+
     with pytest.raises(ConflictError) as invalid_destination:
         await adapter.execute_tool(
             session,
