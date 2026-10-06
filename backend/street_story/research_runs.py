@@ -880,7 +880,8 @@ def run_manifest(db, run_id: str) -> dict[str, Any]:
 def manifest_complete(manifest: dict[str, Any]) -> bool:
     counts = manifest.get("counts") or {}
     return (
-        int(counts.get("sources_partial") or 0) == 0
+        int(counts.get("sources_discovered") or 0) > 0
+        and int(counts.get("sources_partial") or 0) == 0
         and int(counts.get("sources_failed") or 0) == 0
         and int(counts.get("sources_pending") or 0) == 0
         and int(counts.get("chunks_failed") or 0) == 0

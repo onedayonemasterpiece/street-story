@@ -270,6 +270,7 @@ class GigaChatResearchClient:
             'query': query, 'sources': inventory, 'context': capsule.get('context', {}),
             'known_fact_inventory': capsule.get('known_fact_inventory', [])})}]
         receipts, read_passages, status, tool_roundtrips = [], {}, 'failed', 0
+        strict_final_required = False
         workload = {'purpose': purpose, 'modalities': ['text'], 'images': 0,
                     'estimated_input_tokens': len(_json(public_capsule).encode('utf-8')) + len(SYSTEM.encode('utf-8'))
                         + (12000 if len(full_inventory) > len(capsule.get('known_fact_inventory', [])) else 0),
@@ -277,15 +278,16 @@ class GigaChatResearchClient:
         async with self.admission(self.binding, workload) as lease:
             try:
                 for turn in range(max_tool_calls + 1):
+                    final_turn = strict_final_required or turn == max_tool_calls
                     body = {'model': MODEL, 'messages': messages, 'max_tokens': max_output_tokens,
                             'stream': False, 'functions': [FUNCTION, INVENTORY_FUNCTION],
-                            'function_call': {'name': 'get_evidence'} if turn == 0 else 'auto' if turn < max_tool_calls else 'none'}
-                    if turn == max_tool_calls:
+                            'function_call': {'name': 'get_evidence'} if turn == 0 else 'none' if final_turn else 'auto'}
+                    if final_turn:
                         body['response_format'] = {'type': 'json_schema', 'schema': FINDINGS_SCHEMA, 'strict': True}
                     message, reason = await self._completion(lease, body, receipts, purpose, before_inference)
                     call = message.get('function_call')
                     if call:
-                        if reason != 'function_call' or turn >= max_tool_calls or call.get('name') not in {'get_evidence', 'get_known_facts'}:
+                        if reason != 'function_call' or final_turn or call.get('name') not in {'get_evidence', 'get_known_facts'}:
                             raise MalformedProviderResponse('gigachat:tool_outside_scope')
                         args = call.get('arguments')
                         if isinstance(args, str):
@@ -332,14 +334,38 @@ class GigaChatResearchClient:
                                          {'role': 'function', 'name': 'get_evidence', 'content': _json({
                                              'source_version_id': args['source_version_id'], 'url': source['url'], 'passages': selected})}])
                         continue
+                    if read_passages and reason == 'length' and not final_turn and turn < max_tool_calls:
+                        content = message.get('content')
+                        receipts[-1].update(rejection_reason='closed_intermediate_length',
+                            response_content_kind=type(content).__name__,
+                            response_content_bytes=len(content.encode('utf-8')) if isinstance(content, str) else None)
+                        strict_final_required = True
+                        messages.append({'role': 'user', 'content':
+                            'Return only the required facts JSON object using the already read source evidence. '
+                            'Avoid explanatory prose outside that object. Do not treat a previous truncated answer as evidence. '
+                            'Preserve the atomic claim and all qualifiers.'})
+                        continue
                     if not read_passages or reason != 'stop':
                         raise MalformedProviderResponse('gigachat:missing_tool_roundtrip_or_truncated_output')
                     try:
                         result = json.loads(message.get('content') or '')
                         if not isinstance(result, dict) or not isinstance(result.get('facts'), list) or len(result['facts']) > 32:
                             raise ValueError
-                    except (TypeError, ValueError):
-                        receipts[-1]['rejection_reason'] = 'semantic_json_invalid'
+                    except (TypeError, ValueError) as exc:
+                        content = message.get('content')
+                        receipts[-1].update(rejection_reason='semantic_json_invalid',
+                            response_content_kind=type(content).__name__,
+                            response_content_bytes=len(content.encode('utf-8')) if isinstance(content, str) else None,
+                            json_parser_error=type(exc).__name__, json_parser_offset=getattr(exc, 'pos', None))
+                        # A closed intermediate answer may stop before the
+                        # structured final request. Use the remaining bounded
+                        # round of this same admission, with the same evidence.
+                        if not final_turn and turn < max_tool_calls:
+                            strict_final_required = True
+                            messages.append({'role': 'user', 'content':
+                                'Return only the required facts JSON object using the already read source evidence. '
+                                'Do not treat a previous answer as evidence. Preserve the atomic claim and all qualifiers.'})
+                            continue
                         raise MalformedProviderResponse('gigachat:semantic_json_invalid') from None
                     receipts[-1]['findings_shape'] = [{'keys': sorted(fact),
                         'text_present': isinstance(fact.get('text'), str) and bool(fact.get('text')),
