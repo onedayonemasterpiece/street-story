@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import pytest_asyncio
+from visual_queue_fixture import queued_reference_count
 
 from street_story.errors import RetryableProviderError
 from street_story.headless_identity import HeadlessIdentity
@@ -112,7 +113,7 @@ def snapshot(fixture):
         row = db.execute('SELECT * FROM stories WHERE id=?', (fixture.sid,)).fetchone()
         research = json.loads(row['research_json'])
         job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (fixture.job_id,)).fetchone())
-        attempts = [dict(record) for record in db.execute('SELECT * FROM research_provider_attempts WHERE story_id=?', (fixture.sid,))]
+        attempts = [dict(record) for record in db.execute("SELECT * FROM research_provider_attempts WHERE story_id=? AND role='vision_native'", (fixture.sid,))]
         return research, job, attempts
 
 
@@ -126,7 +127,7 @@ async def test_normal_worker_retry_releases_lease_and_resumes_same_pair_without_
     research, job, attempts = snapshot(fixture)
     state = research['visual_search_operation']
     assert job['state'] == 'retry' and state['lease_owner'] is None and state['lease_until'] == 0
-    assert len(state['queue']) == 1 and not state['seen_images']
+    assert queued_reference_count(state) == 1 and not state['reviewed_reference_ids']
     assert len(attempts) == 1
     first = json.loads(attempts[0]['receipt_json'])
     assert first['phase'] == ('created' if failure == 'before_send' else 'submitted')
@@ -148,11 +149,14 @@ async def test_normal_worker_retry_releases_lease_and_resumes_same_pair_without_
     assert completed['thread_id'] == original_thread
     if original_turn:
         assert completed['turn_id'] == original_turn
+        assert completed['binding']['job_id'] == first['binding']['job_id']
+        assert completed['binding']['job_attempt'] == first['binding']['job_attempt']
+        assert completed['quota_permission'] == first['quota_permission']
     assert sum(name == 'thread/start' for name, _ in fixture.client.calls) == 1
     assert sum(name == 'turn/start' for name, _ in fixture.client.calls) == 1
     assert len(fixture.sends) == 1
     assert len(research['visual_search_operation']['verdict_history']) == 1
-    assert len(research['visual_search_operation']['seen_images']) == 1
+    assert len(research['visual_search_operation']['reviewed_reference_ids']) == 1
     assert research['identity_progress']['images_reviewed_count'] == 1
     assert research['visual_search_operation']['lease_owner'] is None
     assert snapshot(fixture)[0]['identity_progress']['images_reviewed_count'] == 1
@@ -171,7 +175,7 @@ async def test_generic_worker_exception_releases_only_lease_and_keeps_pending_pa
     assert job['state'] == 'retry' and job['last_error'] == 'worker_failure:RuntimeError'
     state = research['visual_search_operation']
     assert state['lease_owner'] is None and state['lease_until'] == 0
-    assert len(state['queue']) == 1 and not state['seen_images']
+    assert queued_reference_count(state) == 1 and not state['reviewed_reference_ids']
     assert state['query'] == 'Physical gate'
     assert state['sources'] and not attempts
 
@@ -184,7 +188,7 @@ async def test_no_pending_provider_work_releases_owned_lease_without_replacing_s
         async def _compare_place_images(self, session, args, **kwargs):
             state = self._visual_lease(session, expected=kwargs['expected_scope'])
             state.update(photo_sha256=fixture.photo_sha, generation=0, queue=[], query='saved query',
-                         seen_images=['earlier'], sources={}, searches={'earlier query': {'status': 'completed'}})
+                         reviewed_reference_ids=['earlier'], sources={}, searches={'earlier query': {'status': 'completed'}})
             session.state['visual_comparison'] = state
             self._save_visual_queue(session, state)
             return {'partial': True}
@@ -195,7 +199,7 @@ async def test_no_pending_provider_work_releases_owned_lease_without_replacing_s
         await EmptyUnit(fixture.service).run(job)
     state = snapshot(fixture)[0]['visual_search_operation']
     assert state['lease_owner'] is None and state['lease_until'] == 0
-    assert state['query'] == 'saved query' and state['seen_images'] == ['earlier']
+    assert state['query'] == 'saved query' and state['reviewed_reference_ids'] == ['earlier']
     assert state['searches'] == {'earlier query': {'status': 'completed'}}
     assert not fixture.client.calls
 
@@ -228,7 +232,7 @@ async def test_awaiting_worker_keeps_lease_and_late_exit_cannot_clear_changed_ow
     assert await task
     latest, _job, _attempts = snapshot(fixture)
     assert latest['visual_search_operation'] == expected_state
-    assert not latest['visual_search_operation']['seen_images']
+    assert not latest['visual_search_operation']['reviewed_reference_ids']
     assert not latest.get('identity_progress', {}).get('images_reviewed_count')
     assert sum(name == 'turn/start' for name, _ in fixture.client.calls) == 1
 
@@ -244,7 +248,33 @@ async def test_worker_task_cancellation_releases_owned_queue_but_preserves_unkno
         await task
     research, _job, attempts = snapshot(fixture)
     assert research['visual_search_operation']['lease_owner'] is None
-    assert len(research['visual_search_operation']['queue']) == 1
+    assert queued_reference_count(research['visual_search_operation']) == 1
     receipt = json.loads(attempts[0]['receipt_json'])
     assert receipt['phase'] == 'unknown' and receipt['thread_id'] and receipt['turn_id']
     assert sum(name == 'turn/start' for name, _ in fixture.client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_native_readback_rejects_caller_without_current_job_lease(prepared):
+    import base64
+    from street_story.headless_identity import VERDICT_SCHEMA
+    from street_story.service import ConflictError
+    fixture = prepared
+    fixture.client.first_read_error = True
+    assert await fixture.service.run_once()
+    research, job, attempts = snapshot(fixture)
+    assert job['state'] == 'retry'  # No worker currently owns this job.
+    pending = research['visual_search_operation']['pending_descriptor']
+    context = pending['reply']
+    story = {'id': fixture.sid, '_identity_generation': 0,
+        '_research_job_id': fixture.job_id, '_research_job_attempt': job['attempts'],
+        '_visual_reference_mapping': context['references'],
+        '_visual_image_parts': [{'label': 'SOURCE', 'mime_type': 'image/jpeg',
+            'data': base64.b64encode(fixture.service._source_photo_bytes(fixture.sid)).decode()},
+            {'label': 'REF 1', 'url': pending['candidates'][0]['reference_image_urls'][0]}]}
+    calls_before = len(fixture.client.calls)
+    with pytest.raises(ConflictError, match='не владеет'):
+        await fixture.adapter.visual_verdict(None, story, VERDICT_SCHEMA, context)
+    assert len(fixture.client.calls) == calls_before
+    assert len(fixture.sends) == 1
+    assert snapshot(fixture)[2] == attempts

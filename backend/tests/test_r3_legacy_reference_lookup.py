@@ -23,7 +23,7 @@ def legacy_reference_store(*, image_url=IMAGE, final_url=ARTICLE, valid_hash=Tru
     research = {'visual_identity': {'status': 'match', 'visual_reference_verified': True,
         'candidate_id': 'osm:way:1', 'candidate_name': 'Physical POI name',
         'reference_evidence': [{'candidate_id': 'web:example', 'subject_candidate_id': 'osm:way:1',
-            'article_url': ARTICLE, 'image_url': IMAGE, 'model_image_sha256': 'b' * 64}]}}
+            'article_url': ARTICLE, 'image_url': IMAGE, 'article_title': 'Original article H1'}]}}
     body = f'<h1>Original article H1</h1><article><img src="{image_url}"></article>'.encode()
     entry = {'body': base64.b64encode(body).decode(), 'final_url': final_url,
         'sha256': hashlib.sha256(body).hexdigest() if valid_hash else '0' * 64}
@@ -33,7 +33,7 @@ def legacy_reference_store(*, image_url=IMAGE, final_url=ARTICLE, valid_hash=Tru
     return db, entry
 
 
-def test_legacy_accepted_reference_recovers_hash_and_original_title_without_mutating_history():
+def test_legacy_accepted_reference_retains_article_metadata_without_mutating_history():
     db, entry = legacy_reference_store()
     try:
         original = db.execute('SELECT research_json FROM stories').fetchone()[0]
@@ -42,11 +42,11 @@ def test_legacy_accepted_reference_recovers_hash_and_original_title_without_muta
         assert len(refs) == 1
         ref = refs[0]
         assert ref['name'] == 'Original article H1'
-        assert ref['article_media'][0]['article_source_sha256'] == entry['sha256']
+        assert ref['article_media'][0]['article_url'] == ARTICLE
         assert ref['reference_image_urls'] == [IMAGE]
         assert ref['reference_reuse']['subject_candidate_id'] == 'osm:way:1'
         assert ref['reference_reuse']['story_id'] == 'story_original'
-        assert ref['article_media'][0]['model_image_sha256'] == 'b' * 64
+        assert not any('sha' in key for key in ref['article_media'][0])
         assert db.total_changes == changes
         assert db.execute('SELECT research_json FROM stories').fetchone()[0] == original
         assert 'owner_confirmed' not in ref and 'confidence' not in ref
@@ -59,11 +59,14 @@ def test_legacy_accepted_reference_recovers_hash_and_original_title_without_muta
     {'final_url': 'https://history.example/another-article'},
     {'valid_hash': False},
 ])
-def test_legacy_reference_without_valid_addressed_descriptor_is_not_reused(arguments):
+def test_accepted_reference_url_hint_does_not_require_pixel_or_article_hash_cache(arguments):
     db, _entry = legacy_reference_store(**arguments)
     try:
         changes = db.total_changes
-        assert candidate_reference_images(db, [{'candidate_id': 'osm:way:1'}]) == []
+        refs = candidate_reference_images(db, [{'candidate_id': 'osm:way:1'}])
+        assert refs[0]['reference_image_urls'] == [IMAGE]
+        assert 'confidence' not in refs[0] and 'owner_confirmed' not in refs[0]
+        assert not any('sha' in key for key in refs[0]['article_media'][0])
         assert db.total_changes == changes
     finally:
         db.close()

@@ -574,7 +574,11 @@ class ProductResearchAdapter:
         unit = canonical(visual_operation_unit(story, supplied))
         pending_native = self._native_visual_readback_binding(story, unit)
         if pending_native:
-            self.guard_binding(pending_native)
+            # The original send remains bound to its saved thread/turn/quota.
+            # A retry worker has a new job lease and may only read that turn.
+            self.guard_binding({**pending_native,
+                'job_id': story.get('_research_job_id'),
+                'job_attempt': story.get('_research_job_attempt')})
             if self.native_vision is None:
                 raise RetryableProviderError('native_turn_outcome_unknown', retry_at=self.service.store.now()+300)
             return await self.native_vision.compare_visual(None, story, schema, context, pending_native)

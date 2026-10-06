@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from visual_queue_fixture import prepare_live_parts, queued_reference_count, reference_receipt
 
 from street_story.headless_identity import HeadlessIdentity
 from street_story.live import StreetStoryLiveAdapter
@@ -26,11 +27,11 @@ def setup(tmp_path):
             'identity_generation': 0, 'visual_identity': {'status': 'uncertain', 'candidates': [candidate]}}), story['id']))
     async def images(candidates, limit, *, story_id, evidence):
         item = candidates[0]
-        evidence.append({'candidate_id': item['candidate_id'], 'source_url': item['reference_image_urls'][0],
-                         'model_image_sha256': hashlib.sha256(photo).hexdigest()})
-        return [(item['candidate_id'], 'image/jpeg', photo)]
+        evidence.append(reference_receipt(item))
+        return [(item['candidate_id'], 'image/jpeg', item['reference_image_urls'][0])]
     svc._candidate_reference_images = images
     adapter = StreetStoryLiveAdapter(svc, lambda *args: None, lambda *args: None)
+    prepare_live_parts(adapter, photo)
     session = SimpleNamespace(id='visual-control-session', resource_id=story['id'], model='test-vision', state={})
     return svc, adapter, session, story
 
@@ -56,7 +57,7 @@ async def test_low_confidence_match_records_uncertain_and_continues_same_queue(t
     assert not research.get('poi_id')
     queue = research['visual_search_operation']
     assert queue.get('pending') is None and queue['lease_owner'] is None
-    assert len(queue['queue']) == 1 and len(queue['seen_images']) == 1
+    assert len(queue['queue']) == 1 and len(queue['reviewed_reference_ids']) == 1
     assert queue['verdict_history'][-1]['status'] == 'uncertain'
     assert queue['verdict_history'][-1]['model_status'] == 'match'
     assert queue['verdict_history'][-1]['confidence'] == .78
@@ -79,8 +80,8 @@ async def test_late_verdict_cannot_record_seen_or_clear_retained_queue(tmp_path,
         adapter._record_place_comparison(session, 'late-verdict', verdict(reply['comparison_id'], status))
     after = state(svc, story['id'])
     assert after == before
-    assert len(after['visual_search_operation']['queue']) == 2
-    assert not after['visual_search_operation']['seen_images']
+    assert queued_reference_count(after['visual_search_operation']) == 2
+    assert not after['visual_search_operation']['reviewed_reference_ids']
     assert after['visual_identity']['status'] == 'uncertain'
     assert not after.get('poi_id')
     with svc.store.connection() as db:
@@ -104,8 +105,8 @@ async def test_late_download_cannot_overwrite_queue_after_stop(tmp_path, resume)
     with pytest.raises(ConflictError, match='изменилось'):
         await adapter._compare_place_images(session, {})
     assert state(svc, story['id']) == saved[0]
-    assert len(saved[0]['visual_search_operation']['queue']) == 2
-    assert not saved[0]['visual_search_operation']['seen_images']
+    assert queued_reference_count(saved[0]['visual_search_operation']) == 2
+    assert not saved[0]['visual_search_operation']['reviewed_reference_ids']
 
 
 @pytest.mark.asyncio
@@ -140,16 +141,16 @@ async def test_persisted_visual_control_revision_also_fences_late_verdict(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_resume_reoffers_pending_image_with_new_comparison_id(tmp_path):
+async def test_resume_reoffers_pending_reference_with_same_operation_id(tmp_path):
     svc, adapter, session, story = setup(tmp_path)
     old = await adapter._compare_place_images(session, {})
     stop_research(svc, story['id'], purpose='identity')
     resume_research(svc, story['id'], purpose='identity')
-    fresh = await adapter._compare_place_images(session, {})
-    assert fresh['comparison_id'] != old['comparison_id']
-    assert fresh['references'] == old['references']
     with pytest.raises(ConflictError):
         adapter._record_place_comparison(session, 'old-same-session', verdict(old['comparison_id']))
+    fresh = await adapter._compare_place_images(session, {})
+    assert fresh['comparison_id'] == old['comparison_id']
+    assert fresh['references'] == old['references']
     result = adapter._record_place_comparison(session, 'fresh', verdict(fresh['comparison_id']))
     assert result['matched']
     assert state(svc, story['id'])['identity_progress']['images_reviewed_count'] == 1
@@ -193,6 +194,6 @@ async def test_headless_late_provider_result_returns_without_commit(tmp_path, re
     assert len(calls) == 1
     research = state(svc, story['id'])
     assert research['visual_identity']['status'] == 'uncertain'
-    assert not research['visual_search_operation']['seen_images']
-    assert len(research['visual_search_operation']['queue']) == 2
+    assert not research['visual_search_operation']['reviewed_reference_ids']
+    assert queued_reference_count(research['visual_search_operation']) == 2
     assert not research.get('poi_id')

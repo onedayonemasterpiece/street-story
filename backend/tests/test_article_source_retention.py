@@ -1,6 +1,5 @@
 """Per-pass budgets never discard the discovered URL backlog."""
 import asyncio
-import hashlib
 from types import SimpleNamespace
 
 import httpx
@@ -9,7 +8,6 @@ import pytest
 from street_story import article_media, identity_discovery
 from street_story.research_control import stop_research
 from street_story.service import ConflictError
-from test_reference_image_codec import jpeg
 from test_visual_search_continuation import prepared
 
 
@@ -26,8 +24,8 @@ def images(svc):
         item = candidates[0]
         url = item['reference_image_urls'][0]
         loaded.append(url)
-        evidence.append({'candidate_id': item['candidate_id'], 'model_image_sha256': hashlib.sha256(url.encode()).hexdigest()})
-        return [(item['candidate_id'], 'image/jpeg', jpeg())]
+        evidence.append({'candidate_id': item['candidate_id'], 'source_url': url, 'article_url': item.get('url')})
+        return [(item['candidate_id'], 'image/jpeg', url)]
     svc._candidate_reference_images = load
     return loaded
 
@@ -139,7 +137,7 @@ async def test_pending_comparison_retains_all_later_supplied_urls(tmp_path, monk
     _, research = svc._identity_snapshot(topic['id'])
     assert set(late) <= set(research['visual_search_operation']['sources'])
     assert len(research['visual_search_operation']['sources']) == 86
-    assert not research['visual_search_operation']['seen_images']
+    assert not research['visual_search_operation']['reviewed_reference_ids']
 
 
 @pytest.mark.asyncio

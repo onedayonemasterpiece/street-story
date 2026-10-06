@@ -479,6 +479,9 @@ async def test_pipeline_checkpoints_survive_process_restart_and_expired_provider
     fresh = StreetStoryService(svc.settings, ProviderBundle(osm, wiki, fresh_gemini, svc.providers.vibepublish))
     fresh.store.now = clock
     clock.value += 8*86400
+    from test_backend import create
+    assert fresh.story(sid)['source_available'] is False
+    assert create(fresh, key='pipeline', client='pipeline')['id'] == sid
     assert await fresh.run_once()
     assert fresh.story(sid)['state'] == 'review'
     assert osm.calls == wiki.calls == 1

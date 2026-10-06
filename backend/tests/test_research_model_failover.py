@@ -73,8 +73,7 @@ async def test_grounded_research_fails_over_to_second_lite_model(tmp_path):
         return SimpleNamespace(text=json.dumps(payload), candidates=[candidate])
 
     client._generate = generate
-    photo = tmp_path / "photo.jpg"
-    photo.write_bytes(b"photo")
+    photo = b"photo"
 
     result = await client.research(photo, "image/jpeg", "voice", {"label": "place"}, [], [])
 

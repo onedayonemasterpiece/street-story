@@ -1,4 +1,3 @@
-import hashlib
 import json
 from types import SimpleNamespace
 
@@ -91,9 +90,9 @@ async def test_reference_must_have_article_provenance_and_be_decodable():
 def test_count_increases_after_comparison_including_nonmatches_and_survives_readback():
     state = advance({}, 'identity_reference_loaded', {}, 1)
     assert state.get('images_reviewed_count', 0) == 0
-    state = advance(state, 'identity_images_reviewed', {'image_sha256s': ['a', 'b']}, 2)
+    state = advance(state, 'identity_images_reviewed', {'reference_ids': ['a', 'b']}, 2)
     assert state['images_reviewed_count'] == 2
-    state = advance(state, 'identity_images_reviewed', {'image_sha256s': ['b', 'c']}, 3)
+    state = advance(state, 'identity_images_reviewed', {'reference_ids': ['b', 'c']}, 3)
     assert state['images_reviewed_count'] == 3
     state = advance(state, 'identity_finished', {'status': 'uncertain'}, 4)
     assert not state['visual_comparison_verified']
@@ -104,10 +103,10 @@ def test_count_increases_after_comparison_including_nonmatches_and_survives_read
 
 
 @pytest.mark.asyncio
-async def test_live_verdict_is_bound_to_sent_images_photo_and_generation(tmp_path):
+async def test_live_verdict_is_bound_to_sent_references_upload_and_generation(tmp_path, monkeypatch):
     svc, _ = make_service(tmp_path)
     photo = jpeg()
-    story = svc.create_story(key='media', client_story_id='media', photo_sha256=hashlib.sha256(photo).hexdigest(),
+    story = svc.create_story(key='media', client_story_id='media', photo_sha256='opaque-upload-token',
         photo_mime_type='image/jpeg', photo_bytes=photo, voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({'visual_identity': {'status': 'uncertain',
@@ -118,9 +117,13 @@ async def test_live_verdict_is_bound_to_sent_images_photo_and_generation(tmp_pat
     session = SimpleNamespace(id='live_1234567890abcdef', resource_id=story['id'], model='gemini-3.8-live', state={})
     async def images(candidates, limit, *, story_id, evidence):
         evidence.append({'candidate_id': 'wiki:1', 'source_url': 'https://upload.wikimedia.org/1.jpg',
-            'model_image_sha256': hashlib.sha256(photo).hexdigest(), 'model_image_bytes': len(photo)})
-        return [('wiki:1', 'image/jpeg', photo)]
+            'article_url': 'https://example.com/gate'})
+        return [('wiki:1', 'image/jpeg', 'https://upload.wikimedia.org/1.jpg')]
     svc._candidate_reference_images = images
+    from street_story import article_media
+    async def fetch(*args, **kwargs):
+        return 'https://upload.wikimedia.org/1.jpg', 'image/jpeg', photo
+    monkeypatch.setattr(article_media, 'fetch_public', fetch)
     reply = await adapter.execute_tool(session, {'name': 'compare_place_images', 'id': 'image-call', 'args': {}})
     from live_interaction.tool_parts import function_response
     response = function_response('compare_place_images', 'image-call', reply)
@@ -151,23 +154,19 @@ async def test_live_verdict_is_bound_to_sent_images_photo_and_generation(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_blocked_image_uses_only_its_authorized_article_element_and_bounded_browser(monkeypatch):
+async def test_blocked_direct_image_never_uses_browser_screenshot_fallback(monkeypatch):
     from street_story import article_media
-    descriptor = {'image_url': 'https://example.com/gate.jpg', 'article_url': 'https://example.com/gate', 'kind': 'article_img'}
-    candidate = {'article_media': [descriptor], '_browser_budget': {'remaining': 1}}
-    called = []
-    async def browser(item):
-        called.append(item)
-        return jpeg((640, 480))
-    monkeypatch.setattr(article_media, 'browser_reference', browser)
+    descriptor = {'image_url':'https://example.com/gate.jpg','article_url':'https://example.com/gate','kind':'article_img'}
+    candidate = {'article_media':[descriptor], '_browser_budget':{'remaining':1}}
+    async def forbidden(*args):
+        raise AssertionError('No browser image fallback')
+    monkeypatch.setattr(article_media,'browser_reference',forbidden)
     async def resolver(_host):
         return '93.184.216.34'
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as client:
-        _image, receipt = await load_article_reference(client, candidate, descriptor['image_url'], resolver=resolver)
-        assert called == [descriptor] and receipt['retrieval_method'] == 'article_browser_element'
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request:httpx.Response(403))) as client:
         with pytest.raises(httpx.HTTPStatusError):
-            await load_article_reference(client, candidate, descriptor['image_url'], resolver=resolver)
-        assert len(called) == 1
+            await load_article_reference(client,candidate,descriptor['image_url'],resolver=resolver)
+    assert candidate['_browser_budget']['remaining'] == 1
 
 
 @pytest.mark.asyncio
@@ -175,7 +174,7 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
     from street_story import article_media, identity_discovery
     svc, _ = make_service(tmp_path)
     photo = jpeg((640, 480))
-    story = svc.create_story(key='fallback', client_story_id='fallback', photo_sha256=hashlib.sha256(photo).hexdigest(),
+    story = svc.create_story(key='fallback', client_story_id='fallback', photo_sha256='opaque-upload-token',
         photo_mime_type='image/jpeg', photo_bytes=photo, voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
     wiki = {'candidate_id': 'wiki:1', 'name': 'Gate', 'url': 'https://example.com/wiki',
             'reference_image_urls': ['https://upload.wikimedia.org/front.jpg']}
@@ -190,11 +189,9 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
         candidate = candidates[0]
         url = candidate['reference_image_urls'][0]
         loaded.append(url)
-        data = jpeg((300 + len(loaded), 400))
         evidence.append({'candidate_id': candidate['candidate_id'], 'source_url': url,
-                         'model_image_sha256': hashlib.sha256(data).hexdigest(),
                          **({'article_url': candidate['url']} if candidate['candidate_id'].startswith('web:') else {})})
-        return [(candidate['candidate_id'], 'image/jpeg', data)]
+        return [(candidate['candidate_id'], 'image/jpeg', url)]
     async def search(service, query, visual_query, **kwargs):
         searched.append(query)
         return [{'url': article['url']}]
@@ -206,7 +203,7 @@ async def test_wikipedia_mismatch_automatically_searches_and_advances_to_later_a
     monkeypatch.setattr(article_media, 'article_candidates', articles)
     events = []
     adapter = StreetStoryLiveAdapter(svc, lambda _session, event: events.append(event), lambda *a: None)
-    session = SimpleNamespace(id='live_1234567890abcdef', resource_id=story['id'], model='gemini-3.8-live', state={})
+    session = SimpleNamespace(id='headless:article-fallback', resource_id=story['id'], model='gemini-3.8-live', state={})
     for index, status in enumerate(('mismatch', 'mismatch', 'match'), 1):
         reply = await adapter.execute_tool(session, {'name': 'compare_place_images', 'id': f'load-{index}', 'args': {'query': 'Gate'}})
         assert len(searched) == (0 if index == 1 else 1)
