@@ -4,6 +4,7 @@ import sys
 import types
 import asyncio
 import json
+import base64
 
 import pytest
 
@@ -27,11 +28,48 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     from live_interaction.provider import TRANSITION_DEADLINE_SECONDS, FRESH_HANDLE_WAIT_SECONDS
     assert host.reconfigure_timeout_ms >= (TRANSITION_DEADLINE_SECONDS + FRESH_HANDLE_WAIT_SECONDS + 10) * 1000
     calls: list[dict] = []
+    acquisitions: list[int] = []
+
+    ai_resource_control = pytest.importorskip('ai_resource_control', reason='Private managed SDK is installed by server deployment; verified in retained runtime acceptance')
+    from ai_resource_control.client import Control
+
+    async def acquire(_control, *args, **kwargs):
+        acquisitions.append(_control.config.grant_tokens)
+        return object()
+
+    monkeypatch.setattr(Control, 'acquire', acquire)
 
     async def guarded(**kwargs):
         calls.append({**kwargs, "environment": dict(kwargs["environment"])})
+        # Normal initial selection and startup failover both fit actual setup.
+        await kwargs['control'].acquire('gemini-3.8-live')
+        assert kwargs['control'].config.grant_tokens == 1024
+        await kwargs['control'].acquire('gemini-3.8-live', exclude_scopes={'failed-startup'})
+        # Same low remaining quota as the Projects Hub incident. A real SDK
+        # PCM admission must fit it directly, without a setup-sized denial.
+        from ai_resource_control.client import Lease, ResourceError
+        control = kwargs['control']
+        grants = []
 
-    ai_resource_control = pytest.importorskip('ai_resource_control', reason='Private managed SDK is installed by server deployment; verified in retained runtime acceptance')
+        async def rpc(operation, payload, **_kwargs):
+            assert operation == 'grant'
+            grants.append(payload['p_tokens'])
+            if payload['p_tokens'] > 4714:
+                raise ResourceError('RESOURCE_TOKEN_BUDGET')
+            return {'lease_id': 'voice-test', 'fence': 1, 'ttl_ms': 120000,
+                    'tokens': payload['p_tokens'], 'spend_ms': 30000,
+                    'grant_seq': payload['p_seq']}, control.clock()
+
+        control.rpc = rpc
+        lease = Lease(control, 'voice-test', 'private-test-owner', 'private-test-key', 1)
+        lease.deadline = control.clock() + 120
+        audio = {'realtimeInput': {'audio': {'mimeType': 'audio/pcm;rate=16000',
+                    'data': base64.b64encode(bytes(3200)).decode()}}}
+        for _ in range(2):
+            lease.grant_deadline = 0  # Exercise a later renewal, too.
+            await lease.before_send(audio)
+        assert grants == [1024, 1024]
+
     monkeypatch.setattr(ai_resource_control, 'run_guarded', guarded)
     initialized = _adapter.initialize(resource_id=_session.resource_id, actor=None, model='gemini-3.8-live')
     reader = asyncio.StreamReader()
@@ -49,9 +87,11 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     assert call["binding"] == "street-story:live_fixture_session"
     from live_interaction.provider import setup_config
     from ai_resource_control.client import estimate_input_tokens
-    assert call['control'].config.grant_tokens == estimate_input_tokens(setup_config('gemini-3.8-live',
+    setup_units = estimate_input_tokens(setup_config('gemini-3.8-live',
         initialized['context'], configuration=initialized['configuration'], search=False))
-    assert 1024 < call['control'].config.grant_tokens < 20000
+    assert acquisitions == [setup_units, setup_units]
+    assert call['control'].config.grant_tokens == 1024
+    assert 1024 < setup_units < 20000
     assert call["environment"] == {
         "AI_RESOURCE_CONTROL_URL": "https://limiter.example",
         "AI_RESOURCE_CONTROL_SERVICE_KEY": "fixture-service-key",
