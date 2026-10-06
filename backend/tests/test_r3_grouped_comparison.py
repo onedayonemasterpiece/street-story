@@ -1,11 +1,8 @@
 """Per-frame batch addressing never reviews unreturned or malformed frames."""
-import hashlib
-import time
-
 import pytest
 
 from street_story.service import canonical
-from test_reference_image_codec import jpeg
+from visual_queue_fixture import reference_receipt
 from test_visual_search_continuation import prepared
 
 
@@ -16,15 +13,11 @@ async def group(tmp_path):
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET research_json=? WHERE id=?',
                    (canonical({'visual_identity': {'status': 'uncertain', 'candidates': candidates}}), story['id']))
-    svc._identity_reference_cache = {url: (time.monotonic()+60, ('image/jpeg', jpeg()), 'ready')
-                                    for url in candidates[0]['reference_image_urls']}
     async def images(batch, limit, *, story_id, evidence):
         candidate = batch[0]
         url = candidate['reference_image_urls'][0]
-        data = jpeg((640+int(url[-5]),480))
-        evidence.append({'candidate_id': candidate['candidate_id'], 'source_url': url,
-                         'model_image_sha256': hashlib.sha256(data).hexdigest()})
-        return [(candidate['candidate_id'],'image/jpeg',data)]
+        evidence.append(reference_receipt(candidate))
+        return [(candidate['candidate_id'],'image/jpeg',url)]
     svc._candidate_reference_images = images
     session = sessions()
     session.visual_reference_limit = 4

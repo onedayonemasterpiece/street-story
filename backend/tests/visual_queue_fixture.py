@@ -20,6 +20,8 @@ def prepare_live_parts(adapter, reference_bytes):
     async def comparison_result(pending, *, direct_provider=False):
         if direct_provider:
             return dict(pending['reply'])
+        if len(pending['image_parts']) > 2:
+            return {**pending['reply'], 'direct_provider_required': True}
         assert len(pending['image_parts']) == 2
         parts = []
         for index, part in enumerate(pending['image_parts']):
