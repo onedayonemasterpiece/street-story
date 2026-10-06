@@ -141,6 +141,45 @@ async def test_frozen_fact_preparation_does_not_starve_live_receipts(tmp_path, m
         await reader.search_http.aclose()
 
 
+@pytest.mark.asyncio
+async def test_one_slow_frozen_page_keeps_native_audio_receipts_running(tmp_path, monkeypatch):
+    import time
+    svc, job, _, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 80)
+    facts = HeadlessFacts(svc)
+    try:
+        with pytest.raises(RetryableProviderError):
+            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        original = facts.adapter._core_passages
+        receipts = 0
+        running = True
+        progress_during_page = []
+
+        async def native_receipts():
+            nonlocal receipts
+            while running:
+                receipts += 1
+                await asyncio.sleep(.005)
+
+        def slow_page(*args, **kwargs):
+            before = receipts
+            # Controlled synchronous reader/projection cost, not a provider mock.
+            time.sleep(.08)
+            result = original(*args, **kwargs)
+            progress_during_page.append(receipts - before)
+            return result
+
+        monkeypatch.setattr(facts.adapter, '_core_passages', slow_page)
+        heartbeat = asyncio.create_task(native_receipts())
+        try:
+            await facts._prepare_units(job, 'headless-run', 'configured-model', 0)
+        finally:
+            running = False
+            await heartbeat
+        assert progress_during_page and all(n > 0 for n in progress_during_page)
+    finally:
+        await reader.search_http.aclose()
+
+
 async def review_candidates(svc, sid, run_id):
     """Controlled Live semantic decisions, distinct from extractor candidates."""
     with svc.store.connection() as db:
