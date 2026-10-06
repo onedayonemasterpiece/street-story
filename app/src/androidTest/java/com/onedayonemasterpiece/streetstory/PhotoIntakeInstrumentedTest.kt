@@ -164,7 +164,6 @@ class PhotoIntakeInstrumentedTest {
             }
         }
         grant(context.packageName, Manifest.permission.ACCESS_MEDIA_LOCATION)
-        val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
         val store = AppGraph.store(context)
         val previous = store.stories().map { it.clientStoryId }.toSet()
         val takenAt = System.currentTimeMillis() - 28L * 24 * 60 * 60 * 1000
@@ -183,14 +182,17 @@ class PhotoIntakeInstrumentedTest {
                 scenario.onActivity { activity ->
                     MainActivity::class.java.getDeclaredMethod("openOriginalPhotoPicker").apply { isAccessible = true }.invoke(activity)
                 }
-                assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
+                // Package visibility can hide DocumentsUI from resolveActivity,
+                // even though startActivity opens it. Observe the actual UI.
+                val pickerUi = device.wait(Until.findObject(By.pkg(Pattern.compile(".*\\.documentsui")).depth(0)), 5000)
+                assertNotNull("Original-photo DocumentsUI must open", pickerUi)
+                val pickerPackage = pickerUi!!.applicationPackage
                 // Images root can show camera albums first, rather than a flat
                 // Recent list. Open the exact folder seeded by this fixture.
                 device.wait(Until.findObject(By.pkg(pickerPackage).text("Camera")), 2000)?.click()
                 val item = device.wait(Until.findObject(By.text("street-story-month-old-test.jpg")), 5000)
                     ?: device.findObject(By.descContains("street-story-month-old-test"))
                     ?: device.findObject(By.res(Pattern.compile(".*:id/(icon_thumb|icon_thumbnail)")))
-                    ?: device.wait(Until.findObject(By.pkg(pickerPackage).desc(Pattern.compile("(?i).*photo taken.*"))), 15000)
                 device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
                 device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
                 assertNotNull("Month-old photo must be selectable in original provider; package=$pickerPackage", item)

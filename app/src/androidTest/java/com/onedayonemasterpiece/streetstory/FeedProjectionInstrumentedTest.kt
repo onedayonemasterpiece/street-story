@@ -96,74 +96,92 @@ class FeedProjectionInstrumentedTest {
         val store = AppGraph.store(context)
         store.activeVoiceSession()?.let { store.discardVoiceSession(it.sessionId) }
 
-        val firstPhoto = PhotoImporter.importStream(
-            context,
-            ByteArrayInputStream("topics-photo-a".toByteArray()),
-            "image/jpeg",
-            "topics-ui-a-${System.nanoTime()}",
-        )
-        val secondPhoto = PhotoImporter.importStream(
-            context,
-            ByteArrayInputStream("topics-photo-b".toByteArray()),
-            "image/jpeg",
-            "topics-ui-b-${System.nanoTime()}",
-        )
-        val first = store.createStory(firstPhoto)
-        val second = store.createStory(secondPhoto)
-        store.setServerSnapshot(
-            first.clientStoryId,
-            StoryStage.REVIEW,
-            "Бранденбургские ворота",
-            "Калининград",
-            "Первый готовый текст публикации.",
-            null,
-            null,
-            null,
-            null,
-            3,
-        )
-        store.setDraftText(first.clientStoryId, "Первый готовый текст публикации.")
-        store.replaceFacts(
-            first.clientStoryId,
-            listOf(FactSnapshot("fact-1", "Подтверждённый факт", .9, true, true, "[]")),
-        )
-        store.setStage(second.clientStoryId, StoryStage.RESEARCHING)
+        // This is a local projection fixture. Provisioning tests leave a dummy
+        // backend configured; onCreate schedules sync, which can overwrite the
+        // seeded states while these UI assertions run.
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        val topics = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val priorActive = topics.getString("active_story_id", null)
+        val seededIds = mutableListOf<String>()
+        config.backendUrl = null
+        try {
+            val firstPhoto = PhotoImporter.importStream(
+                context,
+                ByteArrayInputStream("topics-photo-a".toByteArray()),
+                "image/jpeg",
+                "topics-ui-a-${System.nanoTime()}",
+            )
+            val secondPhoto = PhotoImporter.importStream(
+                context,
+                ByteArrayInputStream("topics-photo-b".toByteArray()),
+                "image/jpeg",
+                "topics-ui-b-${System.nanoTime()}",
+            )
+            val first = store.createStory(firstPhoto).also { seededIds += it.clientStoryId }
+            val second = store.createStory(secondPhoto).also { seededIds += it.clientStoryId }
+            store.setServerSnapshot(
+                first.clientStoryId,
+                StoryStage.REVIEW,
+                "Бранденбургские ворота",
+                "Калининград",
+                "Первый готовый текст публикации.",
+                null,
+                null,
+                null,
+                null,
+                3,
+            )
+            store.setDraftText(first.clientStoryId, "Первый готовый текст публикации.")
+            store.replaceFacts(
+                first.clientStoryId,
+                listOf(FactSnapshot("fact-1", "Подтверждённый факт", .9, true, true, "[]")),
+            )
+            store.setStage(second.clientStoryId, StoryStage.RESEARCHING)
 
-        context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
-            .edit().remove("active_story_id").commit()
+            topics.edit().remove("active_story_id").commit()
 
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            scenario.onActivity { activity ->
-                val root = activity.findViewById<android.view.View>(android.R.id.content)
-                assertNotNull(findText(root, "Темы"))
-                assertNotNull(findByDescription(root, "new-topic"))
-                assertFalse(collectText(root).any { it.contains("Первый готовый текст публикации.") })
-                assertFalse(collectText(root).any { it.contains("Подтверждённый факт") })
-                assertTrue(collectText(root).any { it.contains("Бранденбургские ворота") })
-                assertTrue(collectText(root).any { it.contains("Ищем факты") })
-                var node: android.view.View? = findText(root, "Бранденбургские ворота")
-                repeat(2) { node = node?.parent as? android.view.View }
-                node?.performClick()
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<android.view.View>(android.R.id.content)
+                    assertNotNull(findText(root, "Темы"))
+                    assertNotNull(findByDescription(root, "new-topic"))
+                    assertFalse(collectText(root).any { it.contains("Первый готовый текст публикации.") })
+                    assertFalse(collectText(root).any { it.contains("Подтверждённый факт") })
+                    assertTrue(collectText(root).any { it.contains("Бранденбургские ворота") })
+                    assertTrue(collectText(root).any { it.contains("Ищем факты") })
+                    var node: android.view.View? = findText(root, "Бранденбургские ворота")
+                    repeat(2) { node = node?.parent as? android.view.View }
+                    node?.performClick()
+                }
+                instrumentation.waitForIdleSync()
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<android.view.View>(android.R.id.content)
+                    assertNotNull(findByDescription(root, "topic-scroll") as? ScrollView)
+                    assertNotNull(findByDescription(root, "publication-image"))
+                    val preview = findByDescription(root, "publication-preview-chat") as? TextView
+                    assertNotNull(preview)
+                    assertTrue(preview?.text?.toString()?.contains("Первый готовый текст") == true)
+                    assertNotNull(findByDescription(root, "facts-island-expanded"))
+                    assertNotNull(findByDescription(root, "live-mic"))
+                    assertFalse(collectText(root).any { it.contains("voice-cleaned-persist") })
+                }
+                scenario.recreate()
+                instrumentation.waitForIdleSync()
+                scenario.onActivity { activity ->
+                    val root = activity.findViewById<android.view.View>(android.R.id.content)
+                    assertNotNull(findByDescription(root, "publication-preview-chat"))
+                    assertNotNull(findByDescription(root, "live-mic"))
+                }
             }
-            instrumentation.waitForIdleSync()
-            scenario.onActivity { activity ->
-                val root = activity.findViewById<android.view.View>(android.R.id.content)
-                assertNotNull(findByDescription(root, "topic-scroll") as? ScrollView)
-                assertNotNull(findByDescription(root, "publication-image"))
-                val preview = findByDescription(root, "publication-preview-chat") as? TextView
-                assertNotNull(preview)
-                assertTrue(preview?.text?.toString()?.contains("Первый готовый текст") == true)
-                assertNotNull(findByDescription(root, "facts-island-expanded"))
-                assertNotNull(findByDescription(root, "live-mic"))
-                assertFalse(collectText(root).any { it.contains("voice-cleaned-persist") })
+        } finally {
+            seededIds.forEach { id ->
+                store.story(id)?.let { PhotoAssets.releaseTemporary(it.photoPath) }
+                store.deleteStory(id)
+                PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
             }
-            scenario.recreate()
-            instrumentation.waitForIdleSync()
-            scenario.onActivity { activity ->
-                val root = activity.findViewById<android.view.View>(android.R.id.content)
-                assertNotNull(findByDescription(root, "publication-preview-chat"))
-                assertNotNull(findByDescription(root, "live-mic"))
-            }
+            topics.edit().putString("active_story_id", priorActive).commit()
+            config.backendUrl = priorBackend
         }
     }
 
