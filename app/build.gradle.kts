@@ -62,6 +62,7 @@ android {
 tasks.named("preBuild").configure { dependsOn(prepareSharedLive) }
 
 dependencies {
+    implementation("androidx.activity:activity:1.10.1")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
