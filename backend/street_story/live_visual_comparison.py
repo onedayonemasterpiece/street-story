@@ -14,7 +14,7 @@ import uuid
 
 from live_interaction import with_live_tool_parts
 
-from .identity_lifecycle import PROTECTED, confidence, visual_match
+from .identity_lifecycle import PROTECTED, confidence, distance, visual_match
 from .identity_telemetry import record_identity_event
 from .service import ConflictError, canonical
 
@@ -319,10 +319,11 @@ class LiveVisualComparisonMixin:
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
-                'url': c.get('url'), 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
+                'url': c.get('url'), 'distance_m': c.get('distance_m'),
+                'alias_candidate_ids': c.get('alias_candidate_ids', [])}
                 for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')][:32],
             'remaining_illustrations': remaining,
-            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Название статьи, реклама и другие объекты не доказательство.'}
+            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1):
         story, research = self.service._identity_snapshot(session.resource_id)
@@ -468,6 +469,38 @@ class LiveVisualComparisonMixin:
         article_urls = {str(url).rstrip('/') for c in physical for url in [c.get('url'), c.get('wikipedia_url')]
             if url and (urlsplit(str(url)).hostname or '').endswith('.wikipedia.org')}
 
+        # A previous positive belongs to its old SOURCE. Use its explicit
+        # subject only to schedule current hypotheses, never as match evidence.
+        def reference_distance(candidate):
+            subject = (candidate.get('reference_reuse') or {}).get('subject_candidate_id')
+            ids = {candidate.get('candidate_id'), subject}
+            url = str(candidate.get('url') or '').rstrip('/')
+            return min((distance(c) for c in physical if ids.intersection(
+                {c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])})
+                or (url and url in {str(c.get('url') or '').rstrip('/'),
+                                   str(c.get('wikipedia_url') or '').rstrip('/')})), default=float('inf'))
+
+        def page_distance(page):
+            source = page.get('source') or {}
+            ids = set(source.get('memory_candidate_ids') or [])
+            ids.add(source.get('candidate_id'))
+            url = str(source.get('url') or '').rstrip('/')
+            return min((distance(c) for c in physical if ids.intersection(
+                {c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])})
+                or (url and url in {str(c.get('url') or '').rstrip('/'),
+                                   str(c.get('wikipedia_url') or '').rstrip('/')})), default=float('inf'))
+
+        if state['queue'] and not unsettled:
+            previous_head = state['queue'][0].get('reference_id')
+            state['queue'].sort(key=lambda c: (reference_distance(c), 0 if c.get('reference_reuse') else 1))
+            if state['queue'][0].get('reference_id') != previous_head:
+                record_identity_event(self.service, story['id'], 'identity_reference_priority', {
+                    'generation': generation, 'reason': 'current_shortlist_proximity',
+                    'candidate_id': state['queue'][0]['candidate_id'],
+                    'distance_m': (reference_distance(state['queue'][0])
+                                   if reference_distance(state['queue'][0]) != float('inf') else None),
+                    'reference_count': len(state['queue']), 'identity_proof_reused': False})
+
         def source_rank(page):
             source = page.get('source') or {}
             if source.get('accepted_reference'):
@@ -491,7 +524,7 @@ class LiveVisualComparisonMixin:
                     cached = hashlib.sha256(body).hexdigest() == saved.get('sha256')
                 except (KeyError, TypeError, ValueError):
                     pass
-            return (source_rank(page), int(not cached), page.get('attempts', 0))
+            return (page_distance(page), source_rank(page), int(not cached), page.get('attempts', 0))
 
         async def acquire_page(page):
             receipts = []
@@ -515,7 +548,10 @@ class LiveVisualComparisonMixin:
             head = state['queue'][0]
             preferred = [p for p in state['sources'].values() if source_rank(p) < 2
                 and p['status'] not in {'completed', 'excluded'} and p.get('retry_at', 0) <= self.service.store.now()
-                and str(p.get('source', {}).get('url') or '').rstrip('/') != str(head.get('url') or '').rstrip('/')]
+                and str(p.get('source', {}).get('url') or '').rstrip('/') != str(head.get('url') or '').rstrip('/')
+                and (page_distance(p) < reference_distance(head)
+                     or (page_distance(p) == float('inf') == reference_distance(head)
+                         and not head.get('reference_reuse')))]
             if not head.get('reference_reuse') and preferred:
                 if not unsettled:
                     for page in sorted(preferred, key=acquisition_priority):
@@ -539,8 +575,9 @@ class LiveVisualComparisonMixin:
                     return -1
                 return source_rank(state['sources'].get(candidate.get('url')) or {'source': {'url': candidate.get('url')}})
             prefer_broad = int(state.get('preferred_units') or 0) >= 2
-            target = next((i for i, candidate in enumerate(state['queue'])
-                if (queued_rank(candidate) == 2 if prefer_broad else queued_rank(candidate) < 2)), None)
+            target = min((i for i, candidate in enumerate(state['queue'])
+                if (queued_rank(candidate) == 2 if prefer_broad else queued_rank(candidate) < 2)),
+                key=lambda i: reference_distance(state['queue'][i]), default=None)
             if target is not None:
                 state['queue'].insert(0, state['queue'].pop(target))
             if int(state.get('units_since_acquisition') or 0) >= 2 and read_pages < page_budget:

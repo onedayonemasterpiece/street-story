@@ -125,3 +125,38 @@ async def test_stop_between_completed_units_prevents_next_send(tmp_path):
     await Worker(svc).run({'id':'fixture-job','story_id':story['id'],'attempts':1,
                           'payload_json':json.dumps({'identity_generation':0})})
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_far_saved_positive_cannot_preempt_ready_nearby_candidate(tmp_path, monkeypatch):
+    from street_story import article_media
+    svc, adapter, current, session = prepared(tmp_path)
+    previous = svc.create_story(key='far-old-source', client_story_id='far-old-source',
+        photo_sha256='old-upload', photo_mime_type='image/jpeg', photo_bytes=b'old source',
+        voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
+    near = {'candidate_id': 'wiki:near', 'name': 'Near object', 'distance_m': 5.3,
+            'url': 'https://en.wikipedia.org/wiki/Near',
+            'reference_image_urls': ['https://images.example/near.jpg']}
+    far = {'candidate_id': 'wiki:far', 'name': 'Far object', 'distance_m': 481.3,
+           'url': 'https://en.wikipedia.org/wiki/Far',
+           'reference_image_urls': ['https://images.example/far.jpg']}
+    accepted = {'status': 'match', 'candidate_id': 'wiki:far', 'candidate_name': 'Far object',
+        'visual_reference_verified': True, 'reference_evidence': [{
+            'candidate_id': 'web:old-far', 'subject_candidate_id': 'wiki:far',
+            'article_url': 'https://archive.example/far', 'image_url': 'https://archive.example/far.jpg'}]}
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+            (canonical({'visual_identity': accepted}), previous['id']))
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+            (canonical({'visual_identity': {'status': 'uncertain', 'candidates': [near, far]}}), current['id']))
+    async def no_delay(*args, **kwargs):
+        raise AssertionError('Do not delay a ready nearby reference behind a distant article')
+    monkeypatch.setattr(article_media, 'article_candidates', no_delay)
+    owner = session()
+    comparison = await adapter._compare_place_images(owner, {})
+    assert comparison['references'][0]['candidate_id'] == 'wiki:near'
+    assert comparison['physical_candidates'][0]['distance_m'] == 5.3
+    assert comparison['physical_candidates'][1]['distance_m'] == 481.3
+    assert any(item.get('reference_reuse', {}).get('subject_candidate_id') == 'wiki:far'
+               for item in owner.state['visual_comparison']['queue'])
+    assert svc.story(current['id'])['visual_identity']['status'] == 'uncertain'
