@@ -958,7 +958,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Reopening an already prepared card must expose its normal confirm
             # tool, without requiring another provider reconnect or new card.
             # This restores capabilities only; owner confirmation stays separate.
-            publication_ready = (state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
+            saved_visual = state['story'].get('visual') or {}
+            ready_visual = (state['story'].get('state') == 'ready_to_publish'
+                and bool(state['story'].get('draft_text'))
+                and bool(state['story'].get('processed_image_url'))
+                and not saved_visual.get('stale', False))
+            publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
+                or ready_visual)
             capability = ('identity' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
                           else 'publication' if publication_ready else 'review' if reviewing else 'research')
             initialized['capability'] = capability
@@ -5404,6 +5410,9 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
         managed_runner=managed_runner,
         models=("gemini-3.8-live",),
         ready_timeout_ms=30_000,
+        # Provider capability recovery allows 95s of rolling-budget wait plus
+        # the fresh-checkpoint wait. Keep the host deadline outside that window.
+        reconfigure_timeout_ms=120_000,
         max_sessions=3,
         diagnostic=transport_diagnostic,
     )

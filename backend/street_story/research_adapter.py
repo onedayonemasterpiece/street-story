@@ -503,6 +503,25 @@ class ProductResearchAdapter:
             raise RetryableProviderError('research_vision_unverified', retry_at=self.service.store.now()+300)
         from .gemini import GeminiUnavailable
         failures = []
+        # A fully verified completed exact observation is a local read, not a
+        # fallback model call. Resolve it before a slow primary admission/send.
+        if self.native_vision is not None and self.native_vision.available:
+            native_context = semantic_visual_context(context)
+            unit = hashlib.sha256(snapshot).hexdigest() + hashlib.sha256((native_context + canonical(schema)).encode()).hexdigest()
+            probe_binding = {'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                'control_revision': story.get('_identity_research_control_revision', 0),
+                'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+            cached = self.reuse_native_verdict(probe_binding, unit, snapshot, schema, native_context, probe_only=True)
+            if cached:
+                binding, saved = self.attempt(story, 'vision_native', unit)
+                if saved and all(saved.get(key) == cached.get(key) for key in
+                        ('provider', 'model', 'transport', 'photo_sha256', 'model_image_sha256',
+                         'prompt_sha256', 'result', 'profile_verified')):
+                    return {'result': saved['result'], 'receipt': saved}
+                reused = self.reuse_native_verdict(binding, unit, snapshot, schema, native_context) if not saved else None
+                if reused:
+                    return {'result': reused['result'], 'receipt': reused}
         if self.primary_vision.available:
             try:
                 return await self.primary_vision.compare_visual(snapshot, story, schema, context)
@@ -534,7 +553,7 @@ class ProductResearchAdapter:
             image.save(output, format='PNG', optimize=True)
         return await self.compare_image(output.getvalue(), story, schema, context)
 
-    def reuse_native_verdict(self, binding, unit, snapshot, schema, context):
+    def reuse_native_verdict(self, binding, unit, snapshot, schema, context, *, probe_only=False):
         """Reuse completed exact comparisons; an unknown turn still reconciles.
 
         The legacy logical digest includes the source story ID. Reconstruct it
@@ -545,13 +564,16 @@ class ProductResearchAdapter:
         from .native_vision import MODEL, TRANSPORT, visual_request
         image_sha = hashlib.sha256(snapshot).hexdigest()
         with self.service.store.tx() as db:
-            current = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
-                                 (binding['attempt_id'],)).fetchone()
-            pending = json.loads(current['receipt_json']) if current else {}
-            addresses = {**(pending.get('binding') or {}), **binding}
-            if (pending.get('phase') != 'created' or pending.get('thread_id') or pending.get('turn_id')
-                    or addresses.get('thread_id') or addresses.get('turn_id')):
-                return None
+            # A read-only probe creates no attempt on a miss. A hit must still
+            # pass this same validation again with the durable current binding.
+            if not probe_only:
+                current = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                     (binding['attempt_id'],)).fetchone()
+                pending = json.loads(current['receipt_json']) if current else {}
+                addresses = {**(pending.get('binding') or {}), **binding}
+                if (pending.get('phase') != 'created' or pending.get('thread_id') or pending.get('turn_id')
+                        or addresses.get('thread_id') or addresses.get('turn_id')):
+                    return None
             self.guard_binding(binding)
             for row in db.execute("SELECT a.* FROM research_provider_attempts a JOIN stories s ON s.id=a.story_id "
                                   "WHERE a.role='vision_native' AND s.photo_sha256=? AND a.story_id<>? ORDER BY a.updated_at DESC",
@@ -572,6 +594,8 @@ class ProductResearchAdapter:
                 if (prior.get('prompt_sha256') != prompt_sha
                         or not Draft202012Validator(contract).is_valid(prior.get('result'))):
                     continue
+                if probe_only:
+                    return prior
                 receipt = {key: prior[key] for key in ('provider', 'model', 'transport', 'photo_sha256',
                     'model_image_sha256', 'prompt_sha256', 'result', 'profile_verified')}
                 receipt.update(binding=dict(binding), phase='completed', generation=binding['generation'],
