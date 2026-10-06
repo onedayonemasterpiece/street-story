@@ -120,6 +120,8 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         return result
 
     async def request_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        if body.get('observe_existing_visual') is True:
+            return await self._observe_existing_visual(story_id, key, body)
         # Observe the original operation before replacing its frozen context.
         # A new key expresses a new author request, never an unknown-outcome retry.
         with self.store.connection() as db:
@@ -132,6 +134,9 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         observed = None
         if operation:
             observed = _receipt(await self.providers.vibepublish.status(operation), operation)
+            if observed.get('operation_id') == operation and observed.get('state') == 'needs_selection':
+                raise ConflictError('visual_observation_required',
+                    'Import and review the existing result before requesting another generation.')
             if observed.get('operation_id') != operation or not (
                 observed.get('state') in {'verified', 'needs_selection'}
                 or (observed.get('state') in {'failed', 'cancelled'} and observed.get('retry_safe') is True)
@@ -139,6 +144,44 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                 raise ConflictError('visual_outcome_unresolved',
                                     'Observe the original generation outcome before requesting another visual.')
         return self.mutate_visual(story_id, key, body, expected_revision=revision, previous_receipt=observed)
+
+    async def _observe_existing_visual(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Resume the normal importer for the saved operation; never generate."""
+        with self.store.connection() as db:
+            before = self._story_row(db, story_id)
+            previous = json.loads(before['visual_context_json'] or '{}')
+            operation = previous.get('operation_id')
+            revision = before['revision']
+        if not operation:
+            raise ConflictError('visual_observation_missing', 'There is no existing visual operation to observe.')
+        observed = _receipt(await self.providers.vibepublish.status(operation), operation)
+        if (observed.get('operation_id') != operation
+                or observed.get('state') not in {'verified', 'needs_selection'}):
+            raise ConflictError('visual_outcome_unresolved', 'The original operation is not ready for result import.')
+        from .fact_ledger import eligibility_issues_for_ids, fact_revision_bundle
+        req_digest = digest({'story_id': story_id, **body})
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            if self._idem(db, key, 'visual_observe', req_digest, 'story', story_id):
+                return self._story_repr(db, row)
+            context = json.loads(row['visual_context_json'] or '{}')
+            ids = [str(value) for value in body.get('selected_fact_ids', [])]
+            research = json.loads(row['research_json'] or '{}')
+            if (row['revision'] != revision or context != previous
+                    or context.get('source_photo_sha256') != row['photo_sha256']
+                    or set(ids) != {item['fact_id'] for item in context.get('selected_facts', [])}
+                    or eligibility_issues_for_ids(db, story_id, ids)
+                    or context.get('fact_revision_bundle') != fact_revision_bundle(db, story_id, ids)
+                    or context.get('publication_concept') != str(research.get('publication_concept') or '')[:1200]
+                    or (body.get('visual_instruction') and body['visual_instruction'] != context.get('visual_instruction'))):
+                raise ConflictError('visual_observation_input_changed', 'The saved visual no longer matches the current story.')
+            if row['state'] == 'ready_to_publish' and row['processed_image_url']:
+                return self._story_repr(db, row)
+            self._enqueue_job(db, story_id, 'visual', f'visual-observe:{key}',
+                {'content_revision': context['content_revision'], 'selected_fact_ids': ids})
+            db.execute("UPDATE stories SET state='visual_processing',error_code=NULL,error_message=NULL,"
+                'revision=revision+1,updated_at=? WHERE id=?', (self.store.now(), story_id))
+            return self._story_repr(db, self._story_row(db, story_id))
 
     def mutate_visual(self, story_id: str, key: str, body: dict[str, Any], *,
                       expected_revision: int | None = None, previous_receipt: dict | None = None) -> dict[str, Any]:

@@ -160,3 +160,5 @@ produce zero admitted frames. Provider playback suppression remains separate.
 ### Saved identity articles in research context
 
 The current research-run projection includes up to five server-owned article references from the confirmed visual comparison. References require the current photo/generation and a source already registered in the same current run. Mira can address these acquisition hints through the ordinary research reader without another search or an owner-supplied URL. An identity article reference does not validate a factual claim; the existing frozen-source, evidence-span and common-intake checks remain required.
+
+An explicit request to retrieve an existing generation can use `generate_visual` with `observe_existing_visual=true`. The server observes the same external operation and resumes only the existing result importer after checking the photo, selected fact revisions and concept. It preserves the frozen visual context and cannot submit another generation; unresolved external outcomes remain blocked.
