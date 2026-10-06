@@ -1,4 +1,5 @@
 """Controlled provider semantics over the normal public reader and fact ledger."""
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -101,6 +102,43 @@ async def fixture(tmp_path, *, text=CLAIM + ' This is an inspectable public arti
         begin_research_run(db, story_id=sid, poi_key='wiki:77', goal='Find historical facts', scope='history',
                            expected_story_revision=story['revision'], identity_generation=0, run_id='headless-run', now=svc.store.now())
     return svc, job, researcher, reader, fetches
+
+
+@pytest.mark.asyncio
+async def test_frozen_fact_preparation_does_not_starve_live_receipts(tmp_path, monkeypatch):
+    svc, job, researcher, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 150)
+    facts = HeadlessFacts(svc)
+    try:
+        # Initial intake freezes the article using its normal reader/leases.
+        with pytest.raises(RetryableProviderError):
+            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        original = facts.adapter._get_research_chunk
+        prepared_at_receipt_count = []
+        receipts = 0
+        running = True
+
+        async def live_receipts():
+            nonlocal receipts
+            while running:
+                receipts += 1
+                await asyncio.sleep(0)
+
+        async def cached_page(*args, **kwargs):
+            # Cached calls use real frozen pages and may return without yielding.
+            prepared_at_receipt_count.append(receipts)
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(facts.adapter, '_get_research_chunk', cached_page)
+        heartbeat = asyncio.create_task(live_receipts())
+        try:
+            await facts._prepare_units(job, 'headless-run', 'configured-model', 0)
+        finally:
+            running = False
+            await heartbeat
+        assert len(prepared_at_receipt_count) >= 2
+        assert all(b > a for a, b in zip(prepared_at_receipt_count, prepared_at_receipt_count[1:]))
+    finally:
+        await reader.search_http.aclose()
 
 
 async def review_candidates(svc, sid, run_id):
