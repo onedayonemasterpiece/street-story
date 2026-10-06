@@ -48,6 +48,13 @@ VISUAL_REQUEST = (
     'подмножество уже выбранных фактов для картинки. Полный выбор фактов, '
     'концепцию и текст поста сохрани. Публиковать не нужно.'
 )
+PRECISION_REQUEST = (
+    'Сделай сохранённый текст короче и точнее. Убери дополнительные предположения: '
+    'каждое фактическое утверждение должно прямо следовать из выбранных фактов. '
+    'Не превращай историческую принадлежность или соседство в утверждение '
+    'о действующей функции. Сохрани полный выбор фактов и концепцию. '
+    'Сохрани уточнённый текст; исследование, картинка и публикация не нужны.'
+)
 ALLOWED_TOOLS = {'read_topic', 'get_facts', 'get_evidence', 'continue_story',
                  'select_facts', 'set_concept', 'edit_text'}
 
@@ -209,6 +216,21 @@ async def run(output: Path, corpus: dict, budget: int) -> dict:
                     raise TimeoutError('editorial_result_timeout')
                 # Read back after the text write. Do not mistake a transient
                 # selection or a spoken promise for a durable editorial result.
+                initial = selected_state(service, story_id)
+                before_revision = host.adapter._topic_state(story_id)['editor']['text_revision']
+                await host.input(session_id=session_id, resource_id=story_id, message={'text': PRECISION_REQUEST})
+                deadline = time.monotonic() + budget
+                while time.monotonic() < deadline:
+                    state = host.adapter._topic_state(story_id)
+                    if state['editor']['text_revision'] > before_revision:
+                        break
+                    events = host.events(session_id=session_id, resource_id=story_id, after=cursor)
+                    cursor = events['cursor']
+                    if events['closed'] or any(e.get('type') == 'error' for e in events['events']):
+                        raise RuntimeError('editorial_refinement_live_failed')
+                    await asyncio.sleep(.25)
+                else:
+                    raise TimeoutError('editorial_refinement_timeout')
                 before = selected_state(service, story_id)
                 read_ids = {f['fact_id'] for t in active_trace if t['name'] == 'get_facts'
                     for f in (t.get('response') or {}).get('facts', []) if f.get('eligibility') == 'eligible'}
@@ -221,11 +243,13 @@ async def run(output: Path, corpus: dict, budget: int) -> dict:
                 full_ids = {f['fact_id'] for f in corpus['facts']}
                 snapshot = host.adapter._topic_state(story_id)
                 scenario = {'story_id': story_id, 'owner_request': prompt, **before,
+                    'precision_request': PRECISION_REQUEST, 'initial_draft': initial['draft'],
                     'model_read_eligible_ids': sorted(read_ids), 'full_inventory_read': read_ids == full_ids,
                     'whole_claims_delivered_in_ready_setup': sorted(setup_ids),
                     'owner_clarification_sent': clarification_sent,
                     'previous_editorial_context': snapshot.get('previous_editorial_context'),
-                    'selected_ids_preserved': selected_state(service, story_id)['selected_fact_ids'] == before['selected_fact_ids']}
+                    'selected_ids_preserved': before['selected_fact_ids'] == initial['selected_fact_ids'],
+                    'concept_preserved_during_refinement': before['concept'] == initial['concept']}
                 scenarios.append(scenario)
                 if len(scenarios) == 2:
                     allow_visual = True
@@ -255,6 +279,7 @@ async def run(output: Path, corpus: dict, budget: int) -> dict:
     except Exception as exc:
         error = {'type': type(exc).__name__, 'code': str(getattr(exc, 'code', str(exc)))[:160]}
     mechanical = len(scenarios) == 2 and all(s['full_inventory_read'] and s['selected_ids_preserved']
+        and s['concept_preserved_during_refinement']
         and len(s['selected_fact_ids']) > 2 for s in scenarios) and all(scenarios[-1].get(k)
         for k in ('visual_subset_ok', 'visual_preserved_draft', 'visual_preserved_concept')) and error is None
     result = {'acceptance': 'editorial_utilization', 'status': status if mechanical else 'FAIL',
