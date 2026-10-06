@@ -75,9 +75,20 @@ def fact_page_capsule(page, context):
             'status', 'candidate_id', 'candidate_name', 'candidate_url', 'wikipedia_url', 'wikidata', 'osm_id')
             if key in identity}
     if isinstance(public.get('previously_processed_sources'), list):
-        public['previously_processed_sources'] = [{key: source[key] for key in (
-            'url', 'title', 'extraction_coverage') if key in source}
-            for source in public['previously_processed_sources'] if isinstance(source, dict)]
+        history = [{key: source[key] for key in ('url', 'title') if key in source}
+                   for source in public['previously_processed_sources'] if isinstance(source, dict)]
+        bounded, size = [], 0
+        for source in history:
+            item_size = len(canonical(source).encode('utf-8'))
+            if size + item_size > 2000:
+                continue  # Omit whole metadata records; never alter source passages.
+            bounded.append(source)
+            size += item_size
+        omitted = int(context.get('previously_processed_sources_omitted_count') or 0)
+        public.update(previously_processed_sources=bounded,
+                      previously_processed_sources_total=len(history) + omitted,
+                      previously_processed_sources_omitted_count=len(history) - len(bounded) + omitted,
+                      processed_source_coverage_included=False)
     inventory = context.get('_known_fact_inventory', context.get('known_facts', []))
     if not isinstance(inventory, list):
         raise PermanentProviderError('research_fact_inventory_invalid')
@@ -91,13 +102,14 @@ def fact_page_capsule(page, context):
     first, size = [], 0
     for item in complete:
         item_size = len(canonical(item).encode('utf-8'))
-        if size + item_size > 12000:
+        if size + item_size > 4000:
             break
         first.append(item)
         size += item_size
-    public.update(known_inventory_complete=len(first) == len(complete),
-                  known_inventory_total=len(complete), known_inventory_next_offset=len(first),
-                  known_inventory_omitted_count=len(complete) - len(first))
+    total = max(len(complete), int(context.get('known_inventory_total') or 0))
+    public.update(known_inventory_complete=len(first) == total,
+                  known_inventory_total=total, known_inventory_next_offset=len(first),
+                  known_inventory_omitted_count=total - len(first))
     return {'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
             'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
                          'title': page.get('source_title', ''), 'passages': [
@@ -424,11 +436,8 @@ class ProductResearchAdapter:
         if not self.opencode_facts_available:
             raise RetryableProviderError('research_text_fallback_unverified', retry_at=self.service.store.now()+300)
         public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
-        # OpenCode's qualified extraction profile has no private inventory
-        # paging tool: supply the complete compact index under admission.
-        public['known_fact_inventory'] = capsule['_known_fact_inventory']
-        public['context'] = {**public['context'], 'known_inventory_complete': True,
-                             'known_inventory_omitted_count': 0}
+        # The bounded hints are sufficient for extraction. Mira later reconciles
+        # candidates against the full ledger; omission does not imply completeness.
         return await self.run(story, 'facts', page['_unit_id'], lambda binding:
                               self.client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding))
 
@@ -473,9 +482,9 @@ class ProductResearchAdapter:
                     client.endpoint, client.model_id, getattr(client, 'directory', None),
                     getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
                 quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
-                route['available'] = route['qualified'] and all(
-                    (self.service.store.cache_get(key) or {}).get('retry_at', 0) <= self.service.store.now()
-                    for key in (route_key, quota_key))
+                route['retry_at'] = max((self.service.store.cache_get(key) or {}).get('retry_at', 0)
+                                        for key in (route_key, quota_key))
+                route['available'] = route['qualified'] and route['retry_at'] <= self.service.store.now()
         return routes
 
     def _fact_pool_receipts(self, story, unit):
@@ -508,9 +517,6 @@ class ProductResearchAdapter:
             return await self._extract_giga_page(page, story, context, allow_fallback=False)
         client = route['client']
         public = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
-        public['known_fact_inventory'] = capsule['_known_fact_inventory']
-        public['context'] = {**public['context'], 'known_inventory_complete': True,
-                             'known_inventory_omitted_count': 0}
         return await self.run(story, route['role'], page['_unit_id'], lambda binding:
                               client.extract_facts({**public, 'jsonschema': FACT_PAGE_SCHEMA}, binding), client=client)
 
@@ -560,19 +566,26 @@ class ProductResearchAdapter:
         capsule = fact_page_capsule(page, context)
         digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
         owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest}
-        routes = [route for route in self._fact_pool_routes() if route['available']]
+        all_routes = self._fact_pool_routes()
+        routes = [route for route in all_routes if route['available']]
         if not routes:
-            raise RetryableProviderError('research_fact_pool_unverified', retry_at=self.service.store.now()+300)
+            due = [route['retry_at'] for route in all_routes if route['qualified']
+                   and route.get('retry_at', 0) > self.service.store.now()]
+            raise RetryableProviderError('research_fact_pool_waiting' if due else 'research_fact_pool_unverified',
+                                         retry_at=min(due) if due else self.service.store.now()+300)
         ordinal = page.get('_extractor_ordinal', page.get('page_ordinal', page.get('batch_index')))
         if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
             ordinal = int(hashlib.sha256(unit.encode()).hexdigest()[:8], 16)
         offset = ordinal % len(routes)
         routes = routes[offset:] + routes[:offset]
-        failures = []
+        failures, deadlines = [], []
         for route in routes:
             old = prior.get(route['role']) or {}
             old_input = (old.get('binding') or {}).get('fact_input_sha256')
             if old.get('phase') in {'failed', 'aborted'} and (old_input == digest or old_input is None):
+                due = (old.get('route_failure') or {}).get('retry_at')
+                if isinstance(due, (int, float)) and due > self.service.store.now():
+                    deadlines.append(due)
                 continue  # A known closed unit is not paid for again unchanged.
             try:
                 result = await self._extract_fact_route(route, capsule, page, owned, context)
@@ -591,10 +604,14 @@ class ProductResearchAdapter:
                 if self._fact_pool_unknown(current):
                     raise RetryableProviderError('research_fact_unit_outcome_unknown',
                                                  retry_at=self.service.store.now()+300) from exc
+                due = getattr(exc, 'retry_at', None)
+                if isinstance(due, (int, float)) and due > self.service.store.now():
+                    deadlines.append(due)
                 failures.append(_failure_code(exc))
                 LOG.warning('street_story_fact_pool_fallback story_id=%s unit_id=%s route=%s code=%s',
                             story['id'], unit, route['role'], failures[-1])
-        raise RetryableProviderError('research_fact_pool_waiting', retry_at=self.service.store.now()+300)
+        raise RetryableProviderError('research_fact_pool_waiting',
+                                     retry_at=min(deadlines) if deadlines else self.service.store.now()+300)
 
     async def _extract_giga_page(self, page, story, context, *, allow_fallback=True):
         from jsonschema import Draft202012Validator

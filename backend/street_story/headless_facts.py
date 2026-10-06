@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 from types import SimpleNamespace
 
 from .errors import MalformedProviderResponse, RetryableProviderError
@@ -98,13 +99,26 @@ class HeadlessFacts:
                        (canonical(research), self.service.store.now(), story['id']))
             return True
 
-    def _partial(self, run_id, reason):
+    def _partial(self, run_id, reason, *, retry_at=None):
         with self.service.store.tx() as db:
             run = db.execute('SELECT state FROM research_runs WHERE run_id=?', (run_id,)).fetchone()
             if run and run['state'] not in {'cancelled', 'failed'}:
                 set_run_state(db, run_id, 'partial', detail=reason, now=self.service.store.now())
         delay = 300 if reason in {'research_fact_source_coverage_partial', 'research_fact_source_unreadable'} else 10
-        raise RetryableProviderError(reason, retry_at=self.service.store.now() + delay)
+        due = self.service.store.now() + delay if retry_at is None else max(self.service.store.now() + 1, retry_at)
+        raise RetryableProviderError(reason, retry_at=due)
+
+    def _pending_retry_at(self, job, run_id):
+        with self.service.store.connection() as db:
+            chunks = {row[0] for row in db.execute("SELECT chunk_id FROM research_chunk_runs WHERE run_id=? "
+                                                  "AND status NOT IN ('extracted','no_claims')", (run_id,))}
+            states = [json.loads(row[0]) for row in db.execute("SELECT value_json FROM research_checkpoints "
+                "WHERE job_id=? AND stage LIKE 'headless_fact_unit:%'", (job['id'],))]
+        due = [state['retry_at'] for state in states if state.get('chunk_id') in chunks
+               and isinstance(state.get('retry_at'), (int, float))
+               and not isinstance(state['retry_at'], bool) and math.isfinite(state['retry_at'])
+               and state['retry_at'] > self.service.store.now()]
+        return min(due) if due else None
 
     async def _discover_requested_gap(self, job, run_id, goal, scope, provider, control_revision):
         payload = json.loads(job.get('payload_json') or '{}')
@@ -294,7 +308,8 @@ class HeadlessFacts:
                 if snapshot[2]['status_detail'] == 'research_fact_discovery_pending' or (payload.get('research_query') and cached_only):
                     await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return
-            self._partial(run_id, 'research_fact_source_coverage_partial')
+            self._partial(run_id, 'research_fact_source_coverage_partial',
+                          retry_at=self._pending_retry_at(job, run_id))
         story, research, _ = snapshot
         inventory = self.adapter._get_facts(story['id'], {'eligibility': 'all', 'limit': 50})
         # A model window is not a ledger coverage limit. The provider owns the
@@ -331,7 +346,7 @@ class HeadlessFacts:
                 'previously_processed_sources': source_window,
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
-        suggestions = []
+        suggestions, failures = [], []
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
         try:
             for ready in asyncio.as_completed(tasks):
@@ -339,6 +354,7 @@ class HeadlessFacts:
                 if self._snapshot(job, run_id, control_revision) is None:
                     continue
                 if error is not None:
+                    failures.append(error)
                     LOG.warning('street_story_headless_fact_unit_partial story_id=%s run_id=%s chunk_id=%s reason=%s',
                                 story['id'], run_id, unit['page']['chunk_id'], type(error).__name__)
                     continue
@@ -368,8 +384,9 @@ class HeadlessFacts:
                               now=self.service.store.now(), completed=False)
             if pending or unread:
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
+                due = self._pending_retry_at(job, run_id) if len(failures) == len(units) else None
                 self._partial(run_id, 'research_fact_next_page' if unread or unvisited
-                              else 'research_fact_source_coverage_partial')
+                              else 'research_fact_source_coverage_partial', retry_at=due)
 
     def _owner_fence(self, db, story, research):
         """Candidate additions may change revision, never these author inputs."""
@@ -462,6 +479,9 @@ class HeadlessFacts:
             page['_unit_id'] = 'factpage_' + hashlib.sha256(canonical(identity).encode()).hexdigest()[:24]
             old = self.service.store.checkpoint_get(job['id'], 'headless_fact_unit:' + page['_unit_id']) or {}
             saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_result:' + page['_unit_id'])
+            due = old.get('retry_at')
+            if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
+                continue  # This exact unit remains fenced until its existing route deadline.
             if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
                 self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'])
                 continue
@@ -516,7 +536,8 @@ class HeadlessFacts:
         except (RuntimeError, OSError, ValueError) as exc:
             known = isinstance(exc, MalformedProviderResponse) or self._boundary_closed(story, page['_unit_id'])
             self._unit_phase(job, page['_unit_id'], 'closed_error' if known else 'unknown',
-                             chunk_id=page['chunk_id'], error_type=type(exc).__name__)
+                             chunk_id=page['chunk_id'], error_type=type(exc).__name__,
+                             retry_at=getattr(exc, 'retry_at', None))
             return unit, None, exc
 
     async def _commit_unit(self, unit, extracted, job, run_id, goal, scope, control_revision):
