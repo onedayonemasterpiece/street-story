@@ -190,9 +190,10 @@ class PhotoIntakeInstrumentedTest {
                 // Images root can show camera albums first, rather than a flat
                 // Recent list. Open the exact folder seeded by this fixture.
                 device.wait(Until.findObject(By.pkg(pickerPackage).text("Camera")), 2000)?.click()
-                val item = device.wait(Until.findObject(By.text("street-story-month-old-test.jpg")), 5000)
-                    ?: device.findObject(By.descContains("street-story-month-old-test"))
-                    ?: device.findObject(By.res(Pattern.compile(".*:id/(icon_thumb|icon_thumbnail)")))
+                // The grid exposes a separate "Preview the file …" child.
+                // Select the file card itself; a substring selector hits Preview.
+                val item = device.wait(Until.findObject(By.pkg(pickerPackage).descStartsWith("street-story-month-old-test.jpg,")), 5000)
+                    ?: device.findObject(By.pkg(pickerPackage).text("street-story-month-old-test.jpg"))
                 device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
                 device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
                 assertNotNull("Month-old photo must be selectable in original provider; package=$pickerPackage", item)
@@ -200,9 +201,12 @@ class PhotoIntakeInstrumentedTest {
                 val selected = waitForStory(previous)
                 assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
+                val diagnostic = PhotoImportTelemetry.pending(context, selected.clientStoryId).orEmpty()
+                println("photo-intake original-month-old diagnostic=$diagnostic")
+                assertNotNull("Normal selected original must preserve latitude", selected.latitude)
+                assertNotNull("Normal selected original must preserve longitude", selected.longitude)
                 assertEquals("Normal selected original must preserve GPS", 54.70123456, selected.latitude!!, 0.0000001)
                 assertEquals(20.50234567, selected.longitude!!, 0.0000001)
-                val diagnostic = PhotoImportTelemetry.pending(context, selected.clientStoryId).orEmpty()
                 assertTrue("GPS must reach import telemetry", diagnostic.contains("gps_present"))
                 println("photo-intake original-month-old PASS story=${selected.clientStoryId} gps=true")
             }
