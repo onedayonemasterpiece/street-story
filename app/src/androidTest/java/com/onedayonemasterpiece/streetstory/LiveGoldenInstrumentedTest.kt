@@ -493,18 +493,33 @@ class LiveGoldenInstrumentedTest {
             assertTrue(publicDestinations.single().status in setOf("supported", "needs_review"))
 
             val scheduledAt = OffsetDateTime.now(ZoneId.of("Europe/Kaliningrad"))
-                .plusMinutes(if (keepPublication) 3L else 1500L)
-                .withSecond(0)
+                .let { now ->
+                    if (keepPublication) now.plusMinutes(4L)
+                    else now.plusMinutes(1500L).withSecond(0)
+                }
                 .withNano(0)
+            val preparationTurnAfter = live.snapshot().completedTurns
+            val previousConfirmationId = live.snapshot().confirmation?.confirmationId
             live.sendText(
-                "Подготовь публикацию именно текущих текста и картинки. " +
-                    "В prepare_publication передай destinations строго как [\"$safeAlias\"], " +
-                    "scheduled_for ${scheduledAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}, " +
-                    "timezone Europe/Kaliningrad. Ничего пока не публикуй."
+                "Подготовь карточку публикации именно текущих текста и уже просмотренной картинки. " +
+                    "Отправляем только в тестовую Telegram-группу street-story e2e (назначение $safeAlias) " +
+                    "на ${scheduledAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)}, " +
+                    "часовой пояс Europe/Kaliningrad. Покажи карточку и жди отдельного подтверждения; " +
+                    "пока ничего не публикуй."
             )
-            waitUntil(90_000, "publication confirmation was not prepared") {
-                live.snapshot().confirmation != null
+            waitUntil(150_000, "publication confirmation was not prepared") {
+                val current = live.snapshot().confirmation
+                current != null && current.confirmationId != previousConfirmationId
             }
+            // The provider can finish its tool-call turn before the card is
+            // prepared. The card and tool result change the existing UI status;
+            // wait for the response turn to finish before the separate consent.
+            waitUntil(120_000, "publication preparation response did not complete") {
+                val current = live.snapshot()
+                check(current.error == null) { "Live failed during publication preparation: ${current.error}" }
+                current.active && current.completedTurns > preparationTurnAfter && current.status == "Слушаю"
+            }
+            awaitingTurnAfter = live.snapshot().completedTurns
             capture("07-publication-confirmation", api.getStory(storyId))
             val confirmation = requireNotNull(live.snapshot().confirmation)
             assertEquals(story.draftText, confirmation.text)

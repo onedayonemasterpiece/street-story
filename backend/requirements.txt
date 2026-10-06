@@ -7,5 +7,5 @@ Pillow>=10,<13
 beautifulsoup4>=4.12,<5
 playwright>=1.58,<2
 google-genai>=1.55,<2
-live-interaction==0.3.11rc2
+live-interaction==0.3.11rc3
 jsonschema>=4,<5
