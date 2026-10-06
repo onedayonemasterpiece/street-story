@@ -408,7 +408,7 @@ def test_generated_installer_uses_same_mimo_limit_and_guard_without_inference(tm
         created.append(adapter)
         return adapter
     monkeypatch.setattr(shared, 'SharedDevCoveerResearch', factory)
-    monkeypatch.setattr(sys, 'argv', ['installer', str(tmp_path)])
+    monkeypatch.setattr(sys, 'argv', ['installer', str(tmp_path), json.dumps(['mimo-v2.6-flash-free'])])
     exec(compile(program, '<generated research installer>', 'exec'), {})
     receipt = json.loads(capsys.readouterr().out)
     assert receipt['guard_sha256']

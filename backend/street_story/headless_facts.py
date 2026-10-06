@@ -466,8 +466,19 @@ class HeadlessFacts:
                 self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'])
                 continue
             if saved and saved['owner'] != owner:
-                self._unit_phase(job, page['_unit_id'], 'deferred', chunk_id=page['chunk_id'])
-                continue
+                old_owner = saved['owner']
+                current_control = (owner.get('controls') or {}).get('facts') or {}
+                old_control = (old_owner.get('controls') or {}).get('facts') or {}
+                same_inputs = {k: v for k, v in old_owner.items() if k != 'controls'} == {k: v for k, v in owner.items() if k != 'controls'}
+                explicitly_resumed = (current_control.get('stopped') is False
+                    and current_control.get('resumed_at', 0) > old_control.get('resumed_at', 0))
+                if not same_inputs or not explicitly_resumed:
+                    self._unit_phase(job, page['_unit_id'], 'deferred', chunk_id=page['chunk_id'])
+                    continue
+                # A new claimed Resume may import the known result as unreviewed
+                # candidates. The interrupted attempt never commits or sends again.
+                saved = {**saved, 'owner': owner}
+                self.service.store.checkpoint_put(job['id'], 'headless_fact_result:' + page['_unit_id'], saved)
             units.append({'page': page, 'session': session, 'owner': saved['owner'] if saved else owner,
                           'saved': saved})
         with self.service.store.connection() as db:

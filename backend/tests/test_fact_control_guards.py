@@ -17,7 +17,10 @@ def stop_resume(svc, sid):
 
 
 def fresh_job(svc, job):
-    with svc.store.connection() as db:
+    with svc.store.tx() as db:
+        # Resume wakes a retry; the worker must claim the next attempt first.
+        db.execute("UPDATE jobs SET state='running',attempts=attempts+1,lease_until=? WHERE id=? AND state='retry'",
+                   (svc.store.now() + 90, job['id']))
         return dict(db.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone())
 
 
