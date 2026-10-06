@@ -31,7 +31,11 @@ class PhotoIntakeInstrumentedTest {
 
     private fun allowExistingMetadata() {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-        device.wait(Until.findObject(By.text("Без геометок")), 1500)?.click()
+        // Material dialog buttons render labels in uppercase. Use the stable
+        // negative-button resource, scoped by this dialog's title.
+        if (device.wait(Until.findObject(By.text("Геометки выбранного фото")), 1500) != null) {
+            requireNotNull(device.findObject(By.res("android", "button2"))).click()
+        }
     }
 
     private fun waitForStory(previous: Set<String>): StorySnapshot {
@@ -40,7 +44,9 @@ class PhotoIntakeInstrumentedTest {
             AppGraph.store(context).stories().firstOrNull { it.clientStoryId !in previous }?.let { return it }
             Thread.sleep(50)
         }
-        error("Shared photo did not create a story")
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val visible = device.findObjects(By.text(Pattern.compile(".+"))).map { it.text }.take(12)
+        error("Shared photo did not create a story; visible=$visible")
     }
 
     @Test fun temporaryGalleryGrantPreservesGpsAndDoesNotDeduplicate() {
