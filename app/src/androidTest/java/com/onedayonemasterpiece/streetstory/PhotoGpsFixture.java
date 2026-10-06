@@ -10,7 +10,15 @@ public final class PhotoGpsFixture {
     private PhotoGpsFixture() {}
 
     public static byte[] bytes() {
-        Bitmap bitmap = Bitmap.createBitmap(24, 32, Bitmap.Config.ARGB_8888);
+        return bytes(24, 32);
+    }
+
+    public static byte[] galleryBytes() {
+        return bytes(480, 640);
+    }
+
+    private static byte[] bytes(int width, int height) {
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         ByteArrayOutputStream jpegOutput = new ByteArrayOutputStream();
         bitmap.compress(Bitmap.CompressFormat.JPEG, 90, jpegOutput);
         bitmap.recycle();

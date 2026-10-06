@@ -157,9 +157,20 @@ class PhotoIntakeInstrumentedTest {
         assertEquals(listOf(photo), PhotoIntake.sharedPhotos(share()))
         assertTrue(PhotoIntake.sharedPhotos(Intent(Intent.ACTION_SEND).apply { type = "text/plain" }).isEmpty())
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
-            "pm grant ${context.packageName} ${Manifest.permission.ACCESS_MEDIA_LOCATION}").use { descriptor ->
-            android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
+        fun grant(packageName: String, permission: String) {
+            InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
+                "pm grant $packageName $permission").use { descriptor ->
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
+            }
+        }
+        grant(context.packageName, Manifest.permission.ACCESS_MEDIA_LOCATION)
+        val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
+        val declared = context.packageManager.getPackageInfo(pickerPackage,
+            android.content.pm.PackageManager.GET_PERMISSIONS).requestedPermissions.orEmpty()
+        // CI's fresh Gallery has not had a user grant or camera roll yet.
+        // This prepares that Gallery only, not Street Story's permissions.
+        for (permission in listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_EXTERNAL_STORAGE)) {
+            if (permission in declared) grant(pickerPackage, permission)
         }
         val store = AppGraph.store(context)
         val previous = store.stories().map { it.clientStoryId }.toSet()
@@ -168,39 +179,26 @@ class PhotoIntakeInstrumentedTest {
         val media = requireNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "street-story-month-old-test.jpg")
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/Camera")
             put(MediaStore.Images.Media.DATE_TAKEN, takenAt)
             put(MediaStore.Images.Media.IS_PENDING, 1)
         }))
         try {
-            resolver.openOutputStream(media)!!.use { it.write(PhotoGpsFixture.bytes()) }
+            resolver.openOutputStream(media)!!.use { it.write(PhotoGpsFixture.galleryBytes()) }
             resolver.update(media, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
             ActivityScenario.launch(MainActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
                     MainActivity::class.java.getDeclaredMethod("openOriginalPhotoPicker").apply { isAccessible = true }.invoke(activity)
                 }
-                val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
                 assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
-                device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
-                device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
-                println("original-picker package=$pickerPackage action=${intent.action} visible=" +
-                    device.findObjects(By.text(Pattern.compile(".+"))).map { it.text }.take(12))
                 val item = device.wait(Until.findObject(By.text("street-story-month-old-test.jpg")), 5000)
                     ?: device.findObject(By.descContains("street-story-month-old-test"))
                     ?: device.findObject(By.res(Pattern.compile(".*:id/(icon_thumb|icon_thumbnail)")))
-                if (item != null) item.click() else {
-                    // AOSP Gallery2 draws its album/photo tiles in GLRootView,
-                    // with no accessible thumbnail nodes. The clean emulator
-                    // has one seeded album/photo: tap its first tile on each
-                    // of the two Gallery pages. Other providers require nodes.
-                    assertEquals("Only AOSP Gallery2 uses this GL test path", "com.android.gallery3d", pickerPackage)
-                    val root = requireNotNull(device.findObject(By.res(pickerPackage, "gl_root_view")))
-                    val bounds = root.visibleBounds
-                    repeat(2) {
-                        device.click(bounds.left + bounds.width() / 6, bounds.top + bounds.width() / 6)
-                        device.waitForIdle(1500)
-                        Thread.sleep(600)
-                    }
-                }
+                    ?: device.wait(Until.findObject(By.pkg(pickerPackage).desc(Pattern.compile("(?i).*photo taken.*"))), 15000)
+                device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
+                device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
+                assertNotNull("Month-old photo must be selectable in original provider; package=$pickerPackage", item)
+                item!!.click()
                 val selected = waitForStory(previous)
                 assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
