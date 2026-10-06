@@ -3,6 +3,8 @@ package com.onedayonemasterpiece.streetstory
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.MediaStore
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
@@ -12,6 +14,25 @@ import androidx.core.content.IntentCompat
 internal object PhotoIntake {
     const val CURRENT_LIMIT = 1
     const val FUTURE_LIMIT = 9
+
+    /** Photo Picker's scoped URI can redact GPS even with ACCESS_MEDIA_LOCATION.
+     * Ask the gallery for its original URI instead; do not derive a URI from a
+     * picker ID or bypass the owner's provider grant. */
+    fun originalPickerIntent(context: Context): Intent {
+        val gallery = Intent(Intent.ACTION_PICK).apply {
+            setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return if (gallery.resolveActivity(context.packageManager) != null) gallery else documentIntent()
+    }
+
+    fun documentIntent(): Intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        type = "image/*"
+        addCategory(Intent.CATEGORY_OPENABLE)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        // Open Images rather than the default Recent document list.
+        putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse("content://com.android.providers.media.documents/root/images_root"))
+    }
 
     fun pickerIntent(context: Context, limit: Int = CURRENT_LIMIT): Intent {
         require(limit in 1..FUTURE_LIMIT)

@@ -1,6 +1,7 @@
 package com.onedayonemasterpiece.streetstory
 
 import android.content.Context
+import android.Manifest
 import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
@@ -92,10 +93,62 @@ class PhotoIntakeInstrumentedTest {
         }
     }
 
-    @Test fun nativePickerSelectsMonthOldPhotoAndFutureContractAcceptsNineWithoutDeduplication() {
+    @Test fun finishedIdentificationHasNoPauseControlsButExplicitPauseCanResume() {
+        val store = AppGraph.store(context)
+        val imported = PhotoImporter.import(context, photo)
+        val id = imported.clientStoryId
+        val prefs = context.getSharedPreferences("street_story_topics_v1", Context.MODE_PRIVATE)
+        val prior = prefs.getString("active_story_id", null)
+        val projection = ResearchProjectionStore(context)
+        store.createStory(imported)
+        store.setServerIdentity(id, "story_owner_gps_ui_test")
+        store.setStage(id, StoryStage.NEEDS_REVIEW)
+        val wire = StoryWire().apply {
+            photoSha256 = imported.sha256
+            identityGeneration = 0
+            identityProgress = IdentityProgressWire().apply { finished = true }
+            researchControls = listOf("identity", "facts").associateWith {
+                ResearchControlWire().apply { photoSha256 = imported.sha256; identityGeneration = 0 }
+            }
+        }
+        projection.replace(id, wire)
+        prefs.edit().putString("active_story_id", id).commit()
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    val host = MainActivity::class.java.getDeclaredField("researchControlBlock").apply { isAccessible = true }
+                        .get(activity) as android.widget.LinearLayout
+                    assertEquals(android.view.View.GONE, host.visibility)
+                    wire.researchControls.getValue("identity").stopped = true
+                    projection.replace(id, wire)
+                    MainActivity::class.java.getDeclaredMethod("refreshTopicDetail").apply { isAccessible = true }.invoke(activity)
+                    assertEquals(android.view.View.VISIBLE, host.visibility)
+                    assertEquals(1, host.childCount)
+                    val resume = host.getChildAt(0) as android.widget.Button
+                    assertEquals("Возобновить поиск объекта", resume.text.toString())
+                    assertEquals("research-resume-identity", resume.contentDescription.toString())
+                    wire.researchControls.getValue("identity").stopped = false
+                    wire.identityProgress!!.finished = false
+                    store.setStage(id, StoryStage.IDENTIFYING)
+                    projection.replace(id, wire)
+                    MainActivity::class.java.getDeclaredMethod("refreshTopicDetail").apply { isAccessible = true }.invoke(activity)
+                    assertEquals(1, host.childCount)
+                    assertEquals("Приостановить поиск объекта", (host.getChildAt(0) as android.widget.Button).text.toString())
+                }
+            }
+        } finally {
+            store.deleteStory(id)
+            projection.clear(id)
+            prefs.edit().putString("active_story_id", prior).commit()
+            PhotoAssets.releaseTemporary(imported.path)
+            PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
+        }
+    }
+
+    @Test fun originalPickerSelectsMonthOldPhotoWithGpsAndFutureContractAcceptsNineWithoutDeduplication() {
         assertTrue("Android 15 emulator must have Photo Picker", PickVisualMedia.isPhotoPickerAvailable(context))
-        val intent = PhotoIntake.pickerIntent(context)
-        assertEquals(MediaStore.ACTION_PICK_IMAGES, intent.action)
+        val intent = PhotoIntake.originalPickerIntent(context)
+        assertTrue(intent.action in listOf(Intent.ACTION_PICK, Intent.ACTION_OPEN_DOCUMENT))
         assertEquals("image/*", intent.type)
         val future = PhotoIntake.pickerIntent(context, PhotoIntake.FUTURE_LIMIT)
         assertEquals(9, future.getIntExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 0))
@@ -103,6 +156,10 @@ class PhotoIntakeInstrumentedTest {
         assertEquals(listOf(photo), PhotoIntake.sharedPhotos(share()))
         assertTrue(PhotoIntake.sharedPhotos(Intent(Intent.ACTION_SEND).apply { type = "text/plain" }).isEmpty())
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
+            "pm grant ${context.packageName} ${Manifest.permission.ACCESS_MEDIA_LOCATION}").use { descriptor ->
+            android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
+        }
         val store = AppGraph.store(context)
         val previous = store.stories().map { it.clientStoryId }.toSet()
         val takenAt = System.currentTimeMillis() - 28L * 24 * 60 * 60 * 1000
@@ -122,13 +179,19 @@ class PhotoIntakeInstrumentedTest {
                 }
                 val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
                 assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
-                val thumbnail = device.wait(Until.findObject(By.res(Pattern.compile(".*:id/icon_thumbnail"))), 5000)
-                assertNotNull("Month-old photo must be selectable in native picker", thumbnail)
-                thumbnail!!.click()
+                val item = device.wait(Until.findObject(By.text("street-story-month-old-test.jpg")), 5000)
+                    ?: device.findObject(By.descContains("street-story-month-old-test"))
+                    ?: device.findObject(By.res(Pattern.compile(".*:id/(icon_thumb|icon_thumbnail)")))
+                assertNotNull("Month-old photo must be selectable in original gallery/document provider", item)
+                item!!.click()
                 val selected = waitForStory(previous)
                 assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
-                println("photo-intake native-month-old PASS story=${selected.clientStoryId} gps=${selected.latitude != null}")
+                assertEquals("Normal selected original must preserve GPS", 54.70123456, selected.latitude!!, 0.0000001)
+                assertEquals(20.50234567, selected.longitude!!, 0.0000001)
+                val diagnostic = PhotoImportTelemetry.pending(context, selected.clientStoryId).orEmpty()
+                assertTrue("GPS must reach import telemetry", diagnostic.contains("gps_present"))
+                println("photo-intake original-month-old PASS story=${selected.clientStoryId} gps=true")
             }
         } finally {
             resolver.delete(media, null, null)

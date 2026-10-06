@@ -34,6 +34,7 @@ data class ResearchProjectionSnapshot(
     val photoSha256: String? = null,
     val identityGeneration: Int? = null,
     val researchControls: Map<String, ResearchControlWire>? = null,
+    val researchPending: Map<String, Boolean> = emptyMap(),
 )
 
 class ResearchProjectionStore(context: Context) {
@@ -64,6 +65,7 @@ class ResearchProjectionStore(context: Context) {
             photoSha256 = wire.photoSha256,
             identityGeneration = wire.identityGeneration,
             researchControls = wire.researchControls,
+            researchPending = wire.researchPending,
         )
         check(prefs.edit().putString(key(storyId), gson.toJson(snapshot)).commit()) {
             "research projection was not persisted"

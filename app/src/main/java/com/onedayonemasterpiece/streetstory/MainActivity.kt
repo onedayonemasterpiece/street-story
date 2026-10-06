@@ -392,7 +392,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(11), 0, dp(8))
             visibility = View.GONE
         }
-        photoRecoveryButton = secondaryButton("Прочитать GPS из оригинала фото") {
+        photoRecoveryButton = secondaryButton("Выбрать оригинал с геометкой") {
             pendingPhotoRecoveryStoryId = story.clientStoryId
             stopLiveForOwner(story.clientStoryId)
             launchPhotoPicker()
@@ -876,13 +876,7 @@ class MainActivity : Activity() {
 
     @Suppress("DEPRECATION")
     private fun openOriginalPhotoPicker() {
-        // Keep the existing explicit original/GPS recovery entry point: some
-        // picker/cloud providers redact EXIF even when the image is readable.
-        val picker = if (pendingPhotoRecoveryStoryId != null) Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            type = "image/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        } else PhotoIntake.pickerIntent(this)
+        val picker = PhotoIntake.originalPickerIntent(this)
         startActivityForResult(picker, REQUEST_PHOTO)
     }
 
@@ -1530,7 +1524,7 @@ class MainActivity : Activity() {
     private fun renderResearchControls(storyId: String, projection: ResearchProjectionSnapshot?) {
         val host = researchControlBlock ?: return
         host.removeAllViews()
-        host.addView(label("Исследование · прогресс сохраняется", 13, MUTED, Typeface.DEFAULT))
+        host.visibility = View.GONE
         val story = store.story(storyId) ?: return
         val controls = projection?.researchControls.orEmpty()
         val scoped = projection?.photoSha256 == story.photoSha256 && projection?.identityGeneration != null &&
@@ -1538,26 +1532,25 @@ class MainActivity : Activity() {
                 it.photoSha256 == story.photoSha256 && it.identityGeneration == projection.identityGeneration
             }
         val pending = store.pendingOperations(storyId).any { it.kind == "research-control" }
-        if (pending) host.addView(label("Применяю команду…", 12, MUTED, Typeface.DEFAULT))
-        val identityStopped = controls["identity"]?.stopped == true
-        val factsStopped = controls["facts"]?.stopped == true
-        for ((purpose, title) in listOf("identity" to "Объект", "facts" to "Факты", "all" to "Всё")) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            val stopped = when (purpose) { "identity" -> identityStopped; "facts" -> factsStopped; else -> identityStopped && factsStopped }
-            val resumable = when (purpose) { "identity" -> identityStopped; "facts" -> factsStopped; else -> identityStopped || factsStopped }
-            row.addView(label(if (stopped) "$title · пауза" else title, 13, INK, Typeface.DEFAULT),
-                LinearLayout.LayoutParams(0, -2, 1f))
-            for ((action, caption) in listOf("stop" to "Стоп", "resume" to "Продолжить")) {
-                row.addView(secondaryButton(caption) { queueResearchControl(storyId, action, purpose) }.apply {
-                    contentDescription = "research-$action-$purpose"
-                    isEnabled = scoped && !pending && !story.serverStoryId.isNullOrBlank() &&
-                        (if (action == "stop") !stopped else resumable)
-                }, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(5) })
-            }
-            host.addView(row)
+        if (!scoped || story.serverStoryId.isNullOrBlank()) return
+        for ((purpose, title) in listOf("identity" to "поиск объекта", "facts" to "поиск фактов")) {
+            val stopped = controls[purpose]?.stopped == true
+            val running = projection?.researchPending?.get(purpose) == true ||
+                if (purpose == "identity") story.stage == StoryStage.IDENTIFYING && projection?.identityProgress?.finished == false
+                else live.snapshot().takeIf { it.storyId == storyId }?.researchProgress?.active == true
+            if (!stopped && !running) continue
+            host.visibility = View.VISIBLE
+            val action = if (stopped) "resume" else "stop"
+            host.addView(secondaryButton("${if (stopped) "Возобновить" else "Приостановить"} $title") {
+                queueResearchControl(storyId, action, purpose)
+            }.apply {
+                contentDescription = "research-$action-$purpose"
+                isEnabled = !pending
+            })
+        }
+        if (pending) {
+            host.visibility = View.VISIBLE
+            host.addView(label("Применяю команду…", 12, MUTED, Typeface.DEFAULT))
         }
     }
 
