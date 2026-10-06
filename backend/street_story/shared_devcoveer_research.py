@@ -21,6 +21,14 @@ import httpx
 
 from .opencode_research import OpenCodeResearch, ResearchLimits, ResearchUnavailable
 
+# The connected MiMo route shares its finite ceiling across reasoning and JSON.
+MIMO_MAX_OUTPUT_TOKENS = 8192
+
+
+def shared_output_limit(model_id: str, provider_id: str = 'opencode') -> int:
+    return MIMO_MAX_OUTPUT_TOKENS if (provider_id, model_id) == (
+        'opencode', 'mimo-v2.6-flash-free') else ResearchLimits().max_output_tokens
+
 GUARD_SOURCE = Path(__file__).resolve().parents[1] / 'deploy' / 'research_guard.mjs'
 NATIVE_TOOL_IDS = {'invalid', 'question', 'bash', 'read', 'glob', 'grep', 'edit', 'write',
                    'task', 'webfetch', 'todowrite', 'websearch', 'skill', 'apply_patch'}
@@ -40,13 +48,14 @@ def scoped_research_config(model_id: str, *, provider_id: str = 'opencode',
     credentials remain selected by the shared server. Inherited plugins/MCP or
     instruction overrides fail runtime attestation rather than being replaced.
     """
-    limits = limits or ResearchLimits()
+    output_limit = shared_output_limit(model_id, provider_id)
+    limits = limits or ResearchLimits(max_output_tokens=output_limit)
     config = {'$schema': 'https://opencode.ai/config.json', 'share': 'disabled', 'snapshot': False,
             'tool_output': {'max_bytes': limits.max_search_context_chars, 'max_lines': 300},
             'agent': {'plan': {'steps': min(3, limits.max_steps)},
                       **{name: {'disable': True} for name in ('title', 'summary', 'compaction')}},
             'provider': {provider_id: {'models': {model_id: {'limit': {
-                'context': 200000, 'output': min(2048, limits.max_output_tokens)}}}}}}
+                'context': 200000, 'output': min(output_limit, limits.max_output_tokens)}}}}}}
     if directory is not None:
         config['plugin'] = [guard_profile(directory, limits)]
     return config
@@ -71,10 +80,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             raise ValueError('research_abort_timeout_invalid')
         if 'client' in kwargs or 'agent_names' in kwargs:
             raise ValueError('research_shared_transport_required')
+        output_limit = shared_output_limit(kwargs['model_id'], kwargs.get('provider_id', 'opencode'))
+        if kwargs.get('limits') is None:
+            kwargs['limits'] = ResearchLimits(max_output_tokens=output_limit)
         super().__init__('http://127.0.0.1:4097', agent_names={role: 'plan' for role in ('search', 'vision', 'facts')},
                          **kwargs)
         if (not 0 < self.limits.timeout_seconds <= 120 or not 0 < self.limits.max_steps <= 3
-                or not 0 < self.limits.max_output_tokens <= 2048):
+                or not 0 < self.limits.max_output_tokens <= output_limit):
             raise ValueError('research_shared_limits_invalid')
         self.directory = str(path)
         self.require_guard = require_guard

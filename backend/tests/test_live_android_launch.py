@@ -59,3 +59,33 @@ elif args[:1] == ['exec-in']:
         assert decoded['resumeStoryId'] == resume_id
     else:
         assert 'resumeStoryId' not in decoded
+
+
+@pytest.mark.parametrize('resumed,turns,claimed,error', [
+    (True, 0, False, None),
+    (False, 1, True, None),
+    (False, 0, False, 'lacks prepared owner speech'),
+    (True, 0, True, 'misrepresents prepared PCM'),
+])
+def test_more_verifier_preserves_text_resume_and_fresh_voice_provenance(tmp_path, monkeypatch, resumed, turns, claimed, error):
+    sid = 'story_12345678abcdefgh'
+    evidence = {'acceptance': 'more', 'more_acceptance_status': 'passed',
+                'more_added_fact_ids': ['supported-new-claim'], 'more_selection_and_draft_preserved': True,
+                'physical_mic': False, 'prepared_pcm_turn_count': turns,
+                'prepared_pcm_after_capture_boundary': claimed, 'legacy_voice_endpoint_used': False,
+                'transport_final': {'transport': 'wss', 'http_audio_fallback': False,
+                                    'event_polling': False, 'received_pcm_bytes': 1082400}}
+    if resumed:
+        evidence.update(resumed_story_id=sid, fresh_full_pass=False)
+    (tmp_path / 'android-golden-evidence.json').write_text(json.dumps(evidence))
+    monkeypatch.setenv('LIVE_E2E_ARTIFACT_DIR', str(tmp_path))
+    monkeypatch.setenv('LIVE_E2E_RESUME_STORY_ID', sid if resumed else '')
+    monkeypatch.setenv('LIVE_E2E_IDENTITY_ONLY', 'false')
+    monkeypatch.setenv('LIVE_E2E_MORE_ONLY', 'true')
+    script = Path(__file__).resolve().parents[2] / '.github/scripts/live-e2e-android.sh'
+    verifier = script.read_text().rsplit("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+    if error:
+        with pytest.raises(SystemExit, match=error):
+            exec(compile(verifier, str(script), 'exec'), {})
+    else:
+        exec(compile(verifier, str(script), 'exec'), {})
