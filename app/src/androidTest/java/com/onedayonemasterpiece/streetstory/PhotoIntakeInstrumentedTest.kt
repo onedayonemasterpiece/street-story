@@ -1,6 +1,7 @@
 package com.onedayonemasterpiece.streetstory
 
 import android.content.Context
+import android.content.ContentValues
 import android.content.Intent
 import android.net.Uri
 import android.provider.MediaStore
@@ -15,6 +16,7 @@ import androidx.test.uiautomator.Until
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.regex.Pattern
 
 @RunWith(AndroidJUnit4::class)
 class PhotoIntakeInstrumentedTest {
@@ -84,7 +86,7 @@ class PhotoIntakeInstrumentedTest {
         }
     }
 
-    @Test fun nativePickerLaunchesAndFutureContractAcceptsNineWithoutDeduplication() {
+    @Test fun nativePickerSelectsMonthOldPhotoAndFutureContractAcceptsNineWithoutDeduplication() {
         assertTrue("Android 15 emulator must have Photo Picker", PickVisualMedia.isPhotoPickerAvailable(context))
         val intent = PhotoIntake.pickerIntent(context)
         assertEquals(MediaStore.ACTION_PICK_IMAGES, intent.action)
@@ -95,13 +97,39 @@ class PhotoIntakeInstrumentedTest {
         assertEquals(listOf(photo), PhotoIntake.sharedPhotos(share()))
         assertTrue(PhotoIntake.sharedPhotos(Intent(Intent.ACTION_SEND).apply { type = "text/plain" }).isEmpty())
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            scenario.onActivity { activity ->
-                MainActivity::class.java.getDeclaredMethod("openOriginalPhotoPicker").apply { isAccessible = true }.invoke(activity)
+        val store = AppGraph.store(context)
+        val previous = store.stories().map { it.clientStoryId }.toSet()
+        val takenAt = System.currentTimeMillis() - 28L * 24 * 60 * 60 * 1000
+        val resolver = context.contentResolver
+        val media = requireNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "street-story-month-old-test.jpg")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.DATE_TAKEN, takenAt)
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }))
+        try {
+            resolver.openOutputStream(media)!!.use { it.write(PhotoGpsFixture.bytes()) }
+            resolver.update(media, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    MainActivity::class.java.getDeclaredMethod("openOriginalPhotoPicker").apply { isAccessible = true }.invoke(activity)
+                }
+                val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
+                assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
+                val thumbnail = device.wait(Until.findObject(By.res(Pattern.compile(".*:id/icon_thumbnail"))), 5000)
+                assertNotNull("Month-old photo must be selectable in native picker", thumbnail)
+                thumbnail!!.click()
+                val selected = waitForStory(previous)
+                assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
+                assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
+                println("photo-intake native-month-old PASS story=${selected.clientStoryId} gps=${selected.latitude != null}")
             }
-            val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
-            assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
-            device.pressBack()
+        } finally {
+            resolver.delete(media, null, null)
+            store.stories().filter { it.clientStoryId !in previous }.forEach { story ->
+                store.deleteStory(story.clientStoryId)
+                PhotoImportTelemetry.pending(context, story.clientStoryId)?.let { PhotoImportTelemetry.acknowledge(context, story.clientStoryId, it) }
+            }
         }
     }
 }
