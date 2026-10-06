@@ -17,6 +17,7 @@ import androidx.test.uiautomator.Until
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 import java.util.regex.Pattern
 
 @RunWith(AndroidJUnit4::class)
@@ -179,11 +180,27 @@ class PhotoIntakeInstrumentedTest {
                 }
                 val pickerPackage = context.packageManager.resolveActivity(intent, 0)!!.activityInfo.packageName
                 assertTrue(device.wait(Until.hasObject(By.pkg(pickerPackage).depth(0)), 5000))
+                device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
+                device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
+                println("original-picker package=$pickerPackage action=${intent.action} visible=" +
+                    device.findObjects(By.text(Pattern.compile(".+"))).map { it.text }.take(12))
                 val item = device.wait(Until.findObject(By.text("street-story-month-old-test.jpg")), 5000)
                     ?: device.findObject(By.descContains("street-story-month-old-test"))
                     ?: device.findObject(By.res(Pattern.compile(".*:id/(icon_thumb|icon_thumbnail)")))
-                assertNotNull("Month-old photo must be selectable in original gallery/document provider", item)
-                item!!.click()
+                if (item != null) item.click() else {
+                    // AOSP Gallery2 draws its album/photo tiles in GLRootView,
+                    // with no accessible thumbnail nodes. The clean emulator
+                    // has one seeded album/photo: tap its first tile on each
+                    // of the two Gallery pages. Other providers require nodes.
+                    assertEquals("Only AOSP Gallery2 uses this GL test path", "com.android.gallery3d", pickerPackage)
+                    val root = requireNotNull(device.findObject(By.res(pickerPackage, "gl_root_view")))
+                    val bounds = root.visibleBounds
+                    repeat(2) {
+                        device.click(bounds.left + bounds.width() / 6, bounds.top + bounds.width() / 6)
+                        device.waitForIdle(1500)
+                        Thread.sleep(600)
+                    }
+                }
                 val selected = waitForStory(previous)
                 assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
