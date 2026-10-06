@@ -323,6 +323,15 @@ class LiveVisualComparisonMixin:
                 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
                 for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')][:32],
             'remaining_illustrations': remaining,
+            'shooting_distance_instruction': (
+                'Оцени по SOURCE, перспективе, размеру объекта в кадре и доступным camera_hints '
+                'правдоподобный диапазон дистанции съёмки и приблизительную верхнюю границу в метрах. '
+                'Кратко запиши оценку, основания и неопределённость в observations. '
+                'Если масштаб или зум неизвестны, не выдумывай верхнюю границу. '
+                'Сопоставь оценку с distance_m кандидатов; не подтверждай дальний вариант '
+                'за счёт придуманного зума или иной точки съёмки при близкой визуально подходящей '
+                'альтернативе. При неразрешённом противоречии верни uncertain. '
+                'Оценка не является точным измерением или самостоятельным доказательством identity.'),
             'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1):
@@ -703,6 +712,16 @@ class LiveVisualComparisonMixin:
             raise RetryableProviderError('source_photo_ram_unavailable', retry_at=self.service.store.now()+30)
         comparison_id = 'comparison_' + uuid.uuid4().hex
         reply = self._visual_reply(comparison_id, candidates, identity, len(state['queue']))
+        from .camera_hints import model_camera_hints, read_camera_hints
+        binding = research.get('photo_camera_hints') or {}
+        hints = (binding.get('metadata') if binding.get('photo_sha256') == story['photo_sha256']
+                 and isinstance(binding.get('metadata'), dict) else read_camera_hints(source_bytes))
+        reply['camera_hints'] = model_camera_hints(hints)
+        reply['camera_hints_instruction'] = (
+            'focal_length_35mm уже является эквивалентным фокусным расстоянием. '
+            'Не умножай его автоматически на digital_zoom_ratio: поля могут описывать один и тот же зум. '
+            'distance_m — расстояние до координаты POI, которая может обозначать центр здания или территории, '
+            'а не точную дистанцию до видимого фасада.')
         image_parts = [{'label': 'SOURCE', 'mime_type': story.get('photo_mime_type') or 'image/jpeg',
             'data': base64.b64encode(source_bytes).decode('ascii')}] + [
             {'label': f'REF {i}', 'mime_type': mime, 'url': url}

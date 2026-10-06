@@ -130,6 +130,7 @@ async def test_stop_between_completed_units_prevents_next_send(tmp_path):
 @pytest.mark.asyncio
 async def test_far_saved_positive_cannot_preempt_ready_nearby_candidate(tmp_path, monkeypatch):
     from street_story import article_media
+    from test_camera_hints import jpeg
     svc, adapter, current, session = prepared(tmp_path)
     previous = svc.create_story(key='far-old-source', client_story_id='far-old-source',
         photo_sha256='old-upload', photo_mime_type='image/jpeg', photo_bytes=b'old source',
@@ -152,11 +153,16 @@ async def test_far_saved_positive_cannot_preempt_ready_nearby_candidate(tmp_path
     async def no_delay(*args, **kwargs):
         raise AssertionError('Do not delay a ready nearby reference behind a distant article')
     monkeypatch.setattr(article_media, 'article_candidates', no_delay)
+    monkeypatch.setattr(svc, '_source_photo_bytes', lambda _id: jpeg(direction=0))
     owner = session()
     comparison = await adapter._compare_place_images(owner, {})
     assert comparison['references'][0]['candidate_id'] == 'wiki:near'
     assert comparison['physical_candidates'][0]['distance_m'] == 5.3
     assert comparison['physical_candidates'][1]['distance_m'] == 481.3
+    assert comparison['camera_hints']['focal_length_35mm'] == 72
+    assert comparison['camera_hints']['digital_zoom_ratio'] == 3
+    assert comparison['camera_hints']['diagonal_fov_35mm_deg'] == pytest.approx(33.4, abs=.2)
+    assert 'direction_degrees' not in comparison['camera_hints']
     assert any(item.get('reference_reuse', {}).get('subject_candidate_id') == 'wiki:far'
                for item in owner.state['visual_comparison']['queue'])
     assert svc.story(current['id'])['visual_identity']['status'] == 'uncertain'
