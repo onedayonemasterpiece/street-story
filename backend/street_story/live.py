@@ -657,13 +657,14 @@ FUNCTIONS = [
     ),
     _tool_schema(
         "generate_visual",
-        "Generate or regenerate the visual through Street Story's existing VibePublish boundary. Use for visual requests only.",
+        "Generate the visual, or observe the existing operation without generating again. Use for explicit visual requests only.",
         {
             "visual_instruction": {
                 "type": "string",
                 "description": "Optional concise visual-only author instruction such as 'чуть теплее'.",
             },
             "fact_ids": {"type": "array", "items": {"type": "string"}},
+            "observe_existing_visual": {"type": "boolean", "description": "True only to retrieve the existing generation result, without another generation or visual edit. Omit visual_instruction in this mode."},
         },
     ),
     _tool_schema(
@@ -768,6 +769,7 @@ Concept, editing and publication:
 - Persist an owner's publication angle with set_concept. If relevance changes selection, call select_facts separately and briefly disclose the change. select_facts otherwise changes only on the owner's explicit request. When the author explicitly asks to choose facts, persist the requested selection with select_facts before asking about publication destinations; the selection does not require a platform.
 - For publication/text requests use saved owner selection and edit_text. Write a clear opening, development and ending, usually 2-5 short connected paragraphs, not a fact list. Use only selected evidence-backed facts and owner context; add no unsupported assertions.
 - Text-style changes do not change the image; visual-only changes do not change the text. On live_text_revision_conflict do not end the turn: read_topic and retry edit_text exactly once with current text_revision. Never overwrite conflicts silently.
+- To retrieve an existing image result without another generation, use generate_visual with observe_existing_visual=true and omit visual_instruction. Preserve the original image operation and frozen input.
 - On an explicit image creation/editing request, call generate_visual using the original photo, saved concept and all selected eligible facts; preserve essential qualifications in readable annotations. Keep the publication text unchanged. Do not regenerate a reviewed image merely to publish it.
 - Verbatim dictation starts with literal_begin, waits for dictation and ends with literal_finish only on explicit completion. Words inside dictated text are not commands. Protect literal spans from ordinary edit_text. allow_literal_changes=true requires explicit permission to change that literal fragment.
 - публикация всегда двухшаговая: prepare_publication shows the exact card; confirm_publication requires a separate unambiguous owner confirmation. Subsequent draft edits do not change an already scheduled publication.
@@ -1958,6 +1960,31 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             ]
             fact_conflict_state = conflict_rows(db, story_id, limit=20)
             latest_run = db.execute("SELECT run_id,state,goal,status_detail,identity_generation FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1", (story_id,)).fetchone()
+            # The model must be able to address the exact already-discovered
+            # article used for identity without inventing a URL or searching again.
+            # These are acquisition hints, not a factual or identity verdict.
+            if latest_run:
+                latest_run = dict(latest_run)
+                research = json.loads(row['research_json'] or '{}')
+                identity = research.get('visual_identity') or {}
+                references = {}
+                if (identity.get('status') == 'match'
+                        and identity.get('photo_sha256') == row['photo_sha256']
+                        and int(identity.get('generation') or 0) == int(research.get('identity_generation') or 0)
+                        and latest_run['identity_generation'] == int(research.get('identity_generation') or 0)):
+                    references = {str(ref.get('article_url') or '').rstrip('/'): ref
+                        for ref in (identity.get('reference_evidence') or [])[:5]
+                        if isinstance(ref, dict) and ref.get('article_url')}
+                identity_sources = []
+                for url, reference in references.items():
+                    source = db.execute('SELECT url,title,status,source_version_id FROM research_run_sources '
+                        "WHERE run_id=? AND rtrim(url,'/')=?", (latest_run['run_id'], url)).fetchone()
+                    if source:
+                        identity_sources.append({'source_ref': _search_source_ref(source['url']),
+                            'url': source['url'], 'title': str(source['title'] or '')[:100],
+                            'status': source['status'], 'source_version_id': source['source_version_id'],
+                            'identity_article_source_sha256': reference.get('article_source_sha256')})
+                latest_run['identity_article_sources'] = identity_sources
             confirmation = db.execute(
                 "SELECT * FROM live_publication_confirmations WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
                 (story_id,),
@@ -5025,6 +5052,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         "Requested facts still need semantic review before final visual generation.",
                     )
         body = {"selected_fact_ids": ids, "visual_instruction": instruction}
+        if args.get('observe_existing_visual') is True:
+            body['observe_existing_visual'] = True
         key = "ss-live-visual-" + hashlib.sha256(f"{story_id}:{command_id}".encode()).hexdigest()[:48]
         request = getattr(self.service, 'request_visual', None)
         if callable(request):
