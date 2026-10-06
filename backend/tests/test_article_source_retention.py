@@ -258,8 +258,10 @@ async def test_recovery_reuses_completed_media_and_fetches_deferred_urls_with_ga
     result, discovered = await identity_discovery.recover(svc, story, '', [], set())
     assert result['_article_media_pending']
     assert completed in discovered
-    assert [source['url'] for source in batches[0]] == [urls[2], urls[1]]
-    assert batches[0][1]['gallery_cursor'] == 12 and batches[0][1]['gallery_slide_cursor'] == 3
-    assert urls[0] not in {source['url'] for source in batches[0]}
+    assert not batches  # Ready retained media is delivered without another page barrier.
+    pages = svc._identity_snapshot(topic['id'])[1]['identity_article_discovery']['pages']
+    assert pages[urls[1]]['source']['gallery_cursor'] == 12
+    assert pages[urls[1]]['source']['gallery_slide_cursor'] == 3
     history = svc._identity_snapshot(topic['id'])[1]['identity_article_discovery']
-    assert len(history['sources']) == len(history['pages']) == 3
+    assert len(history['sources']) == 3
+    assert len(history['pages']) == 2  # The unread URL is retained without pretending it was fetched.

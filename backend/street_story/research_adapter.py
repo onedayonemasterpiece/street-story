@@ -23,6 +23,24 @@ def _failure_code(exc):
     value = getattr(exc, 'code', None) or str(exc)
     return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', value) else type(exc).__name__
 
+
+def _closed_malformed_visual(receipt):
+    """All sends produced complete responses; malformed content is not timeout."""
+    attempts = receipt.get('model_attempts') if isinstance(receipt, dict) else None
+    if not isinstance(attempts, list) or not attempts:
+        return False
+    for attempt in attempts:
+        if not isinstance(attempt, dict) or attempt.get('category') != 'malformed_response':
+            return False
+        request_id, usage = attempt.get('provider_request_id'), attempt.get('usage')
+        if not isinstance(request_id, str) or not request_id.strip() or not isinstance(usage, dict):
+            return False
+        total = usage.get('total_tokens')
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            return False
+    return True
+
+
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
     'research_sufficient':{'type':'boolean'},
     'next_research_query':{'type':'string','maxLength':500},
@@ -169,6 +187,11 @@ class ProductResearchAdapter:
         with self.service.store.tx() as db:
             rows = list(db.execute('SELECT * FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC', (logical,)))
             old = json.loads(rows[0]['receipt_json']) if rows else {}
+            if (role == 'vision_google_group' and old.get('phase') == 'failed'
+                    and old.get('fallback_mode') == 'pair' and old.get('retry_safe') is True):
+                # This exact group has a closed result/known local refusal. A
+                # smaller pair is a different unit; never repeat this group.
+                raise PermanentProviderError('research_visual_group_pair_required')
             if rows and old.get('phase') == 'completed':
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
@@ -503,6 +526,8 @@ class ProductResearchAdapter:
             raise RetryableProviderError('research_vision_unverified', retry_at=self.service.store.now()+300)
         from .gemini import GeminiUnavailable
         failures = []
+        if story.get('_visual_image_parts') is not None:
+            return await self._grouped_visual_verdict(snapshot, story, schema, context)
         # A fully verified completed exact observation is a local read, not a
         # fallback model call. Resolve it before a slow primary admission/send.
         if self.native_vision is not None and self.native_vision.available:
@@ -552,6 +577,72 @@ class ProductResearchAdapter:
             output = io.BytesIO()
             image.save(output, format='PNG', optimize=True)
         return await self.compare_image(output.getvalue(), story, schema, context)
+
+    async def _grouped_visual_verdict(self, snapshot, story, schema, context):
+        """An unknown grouped send never authorizes a new pair of model calls."""
+        from .gemini import GeminiUnavailable
+        semantic = semantic_visual_context(context if isinstance(context, str) else canonical(context))
+        part_hashes = [hashlib.sha256(canonical(part).encode()).hexdigest()
+                       for part in story['_visual_image_parts']]
+        unit = hashlib.sha256(snapshot).hexdigest() + hashlib.sha256(canonical([
+            semantic, schema, 'observable_geometry_v1', part_hashes,
+            story.get('_visual_reference_mapping')]).encode()).hexdigest()
+        scope = {'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                 'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                 'control_revision': story.get('_identity_research_control_revision', 0),
+                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+        self.guard_binding(scope)
+        binding, saved = self.attempt(story, 'vision_google_group', unit)
+        if saved:
+            return {'result': saved['result'], 'receipt': saved}
+        if binding.get('phase', 'created') != 'created':
+            raise RetryableProviderError('research_visual_group_outcome_unknown',
+                                         retry_at=self.service.store.now()+300)
+        self.guard_binding(binding)
+        if not self.primary_vision.available:
+            await self.checkpoint(binding, {'binding': dict(binding), 'phase': 'failed',
+                'provider_send_state': 'not_sent', 'retry_safe': True,
+                'error_code': 'research_visual_group_pair_required'})
+            raise PermanentProviderError('research_visual_group_pair_required')
+        intent = {'binding': dict(binding), 'phase': 'submitted', 'provider': 'google',
+                  'transport': 'gemini_generate_content', 'workload': 'identity_comparison',
+                  'model_image_sha256': hashlib.sha256(snapshot).hexdigest(),
+                  'reference_mapping': story.get('_visual_reference_mapping'),
+                  'provider_send_state': 'possibly_sent'}
+        await self.checkpoint(binding, intent)
+        try:
+            response = await self.primary_vision.compare_visual(snapshot, story, schema, context)
+        except BaseException as exc:
+            prior = getattr(exc, 'receipt', None) or {}
+            code = str(exc) if isinstance(exc, PermanentProviderError) else None
+            known_local = code in {
+                'headless_vision:invalid_image_attachment', 'headless_vision:invalid_comparison_context',
+                'headless_vision:invalid_grouped_pixels', 'research_visual_group_pair_required'}
+            known_unsent = known_local or (isinstance(exc, GeminiUnavailable)
+                                           and not prior.get('model_attempts'))
+            known_closed = _closed_malformed_visual(prior)
+            retry_safe = known_unsent or known_closed
+            failed = {**intent, 'phase': 'failed' if retry_safe else 'unknown',
+                      'provider_send_state': 'not_sent' if known_unsent else
+                                             'response_closed' if known_closed else 'possibly_sent',
+                      'retry_safe': retry_safe, 'fallback_mode': 'pair' if retry_safe else None,
+                      'error_type': type(exc).__name__,
+                      'observation': prior}
+            await self.checkpoint(binding, failed)
+            LOG.warning('street_story_visual_group story_id=%s attempt_id=%s phase=%s provider_send_state=%s',
+                        story['id'], binding['attempt_id'], failed['phase'], failed['provider_send_state'])
+            if not isinstance(exc, Exception):
+                raise
+            if known_local:
+                raise
+            if retry_safe:
+                raise PermanentProviderError('research_visual_group_pair_required') from None
+            raise RetryableProviderError('research_visual_group_outcome_unknown',
+                retry_at=getattr(exc, 'retry_at', None) or self.service.store.now()+300) from None
+        receipt = {**response['receipt'], 'binding': dict(binding), 'phase': 'completed',
+                   'provider_send_state': 'response_closed', 'result': response['result']}
+        await self.checkpoint(binding, receipt)
+        return {'result': response['result'], 'receipt': receipt}
 
     def reuse_native_verdict(self, binding, unit, snapshot, schema, context, *, probe_only=False):
         """Reuse completed exact comparisons; an unknown turn still reconciles.

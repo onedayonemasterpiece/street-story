@@ -29,7 +29,9 @@ def setup(status='match', usage=None):
     verdict = {'status': status, 'candidate_id': 'web:gallery', 'reference_subject_candidate_id': 'wiki:1',
                'reference_subject_observations': ['Same arches as physical candidate.'],
                'confidence': .97, 'observations': ['Distinctive three windows and rear arch.'],
-               'alternative_candidate_ids': []}
+               'alternative_candidate_ids': [], 'shared_distinctive_geometry': True,
+               'observable_correspondences': [{'source_detail': 'Three windows and rear arch',
+                                              'reference_detail': 'Same three windows and rear arch'}]}
 
     async def generate(key, timeout, contents, config, **kwargs):
         assert key == 'unit-test-key' and timeout == 20

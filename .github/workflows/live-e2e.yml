@@ -20,9 +20,14 @@ on:
         default: false
         type: boolean
       story_id:
-        description: 'readback: export only; full_social/more: continue saved test story through normal Android (not a fresh full pass)'
+        description: 'readback: export only; identity/full_social/more: inspect or continue saved story (not a fresh full pass)'
         required: false
         type: string
+      resume_identity_research:
+        description: 'identity + saved story only: explicit scoped Resume of stopped research'
+        required: false
+        default: false
+        type: boolean
   pull_request:
     branches: [main]
     types: [labeled]
@@ -352,6 +357,7 @@ jobs:
           LIVE_E2E_KEEP_PUBLICATION: ${{ inputs.keep_publication && 'true' || 'false' }}
           LIVE_E2E_MORE_ONLY: ${{ inputs.acceptance == 'more' && 'true' || 'false' }}
           LIVE_E2E_RESUME_STORY_ID: ${{ inputs.story_id }}
+          LIVE_E2E_RESUME_IDENTITY_RESEARCH: ${{ inputs.resume_identity_research && 'true' || 'false' }}
           LIVE_E2E_IDENTITY_ONLY: ${{ inputs.acceptance == 'identity' && 'true' || 'false' }}
         if: >-
           (github.event_name == 'workflow_dispatch' && (inputs.acceptance == 'full_social' || inputs.acceptance == 'more' || inputs.acceptance == 'identity')) ||

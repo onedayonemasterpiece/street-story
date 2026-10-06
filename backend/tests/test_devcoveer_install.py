@@ -580,6 +580,8 @@ def test_ensure_venv_uses_only_release_python_for_pip(monkeypatch, tmp_path) -> 
     requirements = release / "source/backend/requirements.txt"
     requirements.parent.mkdir(parents=True)
     requirements.write_text("fastapi>=0.115,<1\n")
+    _dependency_inputs(release)
+    monkeypatch.setattr(module, 'RELEASES_ROOT', release.parent)
     calls: list[list[str]] = []
 
     monkeypatch.setattr(module, "_python_312_runtime", lambda: "/fixture/python3.12")
@@ -897,3 +899,115 @@ def test_vibe_http_error_preserves_only_safe_machine_code(monkeypatch) -> None:
     assert caught.value.code == "invalid_host"
     assert "private details" not in str(caught.value)
     assert module._vibe_auth_failed(caught.value) is False
+
+
+def _dependency_inputs(release, version='0.3.11rc3'):
+    source = release / 'source'
+    (source / 'backend').mkdir(parents=True, exist_ok=True)
+    (source / 'backend/requirements.txt').write_text('fastapi>=0.115,<1\n')
+    (source / 'vendor').mkdir(exist_ok=True)
+    archive = source / 'vendor/live.tar.gz'
+    archive.write_bytes(b'immutable package fixture')
+    (source / 'live-framework.lock.json').write_text(json.dumps({
+        'archive': 'vendor/live.tar.gz', 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+        'python_version': version}))
+
+
+def test_compatible_env_reuse_survives_third_release_and_prune(monkeypatch, tmp_path):
+    module = _load_installer()
+    a, b, c = [_deployment_fixture(tmp_path, char * 40) for char in 'abc']
+    for release in (a, b, c):
+        _dependency_inputs(release)
+    for release in (b, c):
+        module.shutil.rmtree(release / 'venv')
+    monkeypatch.setattr(module, 'RELEASES_ROOT', tmp_path)
+    monkeypatch.setattr(module, 'release_process_references', set)
+    probes = []
+    monkeypatch.setattr(module, 'attest_dependency_environment', lambda env, fp: probes.append(env))
+    monkeypatch.setattr(module, '_python_312_runtime', lambda: pytest.fail('reuse must not create another env'))
+    assert module.ensure_venv(b).resolve() == a / 'venv'
+    assert module.ensure_venv(c).resolve() == a / 'venv'
+    assert (b / 'venv').is_symlink() and (c / 'venv').is_symlink()
+    receipt = module.prune_release_environments(c.name, b.name)
+    assert a.name in receipt['protected'] and receipt['removed'] == []
+    assert all((release / 'venv/bin/python').is_file() for release in (a, b, c))
+    assert probes == [a / 'venv', a / 'venv']
+
+
+def test_changed_lock_requires_new_env_without_mutating_shared_owner(monkeypatch, tmp_path):
+    module = _load_installer()
+    a, b = [_deployment_fixture(tmp_path, char * 40) for char in 'ab']
+    _dependency_inputs(a)
+    _dependency_inputs(b, version='0.3.12')
+    module.shutil.rmtree(b / 'venv')
+    monkeypatch.setattr(module, 'RELEASES_ROOT', tmp_path)
+    monkeypatch.setattr(module, 'attest_dependency_environment', lambda *args: pytest.fail('mismatch is not reusable'))
+    assert module.reuse_compatible_environment(b, module.dependency_fingerprint(b)) is None
+    assert not (b / 'venv').exists()
+    assert (a / 'venv/bin/python').read_text() == 'rebuildable dependency fixture'
+    # A previously linked release must fail closed rather than pip-modifying the old env.
+    (b / 'venv').symlink_to(a / 'venv', target_is_directory=True)
+    with pytest.raises(module.DeployError, match='incompatible'):
+        module.reuse_compatible_environment(b, module.dependency_fingerprint(b))
+
+
+def test_installed_dependency_attestation_and_donor_manifest_required(monkeypatch, tmp_path):
+    module = _load_installer()
+    a, b = [_deployment_fixture(tmp_path, char * 40) for char in 'ab']
+    for release in (a, b):
+        _dependency_inputs(release)
+    module.shutil.rmtree(b / 'venv')
+    monkeypatch.setattr(module, 'RELEASES_ROOT', tmp_path)
+    def invalid_env(*args):
+        raise module.DeployError('installed archive provenance mismatch')
+    monkeypatch.setattr(module, 'attest_dependency_environment', invalid_env)
+    assert module.reuse_compatible_environment(b, module.dependency_fingerprint(b)) is None
+    monkeypatch.setattr(module, 'attest_dependency_environment', lambda *args: pytest.fail('invalid manifest must not be probed'))
+    (a / '.street-story-release.json').write_text('{}')
+    assert module.reuse_compatible_environment(b, module.dependency_fingerprint(b)) is None
+
+
+def test_prune_fences_newly_started_process_with_env_alias(monkeypatch, tmp_path):
+    module = _load_installer()
+    a, b = [_deployment_fixture(tmp_path, char * 40) for char in 'ab']
+    module.shutil.rmtree(b / 'venv')
+    (b / 'venv').symlink_to(a / 'venv', target_is_directory=True)
+    monkeypatch.setattr(module, 'RELEASES_ROOT', tmp_path)
+    snapshots = iter([set(), {b.name}])
+    monkeypatch.setattr(module, 'release_process_references', lambda: next(snapshots))
+    assert module.prune_release_environments('c' * 40, None)['removed'] == []
+    assert (a / 'venv/bin/python').is_file()
+
+
+def test_dependency_fingerprint_rejects_corrupted_vendor(tmp_path):
+    module = _load_installer()
+    _dependency_inputs(tmp_path)
+    (tmp_path / 'source/vendor/live.tar.gz').write_bytes(b'changed archive')
+    with pytest.raises(module.DeployError, match='digest mismatch'):
+        module.dependency_fingerprint(tmp_path)
+
+
+def test_ensure_changed_lock_creates_own_environment_and_leaves_donor(monkeypatch, tmp_path):
+    module = _load_installer()
+    a, b = [_deployment_fixture(tmp_path, char * 40) for char in 'ab']
+    _dependency_inputs(a)
+    _dependency_inputs(b, version='0.3.12')
+    module.shutil.rmtree(b / 'venv')
+    monkeypatch.setattr(module, 'RELEASES_ROOT', tmp_path)
+    monkeypatch.setattr(module, '_python_312_runtime', lambda: '/fixture/python3.12')
+    monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(module, 'install_ai_resource_control', lambda target: None)
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:3] == ['/fixture/python3.12', '-m', 'venv']:
+            python = Path(argv[-1]) / 'bin/python'
+            python.parent.mkdir(parents=True)
+            python.write_text('new version environment')
+        return ''
+    monkeypatch.setattr(module, 'run', fake_run)
+    assert module.ensure_venv(b) == b / 'venv'
+    assert not (b / 'venv').is_symlink()
+    assert (a / 'venv/bin/python').read_text() == 'rebuildable dependency fixture'
+    assert any(argv[:3] == ['/fixture/python3.12', '-m', 'venv'] for argv in calls)
+    assert all(str(a / 'venv') not in str(argv) for argv in calls)

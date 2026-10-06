@@ -93,7 +93,8 @@ class LiveVisualComparisonMixin:
     @staticmethod
     def _image_entries(candidate):
         for url in candidate.get('reference_image_urls', []):
-            yield {**candidate, 'reference_image_urls': [url], 'reference_batch': True,
+            reference_id = 'ref_' + hashlib.sha256(canonical([candidate['candidate_id'], url]).encode()).hexdigest()[:24]
+            yield {**candidate, 'reference_id': reference_id, 'reference_image_urls': [url], 'reference_batch': True,
                    'article_media': [m for m in candidate.get('article_media', []) if m['image_url'] == url]}
 
     async def _find_place_articles(self, session, args):
@@ -448,7 +449,10 @@ class LiveVisualComparisonMixin:
     @staticmethod
     def _visual_reply(comparison_id, candidates, identity, remaining):
         return {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
-            'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name']}
+            'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name'],
+                **({'reference_id': c['reference_id'], 'article_url': c.get('url'),
+                    'context': [{key: media[key] for key in ('alt','figcaption','section_heading','context_text') if key in media}
+                                for media in c.get('article_media') or []]} if len(candidates) > 1 else {})}
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
                 'url': c.get('url'), 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
@@ -549,8 +553,130 @@ class LiveVisualComparisonMixin:
         reconciled = await self._reconcile_completed_reference(session, story, research, identity, state)
         if reconciled is not None:
             return reconciled
+        # Address accepted references by the current shortlist, not an archive
+        # scan or old SOURCE verdict. Unknown sends retain their original pair.
+        with self.service.store.connection() as db:
+            unsettled = False
+            for row in db.execute("SELECT role,receipt_json FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'", (story['id'],)):
+                receipt = json.loads(row['receipt_json'])
+                binding = receipt.get('binding') or {}
+                if (receipt.get('phase') not in {'completed', 'failed', 'aborted'}
+                        and receipt.get('photo_sha256', binding.get('photo_sha256')) == story['photo_sha256']
+                        and receipt.get('generation', binding.get('generation', generation)) == generation):
+                    unsettled = True
+                    if row['role'] == 'vision_google_group' and receipt.get('phase') in {'submitted', 'unknown'}:
+                        from .errors import RetryableProviderError
+                        # Restarts must not turn a possibly-sent group into a
+                        # brand new pair. Its exact outcome remains unresolved.
+                        raise RetryableProviderError('research_visual_group_outcome_unknown',
+                                                     retry_at=self.service.store.now()+300)
+            if not state.get('accepted_references_loaded') and not unsettled:
+                from .poi_memory import candidate_reference_images
+                reused = candidate_reference_images(db, identity.get('candidates') or [])
+                entries = [entry for candidate in reused for entry in self._image_entries(candidate)]
+                existing = {(c['candidate_id'], tuple(c.get('reference_image_urls') or [])) for c in state['queue']}
+                entries = [c for c in entries if (c['candidate_id'], tuple(c['reference_image_urls'])) not in existing]
+                state['queue'] = entries + state['queue']
+                state['accepted_references_loaded'] = True
+                if entries:
+                    record_identity_event(self.service, story['id'], 'identity_accepted_references_reused',
+                        {'generation': generation, 'reference_count': len(entries), 'identity_proof_reused': False})
         read_pages = 0
         searches_performed = 0
+        from .article_media import article_candidates
+        physical = [c for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')]
+        physical_ids = {value for c in physical for value in [c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])] if value}
+        article_urls = {str(url).rstrip('/') for c in physical for url in [c.get('url'), c.get('wikipedia_url')]
+            if url and (urlsplit(str(url)).hostname or '').endswith('.wikipedia.org')}
+
+        def source_rank(page):
+            source = page.get('source') or {}
+            if source.get('accepted_reference'):
+                return -1
+            if str(source.get('url') or '').rstrip('/') in article_urls:
+                return 0
+            if physical_ids.intersection(source.get('memory_candidate_ids') or []):
+                return 1
+            return 2
+
+        def acquisition_priority(page):
+            # An acquired article is a cheap media lead, regardless of whether
+            # any prior comparison was positive or negative. The normal reader
+            # still verifies/refetches image bytes and the common gate decides.
+            source_url = str((page.get('source') or {}).get('url') or '')
+            saved = self.service.store.cache_get('public-article-acquisition-v1:' + hashlib.sha256(source_url.encode()).hexdigest())
+            cached = False
+            if saved and saved.get('final_url') == source_url:
+                try:
+                    body = base64.b64decode(saved['body'], validate=True)
+                    cached = hashlib.sha256(body).hexdigest() == saved.get('sha256')
+                except (KeyError, TypeError, ValueError):
+                    pass
+            return (source_rank(page), int(not cached), page.get('attempts', 0))
+
+        async def acquire_page(page):
+            receipts = []
+            articles = await article_candidates(self.service, {**story, '_identity_generation': generation},
+                [page['source']], set(research.get('identity_rejected_ids') or []), receipts=receipts)
+            page['attempts'] += 1
+            page['status'] = receipts[0]['status'] if receipts else 'temporary_failure'
+            if receipts:
+                page['source']['gallery_cursor'] = receipts[0].get('gallery_cursor', 0)
+                page['source']['gallery_slide_cursor'] = receipts[0].get('gallery_slide_cursor', 0)
+                if 'static_media_delivered' in receipts[0]:
+                    page['source']['static_media_delivered'] = receipts[0]['static_media_delivered']
+            page['retry_at'] = self.service.store.now() + 15 if page['status'] != 'completed' else 0
+            for candidate in articles:
+                state['queue'].extend(self._image_entries(candidate))
+
+        # A broad gallery must not starve unread articles tied to the physical
+        # shortlist. This is acquisition order only, never identity evidence.
+        # Preserve the entire gallery and do not preempt an unknown dispatch.
+        if state['queue'] and not unsettled and int(state.get('preferred_units') or 0) < 2:
+            head = state['queue'][0]
+            preferred = [p for p in state['sources'].values() if source_rank(p) < 2
+                and p['status'] not in {'completed', 'excluded'} and p.get('retry_at', 0) <= self.service.store.now()
+                and str(p.get('source', {}).get('url') or '').rstrip('/') != str(head.get('url') or '').rstrip('/')]
+            if not head.get('reference_reuse') and preferred:
+                if not unsettled:
+                    for page in sorted(preferred, key=acquisition_priority):
+                        if read_pages >= page_budget:
+                            break
+                        read_pages += 1
+                        tail_count = len(state['queue'])
+                        await acquire_page(page)
+                        if len(state['queue']) > tail_count:
+                            state['queue'] = state['queue'][tail_count:] + state['queue'][:tail_count]
+                            record_identity_event(self.service, story['id'], 'identity_source_priority', {
+                                'generation': generation, 'reason': 'unread_shortlist_article',
+                                'gallery_frames_retained': tail_count, 'new_reference_count': len(state['queue'])-tail_count})
+                            break
+                        state['units_since_acquisition'] = 0
+        if state['queue'] and not unsettled:
+            # Bounded alternation serves other saved hypotheses as well. The
+            # whole gallery remains addressable; this is no source/image cap.
+            def queued_rank(candidate):
+                if candidate.get('reference_reuse'):
+                    return -1
+                return source_rank(state['sources'].get(candidate.get('url')) or {'source': {'url': candidate.get('url')}})
+            prefer_broad = int(state.get('preferred_units') or 0) >= 2
+            target = next((i for i, candidate in enumerate(state['queue'])
+                if (queued_rank(candidate) == 2 if prefer_broad else queued_rank(candidate) < 2)), None)
+            if target is not None:
+                state['queue'].insert(0, state['queue'].pop(target))
+            if int(state.get('units_since_acquisition') or 0) >= 2 and read_pages < page_budget:
+                due = [page for page in state['sources'].values()
+                       if page['status'] not in {'completed', 'excluded'}
+                       and page.get('retry_at', 0) <= self.service.store.now()
+                       and page.get('source', {}).get('url') != state['queue'][0].get('url')]
+                if due:
+                    page = min(due, key=lambda p: (p.get('attempts', 0), acquisition_priority(p)))
+                    tail_count = len(state['queue'])
+                    read_pages += 1
+                    await acquire_page(page)
+                    state['units_since_acquisition'] = 0
+                    if len(state['queue']) > tail_count:
+                        state['queue'] = state['queue'][tail_count:] + state['queue'][:tail_count]
         if not state['queue']:
             from .article_media import article_candidates
             query = str(args.get('query') or state['query'] or query_hint)[:180]
@@ -568,7 +694,7 @@ class LiveVisualComparisonMixin:
                     state['queue'].extend(self._image_entries(candidate))
                     state['sources'][candidate['url']] = {'status': candidate.get('enumeration_status', 'completed'),
                         'source': {'url': candidate['url'], **{key: value for key, value in
-                            candidate.get('discovery_provenance', {}).items() if key in {'gallery_cursor', 'gallery_slide_cursor'}}}, 'attempts': 1}
+                            candidate.get('discovery_provenance', {}).items() if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}}, 'attempts': 1}
             available = any(p['status'] in {'pending', 'partial', 'temporary_failure'}
                             for p in state['sources'].values())
             previous = state['searches'].get(query) or {}
@@ -589,30 +715,37 @@ class LiveVisualComparisonMixin:
             # Read the first usable page, not all 20 before showing any image.
             # Give unread URLs a turn before retrying unavailable pages. A slow
             # scheduler must not revisit its first failed four forever.
-            for page in sorted(state['sources'].values(), key=lambda item: item.get('attempts', 0)):
+            for page in sorted(state['sources'].values(), key=acquisition_priority):
                 if state['queue'] or read_pages >= page_budget:
                     break
                 if page['status'] in {'completed', 'excluded'} or page.get('retry_at', 0) > self.service.store.now():
                     continue
                 read_pages += 1
-                receipts = []
-                articles = await article_candidates(self.service, {**story, '_identity_generation': generation},
-                    [page['source']], set(research.get('identity_rejected_ids') or []), receipts=receipts)
-                page['attempts'] += 1
-                page['status'] = receipts[0]['status'] if receipts else 'temporary_failure'
-                if receipts:
-                    page['source']['gallery_cursor'] = receipts[0].get('gallery_cursor', 0)
-                    page['source']['gallery_slide_cursor'] = receipts[0].get('gallery_slide_cursor', 0)
-                page['retry_at'] = self.service.store.now() + 15 if page['status'] != 'completed' else 0
-                for candidate in articles:
-                    state['queue'].extend(self._image_entries(candidate))
+                await acquire_page(page)
             state['web_searched'] = state['searches'].get(query, {}).get('status') == 'completed'
         self._save_visual_queue(session, state)
         references, evidence, candidates = [], [], []
         # One reference beside the source keeps detail readable and the current
         # Live context bounded. Every completed image advances the UI counter.
         fetch_attempts = 0
-        while state['queue'] and len(references) < 1 and fetch_attempts < 3:
+        reference_limit = min(4, max(1, int(getattr(session, 'visual_reference_limit', 1))))
+        while state['queue'] and len(references) < reference_limit and fetch_attempts < 3 + reference_limit - 1:
+            if references:
+                # Never hold a ready first REF waiting to fill an ideal group.
+                # Add only already decoded cache entries, preferring another
+                # source. Uncached acquisition continues in the next unit.
+                from .identity_references import original_reference, thumbnail_reference
+                cache = getattr(self.service, '_identity_reference_cache', {})
+                ready = []
+                for i, item in enumerate(state['queue']):
+                    url = item['reference_image_urls'][0]
+                    keys = [url, thumbnail_reference(url), original_reference(url), 'article:' + str(item.get('url')) + ':' + url]
+                    if any(cache.get(key) and cache[key][0] > time.monotonic() and cache[key][1] for key in keys):
+                        ready.append(i)
+                if not ready:
+                    break
+                chosen = next((i for i in ready if state['queue'][i].get('url') not in {c.get('url') for c in candidates}), ready[0])
+                state['queue'].insert(0, state['queue'].pop(chosen))
             candidate = state['queue'].pop(0)
             fetch_attempts += 1
             receipts = []
@@ -623,11 +756,17 @@ class LiveVisualComparisonMixin:
                 if candidate['_fetch_attempts'] < 2:
                     state['fetch_failures'].append(candidate)
                 continue
-            if receipts[0]['model_image_sha256'] in state['seen_images']:
+            if receipts[0]['model_image_sha256'] in {*state['seen_images'], *(e['model_image_sha256'] for e in evidence)}:
                 continue
+            receipts[0].update(reference_id=candidate.get('reference_id') or next(self._image_entries(candidate))['reference_id'],
+                               label=f'REF {len(references)+1}')
+            candidate['reference_id'] = receipts[0]['reference_id']
             references.extend(images)
             evidence.extend(receipts)
             candidates.append(candidate)
+            state['units_since_acquisition'] = int(state.get('units_since_acquisition') or 0) + 1
+            state['preferred_units'] = int(state.get('preferred_units') or 0) + 1 if candidate.get('reference_reuse') or source_rank(
+                state['sources'].get(candidate.get('url')) or {'source': {'url': candidate.get('url')}}) < 2 else 0
         if not references:
             # Retry failed media on a later turn; never manufacture a verdict.
             failed = state['fetch_failures']
@@ -665,7 +804,19 @@ class LiveVisualComparisonMixin:
         comparison_id = 'comparison_' + hashlib.sha256(canonical([story['photo_sha256'], generation,
             state['control_revision'], [e['model_image_sha256'] for e in evidence]]).encode()).hexdigest()[:32]
         reply = self._visual_reply(comparison_id, candidates, identity, len(state['queue']))
+        if len(candidates) > 1:
+            reply['references'] = [{**reference, 'model_image_sha256': item['model_image_sha256'],
+                'source_url': item.get('source_url'), 'article_url': item.get('article_url')}
+                for reference, item in zip(reply['references'], evidence)]
         state['pending'] = {'id': comparison_id, 'candidates': candidates, 'evidence': evidence, 'reply': reply, 'snapshot': sheet}
+        if len(candidates) > 1:
+            from pathlib import Path
+            from .reference_image_codec import normalize_reference
+            source_mime, source_bytes = normalize_reference(Path(story['photo_path']).read_bytes())
+            state['pending']['image_parts'] = [{'label': 'SOURCE', 'mime_type': source_mime,
+                'data': base64.b64encode(source_bytes).decode('ascii')}] + [
+                {'label': f'REF {i}', 'mime_type': mime, 'data': base64.b64encode(data).decode('ascii')}
+                for i, (_cid, mime, data) in enumerate(references, 1)]
         self._save_visual_queue(session, state)
         record_identity_event(self.service, story['id'], 'identity_live_comparison_sent', {
             'generation': generation, 'image_count': len(references), 'sheet_sha256': hashlib.sha256(sheet).hexdigest(),
@@ -677,6 +828,8 @@ class LiveVisualComparisonMixin:
         pending = state.get('pending') or {}
         if not pending or args.get('comparison_id') != pending['id']:
             raise ConflictError('visual_comparison_changed', 'Группа иллюстраций уже изменилась.')
+        if len(pending['candidates']) > 1:
+            return self._record_grouped_comparison(session, command_id, args)
         status = args.get('status')
         if (status not in {'match', 'uncertain', 'mismatch'} or not isinstance(args.get('observations'), list)
                 or any(not isinstance(item, str) or not item.strip() for item in args['observations'])
@@ -684,6 +837,8 @@ class LiveVisualComparisonMixin:
             raise ConflictError('visual_comparison_invalid', 'Некорректный результат сравнения.')
         raw = {**{k: v for k, v in args.items() if not k.startswith('_')},
             '_references_sent': [c['candidate_id'] for c in pending['candidates']]}
+        if (args.get('provider_receipt') or {}).get('semantic_visual_contract') == 'observable_geometry_v1':
+            raw['_observable_geometry_required'] = True
         # A valid but low-confidence verdict is a completed comparison, not a
         # failed job. The common gate below records it as uncertain and moves
         # the same durable queue to its next reference without accepting a POI.
@@ -715,6 +870,8 @@ class LiveVisualComparisonMixin:
                 'reference_subject_observations': [str(value)[:300] for value in raw.get('reference_subject_observations', [])[:6]],
                 'alternative_candidate_ids': raw.get('alternative_candidate_ids') or [],
                 'binding_status': bound.get('status'), 'binding_reason': bound.get('reason'),
+                'shared_distinctive_geometry': raw.get('shared_distinctive_geometry'),
+                'observable_correspondences': raw.get('observable_correspondences'),
                 'uncertain_reason': bound.get('reason') or ('common_visual_acceptance_not_proved'
                     if args.get('status') == 'match' and not matched else None),
                 'references': [{'candidate_id': candidate['candidate_id'], 'url': candidate.get('url'),
@@ -765,3 +922,61 @@ class LiveVisualComparisonMixin:
             record_identity_event(self.service, session.resource_id, 'identity_finished', {
                 'generation': state['generation'], 'status': 'match', 'reference_verified': True})
         return {**result, 'story': self.service.story(session.resource_id)}
+
+    def _record_grouped_comparison(self, session, command_id, args):
+        """Apply addressed results through the pair gate; unseen items stay queued."""
+        from jsonschema import Draft202012Validator
+        from .headless_identity import grouped_verdict_schema
+        state = session.state['visual_comparison']
+        pending = state['pending']
+        catalog = {c['reference_id']: (c, e) for c, e in zip(pending['candidates'], pending['evidence'])}
+        item_schema = grouped_verdict_schema()[1]
+        if (args.get('provider_receipt') or {}).get('semantic_visual_contract') == 'observable_geometry_v1':
+            item_schema['properties'].update(shared_distinctive_geometry={'type':'boolean'},
+                observable_correspondences={'type':'array','items':{'type':'object'}})
+            item_schema['required'] += ['shared_distinctive_geometry','observable_correspondences']
+        validator = Draft202012Validator(item_schema)
+        items, duplicates = {}, set()
+        returned = args.get('reference_verdicts')
+        if not isinstance(returned, list):
+            returned = [args] if args.get('reference_id') else []
+        for item in returned:
+            if not isinstance(item, dict):
+                continue
+            ref = item.get('reference_id')
+            if ref in items:
+                duplicates.add(ref)
+            elif ref in catalog and validator.is_valid(item) and item.get('candidate_id') in {'', catalog[ref][0]['candidate_id']}:
+                items[ref] = item
+        for ref in duplicates:
+            items.pop(ref, None)
+        # Different physical hypotheses in one result need an actual
+        # clarification; processing order cannot choose the object's identity.
+        _row, research = self.service._identity_snapshot(session.resource_id)
+        from .identity_subject_binding import subject_aliases
+        aliases = subject_aliases((research.get('visual_identity') or {}).get('candidates') or [])
+        matches = {item.get('reference_subject_candidate_id') or item['candidate_id']
+                   for item in items.values() if item['status'] == 'match'}
+        ambiguous = bool(matches) and not matches.issubset(aliases.get(next(iter(matches)), matches if len(matches) == 1 else set()))
+        unseen = [c for c in pending['candidates'] if c['reference_id'] not in items]
+        # Keep all not-yet-committed frames durable between item commits. A
+        # crash or early match cannot lose the rest of a completed batch.
+        state['queue'] = pending['candidates'] + state['queue']
+        result = {'matched': False, 'continue_comparison': True}
+        for ref, item in items.items():
+            candidate, evidence = catalog[ref]
+            lease = self._visual_lease(session, expected=state)
+            state.update(lease_owner=session.id, lease_until=lease['lease_until'])
+            state['queue'] = [c for c in state['queue'] if c.get('reference_id') != ref]
+            pair_id = pending['id'] + ':' + ref
+            state['pending'] = {**pending, 'id': pair_id, 'candidates': [candidate], 'evidence': [evidence]}
+            result = self._record_place_comparison(session, command_id + ':' + ref,
+                {**item, **({'status':'uncertain'} if ambiguous and item['status'] == 'match' else {}),
+                 'comparison_id': pair_id, 'provider_receipt': args.get('provider_receipt')})
+            if result['matched']:
+                return result
+        lease = self._visual_lease(session, expected=state)
+        state.update(lease_owner=session.id, lease_until=lease['lease_until'], pending=None)
+        self._save_visual_queue(session, state)
+        return {**result, 'unreviewed_reference_count': len(unseen), 'ambiguous_subjects': ambiguous,
+                'story': self.service.story(session.resource_id)}

@@ -140,7 +140,8 @@ async def test_normal_worker_retry_releases_lease_and_resumes_same_pair_without_
     fixture.clock[0] = job['available_at']
     assert await fixture.service.run_once()
     research, job, resumed = snapshot(fixture)
-    assert job['state'] == 'retry' and job['last_error'] == 'identity_background_next_reference'
+    assert job['state'] == 'retry' and job['last_error'] is None
+    assert job['available_at'] == fixture.clock[0]  # Progress gets no failure backoff.
     assert len(resumed) == 1 and resumed[0]['attempt_id'] == attempts[0]['attempt_id']
     completed = json.loads(resumed[0]['receipt_json'])
     assert completed['phase'] == 'completed' and completed['result']['status'] == 'mismatch'
@@ -154,7 +155,6 @@ async def test_normal_worker_retry_releases_lease_and_resumes_same_pair_without_
     assert len(research['visual_search_operation']['seen_images']) == 1
     assert research['identity_progress']['images_reviewed_count'] == 1
     assert research['visual_search_operation']['lease_owner'] is None
-    assert not await fixture.service.run_once()  # Next reference is due later.
     assert snapshot(fixture)[0]['identity_progress']['images_reviewed_count'] == 1
 
 

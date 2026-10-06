@@ -104,6 +104,79 @@ def candidate_article_sources(db, candidates: list[dict[str, Any]]) -> list[dict
     return list(sources.values())
 
 
+def candidate_reference_images(db, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Indexed accepted references for exact POI bindings, never a new verdict.
+
+    Keep the original public descriptors and image addresses. A different
+    SOURCE still passes through acquisition and the current comparison gate.
+    """
+    keys = set()
+    for candidate in candidates:
+        if candidate.get('identity_eligible') is not False and candidate.get('candidate_id'):
+            keys.update(memory_keys(db, candidate))
+    if not keys:
+        return []
+    rows = db.execute("SELECT id,research_json FROM stories WHERE "
+        "json_extract(research_json,'$.visual_identity.status')='match' AND "
+        "json_extract(research_json,'$.visual_identity.visual_reference_verified')=1 AND "
+        "json_extract(research_json,'$.visual_identity.candidate_id') IN ("
+        + ','.join('?' for _ in keys) + ') ORDER BY updated_at DESC', tuple(sorted(keys)))
+    from .article_media import public_url
+    result, seen = [], set()
+    for row in rows:
+        identity = json.loads(row['research_json']).get('visual_identity') or {}
+        for evidence in identity.get('reference_evidence') or []:
+            evidence = dict(evidence)
+            article_url = public_url(evidence.get('article_url') or '')
+            image_url = public_url(evidence.get('image_url') or evidence.get('source_url') or '')
+            subject = evidence.get('subject_candidate_id', evidence.get('candidate_id'))
+            if (not article_url or not image_url or subject not in keys
+                    or not evidence.get('model_image_sha256')):
+                continue
+            key = (article_url, image_url)
+            if key in seen:
+                continue
+            from urllib.parse import urlsplit
+            title = evidence.get('article_title')
+            if not title or not evidence.get('article_source_sha256'):
+                # Reconstruct the original title from the addressed immutable
+                # article. A physical POI name must not silently change the
+                # semantic context of a valid exact SOURCE/REF cache entry.
+                cached = db.execute('SELECT value_json FROM cache WHERE key=?',
+                    ('public-article-acquisition-v1:' + hashlib.sha256(article_url.encode()).hexdigest(),)).fetchone()
+                if cached:
+                    import base64
+                    try:
+                        page = json.loads(cached[0])
+                        body = base64.b64decode(page['body'], validate=True)
+                        if (page.get('final_url') == article_url and hashlib.sha256(body).hexdigest()
+                                == page.get('sha256') and (not evidence.get('article_source_sha256')
+                                or page['sha256'] == evidence['article_source_sha256'])):
+                            from .article_media import extract_media
+                            original_title, descriptors = extract_media(body, article_url)
+                            if evidence.get('article_source_sha256'):
+                                title = title or original_title
+                            elif any(item.get('image_url') == image_url for item in descriptors):
+                                # Legacy accepted records omitted the article
+                                # hash. Recover it only from the addressed body
+                                # containing this exact public image descriptor.
+                                evidence['article_source_sha256'] = page['sha256']
+                                title = title or original_title
+                    except (KeyError, TypeError, ValueError):
+                        pass
+            if not evidence.get('article_source_sha256'):
+                continue
+            seen.add(key)
+            result.append({'candidate_id': evidence['candidate_id'],
+                'name': str(title or identity.get('candidate_name') or '')[:300],
+                'url': article_url, 'source_urls': [article_url], 'reference_image_urls': [image_url],
+                'article_media': [{**evidence, 'image_url': image_url, 'article_url': article_url}],
+                'discovery': 'wikipedia_article_media' if (urlsplit(article_url).hostname or '').endswith('.wikipedia.org') else 'web_article_media',
+                'reference_batch': True, 'reference_reuse': {'story_id': row['id'],
+                    'subject_candidate_id': subject, 'image_sha256': evidence['model_image_sha256']}})
+    return result
+
+
 def _identity_alias_values(identity: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for raw in (

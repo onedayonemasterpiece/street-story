@@ -53,6 +53,14 @@ def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
     if not isinstance(alternatives, list) or any(not isinstance(item, str) for item in alternatives):
         return False
     observations = result.get('observations')
+    if result.get('_observable_geometry_required') is True:
+        correspondences = result.get('observable_correspondences')
+        if (result.get('shared_distinctive_geometry') is not True
+                or not isinstance(correspondences, list) or not correspondences
+                or any(not isinstance(item, dict) or any(not isinstance(item.get(key), str)
+                       or not item[key].strip() for key in ('source_detail', 'reference_detail'))
+                       for item in correspondences)):
+            return False
     references_sent = result.get('_references_sent')
     if (not isinstance(observations, list) or not observations
             or any(not isinstance(item, str) or not item.strip() for item in observations)
@@ -206,8 +214,22 @@ class IdentityLifecycleMixin:
             if not visual_match(raw, candidates):
                 from .identity_discovery import recover
                 rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
-                recovery = await recover(self, {**story, 'latitude': lat if valid else None,
-                    'longitude': lon if valid else None}, transcript, candidates, rejected)
+                known_sources = []
+                if raw.get('_comparison_deferred') and candidates:
+                    from .poi_memory import candidate_article_sources, candidate_reference_images
+                    with self.store.connection() as db:
+                        known_sources = [*candidate_reference_images(db, candidates),
+                                         *candidate_article_sources(db, candidates)]
+                if known_sources:
+                    # New photos still require a new comparison. Deliver the
+                    # existing queue first; searching is not a prerequisite for
+                    # addressing an already accumulated physical POI reference.
+                    record_identity_event(self, story_id, 'identity_memory_acquisition_ready', {
+                        'generation': generation, 'source_count': len(known_sources), 'identity_proof_reused': False})
+                    recovery = None
+                else:
+                    recovery = await recover(self, {**story, 'latitude': lat if valid else None,
+                        'longitude': lon if valid else None}, transcript, candidates, rejected)
                 if recovery:
                     recovered_raw, discovered = recovery
                     recovered_has_candidate = recovered_raw.get('candidate_id') in {

@@ -204,12 +204,21 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
                     if raw in seen_urls:
                         continue
                     seen_urls.add(raw)
+                    cache_key = 'article:' + str(candidate.get('url')) + ':' + raw
+                    saved = cache.get(cache_key)
                     try:
-                        image, descriptor = await load_article_reference(client, candidate, raw)
+                        if saved and saved[0] > time.monotonic() and saved[1]:
+                            image, descriptor = saved[1], saved[3]
+                        else:
+                            image, descriptor = await load_article_reference(client, candidate, raw)
+                            cache[cache_key] = (time.monotonic() + 300, image, 'ready', descriptor)
+                            cache.move_to_end(cache_key)
+                            while len(cache) > 8:
+                                cache.popitem(last=False)
                     except (httpx.HTTPError, ValueError, OSError) as exc:
                         event('identity_reference_unavailable', {'candidate_id': cid, 'reason': type(exc).__name__})
                         continue
-                    receipt(cid, raw, image, False, descriptor)
+                    receipt(cid, raw, image, bool(saved and saved[0] > time.monotonic()), descriptor)
                     event('identity_reference_loaded', {'candidate_id': cid, 'bytes': len(image[1]), 'source_kind': 'article_media'})
                     result.append((cid, image[0], image[1]))
                     loaded_for_candidate += 1

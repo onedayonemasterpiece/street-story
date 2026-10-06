@@ -224,8 +224,7 @@ async def test_competing_physical_object_still_blocks_replayed_match(prepared):
     # reaches the same common acceptance gate and cannot be dropped by recovery.
     fixture.receipt['result']['alternative_candidate_ids'] = ['outside-original-shortlist']
     update_receipt(fixture)
-    with pytest.raises(RetryableProviderError, match='identity_background_next_reference'):
-        await HeadlessIdentity(fixture.service).run(fixture.job)
+    await HeadlessIdentity(fixture.service).run(fixture.job)
     _story, research = fixture.service._identity_snapshot(fixture.story['id'])
     assert research['visual_identity']['status'] == 'uncertain'
     assert research['visual_search_operation']['verdict_history'][-1]['matched'] is False

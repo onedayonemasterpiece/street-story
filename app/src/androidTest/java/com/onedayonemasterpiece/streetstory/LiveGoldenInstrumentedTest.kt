@@ -132,7 +132,9 @@ class LiveGoldenInstrumentedTest {
         val identityOnly = InstrumentationRegistry.getArguments().getString("identityOnly") == "true"
         val moreOnly = InstrumentationRegistry.getArguments().getString("moreOnly") == "true"
         val resumeStoryId = InstrumentationRegistry.getArguments().getString("resumeStoryId").orEmpty().trim()
-        require(resumeStoryId.isEmpty() || (Regex("story_[a-zA-Z0-9]{8,64}").matches(resumeStoryId) && !identityOnly))
+        val resumeIdentityResearch = InstrumentationRegistry.getArguments().getString("resumeIdentityResearch") == "true"
+        require(resumeStoryId.isEmpty() || Regex("story_[a-zA-Z0-9]{8,64}").matches(resumeStoryId))
+        require(!resumeIdentityResearch || (identityOnly && resumeStoryId.isNotBlank()))
         require(!identityOnly || !keepPublication)
         require(!moreOnly || (!identityOnly && !keepPublication))
         require(!keepPublication || safeAlias == "street_story_e2e_20260928_tg")
@@ -214,6 +216,37 @@ class LiveGoldenInstrumentedTest {
 
         try {
             beginStage("identity", 5L * 60 * 1000)
+            if (resumeIdentityResearch) {
+                val before = rawStory(baseUrl, token, storyId)
+                assertEquals(photoSha, before.requireString("photo_sha256"))
+                val generation = before.get("identity_generation").asInt
+                val revision = before.get("research_control_revision").asInt
+                val control = before.requireObject("research_controls").requireObject("identity")
+                require(control.get("stopped").asBoolean) { "Explicit Resume requires a stopped saved scope" }
+                assertEquals(photoSha, control.requireString("photo_sha256"))
+                assertEquals(generation, control.get("identity_generation").asInt)
+                val payload = gson.toJson(mapOf(
+                    "action" to "resume", "purpose" to "identity",
+                    "expected_photo_sha256" to photoSha,
+                    "expected_identity_generation" to generation,
+                    "expected_control_revision" to revision,
+                ))
+                // The same addressed request survives a lost response; no new job or generation is created.
+                val requestKey = "golden-resume-identity-$storyId-$generation-$revision"
+                File(root, "identity-resume-intent.json").writeText(gson.toJson(mapOf(
+                    "story_id" to storyId, "request_key" to requestKey,
+                    "photo_sha256" to photoSha, "identity_generation" to generation,
+                    "research_control_revision" to revision,
+                )))
+                val after = api.mutate(storyId, "research-control", payload, requestKey)
+                assertEquals(photoSha, after.photoSha256)
+                assertEquals(generation, after.identityGeneration)
+                require(after.researchControls["identity"]?.stopped == false)
+                evidence["identity_explicit_resume"] = mapOf(
+                    "request_key" to requestKey, "control_revision_before" to revision,
+                    "photo_sha256" to photoSha, "identity_generation" to generation,
+                )
+            }
             assertHeadlessIdentity()
             capture("01-photo-before-research", api.getStory(storyId))
             var story = pollStory(api, storyId, stageDeadline - System.currentTimeMillis(),
@@ -435,6 +468,15 @@ class LiveGoldenInstrumentedTest {
             // consume real-provider budget before image/publication acceptance.
             beginStage("visual", 8L * 60 * 1000)
             val textBeforeVisual = requireNotNull(story.draftText)
+            val visualBefore = rawStory(baseUrl, token, storyId).getAsJsonObject("visual")
+            val previousImageOperation = visualBefore?.get("operation_id")?.takeIf { !it.isJsonNull }?.asString
+            val freshFullPass = resumed == null && !identityOnly && !moreOnly
+            if (freshFullPass) {
+                require(previousImageOperation.isNullOrBlank() && story.processedImageUrl.isNullOrBlank() &&
+                    story.state != StoryStage.VISUAL_PROCESSING) {
+                    "Fresh visual stage already has an operation; observe that operation before any new request"
+                }
+            }
             val savedVisualReady = resumed != null && savedDraftReady && story.state == StoryStage.READY_TO_PUBLISH && !story.processedImageUrl.isNullOrBlank()
             evidence["visual_history_reused"] = savedVisualReady
             if (!savedVisualReady) {
@@ -462,6 +504,12 @@ class LiveGoldenInstrumentedTest {
             val imageOperation = visual.requireString("operation_id")
             val imageAsset = visual.requireString("selected_asset_ref")
             val imageSha = visual.requireString("selected_sha256")
+            if (freshFullPass) {
+                require(imageOperation != previousImageOperation)
+                evidence["fresh_visual_operation"] = true
+            }
+            assertEquals("Visual changed the selected facts", selectedFactIds.toSet(),
+                story.facts.filter { it.selected && it.evidenceSupported }.map { it.factId }.toSet())
 
             val processed = File(root, "processed.img")
             api.downloadAsset(requireNotNull(story.processedImageUrl), processed)
@@ -524,6 +572,13 @@ class LiveGoldenInstrumentedTest {
             val confirmation = requireNotNull(live.snapshot().confirmation)
             assertEquals(story.draftText, confirmation.text)
             assertEquals(listOf(safeAlias), confirmation.destinations)
+            assertEquals("Publication card changed the reviewed image", story.processedImageUrl, confirmation.imageUrl)
+            assertEquals("Publication card changed the requested time", scheduledAt.toInstant(),
+                OffsetDateTime.parse(requireNotNull(confirmation.scheduledFor)).toInstant())
+            assertEquals("Europe/Kaliningrad", confirmation.timezone)
+            evidence["confirmation_id"] = confirmation.confirmationId
+            evidence["separate_confirmation_input"] = true
+            evidence["exact_card_text_image_destination_time_review"] = true
 
             live.sendText("Подтверждаю именно показанную карточку публикации.")
             awaitAnswer(live, "publication confirmation")

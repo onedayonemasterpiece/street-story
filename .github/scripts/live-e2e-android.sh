@@ -8,8 +8,10 @@ KEEP_PUBLICATION="${LIVE_E2E_KEEP_PUBLICATION:-false}"
 IDENTITY_ONLY="${LIVE_E2E_IDENTITY_ONLY:-false}"
 MORE_ONLY="${LIVE_E2E_MORE_ONLY:-false}"
 RESUME_STORY_ID="${LIVE_E2E_RESUME_STORY_ID:-}"
+RESUME_IDENTITY_RESEARCH="${LIVE_E2E_RESUME_IDENTITY_RESEARCH:-false}"
 [[ -z "$RESUME_STORY_ID" || "$RESUME_STORY_ID" =~ ^story_[a-zA-Z0-9]{8,64}$ ]]
-[[ -z "$RESUME_STORY_ID" || "$IDENTITY_ONLY" == false ]]
+[[ "$RESUME_IDENTITY_RESEARCH" == true || "$RESUME_IDENTITY_RESEARCH" == false ]]
+[[ "$RESUME_IDENTITY_RESEARCH" != true || ( "$IDENTITY_ONLY" == true && -n "$RESUME_STORY_ID" ) ]]
 [[ "$KEEP_PUBLICATION" == true || "$KEEP_PUBLICATION" == false ]]
 [[ "$IDENTITY_ONLY" == true || "$IDENTITY_ONLY" == false ]]
 [[ "$MORE_ONLY" == true || "$MORE_ONLY" == false ]]
@@ -103,6 +105,7 @@ adb shell am instrument -w \
   -e class com.onedayonemasterpiece.streetstory.LiveGoldenInstrumentedTest \
   -e keepPublication "$KEEP_PUBLICATION" \
   -e identityOnly "$IDENTITY_ONLY" \
+  -e resumeIdentityResearch "$RESUME_IDENTITY_RESEARCH" \
   -e moreOnly "$MORE_ONLY" \
   "${resume_args[@]}" \
   "$PKG.test/androidx.test.runner.AndroidJUnitRunner" \
@@ -110,6 +113,7 @@ adb shell am instrument -w \
 # Preserve bounded evidence on failure; never export token/configuration stores.
 adb exec-out "run-as $PKG cat files/live-golden/stage-progress.json" > "$ARTIFACT_DIR/android-stage-progress.json" || true
 adb exec-out "run-as $PKG cat files/live-golden/evidence.json" > "$ARTIFACT_DIR/android-golden-evidence.json" || true
+adb exec-out "run-as $PKG cat files/live-golden/identity-resume-intent.json" > "$ARTIFACT_DIR/android-identity-resume-intent.json" || true
 mkdir -p "$ARTIFACT_DIR/stage-screenshots"
 for name in $(adb shell "run-as $PKG ls files/live-golden/screenshots" 2>/dev/null | tr -d '\r'); do
   [[ "$name" =~ ^[0-9][0-9]-[a-z-]+\.png$ ]] || continue

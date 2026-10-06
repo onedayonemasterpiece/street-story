@@ -298,6 +298,7 @@ class StreetStoryService:
             "processing": processing,
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "photo_sha256": row['photo_sha256'], "identity_generation": generation,
+            "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {
                 'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
                 'revision': int((controls.get(purpose) or {}).get('revision') or 0),
@@ -481,6 +482,9 @@ class StreetStoryService:
         purpose = body.get('purpose', 'all')
         if purpose not in {'all', 'identity', 'facts'}:
             raise InvalidStateError('research_control_invalid', 'Укажите purpose: identity, facts или all.')
+        control_revision = body.get('expected_control_revision')
+        if control_revision is not None and (type(control_revision) is not int or control_revision < 0):
+            raise InvalidStateError('research_control_invalid', 'Ревизия управления должна быть целым неотрицательным числом.')
         generation = body.get('expected_identity_generation')
         if generation is not None and (type(generation) is not int or generation < 0):
             raise InvalidStateError('research_control_invalid', 'Поколение объекта должно быть целым неотрицательным числом.')
@@ -491,7 +495,7 @@ class StreetStoryService:
                         'changed': [], 'story': self._story_repr(db, self._story_row(db, story_id))}
             operation = stop_research if body['action'] == 'stop' else resume_research
             return operation(self, story_id, purpose=purpose, expected_photo_sha256=body.get('expected_photo_sha256'),
-                             expected_identity_generation=generation, _db=db)
+                             expected_identity_generation=generation, expected_control_revision=control_revision, _db=db)
 
     async def close(self):
         researcher = getattr(self.providers, 'research', None)

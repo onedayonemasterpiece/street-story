@@ -2,10 +2,12 @@
 from __future__ import annotations
 import json
 import logging
+import asyncio
+import time
 from types import SimpleNamespace
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .service import canonical,digest,ConflictError
-from .errors import RetryableProviderError
+from .errors import RetryableProviderError, PermanentProviderError
 from .identity_telemetry import record_identity_event
 
 LOG = logging.getLogger('uvicorn.error')
@@ -16,6 +18,19 @@ VERDICT_SCHEMA = {'type':'object','properties':{
     'confidence':{'type':'number','minimum':0,'maximum':1},'observations':{'type':'array','items':{'type':'string'}},
     'alternative_candidate_ids':{'type':'array','items':{'type':'string'}}},
     'required':['status','candidate_id','confidence','observations','alternative_candidate_ids'], 'additionalProperties':False}
+
+
+def grouped_verdict_schema():
+    from copy import deepcopy
+    schema = deepcopy(VERDICT_SCHEMA)
+    item = deepcopy(VERDICT_SCHEMA)
+    item['properties']['reference_id'] = {'type': 'string'}
+    item['required'].append('reference_id')
+    # Validate each result independently at the host gate. One malformed item
+    # must not erase valid results or mark unreturned references reviewed.
+    schema['properties']['reference_verdicts'] = {'type': 'array', 'maxItems': 4, 'items': {'type': 'object'}}
+    schema['properties']['reference_id'] = {'type': 'string'}
+    return schema, item
 
 
 class HeadlessIdentity(LiveVisualComparisonMixin):
@@ -45,7 +60,29 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         scope = {'photo_sha256': story['photo_sha256'], 'generation': generation,
                  'control_revision': self._visual_control_revision(research, story['photo_sha256'], generation)}
         try:
-            await self._run_owned_unit(job, provider, story, session, scope)
+            started = time.monotonic()
+            for _ in range(4):
+                if await self._run_owned_unit(job, provider, story, session, scope):
+                    return
+                # A completed negative is progress. Yield between units so Stop
+                # and other stories can run; each next send gets fresh admission.
+                await asyncio.sleep(0)
+                current, latest = self.service._identity_snapshot(story['id'])
+                try:
+                    self._assert_visual_current(current, latest, scope)
+                except ConflictError:
+                    return
+                if (time.monotonic() - started >= 15
+                        or not (session.state.get('visual_comparison') or {}).get('queue')):
+                    break
+            # Normal continuation, without a failure count/backoff. Keep this
+            # job addressable; the worker's guarded done update cannot claim it.
+            with self.service.store.tx() as db:
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=NULL,updated_at=? "
+                           "WHERE id=? AND state='running' AND attempts=?",
+                           (self.service.store.now(), self.service.store.now(), job['id'], job['attempts']))
+            record_identity_event(self.service, story['id'], 'identity_background_progress',
+                                  {'generation': generation, 'status': 'continuing'})
         finally:
             # The awaited provider operation has exited. Preserve its durable
             # unknown/completed receipt and pending pair for ordinary resume.
@@ -85,12 +122,12 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             try:
                 self._assert_visual_current(current, latest, scope)
             except ConflictError:
-                return
+                return True
             raise
+        if unit.get('already_resolved'):
+            return True
         if unit.get('reconciled_completed'):
-            if not unit['matched']:
-                raise RetryableProviderError('identity_background_next_reference', retry_at=self.service.store.now()+3)
-            return
+            return bool(unit['matched'])
         pending = (session.state.get('visual_comparison') or {}).get('pending')
         if not pending:
             record_identity_event(self.service,story['id'],'identity_background_waiting',{
@@ -100,11 +137,26 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         try:
             self._assert_visual_current(current, latest, scope, session=session)
         except ConflictError:
-            return
-        result = await provider.visual_verdict(pending['snapshot'],{**story,'_identity_generation':generation,
-            '_identity_research_control_revision': scope['control_revision'],
-            '_research_job_id': job['id'], '_research_job_attempt': job['attempts']},
-            VERDICT_SCHEMA,canonical(pending['reply']))
+            return True
+        grouped = len(pending['candidates']) > 1
+        extra = {'_visual_image_parts': pending['image_parts'], '_visual_reference_mapping': [
+            {**reference, 'model_image_sha256': evidence['model_image_sha256'],
+             'source_url': evidence.get('source_url'), 'article_url': evidence.get('article_url')}
+            for reference, evidence in zip(pending['reply']['references'], pending['evidence'])]} if grouped else {}
+        try:
+            result = await provider.visual_verdict(pending['snapshot'],{**story, **extra, '_identity_generation':generation,
+                '_identity_research_control_revision': scope['control_revision'],
+                '_research_job_id': job['id'], '_research_job_attempt': job['attempts']},
+                grouped_verdict_schema()[0] if grouped else VERDICT_SCHEMA,canonical(pending['reply']))
+        except PermanentProviderError as exc:
+            if not grouped or str(exc) != 'research_visual_group_pair_required':
+                raise
+            state = session.state['visual_comparison']
+            state['queue'] = pending['candidates'] + state['queue']
+            state['pending'] = None
+            session.visual_reference_limit = 1
+            self._save_visual_queue(session, state)
+            return False  # Known-unsent shape reduction, never an unknown replay.
         verdict = dict(result['result'])
         session.model = result['receipt'].get('model') or result['receipt'].get('model_id') or session.model
         verdict.update(comparison_id=pending['id'],provider_receipt=result['receipt'])
@@ -117,7 +169,6 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             try:
                 self._assert_visual_current(current, latest, scope, session=session)
             except ConflictError:
-                return
+                return True
             raise
-        if not committed['matched']:
-            raise RetryableProviderError('identity_background_next_reference', retry_at=self.service.store.now()+3)
+        return bool(committed['matched'])

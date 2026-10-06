@@ -31,16 +31,18 @@ def _purposes(purpose):
     return (purpose,)
 
 
-def _scope(story, research, expected_photo_sha256, expected_identity_generation):
+def _scope(story, research, expected_photo_sha256, expected_identity_generation, expected_control_revision=None):
     generation = int(research.get('identity_generation') or 0)
     if ((expected_photo_sha256 is not None and expected_photo_sha256 != story['photo_sha256'])
-            or (expected_identity_generation is not None and expected_identity_generation != generation)):
+            or (expected_identity_generation is not None and expected_identity_generation != generation)
+            or (expected_control_revision is not None
+                and expected_control_revision != int(research.get('research_control_revision') or 0))):
         raise ConflictError('research_control_stale', 'Фото или объект изменился. Обновите состояние истории.')
     return {'photo_sha256': story['photo_sha256'], 'identity_generation': generation}
 
 
 def stop_research(service, story_id, *, purpose='all', expected_photo_sha256=None,
-                  expected_identity_generation=None, _db=None):
+                  expected_identity_generation=None, expected_control_revision=None, _db=None):
     """Fence unfinished work and retain all finished facts, drafts and cursors.
 
     The worker must fence its own state writes by claimed attempts/state. Native
@@ -50,7 +52,7 @@ def stop_research(service, story_id, *, purpose='all', expected_photo_sha256=Non
     with service.store.tx() if _db is None else nullcontext(_db) as db:
         story = service._story_row(db, story_id)
         research = json.loads(story['research_json'] or '{}')
-        scope = _scope(story, research, expected_photo_sha256, expected_identity_generation)
+        scope = _scope(story, research, expected_photo_sha256, expected_identity_generation, expected_control_revision)
         controls = research.setdefault('research_controls', {})
         changed = []
         for item in purposes:
@@ -103,15 +105,16 @@ def stop_research(service, story_id, *, purpose='all', expected_photo_sha256=Non
 
 
 def resume_research(service, story_id, *, purpose='all', expected_photo_sha256=None,
-                    expected_identity_generation=None, _db=None):
+                    expected_identity_generation=None, expected_control_revision=None, _db=None):
     """Explicitly wake only this Stop's existing jobs and frozen checkpoints."""
     purposes = _purposes(purpose)
     with service.store.tx() if _db is None else nullcontext(_db) as db:
         story = service._story_row(db, story_id)
         research = json.loads(story['research_json'] or '{}')
-        scope = _scope(story, research, expected_photo_sha256, expected_identity_generation)
+        scope = _scope(story, research, expected_photo_sha256, expected_identity_generation, expected_control_revision)
         controls = research.get('research_controls') or {}
         changed, resumed_jobs = [], []
+        epoch = int(research.get('research_control_revision') or 0) + 1
         for item in purposes:
             record = controls.get(item)
             if not isinstance(record, dict) or not record.get('stopped'):
@@ -135,11 +138,16 @@ def resume_research(service, story_id, *, purpose='all', expected_photo_sha256=N
                 if 'pending_fact_request' in research:
                     raise ConflictError('research_control_pending_changed', 'Появился другой запрос исследования; обновите состояние.')
                 research['pending_fact_request'] = record.pop('pending_fact_request')
-            record.update(stopped=False, resumed_at=now)
+            record.update(stopped=False, resumed_at=now, revision=epoch)
+            if item == 'identity':
+                visual = research.get('visual_search_operation') or {}
+                if (visual.get('photo_sha256') == scope['photo_sha256']
+                        and visual.get('generation') == scope['identity_generation']):
+                    visual.update(control_revision=epoch, lease_owner=None, lease_until=0)
             research[FLAGS[item]] = False
             changed.append(item)
         if changed:
-            research['research_control_revision'] = int(research.get('research_control_revision') or 0) + 1
+            research['research_control_revision'] = epoch
             db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                        (canonical(research), service.store.now(), story_id))
             scheduler = getattr(service, '_resume_joined_fact_request', None)
