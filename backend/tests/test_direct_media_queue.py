@@ -30,7 +30,7 @@ class Store:
         self.clock = 1000
         self.db.executescript('''
             CREATE TABLE stories(id TEXT, photo_sha256 TEXT, photo_mime_type TEXT, state TEXT,
-                research_json TEXT, updated_at REAL);
+                research_json TEXT, updated_at REAL, error_code TEXT);
             CREATE TABLE poi_aliases(namespace TEXT, normalized_value TEXT, poi_id TEXT);
             CREATE TABLE research_provider_attempts(story_id TEXT,role TEXT,receipt_json TEXT);
             CREATE TABLE live_commands(story_id TEXT,command_id TEXT,tool_name TEXT,request_digest TEXT,
@@ -50,8 +50,8 @@ class Service:
     def __init__(self, candidates):
         self.store = Store()
         research = {'identity_generation': 0, 'visual_identity': {'status': 'uncertain', 'candidates': candidates}}
-        self.store.db.execute('INSERT INTO stories VALUES(?,?,?,?,?,?)',
-            ('story_direct', 'opaque-upload-token', 'image/jpeg', 'identifying', json.dumps(research), 1))
+        self.store.db.execute('INSERT INTO stories VALUES(?,?,?,?,?,?,?)',
+            ('story_direct', 'opaque-upload-token', 'image/jpeg', 'identifying', json.dumps(research), 1, None))
         self.raw = RAW_SOURCE
     def _story_row(self, db, sid):
         return db.execute('SELECT * FROM stories WHERE id=?', (sid,)).fetchone()
