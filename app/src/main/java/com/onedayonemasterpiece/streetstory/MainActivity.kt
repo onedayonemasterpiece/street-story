@@ -607,7 +607,11 @@ class MainActivity : Activity() {
             visibility = if (draft == null) View.GONE else View.VISIBLE
         }
 
-        photoRecoveryButton?.visibility = if ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW) View.VISIBLE else View.GONE
+        photoRecoveryButton?.apply {
+            val sourceMissing = story.lastError == SOURCE_UNAVAILABLE_MESSAGE
+            text = if (sourceMissing) "Повторно открыть исходное фото" else "Выбрать оригинал с геометкой"
+            visibility = if (sourceMissing || ((story.latitude == null || story.longitude == null) && story.stage == StoryStage.NEEDS_REVIEW)) View.VISIBLE else View.GONE
+        }
         val projection = research.get(id)
         renderResearchControls(id, projection)
         renderFactsIsland(id)
@@ -904,11 +908,17 @@ class MainActivity : Activity() {
                 imported = photo
                 if (recoveryId != null) {
                     val existing = requireNotNull(store.story(recoveryId)) { "Тема уже удалена" }
-                    val server = requireNotNull(existing.serverStoryId) { "Дождитесь синхронизации темы" }
+                    val sourceMissing = existing.lastError == SOURCE_UNAVAILABLE_MESSAGE
+                    val server = existing.serverStoryId
                     val api = ApiClient(requireNotNull(config.backendUrl), requireNotNull(config.deviceToken)) { PhotoAssets.open(this, it) }
-                    val restored = api.recoverPhotoLocation(server, existing.photoSha256, photo)
-                    check(restored.id == server) { "Backend вернул другую тему" }
-                    PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { payload ->
+                    if (!sourceMissing || !server.isNullOrBlank()) {
+                        val restored = if (sourceMissing) api.createStory(existing.copy(photoPath = photo.path))
+                            else api.recoverPhotoLocation(requireNotNull(server) { "Дождитесь синхронизации темы" }, existing.photoSha256, photo)
+                        check(restored.id == server) { "Backend вернул другую тему" }
+                    }
+                    store.setPhotoSourcePath(recoveryId, photo.path)
+                    store.setStage(recoveryId, existing.stage)
+                    if (!server.isNullOrBlank()) PhotoImportTelemetry.pending(this, photo.clientStoryId)?.let { payload ->
                         runCatching { api.photoDiagnostic(server, payload) }
                     }
                     recoveryId

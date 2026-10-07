@@ -41,9 +41,10 @@ object PhotoImporter {
         val bytes = requireNotNull(input) { "Не удалось открыть выбранное фото" }.use(::readPhotoBytes)
         val exif = runCatching { ExifInterface(ByteArrayInputStream(bytes)) }.getOrNull()
         val uploadId = newPhotoUploadId()
-        // Share-sheet providers usually grant temporary access only. Read while
-        // that grant is alive and retain bytes in the existing bounded RAM store.
-        val path = if (persistent) uri.toString() else PhotoAssets.retainTemporary(bytes, uploadId)
+        // Preserve the selected URI even for a temporary share grant. Reopen it
+        // after RAM expiry when the provider still grants access; RAM is fallback.
+        val path = if (persistent) uri.toString() else if (uri.scheme == "content")
+            PhotoAssets.retainSelectedUri(uri.toString(), bytes) else PhotoAssets.retainTemporary(bytes, uploadId)
         val photo = imported(clientStoryId, path, uploadId, mime, exif)
         val gps = photo.latitude != null && photo.longitude != null
         val hasTags = exif?.getAttribute(ExifInterface.TAG_GPS_LATITUDE) != null || exif?.getAttribute(ExifInterface.TAG_GPS_LONGITUDE) != null

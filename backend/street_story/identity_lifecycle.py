@@ -78,6 +78,47 @@ def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
 
 
 class IdentityLifecycleMixin:
+    def _recover_transient_identity(self, db) -> int:
+        """Unseal old uncertain attempts only with retained outage evidence.
+
+        Reuse their original identity job and generation. Visual operation
+        receipts, leases, owner Stop and publication jobs remain authoritative.
+        """
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='live_diagnostics'").fetchone():
+            return 0
+        from .research_control import research_stopped
+        changed = 0
+        for row in db.execute("SELECT * FROM stories WHERE state='needs_review' AND error_code='visual_identity_uncertain'").fetchall():
+            research = json.loads(row['research_json'] or '{}')
+            generation = int(research.get('identity_generation') or 0)
+            if (research.get('visual_identity') or {}).get('status') != 'uncertain' or research_stopped(
+                    research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation):
+                continue
+            started = db.execute("SELECT max(created_at) FROM live_diagnostics WHERE story_id=? AND source='identity' "
+                "AND event_type='identity_started' AND json_extract(payload_json,'$.generation')=?", (row['id'], generation)).fetchone()[0]
+            if started is None or not db.execute("SELECT 1 FROM live_diagnostics WHERE story_id=? AND source='identity' "
+                "AND created_at>=? AND event_type IN ('identity_osm_unavailable','identity_wikipedia_unavailable','identity_discovery_unavailable') LIMIT 1",
+                (row['id'], started)).fetchone():
+                continue
+            resumed = db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error='identity_sources_waiting',updated_at=? "
+                "WHERE story_id=? AND kind='identity' AND state='done' AND json_extract(payload_json,'$.identity_generation')=?",
+                (self.store.now(), self.store.now(), row['id'], generation)).rowcount
+            if not resumed:
+                continue
+            research.pop('identity_attempted_generation', None)
+            research['identity_sources_waiting'] = True
+            # A failed Wikipedia fetch was previously serialized as an empty
+            # successful result. Fetch it again; keep all usable OSM candidates.
+            research.pop('wikipedia', None)
+            db.execute("UPDATE stories SET state='identifying',research_json=?,error_code='identity_sources_waiting',"
+                "error_message='Источники не ответили; поиск продолжится автоматически.',revision=revision+1,updated_at=? WHERE id=?",
+                (canonical(research), self.store.now(), row['id']))
+            import logging
+            logging.getLogger('uvicorn.error').info('street_story_identity_recovery %s', canonical({
+                'story_id': row['id'], 'generation': generation, 'reason': 'retained_provider_outage', 'jobs_resumed': resumed}))
+            changed += resumed
+        return changed
+
     def _identity_snapshot(self, story_id):
         with self.store.connection() as db:
             story = dict(self._story_row(db, story_id))
@@ -161,24 +202,28 @@ class IdentityLifecycleMixin:
             record_identity_event(self, story_id, 'identity_camera_metadata', {
                 'generation': generation, 'position_verified': position_verified, **metadata_summary(hints)})
             osm, wikipedia, candidates = {}, [], []
+            source_waits = []
             if not valid:
                 raw = {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                        'observations': ['В доступной приложению копии фото нет читаемых геометок. Выберите оригинал с разрешением на метаданные.']}
                 error = 'identity_location_missing'
             else:
                 try:
-                    osm_error = None
                     osm = prior.get('osm')
-                    if not isinstance(osm, dict) or not osm:
+                    if not isinstance(osm, dict) or not osm or osm.get('partial'):
                         try:
                             osm = await self.providers.osm.lookup(float(lat), float(lon))
                         except Exception as exc:
                             from .providers import RetryableProviderError
                             if not isinstance(exc, RetryableProviderError):
                                 raise
-                            osm_error = exc
-                            osm = {}
+                            if not isinstance(osm, dict):
+                                osm = {}
+                            source_waits.append(exc)
                             record_identity_event(self, story_id, 'identity_osm_unavailable', {'generation': generation, 'error_type': type(exc).__name__})
+                    if osm.get('partial'):
+                        from .errors import RetryableProviderError
+                        source_waits.append(RetryableProviderError('identity_osm_partial'))
                     record_identity_event(self, story_id, 'identity_osm', {'generation': generation,
                         'candidate_pool_counts': osm.get('candidate_pool_counts', {}), 'retained_count': len(osm.get('nearby') or []), 'available': bool(osm),
                         'partial': bool(osm.get('partial')), 'unavailable_buckets': osm.get('unavailable_buckets', []),
@@ -191,9 +236,9 @@ class IdentityLifecycleMixin:
                             # Wikimedia may be unavailable. Never invent visual proof;
                             # keep OSM candidates and require author confirmation then.
                             wikipedia = []
+                            from .errors import RetryableProviderError
+                            source_waits.append(RetryableProviderError('identity_wikipedia_waiting', retry_at=getattr(exc, 'retry_at', None)))
                             record_identity_event(self, story_id, 'identity_wikipedia_unavailable', {'generation': generation, 'error_type': type(exc).__name__})
-                    if osm_error is not None and not wikipedia:
-                        raise osm_error
                     record_identity_event(self, story_id, 'identity_wikipedia', {'generation': generation, 'count': len(wikipedia)})
                     excluded = set(prior.get('identity_rejected_ids') or [])
                     candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
@@ -228,8 +273,13 @@ class IdentityLifecycleMixin:
                         'generation': generation, 'source_count': len(known_sources), 'identity_proof_reused': False})
                     recovery = None
                 else:
-                    recovery = await recover(self, {**story, 'latitude': lat if valid else None,
-                        'longitude': lon if valid else None}, transcript, candidates, rejected)
+                    from .errors import RetryableProviderError
+                    try:
+                        recovery = await recover(self, {**story, 'latitude': lat if valid else None,
+                            'longitude': lon if valid else None}, transcript, candidates, rejected)
+                    except RetryableProviderError as exc:
+                        source_waits.append(exc)
+                        recovery = None
                 if recovery:
                     recovered_raw, discovered = recovery
                     recovered_has_candidate = recovered_raw.get('candidate_id') in {
@@ -262,6 +312,10 @@ class IdentityLifecycleMixin:
             catalog = {item['candidate_id']: item for item in candidates}
             selected = catalog.get(str(raw.get('candidate_id') or '')) if raw.get('status') != 'mismatch' else None
             matched = selected is not None and visual_match(raw, candidates)
+            if not matched and (raw.get('_references_rate_limited') or raw.get('_references_unavailable_ids')):
+                from .errors import RetryableProviderError
+                source_waits.append(RetryableProviderError('identity_references_waiting'))
+            waiting = bool(source_waits) and not matched
             identity = {'status': 'match' if matched else 'uncertain',
                 'candidate_id': selected['candidate_id'] if selected else None,
                 'candidate_name': selected['name'] if selected else None,
@@ -287,7 +341,19 @@ class IdentityLifecycleMixin:
                     return self._story_repr(db, current)
                 if job_id and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job_id, job_attempt)).fetchone():
                     return self._story_repr(db, current)
-                latest.update({'visual_identity': identity, 'identity_attempted_generation': generation, 'osm': osm, 'wikipedia': wikipedia, 'photo_camera_hints': binding})
+                latest.update({'visual_identity': identity, 'osm': osm, 'photo_camera_hints': binding})
+                # Keep successful discovery available to the SAME visual queue,
+                # but do not seal a generation while providers are unavailable.
+                if waiting:
+                    latest.pop('identity_attempted_generation', None)
+                    latest['identity_sources_waiting'] = True
+                    if any(str(exc).startswith('identity_wikipedia') for exc in source_waits):
+                        latest.pop('wikipedia', None)
+                    else:
+                        latest['wikipedia'] = wikipedia
+                else:
+                    latest.update(identity_attempted_generation=generation, wikipedia=wikipedia)
+                    latest.pop('identity_sources_waiting', None)
                 if matched:
                     from .poi_memory import ensure_poi_identity, hydrate_story_facts
                     now = self.store.now()
@@ -303,10 +369,17 @@ class IdentityLifecycleMixin:
                     latest['poi_reused_fact_count'] = reused
                 db.execute('UPDATE stories SET latitude=COALESCE(latitude,?),longitude=COALESCE(longitude,?),'
                     'state=?,place_name=?,research_json=?,error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?',
-                    (float(lat) if valid else None, float(lon) if valid else None, 'identity_ready' if matched else 'needs_review',
-                     identity['candidate_name'] if matched else None, canonical(latest), None if matched else error,
-                     None if matched else 'Пока недостаточно доказательств: варианты и основания доступны в теме.', self.store.now(), story_id))
+                    (float(lat) if valid else None, float(lon) if valid else None, 'identity_ready' if matched else ('identifying' if waiting else 'needs_review'),
+                     identity['candidate_name'] if matched else None, canonical(latest), None if matched else ('identity_sources_waiting' if waiting else error),
+                     None if matched else ('Источники не ответили; поиск продолжится автоматически.' if waiting else
+                         'Пока недостаточно доказательств: варианты и основания доступны в теме.'), self.store.now(), story_id))
                 result = self._story_repr(db, self._story_row(db, story_id))
+            if waiting:
+                retry_at = max([self.store.now() + 60, *(getattr(exc, 'retry_at', None) or 0 for exc in source_waits)])
+                record_identity_event(self, story_id, 'identity_sources_waiting', {'generation': generation,
+                    'candidate_count': len(candidates), 'retry_at': retry_at})
+                from .errors import RetryableProviderError
+                raise RetryableProviderError('identity_sources_waiting', retry_at=retry_at)
             record_identity_event(self, story_id, 'identity_finished', {'generation': generation, 'status': identity['status'],
                 'candidate_id': identity['candidate_id'], 'candidate_url': identity['candidate_url'], 'confidence': identity['confidence'],
                 'reference_verified': matched, 'duration_ms': round((time.monotonic() - started) * 1000)})

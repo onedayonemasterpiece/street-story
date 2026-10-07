@@ -55,6 +55,9 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             for (initial in store.stories()) {
                 try {
                     if (syncStory(store, feed, research, api, initial, capabilities)) pollAgain = true
+                } catch (exc: SourceUnavailableException) {
+                    // Initial local-only intake can also lose a temporary grant.
+                    store.setStage(initial.clientStoryId, initial.stage, SOURCE_UNAVAILABLE_MESSAGE)
                 } catch (exc: ApiException) {
                     store.setStage(initial.clientStoryId, if (exc.retryable) initial.stage else StoryStage.NEEDS_REVIEW, exc.message)
                     if (exc.retryable) pollAgain = true
@@ -76,7 +79,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         Result.success()
     }
 
-    private fun syncStory(
+    internal fun syncStory(
         store: StoryStore,
         feed: FeedProjectionStore,
         research: ResearchProjectionStore,
@@ -87,14 +90,22 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         var story = store.story(initial.clientStoryId) ?: return false
         var remote = if (story.serverStoryId.isNullOrBlank()) api.createStory(story) else api.getStory(requireNotNull(story.serverStoryId))
         validateStoryIdentity(story, remote)
+        if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
+        applyRemote(store, feed, research, story.clientStoryId, remote)
+        var sourceUnavailable = false
         val needsSource = remote.state in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING, StoryStage.VISUAL_PROCESSING) ||
             remote.researchPending["identity"] == true ||
             store.pendingOperations(story.clientStoryId).any { it.kind == "visual" }
         if (remote.sourceAvailable == false && needsSource) {
             // The backend keeps only RAM bytes. Rehydrate the same immutable upload
             // from its persisted gallery grant, preserving jobs and editorial state.
-            remote = api.createStory(story)
-            validateStoryIdentity(story, remote)
+            try {
+                remote = api.createStory(story)
+                validateStoryIdentity(story, remote)
+            } catch (exc: SourceUnavailableException) {
+                sourceUnavailable = true
+                android.util.Log.i("StreetStorySync", "source_unavailable story_id=${story.clientStoryId} state=${remote.state}")
+            }
         }
         val identityBackfillEligible = remote.visualIdentity == null && remote.researchControls["identity"]?.stopped != true &&
             remote.state !in setOf(
@@ -103,7 +114,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                 StoryStage.PUBLISHED,
                 StoryStage.SCHEDULING,
             )
-        if (identityBackfillEligible) {
+        if (identityBackfillEligible && !sourceUnavailable) {
             remote = api.ensureIdentity(remote.id)
             validateStoryIdentity(story, remote)
         }
@@ -122,6 +133,9 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         }
 
         for (operation in store.pendingOperations(story.clientStoryId)) {
+            // Only an unsent visual depends on SOURCE. Preserve its request ID
+            // and continue selection/text/voice sync while access is restored.
+            if (sourceUnavailable && operation.kind == "visual") continue
             try {
                 remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
                 validateStoryIdentity(story, remote)
@@ -154,6 +168,13 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         // The visual queue can remain active in needs_review after an uncertain
         // first result. Its authoritative job projection, not a microphone, keeps
         // readback polling alive. Explicitly paused research stops polling.
+        if (sourceUnavailable) {
+            store.setStage(story.clientStoryId, current.stage, SOURCE_UNAVAILABLE_MESSAGE)
+            // A revoked grant requires owner/provider access restoration. Do not
+            // hot-loop a visual; reopening the app or reattaching enqueues sync.
+            return (remote.researchPending["facts"] == true && remote.researchControls["facts"]?.stopped != true) ||
+                remote.state in setOf(StoryStage.QUEUED, StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING)
+        }
         return shouldPollStory(remote)
     }
 

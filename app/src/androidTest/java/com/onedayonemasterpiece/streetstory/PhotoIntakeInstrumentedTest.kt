@@ -12,6 +12,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.Assert.*
@@ -57,7 +58,9 @@ class PhotoIntakeInstrumentedTest {
         try {
             assertNotEquals(first.clientStoryId, second.clientStoryId)
             assertNotEquals(first.sha256, second.sha256)
-            assertTrue(first.path.startsWith("ram-photo:"))
+            assertEquals(photo.toString(), first.path)
+            PhotoAssets.releaseTemporary(first.path) // simulate expired RAM / fresh process
+            assertArrayEquals(PhotoGpsFixture.bytes(), PhotoAssets.open(context, first.path).use { it.readBytes() })
             assertEquals(54.70123456, first.latitude!!, 0.0000001)
             assertEquals(20.50234567, first.longitude!!, 0.0000001)
             assertArrayEquals(PhotoGpsFixture.bytes(), PhotoAssets.open(context, first.path).use { it.readBytes() })
@@ -191,24 +194,41 @@ class PhotoIntakeInstrumentedTest {
                 }
                 assertNotNull("Original-photo DocumentsUI must open", pickerUi)
                 val pickerPackage = pickerUi!!.applicationPackage
-                // Images root can show camera albums first, rather than a flat
-                // Recent list. Open the exact folder seeded by this fixture.
-                // The provider window appears before its MediaStore query has
-                // populated the albums. Wait for actual content, not an optional
-                // two-second folder lookup followed by a file lookup at the root.
-                val entry = device.wait(Until.findObject(By.pkg(pickerPackage).text(
-                    Pattern.compile("^(Camera|street-story-month-old-test\\.jpg)$"))), 10000)
-                if (entry?.text == "Camera") entry.click()
-                // The grid exposes a separate "Preview the file …" child.
-                // Select the file card itself; a substring selector hits Preview.
-                val item = device.wait(Until.findObject(By.pkg(pickerPackage).descStartsWith("street-story-month-old-test.jpg,")), 5000)
-                    ?: device.findObject(By.pkg(pickerPackage).text("street-story-month-old-test.jpg"))
+                // Read the current provider state until the actual filename
+                // appears. A text child can be visible before its clickable
+                // folder card is ready; use the card and observe navigation.
+                val filename = "street-story-month-old-test.jpg"
+                val fileCard = By.pkg(pickerPackage).descStartsWith("$filename,")
+                val fileTitle = By.pkg(pickerPackage).text(filename)
+                val imagesRoot = By.res(pickerPackage, "breadcrumb_text").text("Images").enabled(true)
+                val cameraCard = By.res(pickerPackage, "item_root").clickable(true)
+                    .hasDescendant(By.res("android", "title").text("Camera"))
+                val deadline = android.os.SystemClock.elapsedRealtime() + 20_000
+                var item: UiObject2? = null
+                while (android.os.SystemClock.elapsedRealtime() < deadline) {
+                    item = device.findObject(fileCard) ?: device.findObject(fileTitle)
+                    if (item != null) break
+                    // Recheck the Images root before every navigation attempt.
+                    // This cannot click a file/preview after the folder opens.
+                    if (device.hasObject(imagesRoot)) {
+                        device.findObject(cameraCard)?.let { folder ->
+                            folder.click()
+                            device.wait(Until.gone(imagesRoot), 1500)
+                        }
+                    }
+                    device.wait(Until.hasObject(fileCard), 250)
+                }
                 device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
                 device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
                 assertNotNull("Month-old photo must be selectable in original provider; package=$pickerPackage", item)
-                item!!.click()
+                // GridView handles file-card touches even when accessibility
+                // reports clickable=false. Click this exact card, not its grid.
+                requireNotNull(item).click()
                 val selected = waitForStory(previous)
-                assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
+                assertTrue(selected.photoPath.startsWith("content:"))
+                assertTrue("Actual DocumentsUI grant must be persistent", resolver.persistedUriPermissions.any { it.uri.toString() == selected.photoPath && it.isReadPermission })
+                PhotoAssets.releaseTemporary(selected.photoPath)
+                assertArrayEquals(PhotoGpsFixture.galleryBytes(), PhotoAssets.open(context, selected.photoPath).use { it.readBytes() })
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
                 val diagnostic = PhotoImportTelemetry.pending(context, selected.clientStoryId).orEmpty()
                 println("photo-intake original-month-old diagnostic=$diagnostic")

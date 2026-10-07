@@ -184,7 +184,7 @@ class ApiClient(private val baseUrl: String, private val token: String,
                 private val photoInput: (String) -> InputStream = { File(it).inputStream() }) {
     private val gson = Gson()
 
-    fun createStory(story: StorySnapshot): StoryWire {
+    fun createStory(story: StorySnapshot): StoryWire = photoInput(story.photoPath).use { photo ->
         val boundary = "street-story-${UUID.randomUUID()}"
         val connection = open("POST", "/v1/stories", newRequestKey("create", story.clientStoryId)).apply {
             setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
@@ -206,10 +206,10 @@ class ApiClient(private val baseUrl: String, private val token: String,
             out.writeBytes("--$boundary\r\n")
             out.writeBytes("Content-Disposition: form-data; name=\"photo\"; filename=\"photo\"\r\n")
             out.writeBytes("Content-Type: ${story.photoMimeType}\r\n\r\n")
-            photoInput(story.photoPath).use { input -> input.copyTo(out, 64 * 1024) }
+            photo.copyTo(out, 64 * 1024)
             out.writeBytes("\r\n--$boundary--\r\n")
         }
-        return readJson(connection, StoryWire::class.java)
+        readJson(connection, StoryWire::class.java)
     }
 
     fun getStory(serverStoryId: String): StoryWire = requestJson("GET", "/v1/stories/${segment(serverStoryId)}", null, null, StoryWire::class.java)

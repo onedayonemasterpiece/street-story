@@ -330,6 +330,15 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     @Synchronized
+    fun setPhotoSourcePath(id: String, path: String) {
+        require(path.startsWith("content:"))
+        writableDatabase.update("stories", ContentValues().apply {
+            put("photo_path", path)
+            put("updated_at", System.currentTimeMillis())
+        }, "client_story_id=?", arrayOf(id))
+    }
+
+    @Synchronized
     fun setStage(id: String, stage: String, error: String? = null) {
         writableDatabase.update("stories", ContentValues().apply {
             put("stage", stage)
