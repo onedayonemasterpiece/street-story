@@ -734,7 +734,9 @@ class LiveVisualComparisonMixin:
             if any(unsupported_reference_url(url) for url in candidate.get('reference_image_urls') or []):
                 continue
             reference_id = candidate.get('reference_id') or next(self._image_entries(candidate))['reference_id']
-            if reference_id in state['reviewed_reference_ids'] or reference_id in {e['reference_id'] for e in evidence}:
+            if (reference_id in state['reviewed_reference_ids']
+                    or reference_id in state.get('unavailable_reference_ids', [])
+                    or reference_id in {e['reference_id'] for e in evidence}):
                 continue
             receipts = []
             images = await self.service._candidate_reference_images([candidate], limit=1,

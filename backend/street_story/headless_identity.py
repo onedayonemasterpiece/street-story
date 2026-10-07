@@ -184,6 +184,9 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 '_research_job_id': job['id'], '_research_job_attempt': job['attempts']},
                 grouped_verdict_schema()[0] if grouped else VERDICT_SCHEMA,canonical(pending['reply']))
         except PermanentProviderError as exc:
+            if not grouped and str(exc) == 'native_vision:reference_unavailable':
+                self._retire_unsent_reference(provider, story, session, pending, scope)
+                return False
             if not grouped or str(exc) != 'research_visual_group_pair_required':
                 raise
             state = session.state['visual_comparison']
@@ -207,6 +210,38 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 return True
             raise
         return bool(committed['matched'])
+
+    def _retire_unsent_reference(self, provider, story, session, pending, scope):
+        # A failed reader is neither a model mismatch nor an unknown send.
+        # Every addressed provider must prove this exact unit was never sent.
+        observe = getattr(provider, 'visual_pair_receipts', None)
+        receipts = observe({**story, '_identity_generation': scope['generation'],
+            '_visual_reference_mapping': list(pending['reply']['references'])},
+            canonical(pending['reply'])) if callable(observe) else {}
+        safe = bool(receipts) and all(
+            receipt.get('provider_send_state') == 'not_sent'
+            and not receipt.get('turn_id')
+            and receipt.get('phase') in {'created', 'thread_created', 'failed', 'aborted'}
+            and (receipt.get('phase') != 'aborted' or receipt.get('abort_acknowledged') is True)
+            for receipt in receipts.values())
+        if not safe:
+            raise RetryableProviderError('research_visual_pair_outcome_unknown',
+                                         retry_at=self.service.store.now()+30)
+        state = session.state['visual_comparison']
+        reference_id = pending['candidates'][0]['reference_id']
+        state['unavailable_reference_ids'] = list(dict.fromkeys([
+            *state.get('unavailable_reference_ids', []), reference_id]))
+        state.setdefault('unavailable_references', []).append({
+            'comparison_id': pending['id'], 'reference_id': reference_id,
+            'reason': 'native_vision:reference_unavailable',
+            'references': pending['reply']['references'], 'provider_receipts': receipts})
+        state['queue'] = [c for c in state['queue'] if c.get('reference_id') != reference_id]
+        state['pending'] = None
+        self._save_visual_queue(session, state)
+        record_identity_event(self.service, story['id'], 'identity_reference_unavailable', {
+            'generation': scope['generation'], 'comparison_id': pending['id'],
+            'reference_id': reference_id, 'provider_send_state': 'not_sent',
+            'reason': 'reference_unavailable', 'remaining_reference_count': len(state['queue'])})
 
     def _parallel_parent_attempted(self, story, pending, generation):
         # A previously addressed grouped unit must retain its exact original
