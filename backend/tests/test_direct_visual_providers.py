@@ -130,7 +130,8 @@ async def test_opencode_direct_two_parts_roundtrip_readback_without_contact_shee
     files = [part for part in h.parts if part['type'] == 'file']
     assert len(files) == 2 and files[0]['mime'] == 'image/png'
     assert base64.b64decode(files[0]['url'].split(',', 1)[1]) == b'original-untransformed-source'
-    assert files[1]['url'] == 'https://example.org/ref-1.jpg'
+    assert files[1]['mime'] == 'image/jpeg'
+    assert base64.b64decode(files[1]['url'].split(',', 1)[1]) == b'reference-fixture-RAM'
     assert result['receipt']['image_attachment_readback_verified'] is True
     assert 'sha256' not in json.dumps(result['receipt'])
     assert not result['sources'] and len(h.sends) == 1

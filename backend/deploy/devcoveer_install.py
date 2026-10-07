@@ -1181,7 +1181,7 @@ def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
     native = caches.get('native-vision-verification-v1') or {}
     text = caches.get('research-text-verification-v1') or {}
     required = {'native-vision-verification-v1', 'research-text-verification-v1'}
-    if (not required.issubset(caches) or set(caches) - required - {'headless-vision-verification-v1'}
+    if (not required.issubset(caches) or set(caches) - required - {'headless-vision-verification-v1', 'research-vision-verification-v1'}
             or native.get('model') != 'gpt-6-luna' or native.get('transport') != 'native_codex_app_server'
             or native.get('controls') != {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}
             or not native.get('common_acceptance_verified') or text.get('gigachat_model') != 'GigaChat-2'
@@ -1202,6 +1202,21 @@ def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
                     or not model.get('qualification_sha256')
                     or proofs.get(model.get('qualification_receipt')) != model['qualification_sha256']):
                 raise DeployError('direct vision qualification incomplete')
+    optional_vision = caches.get('research-vision-verification-v1')
+    if optional_vision is not None:
+        proofs = {item['path']: item['sha256'] for item in evidence}
+        if (not isinstance(optional_vision, dict)
+                or optional_vision.get('model_id') != 'mimo-v2.6-flash-free'
+                or optional_vision.get('provider_id') != 'opencode'
+                or optional_vision.get('endpoint') != 'http://127.0.0.1:4097'
+                or optional_vision.get('positive') != 'match' or optional_vision.get('negative') != 'mismatch'
+                or optional_vision.get('pixel_transport_verified') is not True
+                or optional_vision.get('common_acceptance_verified') is not True
+                or optional_vision.get('image_transport') != 'inline_data_uri_v1'
+                or optional_vision.get('image_attachments') != 2
+                or not optional_vision.get('qualification_sha256')
+                or proofs.get(optional_vision.get('qualification_receipt')) != optional_vision['qualification_sha256']):
+            raise DeployError('OpenCode vision qualification incomplete')
     RESEARCH_DIRECTORY.mkdir(parents=True, exist_ok=True, mode=0o700)
     source = release / 'source'
     guard = source / 'backend/deploy/research_guard.mjs'
@@ -1242,6 +1257,7 @@ asyncio.run(main())
             db.execute('INSERT OR REPLACE INTO cache(key,value_json,expires_at,created_at) VALUES(?,?,?,?)',
                        (key, json.dumps(value), now + 30 * 86400, now))
     return {**attestation, 'qualified_native_model': native['model'], 'qualified_text_model': text['gigachat_model'],
+            **({'qualified_opencode_vision_model': optional_vision['model_id']} if optional_vision is not None else {}),
             **({'qualified_fact_extractors': [entry['model_id'] for entry in text['extractors']]}
                if 'extractors' in text else {}),
             'qualification_sha256': hashlib.sha256(RESEARCH_QUALIFICATION.read_bytes()).hexdigest(), 'new_inference': False}
