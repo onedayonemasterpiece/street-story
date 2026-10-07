@@ -388,6 +388,7 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
             return None
         async with semaphore:
             page_url, title, media, partial, body = raw, '', [], False, b''
+            browser_completed = False
             try:
                 page_url, mime, body = await cached_public_page(service.store, client, raw, resolver=resolver)
                 if mime not in {'text/html', 'application/xhtml+xml'}:
@@ -411,6 +412,7 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     title = rendered_title or title
                     media = list({m['image_url']: m for m in [*media, *rendered]}.values())
                     partial = getattr(rendered, 'partial', partial)
+                    browser_completed = not partial
                     source = dict(source, gallery_cursor=getattr(rendered, 'cursor', source.get('gallery_cursor', 0)),
                         gallery_slide_cursor=getattr(rendered, 'slide_cursor', source.get('gallery_slide_cursor', 0)))
                     # Bounded browser enumeration can be partial; do not assert
@@ -426,7 +428,9 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     if (url := original_reference(item['image_url']))}.values())
             if not media:
                 if receipts is not None:
-                    receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure',
+                    receipts.append({'url': raw, 'final_url': page_url,
+                        'status': 'completed' if browser_completed else 'temporary_failure',
+                        'image_count': 0,
                         'gallery_cursor': source.get('gallery_cursor', 0),
                         'gallery_slide_cursor': source.get('gallery_slide_cursor', 0),
                         'static_media_delivered': bool(source.get('static_media_delivered'))})

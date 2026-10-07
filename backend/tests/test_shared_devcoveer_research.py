@@ -73,6 +73,9 @@ class Backend:
 
 
 def setup(tmp_path, **kwargs):
+    async def public_image_loader(url):
+        return 'image/jpeg', b'reference-fixture-RAM'
+    kwargs.setdefault('public_image_loader', public_image_loader)
     h = Harness()
     h.config = scoped_research_config('mimo-v2.6-flash-free', limits=kwargs.get('limits'))
     backend = Backend(h, tmp_path)

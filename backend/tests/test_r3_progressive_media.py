@@ -24,7 +24,8 @@ class Store:
 def service(tmp_path, monkeypatch):
     monkeypatch.setattr(media, 'record_identity_event', lambda *_: None)
     monkeypatch.setattr(discovery, 'record_identity_event', lambda *_: None)
-    return SimpleNamespace(store=Store(tmp_path / 'fixture-store'))
+    return SimpleNamespace(store=Store(tmp_path / 'fixture-store'),
+        _identity_snapshot=lambda _sid: ({'photo_sha256': 'fixture-upload'}, {'identity_generation': 0}))
 
 
 async def resolver(_host):
@@ -200,7 +201,7 @@ async def test_recovery_uses_first_ready_and_returns_useful_page(service, monkey
     monkeypatch.setattr(discovery, '_retain_article_discovery', retain)
     import street_story.article_media as actual
     monkeypatch.setattr(actual, 'article_candidates', articles)
-    result, candidates = await discovery.recover(service, {'id': 'fixture'}, '', [], set())
+    result, candidates = await discovery.recover(service, {'id': 'fixture', 'photo_sha256': 'fixture-upload'}, '', [], set())
     assert result['_article_media_pending'] is True and result['status'] == 'uncertain'
     assert candidates[0]['url'] == sources[1]['url']
     assert len(retained[1][0]) == 30
@@ -224,7 +225,7 @@ async def test_recovery_does_not_hold_cached_partial_for_new_reads(service, monk
         raise AssertionError('cached partial must return before other acquisition')
     import street_story.article_media as actual
     monkeypatch.setattr(actual, 'article_candidates', forbidden)
-    result, candidates = await discovery.recover(service, {'id': 'fixture'}, '', [], set())
+    result, candidates = await discovery.recover(service, {'id': 'fixture', 'photo_sha256': 'fixture-upload'}, '', [], set())
     assert candidates == [ready] and result['_article_media_pending'] is True
     assert history['pages'][ready['url']]['status'] == 'partial'
 

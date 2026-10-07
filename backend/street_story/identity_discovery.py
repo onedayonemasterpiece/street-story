@@ -601,13 +601,23 @@ async def recover(service, story, transcript, candidates, excluded):
     if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
         return None
     record_identity_event(service, story['id'], 'identity_discovery_started', {'candidate_count': len(candidates)})
+    def already_proved():
+        current, latest = service._identity_snapshot(story['id'])
+        return (current['photo_sha256'] == story['photo_sha256']
+            and int(latest.get('identity_generation') or 0) == int(story.get('_identity_generation') or 0)
+            and (latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'})
+
     async def work():
         entity_name, wiki_queries, visual_query, commons_query = await suggest(
             service, story, transcript, candidates)
+        if already_proved():
+            return None
         from .article_media import article_candidates
         record_identity_event(service, story['id'], 'identity_web_media_started', {'generation': story.get('_identity_generation', 0)})
         sources, search_failures = [], []
         for query in story.get('_identity_article_queries') or [None]:
+            if already_proved():
+                return None
             query_story = {**story, '_identity_search_query': query} if query else story
             try:
                 sources = await web_image_sources(service, entity_name, visual_query, story=query_story)
@@ -617,6 +627,8 @@ async def recover(service, story, transcript, candidates, excluded):
                 search_failures.append(exc)
         if not sources and search_failures:
             raise search_failures[0]
+        if already_proved():
+            return None
         history = _retain_article_discovery(service, story, sources)
         pages = history.get('pages') or {}
         cached, unread = [], []
@@ -642,6 +654,8 @@ async def recover(service, story, transcript, candidates, excluded):
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                 'observations': ['Найдены иллюстрации в статьях; продолжаю визуальное сравнение в Live.'],
                 '_article_media_pending': True, '_references_sent': []}, articles
+        if already_proved():
+            return None
         web_hints = list(dict.fromkeys(plain(source.get('title'), 180) for source in sources))[:3]
         search_queries = list(dict.fromkeys([
             *wiki_queries,

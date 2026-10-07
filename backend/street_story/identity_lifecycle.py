@@ -152,7 +152,7 @@ class IdentityLifecycleMixin:
         generation = json.loads(job.get('payload_json') or '{}').get('identity_generation', 0)
         await self.resolve_identity(job['story_id'], expected_generation=generation, job_id=job['id'], job_attempt=job['attempts'])
 
-    async def resolve_identity(self, story_id: str, transcript: str = '', *, expected_generation=None, job_id=None, job_attempt=None):
+    async def resolve_identity(self, story_id: str, transcript: str = '', *, expected_generation=None, job_id=None, job_attempt=None, owner_hint=''):
         if not hasattr(self, '_identity_locks'):
             self._identity_locks = weakref.WeakValueDictionary()
         lock = self._identity_locks.setdefault(story_id, asyncio.Lock())
@@ -167,7 +167,7 @@ class IdentityLifecycleMixin:
             if expected_generation is not None and expected_generation != generation:
                 record_identity_event(self, story_id, 'identity_stale_job', {'generation': generation, 'job_generation': expected_generation})
                 return self.story(story_id)
-            if previous.get('status') in ACCEPTED or prior.get('identity_attempted_generation') == generation:
+            if previous.get('status') in ACCEPTED or (prior.get('identity_attempted_generation') == generation and not owner_hint.strip()):
                 record_identity_event(self, story_id, 'identity_reused', {'generation': generation, 'status': previous.get('status')})
                 return self.story(story_id)
             started = time.monotonic()
@@ -256,6 +256,27 @@ class IdentityLifecycleMixin:
                         'duration_ms': round((time.monotonic() - started) * 1000)})
                     raise
                 error = 'visual_identity_uncertain'
+            if raw.get('_comparison_deferred') and candidates:
+                # Publish ready references before independent article discovery waits.
+                # The dedicated visual worker keeps the same queue/operation fences.
+                with self.store.tx() as db:
+                    current = self._story_row(db, story_id)
+                    latest = json.loads(current['research_json'] or '{}')
+                    if (int(latest.get('identity_generation') or 0) != generation
+                            or current['photo_sha256'] != story['photo_sha256']
+                            or (latest.get('visual_identity') or {}).get('status') in ACCEPTED
+                            or research_stopped(latest, 'identity', photo_sha256=current['photo_sha256'], identity_generation=generation)
+                            or int(((latest.get('research_controls') or {}).get('identity') or {}).get('revision') or 0) != control_revision):
+                        return self._story_repr(db, current)
+                    if job_id and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job_id, job_attempt)).fetchone():
+                        return self._story_repr(db, current)
+                    latest['visual_identity'] = {'status': 'uncertain', 'candidates': candidates,
+                        'generation': generation, 'photo_sha256': story['photo_sha256']}
+                    latest.update(osm=osm, wikipedia=wikipedia, photo_camera_hints=binding)
+                    db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
+                self._schedule_identity_visual()
+                record_identity_event(self, story_id, 'identity_shortlist_ready', {'generation': generation,
+                    'candidate_count': len(candidates), 'discovery_may_continue': True})
             if not visual_match(raw, candidates):
                 from .identity_discovery import recover
                 rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
@@ -265,7 +286,7 @@ class IdentityLifecycleMixin:
                     with self.store.connection() as db:
                         known_sources = [*candidate_reference_images(db, candidates),
                                          *candidate_article_sources(db, candidates)]
-                if known_sources:
+                if known_sources and not owner_hint.strip():
                     # New photos still require a new comparison. Deliver the
                     # existing queue first; searching is not a prerequisite for
                     # addressing an already accumulated physical POI reference.
@@ -345,7 +366,7 @@ class IdentityLifecycleMixin:
                 if (int(latest.get('identity_generation') or 0) != generation or current['photo_sha256'] != story['photo_sha256']
                     or research_stopped(latest, 'identity', photo_sha256=current['photo_sha256'], identity_generation=generation)
                     or int(((latest.get('research_controls') or {}).get('identity') or {}).get('revision') or 0) != control_revision
-                    or (latest.get('visual_identity') or {}).get('status') == 'owner_confirmed'):
+                    or (latest.get('visual_identity') or {}).get('status') in ACCEPTED):
                     return self._story_repr(db, current)
                 if job_id and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job_id, job_attempt)).fetchone():
                     return self._story_repr(db, current)
@@ -381,6 +402,11 @@ class IdentityLifecycleMixin:
                      identity['candidate_name'] if matched else None, canonical(latest), None if matched else ('identity_sources_waiting' if waiting else error),
                      None if matched else ('Источники не ответили; поиск продолжится автоматически.' if waiting else
                          'Пока недостаточно доказательств: варианты и основания доступны в теме.'), self.store.now(), story_id))
+                if owner_hint.strip() and not matched:
+                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=NULL,updated_at=? "
+                               "WHERE story_id=? AND kind='identity_visual' AND state='done' "
+                               "AND json_extract(payload_json,'$.identity_generation')=?",
+                               (self.store.now(), self.store.now(), story_id, generation))
                 result = self._story_repr(db, self._story_row(db, story_id))
             if waiting:
                 # Revisit independent work, not the slowest provider's cooldown.

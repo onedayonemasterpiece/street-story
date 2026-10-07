@@ -6,6 +6,7 @@ checkpoints belong to the product's existing resource control/job adapters.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import re
@@ -122,7 +123,7 @@ class OpenCodeResearch:
     def __init__(self, endpoint: str, *, model_id: str, provider_id: str = 'opencode',
                  admission: Callable | None = None, checkpoint: Callable | None = None,
                  client: httpx.AsyncClient | None = None, limits: ResearchLimits | None = None,
-                 agent_names: dict[str, str] | None = None):
+                 agent_names: dict[str, str] | None = None, public_image_loader=None):
         parsed = urlsplit(endpoint)
         if (parsed.scheme != 'http' or parsed.hostname not in {'127.0.0.1', '::1'}
                 or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/')):
@@ -134,8 +135,17 @@ class OpenCodeResearch:
         self.model_id, self.provider_id = model_id, provider_id
         self.admission, self.checkpoint = admission, checkpoint
         self.client = client
+        self.public_image_loader = public_image_loader or self._load_public_image
         self.limits = limits or ResearchLimits()
         self.agents = agent_names or {role: 'street-story-' + role for role in ('search', 'vision', 'facts')}
+
+    @staticmethod
+    async def _load_public_image(url):
+        from .article_media import fetch_public
+        from .reference_image_codec import MAX_DOWNLOAD_BYTES
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+            _target, mime, raw = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+        return mime, raw
 
     async def _request(self, client, method, path, **kwargs):
         if client is None:
@@ -269,7 +279,7 @@ class OpenCodeResearch:
                 raise ResearchUnavailable('research_image_invalid') from None
         prompt += '\nResponse JSON schema (validate locally, no retries):\n' + json.dumps(schema, ensure_ascii=False)
         operation = json.dumps({'role': role, 'binding': {k: v for k, v in binding.items()
-                                    if k not in {'session_id', 'message_id', 'phase'}}, 'prompt': prompt,
+                                    if k not in {'session_id', 'message_id', 'phase', 'image_transport'}}, 'prompt': prompt,
                                 'reference_ids': [item.get('reference_id') for item in supplied['references']] if direct_parts else []}, sort_keys=True)
         logical_hash = hashlib.sha256(operation.encode()).hexdigest()
         # Match the installed client's public Identifier format. Retain the
@@ -287,6 +297,31 @@ class OpenCodeResearch:
         client = self.client
         started = time.monotonic()
         try:
+            submitted = bool(binding.get('message_id')) or receipt['phase'] in {
+                'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}
+            if direct_parts and not submitted:
+                # Installed OpenCode normalizes every image before saving the
+                # prompt and requires data URIs. Materialize public REF in RAM
+                # before admission; never rewrite historical submitted inputs.
+                resolved = []
+                try:
+                    for part in direct_parts:
+                        if part['bytes'] is None:
+                            mime, raw = await self.public_image_loader(part['url'])
+                            if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not raw:
+                                raise ValueError('reference_not_image')
+                            part = {**part, 'mime_type': mime, 'bytes': raw,
+                                'url': f'data:{mime};base64,' + base64.b64encode(raw).decode('ascii')}
+                        resolved.append(part)
+                except Exception as exc:
+                    receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
+                                   error_type=type(exc).__name__)
+                    raise ResearchUnavailable('research_image_reference_unavailable', receipt) from exc
+                direct_parts = resolved
+                receipt.update(image_transport='inline_data_uri_v1',
+                               input_image_bytes=sum(len(part['bytes']) for part in direct_parts))
+            if submitted and binding.get('image_transport') == 'inline_data_uri_v1':
+                receipt['image_transport'] = binding['image_transport']
             receipt['isolation'] = await self._attest(client, role)
             workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': receipt['input_image_bytes'],
                         'max_steps': receipt['isolation']['steps'], 'max_output_chars': self.limits.max_output_chars,
@@ -398,11 +433,37 @@ class OpenCodeResearch:
                             if direct_parts:
                                 user = next((message for message in messages if message.get('info', {}).get('id') == message_id), {})
                                 delivered = [part for part in user.get('parts', []) if part.get('type') == 'file']
-                                if (len(delivered) != len(direct_parts) or any(
-                                        actual.get('mime') != expected['mime_type'] or actual.get('url') != expected['url']
-                                        for actual, expected in zip(delivered, direct_parts))):
+                                if not submitted or binding.get('image_transport') == 'inline_data_uri_v1':
+                                    # Observe the original accepted RAM attachments.
+                                    # Re-fetching a mutable public URL cannot prove
+                                    # whether an earlier model operation was sent.
+                                    # OpenCode may mechanically resize images before
+                                    # saving them: validate its accepted file parts.
+                                    valid = len(delivered) == len(direct_parts)
+                                    for actual, expected in zip(delivered, direct_parts):
+                                        mime, url = actual.get('mime'), actual.get('url')
+                                        if (mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
+                                                or actual.get('filename') != expected['label']
+                                                or not isinstance(url, str) or not url.startswith(f'data:{mime};base64,')):
+                                            valid = False
+                                            break
+                                        try:
+                                            if not base64.b64decode(url.split(',', 1)[1], validate=True):
+                                                valid = False
+                                        except ValueError:
+                                            valid = False
+                                    labels = [part.get('text') for part in user.get('parts', []) if part.get('type') == 'text'][1:]
+                                    text_parts = [part.get('text') for part in user.get('parts', []) if part.get('type') == 'text']
+                                    valid = valid and labels == [part['label'] for part in direct_parts] and text_parts[0] == prompt
+                                else:
+                                    valid = len(delivered) == len(direct_parts) and all(
+                                        actual.get('mime') == expected['mime_type'] and actual.get('url') == expected['url']
+                                        for actual, expected in zip(delivered, direct_parts))
+                                if not valid:
                                     raise ResearchUnavailable('research_image_delivery_unverified', receipt)
                                 receipt['image_attachment_readback_verified'] = True
+                                if not submitted or binding.get('image_transport') == 'inline_data_uri_v1':
+                                    receipt['image_delivery_verification'] = 'original_server_inline_parts_labels_mime'
                             if role == 'search' and not any(call['status'] == 'completed' for call in calls):
                                 raise ResearchUnavailable('research_search_backend_failed' if calls else 'research_search_not_performed', receipt)
                             if len(json.dumps(result)) > self.limits.max_output_chars:

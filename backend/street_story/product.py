@@ -722,14 +722,16 @@ class ProductStreetStoryService(StreetStoryService):
             raise PermanentProviderError(f"VibePublish cancel operation ended in {state}")
         raise RetryableProviderError(f"VibePublish cancel operation is {state or 'pending'}")
 
-    async def run_once(self) -> bool:
+    async def run_once(self, *, claim_kind=None, exclude_kind=None) -> bool:
+        if claim_kind is not None:
+            return await super().run_once(claim_kind=claim_kind, exclude_kind=exclude_kind)
         with self.store.connection() as db:
             cancel_ready = db.execute(
                 "SELECT 1 FROM jobs WHERE kind='cancel' AND ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) LIMIT 1",
                 (self.store.now(), self.store.now()),
             ).fetchone()
         if not cancel_ready:
-            return await super().run_once()
+            return await super().run_once(exclude_kind=exclude_kind)
         now = self.store.now()
         with self.store.tx() as db:
             row = db.execute(

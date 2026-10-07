@@ -86,6 +86,9 @@ class Harness:
         self.checkpoints.append((copy.deepcopy(binding), copy.deepcopy(receipt)))
 
     def adapter(self, **kwargs):
+        async def public_image_loader(url):
+            return 'image/jpeg', b'reference-fixture-RAM'
+        kwargs.setdefault('public_image_loader', public_image_loader)
         return OpenCodeResearch('http://127.0.0.1:4097', model_id='mimo-v2.6-flash-free',
                                 client=self.client, admission=self.admission, checkpoint=self.checkpoint, **kwargs)
 
@@ -139,7 +142,7 @@ async def test_vision_inline_actual_pixels_readback_and_no_search():
     assert base64.b64decode(image['url'].split(',', 1)[1]) == sheet()
     assert result['receipt']['image_attachment_readback_verified'] is True
     assert result['receipt']['image_usage'] == 'unknown'
-    assert h.admissions[0][1]['image_bytes'] == len(sheet())
+    assert h.admissions[0][1]['image_bytes'] == len(sheet()) + len(b'reference-fixture-RAM')
     assert h.admissions[0][1]['max_steps'] == 2
     assert not result['sources']
 
