@@ -181,6 +181,7 @@ class IdentityLifecycleMixin:
                             record_identity_event(self, story_id, 'identity_osm_unavailable', {'generation': generation, 'error_type': type(exc).__name__})
                     record_identity_event(self, story_id, 'identity_osm', {'generation': generation,
                         'candidate_pool_counts': osm.get('candidate_pool_counts', {}), 'retained_count': len(osm.get('nearby') or []), 'available': bool(osm),
+                        'partial': bool(osm.get('partial')), 'unavailable_buckets': osm.get('unavailable_buckets', []),
                         'duration_ms': round((time.monotonic() - started) * 1000)})
                     wikipedia = prior.get('wikipedia')
                     if not isinstance(wikipedia, list):

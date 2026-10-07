@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import logging
 import math
+import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -43,6 +45,39 @@ class OSMClient:
         self.http = http
         self.reverse_url = "https://nominatim.openstreetmap.org/reverse"
         self.overpass_url = "https://overpass-api.de/api/interpreter"
+        self.overpass_fallback_url = "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+
+    async def _overpass_query(self, client, query: str, bucket: str, preferred: str | None, paused: set[str]):
+        endpoints = list(dict.fromkeys([preferred or self.overpass_url, self.overpass_url, self.overpass_fallback_url]))
+        last_error = None
+        for endpoint in endpoints:
+            if endpoint in paused:
+                continue
+            started = time.monotonic()
+            receipt = {"bucket": bucket, "endpoint_host": urlparse(endpoint).hostname}
+            try:
+                response = await client.post(endpoint, data={"data": query}, headers={"User-Agent": self.user_agent})
+                receipt["status_code"] = response.status_code
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict) or not isinstance(data.get("elements"), list) or data.get("remark"):
+                    raise ValueError("Incomplete Overpass response")
+                receipt.update(outcome="success", element_count=len(data["elements"]))
+                return data, endpoint
+            except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
+                last_error = exc
+                receipt.update(outcome="failed", error_type=type(exc).__name__)
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {403, 406, 429}:
+                    # Do not hit a rejecting/rate-limited host again for the
+                    # other independent query in this lookup.
+                    paused.add(endpoint)
+                # Invalid query/authentication errors are not server overload.
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in {403, 406, 408, 429} and exc.response.status_code < 500:
+                    raise RetryableProviderError("Overpass query rejected") from exc
+            finally:
+                receipt["duration_ms"] = round((time.monotonic() - started) * 1000)
+                logging.getLogger("uvicorn.error").info("osm_overpass_request %s", json.dumps(receipt))
+        raise RetryableProviderError(f"Overpass {bucket} routes unavailable") from last_error
 
     async def lookup(self, lat: float, lon: float) -> dict[str, Any]:
         key = _stable_cache_key("osm-visible-nearby-v4", [round(lat, 6), round(lon, 6)])
@@ -78,18 +113,21 @@ class OSMClient:
                 nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[name];
             );out center tags 180;"""
 
-            landmark_response = await client.post(
-                self.overpass_url,
-                content=landmark_query.encode(),
-                headers={"User-Agent": self.user_agent, "Content-Type": "text/plain; charset=utf-8"},
-            )
-            landmark_response.raise_for_status()
-            nearby_response = await client.post(
-                self.overpass_url,
-                content=nearby_query.encode(),
-                headers={"User-Agent": self.user_agent, "Content-Type": "text/plain; charset=utf-8"},
-            )
-            nearby_response.raise_for_status()
+            responses = {}
+            unavailable_buckets = []
+            preferred = None
+            paused: set[str] = set()
+            last_error = None
+            for bucket, query in (("landmark", landmark_query), ("nearby", nearby_query)):
+                try:
+                    responses[bucket], preferred = await self._overpass_query(client, query, bucket, preferred, paused)
+                except RetryableProviderError as exc:
+                    # A failed independent query must not discard useful objects
+                    # already returned by another query. Vision still proves identity.
+                    unavailable_buckets.append(bucket)
+                    last_error = exc
+            if not responses:
+                raise RetryableProviderError("OSM object queries unavailable") from last_error
 
             def normalized(raw: Any, bucket: str) -> dict[str, Any] | None:
                 if not isinstance(raw, dict):
@@ -149,14 +187,14 @@ class OSMClient:
             landmarks = [
                 item for item in (
                     normalized(raw, "landmark")
-                    for raw in landmark_response.json().get("elements", [])[:240]
+                    for raw in responses.get("landmark", {}).get("elements", [])[:240]
                 )
                 if item is not None and float(item.get("distance_m", radius_m + 1)) <= radius_m
             ]
             nearby = [
                 item for item in (
                     normalized(raw, "nearby")
-                    for raw in nearby_response.json().get("elements", [])[:180]
+                    for raw in responses.get("nearby", {}).get("elements", [])[:180]
                 )
                 if item is not None and float(item.get("distance_m", close_radius_m + 1)) <= close_radius_m
             ]
@@ -212,8 +250,12 @@ class OSMClient:
                     "landmark": len(landmarks),
                     "nearby": len(nearby),
                 },
+                "partial": bool(unavailable_buckets),
+                "unavailable_buckets": unavailable_buckets,
             }
-            self.store.cache_put(key, result, 7 * 24 * 3600)
+            # Incomplete coverage must not become a week-long negative cache.
+            if not unavailable_buckets:
+                self.store.cache_put(key, result, 7 * 24 * 3600)
             return result
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
             raise RetryableProviderError(f"OSM lookup failed: {exc}") from exc
