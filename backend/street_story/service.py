@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -115,6 +116,13 @@ class StreetStoryService:
         with self.store.tx() as db:
             recover_identity = getattr(self, '_recover_transient_identity', None)
             identity_recovered = recover_identity(db) if callable(recover_identity) else 0
+            # Upgrade existing long provider waits to the same bounded revisit
+            # cadence; provider cooldowns and unknown receipts stay unchanged.
+            identity_recovered += db.execute(
+                "UPDATE jobs SET available_at=?,updated_at=? WHERE kind='identity' AND state='retry' "
+                "AND last_error='identity_sources_waiting' AND available_at>?",
+                (now+60, now, now+60),
+            ).rowcount
             exhausted = [dict(row) for row in db.execute(
                 "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
                 (MAX_JOB_ATTEMPTS,),
@@ -313,6 +321,23 @@ class StreetStoryService:
                 "message": "Определение объекта займёт немного больше времени" if delayed else "Определяем объект",
                 "automatic_retry": True,
             }
+            waiting = db.execute(
+                "SELECT kind,state,last_error,available_at FROM jobs WHERE story_id=? "
+                "AND kind IN ('identity','identity_visual') AND state IN ('ready','running','retry')",
+                (row['id'],),
+            ).fetchall()
+            now = self.store.now()
+            if waiting and all(job['state'] == 'retry' and job['available_at'] > now for job in waiting):
+                next_retry = min(job['available_at'] for job in waiting)
+                reasons = {job['last_error'] for job in waiting}
+                if reasons.intersection({'source_unavailable', 'identity_source_unavailable'}):
+                    message = 'Восстанавливаем доступ к выбранному фото'
+                elif reasons.intersection({'visual_unit_busy', 'research_visual_outcome_unknown'}):
+                    message = 'Ожидаем результат уже начатого сравнения'
+                else:
+                    message = 'Поиск ожидает доступного источника или модели'
+                processing.update(status='processing_delayed', message=message,
+                                  retry_at=next_retry, retry_in_seconds=max(1, math.ceil(next_retry-now)))
             error = None
         elif row["state"] == "researching":
             pending = db.execute("SELECT created_at,available_at FROM jobs WHERE story_id=? AND kind IN ('research','refinement') AND state IN ('ready','running','retry') ORDER BY created_at LIMIT 1", (row["id"],)).fetchone()

@@ -67,9 +67,10 @@ class LiveVisualComparisonMixin:
     @staticmethod
     def _image_entries(candidate):
         from .article_media import public_url
+        from .identity_references import unsupported_reference_url
         for supplied in candidate.get('reference_image_urls', []):
             url = public_url(supplied)
-            if not url:
+            if not url or unsupported_reference_url(url):
                 continue
             reference_id = 'ref_' + uuid.uuid5(uuid.NAMESPACE_URL, str(candidate['candidate_id']) + '\n' + url).hex
             allowed = ('image_url', 'article_url', 'kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title')
@@ -239,6 +240,7 @@ class LiveVisualComparisonMixin:
     async def _comparison_result(self, pending, *, direct_provider=False):
         if direct_provider:
             return dict(pending['reply'])
+        pending['live_images_delivered'] = False
         # Shared Live receives a separate SOURCE and REF, rotated and fitted
         # in RAM only to respect its transport and image budget.
         if len(pending['image_parts']) != 2:
@@ -259,10 +261,15 @@ class LiveVisualComparisonMixin:
                 encoded = base64.b64encode(prepared).decode('ascii')
                 parts.append({'inlineData': {'mimeType': mime,
                     'displayName': 'SOURCE' if index == 0 else 'REF_1', 'data': encoded}})
+            pending['live_images_delivered'] = True
             return with_live_tool_parts(pending['reply'], parts)
         except (httpx.HTTPError, ValueError, OSError):
             return {**pending['reply'], 'direct_provider_required': True,
-                    'instruction': 'Original direct images exceed this Live transport or are unavailable. Wait for the same background vision operation; no verdict is available yet.'}
+                    'image_delivery_status': 'preparation_failed',
+                    'instruction': 'Image preparation for this comparison failed; SOURCE may still be available. '
+                        'This is not a visual verdict. Do not record_place_comparison or claim images were reviewed. '
+                        'The background queue owns retry/fallback; describe this as a comparison preparation failure, '
+                        'not a lost original photo.'}
 
     async def _next_visual_result(self, session, result):
         """Deliver the next bounded frame while the model owns its verdict."""
@@ -437,6 +444,38 @@ class LiveVisualComparisonMixin:
                 {'label': f'REF {i}', 'mime_type': 'image/jpeg', 'url': c['reference_image_urls'][0]}
                 for i, c in enumerate(restored['candidates'], 1)]
             state['pending'] = restored
+        if state.get('pending'):
+            from .identity_references import unsupported_reference_url
+            pending = state['pending']
+            unusable = [c for c in pending['candidates']
+                        if any(unsupported_reference_url(url) for url in c.get('reference_image_urls') or [])]
+            if unusable:
+                # A legacy descriptor can predate transport validation. It may
+                # be retired only when no inference outcome is unresolved.
+                blocked = False
+                with self.service.store.connection() as db:
+                    for attempt in db.execute("SELECT receipt_json FROM research_provider_attempts "
+                                              "WHERE story_id=? AND role LIKE 'vision%'", (story['id'],)):
+                        receipt = json.loads(attempt['receipt_json'])
+                        binding = receipt.get('binding') or {}
+                        if receipt.get('generation', binding.get('generation', generation)) != generation:
+                            continue
+                        if (receipt.get('phase') not in {'failed', 'aborted', 'completed'}
+                                or receipt.get('provider_send_state') == 'possibly_sent'
+                                or (receipt.get('phase') == 'completed'
+                                    and receipt.get('comparison_id') == pending['id'])):
+                            blocked = True
+                            break
+                if not blocked:
+                    rejected_ids = {c['reference_id'] for c in unusable}
+                    state.setdefault('skipped_reference_ids', []).extend(
+                        ref for ref in rejected_ids if ref not in state.get('skipped_reference_ids', []))
+                    state['queue'] = [c for c in pending['candidates'] if c not in unusable] + state['queue']
+                    state['pending'] = None
+                    self._save_visual_queue(session, state)
+                    record_identity_event(self.service, story['id'], 'identity_reference_skipped', {
+                        'generation': generation, 'reason': 'unsupported_reference_format',
+                        'reference_ids': sorted(rejected_ids), 'comparison_id': pending['id']})
         if state.get('pending'):
             # A pending verdict must not swallow URLs supplied by a later tool.
             self._save_visual_queue(session, state)
@@ -650,6 +689,7 @@ class LiveVisualComparisonMixin:
             state['web_searched'] = state['searches'].get(query, {}).get('status') == 'completed'
         self._save_visual_queue(session, state)
         references, evidence, candidates = [], [], []
+        from .identity_references import unsupported_reference_url
         reference_limit = min(4, max(1, int(getattr(session, 'visual_reference_limit', 1))))
         while state['queue'] and len(references) < reference_limit:
             if references:
@@ -658,6 +698,8 @@ class LiveVisualComparisonMixin:
                 if other is not None:
                     state['queue'].insert(0, state['queue'].pop(other))
             candidate = state['queue'].pop(0)
+            if any(unsupported_reference_url(url) for url in candidate.get('reference_image_urls') or []):
+                continue
             reference_id = candidate.get('reference_id') or next(self._image_entries(candidate))['reference_id']
             if reference_id in state['reviewed_reference_ids'] or reference_id in {e['reference_id'] for e in evidence}:
                 continue
@@ -739,6 +781,9 @@ class LiveVisualComparisonMixin:
         pending = state.get('pending') or {}
         if not pending or args.get('comparison_id') != pending['id']:
             raise ConflictError('visual_comparison_changed', 'Группа иллюстраций уже изменилась.')
+        if pending.get('live_images_delivered') is False and not session.id.startswith('headless:'):
+            raise ConflictError('visual_images_not_delivered',
+                                'Изображения не переданы модели; фоновая проверка продолжит работу.')
         if len(pending['candidates']) > 1:
             return self._record_grouped_comparison(session, command_id, args)
         status = args.get('status')

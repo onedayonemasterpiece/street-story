@@ -375,7 +375,10 @@ class IdentityLifecycleMixin:
                          'Пока недостаточно доказательств: варианты и основания доступны в теме.'), self.store.now(), story_id))
                 result = self._story_repr(db, self._story_row(db, story_id))
             if waiting:
-                retry_at = max([self.store.now() + 60, *(getattr(exc, 'retry_at', None) or 0 for exc in source_waits)])
+                # Revisit independent work, not the slowest provider's cooldown.
+                # Each provider keeps its own admission/cooldown; this cannot
+                # resend an unknown visual operation or bypass quota controls.
+                retry_at = self.store.now() + 60
                 record_identity_event(self, story_id, 'identity_sources_waiting', {'generation': generation,
                     'candidate_count': len(candidates), 'retry_at': retry_at})
                 from .errors import RetryableProviderError

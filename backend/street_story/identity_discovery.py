@@ -58,6 +58,11 @@ async def suggest(service, story, transcript, candidates):
         'неизвестное название. Фото может показывать только часть объекта. '
         'entity_name — короткое наиболее вероятное название именно сооружения/объекта по-русски; '
         'название города, района или общий тип здания не подходит. '
+        'Для исторических зданий Калининградской области полезен дополнительный интернет-запрос '
+        'с адресом или названием и словом prussia39, например «улица номер дома prussia39». '
+        'Используй только адрес, подтверждённый доступными данными; не выдумывай его. '
+        'Это дополнительный источник статей/фотографий, а не обязательная Wikipedia-статья '
+        'и не доказательство identity без сравнения SOURCE и REF. '
         'Верни до двух коротких запросов для русской Википедии по наиболее вероятным собственным именам. '
         'visual_query обязателен: это отдельный поисковый запрос только по реально видимым физическим признакам '
         '(материал, форма башни/крыши, часы, окна, декор, надписи) плюс region_hint; не вставляй туда entity_name. '
@@ -483,11 +488,19 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     google = getattr(service.providers.gemini, 'discover_article_urls', None)
     if callable(google):
         routes.append(('google', lambda: asyncio.wait_for(google(query), timeout=45)))
+    public_search = getattr(service.providers.gemini, '_public_web_search', None)
+    if callable(public_search):
+        # Existing URL/snippet discovery needs neither model quota nor another
+        # framework. Acquired articles and vision still supply identity proof.
+        routes.append(('public_web', lambda: asyncio.wait_for(public_search(query), timeout=15)))
     for provider, call in routes:
         try:
             result = await call()
             sources = (result.get('sources') or []) if isinstance(result, dict) else (getattr(result, 'grounding_sources', None) or [])
             if sources:
+                if story:
+                    record_identity_event(service, story['id'], 'identity_search_route_ready', {
+                        'provider': provider, 'source_count': len(sources)})
                 return sources
         except Exception as exc:
             failures.append(exc)
@@ -496,7 +509,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                     'provider': provider, 'code': getattr(exc, 'code', type(exc).__name__),
                     'retry_at': getattr(exc, 'retry_at', None)})
     if failures:
-        retry = [exc.retry_at for exc in failures if getattr(exc, 'retry_at', None)]
+        retry = [getattr(exc, 'retry_at', None) or service.store.now() + 30 for exc in failures]
         raise GeminiUnavailable(min(retry) if retry else service.store.now() + 30, 'all_article_search_routes_unavailable')
     if not routes:
         raise RetryableProviderError('article_url_discovery_not_configured')

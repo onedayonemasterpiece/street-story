@@ -232,7 +232,7 @@ class GeminiKeyPool:
                                (until, utilization, self.clock(), key_id, self.model))
 
     def event(self, event: str, operation: str, key_id: str | None = None, **fields):
-        record = {'event': 'gemini.'+event, 'operation': operation, **fields}
+        record = {'event': 'gemini.'+event, 'operation': operation, 'model': self.model, **fields}
         if key_id:
             record.update(key_id=key_id[:12], slot=self.ids.index(key_id)+1)
         logger.info('%s', json.dumps(record, sort_keys=True))

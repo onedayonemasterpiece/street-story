@@ -198,3 +198,7 @@ background backfill in the existing queue. Initial identity marks its visual
 continuation as interactive; the scheduler admits these before background
 portions. FIFO within each priority and existing due/lease checks remain intact.
 A running unit finishes under its existing lease; it is not preempted.
+
+### Regional article search: Prussia39
+
+Owner-requested search hint (2026-10-07): for historical buildings in the Kaliningrad region, let the model add ordinary internet queries such as `address prussia39` alongside other article searches. Derive the address from available location/source evidence; do not guess it. Prussia39 pages may provide source-backed historical facts and occasionally reference photographs. Do not add a deterministic site crawler, a special POI catalog or hardcoded building identification. The example supplied by the owner is https://www.prussia39.ru/sight/index.php?sid=3875; it is a search/source hint, not a fixture proving automatic identity.

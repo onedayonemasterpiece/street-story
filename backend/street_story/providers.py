@@ -794,6 +794,8 @@ class GeminiClient:
             self.research_routes.append((model, model_pool, model_quota, GeminiExecutor(model_pool)))
         web_search_models = tuple(dict.fromkeys((
             settings.gemini_web_search_model,
+            settings.gemini_model,
+            settings.gemini_fallback_model,
             settings.gemini_web_search_tertiary_model,
         )))
         self.web_search_routes = []
@@ -3133,7 +3135,8 @@ class GeminiClient:
                     self.last_article_discovery_failure = receipt
                     self.article_discovery_failures = [*getattr(self, 'article_discovery_failures', [])[-5:], receipt]
                     import logging
-                    logging.getLogger(__name__).info('article_api_search_failed %s', json.dumps(receipt))
+                    logging.getLogger('uvicorn.error.street_story.gemini').info(
+                        'article_api_search_failed %s', json.dumps(receipt))
                     raise
                 sources = {}
                 for candidate in getattr(response, 'candidates', []) or []:

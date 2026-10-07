@@ -275,8 +275,14 @@ class ProductResearchAdapter:
                 and prior_failure.get('wait_scope') == wait_scope):
             raise RetryableProviderError(prior_failure['code'], retry_at=research_retry_at(
                 prior_failure['code'], self.service.store.now(), self.service.store.now()+3600))
-        for health_key in (() if readback else (route_key, quota_key)):
+        # A reservation that does not fit the remaining local daily budget
+        # says nothing about a smaller independent frozen unit. Provider429
+        # still has model-wide scope; keep unknown-send readback exempt.
+        workload_key = 'research-workload-health:' + route_key + ':' + binding['request_id']
+        for health_key in (() if readback else (route_key, quota_key, workload_key)):
             health = self.service.store.cache_get(health_key) or {}
+            if health_key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET':
+                continue  # Legacy blanket reservation refusal, not provider quota.
             resumed_probe = (health.get('category') == 'RESOURCE_DAILY_BUDGET'
                 and prior_failure.get('wait_scope') != wait_scope
                 and (int(binding.get('control_revision', 0)) > 0
@@ -320,9 +326,9 @@ class ProductResearchAdapter:
                     self.service.store.now()+max(3, getattr(exc, 'retry_after_ms', 30000)/1000))
                 self._record_route_failure(binding, role, code, retry_at, wait_scope=wait_scope,
                     requires_binding_change=code.lower().endswith('binding_changed'))
-                # Per-binding/minute-capacity refusals may leave another smaller
-                # workload healthy. Cache only shared daily/configuration waits.
-                health_key = quota_key if code == 'RESOURCE_DAILY_BUDGET' else route_key if code in {
+                # Local budget admission refused this exact logical workload.
+                # Another unit still goes through normal shared admission.
+                health_key = workload_key if code == 'RESOURCE_DAILY_BUDGET' else route_key if code in {
                     'RESOURCE_CONTROL_UNAVAILABLE', 'RESOURCE_POLICY_UNAVAILABLE', 'RESOURCE_UNAVAILABLE'} else None
                 if health_key:
                     self.service.store.cache_put(health_key, {'category':code,'retry_at':retry_at},
@@ -350,6 +356,10 @@ class ProductResearchAdapter:
         unit = canonical([query,story.get('_research_run_id')])
         history = self.search_history(story)
         capsule = canonical({'query': query, 'purpose': 'facts' if '_fact_research_control_revision' in story else 'identity',
+                             'regional_search_hint': 'Для исторических зданий Калининградской области '
+                                 'попробуй дополнительный запрос «адрес или название prussia39». '
+                                 'Адрес должен следовать из доступных данных. Prussia39 может быть '
+                                 'источником статьи и иногда фото; не исключай остальные источники.',
                              'research_history': history,
                              'visual_evidence_context': story.get('_identity_query_context', {})})
         return await self.run(story, 'search', unit, lambda binding: self.client.search_articles(capsule, binding))
@@ -482,8 +492,9 @@ class ProductResearchAdapter:
                     client.endpoint, client.model_id, getattr(client, 'directory', None),
                     getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
                 quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
-                route['retry_at'] = max((self.service.store.cache_get(key) or {}).get('retry_at', 0)
-                                        for key in (route_key, quota_key))
+                healths = [(key, self.service.store.cache_get(key) or {}) for key in (route_key, quota_key)]
+                route['retry_at'] = max((health.get('retry_at', 0) for key, health in healths
+                    if not (key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET')), default=0)
                 route['available'] = route['qualified'] and route['retry_at'] <= self.service.store.now()
         return routes
 
