@@ -330,6 +330,7 @@ class LiveVisualComparisonMixin:
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
                 'url': c.get('url'), 'distance_m': c.get('distance_m'),
+                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name') if key in c},
                 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
                 for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
                 and not str(c.get('candidate_id', '')).startswith('web:')][:32],
@@ -441,6 +442,8 @@ class LiveVisualComparisonMixin:
         # quiet-browser reader before advancing to broad API discovery.
         from urllib.parse import urlsplit
         for candidate in identity.get('candidates', []):
+            if not reference_eligible(candidate):
+                continue
             url = str(candidate.get('url') or '')
             if candidate.get('reference_image_urls') and (urlsplit(url).hostname or '').endswith('.wikipedia.org'):
                 state['sources'].setdefault(url, {'source': {'url': url, 'candidate_id': candidate['candidate_id']},

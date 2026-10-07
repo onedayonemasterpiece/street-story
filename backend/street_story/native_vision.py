@@ -17,6 +17,8 @@ from copy import deepcopy
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
+
 from jsonschema import Draft202012Validator
 
 from .errors import PermanentProviderError, RetryableProviderError
@@ -221,6 +223,20 @@ class NativeVisionProvider:
                     part['bytes'] = data
                     url = f'data:{mime};base64,{base64.b64encode(data).decode("ascii")}'
                 input_parts.extend([{'type': 'text', 'text': part['label']}, {'type': 'image', 'url': url}])
+        except httpx.TransportError as exc:
+            # A public REF download is before Native admission/turn submission.
+            # Reject only this unsent reference, not the POI or independent peers.
+            logger.warning('native_visual_reference_unavailable story_id=%s attempt_id=%s comparison_id=%s phase=%s submitted=%s error_type=%s',
+                story['id'], binding.get('attempt_id'), receipt['comparison_id'], receipt['phase'], submitted, type(exc).__name__)
+            if submitted:
+                # Reconstructing inputs failed; it says nothing about the saved
+                # turn. Preserve its original durable receipt and send fence.
+                raise RetryableProviderError('native_reference_readback_waiting', retry_at=self.service.store.now() + 60) from exc
+            receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
+                error_type='PermanentProviderError', reference_error_type=type(exc).__name__,
+                error_code='native_vision:reference_unavailable')
+            await self._save(binding, receipt)
+            raise PermanentProviderError('native_vision:reference_unavailable') from exc
         except BaseException:
             if not submitted:
                 receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True)
