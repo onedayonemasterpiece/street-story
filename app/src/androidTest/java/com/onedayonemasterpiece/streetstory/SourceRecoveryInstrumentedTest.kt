@@ -73,6 +73,9 @@ class SourceRecoveryInstrumentedTest {
             }
             start()
         }
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
         try {
             store.createStory(imported)
             store.setServerIdentity(id, serverId)
@@ -128,6 +131,7 @@ class SourceRecoveryInstrumentedTest {
             PhotoImportTelemetry.pending(context, id)?.let { PhotoImportTelemetry.acknowledge(context, id, it) }
             PhotoAssets.releaseTemporary(imported.path)
             server.shutdown()
+            config.backendUrl = priorBackend
         }
     }
 }
