@@ -381,7 +381,7 @@ class ProductResearchAdapter:
             research = json.loads(row['research_json'] or '{}')
             for attempt in db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role='search' ORDER BY updated_at", (story['id'],)):
                 receipt = json.loads(attempt['receipt_json'] or '{}')
-                for source in receipt.get('sources') or []:
+                for source in [*(receipt.get('discovered_sources') or []), *(receipt.get('sources') or [])]:
                     if isinstance(source, dict) and source.get('url'):
                         found[source['url']] = {'url': source['url'], 'title': source.get('title', '')}
                 queries.extend(call['query'] for call in receipt.get('search_calls') or [] if call.get('query'))

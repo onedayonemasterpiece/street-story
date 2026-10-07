@@ -43,6 +43,21 @@ def queries_from(payload):
     return entity, queries, visual_query, plain(commons, 180) if isinstance(commons, str) else ''
 
 
+def _map_query_context(story, candidates):
+    context = dict(story.get('_identity_search_context') or {})
+    # Addresses identify their mapped entry only. Present every supplied anchor,
+    # including address nodes absent from the physical building shortlist.
+    anchors = []
+    for item in [*(context.get('nearby') or []), *candidates]:
+        if not item.get('map_address') or item.get('identity_eligible') is False:
+            continue
+        anchor = {key: item[key] for key in ('candidate_id', 'map_address', 'map_coordinates', 'distance_m') if key in item}
+        if anchor not in anchors:
+            anchors.append(anchor)
+    context['nearby_address_hypotheses'] = anchors
+    return context
+
+
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
     schema = {'type': 'object', 'properties': {
@@ -50,7 +65,7 @@ async def suggest(service, story, transcript, candidates):
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
         'visual_query': {'type': 'string'},
         'commons_query': {'type': 'string'},
-        'article_queries': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query']}
+        'article_queries': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query', 'article_queries']}
     source_bytes = service._source_photo_bytes(story['id'])
     source_mime = story.get('photo_mime_type') or 'image/jpeg'
     prompt = (
@@ -65,7 +80,13 @@ async def suggest(service, story, transcript, candidates):
         'Используй только адрес, подтверждённый доступными данными; не выдумывай его. '
         'Это дополнительный источник статей/фотографий, а не обязательная Wikipedia-статья '
         'и не доказательство identity без сравнения SOURCE и REF. '
-        'article_queries — до трёх обычных интернет-запросов для статей и фотографий. '
+        'article_queries — до трёх готовых буквальных интернет-запросов для статей с современными внешними фотографиями. '
+        'Включай прямо в запрос слова о современном фасаде, внешнем виде или фото здания с улицы, '
+        'чтобы поиск по одному адресу не уходил в интерьеры квартир, номера гостиниц и карты. '
+        'nearby_address_hypotheses — полный список переданных реальных соседних адресных якорей, '
+        'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
+        'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
+        'или видимым признакам; не расходуй весь план на одну догадку и её повтор с prussia39. '
         'SOURCE — современный снимок: для визуального сравнения ищи современные фотографии '
         'нынешнего здания, фасада и адреса. Историческое здание не означает историческую фотографию. '
         'Не направляй этот поиск в общие довоенные фотоархивы и не подменяй Калининград Кёнигсбергом. '
@@ -92,7 +113,7 @@ async def suggest(service, story, transcript, candidates):
         json.dumps({'region_hint': REGION_HINT,
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
                         'camera_alignment', 'map_address', 'map_coordinates', 'road_name') if key in x} for x in candidates[:16]],
-                    'location_search_context': story.get('_identity_search_context', {}),
+                    'location_search_context': _map_query_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
                     'author_context': transcript[:1500]}, ensure_ascii=False))
@@ -110,7 +131,13 @@ async def suggest(service, story, transcript, candidates):
         queries = payload.get('article_queries') if isinstance(payload, dict) else None
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:3] if isinstance(queries, list) else []
-        return queries_from(payload)
+        result = queries_from(payload)
+        # The independent feature query is already model-owned. Keep it as an
+        # ordinary web alternative instead of abandoning it after an address
+        # guess yields any gallery; existing bounded turns/early proof still apply.
+        if result[2] and result[2] not in story['_identity_article_queries']:
+            story['_identity_article_queries'].append(result[2])
+        return result
     routes = getattr(gemini, 'research_routes', None)
     if not routes:
         return await gemini.executor.execute('grounded_research', call)
@@ -793,7 +820,9 @@ async def recover(service, story, transcript, candidates, excluded):
             if page.get('status') not in {'completed', 'excluded'}:
                 unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
                     if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}})
-        unread.sort(key=lambda source: pages.get(source['url'], {}).get('attempts', 0))
+        from .live_visual_comparison import _article_acquisition_rank
+        unread.sort(key=lambda source: (pages.get(source['url'], {}).get('attempts', 0),
+                                        _article_acquisition_rank(source)))
         if cached:
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                 'observations': ['Сохранённые иллюстрации готовы для визуального сравнения.'],

@@ -87,7 +87,7 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
     assert 'house_number' not in supplied['map_address']
     assert supplied['map_coordinates']['provenance'] == 'osm.center'
     assert [item['road_name'] for item in contexts[0]['location_search_context']['nearby']] == ['First Road', 'Second Road']
-    assert story['_identity_article_queries'] == ['First Road brick building', 'Second Road brick building']
+    assert story['_identity_article_queries'] == ['First Road brick building', 'Second Road brick building', 'brick building']
     assert contents_seen[0][0].inline_data.data == b'fixture-source'
     assert 'address' not in story  # no model search hint becomes confirmed subject data
 

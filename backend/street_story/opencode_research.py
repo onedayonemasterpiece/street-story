@@ -9,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -18,6 +19,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+
+LOG = logging.getLogger(__name__)
 
 
 class ResearchUnavailable(RuntimeError):
@@ -40,8 +43,29 @@ class ResearchLimits:
     max_image_bytes: int = 2 * 1024 * 1024
 
 
-SEARCH_SCHEMA = {'type': 'object', 'properties': {'summary': {'type': 'string', 'maxLength': 2000}},
-                 'required': ['summary'], 'additionalProperties': False}
+SEARCH_SCHEMA = {'type': 'object', 'properties': {
+    'summary': {'type': 'string', 'maxLength': 2000},
+    'selected_sources': {'type': 'array', 'items': {'type': 'object', 'properties': {
+        'url': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 400}},
+        'required': ['url', 'reason'], 'additionalProperties': False}}},
+    'required': ['summary', 'selected_sources'], 'additionalProperties': False}
+
+
+def selected_search_sources(sources, result):
+    """A model may choose tool-observed URLs; it cannot create provenance."""
+    observed = {source['url']: source for source in sources}
+    chosen, rejected, seen = [], 0, set()
+    for item in result.get('selected_sources', []):
+        url = _public_article_url(item['url'])
+        if url not in observed:
+            rejected += 1
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        chosen.append({**observed[url], 'source_selection_reason': item['reason']})
+    return chosen, rejected
+
 DISABLED_TOOLS = ('bash', 'read', 'edit', 'write', 'apply_patch', 'glob', 'grep', 'list', 'task', 'question',
                   'webfetch', 'skill', 'lsp', 'todowrite', 'todoread')
 
@@ -534,6 +558,22 @@ class OpenCodeResearch:
                                 raise ResearchUnavailable('research_search_backend_failed' if calls else 'research_search_not_performed', receipt)
                             if len(json.dumps(result)) > self.limits.max_output_chars:
                                 raise ResearchUnavailable('research_output_too_large', receipt)
+                            if role == 'search':
+                                discovered = sources
+                                if 'selected_sources' in result:
+                                    sources, rejected = selected_search_sources(discovered, result)
+                                    selection_status = 'model_selected'
+                                elif binding.get('purpose') == 'identity':
+                                    sources, rejected, selection_status = [], 0, 'selection_unavailable'
+                                else:
+                                    sources, rejected, selection_status = discovered, 0, 'legacy_discovery'
+                                receipt.update(discovered_sources=discovered, sources=sources,
+                                    source_selection={'status': selection_status, 'discovered_count': len(discovered),
+                                        'selected_count': len(sources), 'unobserved_count': rejected})
+                                LOG.info('street_story_search_selection story_id=%s attempt_id=%s purpose=%s '
+                                         'status=%s discovered=%s selected=%s unobserved=%s',
+                                         binding.get('story_id'), binding.get('attempt_id'), binding.get('purpose'),
+                                         selection_status, len(discovered), len(sources), rejected)
                             receipt.update({'phase': 'completed', 'elapsed_ms': round((time.monotonic() - started) * 1000),
                                             'assistant_message_id': info.get('id'), 'result': result})
                             await self._checkpoint(binding, receipt)
@@ -581,11 +621,17 @@ class OpenCodeResearch:
                 'time': info.get('time'), 'finish': info.get('finish'), 'image_tokens': 'unknown'}
 
     async def search_articles(self, query, binding):
-        prompt = ('Use websearch to find concrete public articles/gallery pages relevant to the photo identity hypotheses. '
-                  'Do not fetch pages or identify the photo from a title. Broaden searches toward missing evidence/aspects. '
-                  'Reuse the supplied research history. Prioritize new sources; completed_for_scope sources need no repeat search. '
-                  'Found but unfinished sources remain useful; a new scope may reuse a previously read page. '
-                  'The product reads actual websearch tool URLs. Return a short summary JSON. Hypotheses/query:\n' + str(query))
+        prompt = ('Use websearch to find concrete public articles relevant to the supplied purpose and hypotheses. '
+                  'Do not fetch pages or identify the photo from a title. '
+                  'Reuse the supplied research history; completed_for_scope sources need no repeat search. '
+                  'Return summary and selected_sources in useful reading order. Choose only exact URLs observed '
+                  'in completed websearch output, with a short reason based on its title/snippet and the query context. '
+                  'For identity, choose sources plausibly showing the present-day exterior of the nearby object; '
+                  'omit apartment/hotel interiors, broad maps/directories and unrelated locations or historical-photo '
+                  'collections. An address match alone is not enough. If results are irrelevant, refine the search '
+                  'using the supplied alternatives, or return an empty selection. '
+                  'For facts, choose relevant source-backed articles about the confirmed subject, including historical material. '
+                  'This choice is acquisition guidance only, never proof of identity or facts. Hypotheses/query:\n' + str(query))
         return await self._run('search', prompt, binding, SEARCH_SCHEMA)
 
     async def compare_image(self, snapshot, binding, jsonschema, context=''):

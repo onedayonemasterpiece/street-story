@@ -32,6 +32,7 @@ MAX_PAGE_BYTES = 2 * 1024 * 1024
 CHROME = re.compile(r'(?:^|[\s_/-])(?:ad|ads|advert\w*|banner|logo\w*|icon|avatar|footer|header|sidebar|related|recommend\w*|cookie|social|share|tracking|poster-item|interest-slider|content-right|contact|similar|widget)(?:$|[\s_/-])', re.I)
 CONTENT = re.compile(r'(?:article|entry-content|post-content|news-detail|detail|articleBody|description|gallery|photo|content_container|mw-parser-output)', re.I)
 _PAGE_ACQUISITION_LOCKS = weakref.WeakKeyDictionary()
+_BROWSER_LOCKS = weakref.WeakKeyDictionary()
 
 
 def public_url(raw: str) -> str | None:
@@ -231,13 +232,21 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
                 descriptor.update(local_context(node, root))
             media.append(descriptor)
 
+    def publisher_chrome(node):
+        if node.name in {'nav', 'aside', 'header', 'footer'}:
+            return True
+        # Global theme/layout classes do not turn the article body into chrome.
+        # Exclude actual nested banners, logos, related cards and navigation.
+        if node.name in {'html', 'body', 'main'} or node.get('role') == 'main':
+            return False
+        return bool(CHROME.search(' '.join([str(node.get('id', '')), *node.get('class', [])])))
+
     for root in roots:
         for image in root.find_all('img'):
             ancestors = [image, *list(image.parents)]
             if any(id(node) in collection_ids for node in ancestors):
                 continue
-            if any(node.name in {'nav', 'aside', 'header', 'footer'} or CHROME.search(
-                    ' '.join([str(node.get('id', '')), *node.get('class', [])])) for node in ancestors):
+            if any(publisher_chrome(node) for node in ancestors):
                 continue
             try:
                 if any(0 < int(image.get(key, 0)) < 160 for key in ('width', 'height')):
@@ -273,8 +282,8 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
             add(image.get('data-original') or image.get('data-src') or image.get('data-lazy-src')
                 or image.get('src'), 'article_img', alt, node=image, root=root)
         for node in ([root] if root.has_attr('style') else []) + root.select('[style]'):
-            if not CONTENT.search(' '.join(node.get('class', []))) or any(CHROME.search(
-                    ' '.join([str(p.get('id', '')), *p.get('class', [])])) for p in [node, *node.parents]):
+            if not CONTENT.search(' '.join(node.get('class', []))) or any(
+                    publisher_chrome(p) for p in [node, *node.parents]):
                 continue
             for raw in re.findall(r'url\([\'"]?([^\)\'"]+)', node.get('style', '')):
                 add(raw, 'article_gallery_background', node=node, root=root)
@@ -307,6 +316,16 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
 
 @asynccontextmanager
 async def article_browser(page_url: str):
+    # Public article reads stay parallel; Chromium is the memory-heavy reserve.
+    loop = asyncio.get_running_loop()
+    lock = _BROWSER_LOCKS.setdefault(loop, asyncio.Lock())
+    async with lock:
+        async with _article_browser(page_url) as page:
+            yield page
+
+
+@asynccontextmanager
+async def _article_browser(page_url: str):
     """Quiet browser with a managed disposable profile and public-only routing."""
     from playwright.async_api import async_playwright
     if not public_url(page_url):
