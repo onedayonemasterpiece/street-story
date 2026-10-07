@@ -28,6 +28,15 @@ def test_chosen_reference_success_removes_obsolete_warning():
     assert 'проверен' in refs['label']
 
 
+def test_partial_osm_candidates_remain_visible_with_accurate_warning():
+    state = advance({}, 'identity_osm', {'available': True, 'partial': True, 'retained_count': 15}, 1)
+    step = next(s for s in state['steps'] if s['key'] == 'map')
+    assert state['map_count'] == 15 and step['status'] == 'warning'
+    assert '15' in step['label'] and 'недоступна' not in step['label']
+    old = {'steps': [{'key': 'map', 'label': 'Карта временно недоступна; проверяю Википедию', 'status': 'warning'}]}
+    assert 'Карта временно недоступна' not in current_projection(old)['steps'][0]['label']
+
+
 def test_uncertainty_is_not_an_order_to_name_the_object():
     for candidate in (None, 'wiki:1'):
         state = advance({}, 'identity_finished', {'status': 'uncertain', 'candidate_id': candidate}, 1)

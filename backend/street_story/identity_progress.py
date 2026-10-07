@@ -8,6 +8,7 @@ def current_projection(previous: dict, identity: dict | None = None) -> dict:
     labels = {
         'Найден вероятный вариант · подтвердите объект': 'Найден вероятный вариант · пока недостаточно доказательств',
         'Объект пока не подтверждён · уточните место': 'Объект пока не определён · доказательств недостаточно',
+        'Карта временно недоступна; проверяю Википедию': 'Поиск объектов OSM не ответил; проверяю другие источники',
     }
     result['steps'] = [dict(step, label=labels.get(step.get('label'), step.get('label', '')))
                        for step in result.get('steps', []) if isinstance(step, dict)]
@@ -42,11 +43,13 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
     elif event == 'identity_osm' and fields.get('available') is not False:
         counts = fields.get('candidate_pool_counts') or {}
         progress['map_count'] = int(fields.get('retained_count', 0))
-        step('map', f"Карта: {progress['map_count']} кандидатов после отбора", 'done')
+        partial = bool(fields.get('partial'))
+        step('map', (f"OSM: {progress['map_count']} кандидатов · часть поиска не ответила" if partial else
+                     f"Карта: {progress['map_count']} кандидатов после отбора"), 'warning' if partial else 'done')
         progress['map_pool_counts'] = {key:int(counts.get(key, 0)) for key in ('landmark','nearby')}
         step('wiki', 'Ищу статьи и эталонные фотографии', 'working')
     elif event == 'identity_osm_unavailable':
-        step('map', 'Карта временно недоступна; проверяю Википедию', 'warning')
+        step('map', 'Поиск объектов OSM не ответил; проверяю другие источники', 'warning')
     elif event == 'identity_wikipedia':
         progress['wiki_count'] = int(fields.get('count', 0))
         step('wiki', f"Википедия: {progress['wiki_count']} статей рядом", 'done')
