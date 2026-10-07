@@ -16,6 +16,8 @@ public final class PhotoIntakeFixtureProvider extends ContentProvider {
     @Override public int update(Uri uri, ContentValues values, String selection, String[] args) { throw new UnsupportedOperationException(); }
     @Override public int delete(Uri uri, String selection, String[] args) { throw new UnsupportedOperationException(); }
     @Override public ParcelFileDescriptor openFile(Uri uri, String mode) throws java.io.FileNotFoundException {
+        if ("/revoked".equals(uri.getPath())) throw new SecurityException("Fixture grant revoked");
+        if ("/missing".equals(uri.getPath())) throw new java.io.FileNotFoundException("Fixture original no longer available");
         if (!"r".equals(mode)) throw new java.io.FileNotFoundException("Read-only fixture");
         final ParcelFileDescriptor[] pipe;
         try { pipe = ParcelFileDescriptor.createPipe(); }

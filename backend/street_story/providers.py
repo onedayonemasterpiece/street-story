@@ -87,13 +87,29 @@ class OSMClient:
         own = self.http is None
         client = self.http or httpx.AsyncClient(timeout=20, headers={"User-Agent": self.user_agent})
         try:
-            reverse_response = await client.get(
-                self.reverse_url,
-                params={"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1, "namedetails": 1},
-                headers={"User-Agent": self.user_agent},
-            )
-            reverse_response.raise_for_status()
-            reverse = reverse_response.json()
+            unavailable_buckets = []
+            reverse = {}
+            reverse_started = time.monotonic()
+            receipt = {"bucket": "reverse", "endpoint_host": urlparse(self.reverse_url).hostname}
+            try:
+                reverse_response = await client.get(
+                    self.reverse_url,
+                    params={"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1, "namedetails": 1},
+                    headers={"User-Agent": self.user_agent},
+                )
+                receipt["status_code"] = reverse_response.status_code
+                reverse_response.raise_for_status()
+                reverse = reverse_response.json()
+                if not isinstance(reverse, dict) or reverse.get("error"):
+                    raise ValueError("Incomplete Nominatim response")
+                receipt["outcome"] = "success"
+            except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
+                reverse = {}
+                unavailable_buckets.append("reverse")
+                receipt.update(outcome="failed", error_type=type(exc).__name__)
+            finally:
+                receipt["duration_ms"] = round((time.monotonic() - reverse_started) * 1000)
+                logging.getLogger("uvicorn.error").info("osm_reverse_request %s", json.dumps(receipt))
             radius_m = 600
             close_radius_m = 160
             landmark_query = f"""[out:json][timeout:12];(
@@ -114,7 +130,6 @@ class OSMClient:
             );out center tags 180;"""
 
             responses = {}
-            unavailable_buckets = []
             preferred = None
             paused: set[str] = set()
             last_error = None

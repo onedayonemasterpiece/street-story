@@ -9,8 +9,13 @@ import androidx.core.content.ContextCompat
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
+import java.io.IOException
 
-/** URI grants survive restart; image bytes are never copied into app storage. */
+internal const val SOURCE_UNAVAILABLE_MESSAGE = "Исходное фото недоступно · тема, факты и выбор сохранены. Откройте оригинал повторно."
+internal class SourceUnavailableException(cause: Throwable? = null) : IOException(SOURCE_UNAVAILABLE_MESSAGE, cause)
+
+/** Persisted grants survive restart; nonpersistable provider URIs are retained
+ * for as long as their original grant remains valid. No image copies on disk. */
 internal object PhotoAssets {
     private const val PREFIX = "ram-photo:"
     private const val MAX_CACHE_BYTES = 64 * 1024 * 1024
@@ -26,6 +31,13 @@ internal object PhotoAssets {
         val path = PREFIX + id
         temporary[path] = Entry(bytes, System.currentTimeMillis() + TTL_MS)
         return path
+    }
+
+    @Synchronized fun retainSelectedUri(uri: String, bytes: ByteArray): String {
+        require(uri.startsWith("content:"))
+        val path = retainTemporary(bytes)
+        temporary[uri] = requireNotNull(temporary.remove(path))
+        return uri
     }
 
     @Synchronized fun releaseTemporary(path: String) { temporary.remove(path) }
@@ -47,19 +59,30 @@ internal object PhotoAssets {
     fun open(context: Context, path: String): InputStream {
         if (path.startsWith(PREFIX)) return synchronized(this) {
             evictExpired()
-            ByteArrayInputStream(requireNotNull(temporary[path]) { "Временное изображение уже недоступно" }.bytes)
+            ByteArrayInputStream(temporary[path]?.bytes ?: throw SourceUnavailableException())
         }
         val uri = Uri.parse(path)
         if (uri.scheme == "content") {
-            val resolver = context.contentResolver
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                val mediaUri = if (uri.authority == "media") uri else runCatching { MediaStore.getMediaUri(context, uri) }.getOrNull()
-                if (mediaUri != null) {
-                    runCatching { resolver.openInputStream(MediaStore.setRequireOriginal(mediaUri)) }.getOrNull()?.let { return it }
+            try {
+                val resolver = context.contentResolver
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    val mediaUri = if (uri.authority == "media") uri else runCatching { MediaStore.getMediaUri(context, uri) }.getOrNull()
+                    if (mediaUri != null) {
+                        runCatching { resolver.openInputStream(MediaStore.setRequireOriginal(mediaUri)) }.getOrNull()?.let { return it }
+                    }
                 }
+                return resolver.openInputStream(uri) ?: throw SourceUnavailableException()
+            } catch (exc: Exception) {
+                if (exc !is IOException && exc !is SecurityException && exc !is IllegalArgumentException) throw exc
+                synchronized(this) {
+                    evictExpired()
+                    temporary[path]?.let { return ByteArrayInputStream(it.bytes) }
+                }
+                throw SourceUnavailableException(exc)
             }
-            return requireNotNull(resolver.openInputStream(uri)) { "Не удалось открыть выбранное фото" }
         }
-        return File(if (uri.scheme == "file") requireNotNull(uri.path) else path).inputStream()
+        try {
+            return File(if (uri.scheme == "file") requireNotNull(uri.path) else path).inputStream()
+        } catch (exc: IOException) { throw SourceUnavailableException(exc) }
     }
 }

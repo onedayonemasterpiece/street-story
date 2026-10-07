@@ -101,6 +101,9 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'working')
     elif event == 'identity_failed':
         step('retry', f"Источник не ответил · попытка {progress.get('attempt', 1)}", 'warning')
+    elif event == 'identity_sources_waiting':
+        progress['finished'] = False
+        step('retry', 'Источники не ответили · повторю поиск автоматически', 'working')
     elif event == 'identity_owner_confirmed':
         step('result', 'Объект явно подтверждён автором', 'done')
         progress['finished'] = True

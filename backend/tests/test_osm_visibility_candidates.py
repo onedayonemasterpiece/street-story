@@ -245,3 +245,31 @@ async def test_rate_limited_host_is_not_retried_for_other_bucket(tmp_path):
         with pytest.raises(RetryableProviderError):
             await osm.lookup(54.7000, 20.5000)
     assert calls == ["overpass-api.de", "maps.mail.ru"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["503", "timeout", "malformed"])
+async def test_reverse_failure_does_not_block_objects_and_recovers_without_sticky_cache(tmp_path, failure):
+    reverse_down = True
+    calls = []
+
+    async def handler(request):
+        calls.append(request)
+        if request.method == "GET":
+            if reverse_down:
+                if failure == "timeout":
+                    raise httpx.ReadTimeout("reverse offline", request=request)
+                return httpx.Response(503) if failure == "503" else httpx.Response(200, json=[])
+            return reverse_response()
+        return object_response(100)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        osm = OSMClient(Store(tmp_path / "db.sqlite3"), "StreetStory tests", client)
+        partial = await osm.lookup(54.7000, 20.5000)
+        assert [item["id"] for item in partial["nearby"]] == [100]
+        assert partial["partial"] and partial["unavailable_buckets"] == ["reverse"]
+        assert len(calls) == 3
+        reverse_down = False
+        complete = await osm.lookup(54.7000, 20.5000)
+        assert not complete["partial"] and complete["reverse"]["osm_id"] == 1
+        assert len(calls) == 6

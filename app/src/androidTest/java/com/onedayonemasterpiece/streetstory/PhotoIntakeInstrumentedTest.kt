@@ -57,7 +57,9 @@ class PhotoIntakeInstrumentedTest {
         try {
             assertNotEquals(first.clientStoryId, second.clientStoryId)
             assertNotEquals(first.sha256, second.sha256)
-            assertTrue(first.path.startsWith("ram-photo:"))
+            assertEquals(photo.toString(), first.path)
+            PhotoAssets.releaseTemporary(first.path) // simulate expired RAM / fresh process
+            assertArrayEquals(PhotoGpsFixture.bytes(), PhotoAssets.open(context, first.path).use { it.readBytes() })
             assertEquals(54.70123456, first.latitude!!, 0.0000001)
             assertEquals(20.50234567, first.longitude!!, 0.0000001)
             assertArrayEquals(PhotoGpsFixture.bytes(), PhotoAssets.open(context, first.path).use { it.readBytes() })
@@ -208,7 +210,10 @@ class PhotoIntakeInstrumentedTest {
                 assertNotNull("Month-old photo must be selectable in original provider; package=$pickerPackage", item)
                 item!!.click()
                 val selected = waitForStory(previous)
-                assertTrue(selected.photoPath.startsWith("content:") || selected.photoPath.startsWith("ram-photo:"))
+                assertTrue(selected.photoPath.startsWith("content:"))
+                assertTrue("Actual DocumentsUI grant must be persistent", resolver.persistedUriPermissions.any { it.uri.toString() == selected.photoPath && it.isReadPermission })
+                PhotoAssets.releaseTemporary(selected.photoPath)
+                assertArrayEquals(PhotoGpsFixture.bytes(), PhotoAssets.open(context, selected.photoPath).use { it.readBytes() })
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
                 val diagnostic = PhotoImportTelemetry.pending(context, selected.clientStoryId).orEmpty()
                 println("photo-intake original-month-old diagnostic=$diagnostic")

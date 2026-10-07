@@ -17,7 +17,7 @@ from .gemini import GeminiUnavailable
 from .identity_candidate_policy import wikipedia_identity_eligible
 from .identity_telemetry import record_identity_event
 from .identity_references import canonical_reference, original_reference
-from .providers import WIKIPEDIA_USER_AGENT, PermanentProviderError
+from .providers import WIKIPEDIA_USER_AGENT, PermanentProviderError, RetryableProviderError
 
 WIKI = 'https://ru.wikipedia.org/w/api.php'
 COMMONS = 'https://commons.wikimedia.org/w/api.php'
@@ -303,14 +303,16 @@ def merge_candidates(candidates, entity_name):
     return merged
 
 
-async def category_candidates(service, client, searches, excluded, entity_name):
+async def category_candidates(service, client, searches, excluded, entity_name, *, failures=None):
     category_pages = {}
     for query in list(dict.fromkeys(value for value in searches if value))[:4]:
         try:
             pages = await api(service, client, COMMONS, {
                 'generator': 'search', 'gsrsearch': query, 'gsrnamespace': 14,
                 'gsrlimit': 3, 'prop': 'categoryinfo'})
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as exc:
+            if failures is not None:
+                failures.append(exc)
             continue
         for page in pages:
             title = str(page.get('title') or '')
@@ -326,7 +328,9 @@ async def category_candidates(service, client, searches, excluded, entity_name):
                 'generator': 'categorymembers', 'gcmtitle': title, 'gcmtype': 'file',
                 'gcmlimit': 6, 'prop': 'imageinfo|categories', 'cllimit': 30,
                 'iiprop': 'url|extmetadata', 'iiurlwidth': 1280})
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as exc:
+            if failures is not None:
+                failures.append(exc)
             continue
         refs = list(dict.fromkeys(url for page in files for url in image_urls(page)))[:6]
         if not refs:
@@ -353,6 +357,7 @@ async def category_candidates(service, client, searches, excluded, entity_name):
 
 
 async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_name=''):
+    failures = []
     async with httpx.AsyncClient(timeout=10, follow_redirects=False,
             headers={'User-Agent': WIKIPEDIA_USER_AGENT}) as client:
         jobs = [api(service, client, WIKI, {
@@ -363,6 +368,8 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
         responses = await asyncio.gather(*jobs, return_exceptions=True)
         pages = {}
         for response in responses:
+            if isinstance(response, Exception):
+                failures.append(response)
             if isinstance(response, list):
                 for page in sorted(response, key=lambda item: item.get('index', 100)):
                     if page.get('pageid') and not page.get('missing'):
@@ -378,7 +385,7 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
             'iiprop': 'url|extmetadata', 'iiurlwidth': 1280}) if titles else []
         by_title = {page.get('title'): page for page in image_pages if page.get('imageinfo')}
         candidates = await category_candidates(
-            service, client, [commons_query, *wiki_queries, entity_name], excluded, entity_name)
+            service, client, [commons_query, *wiki_queries, entity_name], excluded, entity_name, failures=failures)
         for page in selected:
             cid = f"wiki:{page['pageid']}"
             if cid in excluded:
@@ -415,7 +422,8 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
                     'generator': 'search', 'gsrsearch': commons_query, 'gsrnamespace': 6,
                     'gsrlimit': 5, 'prop': 'imageinfo|categories', 'cllimit': 30,
                     'iiprop': 'url|extmetadata', 'iiurlwidth': 1280})
-            except (httpx.HTTPError, ValueError):
+            except (httpx.HTTPError, ValueError) as exc:
+                failures.append(exc)
                 commons_pages = []
             for page in sorted(commons_pages, key=lambda item: item.get('index', 100))[:5]:
                 cid = f"commons:{page.get('pageid')}"
@@ -433,6 +441,8 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
                     'entity_keys': _entity_keys(page, commons_query),
                     'discovery': 'commons_text_search'})
         from .identity_entity_aliases import enrich_entity_links
+        if not candidates and failures:
+            raise RetryableProviderError('identity_discovery_sources_waiting') from failures[0]
         return merge_candidates(enrich_entity_links(candidates, {}, selected), entity_name)[:10]
 
 
@@ -618,4 +628,6 @@ async def recover(service, story, transcript, candidates, excluded):
         return await asyncio.wait_for(work(), timeout=240)
     except Exception as exc:
         record_identity_event(service, story['id'], 'identity_discovery_unavailable', {'error_type': type(exc).__name__})
+        if isinstance(exc, (RetryableProviderError, GeminiUnavailable, httpx.HTTPError, TimeoutError, ValueError)):
+            raise RetryableProviderError('identity_discovery_waiting', retry_at=getattr(exc, 'retry_at', None)) from exc
         return None

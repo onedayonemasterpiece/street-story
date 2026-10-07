@@ -113,11 +113,13 @@ class StreetStoryService:
     def recover_jobs(self) -> int:
         now = self.store.now()
         with self.store.tx() as db:
+            recover_identity = getattr(self, '_recover_transient_identity', None)
+            identity_recovered = recover_identity(db) if callable(recover_identity) else 0
             exhausted = [dict(row) for row in db.execute(
                 "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
                 (MAX_JOB_ATTEMPTS,),
             )]
-            changed = 0
+            changed = identity_recovered
             for job in exhausted:
                 if job['kind'] in {'research', 'refinement'}:
                     row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
