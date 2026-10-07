@@ -6,6 +6,7 @@ lazy and reused; no OpenCode server, credential copy or independent queue.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 import logging
@@ -83,13 +84,48 @@ def native_rpc_error(exc):
     if type(exc).__name__ != 'NativeAppServerError':
         return None
     code = getattr(exc, 'code', None)
+    message = safe_rpc_message(exc)
     if not isinstance(code, int) or isinstance(code, bool):
-        return {'response_received': True, 'category': 'unclassified_rpc_error'}
+        return {'response_received': True, 'category': 'unclassified_rpc_error', 'message': message}
     categories = {-32600: 'invalid_request', -32601: 'method_not_found',
                   -32602: 'invalid_params'}
     return {'response_received': True, 'code': code,
             'category': categories.get(code, 'unclassified_rpc_error'),
-            'turn_rejected': code in categories}
+            'turn_rejected': code in categories, 'message': message}
+
+
+def safe_rpc_message(exc):
+    """Retain bounded diagnostic wording without credentials or image/payload URLs."""
+    message = str(exc)[:8192]
+    def redact_data(value):
+        nonlocal message
+        if isinstance(value, dict):
+            for item in value.values():
+                redact_data(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value[:32]:
+                redact_data(item)
+        elif isinstance(value, str) and len(value) >= 4:
+            message = message.replace(value, '[redacted]')
+    redact_data(getattr(exc, 'data', None))
+    message = re.sub(r'data:[^\s\"\'<>]+', '[image data redacted]', message, flags=re.IGNORECASE)
+    message = re.sub(r'https?://[^\s\"\'<>]+', '[URL redacted]', message, flags=re.IGNORECASE)
+    message = re.sub(r'(?i)\bbearer\s+[^\s,;]+', 'Bearer [redacted]', message)
+    message = re.sub(r'(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|credential|secret|password)\s*[=:]\s*[^\s,;]+',
+                     r'\1=[redacted]', message)
+    return message[:512]
+
+
+async def native_public_image(url):
+    """Existing public DNS/redirect reader, RAM only; Codex requires inline images."""
+    import httpx
+    from .article_media import fetch_public
+    from .reference_image_codec import MAX_DOWNLOAD_BYTES
+    async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+        _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+    if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
+        raise PermanentProviderError('native_vision:reference_not_image')
+    return mime, data
 
 
 def platform_client():
@@ -114,9 +150,10 @@ def platform_client():
 
 
 class NativeVisionProvider:
-    def __init__(self, service, *, admission, checkpoint, client_factory=platform_client, permission=None):
+    def __init__(self, service, *, admission, checkpoint, client_factory=platform_client, permission=None, public_image_loader=native_public_image):
         self.service, self.admission, self.checkpoint = service, admission, checkpoint
         self.client_factory, self.client = client_factory, None
+        self.public_image_loader = public_image_loader
         self.permission = permission or NativeQuotaPermission(service.store)
         self.timeout, self.poll_seconds = 120, 1
 
@@ -156,10 +193,28 @@ class NativeVisionProvider:
                    'comparison_id': supplied.get('comparison_id'), 'usage': {'cost': 'unknown'}}
         if binding.get('quota_permission'):
             receipt['quota_permission'] = dict(binding['quota_permission'])
+        submitted = bool(receipt['turn_id']) or receipt['phase'] in {'prompt_intent', 'submitted', 'unknown'}
+        # Historical uncertain attempts retain their original URL input for
+        # readback. New operations inline public bytes before any provider send.
+        inline = not submitted or binding.get('image_transport') == 'inline_data_uri_v1'
         input_parts = [{'type': 'text', 'text': prompt}]
-        for part in image_parts:
-            input_parts.extend([{'type': 'text', 'text': part['label']},
-                                {'type': 'image', 'url': part['url']}])
+        try:
+            for part in image_parts:
+                url = part['url']
+                if inline and part['bytes'] is None:
+                    mime, data = await self.public_image_loader(url)
+                    if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
+                        raise PermanentProviderError('native_vision:reference_not_image')
+                    part['bytes'] = data
+                    url = f'data:{mime};base64,{base64.b64encode(data).decode("ascii")}'
+                input_parts.extend([{'type': 'text', 'text': part['label']}, {'type': 'image', 'url': url}])
+        except BaseException:
+            if not submitted:
+                receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True)
+                await self._save(binding, receipt)
+            raise
+        if inline:
+            receipt['image_transport'] = 'inline_data_uri_v1'
         cwd = str(self.service.settings.data_dir)
 
         def input_verified(turn):
@@ -174,7 +229,6 @@ class NativeVisionProvider:
         workload = {'role': 'vision', 'input_chars': len(prompt), 'image_bytes': sum(len(part['bytes'] or b'') for part in image_parts),
                     'max_steps': 1, 'max_output_tokens': 8192}
         # Reconciliation does not spend another inference or require fresh quota.
-        submitted = bool(receipt['turn_id']) or receipt['phase'] in {'prompt_intent', 'submitted', 'unknown'}
         admission = native_readback() if submitted else self.admission(binding, workload)
         if submitted:
             receipt['resource_reconciliation'] = 'readback_only_original_reservation_unchanged'
@@ -294,8 +348,14 @@ class NativeVisionProvider:
                 finally:
                     usage = receipt['usage']
                     actual = usage.get('totalTokens')
-                    await lease.finalize({'actual_total_tokens': actual, 'usage': usage},
-                        'completed' if receipt['phase'] in {'completed', 'failed', 'response_completed'} else 'unknown')
+                    known_rejected = (receipt.get('provider_send_state') == 'not_sent'
+                                      and (receipt.get('rpc_error') or {}).get('turn_rejected') is True)
+                    if known_rejected:
+                        await lease.finalize({'actual_total_tokens': 0, 'usage': usage,
+                                              'provider_send_state': 'not_sent'}, 'aborted')
+                    else:
+                        await lease.finalize({'actual_total_tokens': actual, 'usage': usage},
+                            'completed' if receipt['phase'] in {'completed', 'failed', 'response_completed'} else 'unknown')
         except BaseException as exc:
             # Authoritative auth/quota rejection cancels the short-lived grant;
             # the next authorized attempt needs a new quota observation.

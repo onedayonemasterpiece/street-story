@@ -30,8 +30,9 @@ async def test_authoritative_rpc_request_rejection_is_closed_before_finalize(tmp
     assert receipt['phase'] == 'failed' and receipt['turn_id'] is None
     assert receipt['provider_send_state'] == 'not_sent' and receipt['retry_safe'] is True
     assert receipt['rpc_error'] == {'response_received': True, 'code': code,
-                                    'category': category, 'turn_rejected': True, 'method': 'turn/start'}
-    assert len(sends) == 1 and finalized[-1][1] == 'completed'
+                                    'category': category, 'turn_rejected': True, 'method': 'turn/start', 'message': '[redacted]'}
+    assert len(sends) == 1 and finalized[-1][1] == 'aborted'
+    assert finalized[-1][0]['actual_total_tokens'] == 0
     assert sum(method == 'turn/start' for method, _ in client.calls) == 1
     assert 'secret-payload' not in str(receipt) + caplog.text
     assert f'code={code}' in caplog.text
