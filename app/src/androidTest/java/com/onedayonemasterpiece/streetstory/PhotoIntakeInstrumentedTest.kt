@@ -213,7 +213,7 @@ class PhotoIntakeInstrumentedTest {
                 assertTrue(selected.photoPath.startsWith("content:"))
                 assertTrue("Actual DocumentsUI grant must be persistent", resolver.persistedUriPermissions.any { it.uri.toString() == selected.photoPath && it.isReadPermission })
                 PhotoAssets.releaseTemporary(selected.photoPath)
-                assertArrayEquals(PhotoGpsFixture.bytes(), PhotoAssets.open(context, selected.photoPath).use { it.readBytes() })
+            assertArrayEquals(PhotoGpsFixture.galleryBytes(), PhotoAssets.open(context, selected.photoPath).use { it.readBytes() })
                 assertTrue(PhotoAssets.open(context, selected.photoPath).use { it.read() } >= 0)
                 val diagnostic = PhotoImportTelemetry.pending(context, selected.clientStoryId).orEmpty()
                 println("photo-intake original-month-old diagnostic=$diagnostic")
