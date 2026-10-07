@@ -221,10 +221,9 @@ class PhotoIntakeInstrumentedTest {
                 device.dumpWindowHierarchy(File(context.getExternalFilesDir(null), "original-picker-ui.xml"))
                 device.takeScreenshot(File(context.getExternalFilesDir(null), "original-picker-ui.png"))
                 assertNotNull("Month-old photo must be selectable in original provider; package=$pickerPackage", item)
-                var target = requireNotNull(item)
-                while (!target.isClickable && target.parent != null) target = requireNotNull(target.parent)
-                assertTrue("Selected file must have a clickable card", target.isClickable)
-                target.click()
+                // GridView handles file-card touches even when accessibility
+                // reports clickable=false. Click this exact card, not its grid.
+                requireNotNull(item).click()
                 val selected = waitForStory(previous)
                 assertTrue(selected.photoPath.startsWith("content:"))
                 assertTrue("Actual DocumentsUI grant must be persistent", resolver.persistedUriPermissions.any { it.uri.toString() == selected.photoPath && it.isReadPermission })
