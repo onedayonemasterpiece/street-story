@@ -200,7 +200,7 @@ class PhotoIntakeInstrumentedTest {
                 val filename = "street-story-month-old-test.jpg"
                 val fileCard = By.pkg(pickerPackage).descStartsWith("$filename,")
                 val fileTitle = By.pkg(pickerPackage).text(filename)
-                val imagesRoot = By.res(pickerPackage, "breadcrumb_text").text("Images")
+                val imagesRoot = By.res(pickerPackage, "breadcrumb_text").text("Images").enabled(true)
                 val cameraCard = By.res(pickerPackage, "item_root").clickable(true)
                     .hasDescendant(By.res("android", "title").text("Camera"))
                 val deadline = android.os.SystemClock.elapsedRealtime() + 20_000
