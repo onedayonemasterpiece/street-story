@@ -168,3 +168,38 @@ async def test_google_search_can_use_configured_lite_when_other_model_quota_fail
     found = await client.discover_article_urls('nearby historical building')
     assert attempted == [svc.settings.gemini_web_search_model, svc.settings.gemini_model]
     assert found.grounding_sources[0]['model'] == svc.settings.gemini_model
+
+
+@pytest.mark.asyncio
+async def test_search_terms_receive_nearby_address_distance_and_camera_context(tmp_path):
+    import json
+    svc, _adapter, topic, _session = prepared(tmp_path)
+    query = 'Примерная улица историческое здание prussia39'
+    topic.update(_identity_search_context={'reverse_address': {'road': 'Примерная улица'},
+        'nearby': [{'distance_m': 18, 'tags': {'name': 'Примерная улица'}}]},
+        _camera_hints={'focal_length_35mm': 24})
+
+    class Executor:
+        async def execute(self, operation, call):
+            return await call('fixture', 5)
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        context = json.loads(contents[1].split('Данные ниже — только контекст:\n')[1])
+        assert context['location_search_context']['nearby'][0]['distance_m'] == 18
+        assert context['camera_hints']['focal_length_35mm'] == 24
+        return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
+            'visual_query': 'red brick building', 'commons_query': '', 'article_queries': [query]}))
+
+    svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    assert await identity_discovery.suggest(svc, topic, '', []) == ('', [], 'red brick building', '')
+    assert topic['_identity_article_queries'] == [query]
+    queries = []
+
+    async def public(q):
+        queries.append(q)
+        return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/building'}])
+
+    svc.providers.gemini._public_web_search = public
+    await identity_discovery.web_image_sources(svc, 'wrong distant guess', 'building',
+        story={**topic, '_identity_search_query': topic['_identity_article_queries'][0]})
+    assert queries == [query]

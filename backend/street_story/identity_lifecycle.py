@@ -275,8 +275,16 @@ class IdentityLifecycleMixin:
                 else:
                     from .errors import RetryableProviderError
                     try:
+                        nearest = sorted(osm.get('nearby') or [], key=distance)[:20]
+                        search_context = {
+                            'reverse_address': (osm.get('reverse') or {}).get('address') or {},
+                            'nearby': [{'distance_m': item.get('distance_m'),
+                                'tags': {key: value for key, value in (item.get('tags') or {}).items()
+                                    if key in {'name', 'addr:street', 'addr:housenumber', 'building', 'historic'}}}
+                                for item in nearest]}
                         recovery = await recover(self, {**story, 'latitude': lat if valid else None,
-                            'longitude': lon if valid else None}, transcript, candidates, rejected)
+                            'longitude': lon if valid else None, '_identity_search_context': search_context},
+                            transcript, candidates, rejected)
                     except RetryableProviderError as exc:
                         source_waits.append(exc)
                         recovery = None

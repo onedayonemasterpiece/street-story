@@ -67,6 +67,7 @@ def test_shared_devcoveer_google_environment_is_discovered(monkeypatch, tmp_path
     ]
     assert [route[0] for route in client.web_search_routes] == [
         "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
         "gemini-3.8-flash",
     ]
     assert settings.gemini_quota_supabase_url == "https://quota.example"
