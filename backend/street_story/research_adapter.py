@@ -206,7 +206,7 @@ class ProductResearchAdapter:
             story['id'], story['photo_sha256'], story.get('_identity_generation', 0), role, unit]
         logical = hashlib.sha256(canonical(identity).encode()).hexdigest()
         with self.service.store.tx() as db:
-            rows = list(db.execute('SELECT * FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC', (logical,)))
+            rows = list(db.execute('SELECT * FROM research_provider_attempts WHERE logical_id=? ORDER BY created_at DESC,rowid DESC', (logical,)))
             old = json.loads(rows[0]['receipt_json']) if rows else {}
             if (role in {'vision_google_group', 'vision_google_pair'} and old.get('phase') == 'failed'
                     and old.get('fallback_mode') in {'pair', 'native'} and old.get('retry_safe') is True
@@ -283,6 +283,10 @@ class ProductResearchAdapter:
             health = self.service.store.cache_get(health_key) or {}
             if health_key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET':
                 continue  # Legacy blanket reservation refusal, not provider quota.
+            if health.get('category') == 'RESOURCE_DAILY_BUDGET':
+                observed = health.get('observed_at')
+                if not isinstance(observed, (int, float)) or observed+300 <= self.service.store.now():
+                    continue  # Re-admit old local waits; never clear actual provider quota.
             resumed_probe = (health.get('category') == 'RESOURCE_DAILY_BUDGET'
                 and prior_failure.get('wait_scope') != wait_scope
                 and (int(binding.get('control_revision', 0)) > 0
@@ -331,7 +335,8 @@ class ProductResearchAdapter:
                 health_key = workload_key if code == 'RESOURCE_DAILY_BUDGET' else route_key if code in {
                     'RESOURCE_CONTROL_UNAVAILABLE', 'RESOURCE_POLICY_UNAVAILABLE', 'RESOURCE_UNAVAILABLE'} else None
                 if health_key:
-                    self.service.store.cache_put(health_key, {'category':code,'retry_at':retry_at},
+                    self.service.store.cache_put(health_key, {'category':code,'retry_at':retry_at,
+                        'observed_at': self.service.store.now()},
                         math.ceil(retry_at-self.service.store.now()))
                 raise RetryableProviderError(code, retry_at=retry_at) from exc
             raise
@@ -621,8 +626,10 @@ class ProductResearchAdapter:
                 failures.append(_failure_code(exc))
                 LOG.warning('street_story_fact_pool_fallback story_id=%s unit_id=%s route=%s code=%s',
                             story['id'], unit, route['role'], failures[-1])
-        raise RetryableProviderError('research_fact_pool_waiting',
+        failure = RetryableProviderError('research_fact_pool_waiting',
                                      retry_at=min(deadlines) if deadlines else self.service.store.now()+300)
+        failure.route_failures = failures
+        raise failure
 
     async def _extract_giga_page(self, page, story, context, *, allow_fallback=True):
         from jsonschema import Draft202012Validator
@@ -727,6 +734,223 @@ class ProductResearchAdapter:
         return (self.client is not None and receipt.get('model_id') == self.client.model_id
             and receipt.get('endpoint') == self.client.endpoint and receipt.get('positive') == 'match'
             and receipt.get('negative') == 'mismatch' and receipt.get('pixel_transport_verified') is True)
+
+    def parallel_visual_routes(self):
+        """Freeze up to four qualified lanes; admission still owns every send.
+
+        Google repeats represent distinct healthy key slots for distinct child
+        units. Native inclusion grants no quota: its normal 15-minute permission
+        check and shared scope concurrency of one remain mandatory.
+        """
+        google_slots = 0
+        if self.primary_vision.available:
+            verified = getattr(self.primary_vision, '_verified_routes', None)
+            pools = [route[1] for route in verified()] if callable(verified) else []
+            snapshots = [pool.snapshot('grounded_research') for pool in pools if pool is not None]
+            google_slots = max((int(item.get('healthy_keys', 0)) for item in snapshots), default=1)
+        opencode = self.opencode_vision_available
+        if opencode:
+            client = self.client
+            route_key = 'research-route-health:' + hashlib.sha256(canonical([
+                client.endpoint, client.model_id, getattr(client, 'directory', None),
+                getattr(client, 'profile_fingerprint', None)]).encode()).hexdigest()
+            quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
+            healths = [self.service.store.cache_get(key) or {} for key in (route_key, quota_key)]
+            opencode = all(health.get('retry_at', 0) <= self.service.store.now()
+                           or health.get('category') == 'RESOURCE_DAILY_BUDGET' for health in healths)
+        native = self.native_vision is not None and self.native_vision.available
+        routes = []
+        if google_slots:
+            routes.append('google')
+            google_slots -= 1
+        if opencode:
+            routes.append('opencode')
+        if google_slots:
+            routes.append('google')
+            google_slots -= 1
+        if native:
+            routes.append('native')
+        routes.extend(['google'] * min(google_slots, 4-len(routes)))
+        return tuple(routes)
+
+    def visual_pair_receipts(self, story, context):
+        """Latest per-provider observations of this exact frozen child unit."""
+        from .visual_attachments import visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        unit = canonical(visual_operation_unit(story, supplied))
+        roles = ('vision_google_pair', 'vision', 'vision_native')
+        logicals = {hashlib.sha256(canonical([story['id'], story.get('_identity_generation', 0),
+                    role, unit]).encode()).hexdigest(): role for role in roles}
+        latest = {}
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
+                              "WHERE story_id=? AND role IN ('vision_google_pair','vision','vision_native') "
+                              "ORDER BY created_at DESC,rowid DESC", (story['id'],))
+            for row in rows:
+                if row['logical_id'] in logicals:
+                    latest.setdefault(row['role'], json.loads(row['receipt_json'] or '{}'))
+        return latest
+
+    @staticmethod
+    def visual_pair_unknown(receipt):
+        """A closed failure is distinct from an unobserved send or creation."""
+        return (receipt.get('phase') not in {'created', 'thread_created', 'failed',
+                                           'completed', 'response_completed', 'aborted'}
+                or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged'))
+
+    @staticmethod
+    def _visual_pair_unsent(receipt):
+        if receipt.get('phase') in {'created', 'thread_created'}:
+            return True
+        return (receipt.get('phase') == 'failed' and receipt.get('provider_send_state') == 'not_sent'
+                and receipt.get('retry_safe') is True and not (receipt.get('rpc_error') or {}).get('turn_rejected')
+                and receipt.get('error_type') != 'PermanentProviderError')
+
+    @staticmethod
+    def _visual_pair_retry_at(receipt):
+        value = (receipt.get('route_failure') or {}).get('retry_at', receipt.get('retry_at', 0))
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else 0
+
+    async def visual_pair_route(self, route, snapshot, story, schema, context):
+        """One frozen SOURCE/REF child; never race its unknown send elsewhere.
+
+        The queue persists sibling descriptors and owns their cap of four. This
+        lock only coalesces accidental concurrent recovery of the same child.
+        """
+        from .visual_attachments import visual_operation_unit
+        supplied = json.loads(context) if isinstance(context, str) else context
+        mapping = story.get('_visual_reference_mapping')
+        if (route not in {'google', 'opencode', 'native'} or not isinstance(mapping, list) or len(mapping) != 1
+                or mapping != supplied.get('references') or not mapping[0].get('reference_id')):
+            raise PermanentProviderError('research_visual_pair_route_invalid')
+        self._guard_legacy_visual_unknown(story)
+        unit = canonical(visual_operation_unit(story, supplied))
+        if not supplied.get('comparison_id'):
+            raise PermanentProviderError('research_visual_pair_route_invalid')
+        if not hasattr(self, '_visual_pair_locks'):
+            self._visual_pair_locks = WeakValueDictionary()
+        lock = self._visual_pair_locks.get(unit)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._visual_pair_locks[unit] = lock
+        async with lock:
+            return await self._visual_pair_route_owned(route, story, schema, context, unit)
+
+    async def _visual_pair_route_owned(self, route, story, schema, context, unit):
+        from .gemini import GeminiUnavailable
+        from .visual_attachments import direct_visual_parts
+        receipts = self.visual_pair_receipts(story, context)
+        scope = {'story_id': story['id'], 'visual_scope': True,
+                 'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                 'control_revision': story.get('_identity_research_control_revision', 0),
+                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
+        self.guard_binding(scope)
+        unknowns = [(role, receipt) for role, receipt in receipts.items() if self.visual_pair_unknown(receipt)]
+        if len(unknowns) > 1:
+            raise RetryableProviderError('research_visual_pair_multiple_outcomes_unknown',
+                                         retry_at=self.service.store.now()+300)
+        if unknowns:
+            role, receipt = unknowns[0]
+            binding = {**(receipt.get('binding') or {}), **{key: receipt[key] for key in (
+                'thread_id', 'turn_id', 'session_id', 'message_id', 'phase', 'profile_verified',
+                'quota_permission', 'image_transport') if key in receipt}}
+            # Guard the current worker, while readback retains the original
+            # provider binding and addressed IDs instead of inventing a turn.
+            self.guard_binding({**binding, 'control_revision': scope['control_revision'],
+                                'job_id': scope['job_id'], 'job_attempt': scope['job_attempt']})
+            try:
+                direct_visual_parts(story, json.loads(context) if isinstance(context, str) else context)
+            except PermanentProviderError:
+                raise RetryableProviderError('research_visual_pair_source_required',
+                                             retry_at=self.service.store.now()+300) from None
+            try:
+                if role == 'vision_native' and self.native_vision is not None:
+                    result = await self.native_vision.compare_visual(None, story, schema, context, binding)
+                    self.guard_binding(scope)
+                    return result
+                if (role == 'vision' and self.client is not None and binding.get('session_id')
+                        and binding.get('message_id') and binding.get('phase') in {
+                            'prompt_intent', 'submitted', 'abort_intent', 'abort_outcome_unknown', 'aborted'}):
+                    result = await self.compare_image(None, story, schema, context)
+                    self.guard_binding(scope)
+                    return result
+            except ConflictError:
+                raise
+            except Exception as exc:
+                latest = self.visual_pair_receipts(story, context).get(role, receipt)
+                if self.visual_pair_unknown(latest):
+                    raise RetryableProviderError('research_visual_pair_outcome_unknown',
+                        retry_at=getattr(exc, 'retry_at', None) or self.service.store.now()+300) from None
+                raise
+            raise RetryableProviderError('research_visual_pair_outcome_unknown',
+                                         retry_at=self.service.store.now()+300)
+        for role in ('vision_native', 'vision_google_pair', 'vision'):
+            receipt = receipts.get(role) or {}
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        if story.get('_visual_pair_observe_only'):
+            raise PermanentProviderError('research_visual_pair_observation_closed')
+        if story.get('_visual_pair_resume_only') and not receipts:
+            # Parent submitted descriptor without a provider attempt: crash
+            # boundary is ambiguous, so do not reconstruct a fresh dispatch.
+            raise RetryableProviderError('research_visual_pair_dispatch_unknown',
+                                         retry_at=self.service.store.now()+300)
+        if len(direct_visual_parts(story, json.loads(context) if isinstance(context, str) else context)) != 2:
+            raise PermanentProviderError('research_visual_pair_route_invalid')
+        base_role = {'google': 'vision_google_pair', 'opencode': 'vision', 'native': 'vision_native'}[route]
+        prior = receipts.get(base_role)
+        # Closed/admission-refused units go only to the existing Native reserve;
+        # never repeat an unchanged prompt on their frozen primary route.
+        now, waits = self.service.store.now(), []
+        if prior and self._visual_pair_unsent(prior):
+            due = self._visual_pair_retry_at(prior)
+            if due > now:
+                waits.append(due)
+            primary_closed = due > now
+        else:
+            primary_closed = bool(prior and prior.get('phase') != 'created')
+        if prior and prior.get('error_type') == 'PermanentProviderError' and not (
+                prior.get('observation') or {}).get('model_attempts'):
+            raise PermanentProviderError('research_visual_pair_routes_closed')
+        if not primary_closed:
+            try:
+                if route == 'google':
+                    return await self._google_visual_verdict(None, story, schema, context, grouped=False)
+                if route == 'native':
+                    if self.native_vision is None or not self.native_vision.available:
+                        raise RetryableProviderError('research_vision_waiting', retry_at=self.service.store.now()+300)
+                    binding, saved = self.attempt(story, 'vision_native', unit)
+                    if saved:
+                        return {'result': saved['result'], 'receipt': saved}
+                    return await self.native_vision.compare_visual(None, story, schema, context, binding)
+                if not self.opencode_vision_available:
+                    raise RetryableProviderError('research_vision_route_unverified',
+                                                 retry_at=self.service.store.now()+300)
+                return await self.compare_image(None, story, schema, context)
+            except (GeminiUnavailable, RetryableProviderError) as exc:
+                if getattr(exc, 'retry_at', None) and exc.retry_at > self.service.store.now():
+                    waits.append(exc.retry_at)
+                receipts = self.visual_pair_receipts(story, context)
+                receipt = receipts.get(base_role)
+                if not receipt or self.visual_pair_unknown(receipt):
+                    raise
+                if receipt.get('phase') == 'created' and not receipt.get('route_failure'):
+                    raise  # Local validation is not a provider fallback signal.
+        native_receipt = receipts.get('vision_native')
+        if native_receipt:
+            if not self._visual_pair_unsent(native_receipt):
+                raise PermanentProviderError('research_visual_pair_routes_closed')
+            due = self._visual_pair_retry_at(native_receipt)
+            if due > self.service.store.now():
+                waits.append(due)
+                raise RetryableProviderError('research_vision_waiting', retry_at=min(waits))
+        if self.native_vision is None or not self.native_vision.available:
+            raise RetryableProviderError('research_vision_waiting',
+                retry_at=min(waits) if waits else self.service.store.now()+300)
+        binding, saved = self.attempt(story, 'vision_native', unit)
+        if saved:
+            return {'result': saved['result'], 'receipt': saved}
+        return await self.native_vision.compare_visual(None, story, schema, context, binding)
 
     @property
     def vision_available(self):
@@ -848,7 +1072,7 @@ class ProductResearchAdapter:
         if not self.primary_vision.available:
             await self.checkpoint(binding, {'binding': dict(binding), 'phase': 'failed',
                 'provider_send_state': 'not_sent', 'retry_safe': True, 'fallback_mode': fallback_mode,
-                'error_code': 'google_visual_route_unavailable'})
+                'error_code': 'google_visual_route_unavailable', 'retry_at': self.service.store.now()+300})
             if grouped:
                 raise PermanentProviderError('research_visual_group_pair_required')
             raise GeminiUnavailable(self.service.store.now()+300, 'visual_pair_known_failure')
@@ -880,7 +1104,9 @@ class ProductResearchAdapter:
                                              'response_closed' if known_closed else 'possibly_sent',
                       'retry_safe': retry_safe, 'fallback_mode': fallback_mode if retry_safe else None,
                       'error_type': type(exc).__name__,
-                      'observation': prior}
+                      'observation': prior,
+                      **({'retry_at': getattr(exc, 'retry_at', None) or self.service.store.now()+300}
+                         if known_unsent else {})}
             await self.checkpoint(binding, failed)
             LOG.warning('street_story_visual_google story_id=%s attempt_id=%s role=%s phase=%s provider_send_state=%s',
                         story['id'], binding['attempt_id'], role, failed['phase'], failed['provider_send_state'])

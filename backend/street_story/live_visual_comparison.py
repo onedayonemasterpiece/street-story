@@ -48,7 +48,7 @@ class LiveVisualComparisonMixin:
 
     def _save_visual_queue(self, session, state, *, db=None, research=None):
         """Store queue addresses and the same pending operation, never image bytes."""
-        durable = {k: v for k, v in state.items() if k not in {'pending', 'pending_descriptor', 'seen_images'}}
+        durable = {k: v for k, v in state.items() if k not in {'pending', 'pending_descriptor', 'seen_images', 'parallel_pair_payloads'}}
         pending = state.get('pending') or {}
         if pending:
             durable['pending_descriptor'] = {key: pending[key] for key in ('id', 'candidates', 'evidence', 'reply')}
@@ -165,6 +165,9 @@ class LiveVisualComparisonMixin:
         if state.get('pending'):
             return
         identity = research.get('visual_identity') or {}
+        if (_story.get('error_code') == 'visual_identity_conflict'
+                and int(identity.get('generation') or 0) == int(research.get('identity_generation') or 0)):
+            return
         if identity.get('status') in {'match', 'owner_confirmed'}:
             return
         now = self.service.store.now()
@@ -345,6 +348,9 @@ class LiveVisualComparisonMixin:
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
+        if (story.get('error_code') == 'visual_identity_conflict'
+                and int(identity.get('generation') or 0) == generation):
+            return {'identity_conflict': True, 'exhausted': True, 'visual_identity': identity}
         if identity.get('status') in {'match', 'owner_confirmed'}:
             return {'already_resolved': True, 'visual_identity': identity}
         try:
@@ -807,9 +813,13 @@ class LiveVisualComparisonMixin:
             row = self.service._story_row(db, session.resource_id)
             research = json.loads(row['research_json'] or '{}')
             self._assert_visual_current(row, research, state, session=session)
+            pair = next((item for item in state.get('parallel_pairs', [])
+                         if item['id'] == pending['id'] and item.get('phase') == 'result'), None)
+            accepted_before = (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+            conflict_before = row['error_code'] == 'visual_identity_conflict'
             if (int(research.get('identity_generation') or 0) != state['generation']
-                    or row['photo_sha256'] != state['photo_sha256'] or row['state'] in PROTECTED
-                    or (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}):
+                    or row['photo_sha256'] != state['photo_sha256']
+                    or ((row['state'] in PROTECTED or accepted_before or conflict_before) and pair is None)):
                 raise ConflictError('visual_comparison_changed', 'Фото или подтверждение объекта изменилось.')
             from .identity_subject_binding import bind_reference_subject
             shortlist = (research.get('visual_identity') or {}).get('candidates', [])
@@ -817,8 +827,13 @@ class LiveVisualComparisonMixin:
             raw = bound['result']
             aliases = {r['normalized_value']: r['poi_id'] for r in db.execute(
                 "SELECT normalized_value,poi_id FROM poi_aliases WHERE namespace='street_story_candidate'")}
-            matched = visual_match(raw, pending['candidates'], shortlist, poi_aliases=aliases)
-            if not matched and raw.get('status') == 'match':
+            proved = visual_match(raw, pending['candidates'], shortlist, poi_aliases=aliases)
+            from .identity_subject_binding import subject_aliases
+            accepted_id = (research.get('visual_identity') or {}).get('candidate_id')
+            pair_aliases = subject_aliases(shortlist, poi_aliases=aliases).get(raw.get('candidate_id'), {raw.get('candidate_id')})
+            conflicting_peer = pair is not None and accepted_before and proved and accepted_id not in pair_aliases
+            matched = not accepted_before and not conflict_before and proved
+            if (not proved or conflicting_peer) and raw.get('status') == 'match':
                 raw = {**raw, 'status': 'uncertain'}
             status = raw.get('status')
             verdict_summary = {'comparison_id': pending['id'], 'query': state.get('query'),
@@ -831,14 +846,26 @@ class LiveVisualComparisonMixin:
                 'binding_status': bound.get('status'), 'binding_reason': bound.get('reason'),
                 'shared_distinctive_geometry': raw.get('shared_distinctive_geometry'),
                 'observable_correspondences': raw.get('observable_correspondences'),
-                'uncertain_reason': bound.get('reason') or ('common_visual_acceptance_not_proved'
-                    if args.get('status') == 'match' and not matched else None),
+                'uncertain_reason': ('parallel_peer_physical_conflict' if conflicting_peer or conflict_before else
+                    bound.get('reason') or ('common_visual_acceptance_not_proved'
+                    if args.get('status') == 'match' and not proved else None)),
                 'references': [{'candidate_id': candidate['candidate_id'], 'url': candidate.get('url'),
                     'image_urls': candidate.get('reference_image_urls') or []} for candidate in pending['candidates']],
                 'confidence': confidence(raw), 'model': session.model, 'photo_sha256': state['photo_sha256'],
                 'generation': state['generation'], 'control_revision': state.get('control_revision', 0)}
             state['verdict_history'] = [item for item in state.get('verdict_history', [])
                 if item.get('comparison_id') != pending['id']] + [verdict_summary]
+            if conflicting_peer:
+                previous_identity = research['visual_identity']
+                research['visual_identity'] = {**previous_identity, 'status': 'uncertain',
+                    'visual_reference_verified': False, 'confidence': None,
+                    'conflicting_comparison_ids': [previous_identity.get('comparison_id'), pending['id']],
+                    'observations': ['Независимые сравнения подтвердили разные физические объекты; identity требует разрешения противоречия.']}
+                db.execute("UPDATE stories SET state='needs_review',research_json=?,error_code='visual_identity_conflict',"
+                           "error_message=?,revision=revision+1,updated_at=? WHERE id=?",
+                           (canonical(research), 'Сравнения дали противоречащие определения объекта. Публикация приостановлена.',
+                            self.service.store.now(), row['id']))
+                verdict_summary['conflicts_with_comparison_id'] = previous_identity.get('comparison_id')
             if matched:
                 selected = bound['candidate']
                 evidence = bound.get('reference_evidence') or pending['evidence']
@@ -861,25 +888,34 @@ class LiveVisualComparisonMixin:
                 research['poi_reused_fact_count'] = hydrate_story_facts(db, identity, row['id'])
                 db.execute("UPDATE stories SET state='identity_ready',place_name=?,research_json=?,error_code=NULL,error_message=NULL,revision=revision+1,updated_at=? WHERE id=?",
                     (identity['candidate_name'], canonical(research), self.service.store.now(), row['id']))
-            result = {'matched': matched, 'continue_comparison': not matched,
+            result = {'matched': matched, 'continue_comparison': not matched and not accepted_before and not conflict_before,
+                      'identity_conflict': conflicting_peer,
                       'instruction': 'Объект подтверждён.' if matched else 'Совпадения пока нет: вызови compare_place_images для следующей группы; широкий поиск выполняется автоматически.'}
             state['reviewed_reference_ids'] = list(dict.fromkeys([*state['reviewed_reference_ids'], *[e['reference_id'] for e in pending['evidence']]]))
             from .identity_progress import advance
             research['identity_progress'] = advance(research.get('identity_progress') or {}, 'identity_images_reviewed',
                 {'generation': state['generation'], 'reference_ids': [e['reference_id'] for e in pending['evidence']]}, self.service.store.now())
+            if pair is not None:
+                # The accepted identity and every submitted sibling address commit
+                # together. Later peer results only drain this frozen operation.
+                pair.update(phase='completed', matched=matched, receipt=args.get('provider_receipt'))
+                pair.pop('result', None)
             state['pending'] = None
-            state.update(lease_owner=None, lease_until=0)
+            if not any(item.get('phase') not in {'completed', 'failed', 'skipped'}
+                       for item in state.get('parallel_pairs', [])):
+                state.update(lease_owner=None, lease_until=0)
             self._save_visual_queue(session, state, db=db, research=research)
             self._store_command(db, row['id'], command_id, 'record_place_comparison', args, result)
         record_identity_event(self.service, session.resource_id, 'identity_images_reviewed', {
             'generation': state['generation'], 'image_count': len(pending['evidence']),
             'reference_ids': [e['reference_id'] for e in pending['evidence']],
             'comparison_model': session.model, 'comparison_id': pending['id'],
-            'status': status, 'matched': matched, 'confidence': confidence(raw)})
+            'status': status, 'matched': matched, 'conflicting_peer': conflicting_peer, 'confidence': confidence(raw)})
         state['pending'] = None
-        if matched:
+        if matched or accepted_before or conflict_before:
             record_identity_event(self.service, session.resource_id, 'identity_finished', {
-                'generation': state['generation'], 'status': 'match', 'reference_verified': True})
+                'generation': state['generation'], 'status': 'uncertain' if conflicting_peer or conflict_before else 'match',
+                'reference_verified': not (conflicting_peer or conflict_before)})
         return {**result, 'story': self.service.story(session.resource_id)}
 
     def _record_grouped_comparison(self, session, command_id, args):

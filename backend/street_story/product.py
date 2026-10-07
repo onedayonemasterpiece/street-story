@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from typing import Any
 
@@ -19,6 +20,8 @@ from .service import (
     digest,
 )
 
+
+LOG = logging.getLogger(__name__)
 
 _VOCAL_FILLERS = re.compile(
     r"(?iu)(?<!\w)(?:э(?:[-–—]?э)+|ээ+|эм+|м(?:[-–—]?м)+|а(?:[-–—]?а)+)(?!\w)[,;:\s]*"
@@ -607,43 +610,96 @@ class ProductStreetStoryService(StreetStoryService):
                     (self.settings.redact(str(exc)), self.store.now(), story_id),
                 )
 
+    def _publish_identity_conflicted(self, db, story_id: str) -> bool:
+        row = self._story_row(db, story_id)
+        research = json.loads(row['research_json'] or '{}')
+        identity = research.get('visual_identity') or {}
+        return (row['error_code'] == 'visual_identity_conflict'
+                or bool(research.get('visual_identity_conflict'))
+                or identity.get('status') in {'uncertain', 'mismatch', 'conflict'})
+
+    def _guard_publish_identity(self, db, story_id: str, *, possibly_sent: bool) -> None:
+        if self._publish_identity_conflicted(db, story_id):
+            LOG.warning('street_story_publish_identity_blocked story_id=%s possibly_sent=%s',
+                        story_id, possibly_sent)
+            # Without an operation ID a same-key POST might be the first send:
+            # the durable intent may precede a crash at the HTTP boundary.
+            if possibly_sent:
+                raise RetryableProviderError('publication_identity_conflict_outcome_unknown',
+                                             retry_at=self.store.now()+300)
+            raise PermanentProviderError('publication_identity_conflict_before_send')
+
     async def _run_publish(self, job: dict[str, Any]) -> None:
         intent_id = json.loads(job["payload_json"])["intent_id"]
         with self.store.connection() as db:
             intent = dict(db.execute("SELECT * FROM publish_intents WHERE id=?", (intent_id,)).fetchone())
-        request = json.loads(intent["request_json"])
-        requested_aliases = [str(value) for value in request["destinations"]]
-        bootstrap = await self._publication_bootstrap(requested_aliases)
-        projected = project_destinations_v2(bootstrap)
-        by_alias = {item["alias"]: item for item in projected}
-        eligible = {
-            alias
-            for alias, item in by_alias.items()
-            if item["provider"] == "telegram" and item["status"] == "supported"
-        }
-        if not set(requested_aliases).issubset(eligible):
-            raise PermanentProviderError("Requested destination is not eligible in current VibePublish bootstrap")
-        if not request.get("destination_details"):
-            request["destination_details"] = [by_alias[alias] for alias in requested_aliases]
-            with self.store.tx() as db:
-                db.execute("UPDATE publish_intents SET request_json=?,updated_at=? WHERE id=?", (canonical(request), self.store.now(), intent_id))
-
-        operation_id = intent.get("vibepublish_operation_id")
-        if not operation_id:
-            payload = {
-                "to": requested_aliases,
-                "content": {"text": request.get("text") or "", "format": "plain"},
-                "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
-                "surface": "post",
-                "delivery": {"kind": "at", "at": request["scheduled_for"]},
-                "mode": "execute",
-                "routing_revision": bootstrap["routing_revision"],
-            }
-            receipt = await self.providers.vibepublish.publish(payload, intent["vibepublish_request_key"])
-            operation_id = str(receipt.get("operation_id") or "")
+            dispatch = (json.loads(intent['receipt_json'] or '{}').get('_publish_dispatch') or {})
+            operation_id = intent.get('vibepublish_operation_id')
             if not operation_id:
-                raise RetryableProviderError("VibePublish accepted no recoverable publication operation_id")
+                self._guard_publish_identity(db, job['story_id'], possibly_sent=(dispatch.get('phase') == 'possibly_sent'
+                    or not dispatch and int(job.get('attempts') or 0) > 1))
+        request = json.loads(intent["request_json"])
+        if not operation_id:
+            if dispatch.get('phase') == 'possibly_sent':
+                if dispatch.get('request_key') != intent['vibepublish_request_key'] or not isinstance(dispatch.get('payload'), dict):
+                    raise RetryableProviderError('publication_dispatch_binding_unknown', retry_at=self.store.now()+300)
+                payload = dispatch['payload']
+            else:
+                requested_aliases = [str(value) for value in request["destinations"]]
+                bootstrap = await self._publication_bootstrap(requested_aliases)
+                projected = project_destinations_v2(bootstrap)
+                by_alias = {item["alias"]: item for item in projected}
+                eligible = {alias for alias, item in by_alias.items()
+                            if item["provider"] == "telegram" and item["status"] == "supported"}
+                if not set(requested_aliases).issubset(eligible):
+                    raise PermanentProviderError("Requested destination is not eligible in current VibePublish bootstrap")
+                if not request.get("destination_details"):
+                    request["destination_details"] = [by_alias[alias] for alias in requested_aliases]
+                    with self.store.tx() as db:
+                        db.execute("UPDATE publish_intents SET request_json=?,updated_at=? WHERE id=?",
+                                   (canonical(request), self.store.now(), intent_id))
+                payload = {
+                    "to": requested_aliases,
+                    "content": {"text": request.get("text") or "", "format": "plain"},
+                    "media": [{"source": {"kind": "asset", "id": request["asset_ref"]}, "role": "image"}],
+                    "surface": "post",
+                    "delivery": {"kind": "at", "at": request["scheduled_for"]},
+                    "mode": "execute",
+                    "routing_revision": bootstrap["routing_revision"],
+                }
+            with self.store.tx() as db:
+                # Final check and durable intent share a transaction. Conflict
+                # arising during asynchronous bootstrap cannot slip past it.
+                fresh = dict(db.execute('SELECT * FROM publish_intents WHERE id=?', (intent_id,)).fetchone())
+                operation_id = fresh.get('vibepublish_operation_id')
+                if not operation_id:
+                    prior = json.loads(fresh['receipt_json'] or '{}')
+                    existing = prior.get('_publish_dispatch') or {}
+                    self._guard_publish_identity(db, job['story_id'], possibly_sent=(existing.get('phase') == 'possibly_sent'
+                        or not existing and int(job.get('attempts') or 0) > 1))
+                    if existing.get('phase') == 'possibly_sent':
+                        if existing.get('request_key') != intent['vibepublish_request_key'] or not isinstance(existing.get('payload'), dict):
+                            raise RetryableProviderError('publication_dispatch_binding_unknown', retry_at=self.store.now()+300)
+                        dispatch, payload = existing, existing['payload']
+                    else:
+                        dispatch = {'phase': 'possibly_sent', 'request_key': intent['vibepublish_request_key'],
+                                    'payload': payload, 'recorded_at': self.store.now()}
+                    db.execute('UPDATE publish_intents SET receipt_json=?,updated_at=? WHERE id=?',
+                               (canonical({**prior, '_publish_dispatch': dispatch}), self.store.now(), intent_id))
+            if not operation_id:
+                # Persist before awaiting the boundary; timeout/cancellation
+                # never converts this marker into a known-unsent request.
+                LOG.info('street_story_publish_dispatch story_id=%s intent_id=%s phase=possibly_sent',
+                         job['story_id'], intent_id)
+                receipt = await self.providers.vibepublish.publish(payload, intent["vibepublish_request_key"])
+                operation_id = str(receipt.get("operation_id") or "")
+                if not operation_id:
+                    raise RetryableProviderError("VibePublish accepted no recoverable publication operation_id")
+            else:
+                receipt = await self.providers.vibepublish.status(operation_id)
         else:
+            # Existing operations remain observable despite conflict or changed
+            # destination capability. This branch never executes a POST.
             receipt = await self.providers.vibepublish.status(operation_id)
         current = _receipt(receipt, operation_id)
         if current.get("operation_id") != operation_id:
@@ -655,14 +711,16 @@ class ProductStreetStoryService(StreetStoryService):
             db.execute(
                 "UPDATE publish_intents SET vibepublish_operation_id=?,vibepublish_publication_id=COALESCE(?,vibepublish_publication_id),"
                 "vibepublish_revision=COALESCE(?,vibepublish_revision),receipt_json=?,state=?,updated_at=? WHERE id=?",
-                (operation_id, publication_id, revision, canonical(current), state or "accepted", self.store.now(), intent_id),
+                (operation_id, publication_id, revision, canonical({**current, **({'_publish_dispatch': dispatch} if dispatch else {})}),
+                 state or "accepted", self.store.now(), intent_id),
             )
         if state in {"scheduled", "verified"}:
             with self.store.tx() as db:
-                db.execute(
-                    "UPDATE stories SET state='scheduled',scheduled_for=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? WHERE id=?",
-                    (request["scheduled_for"], self.store.now(), job["story_id"]),
-                )
+                if not self._publish_identity_conflicted(db, job['story_id']):
+                    db.execute(
+                        "UPDATE stories SET state='scheduled',scheduled_for=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? WHERE id=?",
+                        (request["scheduled_for"], self.store.now(), job["story_id"]),
+                    )
             return
         if state in {"failed", "blocked", "outcome_unknown", "cancelled"}:
             raise PermanentProviderError(f"VibePublish publication operation ended in {state}")
