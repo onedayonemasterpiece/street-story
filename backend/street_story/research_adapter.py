@@ -222,7 +222,7 @@ class ProductResearchAdapter:
             if rows and old.get('phase') == 'completed':
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
-                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission') if k in old}}
+                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport') if k in old}}
             if rows and old.get('phase') == 'created':
                 resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                                job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
