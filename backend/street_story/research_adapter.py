@@ -361,6 +361,10 @@ class ProductResearchAdapter:
         unit = canonical([query,story.get('_research_run_id')])
         history = self.search_history(story)
         capsule = canonical({'query': query, 'purpose': 'facts' if '_fact_research_control_revision' in story else 'identity',
+                             'visual_search_requirement': (None if '_fact_research_control_revision' in story else
+                                 'Find modern photos of the present-day physical object and its address. '
+                                 'A historic building does not call for historic photographs. '
+                                 'Do not use pre-war photo archives as visual references; historic material belongs to fact research.'),
                              'regional_search_hint': 'Для исторических зданий Калининградской области '
                                  'попробуй дополнительный запрос «адрес или название prussia39». '
                                  'Адрес должен следовать из доступных данных. Prussia39 может быть '

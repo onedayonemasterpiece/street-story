@@ -66,6 +66,10 @@ async def suggest(service, story, transcript, candidates):
         'Это дополнительный источник статей/фотографий, а не обязательная Wikipedia-статья '
         'и не доказательство identity без сравнения SOURCE и REF. '
         'article_queries — до трёх обычных интернет-запросов для статей и фотографий. '
+        'SOURCE — современный снимок: для визуального сравнения ищи современные фотографии '
+        'нынешнего здания, фасада и адреса. Историческое здание не означает историческую фотографию. '
+        'Не направляй этот поиск в общие довоенные фотоархивы и не подменяй Калининград Кёнигсбергом. '
+        'Исторические названия и архивные материалы полезны для фактов после определения объекта. '
         'Если на фото близкий дом, сначала используй ближайшие улицы/подтверждённые адреса '
         'и видимые признаки, а не имена далёких достопримечательностей. '
         'Добавь вариант с prussia39 для исторического здания. Статья в Wikipedia не обязательна. '
@@ -524,7 +528,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     from .gemini import GeminiUnavailable
     query = story.get('_identity_search_query') if story else None
     if not query:
-        query = (f'{entity_name} {REGION_HINT} фотографии разные ракурсы' if entity_name
+        query = (f'{entity_name} {REGION_HINT} современные фотографии фасада' if entity_name
                  else f'{visual_query} {REGION_HINT} фото').strip()
     routes, failures = [], []
     researcher = getattr(service.providers, 'research', None)
@@ -532,27 +536,47 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
         routes.append(('opencode', lambda: researcher.search_articles(query, story)))
     google = getattr(service.providers.gemini, 'discover_article_urls', None)
     if callable(google):
-        routes.append(('google', lambda: asyncio.wait_for(google(query), timeout=45)))
+        routes.append(('google', lambda: asyncio.wait_for(
+            google(f'{query} современные фотографии нынешнего здания фасада'), timeout=45)))
     public_search = getattr(service.providers.gemini, '_public_web_search', None)
     if callable(public_search):
         # Existing URL/snippet discovery needs neither model quota nor another
         # framework. Acquired articles and vision still supply identity proof.
         routes.append(('public_web', lambda: asyncio.wait_for(public_search(query), timeout=15)))
-    for provider, call in routes:
+    async def discover(provider, call):
+        started = asyncio.get_running_loop().time()
         try:
             result = await call()
             sources = (result.get('sources') or []) if isinstance(result, dict) else (getattr(result, 'grounding_sources', None) or [])
-            if sources:
-                if story:
-                    record_identity_event(service, story['id'], 'identity_search_route_ready', {
-                        'provider': provider, 'source_count': len(sources)})
-                return sources
         except Exception as exc:
             failures.append(exc)
             if story:
                 record_identity_event(service, story['id'], 'identity_search_route_unavailable', {
                     'provider': provider, 'code': getattr(exc, 'code', type(exc).__name__),
-                    'retry_at': getattr(exc, 'retry_at', None)})
+                    'retry_at': getattr(exc, 'retry_at', None),
+                    'elapsed_ms': round((asyncio.get_running_loop().time()-started)*1000)})
+            return []
+        if story:
+            # Deliver each completed route to the existing visual worker while
+            # slower searches finish. Never cancel an addressed OpenCode send.
+            if sources:
+                _retain_article_discovery(service, story, sources)
+            record_identity_event(service, story['id'], 'identity_search_route_ready', {
+                'provider': provider, 'source_count': len(sources),
+                'elapsed_ms': round((asyncio.get_running_loop().time()-started)*1000)})
+        return sources
+    results = await asyncio.gather(*(discover(provider, call) for provider, call in routes),
+                                   return_exceptions=True)
+    sources = {}
+    for result in results:
+        if isinstance(result, BaseException):
+            # A persistence/Stop fence is not a provider failure to bypass.
+            raise result
+        for source in result:
+            if isinstance(source, dict) and source.get('url'):
+                sources.setdefault(source['url'], source)
+    if sources:
+        return list(sources.values())
     if failures:
         retry = [getattr(exc, 'retry_at', None) or service.store.now() + 30 for exc in failures]
         raise GeminiUnavailable(min(retry) if retry else service.store.now() + 30, 'all_article_search_routes_unavailable')
@@ -561,7 +585,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     return []
 
 
-def _retain_article_discovery(service, story, sources, *, receipts=(), articles=()):
+def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None):
     """Keep every URL and fetched media outside the bounded identity catalog."""
     from .article_media import public_url
     from .research_control import research_stopped
@@ -582,6 +606,24 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
         history = research.get('identity_article_discovery') or {}
         if history.get('generation') != generation or history.get('photo_sha256') != story['photo_sha256']:
             history = {'generation': generation, 'photo_sha256': story['photo_sha256'], 'queries': {}, 'sources': []}
+        history['planned_queries'] = list(dict.fromkeys([
+            *history.get('planned_queries', []),
+            *(plain(query, 240) for query in planned_queries if isinstance(query, str) and query.strip())]))
+        queries = history.setdefault('queries', {})
+        for query, result in (query_results or {}).items():
+            key = next((key for key in queries if ' '.join(key.split()).casefold() ==
+                        ' '.join(query.split()).casefold()), query)
+            previous = queries.get(key) or {}
+            if result.get('status') == 'in_progress' and (
+                    previous.get('status') in {'completed', 'in_progress', 'unknown', 'submitted'}
+                    or previous.get('retry_at', 0) > service.store.now()):
+                continue
+            if (previous.get('status') == 'in_progress'
+                    and previous.get('claim_id') != result.get('claim_id')):
+                continue
+            if previous.get('status') == 'completed' and result.get('status') != 'completed':
+                continue
+            queries[key] = result
         unique = {source['url']: source for source in history.get('sources', [])}
         for source in sources:
             if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
@@ -596,6 +638,10 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
             page['status'] = receipt['status']
             page['attempts'] += 1
             page['source'].update({key: receipt[key] for key in ('gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered') if key in receipt})
+            if receipt.get('collection_boundary'):
+                page['collection_boundary'] = receipt['collection_boundary']
+                page['candidates'] = []
+                page['detail_sources'] = receipt.get('detail_sources') or []
             media = [item for item in articles if item.get('discovery_provenance', {}).get('url') == url
                      or item.get('url') == receipt.get('final_url', url)]
             if media:
@@ -605,7 +651,55 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
     return history
 
 
-def next_visual_query(identity, seed, searches):
+def _claim_article_query(service, story, query):
+    """Fence this exact query in the existing durable history before sending."""
+    import uuid
+    token = uuid.uuid4().hex
+    history = _retain_article_discovery(service, story, [], query_results={query: {
+        'status': 'in_progress', 'sources': [], 'claim_id': token,
+        'started_at': service.store.now()}})
+    result = next((result for key, result in history['queries'].items()
+                   if ' '.join(key.split()).casefold() == ' '.join(query.split()).casefold()), {})
+    return (token if result.get('claim_id') == token else None), result
+
+
+async def _resume_article_query(service, story, query, previous):
+    """Observe the original search ledger; never reroute an unfinished query."""
+    from .service import canonical, digest
+    captured = json.loads(story.get('research_json') or '{}')
+    generation = int(story.get('_identity_generation', captured.get('identity_generation') or 0))
+    unit = canonical([query, story.get('_research_run_id')])
+    logical = digest([story['id'], story['photo_sha256'], generation, 'search', unit])
+    with service.store.connection() as db:
+        row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
+                         'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
+    receipt = json.loads(row['receipt_json']) if row else {}
+    observed = {**previous, 'status': 'unknown', 'sources': [], 'code': 'research_article_query_dispatch_unknown'}
+    if receipt.get('phase') == 'completed':
+        observed.update(status='completed', sources=receipt.get('sources') or [], provider_receipt=receipt)
+        observed.pop('code', None)
+    elif (receipt.get('phase') == 'created'
+          or receipt.get('session_id') and receipt.get('message_id')
+          and receipt.get('phase') in {'prompt_intent', 'submitted', 'abort_intent', 'abort_outcome_unknown'}):
+        researcher = getattr(service.providers, 'research', None)
+        search = getattr(researcher, 'search_articles', None)
+        if callable(search):
+            try:
+                result = await search(query, {**story, '_identity_generation': generation})
+                observed.update(status='completed', sources=result.get('sources') or [],
+                                provider_receipt=result.get('receipt'))
+                observed.pop('code', None)
+            except Exception as exc:
+                observed['code'] = getattr(exc, 'code', type(exc).__name__)
+    elif receipt.get('phase') == 'failed' and receipt.get('provider_send_state') == 'not_sent':
+        observed.update(status='temporary_failure', code='research_article_query_not_sent',
+                        retry_at=(receipt.get('route_failure') or {}).get('retry_at', service.store.now()+15))
+    history = _retain_article_discovery(service, story, observed['sources'], query_results={query: observed})
+    return next(result for key, result in history['queries'].items()
+                if ' '.join(key.split()).casefold() == ' '.join(query.split()).casefold())
+
+
+def next_visual_query(identity, seed, searches, planned_queries=()):
     """Explore existing physical hypotheses/views; never synthesize an identity.
 
     The seed stays fixed in the durable operation, preventing a suffix chain.
@@ -615,12 +709,17 @@ def next_visual_query(identity, seed, searches):
     from .identity_candidate_policy import candidate_identity_eligible
     def normalized(value):
         return ' '.join(str(value or '').split()).casefold()
-    completed = {normalized(query) for query, result in searches.items() if result.get('status') == 'completed'}
+    completed = {normalized(query) for query, result in searches.items() if result.get('status') in {'completed', 'in_progress', 'unknown', 'submitted'}}
+    tried = {normalized(query) for query in searches}
+    plan = list(dict.fromkeys(plain(query, 240) for query in planned_queries if query))
+    untried = next((query for query in plan if normalized(query) not in tried), '')
+    if untried:
+        return untried
     bases = list(dict.fromkeys(plain(value, 120) for value in [seed, *(
         candidate.get('name') for candidate in identity.get('candidates', [])
         if not str(candidate.get('candidate_id') or '').startswith('web:')
         and candidate_identity_eligible(candidate))] if value))
-    variants = [*bases, *(f'{base} другие ракурсы фасад вход' for base in bases),
+    variants = [*plan, *bases, *(f'{base} другие ракурсы фасад вход' for base in bases),
                 *(f'{base} вид сбоку сзади детали здания' for base in bases)]
     return next((query for query in variants if normalized(query) not in completed), '')
 
@@ -643,17 +742,43 @@ async def recover(service, story, transcript, candidates, excluded):
             return None
         from .article_media import article_candidates
         record_identity_event(service, story['id'], 'identity_web_media_started', {'generation': story.get('_identity_generation', 0)})
+        history = _retain_article_discovery(service, story, [],
+            planned_queries=story.get('_identity_article_queries') or [])
         sources, search_failures = [], []
-        for query in story.get('_identity_article_queries') or [None]:
+        plan = history.get('planned_queries') or [
+            (f'{entity_name} {REGION_HINT} современные фотографии фасада' if entity_name
+             else f'{visual_query} {REGION_HINT} фото').strip()]
+        for query in plan:
             if already_proved():
                 return None
-            query_story = {**story, '_identity_search_query': query} if query else story
+            previous = history.get('queries', {}).get(query) or {}
+            if previous.get('status') == 'completed':
+                sources = previous.get('sources') or []
+                if sources:
+                    break
+                continue
+            if previous.get('retry_at', 0) > service.store.now():
+                continue
+            claim_id, previous = _claim_article_query(service, story, query)
+            if not claim_id:
+                if previous.get('status') == 'in_progress':
+                    previous = await _resume_article_query(service, story, query, previous)
+                if previous.get('status') == 'completed' and previous.get('sources'):
+                    sources = previous['sources']
+                    break
+                continue
+            query_story = {**story, '_identity_search_query': query}
             try:
                 sources = await web_image_sources(service, entity_name, visual_query, story=query_story)
+                history = _retain_article_discovery(service, story, sources,
+                    query_results={query: {'sources': sources, 'status': 'completed', 'search_unavailable': False, 'claim_id': claim_id}})
                 if sources:
                     break
             except (RetryableProviderError, GeminiUnavailable) as exc:
                 search_failures.append(exc)
+                history = _retain_article_discovery(service, story, [], query_results={query: {
+                    'sources': [], 'status': 'temporary_failure', 'search_unavailable': True, 'claim_id': claim_id,
+                    'retry_at': getattr(exc, 'retry_at', None) or service.store.now()+15}})
         if not sources and search_failures:
             raise search_failures[0]
         if already_proved():

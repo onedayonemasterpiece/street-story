@@ -213,7 +213,11 @@ class IdentityLifecycleMixin:
             else:
                 try:
                     osm = prior.get('osm')
-                    if not isinstance(osm, dict) or not osm or osm.get('partial'):
+                    map_policy = getattr(self.providers.osm, 'LOOKUP_POLICY_VERSION', None)
+                    map_policy_changed = (isinstance(osm, dict) and map_policy is not None
+                        and osm.get('lookup_policy_version') != map_policy)
+                    if (not isinstance(osm, dict) or not osm or osm.get('partial')
+                            or map_policy is not None and osm.get('lookup_policy_version') != map_policy):
                         try:
                             osm = await self.providers.osm.lookup(float(lat), float(lon))
                         except Exception as exc:
@@ -232,9 +236,13 @@ class IdentityLifecycleMixin:
                         'partial': bool(osm.get('partial')), 'unavailable_buckets': osm.get('unavailable_buckets', []),
                         'duration_ms': round((time.monotonic() - started) * 1000)})
                     wikipedia = prior.get('wikipedia')
-                    if not isinstance(wikipedia, list):
+                    if (not isinstance(wikipedia, list) or map_policy_changed
+                            and osm.get('lookup_policy_version') == map_policy):
                         try:
-                            wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
+                            linked = getattr(self.providers.wikipedia, 'linked', None)
+                            wikipedia = await linked(osm) if callable(linked) else None
+                            if wikipedia is None:
+                                wikipedia = await self.providers.wikipedia.nearby(float(lat), float(lon))
                         except Exception as exc:
                             # Wikimedia may be unavailable. Never invent visual proof;
                             # keep OSM candidates and require author confirmation then.

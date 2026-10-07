@@ -39,6 +39,8 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
+    LOOKUP_POLICY_VERSION = 5
+
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
         self.user_agent = user_agent
@@ -80,7 +82,7 @@ class OSMClient:
         raise RetryableProviderError(f"Overpass {bucket} routes unavailable") from last_error
 
     async def lookup(self, lat: float, lon: float) -> dict[str, Any]:
-        key = _stable_cache_key("osm-visible-nearby-v4", [round(lat, 6), round(lon, 6)])
+        key = _stable_cache_key(f"osm-visible-nearby-v{self.LOOKUP_POLICY_VERSION}", [round(lat, 6), round(lon, 6)])
         cached = self.store.cache_get(key)
         if cached is not None:
             return cached
@@ -127,6 +129,7 @@ class OSMClient:
             nearby_query = f"""[out:json][timeout:12];(
                 nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[building];
                 nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[name];
+                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})["addr:housenumber"];
             );out center tags 180;"""
 
             responses = {}
@@ -261,6 +264,7 @@ class OSMClient:
                 "nearby": selected[:68],
                 "radius_m": radius_m,
                 "close_radius_m": close_radius_m,
+                "lookup_policy_version": self.LOOKUP_POLICY_VERSION,
                 "candidate_pool_counts": {
                     "landmark": len(landmarks),
                     "nearby": len(nearby),
@@ -299,6 +303,10 @@ class WikipediaClient:
         self.store = store
         self.http = http
         self.endpoint = "https://ru.wikipedia.org/w/api.php"
+
+    async def linked(self, osm: dict[str, Any]) -> list[dict[str, Any]] | None:
+        from .mapped_wikipedia import linked_pages
+        return await linked_pages(self, osm)
 
     async def nearby(self, lat: float, lon: float) -> list[dict[str, Any]]:
         key = _stable_cache_key("wikipedia-pageimages-position-v4", [round(lat, 6), round(lon, 6)])
