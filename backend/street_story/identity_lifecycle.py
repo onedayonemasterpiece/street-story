@@ -301,13 +301,15 @@ class IdentityLifecycleMixin:
                 else:
                     from .errors import RetryableProviderError
                     try:
+                        from .identity_map_context import map_entry_context
                         nearest = sorted(osm.get('nearby') or [], key=distance)[:20]
                         search_context = {
                             'radius_m': osm.get('radius_m'),
                             'reverse_address': (osm.get('reverse') or {}).get('address') or {},
-                            'nearby': [{'distance_m': item.get('distance_m'),
+                            'reverse_map_context': map_entry_context(osm.get('reverse') or {}),
+                            'nearby': [{**map_entry_context(item), 'distance_m': item.get('distance_m'),
                                 'tags': {key: value for key, value in (item.get('tags') or {}).items()
-                                    if key in {'name', 'addr:street', 'addr:housenumber', 'building', 'historic'}}}
+                                    if key in {'name', 'addr:street', 'addr:housenumber', 'building', 'historic', 'highway'}}}
                                 for item in nearest]}
                         recovery = await recover(self, {**story, 'latitude': lat if valid else None,
                             'longitude': lon if valid else None, '_identity_search_context': search_context},

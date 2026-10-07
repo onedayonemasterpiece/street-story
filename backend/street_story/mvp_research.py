@@ -24,6 +24,7 @@ from .model_facts import merge_model_fact_inventory, normalized_claim_key, valid
 from .identity_candidate_policy import osm_identity_eligible, wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
+from .identity_map_context import map_entry_context
 from .identity_visual import identify_nearest
 from .mvp import MvpProductStreetStoryService
 from .poi_memory import persist_research_memory, prior_facts, processed_sources
@@ -373,6 +374,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "candidate_id": cid,
                 "name": title,
                 "type": "wikipedia",
+                **map_entry_context(page, source_url=_norm_url(page.get("url")), coordinate_provenance="wikipedia.geosearch"),
                 "url": _norm_url(page.get("url")),
                 "reference_excerpt": str(page.get("extract") or "")[:1200],
                 "reference_image_urls": refs[:2],
@@ -430,6 +432,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "candidate_id": cid,
                 "name": name,
                 "type": "osm",
+                **map_entry_context(item),
                 **({"identity_eligible": False, "identity_ineligible_reason": "osm_settlement_context"}
                     if not osm_identity_eligible(tags) else {}),
                 **({"identity_role": "anonymous_physical_building",

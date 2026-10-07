@@ -112,6 +112,7 @@ async def test_false_eligibility_is_excluded_from_new_seed_existing_queue_and_ph
     assert fetched == ['wiki:1']
     assert reply['references'][0]['candidate_id'] == 'wiki:1'
     assert 'wiki:0' not in {c['candidate_id'] for c in reply['physical_candidates']}
+    assert 'https://ru.wikipedia.org/wiki/Physical_0' not in session.state['visual_comparison']['sources']
 
 
 @pytest.mark.asyncio

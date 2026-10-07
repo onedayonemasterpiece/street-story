@@ -71,6 +71,14 @@ async def suggest(service, story, transcript, candidates):
         'Добавь вариант с prussia39 для исторического здания. Статья в Wikipedia не обязательна. '
         'Расстояния и focal_length_35mm помогают оценить правдоподобие гипотез, но не доказывают объект. '
         'Не выводи номер дома из одной геометки на соседней улице. '
+        'Адрес — поисковый якорь наравне с названием объекта: для дома ищи по улице и номеру, '
+        'если номер читается на SOURCE или явно указан в реальной map_address/source записи. '
+        'map_address относится только к указанному mapped_entry, а не автоматически к объекту на SOURCE; '
+        'сравни map_coordinates кандидата с capture_lat/capture_lon и видимым зданием. '
+        'Номер соседнего дома и предположение модели не становятся фактом или подтверждённым адресом. '
+        'Когда номер неизвестен, продолжай по одной улице/road_name и видимым признакам, '
+        'в том числе по нескольким реальным соседним улицам; неизвестный адрес не блокирует поиск. '
+        'Не выводи номер из порядка домов, близости точки GPS или названия улицы. '
         'Верни до двух коротких запросов для русской Википедии по наиболее вероятным собственным именам. '
         'visual_query обязателен: это отдельный поисковый запрос только по реально видимым физическим признакам '
         '(материал, форма башни/крыши, часы, окна, декор, надписи) плюс region_hint; не вставляй туда entity_name. '
@@ -79,7 +87,7 @@ async def suggest(service, story, transcript, candidates):
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': REGION_HINT,
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
-                        'camera_alignment') if key in x} for x in candidates[:16]],
+                        'camera_alignment', 'map_address', 'map_coordinates', 'road_name') if key in x} for x in candidates[:16]],
                     'location_search_context': story.get('_identity_search_context', {}),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
