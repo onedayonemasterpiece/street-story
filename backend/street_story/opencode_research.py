@@ -71,6 +71,67 @@ def _public_article_url(value: Any) -> str | None:
     return None
 
 
+def _completed_search_result_prefix(output: str) -> list[dict]:
+    """Recover closed result objects from a truncated JSON tool response.
+
+    Decode JSON structure from its start; a URL inside prose, an excerpt or
+    an unfinished result is never a discovered source. No spill file is read.
+    """
+    decoder = json.JSONDecoder()
+    text = output.lstrip()
+    try:
+        decoded, _ = decoder.raw_decode(text)
+        results = decoded.get('results', []) if isinstance(decoded, dict) else decoded
+        return [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
+    except ValueError:
+        pass
+    offset = 0
+    results = []
+    try:
+        if text.startswith('{'):
+            offset = 1
+            while True:
+                while offset < len(text) and text[offset].isspace():
+                    offset += 1
+                key, offset = decoder.raw_decode(text, offset)
+                if not isinstance(key, str):
+                    return []
+                while offset < len(text) and text[offset].isspace():
+                    offset += 1
+                if text[offset:offset+1] != ':':
+                    return []
+                offset += 1
+                while offset < len(text) and text[offset].isspace():
+                    offset += 1
+                if key == 'results':
+                    break
+                _, offset = decoder.raw_decode(text, offset)
+                while offset < len(text) and text[offset].isspace():
+                    offset += 1
+                if text[offset:offset+1] != ',':
+                    return []
+                offset += 1
+        if text[offset:offset+1] != '[':
+            return []
+        offset += 1
+        results = []
+        while True:
+            while offset < len(text) and text[offset].isspace():
+                offset += 1
+            item, end = decoder.raw_decode(text, offset)
+            if not isinstance(item, dict):
+                return results
+            results.append(item)
+            offset = end
+            while offset < len(text) and text[offset].isspace():
+                offset += 1
+            if text[offset:offset+1] != ',':
+                return results
+            offset += 1
+    except ValueError:
+        return results
+
+
 def search_tool_sources(messages: list[dict[str, Any]], query: str, *, limit: int | None = None) -> tuple[list[dict], list[dict]]:
     """Take URLs only from completed websearch tool output, never assistant prose."""
     sources, calls, seen = [], [], set()
@@ -101,12 +162,16 @@ def search_tool_sources(messages: list[dict[str, Any]], query: str, *, limit: in
                     values.extend((str(item.get('url') or ''), str(item.get('title') or ''))
                                   for item in results if isinstance(item, dict))
             except (ValueError, TypeError):
-                title = ''
-                for line in output.splitlines():
-                    if line.startswith('Title:'):
-                        title = line.removeprefix('Title:').strip()[:240]
-                    elif line.startswith('URL:'):
-                        values.append((line.removeprefix('URL:').strip(), title))
+                if metadata.get('truncated') is True and output.lstrip().startswith(('{', '[')):
+                    values.extend((str(item.get('url') or ''), str(item.get('title') or ''))
+                                  for item in _completed_search_result_prefix(output))
+                else:
+                    title = ''
+                    for line in output.splitlines():
+                        if line.startswith('Title:'):
+                            title = line.removeprefix('Title:').strip()[:240]
+                        elif line.startswith('URL:'):
+                            values.append((line.removeprefix('URL:').strip(), title))
             for raw, title in values:
                 url = _public_article_url(raw)
                 if not url or url in seen or (limit is not None and len(sources) >= limit):

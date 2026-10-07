@@ -357,6 +357,24 @@ class NativeVisionProvider:
                                 # projection. Read this same turn; never resend.
                                 await asyncio.sleep(self.poll_seconds)
                                 continue
+                            if turn.get('status') == 'failed' and not turn.get('error'):
+                                # A transient thread/read projection may claim
+                                # failure while turn/completed already says
+                                # completed. An empty error is not a closed
+                                # provider rejection; observe the original turn.
+                                cached = getattr(client, 'cached_status', None)
+                                notification = cached(receipt['thread_id'])[1] if callable(cached) else None
+                                receipt['terminal_readback_pending'] = {
+                                    'read_status': 'failed', 'error_present': False,
+                                    'notification_status': (notification.get('status') if isinstance(notification, dict)
+                                        and notification.get('id') == receipt['turn_id'] else None)}
+                                receipt['phase'] = 'submitted'
+                                await self._save(binding, receipt)
+                                logger.info('native_visual_readback_pending story_id=%s attempt_id=%s thread_id=%s turn_id=%s reason=failed_without_error notification_status=%s',
+                                            story['id'], binding['attempt_id'], receipt['thread_id'], receipt['turn_id'],
+                                            receipt['terminal_readback_pending']['notification_status'])
+                                await asyncio.sleep(self.poll_seconds)
+                                continue
                             items = turn.get('items') or []
                             if any(item.get('type') not in {'userMessage', 'reasoning', 'agentMessage'} for item in items):
                                 receipt['phase'] = 'failed'

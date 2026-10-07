@@ -99,9 +99,19 @@ class LiveVisualComparisonMixin:
             attempted.update(saved.get('queries') or {})
         previous = attempted.get(query) or {}
         now = self.service.store.now()
+        if previous.get('status') in {'in_progress', 'unknown', 'submitted'}:
+            from .identity_discovery import _resume_article_query
+            return await _resume_article_query(self.service, story, query, previous)
         if previous.get('status') == 'completed':
             return previous
         if previous.get('retry_at', 0) > now:
+            return previous
+        from .identity_discovery import _claim_article_query
+        claim_id, previous = _claim_article_query(self.service, story, query)
+        if not claim_id:
+            if previous.get('status') in {'in_progress', 'unknown', 'submitted'}:
+                from .identity_discovery import _resume_article_query
+                return await _resume_article_query(self.service, story, query, previous)
             return previous
         try:
             visual = session.state.get('visual_comparison') or research.get('visual_search_operation') or {}
@@ -121,7 +131,7 @@ class LiveVisualComparisonMixin:
                     if page.get('status') not in {'completed', 'excluded'}]}
             sources = await web_image_sources(self.service, query, '', story={**story,
                 '_identity_generation': int(research.get('identity_generation') or 0),
-                '_identity_query_context': query_context})
+                '_identity_query_context': query_context, '_identity_search_query': query})
             result = {'sources': sources, 'status': 'completed', 'search_unavailable': False,
                 'instruction': 'Fetch article illustrations with compare_place_images; titles are hypotheses only.'}
         except Exception as exc:
@@ -135,6 +145,7 @@ class LiveVisualComparisonMixin:
                     c.get('discovery') == 'web_article_media' and c.get('reference_image_urls')
                     for c in (research.get('visual_identity') or {}).get('candidates', [])):
                 result['instruction'] = 'Search failed, but saved illustrations remain. Call compare_place_images to process them before another search.'
+        result['claim_id'] = claim_id
         attempted[query] = result
         sources = result['sources']
         if sources:
@@ -148,7 +159,7 @@ class LiveVisualComparisonMixin:
             if history.get('photo_sha256') != row['photo_sha256'] or history.get('generation') != scope['generation']:
                 history = {}
             current['identity_article_discovery'] = {**history, 'generation': scope['generation'],
-                'photo_sha256': row['photo_sha256'], 'queries': {**history.get('queries', {}), **attempted},
+                'photo_sha256': row['photo_sha256'], 'queries': {**history.get('queries', {}), query: result},
                 'sources': list({x['url']: x for x in [*history.get('sources', []), *sources]}.values())}
             db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(current), row['id']))
         return result
@@ -179,7 +190,8 @@ class LiveVisualComparisonMixin:
                           if source.get('url') and source.get('url') not in pages]
         searches = {**discovery.get('queries', {}), **state.get('searches', {})}
         from .identity_discovery import next_visual_query
-        continuation = next_visual_query(identity, state.get('query_seed') or state.get('query'), searches)
+        continuation = next_visual_query(identity, state.get('query_seed') or state.get('query'), searches,
+                                         discovery.get('planned_queries', []))
         available = bool(unread_candidates) or bool(unread_sources) or bool(state.get('queue')) or any(p['status'] == 'pending' or
             (p['status'] in {'partial', 'temporary_failure'} and p.get('retry_at', 0) <= now)
             for p in pages.values())
@@ -199,7 +211,7 @@ class LiveVisualComparisonMixin:
         session.state['identity_continuation_token'] = token
         self.write(session, {'type': 'text', 'text': 'Continue the pending visual operation: saved illustrations remain. '
             'Call compare_place_images and record_place_comparison in this same conversation. '
-            'Do not repeat search while usable saved references remain; stop on proved match.'})
+            'Let compare_place_images advance the saved article query plan; do not repeat completed searches; stop on proved match.'})
 
     def _cancel_identity_waiter(self, session):
         task = session.state.pop('identity_wait_task', None)
@@ -344,14 +356,21 @@ class LiveVisualComparisonMixin:
                 'за счёт придуманного зума или иной точки съёмки при близкой визуально подходящей '
                 'альтернативе. При неразрешённом противоречии верни uncertain. '
                 'Оценка не является точным измерением или самостоятельным доказательством identity.'),
-            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
+            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1):
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
         catalog = {c.get('candidate_id'): c for c in identity.get('candidates', [])}
+        collection_pages = {}
         def reference_eligible(candidate):
+            from .article_media import collection_reference
+            url = candidate.get('url')
+            if url not in collection_pages:
+                collection_pages[url] = collection_reference(candidate, self.service.store)
+            if collection_pages[url]:
+                return False
             if str(candidate.get('candidate_id') or '').startswith('web:'):
                 return True  # Article REF still requires the existing eligible physical-subject gate.
             known = catalog.get(candidate.get('candidate_id'), candidate)
@@ -429,6 +448,8 @@ class LiveVisualComparisonMixin:
         state.setdefault('sources', {})
         state.setdefault('searches', {})
         state['searches'].update(discovery.get('queries') or {})
+        state['planned_queries'] = list(discovery.get('planned_queries') or state.get('planned_queries') or [])
+        state.setdefault('units_since_planned_query', len(state['reviewed_reference_ids']))
         state.setdefault('fetch_failures', [])
         # Recovery prefetch may exceed the bounded physical-candidate catalog.
         # Hydrate its saved media once; subsequent passes use this same cursor.
@@ -616,10 +637,47 @@ class LiveVisualComparisonMixin:
             for candidate in articles:
                 state['queue'].extend(self._image_entries(candidate))
 
+        # Give the remaining model-authored address/view plan a bounded turn.
+        # Pending/UNKNOWN operations were returned above, before any new search.
+        from .identity_discovery import next_visual_query
+        planned = next_visual_query({}, '', state['searches'], state['planned_queries'])
+        untried = planned and not any(' '.join(query.split()).casefold() == ' '.join(planned.split()).casefold()
+                                     for query in state['searches'])
+        useful_due = any(page['status'] in {'pending', 'partial'}
+                         and page.get('retry_at', 0) <= self.service.store.now()
+                         for page in state['sources'].values())
+        planned_reference_ready = False
+        if (untried and not unsettled and search_budget > 0
+                and (int(state['units_since_planned_query']) >= 2 or (not state['queue'] and not useful_due))):
+            session.state.setdefault('identity_search_queries', {}).update(state['searches'])
+            result = await self._find_place_articles(session, {'query': planned})
+            searches_performed += 1
+            state['searches'][planned] = result
+            state['units_since_planned_query'] = 0
+            new_pages = []
+            for source in result['sources']:
+                if source['url'] not in state['sources']:
+                    page = {'source': source, 'status': 'pending', 'attempts': 0}
+                    state['sources'][source['url']] = page
+                    new_pages.append(page)
+            self._save_visual_queue(session, state)
+            record_identity_event(self.service, story['id'], 'identity_planned_query_turn', {
+                'generation': generation, 'query': planned, 'status': result['status'],
+                'gallery_frames_retained': len(state['queue']), 'new_source_count': len(new_pages)})
+            if new_pages and read_pages < page_budget:
+                tail_count = len(state['queue'])
+                read_pages += 1
+                await acquire_page(new_pages[0])
+                state['units_since_acquisition'] = 0
+                planned_reference_ready = len(state['queue']) > tail_count
+                state['queue'] = state['queue'][tail_count:] + state['queue'][:tail_count]
+            self._save_visual_queue(session, state)
+
         # A broad gallery must not starve unread articles tied to the physical
         # shortlist. This is acquisition order only, never identity evidence.
         # Preserve the entire gallery and do not preempt an unknown dispatch.
-        if state['queue'] and not unsettled and int(state.get('preferred_units') or 0) < 2:
+        if (state['queue'] and not unsettled and not planned_reference_ready
+                and int(state.get('preferred_units') or 0) < 2):
             head = state['queue'][0]
             preferred = [p for p in state['sources'].values() if source_rank(p) < 2
                 and p['status'] not in {'completed', 'excluded'} and p.get('retry_at', 0) <= self.service.store.now()
@@ -677,7 +735,7 @@ class LiveVisualComparisonMixin:
             query = str(args.get('query') or state['query'] or query_hint)[:180]
             if not query:
                 from .identity_discovery import next_visual_query
-                query = next_visual_query(identity, '', state['searches'])
+                query = next_visual_query(identity, '', state['searches'], state['planned_queries'])
             state['query'] = query
             if not state.get('query_seed'):
                 state['query_seed'] = query
@@ -695,11 +753,11 @@ class LiveVisualComparisonMixin:
             previous = state['searches'].get(query) or {}
             if not available and not state['queue'] and previous.get('status') == 'completed':
                 from .identity_discovery import next_visual_query
-                following = next_visual_query(identity, state['query_seed'], state['searches'])
+                following = next_visual_query(identity, state['query_seed'], state['searches'], state['planned_queries'])
                 if following:
                     query = state['query'] = following
                     previous = state['searches'].get(query) or {}
-            if not available and not state['queue'] and query and previous.get('status') != 'completed' and search_budget > 0:
+            if not available and not state['queue'] and query and previous.get('status') != 'completed' and search_budget > searches_performed:
                 record_identity_event(self.service, story['id'], 'identity_web_media_started', {'generation': generation})
                 session.state.setdefault('identity_search_queries', {}).update(state['searches'])
                 result = await self._find_place_articles(session, {'query': query})
@@ -748,6 +806,7 @@ class LiveVisualComparisonMixin:
             references.extend(images)
             evidence.extend(receipts)
             candidates.append(candidate)
+            state['units_since_planned_query'] = int(state.get('units_since_planned_query') or 0) + 1
             state['units_since_acquisition'] = int(state.get('units_since_acquisition') or 0) + 1
             state['preferred_units'] = int(state.get('preferred_units') or 0) + 1 if candidate.get('reference_reuse') or source_rank(
                 state['sources'].get(candidate.get('url')) or {'source': {'url': candidate.get('url')}}) < 2 else 0
@@ -775,7 +834,7 @@ class LiveVisualComparisonMixin:
                 return {'partial': True, 'search_unavailable': unavailable, 'images_compared': 0,
                     'instruction': 'Queue retained. Some articles/images are unavailable or partial; continue later or supply new API-found article URLs/query. This is not exhausted or mismatch.'}
             from .identity_discovery import next_visual_query
-            following = next_visual_query(identity, state.get('query_seed'), state['searches'])
+            following = next_visual_query(identity, state.get('query_seed'), state['searches'], state['planned_queries'])
             if following:
                 state.update(query=following, web_searched=False)
                 self._save_visual_queue(session, state)

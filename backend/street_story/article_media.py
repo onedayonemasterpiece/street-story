@@ -18,7 +18,7 @@ import uuid
 import weakref
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -120,11 +120,80 @@ async def cached_public_page(store, client, raw, *, resolver=resolve_public):
         return final_url, mime, body
 
 
+def collection_cards(soup, page_url):
+    """Independent item locations are a collection, not one article's views.
+
+    This is publisher structure, not an object classifier. Captions and names
+    never decide identity. Explicit article bodies keep their object galleries.
+    """
+    groups = {}
+    for image in soup.find_all('img'):
+        for card in image.parents:
+            if card.name not in {'div', 'figure', 'li', 'article'}:
+                continue
+            if len(card.find_all('img')) != 1 or not card.find(['p', 'figcaption', 'h2', 'h3', 'h4']):
+                continue
+            if any(parent.name == 'article' or parent.get('itemprop') == 'articleBody' for parent in card.parents):
+                break
+            points, detail_links = set(), []
+            for link in card.find_all('a', href=True):
+                target = public_url(urljoin(page_url, link['href']))
+                if not target:
+                    continue
+                parsed = urlsplit(target)
+                params = parse_qs(parsed.query)
+                lat = params.get('lat', params.get('latitude', []))
+                lon = params.get('lon', params.get('lng', params.get('longitude', [])))
+                try:
+                    if lat and lon and -90 <= float(lat[0]) <= 90 and -180 <= float(lon[0]) <= 180:
+                        points.add((float(lat[0]), float(lon[0])))
+                        continue
+                except (ValueError, TypeError):
+                    pass
+                if (parsed.hostname == urlsplit(page_url).hostname and target != public_url(page_url)
+                        and not link.has_attr('download')
+                        and not re.search(r'\.(?:jpe?g|png|webp|gif)(?:\?|$)', target, re.I)):
+                    detail_links.append({'url': target, 'title': link.get_text(' ', strip=True)[:180],
+                                         'collection_url': page_url})
+            if points:
+                groups.setdefault(id(card.parent), []).append((card, points, detail_links))
+                break
+    cards, sources = [], {}
+    for items in groups.values():
+        points = {point for _card, places, _links in items for point in places}
+        if len(items) >= 3 and len(points) >= 2:
+            for card, _places, links in items:
+                cards.append(card)
+                sources.update({link['url']: link for link in links})
+    return cards, list(sources.values())
+
+
+def collection_reference(candidate, store=None):
+    """Read existing publisher acquisition only; never fetch or alter a verdict."""
+    if candidate.get('collection_boundary') or (candidate.get('discovery_provenance') or {}).get('collection_boundary'):
+        return True
+    url = public_url(str(candidate.get('url') or ''))
+    if not url or store is None:
+        return False
+    saved = store.cache_get('public-article-acquisition-v1:' + hashlib.sha256(url.encode()).hexdigest())
+    if not saved:
+        return False
+    try:
+        body = base64.b64decode(saved['body'], validate=True)
+        final_url = saved.get('final_url') or url
+        cards, _sources = collection_cards(BeautifulSoup(body, 'html.parser'), final_url)
+        return bool(cards) and not extract_media(body, final_url)[1]
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     """Use article/main/gallery media, never the site's whole image inventory."""
     soup = BeautifulSoup(document, 'html.parser')
     title = (soup.find('h1') or soup.find('title'))
     title = title.get_text(' ', strip=True)[:180] if title else ''
+    collection, _detail_sources = collection_cards(soup, page_url)
+    collection_ids = {id(card) for card in collection}
     roots = soup.select('article, [itemprop="articleBody"], main, [role="main"]')
     content_roots = soup.find_all(['div', 'section'], class_=CONTENT)
     roots.extend(node for node in content_roots if not any(parent in roots for parent in node.parents))
@@ -165,6 +234,8 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     for root in roots:
         for image in root.find_all('img'):
             ancestors = [image, *list(image.parents)]
+            if any(id(node) in collection_ids for node in ancestors):
+                continue
             if any(node.name in {'nav', 'aside', 'header', 'footer'} or CHROME.search(
                     ' '.join([str(node.get('id', '')), *node.get('class', [])])) for node in ancestors):
                 continue
@@ -397,6 +468,16 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 title, media = extract_media(body, page_url)
                 # A lead in static HTML does not prove a JS gallery was read.
                 document = BeautifulSoup(body, 'html.parser')
+                collection, detail_sources = collection_cards(document, page_url)
+                if collection and not media:
+                    if receipts is not None:
+                        receipts.append({'url': raw, 'final_url': page_url, 'status': 'completed',
+                            'image_count': 0, 'collection_boundary': 'independent_item_locations',
+                            'collection_item_count': len(collection), 'detail_sources': detail_sources})
+                    event('identity_article_collection', {'source_url': page_url,
+                        'image_count': 0, 'collection_item_count': len(collection),
+                        'detail_source_count': len(detail_sources), 'reason': 'independent_item_locations'})
+                    return None  # No browser gallery expansion of an already proved collection.
                 partial = bool(document.select('[data-gallery], [data-fancybox], [data-swiper], .swiper, .slick-slider, .owl-carousel, [data-lazy-src]'))
             except (httpx.HTTPError, ValueError, OSError) as exc:
                 event('identity_article_unavailable', {'reason': type(exc).__name__})

@@ -187,7 +187,7 @@ async def test_recovery_uses_first_ready_and_returns_useful_page(service, monkey
     async def search(*_, **__):
         return sources
     retained = []
-    def retain(*_, receipts=(), articles=()):
+    def retain(*_, receipts=(), articles=(), **_updates):
         retained.append((list(receipts), list(articles)))
         return history
     async def articles(*_, receipts, first_ready):
@@ -199,12 +199,13 @@ async def test_recovery_uses_first_ready_and_returns_useful_page(service, monkey
     monkeypatch.setattr(discovery, 'suggest', suggest)
     monkeypatch.setattr(discovery, 'web_image_sources', search)
     monkeypatch.setattr(discovery, '_retain_article_discovery', retain)
+    monkeypatch.setattr(discovery, '_claim_article_query', lambda *_: ('fixture-claim', {}))
     import street_story.article_media as actual
     monkeypatch.setattr(actual, 'article_candidates', articles)
     result, candidates = await discovery.recover(service, {'id': 'fixture', 'photo_sha256': 'fixture-upload'}, '', [], set())
     assert result['_article_media_pending'] is True and result['status'] == 'uncertain'
     assert candidates[0]['url'] == sources[1]['url']
-    assert len(retained[1][0]) == 30
+    assert len(retained[-1][0]) == 30
 
 
 @pytest.mark.asyncio
@@ -221,6 +222,7 @@ async def test_recovery_does_not_hold_cached_partial_for_new_reads(service, monk
     monkeypatch.setattr(discovery, 'suggest', suggest)
     monkeypatch.setattr(discovery, 'web_image_sources', search)
     monkeypatch.setattr(discovery, '_retain_article_discovery', lambda *_args, **_kwargs: history)
+    monkeypatch.setattr(discovery, '_claim_article_query', lambda *_: ('fixture-claim', {}))
     async def forbidden(*_, **__):
         raise AssertionError('cached partial must return before other acquisition')
     import street_story.article_media as actual
