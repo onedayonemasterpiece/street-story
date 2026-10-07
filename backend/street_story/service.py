@@ -919,11 +919,11 @@ class StreetStoryService:
 
     async def run_once(self, *, claim_kind=None, exclude_kind=None) -> bool:
         self._schedule_identity_visual()
-        if claim_kind != 'identity_visual':
+        if claim_kind not in {'identity', 'identity_visual'}:
             self._schedule_confirmed_facts()
         job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind)
         if not job:
-            if claim_kind == 'identity_visual':
+            if claim_kind in {'identity', 'identity_visual'}:
                 return False  # Accounting recovery stays with the original worker.
             quota = getattr(self.providers.gemini, 'quota', None)
             if quota is not None:
