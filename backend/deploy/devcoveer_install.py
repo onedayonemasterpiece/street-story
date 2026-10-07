@@ -1161,6 +1161,44 @@ def qualified_fact_pool_models(text: Mapping[str, Any]) -> list[str]:
     return ['mimo-v2.6-flash-free', 'nemotron-3-ultra-free']
 
 
+def validate_fact_semantic_pool(caches, evidence, text):
+    """Optional background pool; absence preserves foreground Mira review."""
+    proof = caches.get('fact-semantic-verification-v1')
+    if proof is None:
+        return
+    routes = proof.get('routes') if isinstance(proof, dict) else None
+    if not isinstance(routes, list) or not routes:
+        raise DeployError('fact semantic qualification incomplete')
+    proofs = {item['path']: item['sha256'] for item in evidence}
+    qualified = {(item.get('provider_id'), item.get('model_id')) for item in text.get('extractors', [])}
+    expected = {'mimo-v2.6-flash-free', 'nemotron-3-ultra-free'}
+    flags = ('schema_verified', 'own_passages_verified', 'qualifier_negative_verified',
+             'nearby_duplicate_verified', 'nearby_conflict_verified')
+    seen = set()
+    for route in routes:
+        if not isinstance(route, dict):
+            raise DeployError('fact semantic qualification incomplete')
+        model = route.get('model_id')
+        path = route.get('qualification_receipt')
+        if (model not in expected or model in seen or ('opencode', model) not in qualified
+                or route.get('provider_id') != 'opencode'
+                or route.get('endpoint') != 'http://127.0.0.1:4097'
+                or route.get('directory') != str(RESEARCH_DIRECTORY)
+                or not all(route.get(flag) is True for flag in flags)
+                or not route.get('qualification_sha256')
+                or proofs.get(path) != route['qualification_sha256']):
+            raise DeployError('fact semantic qualification incomplete')
+        report = json.loads(Path(path).read_text())
+        receipt = report.get('receipt') or {}
+        if (report.get('qualified') is not True or report.get('phase') != 'completed'
+                or report.get('model_id') != model or report.get('provider_id') != 'opencode'
+                or report.get('endpoint') != route['endpoint']
+                or not all(report.get(flag) is True for flag in flags)
+                or receipt.get('phase') != 'completed' or receipt.get('model_id') != model):
+            raise DeployError('fact semantic qualification receipt incomplete')
+        seen.add(model)
+
+
 def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
     """Install only the small scoped profile on the existing OpenCode service.
 
@@ -1181,13 +1219,14 @@ def install_research_runtime(release: Path, venv: Path) -> dict[str, Any]:
     native = caches.get('native-vision-verification-v1') or {}
     text = caches.get('research-text-verification-v1') or {}
     required = {'native-vision-verification-v1', 'research-text-verification-v1'}
-    if (not required.issubset(caches) or set(caches) - required - {'headless-vision-verification-v1', 'research-vision-verification-v1'}
+    if (not required.issubset(caches) or set(caches) - required - {'headless-vision-verification-v1', 'research-vision-verification-v1', 'fact-semantic-verification-v1'}
             or native.get('model') != 'gpt-6-luna' or native.get('transport') != 'native_codex_app_server'
             or native.get('controls') != {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}
             or not native.get('common_acceptance_verified') or text.get('gigachat_model') != 'GigaChat-2'
             or not text.get('semantic_contract_verified')):
         raise DeployError('research semantic qualification incomplete')
     fact_models = qualified_fact_pool_models(text)
+    validate_fact_semantic_pool(caches, evidence, text)
     direct = caches.get('headless-vision-verification-v1')
     if direct is not None:
         models = direct.get('models') if isinstance(direct, dict) else None

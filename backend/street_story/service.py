@@ -123,6 +123,21 @@ class StreetStoryService:
                 "AND last_error='identity_sources_waiting' AND available_at>?",
                 (now+60, now, now+60),
             ).rowcount
+            # Old local daily refusals used a UTC-midnight deadline. Policies
+            # may have changed while this job was waiting. Revisit admission
+            # once on upgrade; provider quota and addressed UNKNOWN receipts
+            # are still checked by their original routes.
+            local_daily_recovered = db.execute(
+                "UPDATE jobs SET available_at=?,updated_at=? WHERE kind IN ('identity','identity_visual','research','refinement') "
+                "AND state='retry' AND last_error='RESOURCE_DAILY_BUDGET' AND available_at>?",
+                (now, now, now+300),
+            ).rowcount
+            identity_recovered += local_daily_recovered
+            if local_daily_recovered:
+                logging.getLogger('uvicorn.error').info(
+                    'street_story_research component=recovery stage=local_admission_revisit jobs=%s',
+                    local_daily_recovered,
+                )
             exhausted = [dict(row) for row in db.execute(
                 "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
                 (MAX_JOB_ATTEMPTS,),

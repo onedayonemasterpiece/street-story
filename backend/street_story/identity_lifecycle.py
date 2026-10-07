@@ -164,6 +164,9 @@ class IdentityLifecycleMixin:
             if research_stopped(prior, 'identity', photo_sha256=story['photo_sha256'], identity_generation=generation):
                 return self.story(story_id)
             previous = prior.get('visual_identity') or {}
+            if (story.get('error_code') == 'visual_identity_conflict'
+                    and int(previous.get('generation') or 0) == generation):
+                return self.story(story_id)  # Existing explicit correction creates the next generation.
             if expected_generation is not None and expected_generation != generation:
                 record_identity_event(self, story_id, 'identity_stale_job', {'generation': generation, 'job_generation': expected_generation})
                 return self.story(story_id)
@@ -265,6 +268,8 @@ class IdentityLifecycleMixin:
                     if (int(latest.get('identity_generation') or 0) != generation
                             or current['photo_sha256'] != story['photo_sha256']
                             or (latest.get('visual_identity') or {}).get('status') in ACCEPTED
+                            or (current['error_code'] == 'visual_identity_conflict'
+                                and int((latest.get('visual_identity') or {}).get('generation') or 0) == generation)
                             or research_stopped(latest, 'identity', photo_sha256=current['photo_sha256'], identity_generation=generation)
                             or int(((latest.get('research_controls') or {}).get('identity') or {}).get('revision') or 0) != control_revision):
                         return self._story_repr(db, current)
@@ -366,7 +371,9 @@ class IdentityLifecycleMixin:
                 if (int(latest.get('identity_generation') or 0) != generation or current['photo_sha256'] != story['photo_sha256']
                     or research_stopped(latest, 'identity', photo_sha256=current['photo_sha256'], identity_generation=generation)
                     or int(((latest.get('research_controls') or {}).get('identity') or {}).get('revision') or 0) != control_revision
-                    or (latest.get('visual_identity') or {}).get('status') in ACCEPTED):
+                    or (latest.get('visual_identity') or {}).get('status') in ACCEPTED
+                    or (current['error_code'] == 'visual_identity_conflict'
+                        and int((latest.get('visual_identity') or {}).get('generation') or 0) == generation)):
                     return self._story_repr(db, current)
                 if job_id and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job_id, job_attempt)).fetchone():
                     return self._story_repr(db, current)

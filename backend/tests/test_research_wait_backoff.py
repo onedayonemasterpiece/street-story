@@ -36,7 +36,7 @@ def setup_adapter(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_daily_wait_is_utc_reset_not_sixty_second_worker_hot_loop(tmp_path):
+async def test_local_daily_wait_rechecks_policy_without_sixty_second_hot_loop(tmp_path):
     service, sid, jid = pending_request(tmp_path)
     now = (int(service.store.now()) // 86400 + 1) * 86400 + 12 * 3600
     clock = [now]
@@ -49,16 +49,16 @@ async def test_daily_wait_is_utc_reset_not_sixty_second_worker_hot_loop(tmp_path
         raise RetryableProviderError('RESOURCE_DAILY_BUDGET', retry_at=clock[0]+60)
     service._run_research = deny
     assert await service.run_once()
-    midnight = (int(now) // 86400 + 1) * 86400
+    recheck = now+300
     with service.store.connection() as db:
-        assert db.execute('SELECT available_at FROM jobs WHERE id=?', (jid,)).fetchone()[0] == midnight
-    for current in (now+60, now+3600, midnight-1):
+        assert db.execute('SELECT available_at FROM jobs WHERE id=?', (jid,)).fetchone()[0] == recheck
+    for current in (now+60, now+120, recheck-1):
         clock[0] = current
         assert not await service.run_once()
     assert calls == [jid]
     assert service.store.checkpoint_get(jid, 'grounded_research_v3') == frozen
     assert service.store.checkpoint_get(jid, 'worker_non_wait_failures') is None
-    clock[0] = midnight
+    clock[0] = recheck
     assert await service.run_once()
     assert calls == [jid, jid]
     with service.store.connection() as db:
@@ -67,18 +67,18 @@ async def test_daily_wait_is_utc_reset_not_sixty_second_worker_hot_loop(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_daily_cooldown_has_one_admission_probe_per_resume_or_profile_change(tmp_path):
+async def test_local_daily_cooldown_has_bounded_admission_and_resume_or_profile_change(tmp_path):
     adapter, service, story, clock = setup_adapter(tmp_path)
     probes, sends = [], []
     async def admission_denied(binding):
         probes.append(binding['control_revision'])
         raise ResourceRefusal('RESOURCE_DAILY_BUDGET', 60000)
         sends.append('unreachable')
-    midnight = (int(clock[0]) // 86400 + 1) * 86400
+    recheck = clock[0]+300
     for _ in range(3):
         with pytest.raises(RetryableProviderError) as error:
             await adapter.run(story, 'search', 'same-unit', admission_denied)
-        assert error.value.retry_at == midnight
+        assert error.value.retry_at == recheck
         clock[0] += 60
     assert probes == [0] and not sends
     resumed = {**story, '_identity_research_control_revision': 2}
@@ -160,7 +160,8 @@ async def test_unavailable_cooldown_prevents_each_story_from_repeating_closed_ro
 
 def test_long_provider_hint_and_alternative_route_readiness_are_preserved():
     now = 1791288000
-    assert research_retry_at('RESOURCE_DAILY_BUDGET', now, now+86400) == now+86400
+    assert research_retry_at('RESOURCE_DAILY_BUDGET', now, now+86400) == now+300
+    assert research_retry_at('research_provider_quota', now, now+86400) == now+86400
     assert research_retry_at('RESOURCE_POLICY_UNAVAILABLE', now, now+900) == now+900
     # Another independently admitted route may recover before the daily-blocked route.
     aggregate = 'all_fact_search_routes_unavailable:RESOURCE_DAILY_BUDGET:gemini:article_url_discovery_unavailable'
@@ -301,3 +302,45 @@ async def test_provider429_wait_still_blocks_new_independent_units(tmp_path):
             await adapter.run(story, 'search', unit, quota)
     assert len(probes) == 1
     assert service.store.cache_get('research-quota-health:opencode:configured')['category'] == 'research_provider_quota'
+
+
+@pytest.mark.asyncio
+async def test_legacy_exact_workload_wait_rechecks_changed_policy_then_bounds_refusal(tmp_path):
+    adapter, service, story, clock = setup_adapter(tmp_path)
+    binding, _ = adapter.attempt(story, 'search', 'frozen-query')
+    route_key = 'research-route-health:' + hashlib.sha256(canonical([
+        adapter.client.endpoint, adapter.client.model_id, None, adapter.client.profile_fingerprint]).encode()).hexdigest()
+    key = 'research-workload-health:' + route_key + ':' + binding['request_id']
+    service.store.cache_put(key, {'category': 'RESOURCE_DAILY_BUDGET', 'retry_at': clock[0]+86400}, 86400)
+    probes = []
+    async def invoke(current):
+        probes.append(current['attempt_id'])
+        if len(probes) == 1:
+            raise ResourceRefusal('RESOURCE_DAILY_BUDGET', 86400000)
+        return {'result': 'policy-now-admits'}
+    for _ in range(2):
+        with pytest.raises(RetryableProviderError) as error:
+            await adapter.run(story, 'search', 'frozen-query', invoke)
+        assert error.value.retry_at == clock[0]+300
+    assert len(probes) == 1
+    clock[0] += 300
+    assert await adapter.run(story, 'search', 'frozen-query', invoke) == {'result': 'policy-now-admits'}
+    assert probes == [binding['attempt_id']]*2
+
+
+def test_recovery_only_revisits_legacy_local_daily_jobs(tmp_path):
+    service, sid, jid = pending_request(tmp_path)
+    now = service.store.now()
+    service.store.now = lambda: now
+    with service.store.tx() as db:
+        db.execute("UPDATE jobs SET state='retry',last_error='RESOURCE_DAILY_BUDGET',available_at=? WHERE id=?", (now+86400, jid))
+        quota = service._enqueue_job(db, sid, 'identity_visual', 'provider-quota', {})
+        db.execute("UPDATE jobs SET state='retry',last_error='research_provider_quota',available_at=? WHERE id=?", (now+86400, quota))
+        unknown = service._enqueue_job(db, sid, 'identity_visual', 'original-unknown', {})
+        db.execute("UPDATE jobs SET state='retry',last_error='research_attempt_unknown',available_at=? WHERE id=?", (now+86400, unknown))
+    assert service.recover_jobs() == 1
+    with service.store.connection() as db:
+        jobs = {row['id']: row['available_at'] for row in db.execute('SELECT id,available_at FROM jobs')}
+    assert jobs[jid] == now
+    assert jobs[quota] == jobs[unknown] == now+86400
+    assert service.recover_jobs() == 0

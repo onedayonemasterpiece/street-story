@@ -217,6 +217,38 @@ class HeadlessFacts:
                        (canonical(research), self.service.store.now(), story['id']))
             return True
 
+    def _capacity_phase(self, job, value):
+        with self.service.store.tx() as db:
+            db.execute('INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) '
+                       'ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json',
+                       (job['id'], 'headless_fact_capacity_wait', canonical(value), self.service.store.now()))
+
+    def _capacity_retry(self, job, run_id, failures, due, committed):
+        """Back off repeated local admission polling, never actual model quota."""
+        key = 'headless_fact_capacity_wait'
+        if committed:
+            self._capacity_phase(job, {'streak': 0})
+            return due
+        codes = [getattr(error, 'route_failures', []) for error in failures]
+        capacity = {'RESOURCE_NO_CAPACITY', 'RESOURCE_CAPACITY', 'RESOURCE_TOKEN_BUDGET', 'RESOURCE_START_BUDGET'}
+        if not codes or any(not reasons or not set(reasons).issubset(capacity) for reasons in codes):
+            return due
+        previous = self.service.store.checkpoint_get(job['id'], key) or {}
+        streak = int(previous.get('streak') or 0) + 1
+        delay = min(60, 5 * 2 ** min(streak-1, 4))
+        self._capacity_phase(job, {'streak': streak, 'delay_seconds': delay})
+        retry_at = max(due or 0, self.service.store.now()+delay)
+        LOG.info('street_story_fact_capacity_wait story_id=%s run_id=%s job_id=%s streak=%s delay_seconds=%s',
+                 job['story_id'], run_id, job['id'], streak, delay)
+        return retry_at
+
+    async def _review_candidates(self, job, run_id, control_revision):
+        from .headless_fact_review import HeadlessFactReview
+        engine = HeadlessFactReview(self)
+        if not engine._qualified_routes(available=False):
+            return 0
+        return await engine.run(job, run_id, control_revision)
+
     async def run(self, job, run_id, goal, scope):
         snapshot = self._snapshot(job, run_id)
         if snapshot is None or snapshot[2]['state'] == 'completed':
@@ -288,6 +320,7 @@ class HeadlessFacts:
         if snapshot is None:
             return
         if not units:
+            await self._review_candidates(job, run_id, control_revision)
             with self.service.store.connection() as db:
                 complete = manifest_complete(run_manifest(db, run_id))
                 unreviewed = db.execute("SELECT 1 FROM fact_assertions a JOIN fact_observations o "
@@ -300,6 +333,9 @@ class HeadlessFacts:
                     if self._snapshot(job, run_id, control_revision) is not None:
                         set_run_state(db, run_id, 'verifying', detail='awaiting_live_semantic_review',
                                       now=self.service.store.now(), completed=False)
+                from .headless_fact_review import HeadlessFactReview
+                if HeadlessFactReview(self)._qualified_routes(available=False):
+                    self._partial(run_id, 'research_fact_review_partial', retry_at=self.service.store.now()+60)
                 return
             if complete and not unreviewed:
                 payload = json.loads(job.get('payload_json') or '{}')
@@ -347,6 +383,7 @@ class HeadlessFacts:
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
         suggestions, failures = [], []
+        review_task = None
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
         try:
             for ready in asyncio.as_completed(tasks):
@@ -362,6 +399,10 @@ class HeadlessFacts:
                     committed = await self._commit_unit(unit, extracted, job, run_id, goal, scope, control_revision)
                     if committed:
                         suggestions.append(extracted['result'])
+                        if review_task is None or review_task.done():
+                            if review_task is not None:
+                                await review_task
+                            review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision))
                 except (ConflictError, MalformedProviderResponse) as exc:
                     LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
                              story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
@@ -370,6 +411,9 @@ class HeadlessFacts:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if review_task is not None:
+                await review_task
+        await self._review_candidates(job, run_id, control_revision)
         if self._snapshot(job, run_id, control_revision) is not None:
             for result in suggestions:
                 self._queue_model_continuation(job, run_id, goal, scope, result, control_revision)
@@ -385,6 +429,7 @@ class HeadlessFacts:
             if pending or unread:
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
                 due = self._pending_retry_at(job, run_id) if len(failures) == len(units) else None
+                due = self._capacity_retry(job, run_id, failures, due, bool(suggestions))
                 self._partial(run_id, 'research_fact_next_page' if unread or unvisited
                               else 'research_fact_source_coverage_partial', retry_at=due)
 
@@ -487,7 +532,8 @@ class HeadlessFacts:
             if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
                 continue  # This exact unit remains fenced until its existing route deadline.
             if not saved and old.get('phase') in {'started', 'unknown'} and not self._boundary_closed(story, page['_unit_id']):
-                self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'])
+                self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'],
+                                 retry_at=self.service.store.now()+300)
                 continue
             if saved and saved['owner'] != owner:
                 old_owner = saved['owner']
@@ -535,13 +581,15 @@ class HeadlessFacts:
             self._unit_phase(job, page['_unit_id'], 'result', chunk_id=page['chunk_id'])
             return unit, extracted, None
         except asyncio.CancelledError:
-            self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'])
+            self._unit_phase(job, page['_unit_id'], 'unknown', chunk_id=page['chunk_id'],
+                                 retry_at=self.service.store.now()+300)
             raise
         except (RuntimeError, OSError, ValueError) as exc:
             known = isinstance(exc, MalformedProviderResponse) or self._boundary_closed(story, page['_unit_id'])
             self._unit_phase(job, page['_unit_id'], 'closed_error' if known else 'unknown',
                              chunk_id=page['chunk_id'], error_type=type(exc).__name__,
-                             retry_at=getattr(exc, 'retry_at', None))
+                             error_code=type(exc).__name__,
+                             retry_at=getattr(exc, 'retry_at', None) or (None if known else self.service.store.now()+300))
             return unit, None, exc
 
     async def _commit_unit(self, unit, extracted, job, run_id, goal, scope, control_revision):

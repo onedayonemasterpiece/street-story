@@ -87,6 +87,26 @@ def pending_candidates(db, story_id, run_id):
         (story_id, fid)).fetchone()]
 
 
+def candidate_review_fence(db, story):
+    """Owner inputs, distinct from unrelated background candidate revisions."""
+    research = json.loads(story['research_json'] or '{}')
+    return {'photo': story['photo_sha256'], 'identity_generation': research.get('identity_generation'),
+            'controls': research.get('research_controls'), 'input_revision': research.get('input_revision'),
+            'fact_request_revision': research.get('fact_request_revision'),
+            'transcript': research.get('transcript'), 'draft': story['draft_text'],
+            'latitude': story['latitude'], 'longitude': story['longitude'],
+            'voices': [list(r) for r in db.execute('SELECT session_id,recording_finished,transcript '
+                'FROM voice_sessions WHERE story_id=? ORDER BY session_id', (story['id'],))],
+            'concept': research.get('publication_concept'),
+            'selected': [r[0] for r in db.execute('SELECT assertion_id FROM fact_assertions '
+                'WHERE story_id=? AND owner_selected=1 ORDER BY assertion_id', (story['id'],))]}
+
+
+def eligible_bundle(db, story_id):
+    return {r[0]: r[1] for r in db.execute('SELECT assertion_id,revision_digest FROM fact_assertions '
+        "WHERE story_id=? AND eligibility='eligible' ORDER BY assertion_id", (story_id,))}
+
+
 def load(adapter, session, db, ref):
     row = db.execute('SELECT * FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                      (ref, session.resource_id)).fetchone()
@@ -107,7 +127,12 @@ def load(adapter, session, db, ref):
             existing = db.execute("SELECT revision_digest,eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?", (session.resource_id, claim['fact_id'])).fetchone()
             if not existing or existing['eligibility'] != 'eligible' or existing['revision_digest'] != claim['revision_digest']:
                 raise ConflictError('live_review_packet_stale', 'Nearby existing claim changed; request a fresh packet.')
-    if int(story['revision']) != row['story_revision'] or int(research.get('identity_generation') or 0) != row['identity_generation'] or current != payload['bundle']:
+    parallel = payload.get('parallel_candidate_review') is True
+    revision_stale = int(story['revision']) != row['story_revision']
+    if parallel:
+        revision_stale = (candidate_review_fence(db, story) != payload['owner_fence']
+                          or eligible_bundle(db, session.resource_id) != payload['eligible_bundle'])
+    if revision_stale or int(research.get('identity_generation') or 0) != row['identity_generation'] or current != payload['bundle']:
         raise ConflictError('live_review_packet_stale', 'Revisions changed; request a new packet. No decision applied.')
     actual = {r['evidence_id']: dict(r) for r in db.execute(
         "SELECT e.evidence_id,e.span_sha256,o.assertion_id FROM fact_evidence_spans e JOIN fact_observations o ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.status='accepted'", (session.resource_id,))}
@@ -147,7 +172,9 @@ def read(adapter, session, args):
                     candidate_ids.extend(str(f['fact_id']) for f in saved.get('facts', []) if f.get('fact_id'))
             candidate_mode = bool(candidate_ids) and not supersedes
             if candidate_mode:
-                candidate_ids = [fid for fid in dict.fromkeys(candidate_ids) if db.execute(
+                requested_candidates = args.get('_candidate_ids')
+                candidate_ids = [fid for fid in dict.fromkeys(candidate_ids)
+                                 if (requested_candidates is None or fid in requested_candidates) and db.execute(
                     "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
                     (session.resource_id, fid)).fetchone()][:3]
                 if not candidate_ids:
@@ -221,7 +248,18 @@ def read(adapter, session, args):
             payload = {'bundle': exact, 'items': items}
             if candidate_mode:
                 payload.update(candidate_scope=list(exact), nearby_existing_claims=nearby)
-            db.execute("UPDATE live_review_attempts SET state='superseded' WHERE state='pending' AND packet_ref IN (SELECT packet_ref FROM live_review_packets WHERE story_id=? AND binding=?)", (session.resource_id, binding(session)))
+                if args.get('_parallel_candidate_review') is True:
+                    payload.update(parallel_candidate_review=True, owner_fence=candidate_review_fence(db, story),
+                                   eligible_bundle=eligible_bundle(db, session.resource_id))
+            for pending_packet in db.execute("SELECT p.packet_ref,p.payload_json FROM live_review_packets p "
+                    "JOIN live_review_attempts a ON a.packet_ref=p.packet_ref WHERE p.story_id=? "
+                    "AND p.binding=? AND a.state='pending'", (session.resource_id, binding(session))):
+                previous = json.loads(pending_packet['payload_json'])
+                independent = (candidate_mode and previous.get('candidate_scope') is not None
+                               and not set(exact).intersection(previous['candidate_scope']))
+                if not independent:
+                    db.execute("UPDATE live_review_attempts SET state='superseded' WHERE packet_ref=?",
+                               (pending_packet['packet_ref'],))
             db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
                        (ref, session.resource_id, run_id, binding(session), int(story['revision']), int(run['identity_generation']), canonical(payload), canonical(reused)))
             scope = sorted(affected & set(exact)) if supersedes else sorted(set(exact) - {items[int(n)]['id'] for n in reused})
