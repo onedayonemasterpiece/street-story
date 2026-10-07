@@ -303,6 +303,7 @@ class IdentityLifecycleMixin:
                     try:
                         nearest = sorted(osm.get('nearby') or [], key=distance)[:20]
                         search_context = {
+                            'radius_m': osm.get('radius_m'),
                             'reverse_address': (osm.get('reverse') or {}).get('address') or {},
                             'nearby': [{'distance_m': item.get('distance_m'),
                                 'tags': {key: value for key, value in (item.get('tags') or {}).items()

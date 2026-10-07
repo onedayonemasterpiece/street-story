@@ -21,7 +21,7 @@ from .fact_ledger import (
     set_owner_selection,
 )
 from .model_facts import merge_model_fact_inventory, normalized_claim_key, validated_model_fact_text
-from .identity_candidate_policy import wikipedia_identity_eligible
+from .identity_candidate_policy import osm_identity_eligible, wikipedia_identity_eligible
 from .gemini import GeminiUnavailable
 from .identity_lifecycle import IdentityLifecycleMixin
 from .identity_visual import identify_nearest
@@ -393,6 +393,13 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 ) if part
             )
             name = str(tags.get("name") or address_name or item.get("display_name") or "").strip()
+            # An unnamed mapped building is still a physical hypothesis. Article
+            # photos can later resolve to its stable OSM ID; this is not a claim
+            # about its name, address, or identity.
+            anonymous_building = bool(not name and tags.get("building")
+                and str(tags.get("building")).casefold() != "no")
+            if anonymous_building:
+                name = "Здание без названия в OSM"
             normalized = re.sub(r"\s+", " ", name.casefold())
             if (
                 not name
@@ -423,6 +430,11 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "candidate_id": cid,
                 "name": name,
                 "type": "osm",
+                **({"identity_eligible": False, "identity_ineligible_reason": "osm_settlement_context"}
+                    if not osm_identity_eligible(tags) else {}),
+                **({"identity_role": "anonymous_physical_building",
+                    **{key: item[key] for key in ("lat", "lon", "center") if key in item}}
+                    if anonymous_building else {}),
                 "url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}",
                 "reference_excerpt": canonical(tags)[:1200],
                 "reference_image_urls": wiki_refs.get(normalized, []),

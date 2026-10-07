@@ -331,7 +331,8 @@ class LiveVisualComparisonMixin:
             'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
                 'url': c.get('url'), 'distance_m': c.get('distance_m'),
                 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
-                for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')][:32],
+                for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
+                and not str(c.get('candidate_id', '')).startswith('web:')][:32],
             'remaining_illustrations': remaining,
             'shooting_distance_instruction': (
                 'Оцени по SOURCE, перспективе, размеру объекта в кадре и доступным camera_hints '
@@ -348,6 +349,15 @@ class LiveVisualComparisonMixin:
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
+        catalog = {c.get('candidate_id'): c for c in identity.get('candidates', [])}
+        def reference_eligible(candidate):
+            if str(candidate.get('candidate_id') or '').startswith('web:'):
+                return True  # Article REF still requires the existing eligible physical-subject gate.
+            known = catalog.get(candidate.get('candidate_id'), candidate)
+            if candidate.get('identity_eligible') is not False and known.get('identity_eligible') is not False:
+                return True
+            from .identity_subject_binding import documented_physical_subject
+            return documented_physical_subject(known, catalog) is not None
         if (story.get('error_code') == 'visual_identity_conflict'
                 and int(identity.get('generation') or 0) == generation):
             return {'identity_conflict': True, 'exhausted': True, 'visual_identity': identity}
@@ -379,7 +389,8 @@ class LiveVisualComparisonMixin:
         if state is None:
             queue = []
             for candidate in identity.get('candidates', []):
-                if candidate.get('reference_image_urls') and candidate.get('discovery') != 'web_article_media':
+                if (reference_eligible(candidate) and candidate.get('reference_image_urls')
+                        and candidate.get('discovery') != 'web_article_media'):
                     from .identity_references import original_reference
                     urls = list(dict.fromkeys(original_reference(url) or url for url in candidate['reference_image_urls']))
                     queue.extend(self._image_entries({**candidate, 'reference_image_urls': urls}))
@@ -518,7 +529,8 @@ class LiveVisualComparisonMixin:
         read_pages = 0
         searches_performed = 0
         from .article_media import article_candidates
-        physical = [c for c in identity.get('candidates', []) if not str(c.get('candidate_id', '')).startswith('web:')]
+        physical = [c for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
+            and not str(c.get('candidate_id', '')).startswith('web:')]
         physical_ids = {value for c in physical for value in [c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])] if value}
         article_urls = {str(url).rstrip('/') for c in physical for url in [c.get('url'), c.get('wikipedia_url')]
             if url and (urlsplit(str(url)).hostname or '').endswith('.wikipedia.org')}
@@ -578,7 +590,13 @@ class LiveVisualComparisonMixin:
                     cached = hashlib.sha256(body).hexdigest() == saved.get('sha256')
                 except (KeyError, TypeError, ValueError):
                     pass
-            return (page_distance(page), source_rank(page), int(not cached), page.get('attempts', 0))
+            # Ready references get their initial turn immediately. After that,
+            # independently discovered articles must not wait for a whole Wiki
+            # gallery. Provenance schedules acquisition; the model binds POI.
+            independent = source_rank(page) == 2 and bool((page.get('source') or {}).get('discovery_provider'))
+            article_turn = int(state.get('preferred_units') or 0) >= 2 and independent
+            return (int(not article_turn), page.get('attempts', 0),
+                    page_distance(page), source_rank(page), int(not cached))
 
         async def acquire_page(page):
             receipts = []
@@ -640,13 +658,17 @@ class LiveVisualComparisonMixin:
                        and page.get('retry_at', 0) <= self.service.store.now()
                        and page.get('source', {}).get('url') != state['queue'][0].get('url')]
                 if due:
-                    page = min(due, key=lambda p: (p.get('attempts', 0), acquisition_priority(p)))
+                    page = min(due, key=acquisition_priority)
                     tail_count = len(state['queue'])
                     read_pages += 1
                     await acquire_page(page)
                     state['units_since_acquisition'] = 0
                     if len(state['queue']) > tail_count:
                         state['queue'] = state['queue'][tail_count:] + state['queue'][:tail_count]
+                        record_identity_event(self.service, story['id'], 'identity_source_priority', {
+                            'generation': generation, 'reason': 'independent_article_turn',
+                            'gallery_frames_retained': tail_count,
+                            'new_reference_count': len(state['queue'])-tail_count})
         if not state['queue']:
             from .article_media import article_candidates
             query = str(args.get('query') or state['query'] or query_hint)[:180]
@@ -704,6 +726,8 @@ class LiveVisualComparisonMixin:
                 if other is not None:
                     state['queue'].insert(0, state['queue'].pop(other))
             candidate = state['queue'].pop(0)
+            if not reference_eligible(candidate):
+                continue  # Context articles remain URL sources, never physical POI candidates.
             if any(unsupported_reference_url(url) for url in candidate.get('reference_image_urls') or []):
                 continue
             reference_id = candidate.get('reference_id') or next(self._image_entries(candidate))['reference_id']

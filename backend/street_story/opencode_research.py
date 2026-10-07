@@ -326,13 +326,14 @@ class OpenCodeResearch:
             workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': receipt['input_image_bytes'],
                         'max_steps': receipt['isolation']['steps'], 'max_output_chars': self.limits.max_output_chars,
                         'max_output_tokens': receipt['isolation']['max_output_tokens'],
-                        'max_search_context_chars': self.limits.max_search_context_chars}
+                        'max_search_context_chars': (self.limits.max_search_context_chars
+                            if 'websearch' in receipt['isolation']['allowed_tools'] else 0)}
             # Each model round sends the full native agent/tool schema and the
             # growing search transcript. Reserve their overhead too; counting
             # only the user prompt underestimates real native Plan usage.
             workload['estimated_tokens'] = (
                 (len(prompt.encode('utf-8')) + 2) // 3 + 10000
-                + (self.limits.max_search_context_chars + 2) // 3 * workload['max_steps']
+                + (workload['max_search_context_chars'] + 2) // 3 * workload['max_steps']
                 + workload['max_output_tokens'])
             async with self._admitted(binding, workload, receipt) as lease:
                 if not receipt['session_id']:

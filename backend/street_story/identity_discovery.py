@@ -8,13 +8,14 @@ import asyncio
 import hashlib
 import html
 import json
+import math
 import re
 from urllib.parse import quote
 
 import httpx
 
 from .gemini import GeminiUnavailable
-from .identity_candidate_policy import wikipedia_identity_eligible
+from .identity_candidate_policy import wikipedia_coordinate_context, wikipedia_identity_eligible
 from .identity_telemetry import record_identity_event
 from .identity_references import canonical_reference, original_reference
 from .providers import WIKIPEDIA_USER_AGENT, PermanentProviderError, RetryableProviderError
@@ -311,6 +312,12 @@ def merge_candidates(candidates, entity_name):
         explicit_entities = {item['wikidata'] for item in members if item.get('wikidata')}
         merged.append({
             **best, 'name': merged_name, 'reference_image_urls': references,
+            # A Commons image/category must not erase a page's host exclusion
+            # when it becomes the cluster representative.
+            **({'identity_eligible': False,
+                'identity_ineligible_reason': next((item.get('identity_ineligible_reason')
+                    for item in members if item.get('identity_ineligible_reason')), 'context_subject')}
+                if any(item.get('identity_eligible') is False for item in members) else {}),
             **({'wikidata': next(iter(explicit_entities))} if len(explicit_entities) == 1 else {}),
             'source_urls': sources, 'entity_aliases': aliases,
             'alias_candidate_ids': [item['candidate_id'] for item in members
@@ -375,13 +382,26 @@ async def category_candidates(service, client, searches, excluded, entity_name, 
     return result
 
 
-async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_name=''):
+async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_name='', story=None):
     failures = []
+    context = (story or {}).get('_identity_search_context') or {}
+    wikipedia = getattr(getattr(service, 'providers', None), 'wikipedia', None)
+    radii = [context.get('radius_m'), getattr(wikipedia, 'search_radius_m', None)]
+    finite_radii = []
+    for value in radii:
+        try:
+            value = float(value)
+            if math.isfinite(value) and value > 0:
+                finite_radii.append(value)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    local_radius = max(finite_radii, default=None)
     async with httpx.AsyncClient(timeout=10, follow_redirects=False,
             headers={'User-Agent': WIKIPEDIA_USER_AGENT}) as client:
         jobs = [api(service, client, WIKI, {
             'generator': 'search', 'gsrsearch': query, 'gsrlimit': 3, 'gsrnamespace': 0,
-            'prop': 'extracts|info|pageimages|images|pageprops', 'exintro': 1, 'explaintext': 1,
+            'prop': 'extracts|info|pageimages|images|pageprops|coordinates',
+            'coprimary': 'primary', 'colimit': 'max', 'exintro': 1, 'explaintext': 1,
             'exchars': 1200, 'inprop': 'url', 'piprop': 'name|original|thumbnail',
             'pithumbsize': 1280, 'imlimit': 10}) for query in wiki_queries]
         responses = await asyncio.gather(*jobs, return_exceptions=True)
@@ -433,6 +453,7 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
                     'extract': plain(page.get('extract')), 'reference_image_urls': references,
                     'identity_eligible': wikipedia_identity_eligible(
                         str(page.get('title') or ''), str(page.get('extract') or '')),
+                    **wikipedia_coordinate_context(page, story, local_radius),
                     'entity_keys': entity_keys, 'entity_aliases': aliases,
                     'discovery': 'wikipedia_text_search'})
         if commons_query:
@@ -666,7 +687,7 @@ async def recover(service, story, transcript, candidates, excluded):
             record_identity_event(service, story['id'], 'identity_web_search_hints', {
                 'hint_count': len(web_hints)})
         discovered = await retrieve(
-            service, search_queries, commons_query, excluded, entity_name=entity_name)
+            service, search_queries, commons_query, excluded, entity_name=entity_name, story=story)
         record_identity_event(service, story['id'], 'identity_discovery_candidates', {
             'candidate_ids': [x['candidate_id'] for x in discovered],
             'query_count': len(search_queries) + bool(commons_query),
