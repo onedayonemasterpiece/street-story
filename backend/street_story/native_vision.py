@@ -48,6 +48,19 @@ def visual_request(schema, supplied):
     contract['properties']['candidate_id']['enum'] = ['', *[r['candidate_id'] for r in references]]
     contract['properties']['reference_subject_candidate_id']['enum'] = ['', *[c['candidate_id'] for c in physical]]
     contract['properties']['alternative_candidate_ids']['items']['enum'] = [c['candidate_id'] for c in physical]
+    # Native structured outputs require every declared property in required.
+    # This provider-local contract leaves the shared optional host schema intact.
+    def strict_properties(node):
+        if isinstance(node, dict):
+            if 'properties' in node:
+                node['required'] = list(node['properties'])
+                node['additionalProperties'] = False
+            for value in node.values():
+                strict_properties(value)
+        elif isinstance(node, list):
+            for value in node:
+                strict_properties(value)
+    strict_properties(contract)
     prompt = ('Compare actual SOURCE and REF pixels. Labels/names/geography are hypotheses, never proof. '
               'Match requires distinctive visible correspondence. If unreadable or unresolved, return uncertain. '
               'alternative_candidate_ids contains ONLY competing physical objects, never proven aliases; '
@@ -334,6 +347,14 @@ class NativeVisionProvider:
                                 raise RetryableProviderError('native_unexpected_tool', retry_at=self.service.store.now() + 300)
                             receipt['usage'] = client.turn_token_usage(receipt['thread_id'], receipt['turn_id']) or {'cost': 'unknown'}
                             if turn.get('status') != 'completed':
+                                error = turn.get('error') or {}
+                                if isinstance(error, dict):
+                                    code = error.get('codexErrorInfo')
+                                    receipt['turn_error'] = {'code': code[:64] if isinstance(code, str) else 'other',
+                                        'message': safe_rpc_message(RuntimeError(str(error.get('message') or '')))}
+                                    logger.warning('native_visual_turn_failed story_id=%s attempt_id=%s thread_id=%s turn_id=%s code=%s message=%s',
+                                        story['id'], binding['attempt_id'], receipt['thread_id'], receipt['turn_id'],
+                                        receipt['turn_error']['code'], receipt['turn_error']['message'])
                                 receipt['phase'] = 'failed'
                                 self.permission.invalidate(grant, 'native_turn_failed')
                                 raise RetryableProviderError('native_turn_failed', retry_at=self.service.store.now() + 60)

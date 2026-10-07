@@ -120,3 +120,53 @@ async def test_three_read_rpc_failures_leave_original_unknown_and_charged(tmp_pa
     assert sum(m == 'thread/read' for m, _ in client.calls) == 3
     assert len(sends) == 1 and finalized[-1][1] == 'unknown'
     assert finalized[-1][0]['actual_total_tokens'] is None
+
+
+def test_native_pair_and_group_schema_require_every_property_without_host_mutation():
+    from street_story.headless_identity import grouped_verdict_schema
+    from street_story.native_vision import visual_request
+    original = copy.deepcopy(VERDICT_SCHEMA)
+    context = {'references': [{'reference_id': 'r1', 'candidate_id': 'web:r1'},
+                              {'reference_id': 'r2', 'candidate_id': 'web:r2'}],
+               'physical_candidates': [{'candidate_id': 'osm:1'}]}
+    def assert_strict(node):
+        if isinstance(node, dict):
+            if 'properties' in node:
+                assert set(node['required']) == set(node['properties'])
+                assert node['additionalProperties'] is False
+            for value in node.values():
+                assert_strict(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_strict(value)
+    for schema in (VERDICT_SCHEMA, grouped_verdict_schema()[0]):
+        before = copy.deepcopy(schema)
+        contract, _ = visual_request(schema, context)
+        assert_strict(contract)
+        assert schema == before
+        assert 'reference_subject_candidate_id' in contract['required']
+        assert 'reference_subject_observations' in contract['required']
+    assert VERDICT_SCHEMA == original
+
+
+@pytest.mark.asyncio
+async def test_terminal_native_schema_rejection_is_retained_without_request_refund(tmp_path):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    async def request(method, params, timeout=30):
+        result = await original(method, params, timeout)
+        if method == 'thread/read':
+            turn = result['thread']['turns'][0]
+            turn.update(status='failed', error={'codexErrorInfo': 'other',
+                'message': "Invalid schema: Missing reference_subject_candidate_id https://private.invalid"})
+        return result
+    client.request = request
+    with pytest.raises(RetryableProviderError, match='native_turn_failed'):
+        await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id': 'schema'})
+    saved = receipts[-1]
+    assert saved['phase'] == 'failed' and 'turn_error' in saved
+    assert 'Missing reference_subject_candidate_id' in saved['turn_error']['message']
+    assert 'https://' not in saved['turn_error']['message']
+    assert not saved.get('retry_safe') and not saved.get('provider_send_state')
+    assert len(sends) == 1 and finalized[-1][1] == 'completed'
+    assert finalized[-1][0]['actual_total_tokens'] == 321
