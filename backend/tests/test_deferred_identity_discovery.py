@@ -69,7 +69,7 @@ async def test_deferred_physical_discovery_reaches_queue_without_confirming_iden
 
     monkeypatch.setattr(service, '_candidate_reference_images', images)
     worker = HeadlessIdentity(service)
-    session = SimpleNamespace(id='deferred-discovery-session', resource_id=story['id'],
+    session = SimpleNamespace(id='headless:deferred-discovery-session', resource_id=story['id'],
         model='test-vision', state={})
     await worker._compare_place_images(session, {})
     pending = session.state['visual_comparison']['pending']

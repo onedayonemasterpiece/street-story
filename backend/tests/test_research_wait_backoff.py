@@ -234,3 +234,70 @@ async def test_input_specific_research_refusal_does_not_poison_other_input(tmp_p
         return {'result': 'healthy-input'}
     assert await adapter.run(story, 'search', 'healthy-input', healthy) == {'result': 'healthy-input'}
     assert len(called) == 1
+
+
+@pytest.mark.asyncio
+async def test_large_fact_daily_refusal_does_not_block_smaller_search_reservation(tmp_path):
+    adapter, service, story, clock = setup_adapter(tmp_path)
+    remaining = 2000
+    probes = []
+    sends = []
+
+    async def large_fact(binding):
+        probes.append(('facts', 3000))
+        if 3000 > remaining:
+            raise ResourceRefusal('RESOURCE_DAILY_BUDGET', 60000)
+        sends.append('unreachable')
+
+    async def small_search(binding):
+        probes.append(('search', 1000))
+        assert 1000 <= remaining
+        sends.append('source-discovery')
+        return {'sources': [{'url': 'https://example.org/source', 'title': 'Public article'}]}
+
+    with pytest.raises(RetryableProviderError):
+        await adapter.run(story, 'facts', 'frozen-large-fact-chunk', large_fact)
+    # The refused exact unit remains frozen rather than hot-looping authority.
+    with pytest.raises(RetryableProviderError):
+        await adapter.run(story, 'facts', 'frozen-large-fact-chunk', large_fact)
+    assert probes == [('facts', 3000)] and not sends
+    found = await adapter.run(story, 'search', 'independent-small-query', small_search)
+    assert found['sources'][0]['url'] == 'https://example.org/source'
+    assert probes == [('facts', 3000), ('search', 1000)]
+    assert sends == ['source-discovery']
+    assert service.store.cache_get('research-quota-health:opencode:configured') is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_blanket_daily_wait_does_not_hide_normal_admission_for_new_unit(tmp_path):
+    adapter, service, story, clock = setup_adapter(tmp_path)
+    key = 'research-quota-health:opencode:configured'
+    legacy = {'category': 'RESOURCE_DAILY_BUDGET', 'retry_at': clock[0]+86400}
+    service.store.cache_put(key, legacy, 86400)
+    probes = []
+
+    async def denied(binding):
+        probes.append(binding['request_id'])
+        raise ResourceRefusal('RESOURCE_DAILY_BUDGET', 60000)
+
+    for _ in range(2):
+        with pytest.raises(RetryableProviderError):
+            await adapter.run(story, 'search', 'new-frozen-query', denied)
+    assert len(probes) == 1
+    assert service.store.cache_get(key) == legacy  # no quota/cooldown reset
+
+
+@pytest.mark.asyncio
+async def test_provider429_wait_still_blocks_new_independent_units(tmp_path):
+    adapter, service, story, clock = setup_adapter(tmp_path)
+    probes = []
+
+    async def quota(binding):
+        probes.append(binding['request_id'])
+        raise ResearchUnavailable('provider_429', {'provider_status': 429})
+
+    for unit in ('first-search', 'second-independent-search'):
+        with pytest.raises(RetryableProviderError):
+            await adapter.run(story, 'search', unit, quota)
+    assert len(probes) == 1
+    assert service.store.cache_get('research-quota-health:opencode:configured')['category'] == 'research_provider_quota'

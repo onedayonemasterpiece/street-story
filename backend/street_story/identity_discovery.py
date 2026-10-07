@@ -48,7 +48,8 @@ async def suggest(service, story, transcript, candidates):
         'entity_name': {'type': 'string'},
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
         'visual_query': {'type': 'string'},
-        'commons_query': {'type': 'string'}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query']}
+        'commons_query': {'type': 'string'},
+        'article_queries': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query']}
     source_bytes = service._source_photo_bytes(story['id'])
     source_mime = story.get('photo_mime_type') or 'image/jpeg'
     prompt = (
@@ -58,6 +59,17 @@ async def suggest(service, story, transcript, candidates):
         'неизвестное название. Фото может показывать только часть объекта. '
         'entity_name — короткое наиболее вероятное название именно сооружения/объекта по-русски; '
         'название города, района или общий тип здания не подходит. '
+        'Для исторических зданий Калининградской области полезен дополнительный интернет-запрос '
+        'с адресом или названием и словом prussia39, например «улица номер дома prussia39». '
+        'Используй только адрес, подтверждённый доступными данными; не выдумывай его. '
+        'Это дополнительный источник статей/фотографий, а не обязательная Wikipedia-статья '
+        'и не доказательство identity без сравнения SOURCE и REF. '
+        'article_queries — до трёх обычных интернет-запросов для статей и фотографий. '
+        'Если на фото близкий дом, сначала используй ближайшие улицы/подтверждённые адреса '
+        'и видимые признаки, а не имена далёких достопримечательностей. '
+        'Добавь вариант с prussia39 для исторического здания. Статья в Wikipedia не обязательна. '
+        'Расстояния и focal_length_35mm помогают оценить правдоподобие гипотез, но не доказывают объект. '
+        'Не выводи номер дома из одной геометки на соседней улице. '
         'Верни до двух коротких запросов для русской Википедии по наиболее вероятным собственным именам. '
         'visual_query обязателен: это отдельный поисковый запрос только по реально видимым физическим признакам '
         '(материал, форма башни/крыши, часы, окна, декор, надписи) плюс region_hint; не вставляй туда entity_name. '
@@ -65,7 +77,10 @@ async def suggest(service, story, transcript, candidates):
         'commons_query — аналогичный английский запрос по видимым признакам и region_hint для Wikimedia Commons, '
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': REGION_HINT,
-                    'nearby_names': [x.get('name', '')[:160] for x in candidates[:16]],
+                    'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
+                        'camera_alignment') if key in x} for x in candidates[:16]],
+                    'location_search_context': story.get('_identity_search_context', {}),
+                    'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
                     'author_context': transcript[:1500]}, ensure_ascii=False))
     config = types.GenerateContentConfig(
@@ -78,7 +93,11 @@ async def suggest(service, story, transcript, candidates):
         response = await gemini._generate(key, timeout, [
             types.Part.from_bytes(data=source_bytes, mime_type=source_mime), prompt], config,
             operation='grounded_research', model=model, quota=quota)
-        return queries_from(json.loads(response.text or '{}'))
+        payload = json.loads(response.text or '{}')
+        queries = payload.get('article_queries') if isinstance(payload, dict) else None
+        story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
+            if isinstance(q, str) and q.strip()))[:3] if isinstance(queries, list) else []
+        return queries_from(payload)
     routes = getattr(gemini, 'research_routes', None)
     if not routes:
         return await gemini.executor.execute('grounded_research', call)
@@ -474,8 +493,10 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     """
     from .errors import RetryableProviderError
     from .gemini import GeminiUnavailable
-    query = (f'{entity_name} {REGION_HINT} фотографии разные ракурсы' if entity_name
-             else f'{visual_query} {REGION_HINT} фото').strip()
+    query = story.get('_identity_search_query') if story else None
+    if not query:
+        query = (f'{entity_name} {REGION_HINT} фотографии разные ракурсы' if entity_name
+                 else f'{visual_query} {REGION_HINT} фото').strip()
     routes, failures = [], []
     researcher = getattr(service.providers, 'research', None)
     if researcher is not None and story is not None:
@@ -483,11 +504,19 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     google = getattr(service.providers.gemini, 'discover_article_urls', None)
     if callable(google):
         routes.append(('google', lambda: asyncio.wait_for(google(query), timeout=45)))
+    public_search = getattr(service.providers.gemini, '_public_web_search', None)
+    if callable(public_search):
+        # Existing URL/snippet discovery needs neither model quota nor another
+        # framework. Acquired articles and vision still supply identity proof.
+        routes.append(('public_web', lambda: asyncio.wait_for(public_search(query), timeout=15)))
     for provider, call in routes:
         try:
             result = await call()
             sources = (result.get('sources') or []) if isinstance(result, dict) else (getattr(result, 'grounding_sources', None) or [])
             if sources:
+                if story:
+                    record_identity_event(service, story['id'], 'identity_search_route_ready', {
+                        'provider': provider, 'source_count': len(sources)})
                 return sources
         except Exception as exc:
             failures.append(exc)
@@ -496,7 +525,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                     'provider': provider, 'code': getattr(exc, 'code', type(exc).__name__),
                     'retry_at': getattr(exc, 'retry_at', None)})
     if failures:
-        retry = [exc.retry_at for exc in failures if getattr(exc, 'retry_at', None)]
+        retry = [getattr(exc, 'retry_at', None) or service.store.now() + 30 for exc in failures]
         raise GeminiUnavailable(min(retry) if retry else service.store.now() + 30, 'all_article_search_routes_unavailable')
     if not routes:
         raise RetryableProviderError('article_url_discovery_not_configured')
@@ -577,7 +606,17 @@ async def recover(service, story, transcript, candidates, excluded):
             service, story, transcript, candidates)
         from .article_media import article_candidates
         record_identity_event(service, story['id'], 'identity_web_media_started', {'generation': story.get('_identity_generation', 0)})
-        sources = await web_image_sources(service, entity_name, visual_query, story=story)
+        sources, search_failures = [], []
+        for query in story.get('_identity_article_queries') or [None]:
+            query_story = {**story, '_identity_search_query': query} if query else story
+            try:
+                sources = await web_image_sources(service, entity_name, visual_query, story=query_story)
+                if sources:
+                    break
+            except (RetryableProviderError, GeminiUnavailable) as exc:
+                search_failures.append(exc)
+        if not sources and search_failures:
+            raise search_failures[0]
         history = _retain_article_discovery(service, story, sources)
         pages = history.get('pages') or {}
         cached, unread = [], []

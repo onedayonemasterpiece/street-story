@@ -19,6 +19,22 @@ def _load_installer():
     return module
 
 
+def test_publisher_maintenance_does_not_stop_generated_backend_unit(tmp_path, monkeypatch):
+    from configparser import ConfigParser
+    module = _load_installer()
+    captured = []
+    monkeypatch.setattr(module, 'DATA_ROOT', tmp_path / 'data')
+    monkeypatch.setattr(module, 'UNIT_ROOT', tmp_path / 'units')
+    monkeypatch.setattr(module, 'private_write', lambda path, text: captured.append(text))
+    monkeypatch.setattr(module, 'run', lambda *args, **kwargs: '')
+    module.install_service(tmp_path / 'release', tmp_path / 'venv')
+    unit = ConfigParser(interpolation=None, strict=False)
+    unit.read_string(captured[0])
+    assert 'vibepublish.service' not in unit['Unit'].get('Requires', '').split()
+    assert 'vibepublish.service' in unit['Unit']['Wants'].split()
+    assert 'vibepublish.service' in unit['Unit']['After'].split()
+
+
 @pytest.mark.parametrize('broken', [None, 'missing_proof', 'wrong_control', 'unverified_common_gate'])
 def test_installer_preserves_proven_direct_vision_route_and_rejects_incomplete_metadata(tmp_path, monkeypatch, broken):
     module = _load_installer()

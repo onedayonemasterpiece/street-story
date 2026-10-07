@@ -203,7 +203,7 @@ async def test_web_search_uses_supported_grounding_models_in_order(tmp_path):
 
     assert primary.calls == 1
     assert fallback.calls == 1
-    assert models == ["gemini-3.8-flash"]
+    assert models == [settings.gemini_model]
     assert result.payload["summary"] == "Search summary"
     assert result.grounding_sources == [{
         "type": "web",
@@ -233,7 +233,7 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
         gemini_fallback_model="gemini-3.5-flash-lite",
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
-    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
@@ -264,7 +264,7 @@ async def test_web_search_falls_back_to_independent_result_snippets(tmp_path):
 
     result = await client.search_web("Brandenburg Gate Kaliningrad", {"place_name": "Kaliningrad"})
 
-    assert [executor.calls for executor in failures] == [1, 1]
+    assert [executor.calls for executor in failures] == [1] * len(failures)
     assert result.payload["search_provider"] == "duckduckgo_html_fallback"
     assert result.payload["facts"] == []
     assert [(source["title"], source["url"]) for source in result.grounding_sources] == [
@@ -293,7 +293,7 @@ async def test_web_search_semantically_completes_discovery_snippets_with_researc
         gemini_fallback_model="gemini-3.5-flash-lite",
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
-    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
@@ -482,7 +482,7 @@ async def test_discovery_fact_metadata_is_fail_soft_but_evidence_is_fail_closed(
         gemini_fallback_model="gemini-3.5-flash-lite",
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
-    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
@@ -556,7 +556,7 @@ async def test_discovery_reads_selected_page_when_snippets_do_not_answer_visual_
         gemini_fallback_model="gemini-3.5-flash-lite",
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
-    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
@@ -787,7 +787,7 @@ async def test_long_page_tail_fact_is_extracted_and_all_chunks_are_accounted_for
         )
 
     client = GeminiClient(settings, store)
-    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)
@@ -908,7 +908,7 @@ async def test_chunk_fact_with_non_verbatim_quote_is_rejected_fail_closed(tmp_pa
         gemini_fallback_model="gemini-3.5-flash-lite",
     )
     client = GeminiClient(settings, Store(tmp_path / "street-story.sqlite3"))
-    failures = [FailingSearchExecutor(), FailingSearchExecutor()]
+    failures = [FailingSearchExecutor() for _ in client.web_search_routes]
     client.web_search_routes = [
         (route[0], route[1], route[2], executor)
         for route, executor in zip(client.web_search_routes, failures, strict=True)

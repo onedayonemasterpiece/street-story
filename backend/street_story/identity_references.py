@@ -5,6 +5,11 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 MAX_BYTES = 8 * 1024 * 1024
 
 
+def unsupported_reference_url(url: str) -> bool:
+    """Known unsupported formats; extensionless raster URLs remain usable."""
+    return urlsplit(url).path.lower().endswith(('.svg', '.pdf', '.tif', '.tiff'))
+
+
 def canonical_reference(raw: str) -> str | None:
     try:
         url = urlsplit(raw)
@@ -66,7 +71,7 @@ async def reference_images(service, candidates, limit=6, *, story_id=None, http=
             continue
         for raw in candidate.get('reference_image_urls') or []:
             url = public_url(raw)
-            if not url or url in seen_urls:
+            if not url or url in seen_urls or unsupported_reference_url(url):
                 continue
             if len(result) >= max(0, min(6, limit)):
                 return result
