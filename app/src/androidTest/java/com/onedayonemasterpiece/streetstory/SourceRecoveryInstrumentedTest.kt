@@ -105,6 +105,13 @@ class SourceRecoveryInstrumentedTest {
             assertFalse("No visual send while SOURCE unavailable", calls.any { it.path.orEmpty().endsWith("/visual") })
             val projection = ResearchProjectionStore(context).get(id)
             assertEquals("Уже выбранный угол", projection?.publicationConcept)
+            // An already accepted external operation may complete without
+            // local SOURCE access. Keep readback alive, without another send.
+            wire.state = StoryStage.VISUAL_PROCESSING
+            assertTrue(first.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null))
+            assertEquals(StoryStage.VISUAL_PROCESSING, store.story(id)?.stage)
+            assertFalse(calls.any { it.path.orEmpty().endsWith("/visual") })
+            wire.state = StoryStage.REVIEW
             // The same still-granted provider URI is restored; no photo copy,
             // no new story, and no fresh visual request ID is invented.
             store.setPhotoSourcePath(id, photo.toString())

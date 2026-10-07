@@ -172,7 +172,8 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             store.setStage(story.clientStoryId, current.stage, SOURCE_UNAVAILABLE_MESSAGE)
             // A revoked grant requires owner/provider access restoration. Do not
             // hot-loop a visual; reopening the app or reattaching enqueues sync.
-            return remote.researchPending["facts"] == true && remote.researchControls["facts"]?.stopped != true
+            return (remote.researchPending["facts"] == true && remote.researchControls["facts"]?.stopped != true) ||
+                remote.state in setOf(StoryStage.QUEUED, StoryStage.VISUAL_PROCESSING, StoryStage.SCHEDULING)
         }
         return shouldPollStory(remote)
     }
