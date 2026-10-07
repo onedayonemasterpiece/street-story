@@ -95,9 +95,14 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
 
     async def worker_loop(*, visual_only=False) -> None:
         while True:
-            worked = await service.run_once(
-                claim_kind='identity_visual' if visual_only else None,
-                exclude_kind=None if visual_only else 'identity_visual')
+            if visual_only:
+                # Initial discovery must not wait behind a background research
+                # await. Keep both identity stages in the existing foreground lane.
+                worked = await service.run_once(claim_kind='identity')
+                if not worked:
+                    worked = await service.run_once(claim_kind='identity_visual')
+            else:
+                worked = await service.run_once(exclude_kind='identity_visual')
             if not worked:
                 await asyncio.sleep(settings.worker_poll_seconds)
 
