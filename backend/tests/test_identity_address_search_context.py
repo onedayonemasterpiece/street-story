@@ -1,3 +1,5 @@
+from test_reference_image_codec import jpeg
+from street_story.reference_image_codec import normalize_reference
 import json
 from types import SimpleNamespace
 
@@ -78,7 +80,7 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
         for i, name in [(1, 'First Road'), (2, 'Second Road')]]
     story = {'id': 'fixture', 'photo_mime_type': 'image/jpeg', 'latitude': 54.71, 'longitude': 20.507,
         '_identity_search_context': {'reverse_address': {'road': 'First Road'}, 'nearby': street_contexts}}
-    service = SimpleNamespace(_source_photo_bytes=lambda _: b'fixture-source',
+    service = SimpleNamespace(_source_photo_bytes=lambda _: jpeg(),
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     result = await suggest(service, story, '', candidates)
     assert result == ('', [], 'brick building', '')
@@ -88,7 +90,7 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
     assert supplied['map_coordinates']['provenance'] == 'osm.center'
     assert [item['road_name'] for item in contexts[0]['location_search_context']['nearby']] == ['First Road', 'Second Road']
     assert story['_identity_article_queries'] == ['First Road brick building', 'Second Road brick building', 'brick building']
-    assert contents_seen[0][0].inline_data.data == b'fixture-source'
+    assert contents_seen[0][0].inline_data.data == normalize_reference(jpeg())[1]
     assert 'address' not in story  # no model search hint becomes confirmed subject data
 
 

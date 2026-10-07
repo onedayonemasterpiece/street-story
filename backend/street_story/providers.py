@@ -3850,7 +3850,8 @@ class GeminiClient:
             "draft_text должен быть короткой публикацией, а не research dump. Structured context:\n"
             + json.dumps(context, ensure_ascii=False)
         )
-        data = photo_path
+        from .reference_image_codec import normalize_reference
+        photo_mime, data = await asyncio.to_thread(normalize_reference, photo_path)
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             response_mime_type="application/json",

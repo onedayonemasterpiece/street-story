@@ -368,7 +368,7 @@ class OpenCodeResearch:
                 raise ResearchUnavailable('research_image_invalid') from None
         prompt += '\nResponse JSON schema (validate locally, no retries):\n' + json.dumps(schema, ensure_ascii=False)
         operation = json.dumps({'role': role, 'binding': {k: v for k, v in binding.items()
-                                    if k not in {'session_id', 'message_id', 'phase', 'image_transport'}}, 'prompt': prompt,
+                                    if k not in {'session_id', 'message_id', 'phase', 'image_transport', 'image_preparation'}}, 'prompt': prompt,
                                 'reference_ids': [item.get('reference_id') for item in supplied['references']] if direct_parts else []}, sort_keys=True)
         logical_hash = hashlib.sha256(operation.encode()).hexdigest()
         # Match the installed client's public Identifier format. Retain the
@@ -388,7 +388,9 @@ class OpenCodeResearch:
         try:
             submitted = bool(binding.get('message_id')) or receipt['phase'] in {
                 'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}
-            if direct_parts and not submitted:
+            from .reference_image_codec import MODEL_PREPARATION, normalize_reference
+            prepare = not submitted or binding.get('image_preparation') == MODEL_PREPARATION
+            if direct_parts and prepare:
                 # Installed OpenCode normalizes every image before saving the
                 # prompt and requires data URIs. Materialize public REF in RAM
                 # before admission; never rewrite historical submitted inputs.
@@ -401,14 +403,24 @@ class OpenCodeResearch:
                                 raise ValueError('reference_not_image')
                             part = {**part, 'mime_type': mime, 'bytes': raw,
                                 'url': f'data:{mime};base64,' + base64.b64encode(raw).decode('ascii')}
+                        mime, raw = await asyncio.to_thread(normalize_reference, part['bytes'])
+                        part = {**part, 'mime_type': mime, 'bytes': raw,
+                            'url': f'data:{mime};base64,' + base64.b64encode(raw).decode('ascii')}
                         resolved.append(part)
                 except Exception as exc:
+                    if submitted:
+                        # Reconstructing the prepared original input says
+                        # nothing about its retained send; preserve that ledger.
+                        from .errors import RetryableProviderError
+                        raise RetryableProviderError('research_image_reference_readback_waiting',
+                                                     retry_at=time.time()+60) from exc
                     receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
                                    error_type=type(exc).__name__)
                     raise ResearchUnavailable('research_image_reference_unavailable', receipt) from exc
                 direct_parts = resolved
-                receipt.update(image_transport='inline_data_uri_v1',
+                receipt.update(image_transport='inline_data_uri_v1', image_preparation=MODEL_PREPARATION,
                                input_image_bytes=sum(len(part['bytes']) for part in direct_parts))
+                receipt['binding']['image_preparation'] = MODEL_PREPARATION
             if submitted and binding.get('image_transport') == 'inline_data_uri_v1':
                 receipt['image_transport'] = binding['image_transport']
             receipt['isolation'] = await self._attest(client, role)
@@ -420,6 +432,10 @@ class OpenCodeResearch:
             # Each model round sends the full native agent/tool schema and the
             # growing search transcript. Reserve their overhead too; counting
             # only the user prompt underestimates real native Plan usage.
+            if role == 'vision':
+                # Pair comparison has no search/tool loop. Reserve its one
+                # provider turn once, independently of the shared agent profile.
+                workload['max_provider_sends'] = 1
             workload['estimated_tokens'] = (
                 (len(prompt.encode('utf-8')) + 2) // 3 + 10000
                 + (workload['max_search_context_chars'] + 2) // 3 * workload['max_steps']

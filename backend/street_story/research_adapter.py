@@ -222,7 +222,7 @@ class ProductResearchAdapter:
             if rows and old.get('phase') == 'completed':
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
-                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport') if k in old}}
+                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport', 'image_preparation') if k in old}}
             if rows and old.get('phase') == 'created':
                 resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                                job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
@@ -357,6 +357,40 @@ class ProductResearchAdapter:
         LOG.warning('street_story_research_route story_id=%s role=%s attempt_id=%s code=%s retry_at=%s',
                     binding.get('story_id'), role, binding['attempt_id'], code, retry_at)
 
+    def identity_search_context(self, story):
+        from .identity_map_context import map_entry_context
+        supplied = story.get('_identity_query_context') or {}
+        nearby = (story.get('_identity_search_context') or {}).get('nearby')
+        if nearby is None:
+            # Initial map context is transient; later turns reuse its durable
+            # OSM observations rather than losing the other address hypotheses.
+            with self.service.store.connection() as db:
+                row = self.service._story_row(db, story['id'])
+                research = json.loads(row['research_json'] or '{}')
+            from .identity_lifecycle import distance
+            nearby = sorted((research.get('osm') or {}).get('nearby') or [], key=distance)[:20]
+        anchors = []
+        for item in nearby:
+            mapped = item if item.get('map_address') else map_entry_context(item)
+            if mapped.get('map_address'):
+                anchors.append({**{key: mapped[key] for key in
+                    ('candidate_id', 'map_address', 'map_coordinates') if key in mapped},
+                    'distance_m': item.get('distance_m')})
+        verdict = supplied.get('last_verdict') or {}
+        context = {key: supplied[key] for key in ('query_seed', 'requested_query') if key in supplied}
+        context.update(nearby_address_hypotheses=anchors,
+            last_verdict={**{key: verdict[key] for key in ('status', 'confidence') if key in verdict},
+                'observations': [str(value)[:400] for value in (verdict.get('observations') or [])[:3]],
+                'alternative_candidate_ids': (verdict.get('alternative_candidate_ids') or [])[:16]})
+        # Search needs compact failed-hypothesis context, not repeated visual
+        # verdicts/large DTOs. Full evidence stays in the existing story ledger.
+        omitted = 0
+        while len(canonical(context)) > 6000 and anchors:
+            anchors.pop()
+            omitted += 1
+        context['omitted_address_hypotheses'] = omitted
+        return context
+
     async def search_articles(self, query, story):
         unit = canonical([query,story.get('_research_run_id')])
         history = self.search_history(story)
@@ -370,7 +404,8 @@ class ProductResearchAdapter:
                                  'Адрес должен следовать из доступных данных. Prussia39 может быть '
                                  'источником статьи и иногда фото; не исключай остальные источники.',
                              'research_history': history,
-                             'visual_evidence_context': story.get('_identity_query_context', {})})
+                             'visual_evidence_context': ({} if '_fact_research_control_revision' in story
+                                 else self.identity_search_context(story))})
         return await self.run(story, 'search', unit, lambda binding: self.client.search_articles(capsule, binding))
 
     def search_history(self, story):
@@ -857,7 +892,7 @@ class ProductResearchAdapter:
             role, receipt = unknowns[0]
             binding = {**(receipt.get('binding') or {}), **{key: receipt[key] for key in (
                 'thread_id', 'turn_id', 'session_id', 'message_id', 'phase', 'profile_verified',
-                'quota_permission', 'image_transport') if key in receipt}}
+                'quota_permission', 'image_transport', 'image_preparation') if key in receipt}}
             # Guard the current worker, while readback retains the original
             # provider binding and addressed IDs instead of inventing a turn.
             self.guard_binding({**binding, 'control_revision': scope['control_revision'],
@@ -998,7 +1033,7 @@ class ProductResearchAdapter:
         if receipt.get('phase') not in {'prompt_intent', 'submitted', 'unknown', 'thread_create_intent'}:
             return None
         return {**(receipt.get('binding') or {}), **{key: receipt[key] for key in
-                ('thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport') if key in receipt}}
+                ('thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport', 'image_preparation') if key in receipt}}
 
     async def visual_verdict(self, snapshot, story, schema, context):
         from .gemini import GeminiUnavailable

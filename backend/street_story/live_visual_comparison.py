@@ -547,12 +547,20 @@ class LiveVisualComparisonMixin:
             for row in db.execute("SELECT role,receipt_json FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'", (story['id'],)):
                 receipt = json.loads(row['receipt_json'])
                 binding = receipt.get('binding') or {}
+                # Local admission refusals stay CREATED but never sent a
+                # comparison. They must not suppress other article/query work.
+                # Contradictory send markers still fence the original operation.
+                send_marked = (receipt.get('provider_send_state') not in {None, 'not_sent'}
+                    or any(container.get(key) for container in (receipt, binding)
+                           for key in ('message_id', 'messageID', 'turn_id', 'turnId', 'possibly_sent')))
+                created_unsent = receipt.get('phase') == 'created' and not send_marked
                 if (receipt.get('phase') not in {'completed', 'failed', 'aborted'}
+                        and not created_unsent
                         and (binding.get('visual_scope') is True
                              or receipt.get('photo_sha256', binding.get('photo_sha256')) == story['photo_sha256'])
                         and receipt.get('generation', binding.get('generation', generation)) == generation):
                     unsettled = True
-                    if receipt.get('phase') not in {'created', 'completed', 'failed', 'aborted'}:
+                    if receipt.get('phase') not in {'created', 'completed', 'failed', 'aborted'} or send_marked:
                         from .errors import RetryableProviderError
                         # Restarts must not turn a possibly-sent group into a
                         # brand new pair. Its exact outcome remains unresolved.

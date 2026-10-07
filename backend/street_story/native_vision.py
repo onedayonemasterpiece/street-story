@@ -212,6 +212,11 @@ class NativeVisionProvider:
         # Historical uncertain attempts retain their original URL input for
         # readback. New operations inline public bytes before any provider send.
         inline = not submitted or binding.get('image_transport') == 'inline_data_uri_v1'
+        from .reference_image_codec import MODEL_PREPARATION, normalize_reference
+        prepare = not submitted or binding.get('image_preparation') == MODEL_PREPARATION
+        if prepare:
+            receipt['image_preparation'] = MODEL_PREPARATION
+            receipt['binding']['image_preparation'] = MODEL_PREPARATION
         input_parts = [{'type': 'text', 'text': prompt}]
         try:
             for part in image_parts:
@@ -220,8 +225,13 @@ class NativeVisionProvider:
                     mime, data = await self.public_image_loader(url)
                     if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
                         raise PermanentProviderError('native_vision:reference_not_image')
-                    part['bytes'] = data
+                    part['bytes'], part['mime_type'] = data, mime
+                if inline and prepare:
+                    mime, data = await asyncio.to_thread(normalize_reference, part['bytes'])
+                    part['bytes'], part['mime_type'] = data, mime
                     url = f'data:{mime};base64,{base64.b64encode(data).decode("ascii")}'
+                elif inline and part['bytes'] is not None:
+                    url = f'data:{part["mime_type"]};base64,{base64.b64encode(part["bytes"]).decode("ascii")}'
                 input_parts.extend([{'type': 'text', 'text': part['label']}, {'type': 'image', 'url': url}])
         except httpx.TransportError as exc:
             # A public REF download is before Native admission/turn submission.

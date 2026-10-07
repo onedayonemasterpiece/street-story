@@ -193,3 +193,51 @@ async def test_native_reserve_refusal_reaches_qualified_opencode_vision_fallback
     result = await adapter.visual_verdict(*visual_args(output.getvalue(), {'id': sid, 'photo_sha256': photo}, {}, canonical({
         'references': [{'candidate_id': 'wiki:1'}], 'physical_candidates': [{'candidate_id': 'wiki:1'}]})))
     assert result['result']['status'] == 'match' and len(calls) == 1
+
+
+def test_later_search_keeps_real_nearest_address_hypotheses_without_full_verdicts(tmp_path):
+    from street_story.service import canonical
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    nearby = [{'type': 'node', 'id': number, 'distance_m': metres, 'lat': 54.7, 'lon': 20.5,
+        'tags': {'addr:street': 'Fixture Street', 'addr:housenumber': str(number)}}
+        for number, metres in [(31, 24), (33, 39)]]
+    with service.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical({'osm': {'nearby': nearby}}), sid))
+    context = adapter.identity_search_context({'id': sid, 'photo_sha256': photo,
+        '_identity_query_context': {'last_verdict': {'status': 'mismatch', 'observations': ['interior']},
+            'recent_verdicts': ['unused detailed context' * 2000]}})
+    assert [x['map_address']['house_number'] for x in context['nearby_address_hypotheses']] == ['31', '33']
+    assert all(x['map_address']['scope'] == 'mapped_entry_only' for x in context['nearby_address_hypotheses'])
+    assert context['last_verdict']['status'] == 'mismatch'
+    assert 'recent_verdicts' not in context
+    assert len(canonical(context)) < 6000
+
+
+@pytest.mark.asyncio
+async def test_search_capsule_fits_after_large_visual_history_and_retains_address_alternatives(tmp_path):
+    import json
+    from types import SimpleNamespace
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter.search_history = lambda _: {'found_sources': [{'url': 'https://fixture.example/' + 'x' * 11500}]}
+    captures = []
+    async def search(capsule, binding):
+        captures.append(capsule)
+        return {'sources': []}
+    adapter.client = SimpleNamespace(search_articles=search)
+    async def invoke(story, role, unit, call):
+        return await call({'purpose': 'identity'})
+    adapter.run = invoke
+    address = {'candidate_id': 'osm:node:31', 'distance_m': 24,
+        'map_address': {'street': 'Fixture Street', 'house_number': '31', 'scope': 'mapped_entry_only'}}
+    await adapter.search_articles('Fixture Street 31', {'id': sid, 'photo_sha256': photo,
+        '_identity_search_context': {'nearby': [address]},
+        '_identity_query_context': {'recent_verdicts': ['private long repeated DTO' * 2000],
+            'last_verdict': {'status': 'uncertain', 'observations': ['reason' * 2000]}}})
+    assert len(captures[0]) < 20000
+    context = json.loads(captures[0])['visual_evidence_context']
+    assert context['nearby_address_hypotheses'][0]['map_address']['house_number'] == '31'
+    assert len(context['last_verdict']['observations'][0]) == 400

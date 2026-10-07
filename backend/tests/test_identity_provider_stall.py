@@ -192,7 +192,7 @@ async def test_search_terms_receive_nearby_address_distance_and_camera_context(t
 
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     assert await identity_discovery.suggest(svc, topic, '', []) == ('', [], 'red brick building', '')
-    assert topic['_identity_article_queries'] == [query]
+    assert topic['_identity_article_queries'] == [query, 'red brick building']
     queries = []
 
     async def public(q):

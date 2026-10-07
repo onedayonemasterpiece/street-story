@@ -211,6 +211,8 @@ class HeadlessVisionProvider:
                         materialized = []
                         for part in image_parts:
                             mime, data = (part['mime_type'], part['bytes']) if part['bytes'] is not None else await self._load_public_reference(part['url'])
+                            from .reference_image_codec import normalize_reference
+                            mime, data = await asyncio.to_thread(normalize_reference, data)
                             materialized.append({**part, 'mime_type': mime, 'bytes': data})
                         resolved_parts = materialized
                     contents = []

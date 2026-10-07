@@ -1,3 +1,5 @@
+from test_reference_image_codec import jpeg
+from street_story.reference_image_codec import normalize_reference
 import copy
 import json
 from types import SimpleNamespace
@@ -44,10 +46,10 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         assert 'article_queries' in config.response_json_schema['required']
         assert 'современными внешними фотографиями' in prompt
         assert 'содержательно разные запросы' in prompt
-        assert contents[0].inline_data.data == b'actual-source-fixture'
+        assert contents[0].inline_data.data == normalize_reference(jpeg())[1]
         return SimpleNamespace(text=json.dumps({'entity_name': 'Hypothesis', 'wikipedia_queries': [],
             'visual_query': feature, 'commons_query': '', 'article_queries': plan}))
-    service = SimpleNamespace(_source_photo_bytes=lambda _: b'actual-source-fixture',
+    service = SimpleNamespace(_source_photo_bytes=lambda _: jpeg(),
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     story = {'id': 'fixture', '_identity_search_context': {'nearby': [a, b]}}
     await identity_discovery.suggest(service, story, '', [])
