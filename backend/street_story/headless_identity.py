@@ -264,6 +264,33 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 or current.get('error_code') == 'visual_identity_conflict')
             if pair['phase'] == 'result':
                 return pair, {'result': pair['result'], 'receipt': pair['receipt']}, None
+            if pair['phase'] == 'ready':
+                frozen = pair['candidates'][0]
+                catalog = {c.get('candidate_id'): c for c in (latest.get('visual_identity') or {}).get('candidates', [])}
+                candidate = catalog.get(frozen.get('candidate_id'), frozen)
+                from .identity_subject_binding import documented_physical_subject
+                ineligible = (not str(frozen.get('candidate_id') or '').startswith('web:')
+                    and (candidate.get('identity_eligible') is False or frozen.get('identity_eligible') is False)
+                    and documented_physical_subject(candidate, catalog) is None)
+                if ineligible:
+                    observe = getattr(provider, 'visual_pair_receipts', None)
+                    if not callable(observe):
+                        return pair, None, RetryableProviderError('research_vision_route_unverified')
+                    receipts = observe({**story, '_identity_generation': scope['generation'],
+                        '_visual_reference_mapping': list(pair['reply']['references'])}, canonical(pair['reply']))
+                    safe_unsent = all((receipt.get('phase') in {'created', 'thread_created'}
+                        and receipt.get('provider_send_state') in {None, 'not_sent'})
+                        or (receipt.get('phase') in {'failed', 'aborted'}
+                            and receipt.get('provider_send_state') == 'not_sent'
+                            and (receipt.get('phase') != 'aborted' or receipt.get('abort_acknowledged')))
+                        for receipt in receipts.values())
+                    if safe_unsent:
+                        pair['phase'] = 'skipped'
+                        self._save_visual_queue(session, state)
+                        return pair, None, None
+                    # The ledger overrides a stale ready descriptor: observe its
+                    # original exact child address, never create another send.
+                    pair['phase'] = 'submitted'
             if accepted and pair['phase'] == 'ready':
                 pair['phase'] = 'skipped'
                 self._save_visual_queue(session, state)

@@ -293,6 +293,8 @@ class OSMClient:
 
 
 class WikipediaClient:
+    search_radius_m = 750
+
     def __init__(self, store: Store, http: httpx.AsyncClient | None = None):
         self.store = store
         self.http = http
@@ -307,7 +309,7 @@ class WikipediaClient:
         client = self.http or httpx.AsyncClient(timeout=20, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
         try:
             geo = await client.get(self.endpoint, params={
-                "action": "query", "list": "geosearch", "gscoord": f"{lat}|{lon}", "gsradius": 750,
+                "action": "query", "list": "geosearch", "gscoord": f"{lat}|{lon}", "gsradius": self.search_radius_m,
                 "gslimit": 20, "format": "json", "formatversion": 2,
             }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
             geo.raise_for_status()
