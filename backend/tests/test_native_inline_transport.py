@@ -72,3 +72,51 @@ def test_rpc_diagnostic_redacts_credentials_image_payload_and_url():
     for secret in ['https://', 'base64,abc', 'private-known-value', 'token123', 'another-secret']:
         assert secret not in text
     assert 'invalid image data URL:' in diagnostic['message'] and len(diagnostic['message']) <= 512
+
+
+@pytest.mark.asyncio
+async def test_first_read_rpc_failure_observes_same_turn_then_completes(tmp_path):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    reads = 0
+    class NativeAppServerError(RuntimeError):
+        code, data = -32600, None
+    async def request(method, params, timeout=30):
+        nonlocal reads
+        if method == 'thread/read':
+            reads += 1
+            if reads == 1:
+                client.calls.append((method, copy.deepcopy(params)))
+                raise NativeAppServerError('thread read is not ready https://private.invalid/path')
+        return await original(method, params, timeout)
+    client.request = request
+    result = await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id': 'read-race'})
+    assert result['receipt']['phase'] == 'completed' and reads == 2
+    error = result['receipt']['readback_rpc_error']
+    assert error['method'] == 'thread/read' and 'turn_rejected' not in error
+    assert 'https://' not in error['message']
+    assert len(sends) == 1 and finalized[-1][1] == 'completed'
+    assert sum(m == 'turn/start' for m, _ in client.calls) == 1
+    assert len({p['threadId'] for m, p in client.calls if m == 'thread/read'}) == 1
+
+
+@pytest.mark.asyncio
+async def test_three_read_rpc_failures_leave_original_unknown_and_charged(tmp_path):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    class NativeAppServerError(RuntimeError):
+        code, data = -32600, None
+    async def request(method, params, timeout=30):
+        if method == 'thread/read':
+            client.calls.append((method, copy.deepcopy(params)))
+            raise NativeAppServerError('thread cannot be read')
+        return await original(method, params, timeout)
+    client.request = request
+    with pytest.raises(RetryableProviderError, match='outcome_unknown'):
+        await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id': 'read-race'})
+    assert receipts[-1]['phase'] == 'unknown' and not receipts[-1].get('retry_safe')
+    assert receipts[-1]['readback_retry_count'] == 3
+    assert sum(m == 'turn/start' for m, _ in client.calls) == 1
+    assert sum(m == 'thread/read' for m, _ in client.calls) == 3
+    assert len(sends) == 1 and finalized[-1][1] == 'unknown'
+    assert finalized[-1][0]['actual_total_tokens'] is None

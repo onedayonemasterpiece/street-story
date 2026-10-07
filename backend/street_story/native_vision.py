@@ -287,8 +287,29 @@ class NativeVisionProvider:
                             raise
                         receipt.update(turn_id=response['turn']['id'], phase='submitted')
                         await self._save(binding, receipt)
+                    read_failures = 0
                     while time.monotonic() - started < self.timeout:
-                        read = await client.request('thread/read', {'threadId': receipt['thread_id'], 'includeTurns': True}, timeout=10)
+                        try:
+                            read = await client.request('thread/read', {'threadId': receipt['thread_id'], 'includeTurns': True}, timeout=10)
+                        except Exception as exc:
+                            error = native_rpc_error(exc)
+                            if error is None:
+                                raise
+                            # A read RPC rejection says nothing about the saved
+                            # inference. Observe this original turn only.
+                            error.pop('turn_rejected', None)
+                            read_failures += 1
+                            receipt['readback_rpc_error'] = {**error, 'method': 'thread/read'}
+                            receipt['readback_retry_count'] = read_failures
+                            await self._save(binding, receipt)
+                            logger.warning('native_visual_readback_wait story_id=%s attempt_id=%s thread_id=%s turn_id=%s code=%s message=%s',
+                                           story['id'], binding['attempt_id'], receipt['thread_id'], receipt['turn_id'],
+                                           error.get('code'), error.get('message'))
+                            if read_failures >= 3:
+                                receipt['phase'] = 'unknown'
+                                raise RetryableProviderError('native_turn_outcome_unknown', retry_at=self.service.store.now() + 60) from exc
+                            await asyncio.sleep(self.poll_seconds)
+                            continue
                         turns = read.get('thread', {}).get('turns', [])
                         if not receipt['turn_id'] and len(turns) == 1 and input_verified(turns[0]):
                             # The exclusively owned thread has one already submitted

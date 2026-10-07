@@ -96,8 +96,12 @@ async def prepared(tmp_path):
     adapter.service, adapter.client, adapter.giga = service, None, None
     adapter.primary_vision = SimpleNamespace(available=False, _verified_routes=lambda: [])
     permission = NativeQuotaPermission(service.store, binding_stamp=lambda: 'fixture-owner')
+    async def native_reference(url):
+        assert url == candidate['reference_image_urls'][0]
+        return 'image/jpeg', jpeg((640, 480))
+
     adapter.native_vision = NativeVisionProvider(service, admission=admission, checkpoint=adapter.checkpoint,
-        client_factory=lambda: client, permission=permission)
+        client_factory=lambda: client, permission=permission, public_image_loader=native_reference)
     adapter.native_vision.poll_seconds = .001
     service.providers.research = adapter
     service.store.cache_put(VERIFICATION_KEY, {'model': MODEL, 'transport': TRANSPORT,
