@@ -770,7 +770,7 @@ class ProductResearchAdapter:
         if receipt.get('phase') not in {'prompt_intent', 'submitted', 'unknown', 'thread_create_intent'}:
             return None
         return {**(receipt.get('binding') or {}), **{key: receipt[key] for key in
-                ('thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission') if key in receipt}}
+                ('thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport') if key in receipt}}
 
     async def visual_verdict(self, snapshot, story, schema, context):
         from .gemini import GeminiUnavailable

@@ -83,6 +83,9 @@ def setup(tmp_path):
         yield SimpleNamespace(before_send=send, finalize=finalize)
     provider = NativeVisionProvider(service, admission=admission, checkpoint=checkpoint,
                                     client_factory=lambda: client, permission=permission)
+    async def load_reference(url):
+        return 'image/jpeg', b'reference RAM bytes'
+    provider.public_image_loader = load_reference
     provider.poll_seconds = .001
     output = io.BytesIO()
     Image.new('RGB', (40, 40), 'red').save(output, format='JPEG')
@@ -163,7 +166,7 @@ async def test_existing_turn_readback_never_reserves_or_sends_another_inference(
         raise AssertionError('Readback must not acquire fresh inference capacity')
         yield
     provider.admission = unavailable
-    binding = {key: first['receipt'][key] for key in ('thread_id', 'turn_id', 'profile_verified', 'quota_permission')}
+    binding = {key: first['receipt'][key] for key in ('thread_id', 'turn_id', 'profile_verified', 'quota_permission', 'image_transport')}
     binding.update(attempt_id='first', phase='unknown')
     provider.service.store.time = 2000
     resumed = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
@@ -194,7 +197,7 @@ async def test_native_rejection_invalidates_quota_grant_before_expiry(tmp_path):
 async def test_lost_turn_start_response_reconciles_exact_input_without_another_turn(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
-    binding = {'attempt_id': 'first', 'phase': 'prompt_intent', 'thread_id': result['receipt']['thread_id'],
+    binding = {'image_transport': 'inline_data_uri_v1', 'attempt_id': 'first', 'phase': 'prompt_intent', 'thread_id': result['receipt']['thread_id'],
                'profile_verified': True}
     provider.service.store.time = 2000
     resumed = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)

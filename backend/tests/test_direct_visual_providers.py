@@ -85,7 +85,8 @@ async def test_native_direct_image_urls_ram_no_image_file_and_permission_lease(t
     images = [part for part in turns[0]['input'] if part['type'] == 'image']
     assert images[0]['url'].startswith('data:image/jpeg;base64,')
     assert base64.b64decode(images[0]['url'].split(',', 1)[1]) == snapshot
-    assert images[1]['url'] == 'https://example.org/ref.jpg'
+    assert images[1]['url'].startswith('data:image/jpeg;base64,')
+    assert base64.b64decode(images[1]['url'].split(',', 1)[1]) == b'reference RAM bytes'
     assert len(images) == 2 and not list(tmp_path.rglob('*.jpg'))
     assert 'localImage' not in json.dumps(turns) and 'sha256' not in json.dumps(receipts)
     assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
