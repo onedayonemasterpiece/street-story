@@ -11,6 +11,7 @@ import hashlib
 import json
 import time
 import uuid
+from urllib.parse import parse_qs, urlsplit
 
 from live_interaction import with_live_tool_parts
 
@@ -19,6 +20,24 @@ from .identity_telemetry import record_identity_event
 from .service import ConflictError, canonical
 
 
+def _article_acquisition_rank(source):
+    """Order reader leads by declared/page role; this never excludes a source."""
+    parsed = urlsplit(str(source.get('url') or ''))
+    segments = {part.casefold() for part in parsed.path.split('/') if part}
+    role = str(source.get('kind') or source.get('source_kind') or source.get('type') or '').casefold()
+    if (role in {'article', 'news', 'photo_gallery'}
+            or segments.intersection({'article', 'articles', 'news', 'story', 'stories', 'post', 'posts', 'blog'})):
+        return 0
+    context = ' '.join(str(source.get(key) or '') for key in ('title', 'snippet')).casefold()
+    if (role in {'map', 'directory', 'search', 'homepage', 'collection'}
+            or segments.intersection({'map', 'maps', 'geo', 'firm', 'search', 'directory', 'catalog', 'adresa', 'addresses'})
+            or any(marker in context for marker in ('на карте', 'номерами домов', 'справочник', 'каталог'))):
+        return 2
+    # An index endpoint can still identify a detail page through its query.
+    detail_query = set(parse_qs(parsed.query)).intersection({'id', 'sid', 'article', 'story', 'post'})
+    if not detail_query and parsed.path.rstrip('/').casefold() in {'', '/index.php', '/index.html'}:
+        return 2
+    return 1
 
 
 class LiveVisualComparisonMixin:
@@ -619,7 +638,10 @@ class LiveVisualComparisonMixin:
             # gallery. Provenance schedules acquisition; the model binds POI.
             independent = source_rank(page) == 2 and bool((page.get('source') or {}).get('discovery_provider'))
             article_turn = int(state.get('preferred_units') or 0) >= 2 and independent
-            return (int(not article_turn), page.get('attempts', 0),
+            # Prefer detailed independent articles to map/directory navigation.
+            # Attempts stay first so unread lower-ranked sources retain a turn.
+            reader_rank = _article_acquisition_rank(page.get('source') or {}) if source_rank(page) == 2 else 0
+            return (int(not article_turn), page.get('attempts', 0), reader_rank,
                     page_distance(page), source_rank(page), int(not cached))
 
         async def acquire_page(page):
@@ -667,7 +689,7 @@ class LiveVisualComparisonMixin:
             if new_pages and read_pages < page_budget:
                 tail_count = len(state['queue'])
                 read_pages += 1
-                await acquire_page(new_pages[0])
+                await acquire_page(min(new_pages, key=acquisition_priority))
                 state['units_since_acquisition'] = 0
                 planned_reference_ready = len(state['queue']) > tail_count
                 state['queue'] = state['queue'][tail_count:] + state['queue'][:tail_count]
