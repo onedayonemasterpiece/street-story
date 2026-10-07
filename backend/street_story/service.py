@@ -796,19 +796,27 @@ class StreetStoryService:
         )
         return job_id
 
-    def _claim(self):
+    def _claim(self, *, claim_kind=None, exclude_kind=None):
         now = self.store.now()
+        filters, params = [], [now, now]
+        if claim_kind is not None:
+            filters.append('kind=?')
+            params.append(claim_kind)
+        if exclude_kind is not None:
+            filters.append('kind<>?')
+            params.append(exclude_kind)
+        kind_filter = ''.join(' AND ' + clause for clause in filters)
         with self.store.tx() as db:
             # Owner actions and their visual continuation precede speculative
             # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
             row = db.execute(
                 "SELECT * FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) OR (state='running' AND lease_until<=?)) "
-                "ORDER BY CASE WHEN kind IN ('identity','refinement','visual','publish') THEN 0 "
+                + kind_filter + " ORDER BY CASE WHEN kind IN ('identity','refinement','visual','publish') THEN 0 "
                 "WHEN json_extract(payload_json,'$.queue_priority')='interactive' THEN 0 "
                 "WHEN kind='research' AND semantic_key NOT LIKE 'automatic-facts:%' "
                 "AND coalesce(json_extract(payload_json,'$.queue_priority'),'')<>'background' THEN 0 "
                 "ELSE 1 END,created_at,id LIMIT 1",
-                (now, now),
+                tuple(params),
             ).fetchone()
             if not row:
                 return None
@@ -894,11 +902,14 @@ class StreetStoryService:
             logging.getLogger(__name__).info('research_scheduler %s', canonical({
                 'component': 'research_scheduler', 'stage': 'confirmed_facts', 'scheduled': scheduled}))
 
-    async def run_once(self) -> bool:
+    async def run_once(self, *, claim_kind=None, exclude_kind=None) -> bool:
         self._schedule_identity_visual()
-        self._schedule_confirmed_facts()
-        job = self._claim()
+        if claim_kind != 'identity_visual':
+            self._schedule_confirmed_facts()
+        job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind)
         if not job:
+            if claim_kind == 'identity_visual':
+                return False  # Accounting recovery stays with the original worker.
             quota = getattr(self.providers.gemini, 'quota', None)
             if quota is not None:
                 try:

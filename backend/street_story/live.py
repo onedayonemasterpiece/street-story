@@ -2335,7 +2335,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     prior["location_provenance"] = {"kind": "owner_live_place_query", "query": owner_hint[:300], "not_device_current_location": True}
                     db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?",
                                (float(resolved["lat"]), float(resolved["lon"]), canonical(prior), story_id))
-        story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint))
+        story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint), owner_hint=owner_hint)
         identity = story.get("visual_identity") or {}
         with self.service.store.connection() as db:
             saved = json.loads(self.service._story_row(db, story_id)["research_json"] or "{}")

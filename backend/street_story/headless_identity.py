@@ -130,7 +130,9 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         if not pending:
             record_identity_event(self.service,story['id'],'identity_background_waiting',{
                 'generation':generation,'reason':'insufficient_evidence' if unit.get('exhausted') else 'resource_or_source_wait'})
-            raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+(300 if unit.get('exhausted') else 30))
+            if unit.get('exhausted'):
+                return True  # Known finite no-evidence outcome; fresh owner leads may resume it.
+            raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+30)
         current,latest = self.service._identity_snapshot(story['id'])
         try:
             self._assert_visual_current(current, latest, scope, session=session)

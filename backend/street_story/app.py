@@ -93,21 +93,25 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     live_host = create_live_host(service, settings)
     source_sha = checkout_source_sha()
 
-    async def worker_loop() -> None:
+    async def worker_loop(*, visual_only=False) -> None:
         while True:
-            worked = await service.run_once()
+            worked = await service.run_once(
+                claim_kind='identity_visual' if visual_only else None,
+                exclude_kind=None if visual_only else 'identity_visual')
             if not worked:
                 await asyncio.sleep(settings.worker_poll_seconds)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         task = asyncio.create_task(worker_loop(), name="street-story-worker")
+        visual_task = asyncio.create_task(worker_loop(visual_only=True), name="street-story-identity-visual-worker")
         try:
             yield
         finally:
             await live_host.stop_all()
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            visual_task.cancel()
+            await asyncio.gather(task, visual_task, return_exceptions=True)
             await service.close()
 
     app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)
