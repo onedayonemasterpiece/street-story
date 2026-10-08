@@ -93,14 +93,14 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     live_host = create_live_host(service, settings)
     source_sha = checkout_source_sha()
 
-    async def worker_loop(*, visual_only=False) -> None:
+    async def worker_loop(*, visual_only=False, identity_only=False) -> None:
         while True:
-            if visual_only:
+            if identity_only:
                 # Initial discovery must not wait behind a background research
                 # await. Keep both identity stages in the existing foreground lane.
                 worked = await service.run_once(claim_kind='identity')
-                if not worked:
-                    worked = await service.run_once(claim_kind='identity_visual')
+            elif visual_only:
+                worked = await service.run_once(claim_kind='identity_visual')
             else:
                 worked = await service.run_once(exclude_kind='identity_visual')
             if not worked:
@@ -110,13 +110,15 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def lifespan(_app: FastAPI):
         task = asyncio.create_task(worker_loop(), name="street-story-worker")
         visual_task = asyncio.create_task(worker_loop(visual_only=True), name="street-story-identity-visual-worker")
+        identity_task = asyncio.create_task(worker_loop(identity_only=True), name="street-story-identity-discovery-worker")
         try:
             yield
         finally:
             await live_host.stop_all()
             task.cancel()
             visual_task.cancel()
-            await asyncio.gather(task, visual_task, return_exceptions=True)
+            identity_task.cancel()
+            await asyncio.gather(task, visual_task, identity_task, return_exceptions=True)
             await service.close()
 
     app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)

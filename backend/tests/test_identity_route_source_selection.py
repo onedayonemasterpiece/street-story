@@ -67,6 +67,24 @@ async def test_google_selects_from_same_observed_grounding_response(tmp_path, bo
 
 
 @pytest.mark.asyncio
+async def test_public_inventory_selection_uses_text_quota_without_search_tools(tmp_path):
+    client = GeminiClient(config(tmp_path), Store(tmp_path/'db'))
+    class Executor:
+        async def execute(self, operation, call):
+            assert operation == 'grounded_research'
+            return await call('fixture', 5)
+    client.research_routes = [('configured-model', None, object(), Executor())]
+    async def generate(key, timeout, contents, configuration, **kwargs):
+        assert not configuration.tools
+        assert kwargs['operation'] == 'grounded_research'
+        return SimpleNamespace(text=json.dumps(choice()))
+    client._generate = generate
+    result = await client.select_identity_sources('plain address', OBSERVED, {})
+    assert result['source_selection']['status'] == 'model_selected'
+    assert [source['url'] for source in result['sources']] == [OBSERVED[0]['url']]
+
+
+@pytest.mark.asyncio
 async def test_fast_selected_route_persisted_while_peer_search_waits(monkeypatch):
     entered, release = asyncio.Event(), asyncio.Event()
     retained = []
