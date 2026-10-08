@@ -49,7 +49,10 @@ def public_url(raw: str) -> str | None:
         except ValueError:
             if '.' not in host:
                 return None
-        return urlunsplit(('https', parsed.netloc, parsed.path or '/', parsed.query, ''))
+        # HTTPS's default port is the same public resource. Keep one cache,
+        # gallery and comparison identity for both spellings.
+        authority = f'[{host}]' if ':' in host else host
+        return urlunsplit(('https', authority, parsed.path or '/', parsed.query, ''))
     except (ValueError, TypeError):
         return None
 
@@ -482,6 +485,7 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
         async with semaphore:
             page_url, title, media, partial, body = raw, '', [], False, b''
             browser_completed = False
+            acquisition_failed = False
             try:
                 page_url, mime, body = await cached_public_page(service.store, client, raw, resolver=resolver)
                 if mime not in {'text/html', 'application/xhtml+xml'}:
@@ -502,7 +506,9 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     return None  # No browser gallery expansion of an already proved collection.
                 partial = bool(document.select('[data-gallery], [data-fancybox], [data-swiper], .swiper, .slick-slider, .owl-carousel, [data-lazy-src]'))
             except (httpx.HTTPError, ValueError, OSError) as exc:
-                event('identity_article_unavailable', {'reason': type(exc).__name__})
+                acquisition_failed = True
+                event('identity_article_unavailable', {'source_url': raw, 'reason': type(exc).__name__,
+                    **({'http_status': exc.response.status_code} if isinstance(exc, httpx.HTTPStatusError) else {})})
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {404, 410}:
                     # A missing/deleted page is a closed acquisition outcome,
                     # not a reason to spend the single browser on that URL.
@@ -541,7 +547,9 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
             if not media:
                 if receipts is not None:
                     receipts.append({'url': raw, 'final_url': page_url,
-                        'status': 'completed' if browser_completed else 'temporary_failure',
+                        # An empty browser result after a failed HTTP read
+                        # does not prove that the article has no illustrations.
+                        'status': 'completed' if browser_completed and not acquisition_failed else 'temporary_failure',
                         'image_count': 0,
                         'gallery_cursor': source.get('gallery_cursor', 0),
                         'gallery_slide_cursor': source.get('gallery_slide_cursor', 0),
@@ -557,7 +565,8 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 'discovery': 'wikipedia_article_media' if wiki else 'web_article_media',
                 'enumeration_status': 'partial' if partial else 'completed', 'discovery_provenance': source}
     try:
-        unique = {str(s.get('url')): s for s in sources if isinstance(s, dict)}
+        unique = {url: {**s, 'url': url} for s in sources if isinstance(s, dict)
+                  and (url := public_url(str(s.get('url') or '')))}
         # Existing four-reader prefetch is enough for a useful first portion.
         # Unstarted/cancelled URLs remain deferred in the caller's source history.
         batch = list(unique.values())[:4 if first_ready else MAX_PAGES]

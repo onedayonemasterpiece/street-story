@@ -33,6 +33,7 @@ async def test_interior_feedback_preserves_building_and_prioritizes_new_external
     assert state['hypotheses']['gate:a']['comparisons'][0]['reference_kind'] == 'interior'
     assert 'gate:b' not in state['hypotheses']  # Alternative was never compared.
     assert state['units_since_planned_query'] >= 2
+    assert state['units_since_acquisition'] >= 2
 
 
 @pytest.mark.asyncio
@@ -64,4 +65,5 @@ def test_historical_comparison_preserves_exact_original_verdict_schema():
     new = planned_verdict_schema({'search_feedback_instruction': 'plan'})
     assert 'search_feedback' not in old['properties']
     assert 'search_feedback' in new['properties']
+    assert 'search_feedback' in new['required']
     assert json.loads(json.dumps(old)) == old

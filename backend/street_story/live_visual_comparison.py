@@ -368,6 +368,11 @@ class LiveVisualComparisonMixin:
                 and not str(c.get('candidate_id', '')).startswith('web:')][:32],
             'remaining_illustrations': remaining,
             'search_feedback_instruction': (
+                'Сначала явно укажи source_subject_scope: building, occupant, other_physical_object или unclear '
+                'по главному предмету всего SOURCE. Крупный фасад целого дома — building, даже если видна '
+                'вывеска арендатора или удалось сопоставить только его вход. Для building выбери ID самого '
+                'здания либо его адресной точки; mapped amenity/shop/office без building — организация, '
+                'не идентификатор здания. Не подменяй дом организацией даже при доказанном совпадении входа. '
                 'Верни search_feedback: тип REF (modern_exterior/interior/historical/diagram/unclear), '
                 'следующее полезное действие (explore_alternative/find_external_view/another_view/verify_binding), '
                 'его reason, буквальный next_query или пустую строку, candidate_ids из physical_candidates. '
@@ -1026,6 +1031,7 @@ class LiveVisualComparisonMixin:
                 'status': status, 'model_status': args.get('status'), 'matched': matched,
                 'candidate_id': raw.get('candidate_id'), 'reference_candidate_id': args.get('candidate_id'),
                 'reference_subject_candidate_id': raw.get('reference_subject_candidate_id'),
+                'source_subject_scope': raw.get('source_subject_scope'),
                 'observations': [str(value)[:300] for value in raw.get('observations', [])[:6]],
                 'reference_subject_observations': [str(value)[:300] for value in raw.get('reference_subject_observations', [])[:6]],
                 'alternative_candidate_ids': raw.get('alternative_candidate_ids') or [],
@@ -1053,6 +1059,15 @@ class LiveVisualComparisonMixin:
                     saved_feedback = {**feedback, 'candidate_ids': valid_ids,
                         'reason': feedback['reason'][:500], 'next_query': feedback['next_query'].strip()[:240]}
                     verdict_summary['search_feedback'] = saved_feedback
+                    # An unusable reference is not a rejection of its building.
+                    # Retain the gallery, but immediately give unread pages a
+                    # turn instead of consuming more interiors from this page.
+                    if saved_feedback['reference_kind'] in {'interior', 'diagram', 'unclear'}:
+                        state['units_since_acquisition'] = max(2, state.get('units_since_acquisition', 0))
+                        for candidate in pending['candidates']:
+                            source_page = state.get('sources', {}).get(candidate.get('url'))
+                            if source_page is not None:
+                                source_page['last_reference_feedback'] = saved_feedback
                     evaluated = [raw.get('reference_subject_candidate_id')] if raw.get('reference_subject_candidate_id') in physical_ids else [
                         c['candidate_id'] for c in pending['candidates'] if c['candidate_id'] in physical_ids]
                     for candidate_id in evaluated:

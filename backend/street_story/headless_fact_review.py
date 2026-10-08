@@ -178,7 +178,7 @@ class HeadlessFactReview:
                 break
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
                 model='gemini-3.8-live', actor=None, closed=False,
-                state={'fact_research_control_revision': control_revision})
+                state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend'})
             candidate_ids = pending[start:start+3]
             with self.service.store.connection() as db:
                 story, _ = self.harness.adapter._research_run_guard(db, session, run_id)

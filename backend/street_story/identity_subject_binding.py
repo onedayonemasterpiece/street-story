@@ -153,13 +153,26 @@ def bind_reference_subject(
 
     if not selected or selected.get('candidate_id') not in raw.get('_references_sent', []):
         return unresolved('reference_not_sent')
+    def occupant_in_building(subject):
+        mapped = subject.get('map_object') or {}
+        tags = mapped.get('tags') or {}
+        return (raw.get('source_subject_scope') == 'building' and mapped.get('provenance') == 'osm.tags'
+                and str(tags.get('building') or '').casefold() in {'', 'no'}
+                and any(tags.get(key) for key in ('amenity', 'shop', 'office')))
     if not article_candidate(selected):
+        if occupant_in_building(selected):
+            return unresolved('mapped_occupant_is_not_building_subject')
         return {'status': 'not_required', 'candidate': selected, 'result': raw,
                 'reference_evidence': reference_evidence}
     subject_id = raw.get('reference_subject_candidate_id')
     candidate = next((item for item in full_shortlist if item.get('candidate_id') == subject_id), None)
     if not candidate or article_candidate(candidate) or not candidate_identity_eligible(candidate):
         return unresolved('subject_not_eligible_shortlist_candidate')
+    # This is a typed entity-scope check, not a guess from a venue name. The
+    # model identifies SOURCE's subject; the map receipt identifies what its
+    # selected ID denotes. A mapped occupant cannot stand for the whole house.
+    if occupant_in_building(candidate):
+        return unresolved('mapped_occupant_is_not_building_subject')
     cid = selected['candidate_id']
     evidence = next((item for item in reference_evidence
                      if item.get('candidate_id') == cid

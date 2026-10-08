@@ -12,6 +12,29 @@ from test_identity_lifecycle import make_service
 from test_reference_image_codec import jpeg
 
 
+def test_default_https_port_has_one_public_resource_identity():
+    assert public_url('https://EXAMPLE.com:443/gallery#view') == 'https://example.com/gallery'
+    assert public_url('https://[2606:4700:4700::1111]:443/photo') == 'https://[2606:4700:4700::1111]/photo'
+
+
+@pytest.mark.asyncio
+async def test_transient_http_error_and_empty_browser_does_not_exhaust_article(tmp_path):
+    from street_story.article_media import article_candidates
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='transient', client_story_id='transient', photo_sha256='transient',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(*args, **kwargs):
+        return '', []
+    receipts = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(503))) as client:
+        assert await article_candidates(svc, story, [{'url': 'https://example.com/story'}], set(),
+            http=client, resolver=resolver, browser=browser, receipts=receipts) == []
+    assert receipts[0]['status'] == 'temporary_failure'
+    assert receipts[0]['image_count'] == 0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status', [404, 410])
 async def test_missing_article_closes_acquisition_without_browser_or_false_mismatch(tmp_path, status):
