@@ -20,6 +20,9 @@ from .config import reveal
 
 LOG = logging.getLogger(__name__)
 
+# A local SOURCE/REF acquisition failure describes this unit, not model health.
+LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_source_unavailable'}
+
 
 def _failure_code(exc):
     value = getattr(exc, 'code', None) or str(exc)
@@ -305,6 +308,8 @@ class ProductResearchAdapter:
         workload_key = 'research-workload-health:' + route_key + ':' + binding['request_id']
         for health_key in (() if readback else (route_key, quota_key, workload_key)):
             health = self.service.store.cache_get(health_key) or {}
+            if health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None:
+                continue  # Older releases incorrectly wrote these as route-wide waits.
             if health_key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET':
                 continue  # Legacy blanket reservation refusal, not provider quota.
             if health.get('category') == 'RESOURCE_DAILY_BUDGET':
@@ -342,7 +347,7 @@ class ProductResearchAdapter:
             self._record_route_failure(binding, role, category, retry_at,
                 wait_scope=wait_scope, requires_binding_change=binding_changed)
             route_unavailable = status in {401, 403, 429} or isinstance(status, int) and status >= 500 or category.lower().endswith('_unavailable')
-            if not binding_changed and route_unavailable:
+            if not binding_changed and route_unavailable and category not in LOCAL_IMAGE_FAILURES:
                 self.service.store.cache_put(quota_key if status == 429 else route_key,
                     {'category':category,'status':status,'retry_at':retry_at},
                     math.ceil(retry_at-self.service.store.now()))
@@ -620,7 +625,8 @@ class ProductResearchAdapter:
                 quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
                 healths = [(key, self.service.store.cache_get(key) or {}) for key in (route_key, quota_key)]
                 route['retry_at'] = max((health.get('retry_at', 0) for key, health in healths
-                    if not (key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET')), default=0)
+                    if not (key == quota_key and health.get('category') == 'RESOURCE_DAILY_BUDGET')
+                    and not (health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None)), default=0)
                 route['available'] = route['qualified'] and route['retry_at'] <= self.service.store.now()
         return routes
 
@@ -878,7 +884,9 @@ class ProductResearchAdapter:
             quota_key = 'research-quota-health:' + client.provider_id + ':' + client.model_id
             healths = [self.service.store.cache_get(key) or {} for key in (route_key, quota_key)]
             opencode = all(health.get('retry_at', 0) <= self.service.store.now()
-                           or health.get('category') == 'RESOURCE_DAILY_BUDGET' for health in healths)
+                           or health.get('category') == 'RESOURCE_DAILY_BUDGET'
+                           or health.get('category') in LOCAL_IMAGE_FAILURES and health.get('status') is None
+                           for health in healths)
         native = self.native_vision is not None and self.native_vision.available
         routes = []
         if google_slots:

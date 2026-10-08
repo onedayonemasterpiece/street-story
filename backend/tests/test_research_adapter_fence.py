@@ -11,6 +11,37 @@ from test_research_control import fixture
 
 
 @pytest.mark.asyncio
+async def test_reference_download_failure_does_not_block_independent_fact_model(tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    from street_story.errors import RetryableProviderError
+    from street_story.opencode_research import ResearchUnavailable
+    from street_story.service import canonical
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter.client = SimpleNamespace(endpoint='http://existing-opencode:4097', model_id='configured', provider_id='opencode')
+    story = {'id': sid, 'photo_sha256': photo}
+    async def unavailable(binding):
+        raise ResearchUnavailable('research_image_reference_unavailable', {'provider_send_state': 'not_sent'})
+    with pytest.raises(RetryableProviderError):
+        await adapter.run(story, 'vision', 'missing-ref', unavailable)
+    route_key = 'research-route-health:' + hashlib.sha256(canonical([
+        adapter.client.endpoint, adapter.client.model_id, None, None]).encode()).hexdigest()
+    assert service.store.cache_get(route_key) is None
+    # Recover the erroneous route-wide wait emitted by the prior release.
+    service.store.cache_put(route_key, {'category': 'research_image_reference_unavailable',
+        'retry_at': service.store.now()+300}, 300)
+    async def independent(binding):
+        return {'result': 'own grounded fact'}
+    assert await adapter.run(story, 'facts', 'independent', independent) == {'result': 'own grounded fact'}
+    service.store.cache_put(route_key, {'category': 'research_provider_credential_or_eligibility',
+        'status': 403, 'retry_at': service.store.now()+3600}, 3600)
+    with pytest.raises(RetryableProviderError):
+        await adapter.run(story, 'facts', 'blocked-by-real-provider', independent)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['abort_outcome_unknown', 'unknown'])
 async def test_unknown_addressed_request_readback_is_not_blocked_by_inference_cooldown(tmp_path, phase):
     import hashlib
