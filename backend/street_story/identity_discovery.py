@@ -84,10 +84,10 @@ async def suggest(service, story, transcript, candidates):
         'Используй только адрес и географию, подтверждённые доступными данными; не выдумывай их. '
         'Пустой region_hint означает неизвестную географию: используй OCR, авторский контекст '
         'и визуальные гипотезы, не считай снимок автоматически калининградским. '
-        'article_queries — до трёх готовых буквальных интернет-запросов для статей с современными внешними фотографиями. '
+        'article_queries — готовый план буквальных интернет-запросов для статей с современными внешними фотографиями, достаточный для разных правдоподобных гипотез. '
         'Сначала используй короткий запрос по реальному адресу или названию и городу без лишних ограничений. '
         'Современный внешний вид — требование к REF, а не обязательные слова каждого запроса. '
-        'Если простой поиск не даёт полезных статей, уточни его по фасаду, внешнему виду или фото с улицы. '
+        'Предусмотри в плане отдельный запрос по фасаду, внешнему виду или фото с улицы для правдоподобного адреса, если простой запрос может дать лишь адресные справочники. '
         'nearby_address_hypotheses — полный список переданных реальных соседних адресных якорей, '
         'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
         'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
@@ -138,7 +138,7 @@ async def suggest(service, story, transcript, candidates):
         payload = json.loads(response.text or '{}')
         queries = payload.get('article_queries') if isinstance(payload, dict) else None
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
-            if isinstance(q, str) and q.strip()))[:3] if isinstance(queries, list) else []
+            if isinstance(q, str) and q.strip())) if isinstance(queries, list) else []
         result = queries_from(payload)
         # The independent feature query is already model-owned. Keep it as an
         # ordinary web alternative instead of abandoning it after an address

@@ -2222,6 +2222,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         identity = story.get("visual_identity") if isinstance(story.get("visual_identity"), dict) else {}
         compact_identity = StreetStoryLiveAdapter._compact_identity(identity)
         return {
+            "current_date_utc": datetime.now(timezone.utc).date().isoformat(),
             "story_id": story.get("id"),
             "photo_sha256": story.get('photo_sha256'),
             "identity_generation": story.get('identity_generation'),

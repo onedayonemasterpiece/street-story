@@ -188,7 +188,8 @@ async def assess(adapter, session, args):
             if attempts >= 12:
                 raise GeminiUnavailable(None, 'semantic_review_helper_attempt_limit')
             state = adapter._compact_context(adapter._topic_state(session.resource_id))
-            result = {**await helper(items, {'identity': state['visual_identity'], 'location': state['poi_location']}), 'helper_available': True}
+            result = {**await helper(items, {'identity': state['visual_identity'], 'location': state['poi_location'],
+                                            'current_date_utc': payload.get('review_as_of_date_utc')}), 'helper_available': True}
         except GeminiUnavailable as exc:
             result = {'helper_available': False, 'reason': str(exc), 'decisions': []}
         except MalformedProviderResponse:

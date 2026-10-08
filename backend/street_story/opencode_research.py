@@ -51,6 +51,22 @@ SEARCH_SCHEMA = {'type': 'object', 'properties': {
     'required': ['summary', 'selected_sources'], 'additionalProperties': False}
 
 
+def completed_search_json(content):
+    """Accept one explicit final JSON block, never prose or tool/reasoning text.
+
+    The shared agent can wrap its final JSON in a steps-exhausted report. The
+    selection still has to validate against SEARCH_SCHEMA and observed URLs.
+    Multiple blocks are ambiguous and must remain unavailable.
+    """
+    try:
+        return json.loads(content)
+    except ValueError:
+        blocks = re.findall(r'(?m)^```json\s*\n(.*?)\n```\s*$', content, re.DOTALL)
+        if len(blocks) != 1:
+            raise ValueError('research_search_json_ambiguous') from None
+        return json.loads(blocks[0])
+
+
 def selected_search_sources(sources, result):
     """A model may choose tool-observed URLs; it cannot create provenance."""
     observed = {source['url']: source for source in sources}
@@ -514,7 +530,7 @@ class OpenCodeResearch:
                                 if content.startswith('```json') and content.endswith('```'):
                                     content = content[7:-3].strip()
                                 try:
-                                    result = json.loads(content)
+                                    result = completed_search_json(content) if role == 'search' else json.loads(content)
                                 except ValueError:
                                     if role != 'search':
                                         raise ResearchUnavailable('research_json_invalid', receipt) from None
