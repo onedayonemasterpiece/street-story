@@ -1,0 +1,484 @@
+{
+  "photo": 126,
+  "camera_provenance": "owner approximate location and screenshot; source EXIF has no GPS",
+  "owner_camera": {
+    "lat": 55.077788,
+    "lon": 21.888265
+  },
+  "osm": {
+    "photo": 126,
+    "camera_latitude": 55.077788,
+    "camera_longitude": 21.888265,
+    "camera_provenance": "owner approximate point, not EXIF",
+    "bbox": [
+      21.884494682116635,
+      55.075629629569676,
+      21.892035317883366,
+      55.07994637043032
+    ],
+    "url": "https://api.openstreetmap.org/api/0.6/map?bbox=21.8844947,55.0756296,21.8920353,55.0799464",
+    "sha256": "9b526791f8901829d1c075f30e0b4eeb783996c788b77de8903c76269426493a",
+    "bytes": 623094
+  },
+  "diagnostic_pose": {
+    "offset_east_north_m": [
+      -8,
+      0
+    ],
+    "camera_inside_footprints": [],
+    "centroid_bearings_ABC": [
+      3.0815060839541606,
+      24.370488704385593,
+      48.57511013006784
+    ],
+    "yaw_to_B_centroid_deg": 24.370488704385593,
+    "left_to_right_centroid_order": [
+      "A",
+      "B",
+      "C"
+    ],
+    "front": {
+      "segment": 1,
+      "length_m": 26.446,
+      "outward_bearing_deg": 165.935,
+      "signed_camera_distance_to_facade_plane_m": 19.402,
+      "angle_deg": 30.03,
+      "a": [
+        25.519352055067763,
+        28.399223491683202
+      ],
+      "b": [
+        -0.13367582765629957,
+        21.97214785413598
+      ]
+    },
+    "side": {
+      "segment": 2,
+      "length_m": 28.533,
+      "outward_bearing_deg": 255.926,
+      "signed_camera_distance_to_facade_plane_m": 12.973,
+      "angle_deg": 18.63,
+      "a": [
+        -0.13367582765629957,
+        21.97214785413598
+      ],
+      "b": [
+        -7.07208783578464,
+        49.64860332454585
+      ]
+    },
+    "note": "Rays to centroids are positional diagnostics, not facade feature correspondences; 2D tests do not establish roof visibility."
+  },
+  "scenario_poses": [
+    {
+      "offset_east_north_m": [
+        0,
+        0
+      ],
+      "camera_inside_footprints": [],
+      "centroid_bearings_ABC": [
+        355.7775984281534,
+        13.133614653089765,
+        43.529592263882634
+      ],
+      "yaw_to_B_centroid_deg": 13.133614653089765,
+      "left_to_right_centroid_order": [
+        "A",
+        "B",
+        "C"
+      ],
+      "front": {
+        "segment": 1,
+        "length_m": 26.446,
+        "outward_bearing_deg": 165.935,
+        "signed_camera_distance_to_facade_plane_m": 21.346,
+        "angle_deg": 42.29,
+        "a": [
+          25.519352055067763,
+          28.399223491683202
+        ],
+        "b": [
+          -0.13367582765629957,
+          21.97214785413598
+        ]
+      },
+      "side": {
+        "segment": 2,
+        "length_m": 28.533,
+        "outward_bearing_deg": 255.926,
+        "signed_camera_distance_to_facade_plane_m": 5.213,
+        "angle_deg": 7.76,
+        "a": [
+          -0.13367582765629957,
+          21.97214785413598
+        ],
+        "b": [
+          -7.07208783578464,
+          49.64860332454585
+        ]
+      },
+      "note": "Rays to centroids are positional diagnostics, not facade feature correspondences; 2D tests do not establish roof visibility."
+    },
+    {
+      "offset_east_north_m": [
+        -8,
+        0
+      ],
+      "camera_inside_footprints": [],
+      "centroid_bearings_ABC": [
+        3.0815060839541606,
+        24.370488704385593,
+        48.57511013006784
+      ],
+      "yaw_to_B_centroid_deg": 24.370488704385593,
+      "left_to_right_centroid_order": [
+        "A",
+        "B",
+        "C"
+      ],
+      "front": {
+        "segment": 1,
+        "length_m": 26.446,
+        "outward_bearing_deg": 165.935,
+        "signed_camera_distance_to_facade_plane_m": 19.402,
+        "angle_deg": 30.03,
+        "a": [
+          25.519352055067763,
+          28.399223491683202
+        ],
+        "b": [
+          -0.13367582765629957,
+          21.97214785413598
+        ]
+      },
+      "side": {
+        "segment": 2,
+        "length_m": 28.533,
+        "outward_bearing_deg": 255.926,
+        "signed_camera_distance_to_facade_plane_m": 12.973,
+        "angle_deg": 18.63,
+        "a": [
+          -0.13367582765629957,
+          21.97214785413598
+        ],
+        "b": [
+          -7.07208783578464,
+          49.64860332454585
+        ]
+      },
+      "note": "Rays to centroids are positional diagnostics, not facade feature correspondences; 2D tests do not establish roof visibility."
+    },
+    {
+      "offset_east_north_m": [
+        20,
+        0
+      ],
+      "camera_inside_footprints": [],
+      "centroid_bearings_ABC": [
+        338.5458857125005,
+        342.4708817862707,
+        26.178820635633926
+      ],
+      "yaw_to_B_centroid_deg": 342.4708817862707,
+      "left_to_right_centroid_order": [
+        "A",
+        "B",
+        "C"
+      ],
+      "front": {
+        "segment": 1,
+        "length_m": 26.446,
+        "outward_bearing_deg": 165.935,
+        "signed_camera_distance_to_facade_plane_m": 26.206,
+        "angle_deg": 53.5,
+        "a": [
+          25.519352055067763,
+          28.399223491683202
+        ],
+        "b": [
+          -0.13367582765629957,
+          21.97214785413598
+        ]
+      },
+      "side": {
+        "segment": 2,
+        "length_m": 28.533,
+        "outward_bearing_deg": 255.926,
+        "signed_camera_distance_to_facade_plane_m": -14.186,
+        "angle_deg": 13.9,
+        "a": [
+          -0.13367582765629957,
+          21.97214785413598
+        ],
+        "b": [
+          -7.07208783578464,
+          49.64860332454585
+        ]
+      },
+      "note": "Rays to centroids are positional diagnostics, not facade feature correspondences; 2D tests do not establish roof visibility."
+    },
+    {
+      "offset_east_north_m": [
+        40,
+        -10
+      ],
+      "camera_inside_footprints": [],
+      "centroid_bearings_ABC": [
+        328.4442788331072,
+        325.8360111190338,
+        1.5498511109008186
+      ],
+      "yaw_to_B_centroid_deg": 325.8360111190338,
+      "left_to_right_centroid_order": [
+        "B",
+        "A",
+        "C"
+      ],
+      "front": {
+        "segment": 1,
+        "length_m": 26.446,
+        "outward_bearing_deg": 165.935,
+        "signed_camera_distance_to_facade_plane_m": 40.767,
+        "angle_deg": 30.8,
+        "a": [
+          25.519352055067763,
+          28.399223491683202
+        ],
+        "b": [
+          -0.13367582765629957,
+          21.97214785413598
+        ]
+      },
+      "side": {
+        "segment": 2,
+        "length_m": 28.533,
+        "outward_bearing_deg": 255.926,
+        "signed_camera_distance_to_facade_plane_m": -31.154,
+        "angle_deg": 13.18,
+        "a": [
+          -0.13367582765629957,
+          21.97214785413598
+        ],
+        "b": [
+          -7.07208783578464,
+          49.64860332454585
+        ]
+      },
+      "note": "Rays to centroids are positional diagnostics, not facade feature correspondences; 2D tests do not establish roof visibility."
+    },
+    {
+      "offset_east_north_m": [
+        -20,
+        -10
+      ],
+      "camera_inside_footprints": [
+        "way/192220392"
+      ],
+      "centroid_bearings_ABC": [
+        11.945745362858068,
+        31.54698539316551,
+        48.88518249967002
+      ],
+      "yaw_to_B_centroid_deg": 31.54698539316551,
+      "left_to_right_centroid_order": [
+        "A",
+        "B",
+        "C"
+      ],
+      "front": {
+        "segment": 1,
+        "length_m": 26.446,
+        "outward_bearing_deg": 165.935,
+        "signed_camera_distance_to_facade_plane_m": 26.186,
+        "angle_deg": 17.99,
+        "a": [
+          25.519352055067763,
+          28.399223491683202
+        ],
+        "b": [
+          -0.13367582765629957,
+          21.97214785413598
+        ]
+      },
+      "side": {
+        "segment": 2,
+        "length_m": 28.533,
+        "outward_bearing_deg": 255.926,
+        "signed_camera_distance_to_facade_plane_m": 27.045,
+        "angle_deg": 19.63,
+        "a": [
+          -0.13367582765629957,
+          21.97214785413598
+        ],
+        "b": [
+          -7.07208783578464,
+          49.64860332454585
+        ]
+      },
+      "note": "Rays to centroids are positional diagnostics, not facade feature correspondences; 2D tests do not establish roof visibility."
+    }
+  ],
+  "scenario_grid": [
+    {
+      "scenario_radius_m": 10,
+      "grid_step_m": 2,
+      "not_probability": true,
+      "outside_buildings_count": 81,
+      "ABC_order_and_both_facades_count": 65,
+      "x_range_m": [
+        -10,
+        6
+      ],
+      "y_range_m": [
+        -10,
+        10
+      ],
+      "yaw_circular_interval": {
+        "start_deg": 3.22,
+        "end_deg": 28.47,
+        "width_deg": 25.26,
+        "wraps_north": false
+      }
+    },
+    {
+      "scenario_radius_m": 20,
+      "grid_step_m": 2,
+      "not_probability": true,
+      "outside_buildings_count": 268,
+      "ABC_order_and_both_facades_count": 178,
+      "x_range_m": [
+        -20,
+        8
+      ],
+      "y_range_m": [
+        -20,
+        20
+      ],
+      "yaw_circular_interval": {
+        "start_deg": 0.52,
+        "end_deg": 43.0,
+        "width_deg": 42.47,
+        "wraps_north": false
+      }
+    },
+    {
+      "scenario_radius_m": 30,
+      "grid_step_m": 2,
+      "not_probability": true,
+      "outside_buildings_count": 522,
+      "ABC_order_and_both_facades_count": 313,
+      "x_range_m": [
+        -30,
+        10
+      ],
+      "y_range_m": [
+        -30,
+        20
+      ],
+      "yaw_circular_interval": {
+        "start_deg": 358.47,
+        "end_deg": 54.71,
+        "width_deg": 56.23,
+        "wraps_north": true
+      }
+    }
+  ],
+  "ABC": [
+    {
+      "osm_id": 192219355,
+      "tags": {
+        "addr:city": "Советск",
+        "addr:housenumber": "5",
+        "addr:street": "улица 9-го Января",
+        "building": "yes"
+      },
+      "centroid_xy": [
+        -4.62646781552939,
+        62.66505691186182
+      ],
+      "boundary_distance_m": 50.15,
+      "centroid_bearing_deg": 355.78,
+      "rank_boundary": 13,
+      "geometry_complete": true
+    },
+    {
+      "osm_id": 192219449,
+      "tags": {
+        "addr:city": "Советск",
+        "addr:housenumber": "5",
+        "addr:street": "улица 9-го Января",
+        "building": "yes"
+      },
+      "centroid_xy": [
+        8.497191054110104,
+        36.41770400869642
+      ],
+      "boundary_distance_m": 21.97,
+      "centroid_bearing_deg": 13.13,
+      "rank_boundary": 4,
+      "geometry_complete": true
+    },
+    {
+      "osm_id": 192219447,
+      "tags": {
+        "addr:city": "Советск",
+        "addr:housenumber": "7",
+        "addr:street": "улица Искры",
+        "building": "yes",
+        "name": "Комендатура Тильзита"
+      },
+      "centroid_xy": [
+        41.451188571493944,
+        43.63528097971958
+      ],
+      "boundary_distance_m": 46.84,
+      "centroid_bearing_deg": 43.53,
+      "rank_boundary": 10,
+      "geometry_complete": true
+    }
+  ],
+  "pair_gaps": {
+    "AB": {
+      "gap_m": 0.0,
+      "anchor_a": [
+        3.6729025032745777,
+        52.339524266040165
+      ],
+      "anchor_b": [
+        3.6729025032745777,
+        52.339524266040165
+      ]
+    },
+    "BC": {
+      "gap_m": 9.358,
+      "anchor_a": [
+        20.541518852942065,
+        48.2475453138223
+      ],
+      "anchor_b": [
+        29.536523777391462,
+        50.82890159908088
+      ]
+    },
+    "AC": {
+      "gap_m": 24.597,
+      "anchor_a": [
+        3.6729025032745777,
+        52.339524266040165
+      ],
+      "anchor_b": [
+        27.925516953333453,
+        56.442622726411344
+      ]
+    }
+  },
+  "alternative_main_facades": [],
+  "scope": "Local scene, physical footprints; addresses from OSM kept separate from owner screenshot. Not a global uniqueness proof.",
+  "reviewed_identity": {
+    "status": "accepted_local_geometry",
+    "target_way_id": 192219449,
+    "review_scope": "given owner-localized street scene and examined alternatives; not global uniqueness",
+    "neighbor_assignments": "strong spatial hypotheses; no independent facade references",
+    "address_conflict": true
+  }
+}

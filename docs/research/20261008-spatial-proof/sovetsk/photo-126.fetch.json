@@ -1,0 +1,15 @@
+{
+  "photo": 126,
+  "camera_latitude": 55.077788,
+  "camera_longitude": 21.888265,
+  "camera_provenance": "owner approximate point, not EXIF",
+  "bbox": [
+    21.884494682116635,
+    55.075629629569676,
+    21.892035317883366,
+    55.07994637043032
+  ],
+  "url": "https://api.openstreetmap.org/api/0.6/map?bbox=21.8844947,55.0756296,21.8920353,55.0799464",
+  "sha256": "9b526791f8901829d1c075f30e0b4eeb783996c788b77de8903c76269426493a",
+  "bytes": 623094
+}

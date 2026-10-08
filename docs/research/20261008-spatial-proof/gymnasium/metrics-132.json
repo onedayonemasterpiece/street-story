@@ -1,0 +1,151 @@
+{
+  "photo": 132,
+  "camera": {
+    "lat": 55.079386,
+    "lon": 21.889776,
+    "source": "owner_approximate_hint",
+    "exif_gps": false
+  },
+  "identity": {
+    "osm_ref": "way/192217077",
+    "address_from_osm": "Советск, Школьная улица, 13",
+    "name_from_osm": "Гимназия № 1"
+  },
+  "source_observation": "view along an approach street across a T junction to a broad frontal facade with central projection",
+  "map_condition": "camera lies near the last Smolenskaya segment; forward is toward its T junction with Shkolnaya",
+  "counts": {
+    "complete_building_geometries": 122,
+    "complete_building_groups": 122,
+    "unresolved_building_geometries": 0,
+    "note": "Rankings cover complete downloaded geometries; missing relation members are not evidence that an object does not exist."
+  },
+  "camera_distance_to_approach_axis_m": 4.67,
+  "camera_distance_to_junction_m": 54.78,
+  "street_axis_bearing_toward_junction_deg": 83.961,
+  "nearest_streets": [
+    {
+      "ref": "way/67826885",
+      "name": "Смоленская улица",
+      "distance_m": 4.67
+    },
+    {
+      "ref": "way/67826887",
+      "name": "Школьная улица",
+      "distance_m": 54.167
+    },
+    {
+      "ref": "way/192217074",
+      "name": "Студенческая улица",
+      "distance_m": 61.213
+    },
+    {
+      "ref": "way/881935696",
+      "name": null,
+      "distance_m": 66.265
+    },
+    {
+      "ref": "way/192219321",
+      "name": null,
+      "distance_m": 70.901
+    },
+    {
+      "ref": "way/192216123",
+      "name": "улица Лизы Чайкиной",
+      "distance_m": 75.57
+    },
+    {
+      "ref": "way/187771213",
+      "name": "улица Ленина",
+      "distance_m": 129.278
+    }
+  ],
+  "target_boundary_distance_m": 66.98,
+  "target_boundary_rank": 10,
+  "target_bbox_center_rank": 13,
+  "target_plan_angular_width_deg": 36.74,
+  "opposite_direction_alternative": {
+    "ref": "way/192220354",
+    "address_from_osm": "Интернациональная улица, 1",
+    "boundary_distance_m": 201.23,
+    "plan_angular_width_deg": 9.23,
+    "comparison": "about 200m away and only 9.23 degrees wide, unlike the broad near facade in SOURCE; depends on ordinary uncropped framing"
+  },
+  "central_projection_width_m": 12.89,
+  "central_projection_center_distance_m": 68.018,
+  "central_projection_center_bearing_deg": 75.099,
+  "facade_axis_deg_mod180": 177.09,
+  "forward_axis_first_hits": [
+    {
+      "ref": "way/192217077",
+      "distance_m": 66.889,
+      "point_xy": [
+        66.02672346792816,
+        11.680454686484092
+      ]
+    },
+    {
+      "ref": "way/379692488",
+      "distance_m": 189.058,
+      "point_xy": [
+        187.51807364983028,
+        24.532394590388897
+      ]
+    }
+  ],
+  "reverse_axis_first_hits": [
+    {
+      "ref": "way/192220354",
+      "distance_m": 201.676,
+      "point_xy": [
+        -201.04816149314559,
+        -16.572012392224188
+      ]
+    },
+    {
+      "ref": "way/192220363",
+      "distance_m": 220.286,
+      "point_xy": [
+        -219.55480067109988,
+        -18.529733778826653
+      ]
+    }
+  ],
+  "central_projection_ground_plan_blockers": [],
+  "conditional_position_scenarios": [
+    {
+      "position_disc_radius_m": 10,
+      "grid_step_m": 2,
+      "street_corridor_halfwidth_m": 10,
+      "positions": 65,
+      "first_footprint_parallel_to_approach": {
+        "way/192217077": 65
+      },
+      "heading_to_central_projection_range_deg": [
+        69.58,
+        83.5
+      ],
+      "meaning": "conditional stress scenario; not a measured GPS error or probability"
+    },
+    {
+      "position_disc_radius_m": 30,
+      "grid_step_m": 2,
+      "street_corridor_halfwidth_m": 10,
+      "positions": 251,
+      "first_footprint_parallel_to_approach": {
+        "way/192217077": 251
+      },
+      "heading_to_central_projection_range_deg": [
+        62.68,
+        88.13
+      ],
+      "meaning": "conditional stress scenario; not a measured GPS error or probability"
+    }
+  ],
+  "limits": [
+    "zero unresolved OSM rings is not proof of complete real-world mapping",
+    "street interpretation comes from SOURCE; exact compass yaw is not in EXIF",
+    "2D first intersection is a plan relation, not a height-aware visibility proof",
+    "grid is conditional and finite; it does not exhaust every possible pose"
+  ],
+  "geometry_conclusion": "accepted physical identity from SOURCE plus street termination geometry; external reference photo is optional"
+}

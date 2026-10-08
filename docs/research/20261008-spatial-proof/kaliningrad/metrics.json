@@ -1,0 +1,1014 @@
+{
+  "cases": [
+    {
+      "photo": 106,
+      "camera": {
+        "latitude": 54.7331882,
+        "longitude": 20.478384299722222,
+        "source": "original_EXIF",
+        "heading_measured": false,
+        "accuracy_measured": false
+      },
+      "approx_hfov_deg": 71.5915,
+      "raw_sha256": "9171c054faf92859b75421693c459f1afb0c8e47cc956a5f9751198c429b3d0c",
+      "candidate_pool_complete_groups": 80,
+      "unresolved_buildings": 1,
+      "measurements": {
+        "A_street_facade_length_m": 21.831,
+        "A_return_depth_m": 12.476,
+        "B_setback_from_A_front_line_at_86B_m": 13.148,
+        "A_B_small_mapping_gap_m": 0.385,
+        "courtyard_front_opening_A_to_C_m": 32.865,
+        "D_east_facing_short_facade_m": 14.285,
+        "D_right_return_depth_m": 11.235,
+        "D_long_south_facade_m": 33.788,
+        "D_south_front_min_camera_shift_south_m": 17.461,
+        "D_south_front_min_camera_shift_anydirection_m": 17.452,
+        "source_complete_main_storeys_observed": 3,
+        "source_attic_observed": true,
+        "A_osm_levels": "3",
+        "D_osm_levels": "2"
+      },
+      "selected_candidates": [
+        {
+          "label": "A",
+          "osm_ref": "way/150596899",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "88",
+            "addr:street": "Комсомольская улица",
+            "building": "apartments",
+            "building:levels": "3"
+          },
+          "linked_addresses": [],
+          "boundary_distance_m": 10.59,
+          "bbox_center_distance_m": 22.26,
+          "boundary_rank": 1,
+          "centroid_bearing_deg": 43.47,
+          "geometry_complete": true
+        },
+        {
+          "label": "B",
+          "osm_ref": "way/150596903",
+          "tags": {
+            "building": "yes",
+            "building:levels": "4"
+          },
+          "linked_addresses": [
+            {
+              "osm_type": "node",
+              "osm_id": 1462814460,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "86",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                23.02297965263746,
+                -21.994386870442572
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1462814461,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "86Б",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                22.714808384616855,
+                -11.241822611828509
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1462814462,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "86А",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                22.348855003614297,
+                -0.6449314657804257
+              ],
+              "association": "boundary_node_member"
+            }
+          ],
+          "boundary_distance_m": 22.31,
+          "bbox_center_distance_m": 30.47,
+          "boundary_rank": 3,
+          "centroid_bearing_deg": 112.64,
+          "geometry_complete": true
+        },
+        {
+          "label": "C",
+          "osm_ref": "way/66345237",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:housenumber": "82-82А",
+            "addr:street": "Комсомольская улица",
+            "building": "yes",
+            "building:levels": "3"
+          },
+          "linked_addresses": [
+            {
+              "osm_type": "node",
+              "osm_id": 1423269110,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "82",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                17.97025490328937,
+                -66.70592863181096
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1423269111,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "82А",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase",
+                "name": "АВТО МАГАЗИН \"КАРАВАН\"",
+                "phone": "+7 4012 911586"
+              },
+              "xy": [
+                18.573756969905745,
+                -61.090577080763445
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1634990898,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "80",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                12.56441724259165,
+                -90.02353695748418
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1634990910,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "84",
+                "addr:street": "Комсомольская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                10.45858024414675,
+                -43.34384227510472
+              ],
+              "association": "boundary_node_member"
+            }
+          ],
+          "boundary_distance_m": 29.47,
+          "bbox_center_distance_m": 69.3,
+          "boundary_rank": 5,
+          "centroid_bearing_deg": 163.28,
+          "geometry_complete": true
+        },
+        {
+          "label": "D",
+          "osm_ref": "way/102519047",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "83",
+            "addr:postcode": "236023",
+            "addr:street": "Комсомольская улица",
+            "building": "yes",
+            "building:levels": "2",
+            "check_date": "2026-09-19",
+            "leisure": "sauna",
+            "name": "Баня №1",
+            "payment:cash": "yes",
+            "payment:credit_cards": "yes",
+            "payment:debit_cards": "yes",
+            "roof:shape": "gabled",
+            "wheelchair": "no"
+          },
+          "linked_addresses": [],
+          "boundary_distance_m": 21.03,
+          "bbox_center_distance_m": 37.4,
+          "boundary_rank": 2,
+          "centroid_bearing_deg": 266.63,
+          "geometry_complete": true
+        },
+        {
+          "label": "E",
+          "osm_ref": "way/150596900",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "90",
+            "addr:street": "Комсомольская улица",
+            "building": "apartments",
+            "building:levels": "4"
+          },
+          "linked_addresses": [],
+          "boundary_distance_m": 28.38,
+          "bbox_center_distance_m": 38.17,
+          "boundary_rank": 4,
+          "centroid_bearing_deg": 23.1,
+          "geometry_complete": true
+        }
+      ],
+      "bounded_anchor_scenarios": [
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            0
+          ],
+          "anchor_span_deg": 73.42,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            -2,
+            0
+          ],
+          "anchor_span_deg": 69.54,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            -10,
+            0
+          ],
+          "anchor_span_deg": 56.13,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            10,
+            0
+          ],
+          "anchor_span_deg": 101.09,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            -10
+          ],
+          "anchor_span_deg": 53.78,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            10
+          ],
+          "anchor_span_deg": 90.09,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            -30,
+            0
+          ],
+          "anchor_span_deg": 35.44,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            30,
+            0
+          ],
+          "anchor_span_deg": 56.74,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            -30
+          ],
+          "anchor_span_deg": 28.42,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            30
+          ],
+          "anchor_span_deg": 50.62,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            0,
+            0
+          ],
+          "anchor_span_deg": 77.48,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            -2,
+            0
+          ],
+          "anchor_span_deg": 82.19,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            -10,
+            0
+          ],
+          "anchor_span_deg": 106.45,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            10,
+            0
+          ],
+          "anchor_span_deg": 59.71,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            0,
+            -10
+          ],
+          "anchor_span_deg": 67.48,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            0,
+            10
+          ],
+          "anchor_span_deg": 76.65,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            -30,
+            0
+          ],
+          "anchor_span_deg": 158.4,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            30,
+            0
+          ],
+          "anchor_span_deg": 40.35,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            0,
+            -30
+          ],
+          "anchor_span_deg": 28.04,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "D_to_D_return",
+          "camera_offset_xy_m": [
+            0,
+            30
+          ],
+          "anchor_span_deg": 55.99,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        }
+      ],
+      "computed_uniqueness": false,
+      "whole_candidate_pool_pose_search_done": false,
+      "no_external_reference_requirement": "An adequately discriminative photo+map match may close identity without fetching an exterior photo. This diagnostic does not claim an exhaustive uniqueness proof.",
+      "decision": {
+        "status": "accepted_photo_plus_map",
+        "accepted_physical_ref": "way/150596899",
+        "external_photo_required": false,
+        "scope": "106 uses source3complete storeys and mapped3vs2storey alternative; pureplan retainsD.125 accepts address-range footprint53–57, not exact arch address57.",
+        "residual_uncertainty": "No exhaustive continuous camera/heading search; missing or wrong map details can reopen an alternative."
+      },
+      "map_sector": {
+        "role": "illustrative candidate-consistent direction, not EXIF heading",
+        "origin_offset_xy_m": [
+          -2,
+          0
+        ],
+        "heading_deg": 55,
+        "hfov_deg": 71.5915
+      }
+    },
+    {
+      "photo": 125,
+      "camera": {
+        "latitude": 54.712702,
+        "longitude": 20.527291,
+        "source": "owner_approximate_location_NOT_EXIF",
+        "heading_measured": false,
+        "accuracy_measured": false
+      },
+      "approx_hfov_deg": 56.8117,
+      "raw_sha256": "b1f55e2d1f3309e041115e07287fda14cf81fd4d0b915ac6782075f9538bce6d",
+      "candidate_pool_complete_groups": 60,
+      "unresolved_buildings": 0,
+      "measurements": {
+        "A_street_frontage_m": 55.315,
+        "A_to_B_return_segment_m": 9.674,
+        "B_setback_normal_to_A_frontage_m": 9.673,
+        "A_B_shared_coordinate": [
+          -21.300261237648904,
+          24.49627617570111
+        ],
+        "A_B_shared_node_present": true,
+        "A_B_shared_node_ids": [
+          1055390458
+        ],
+        "right_E_advance_vs_B_frontage_m": 8.351,
+        "A_advance_vs_left_D_frontage_m": 5.899,
+        "B_frontage_axis_deg_mod180": 80.291,
+        "A_frontage_axis_deg_mod180": 81.736,
+        "C_rectangle_edge_lengths_m": [
+          6.978044055556013,
+          14.790135361045051,
+          6.977053559502634,
+          14.783788663459225
+        ],
+        "arch_or_building_passage_mapped": false,
+        "observed_arch_in_source": true,
+        "historical_single_building_proved_by_osm": false,
+        "identity_scope": "One mapped physical footprint with address range53–57; OSM alone does not establish historical unity or the exact numbered entrance of the pictured arch."
+      },
+      "selected_candidates": [
+        {
+          "label": "A",
+          "osm_ref": "way/152315116",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "53-57",
+            "addr:street": "улица Фрунзе",
+            "building": "yes",
+            "building:start_date": "1900..1905",
+            "historic": "ruins",
+            "name": "Кройц-аптека",
+            "name:de": "Kreuz Apotheke",
+            "name:en": "Kreuz Pharmacy",
+            "wikipedia": "ru:Дома по улице Фрунзе, 53-57"
+          },
+          "linked_addresses": [],
+          "boundary_distance_m": 24.78,
+          "bbox_center_distance_m": 52.88,
+          "boundary_rank": 2,
+          "centroid_bearing_deg": 293.06,
+          "geometry_complete": true
+        },
+        {
+          "label": "B",
+          "osm_ref": "way/90894694",
+          "tags": {
+            "building": "yes",
+            "building:levels": "5"
+          },
+          "linked_addresses": [
+            {
+              "osm_type": "node",
+              "osm_id": 1651431214,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "59",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -8.523958583386412,
+                40.63068231730381
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431216,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "61",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                8.690969075267867,
+                43.81086161201257
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431220,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "63",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                25.55902878884152,
+                46.935443366744934
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431222,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "65",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                40.988228877050055,
+                49.79315692816845
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431224,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "67",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                62.85375639579084,
+                53.84065784935331
+              ],
+              "association": "boundary_node_member"
+            }
+          ],
+          "boundary_distance_m": 27.74,
+          "bbox_center_distance_m": 47.09,
+          "boundary_rank": 3,
+          "centroid_bearing_deg": 32.36,
+          "geometry_complete": true
+        },
+        {
+          "label": "C",
+          "osm_ref": "way/90894945",
+          "tags": {
+            "building": "yes"
+          },
+          "linked_addresses": [],
+          "boundary_distance_m": 20.76,
+          "bbox_center_distance_m": 28.93,
+          "boundary_rank": 1,
+          "centroid_bearing_deg": 233.58,
+          "geometry_complete": true
+        },
+        {
+          "label": "D",
+          "osm_ref": "way/90894700",
+          "tags": {
+            "building": "yes",
+            "building:levels": "5"
+          },
+          "linked_addresses": [
+            {
+              "osm_type": "node",
+              "osm_id": 1055391417,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:housenumber": "1",
+                "addr:street": "Гражданская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -98.27282770580892,
+                20.42653623899974
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431203,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "37",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -167.35736015721025,
+                8.739933306569974
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431205,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "39",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -146.1534511268198,
+                10.20770836542322
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1651431209,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "43",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -107.83096664480527,
+                18.391666270649058
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1865287000,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:housenumber": "3",
+                "addr:street": "Гражданская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -105.8974990234277,
+                35.87153288299891
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 1865287043,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:housenumber": "5",
+                "addr:street": "Гражданская улица",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -106.97022026184973,
+                48.3142623611619
+              ],
+              "association": "boundary_node_member"
+            },
+            {
+              "osm_type": "node",
+              "osm_id": 6046773887,
+              "tags": {
+                "addr:city": "Калининград",
+                "addr:country": "RU",
+                "addr:housenumber": "41",
+                "addr:street": "улица Фрунзе",
+                "entrance": "staircase"
+              },
+              "xy": [
+                -130.64716927298707,
+                13.443485200108382
+              ],
+              "association": "boundary_node_member"
+            }
+          ],
+          "boundary_distance_m": 85.72,
+          "bbox_center_distance_m": 133.47,
+          "boundary_rank": 10,
+          "centroid_bearing_deg": 280.33,
+          "geometry_complete": true
+        },
+        {
+          "label": "E",
+          "osm_ref": "way/90894651",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "71",
+            "addr:postcode": "236016",
+            "addr:street": "улица Фрунзе",
+            "amenity": "townhall",
+            "building": "yes",
+            "building:levels": "3",
+            "name": "МКУ \"Калининградская служба заказчика\"",
+            "townhall:type": "административное_здание"
+          },
+          "linked_addresses": [],
+          "boundary_distance_m": 82.94,
+          "bbox_center_distance_m": 99.34,
+          "boundary_rank": 8,
+          "centroid_bearing_deg": 61.75,
+          "geometry_complete": true
+        }
+      ],
+      "bounded_anchor_scenarios": [
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            0
+          ],
+          "anchor_span_deg": 43.63,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            -2,
+            0
+          ],
+          "anchor_span_deg": 46.26,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            -10,
+            0
+          ],
+          "anchor_span_deg": 59.05,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            10,
+            0
+          ],
+          "anchor_span_deg": 33.32,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            -10
+          ],
+          "anchor_span_deg": 45.46,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            10
+          ],
+          "anchor_span_deg": 36.55,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            -30,
+            0
+          ],
+          "anchor_span_deg": 115.47,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            30,
+            0
+          ],
+          "anchor_span_deg": 21.7,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            -30
+          ],
+          "anchor_span_deg": 42.25,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "A_to_B",
+          "camera_offset_xy_m": [
+            0,
+            30
+          ],
+          "anchor_span_deg": 22.81,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            0,
+            0
+          ],
+          "anchor_span_deg": 107.37,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            -2,
+            0
+          ],
+          "anchor_span_deg": 105.14,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            -10,
+            0
+          ],
+          "anchor_span_deg": 93.62,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            10,
+            0
+          ],
+          "anchor_span_deg": 115.2,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            0,
+            -10
+          ],
+          "anchor_span_deg": 92.04,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            0,
+            10
+          ],
+          "anchor_span_deg": 128.74,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            -30,
+            0
+          ],
+          "anchor_span_deg": 53.02,
+          "fits_approx_hfov": true,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            30,
+            0
+          ],
+          "anchor_span_deg": 118.59,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            0,
+            -30
+          ],
+          "anchor_span_deg": 71.57,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        },
+        {
+          "hypothesis": "B_to_E",
+          "camera_offset_xy_m": [
+            0,
+            30
+          ],
+          "anchor_span_deg": 174.25,
+          "fits_approx_hfov": false,
+          "scope": "Only selected ground-plan anchor angular span; not whole-photo visibility or calibrated identity likelihood."
+        }
+      ],
+      "computed_uniqueness": false,
+      "whole_candidate_pool_pose_search_done": false,
+      "no_external_reference_requirement": "An adequately discriminative photo+map match may close identity without fetching an exterior photo. This diagnostic does not claim an exhaustive uniqueness proof.",
+      "decision": {
+        "status": "accepted_geometry_with_owner_location",
+        "accepted_physical_ref": "way/152315116",
+        "external_photo_required": false,
+        "scope": "106 uses source3complete storeys and mapped3vs2storey alternative; pureplan retainsD.125 accepts address-range footprint53–57, not exact arch address57.",
+        "residual_uncertainty": "No exhaustive continuous camera/heading search; missing or wrong map details can reopen an alternative."
+      },
+      "map_sector": {
+        "role": "illustrative candidate-consistent direction, not EXIF heading",
+        "origin_offset_xy_m": [
+          0,
+          0
+        ],
+        "heading_deg": 298,
+        "hfov_deg": 56.8117
+      }
+    }
+  ],
+  "resource_use": {
+    "new_osm_http_requests": 1,
+    "reused_osm_snapshots": 1,
+    "external_photo_searches": 0,
+    "product_model_calls": 0
+  }
+}
