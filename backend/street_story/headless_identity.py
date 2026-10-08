@@ -402,7 +402,13 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         tasks = {asyncio.create_task(run_pair(pair)) for pair in pairs}
         all_tasks = set(tasks)
         preparation = None
-        freed_routes = []
+        # A resumed batch may contain only one unknown child. Completed lanes
+        # are already free even though no completion occurs in this worker turn.
+        # Preserve the original unknown lane; acquire independent work elsewhere.
+        available_slots = Counter(getattr(provider, 'parallel_visual_routes', lambda: ())())
+        for child in pairs:
+            available_slots[child['route']] -= 1
+        freed_routes = [route for route, count in available_slots.items() for _ in range(max(0, count))]
         waits = []
         try:
             while tasks:

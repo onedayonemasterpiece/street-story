@@ -287,3 +287,46 @@ async def test_reader_refill_does_not_block_ready_match_commit_or_send_after_mat
         verdict_ready.set()
         reader_release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_with_only_unknown_child_acquires_late_source_on_already_free_lane(tmp_path, monkeypatch):
+    svc, story, _ = prepare(tmp_path, count=2)
+    calls = []
+    async def pair(route, snapshot, item, schema, context):
+        cid = item['_visual_reference_mapping'][0]['candidate_id']
+        calls.append((route, cid, item['_visual_pair_resume_only']))
+        if cid == 'gate:b':
+            if not item['_visual_pair_resume_only']:
+                retained_unknown(svc, story, item, context)
+            raise RetryableProviderError('research_visual_pair_outcome_unknown', retry_at=svc.store.now()+1)
+        if cid == 'web:late':
+            return response(item, 'late-completed')
+        return response(item, 'first-negative')
+    install(svc, pair)
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert calls == [('google', 'gate:a', False), ('opencode', 'gate:b', False)]
+    async def read(service, item, sources, rejected, *, receipts):
+        assert sources[0]['url'] == 'https://example.com/late-article'
+        receipts.append({'status': 'completed'})
+        return [{'candidate_id': 'web:late', 'name': 'Late exterior',
+                 'url': sources[0]['url'], 'discovery': 'web_article_media',
+                 'reference_image_urls': ['https://example.com/late.jpg']}]
+    monkeypatch.setattr('street_story.article_media.article_candidates', read)
+    with svc.store.tx() as db:
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (story['id'],)).fetchone()[0])
+        research['identity_article_discovery'] = {'photo_sha256': story['photo_sha256'], 'generation': 0,
+            'sources': [{'url': 'https://example.com/late-article', 'discovery_provider': 'fixture'}]}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+        db.execute("UPDATE jobs SET available_at=0 WHERE kind='identity_visual'")
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert ('opencode', 'gate:b', True) in calls
+    assert ('google', 'web:late', False) in calls
+    _, latest = svc._identity_snapshot(story['id'])
+    assert latest['visual_identity']['status'] == 'uncertain'
+    late = next(p for p in latest['visual_search_operation']['parallel_pairs']
+                if p['candidates'][0]['candidate_id'] == 'web:late')
+    assert late['phase'] == 'completed'
+    assert late['candidates'][0]['reference_id'] in latest['visual_search_operation']['reviewed_reference_ids']
+    unknown = next(p for p in latest['visual_search_operation']['parallel_pairs'] if p['route'] == 'opencode')
+    assert unknown['phase'] == 'submitted'
