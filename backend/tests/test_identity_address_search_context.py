@@ -40,6 +40,22 @@ def test_reverse_road_address_does_not_borrow_nearby_house_number():
     assert 'house_number' not in result['map_address']
 
 
+def test_reverse_mapped_object_kind_reaches_visual_subject_resolution():
+    from street_story.headless_identity import HeadlessIdentity
+    reverse = {'osm_type': 'way', 'osm_id': 12, 'category': 'amenity', 'type': 'parking',
+               'addresstype': 'amenity', 'display_name': 'Nearby Road, City',
+               'lat': '54.71', 'lon': '20.507', 'distance_m': 9,
+               'address': {'road': 'Nearby Road'}, 'selection_bucket': 'reverse'}
+    candidate = MvpResearchStreetStoryService._candidate_catalog({'reverse': reverse}, [])[0]
+    ref = {'candidate_id': 'web:reference', 'reference_id': 'ref-one', 'name': 'Building',
+           'url': 'https://example.com/article', 'reference_image_urls': ['https://example.com/ref.jpg']}
+    context = HeadlessIdentity._visual_reply('comparison', [ref], {'candidates': [candidate]}, 0)
+    mapped = context['physical_candidates'][0]['map_object']
+    assert mapped['category'] == 'amenity' and mapped['type'] == 'parking'
+    assert mapped['scope'] == 'mapped_entry_only'
+    assert context['physical_candidates'][0]['map_address']['street'] == 'Nearby Road'
+
+
 @pytest.mark.parametrize('item', [
     {'tags': {'name': 'Somewhere 99'}},
     {'tags': {'building': 'yes'}, 'center': {'lat': float('nan'), 'lon': 20}},

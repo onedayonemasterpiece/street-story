@@ -116,7 +116,7 @@ async def suggest(service, story, transcript, candidates):
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': REGION_HINT,
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
-                        'camera_alignment', 'map_address', 'map_coordinates', 'road_name') if key in x} for x in candidates[:16]],
+                        'camera_alignment', 'map_address', 'map_coordinates', 'road_name', 'map_object') if key in x} for x in candidates[:16]],
                     'location_search_context': _map_query_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
