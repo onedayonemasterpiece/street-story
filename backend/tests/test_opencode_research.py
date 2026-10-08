@@ -114,6 +114,8 @@ async def test_search_uses_actual_tool_urls_admission_and_durable_intent():
     prompt = next(payload for _method, path, payload in h.requests if path.endswith('prompt_async'))
     assert 'format' not in prompt  # Installed1.18.31 native format fails persisted readback.
     assert 'Response JSON schema' in prompt['parts'][0]['text']
+    assert 'validate locally' not in prompt['parts'][0]['text']
+    assert 'do not run local validation, commands or code' in prompt['parts'][0]['text']
     assert 'tools' not in prompt
     session = next(payload for _method, path, payload in h.requests if path == '/session' and _method == 'POST')
     assert session['permission'] == [{'permission': '*', 'pattern': '*', 'action': 'deny'},
@@ -293,6 +295,28 @@ async def test_resume_reads_existing_attempt_without_model_resubmission():
     assert resumed['receipt']['readback_only'] is True
     assert len(h.finalized) == 1  # Original conservative charge is not refunded.
     assert sum(path.endswith('prompt_async') for _method, path, _payload in h.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_schema_instruction_resumes_exact_original_message_without_send():
+    import hashlib
+    h = Harness()
+    h.result = {'ok': True}
+    binding = {'request_id': 'legacy-frozen', 'attempt_created_at': 1234}
+    schema = {'type': 'object'}
+    prompt = 'Closed frozen operation'
+    legacy = prompt + '\nResponse JSON schema (validate locally, no retries):\n' + json.dumps(schema, ensure_ascii=False)
+    operation = json.dumps({'role': 'facts', 'binding': binding, 'prompt': legacy, 'reference_ids': []}, sort_keys=True)
+    old_hash = hashlib.sha256(operation.encode()).hexdigest()
+    h.message_id = 'msg_' + f'{(1234000 * 4096 + 1) & ((1 << 48) - 1):012x}' + old_hash[:14]
+    h.parts = [{'type': 'text', 'text': legacy}]
+    adapter = h.adapter()
+    result = await adapter._run('facts', prompt, {**binding, 'session_id': 'sesBounded',
+        'message_id': h.message_id, 'phase': 'submitted'}, schema)
+    assert result['result'] == {'ok': True}
+    assert result['receipt']['readback_only'] is True
+    assert not h.sends and not h.admissions
+    assert not any(path.endswith('prompt_async') for _, path, _ in h.requests)
 
 
 @pytest.mark.asyncio
