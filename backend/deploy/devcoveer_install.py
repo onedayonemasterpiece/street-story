@@ -1275,12 +1275,23 @@ config=scoped_research_config(model,directory=directory)
 for selected in models:
  config['provider']['opencode']['models'].update(scoped_research_config(selected,directory=directory)['provider']['opencode']['models'])
 profile=directory/'opencode.json'
-if profile.exists() and json.loads(profile.read_text())!=config:
- raise RuntimeError('existing scoped profile differs; reconcile its active attempts before changing it')
+if profile.exists():
+ existing=json.loads(profile.read_text());disabled=existing.pop('mcp',{})
+ if existing!=config or not isinstance(disabled,dict) or any(not isinstance(value,dict) or value.get('enabled') is not False for value in disabled.values()):
+  raise RuntimeError('existing scoped profile differs; reconcile its active attempts before changing it')
 if not profile.exists():
  profile.write_text(json.dumps(config));profile.chmod(0o600)
 async def main():
  client=SharedDevCoveerResearch(str(directory),model_id=model)
+ effective=await client._request(None,'GET','/config')
+ inherited=effective.get('mcp') or {}
+ if not isinstance(inherited,dict):
+  raise RuntimeError('inherited MCP configuration is invalid')
+ disabled={name:{'enabled':False} for name in inherited}
+ if disabled and any(not isinstance(value,dict) or value.get('enabled') is not False for value in inherited.values()):
+  # Directory-scoped config disables inherited integrations; inference inputs,
+  # existing session addresses and shared global MCP settings remain intact.
+  await client.shared_backend.request('PATCH','/config',directory=str(directory),payload={'mcp':disabled},timeout=30)
  result=await client._attest(None,'search')
  if len(models)>1:
   for selected in models:

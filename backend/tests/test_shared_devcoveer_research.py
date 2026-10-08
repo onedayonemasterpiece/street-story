@@ -167,6 +167,8 @@ async def test_existing_result_is_reconciled_without_second_prompt(tmp_path):
      'research_model_output_not_bounded'),
     ({'plugin': ['untrusted']}, 'research_capsule_config_unverified'),
     ({'mcp': {'writer': {'enabled': True}}}, 'research_capsule_config_unverified'),
+    ({'mcp': {'writer': {}}}, 'research_capsule_config_unverified'),
+    ({'mcp': {'writer': {'enabled': 'false'}}}, 'research_capsule_config_unverified'),
     ({'instructions': ['private-file']}, 'research_capsule_config_unverified'),
     ({'share': 'auto'}, 'research_capsule_config_unverified'),
     ({'agent': {'plan': {'steps': 3}}}, 'research_background_inference_not_disabled'),
@@ -177,6 +179,15 @@ async def test_scoped_config_must_attest_before_any_dispatch(tmp_path, change, c
     with pytest.raises(ResearchUnavailable, match=code):
         await adapter.search_articles('Facade', {'request_id': 'r'})
     assert not h.sends and not any(method == 'POST' for method, *_rest in backend.calls)
+
+
+@pytest.mark.asyncio
+async def test_explicitly_disabled_inherited_mcp_allows_only_native_registry(tmp_path):
+    h, backend, adapter = setup(tmp_path)
+    h.config['mcp'] = {'unrelated-global-integration': {'enabled': False}}
+    result = await adapter.search_articles('Facade', {'request_id': 'r'})
+    assert result['receipt']['phase'] == 'completed'
+    assert len(h.sends) == 1
 
 
 @pytest.mark.asyncio

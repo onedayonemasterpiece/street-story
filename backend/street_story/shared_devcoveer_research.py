@@ -192,7 +192,10 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             if config.get('plugin') != [profile] or config.get('username') != profile[1]['marker']:
                 raise ResearchUnavailable('research_guard_not_loaded')
             guard_verified = True
-        if ((config.get('plugin') and not guard_verified) or config.get('mcp') or config.get('instructions') or config.get('references')
+        mcp = config.get('mcp') or {}
+        active_mcp = (not isinstance(mcp, dict) or any(
+            not isinstance(value, dict) or value.get('enabled') is not False for value in mcp.values()))
+        if ((config.get('plugin') and not guard_verified) or active_mcp or config.get('instructions') or config.get('references')
                 or config.get('reference') or config.get('share') != 'disabled' or config.get('snapshot') is not False):
             raise ResearchUnavailable('research_capsule_config_unverified')
         if any((config.get('agent', {}).get(name) or {}).get('disable') is not True
