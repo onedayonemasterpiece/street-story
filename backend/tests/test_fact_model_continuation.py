@@ -86,7 +86,7 @@ async def test_model_owned_continuation_uses_existing_joined_job_and_exact_query
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('changes', [
-    {'research_sufficient': True}, {'source_matches_poi': False}, {'source_content_valid': False},
+    {'research_sufficient': True}, {'source_matches_poi': False}, {'source_content_valid': None},
     {'next_research_goal': ''}, {'next_research_query': ''}, {'next_research_query': 42},
     {'next_research_query': 'Бранденбургские ворота Find historical facts', 'next_research_goal': 'Find historical facts'},
 ])
@@ -98,6 +98,94 @@ async def test_unverified_sufficient_or_identical_recipe_cannot_schedule_next_sc
         with svc.store.connection() as db:
             research = json.loads(svc._story_row(db, job['story_id'])['research_json'])
             assert 'pending_fact_request' not in research and 'fact_research_continuations' not in research
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recover', [False, True])
+async def test_rejected_gallery_hands_off_saved_query_without_repeating_extraction(tmp_path, monkeypatch, recover):
+    from street_story.research_runs import run_manifest, manifest_complete
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    helper = HeadlessFacts(svc)
+    original = researcher.extract_fact_page
+
+    async def rejected(*args):
+        response = await original(*args)
+        response['result'].update(PLAN, source_content_valid=False, continuation_needed=True)
+        return response
+
+    researcher.extract_fact_page = rejected
+    try:
+        if recover:
+            # Reproduce a deployed committed response whose continuation was
+            # previously stranded. Recovery must consume it without inference.
+            handoff = helper._handoff_rejected_source
+            monkeypatch.setattr(helper, '_handoff_rejected_source', lambda *args: False)
+            with pytest.raises(RetryableProviderError):
+                await helper.run(job, 'headless-run', 'Find historical facts', 'history')
+            monkeypatch.setattr(helper, '_handoff_rejected_source', handoff)
+        await helper.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert len(researcher.pages) == len(researcher.model_units) == 1
+        assert not svc.story(job['story_id'])['facts']
+        with svc.store.tx() as db:
+            manifest = run_manifest(db, 'headless-run')
+            assert manifest['run']['state'] == 'partial'
+            assert manifest['run']['status_detail'] == 'research_rejected_source_replaced'
+            assert not manifest_complete(manifest)
+            assert manifest['sources'][0]['error_code'] == 'not_article_text'
+            db.execute("UPDATE jobs SET state='done' WHERE id=?", (job['id'],))
+            assert svc._resume_joined_fact_request(db, job['story_id'])
+            next_job = dict(db.execute('SELECT * FROM jobs WHERE id<>?', (job['id'],)).fetchone())
+            db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (next_job['id'],))
+            next_job['attempts'] = 1
+            row = svc._story_row(db, job['story_id'])
+            payload = json.loads(next_job['payload_json'])
+            begin_research_run(db, story_id=job['story_id'], poi_key='wiki:77', goal=GOAL,
+                scope=payload['extraction_scope'], expected_story_revision=row['revision'],
+                identity_generation=0, run_id='replacement-run', now=svc.store.now())
+        queries = []
+        original_search = researcher.search_articles
+
+        async def search(query, story):
+            queries.append(query)
+            return await original_search(query, story)
+
+        researcher.search_articles = search
+        researcher.extract_fact_page = original
+        await helper.run(next_job, 'replacement-run', GOAL, payload['extraction_scope'])
+        assert queries == [QUERY]  # The accepted gap query precedes old gallery reuse.
+        assert svc.story(job['story_id'])['facts'][0]['eligibility'] == 'unreviewed'
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('block', ['unknown_send', 'owner_edit'])
+async def test_rejected_gallery_handoff_preserves_unknown_operations_and_owner_fence(tmp_path, monkeypatch, block):
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    helper = HeadlessFacts(svc)
+    original = researcher.extract_fact_page
+
+    async def rejected(*args):
+        response = await original(*args)
+        response['result'].update(PLAN, source_content_valid=False, continuation_needed=True)
+        return response
+
+    researcher.extract_fact_page = rejected
+    try:
+        handoff = helper._handoff_rejected_source
+        monkeypatch.setattr(helper, '_handoff_rejected_source', lambda *args: False)
+        with pytest.raises(RetryableProviderError):
+            await helper.run(job, 'headless-run', 'Find historical facts', 'history')
+        monkeypatch.setattr(helper, '_handoff_rejected_source', handoff)
+        if block == 'unknown_send':
+            svc.store.checkpoint_put(job['id'], 'headless_fact_unit:later-unit', {'phase': 'unknown'})
+        else:
+            with svc.store.tx() as db:
+                db.execute('UPDATE stories SET draft_text=? WHERE id=?', ('New owner draft', job['story_id']))
+        assert not helper._handoff_rejected_source(job, 'headless-run', 'Find historical facts', 'history', 0)
+        assert len(researcher.model_units) == 1
     finally:
         await reader.search_http.aclose()
 
