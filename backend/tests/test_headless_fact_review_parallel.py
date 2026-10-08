@@ -80,6 +80,32 @@ async def test_one_bounded_packet_reviews_twelve_candidates_without_stale_siblin
 
 
 @pytest.mark.asyncio
+async def test_empty_optional_existing_relation_never_grants_support_or_accepts_foreign_id(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=1)
+    session = SimpleNamespace(id='existing-relation', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
+    item = packet['items'][0]
+    decision = {'fact': 0, 'evidence': [0], 'verdict': 'supported', 'atomic': True,
+                'support_complete': True, 'qualifiers_preserved': True, 'claims': [item['text']],
+                'basis_quotes': [item['text']], 'reason': 'Own literal evidence.',
+                'equivalent_to_existing': 'foreign-id'}
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [decision], 'relations_complete': True,
+            'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
+    with pytest.raises(ConflictError, match='nearby_existing_claims'):
+        await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'foreign', 'args': args})
+    decision['equivalent_to_existing'] = ''
+    decision['support_complete'] = False
+    with pytest.raises(ConflictError):
+        await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'unsupported', 'args': args})
+    decision['support_complete'] = True
+    result = await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'supported', 'args': args})
+    assert result['eligible_count'] == 1
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidence(tmp_path):
     from street_story.headless_fact_review import VERIFIER_PROMPT
     from street_story.service import canonical
