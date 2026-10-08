@@ -1,0 +1,320 @@
+{
+  "requested_range": "102,104–133",
+  "links": [
+    {
+      "message_id": 102,
+      "provided_url": "https://t.me/c/4488229487/2/102",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "f56c6cfeaf4b88a018dd3567e66d6fd75918d42da30100cff718c069b10d7c7e",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 104,
+      "provided_url": "https://t.me/c/4488229487/2/104",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "112941081c0b0da81fe091e864c16c144c9d308ecdd31ed438a690c42b71e0cd",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 105,
+      "provided_url": "https://t.me/c/4488229487/2/105",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "cc0dbb5ef8adf7266eae4a6ade70837672266bc33192e59e32450c235ab9b23b",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 106,
+      "provided_url": "https://t.me/c/4488229487/2/106",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "ec1717997abf9a78b5443c2315fe28311709ecbe9be0c594ccc0b7c8b2e9f04f",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 107,
+      "provided_url": "https://t.me/c/4488229487/2/107",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "6577dbb842ddfed4c9f86763a3713c780b82daaf21feefc17267742b5fc92361",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 108,
+      "provided_url": "https://t.me/c/4488229487/2/108",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "e7f8ae9521f6a4c5f949ff9fe47de62417c952de5550b4118970a9d9420ff092",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 109,
+      "provided_url": "https://t.me/c/4488229487/2/109",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "94bbdcac778e3f2e59d4b216c228e629cb5ed7f93efa669cd27b3f8b7457315a",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 110,
+      "provided_url": "https://t.me/c/4488229487/2/110",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "ccf744200bb534b8790b98791029a92d3e06e431137702e853ef1f40248af9dd",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 111,
+      "provided_url": "https://t.me/c/4488229487/2/111",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "9b64f41c40b9df6ce65e779487d3fe32407032303b784ade02fce85a1a86dbde",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 112,
+      "provided_url": "https://t.me/c/4488229487/2/112",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "f50046ef6697c63ac111502dbad26426ebe8b63d7ac4f17433035635968f3d69",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 113,
+      "provided_url": "https://t.me/c/4488229487/2/113",
+      "classification": "text_without_image",
+      "actual_reply_topic": 29,
+      "provided_topic": 2,
+      "building_corpus": false,
+      "image_reviewed": false,
+      "original_document_available": false,
+      "exif_gps_present": false
+    },
+    {
+      "message_id": 114,
+      "provided_url": "https://t.me/c/4488229487/2/114",
+      "classification": "non_building_UI_screenshot",
+      "actual_reply_topic": 29,
+      "provided_topic": 2,
+      "building_corpus": false,
+      "image_reviewed": true,
+      "original_document_available": false,
+      "exif_gps_present": false
+    },
+    {
+      "message_id": 115,
+      "provided_url": "https://t.me/c/4488229487/2/115",
+      "classification": "non_building_UI_screenshot",
+      "actual_reply_topic": 29,
+      "provided_topic": 2,
+      "building_corpus": false,
+      "image_reviewed": true,
+      "original_document_available": false,
+      "exif_gps_present": false
+    },
+    {
+      "message_id": 116,
+      "provided_url": "https://t.me/c/4488229487/2/116",
+      "classification": "non_building_UI_screenshot",
+      "actual_reply_topic": 29,
+      "provided_topic": 2,
+      "building_corpus": false,
+      "image_reviewed": true,
+      "original_document_available": false,
+      "exif_gps_present": false
+    },
+    {
+      "message_id": 117,
+      "provided_url": "https://t.me/c/4488229487/2/117",
+      "classification": "non_building_UI_screenshot",
+      "actual_reply_topic": 29,
+      "provided_topic": 2,
+      "building_corpus": false,
+      "image_reviewed": true,
+      "original_document_available": false,
+      "exif_gps_present": false
+    },
+    {
+      "message_id": 118,
+      "provided_url": "https://t.me/c/4488229487/2/118",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "5ba6fa94128419094bc81a2b900efed2fb4c8984de19309120da30042be8744a",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 119,
+      "provided_url": "https://t.me/c/4488229487/2/119",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "a5714908eeac3ddbe45df954635718adb1a8fa020d319b58d1214ac8f6ab6bce",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 120,
+      "provided_url": "https://t.me/c/4488229487/2/120",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "e55f7ed56dea1ab4d6eb57e80a0bed9061332ccc38251772f4157fb92ae5af7a",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 121,
+      "provided_url": "https://t.me/c/4488229487/2/121",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "3c0889d1a97a2f7e5c52691f7b331f792ddd43ca342964229d2b481b300dcc04",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 122,
+      "provided_url": "https://t.me/c/4488229487/2/122",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "b692b40eb09e14c579a8a686d5e34d2360e72f6c21cf4b7111374b32e7dd74f0",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 123,
+      "provided_url": "https://t.me/c/4488229487/2/123",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "23df96cb36f6aad49fd2ba5b1e9c066d1a1bed6bf24681a592893ab6f100eba9",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 124,
+      "provided_url": "https://t.me/c/4488229487/2/124",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "7057c9a9515a54a16b34ebebdce003388d887d9feef9b1f64601457d1ed8784a",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": null
+    },
+    {
+      "message_id": 125,
+      "provided_url": "https://t.me/c/4488229487/2/125",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "312e5aad64f3285f5b3be260b95b1c2c15bf205c270a5326f03bd1152bf8c411",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": "owner_approximate_hint"
+    },
+    {
+      "message_id": 126,
+      "provided_url": "https://t.me/c/4488229487/2/126",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "647d44970f06e9c168ce4789d4d319df7ba5b602a7c85ba70a8a9140b2cf0b80",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": "owner_approximate_hint"
+    },
+    {
+      "message_id": 127,
+      "provided_url": "https://t.me/c/4488229487/2/127",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "3ffa2cab3d623b81c7c97ffa79c7f7ed7d6fa22e2bcc813a44463ce1c0ea6041",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": null
+    },
+    {
+      "message_id": 128,
+      "provided_url": "https://t.me/c/4488229487/2/128",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "45f02593de0fb634dd4533742e438f55c40488406c3e92ba4946dd28dc8e128c",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": null
+    },
+    {
+      "message_id": 129,
+      "provided_url": "https://t.me/c/4488229487/2/129",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "575d7d026c8af31786f8fece04ac45e4788f2881fc0fd96d523cd2b2baddd2d1",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 130,
+      "provided_url": "https://t.me/c/4488229487/2/130",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "63a06c54726012c68bfcc972de010c3d8922c367f7840abba712620ebb0d3313",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": "owner_approximate_hint"
+    },
+    {
+      "message_id": 131,
+      "provided_url": "https://t.me/c/4488229487/2/131",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "d1417085cb42c966d2cf4ca6b554a5dc29a91553e935ebcf9a4df8d2dd2ed94b",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    },
+    {
+      "message_id": 132,
+      "provided_url": "https://t.me/c/4488229487/2/132",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "4f7dc18d93b6cea0382c206fca8ff7a9707df9c600824e11361ed883cb338b7d",
+      "image_reviewed": true,
+      "exif_gps_present": false,
+      "coordinate_source": "owner_approximate_hint"
+    },
+    {
+      "message_id": 133,
+      "provided_url": "https://t.me/c/4488229487/2/133",
+      "classification": "building_photo",
+      "building_corpus": true,
+      "source_original_sha256": "0536b1fe5e8603771d733aec95340e0f9b74df93f4dfb8e5997e22bb4602dea8",
+      "image_reviewed": true,
+      "exif_gps_present": true,
+      "coordinate_source": "original_exif"
+    }
+  ]
+}

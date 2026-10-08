@@ -1,0 +1,1040 @@
+{
+  "observed_date": "2026-10-08",
+  "method": "Manual comparison of real SOURCE with retrieved Prussia39 architecture; seeded/contextual and alternative routes explicitly retained. No new REF used. Not a blind product benchmark.",
+  "summary": {
+    "requested_links": 31,
+    "building_photos": 26,
+    "non_building_screenshots": 4,
+    "text_messages": 1,
+    "original_exif_gps": 19,
+    "owner_approximate_points": 4,
+    "no_geographic_anchor": 3,
+    "article_bodies_for_target_or_hypothesis_read": 20,
+    "grades": {
+      "A": 13,
+      "N": 6,
+      "H": 2,
+      "S": 1,
+      "P": 4
+    },
+    "blind_accuracy": "not measured",
+    "product_latency": "not measured",
+    "distinct_article_bodies_including_negative_controls": 24,
+    "retained_raw_article_snapshots": 16,
+    "product_inference_calls": 0,
+    "new_external_reference_images_used": 0
+  },
+  "cases": [
+    {
+      "message_id": 102,
+      "telegram_url": "https://t.me/c/4488229487/2/102",
+      "source_original_sha256": "f56c6cfeaf4b88a018dd3567e66d6fd75918d42da30100cff718c069b10d7c7e",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.710473399722225,
+        20.5069561
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Калининград, Житомирская, 22–24",
+      "osm_ref": null,
+      "osm_boundary_rank": null,
+      "osm_boundary_distance_m": null,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=3875",
+      "article_sid": 3875,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Три оси окон; центральный эркер меняет форму в верхней части.",
+      "limits": "Адрес/статья были известны ранее; это проверка текста, не слепое discovery.",
+      "scope_detail": "SOURCE+location lead+descriptive text; not text without location",
+      "discovery_provenance": "prior_identity; EXIF GPS present, no independent OSM discovery in this pass",
+      "discovery_receipt": {
+        "route": "prior_identity; EXIF GPS present, no independent OSM discovery in this pass",
+        "successful_query_url": null,
+        "shared_catalog": false,
+        "prior_audit_link": "docs/prompts/street-story-product-recovery-audit-20261008.md#5"
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 104,
+      "telegram_url": "https://t.me/c/4488229487/2/104",
+      "source_original_sha256": "112941081c0b0da81fe091e864c16c144c9d308ecdd31ed438a690c42b71e0cd",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.7219008,
+        20.514066799722222
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Башня Врангель",
+      "osm_ref": "relation/3665416",
+      "osm_boundary_rank": 2,
+      "osm_boundary_distance_m": 39.75,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=550",
+      "article_sid": 550,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Выступ над зубчатым верхом и повторяющийся арочный декор.",
+      "limits": "География отличает от сходной башни Дона; полный кольцевой план не виден.",
+      "scope_detail": "Статья о всей башне; SOURCE показывает южный наружный участок. Без проверки географии похожая башня Дона остаётся классовой альтернативой.",
+      "discovery_provenance": "previous_known_identity_name_plus_exif_osm_address",
+      "discovery_receipt": {
+        "receipt": "lookup-104.json",
+        "street": "Баранова",
+        "result_count": 12,
+        "target_card_found": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 105,
+      "telegram_url": "https://t.me/c/4488229487/2/105",
+      "source_original_sha256": "cc0dbb5ef8adf7266eae4a6ade70837672266bc33192e59e32450c235ab9b23b",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.714790399722226,
+        20.5081984
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Университетская, 3",
+      "osm_ref": "way/105154961",
+      "osm_boundary_rank": 4,
+      "osm_boundary_distance_m": 39.11,
+      "article_url": null,
+      "article_sid": null,
+      "article_body_read": false,
+      "grade": "N",
+      "assessment": "target_not_found_in_bounded_lookup",
+      "observations": "Для цели нет прочитанного текста.",
+      "limits": "Пять адресных результатов не включают нужный дом; отсутствие статьи во всём сайте не доказано.",
+      "scope_detail": null,
+      "discovery_provenance": "exif_osm_address; candidate chosen with previous-known identity",
+      "discovery_receipt": {
+        "receipt": "lookup-105.json",
+        "street": "Университетская",
+        "result_count": 5,
+        "target_card_found": false
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 106,
+      "telegram_url": "https://t.me/c/4488229487/2/106",
+      "source_original_sha256": "ec1717997abf9a78b5443c2315fe28311709ecbe9be0c594ccc0b7c8b2e9f04f",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.7331882,
+        20.478384299722222
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Комсомольская, 88; статья о комплексе 80–90",
+      "osm_ref": "way/150596899",
+      "osm_boundary_rank": 1,
+      "osm_boundary_distance_m": 10.59,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=2458",
+      "article_sid": 2458,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Совпадают ступенчатый торец, угловой эркер, рельефные пояса и взаимные отступы.",
+      "limits": "Статья охватывает несколько домов; конкретный №88 выбирает OSM-сцена.",
+      "scope_detail": "Prussia39 охватывает комплекс Комсомольская 80,82,82А,84,86,88,90. Адреса не следует превращать в один physical footprint; текущий target way150596899 подтверждён картой и SOURCE.",
+      "discovery_provenance": "exif_osm_address; candidate chosen with previous-known identity",
+      "discovery_receipt": {
+        "receipt": "lookup-106.json",
+        "street": "Комсомольская",
+        "result_count": 35,
+        "target_card_found": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 107,
+      "telegram_url": "https://t.me/c/4488229487/2/107",
+      "source_original_sha256": "6577dbb842ddfed4c9f86763a3713c780b82daaf21feefc17267742b5fc92361",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.730124199722226,
+        20.47844819972222
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Комсомольская, 53–61; северный угол у №61",
+      "osm_ref": "way/135507463",
+      "osm_boundary_rank": 9,
+      "osm_boundary_distance_m": 73.96,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=2519",
+      "article_sid": 2519,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Башенка и эркер верхних этажей согласуются с описанием угла.",
+      "limits": "Одна карточка комплекса; направление устанавливает карта. Найдена также на второй странице адресной выдачи.",
+      "scope_detail": "Одна статья описывает адресный диапазон. Не переносить конкретный подъезд 61 на все корпуса без OSM/пространственной привязки.",
+      "discovery_provenance": "exif_osm_address; candidate chosen with previous-known identity",
+      "discovery_receipt": {
+        "receipt": "lookup-107-page2.fetch.json",
+        "street": "Комсомольская",
+        "result_count": 35,
+        "target_card_found": true,
+        "page": 2,
+        "note": "URL sid2519 was already known/cache reused; independent address-result page2 also contains it."
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 108,
+      "telegram_url": "https://t.me/c/4488229487/2/108",
+      "source_original_sha256": "e7f8ae9521f6a4c5f949ff9fe47de62417c952de5550b4118970a9d9420ff092",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.72164959972223,
+        20.496798999722223
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Генделя, 6",
+      "osm_ref": "relation/1383564",
+      "osm_boundary_rank": 3,
+      "osm_boundary_distance_m": 18.47,
+      "article_url": null,
+      "article_sid": null,
+      "article_body_read": false,
+      "grade": "N",
+      "assessment": "target_not_found_in_bounded_lookup",
+      "observations": "Текст цели не найден; соседнее общежитие не подходит.",
+      "limits": "Карточка Генделя, 8–16 относится к иному корпусу и другой этажности.",
+      "scope_detail": null,
+      "discovery_provenance": "exif_osm_address; candidate chosen with previous-known identity",
+      "discovery_receipt": {
+        "receipt": "lookup-108.json",
+        "street": "Генделя",
+        "result_count": 3,
+        "target_card_found": false
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 109,
+      "telegram_url": "https://t.me/c/4488229487/2/109",
+      "source_original_sha256": "94bbdcac778e3f2e59d4b216c228e629cb5ed7f93efa669cd27b3f8b7457315a",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.713394,
+        20.516686699999998
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Клиническая, 19А",
+      "osm_ref": "relation/17986347",
+      "osm_boundary_rank": 1,
+      "osm_boundary_distance_m": 0.72,
+      "article_url": null,
+      "article_sid": null,
+      "article_body_read": false,
+      "grade": "N",
+      "assessment": "target_not_found_in_bounded_lookup",
+      "observations": "Для цели нет прочитанного текста.",
+      "limits": "Девять результатов по улице не включают точный адрес; исторический стиль не доказывает старый возраст.",
+      "scope_detail": null,
+      "discovery_provenance": "exif_osm_address; candidate chosen with previous-known identity",
+      "discovery_receipt": {
+        "receipt": "lookup-109.json",
+        "street": "Клиническая",
+        "result_count": 9,
+        "target_card_found": false
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 110,
+      "telegram_url": "https://t.me/c/4488229487/2/110",
+      "source_original_sha256": "ccf744200bb534b8790b98791029a92d3e06e431137702e853ef1f40248af9dd",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.3875801,
+        20.6404262
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Багратионовск, Калининградская, 10; северный корпус",
+      "osm_ref": "way/1085593396",
+      "osm_boundary_rank": 3,
+      "osm_boundary_distance_m": 14.91,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=2902",
+      "article_sid": 2902,
+      "article_body_read": true,
+      "grade": "H",
+      "assessment": "history_without_discriminating_exterior",
+      "observations": "Прочитаны сведения об истории и использовании, без фасадных признаков.",
+      "limits": "Карточка полезна после identity; общий адрес не различает соседние корпуса.",
+      "scope_detail": "Карточка комплекса Крайсхаус и общего адреса 10. SOURCE показывает северный корпус way1085593396; музей way1085593395 рядом. Текст не разрешает эту гранулярность.",
+      "discovery_provenance": "previous_known_identity_name_plus_exif_osm_address",
+      "discovery_receipt": null,
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 111,
+      "telegram_url": "https://t.me/c/4488229487/2/111",
+      "source_original_sha256": "9b64f41c40b9df6ce65e779487d3fe32407032303b784ade02fce85a1a86dbde",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.714176,
+        20.4862
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Дмитрия Донского, 15",
+      "osm_ref": "way/95290265",
+      "osm_boundary_rank": 21,
+      "osm_boundary_distance_m": 188.78,
+      "article_url": null,
+      "article_sid": null,
+      "article_body_read": false,
+      "grade": "N",
+      "assessment": "target_not_found_in_bounded_lookup",
+      "observations": "Для цели нет прочитанного текста.",
+      "limits": "Дальний объект не заменяется ближайшим; в 12 адресных результатах нужной карточки нет.",
+      "scope_detail": null,
+      "discovery_provenance": "exif_osm_address; candidate chosen with previous-known identity",
+      "discovery_receipt": {
+        "receipt": "lookup-111.json",
+        "street": "Донского",
+        "result_count": 12,
+        "target_card_found": false
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 112,
+      "telegram_url": "https://t.me/c/4488229487/2/112",
+      "source_original_sha256": "f50046ef6697c63ac111502dbad26426ebe8b63d7ac4f17433035635968f3d69",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.727142399722226,
+        20.499019199722223
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Желябова, 9; школа Фридриха Эберта",
+      "osm_ref": "way/91256978",
+      "osm_boundary_rank": 2,
+      "osm_boundary_distance_m": 10.32,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=3014",
+      "article_sid": 3014,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Квадратная часовая башня, шпиль, отделка фасада.",
+      "limits": "Две скрытые грани и полный план нельзя проверять по этому crop.",
+      "scope_detail": "Статья связана с корпусом way91256978. Школьная территория relation1338754 шире здания; название учреждения не заменяет контур корпуса.",
+      "discovery_provenance": "previous_known_identity_name_plus_exif_osm_address",
+      "discovery_receipt": null,
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 118,
+      "telegram_url": "https://t.me/c/4488229487/2/118",
+      "source_original_sha256": "5ba6fa94128419094bc81a2b900efed2fb4c8984de19309120da30042be8744a",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.72022679972223,
+        20.494925699722224
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Грекова, 2; бывшая дирекция почт",
+      "osm_ref": null,
+      "osm_boundary_rank": null,
+      "osm_boundary_distance_m": null,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1216",
+      "article_sid": 1216,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Выступающий портик, колонны и треугольный фронтон.",
+      "limits": "Часть колонн закрыта; использована именная визуальная гипотеза и GPS, новый OSM ID не сохранён.",
+      "scope_detail": "SOURCE+location lead+descriptive text; not text without location",
+      "discovery_provenance": "named_visual_lead штаб Балтийского флота -> advanced address query; GPS spatial cross-check",
+      "discovery_receipt": {
+        "route": "named_visual_lead штаб Балтийского флота -> advanced address query; GPS spatial cross-check",
+        "successful_query_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%C3%F0%E5%EA%EE%E2%E0&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+        "shared_catalog": false
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 119,
+      "telegram_url": "https://t.me/c/4488229487/2/119",
+      "source_original_sha256": "a5714908eeac3ddbe45df954635718adb1a8fa020d319b58d1214ac8f6ab6bce",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.7127488,
+        20.5014624
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Барнаульская, 6; ближайший OSM-кандидат 6А",
+      "osm_ref": "way/133035089",
+      "osm_boundary_rank": 2,
+      "osm_boundary_distance_m": 21.08,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=2538",
+      "article_sid": 2538,
+      "article_body_read": true,
+      "grade": "S",
+      "assessment": "strong_facade_match_physical_scope_unresolved",
+      "observations": "Сильное соответствие низких крыльев и более высокого центрального входа.",
+      "limits": "Не установлено соответствие статьи о комплексе6 конкретному footprint6А; близость не разрешает конфликт.",
+      "scope_detail": "not accepted by this text-only check",
+      "discovery_provenance": "EXIF -> cached120 OSM, nearest-address shortlist -> shared Барнаульская query",
+      "discovery_receipt": {
+        "route": "EXIF -> cached120 OSM, nearest-address shortlist -> shared Барнаульская query",
+        "successful_query_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CD%E0%F1%E5%EB%E5%ED%ED%FB%E9+%EF%F3%ED%EA%F2&text_adr=%C1%E0%F0%ED%E0%F3%EB%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+        "shared_catalog": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 120,
+      "telegram_url": "https://t.me/c/4488229487/2/120",
+      "source_original_sha256": "e55f7ed56dea1ab4d6eb57e80a0bed9061332ccc38251772f4157fb92ae5af7a",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.7123981,
+        20.500836299722224
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Барнаульская, 8; офтальмологическая клиника",
+      "osm_ref": "way/133035135",
+      "osm_boundary_rank": 1,
+      "osm_boundary_distance_m": 6.78,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=2540",
+      "article_sid": 2540,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Разновысотные объёмы, оформление окон и контрастная кладка.",
+      "limits": "Полный план не виден; соседняя хирургическая клиника имеет другое распределение объёмов.",
+      "scope_detail": "SOURCE+location lead+descriptive text; not text without location",
+      "discovery_provenance": "EXIF -> previously measured OSM shortlist -> advanced address query",
+      "discovery_receipt": {
+        "route": "EXIF -> previously measured OSM shortlist -> advanced address query",
+        "successful_query_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CD%E0%F1%E5%EB%E5%ED%ED%FB%E9+%EF%F3%ED%EA%F2&text_adr=%C1%E0%F0%ED%E0%F3%EB%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+        "shared_catalog": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 121,
+      "telegram_url": "https://t.me/c/4488229487/2/121",
+      "source_original_sha256": "3c0889d1a97a2f7e5c52691f7b331f792ddd43ca342964229d2b481b300dcc04",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.94288409999999,
+        20.154807199999997
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Светлогорск, Октябрьская, 11А",
+      "osm_ref": "way/297368195",
+      "osm_boundary_rank": 1,
+      "osm_boundary_distance_m": 4.91,
+      "article_url": null,
+      "article_sid": null,
+      "article_body_read": false,
+      "grade": "N",
+      "assessment": "target_not_found_in_bounded_lookup",
+      "observations": "Для цели нет прочитанного текста.",
+      "limits": "В 19 результатах нет точной карточки11А. Водолечебница/башня по адресу11 не заменяет дом11А.",
+      "scope_detail": "not accepted by this text-only check",
+      "discovery_provenance": "EXIF -> cached122 OSM; shared Октябрьская address catalog",
+      "discovery_receipt": {
+        "route": "EXIF -> cached122 OSM; shared Октябрьская address catalog",
+        "successful_query_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%D1%E2%E5%F2%EB%EE%E3%EE%F0%F1%EA&text_adr=%CE%EA%F2%FF%E1%F0%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+        "shared_catalog": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 122,
+      "telegram_url": "https://t.me/c/4488229487/2/122",
+      "source_original_sha256": "b692b40eb09e14c579a8a686d5e34d2360e72f6c21cf4b7111374b32e7dd74f0",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.94323599972222,
+        20.154299199999997
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Светлогорск, Октябрьская, 18; Хубертус",
+      "osm_ref": "way/185249717",
+      "osm_boundary_rank": 2,
+      "osm_boundary_distance_m": 18.44,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=2849",
+      "article_sid": 2849,
+      "article_body_read": true,
+      "grade": "P",
+      "assessment": "supportive_or_partial",
+      "observations": "Два этажа, мансарда и крытые балконы согласуются, но мало различают.",
+      "limits": "Характерные детали SOURCE в тексте не описаны; соседний №20 сохраняет отдельный scope.",
+      "scope_detail": "not accepted by this text-only check",
+      "discovery_provenance": "EXIF -> cached OSM -> advanced exact-street catalog",
+      "discovery_receipt": {
+        "route": "EXIF -> cached OSM -> advanced exact-street catalog",
+        "successful_query_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%D1%E2%E5%F2%EB%EE%E3%EE%F0%F1%EA&text_adr=%CE%EA%F2%FF%E1%F0%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+        "shared_catalog": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 123,
+      "telegram_url": "https://t.me/c/4488229487/2/123",
+      "source_original_sha256": "23df96cb36f6aad49fd2ba5b1e9c066d1a1bed6bf24681a592893ab6f100eba9",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.91735899972222,
+        20.175020799722223
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Сальское; кирха Святого Лауренциуса",
+      "osm_ref": null,
+      "osm_boundary_rank": null,
+      "osm_boundary_distance_m": null,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=198",
+      "article_sid": 198,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Руина с уцелевшим кирпичным фронтоном, каменным основанием и пристройками.",
+      "limits": "Найдена прямо по координатам Prussia39; первоначальная догадка о другом посёлке отвергнута.",
+      "scope_detail": "SOURCE+location lead+descriptive text; not text without location",
+      "discovery_provenance": "EXIF -> native Prussia nearby POST by root; no usable OSM result retained",
+      "discovery_receipt": {
+        "route": "EXIF -> native Prussia nearby POST by root; no usable OSM result retained",
+        "successful_query_url": "https://www.prussia39.ru/sight/map_coord.php",
+        "shared_catalog": false,
+        "http_method": "POST",
+        "body": {
+          "new_coords": "54.917359,20.1750208"
+        },
+        "root_receipt": "research-prussia/transport/nearby-123.meta.json",
+        "nearby_results": [
+          198,
+          637
+        ]
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 124,
+      "telegram_url": "https://t.me/c/4488229487/2/124",
+      "source_original_sha256": "7057c9a9515a54a16b34ebebdce003388d887d9feef9b1f64601457d1ed8784a",
+      "source_image_reviewed": true,
+      "coordinate_source": null,
+      "camera_point": [
+        null,
+        null
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Гипотеза: храм Александра Невского",
+      "osm_ref": null,
+      "osm_boundary_rank": null,
+      "osm_boundary_distance_m": null,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=620",
+      "article_sid": 620,
+      "article_body_read": true,
+      "grade": "P",
+      "assessment": "supportive_or_partial",
+      "observations": "Общая типология согласуется; индивидуального описания фасада мало.",
+      "limits": "GPS нет; размеры и история посвящения не опознают этот снимок.",
+      "scope_detail": "not accepted by this text-only check",
+      "discovery_provenance": "no EXIF GPS; visual-name hypothesis -> native name search -> sid620",
+      "discovery_receipt": {
+        "route": "no EXIF GPS; visual-name hypothesis -> native name search -> sid620",
+        "successful_query_url": "https://www.prussia39.ru/search.php?text=%C0%EB%E5%EA%F1%E0%ED%E4%F0%E0+%CD%E5%E2%F1%EA%EE%E3%EE&search_obj=2",
+        "shared_catalog": false,
+        "candidate_ids": [
+          577,
+          598,
+          620,
+          802,
+          1444,
+          1814
+        ],
+        "selected_lead_not_identity": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 125,
+      "telegram_url": "https://t.me/c/4488229487/2/125",
+      "source_original_sha256": "312e5aad64f3285f5b3be260b95b1c2c15bf205c270a5326f03bd1152bf8c411",
+      "source_image_reviewed": true,
+      "coordinate_source": "owner_approximate_hint",
+      "camera_point": [
+        54.712702,
+        20.527291
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Фрунзе, комплекс 53–57; карточка51–57",
+      "osm_ref": "way/152315116",
+      "osm_boundary_rank": 2,
+      "osm_boundary_distance_m": 24.78,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1361",
+      "article_sid": 1361,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Несколько связанных домов и арка согласуются с SOURCE и картой.",
+      "limits": "Принят scope комплекса; номер отдельного исторического дома и tenant не установлены этим текстом.",
+      "scope_detail": "SOURCE+location lead+descriptive text; not text without location",
+      "discovery_provenance": "no EXIF GPS; owner approximate camera54.712702,20.527291 -> existing OSM contour -> address catalog",
+      "discovery_receipt": {
+        "route": "no EXIF GPS; owner approximate camera54.712702,20.527291 -> existing OSM contour -> address catalog",
+        "successful_query_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%D4%F0%F3%ED%E7%E5&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+        "shared_catalog": false
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 126,
+      "telegram_url": "https://t.me/c/4488229487/2/126",
+      "source_original_sha256": "647d44970f06e9c168ce4789d4d319df7ba5b602a7c85ba70a8a9140b2cf0b80",
+      "source_image_reviewed": true,
+      "coordinate_source": "owner_approximate_hint",
+      "camera_point": [
+        55.077788,
+        21.888265
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Советск; ложа «К трём патриархам»",
+      "osm_ref": "way/192219449",
+      "osm_boundary_rank": 4,
+      "osm_boundary_distance_m": 21.97,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1095",
+      "article_sid": 1095,
+      "article_body_read": true,
+      "grade": "P",
+      "assessment": "supportive_or_partial",
+      "observations": "Клинкер и положение на углу поддерживают готовую геометрию.",
+      "limits": "Самостоятельного узкого фасадного доказательства мало. Крупные окна текстом явно не описаны; прежняя geometry identity сохранена.",
+      "scope_detail": "Supportive: текст поддерживает ранее принятую геометрическую идентичность, но не даёт самостоятельного узкого фасадного доказательства. Геометрическая идентичность сохраняется.",
+      "discovery_provenance": {
+        "mode": "owner_approximate_location_and_existing_geometry_then_prior_name_hint",
+        "owner_point": [
+          55.077788,
+          21.888265
+        ],
+        "gps_route": false,
+        "prior_identity_hint_used": true
+      },
+      "discovery_receipt": {
+        "mode": "owner_approximate_location_and_existing_geometry_then_prior_name_hint",
+        "owner_point": [
+          55.077788,
+          21.888265
+        ],
+        "gps_route": false,
+        "prior_identity_hint_used": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": true
+    },
+    {
+      "message_id": 127,
+      "telegram_url": "https://t.me/c/4488229487/2/127",
+      "source_original_sha256": "3ffa2cab3d623b81c7c97ffa79c7f7ed7d6fa22e2bcc813a44463ce1c0ea6041",
+      "source_image_reviewed": true,
+      "coordinate_source": null,
+      "camera_point": [
+        null,
+        null
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Гипотеза, подтверждённая текстовым набором: казармы драгунского полка",
+      "osm_ref": null,
+      "osm_boundary_rank": null,
+      "osm_boundary_distance_m": null,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1093",
+      "article_sid": 1093,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Парные/тройные арки, верхние стрельчатые окна, угловые колонки и портал.",
+      "limits": "GPS отсутствует; город и название были поисковой гипотезой. Это не GPS→OSM успех.",
+      "scope_detail": "Сильное соответствие необычного набора фасадных признаков; географический маршрут из GPS отсутствует.",
+      "discovery_provenance": {
+        "mode": "source_visual_barracks_hypothesis_then_bounded_text_search",
+        "gps_route": false,
+        "prior_identity_hint_used": false,
+        "locality": "Советск первоначально поисковая гипотеза, не координата кадра"
+      },
+      "discovery_receipt": {
+        "mode": "source_visual_barracks_hypothesis_then_bounded_text_search",
+        "gps_route": false,
+        "prior_identity_hint_used": false,
+        "locality": "Советск первоначально поисковая гипотеза, не координата кадра"
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 128,
+      "telegram_url": "https://t.me/c/4488229487/2/128",
+      "source_original_sha256": "45f02593de0fb634dd4533742e438f55c40488406c3e92ba4946dd28dc8e128c",
+      "source_image_reviewed": true,
+      "coordinate_source": null,
+      "camera_point": [
+        null,
+        null
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Гипотеза: капелла «Мария — Звезда моря»",
+      "osm_ref": null,
+      "osm_boundary_rank": null,
+      "osm_boundary_distance_m": null,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=769",
+      "article_sid": 769,
+      "article_body_read": true,
+      "grade": "P",
+      "assessment": "supportive_or_partial",
+      "observations": "Фахверк и крыша согласуются; описанные часы и шпиль не проверяются.",
+      "limits": "GPS нет; невидимые детали не стали отрицанием, но положительного различающего набора недостаточно.",
+      "scope_detail": "Кандидат согласуется частично, но без GPS и при недоступных различающих деталях одного текста недостаточно для независимой уверенной привязки.",
+      "discovery_provenance": {
+        "mode": "source_visual_named_hypothesis_then_root_native_address_lookup",
+        "gps_route": false,
+        "prior_identity_hint_used": false,
+        "visual_hypothesis": "Небольшая капелла/органный зал в Светлогорске; не установленный исходный город",
+        "native_search": "Root: Светлогорск / Курортная; найден адрес3"
+      },
+      "discovery_receipt": {
+        "mode": "source_visual_named_hypothesis_then_root_native_address_lookup",
+        "gps_route": false,
+        "prior_identity_hint_used": false,
+        "visual_hypothesis": "Небольшая капелла/органный зал в Светлогорске; не установленный исходный город",
+        "native_search": "Root: Светлогорск / Курортная; найден адрес3"
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 129,
+      "telegram_url": "https://t.me/c/4488229487/2/129",
+      "source_original_sha256": "575d7d026c8af31786f8fece04ac45e4788f2881fc0fd96d523cd2b2baddd2d1",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.716173499722224,
+        20.46763639972222
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Калининград, Победы, 24; вилла Шмидт",
+      "osm_ref": "way/89404496",
+      "osm_boundary_rank": 6,
+      "osm_boundary_distance_m": 44.1,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1241",
+      "article_sid": 1241,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Материал фасада и декор над окнами согласуются в локальном пуле.",
+      "limits": "Текст прямо учитывает утрату башни; target имеет ранг6, а не1.",
+      "scope_detail": "Совпадение материала и рельефного декора достаточно в локальном пуле вместе с адресом/геометрией; одно слово «вилла» недостаточно.",
+      "discovery_provenance": {
+        "mode": "original_GPS_to_OSM_nearby_named_building_to_site_text",
+        "gps_route": true,
+        "prior_identity_hint_used": false,
+        "osm_wiki_hint": "name=вилла Шмидт; wikipedia=ru:Вилла Шмидт"
+      },
+      "discovery_receipt": {
+        "mode": "original_GPS_to_OSM_nearby_named_building_to_site_text",
+        "gps_route": true,
+        "prior_identity_hint_used": false,
+        "osm_wiki_hint": "name=вилла Шмидт; wikipedia=ru:Вилла Шмидт"
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 130,
+      "telegram_url": "https://t.me/c/4488229487/2/130",
+      "source_original_sha256": "63a06c54726012c68bfcc972de010c3d8922c367f7840abba712620ebb0d3313",
+      "source_image_reviewed": true,
+      "coordinate_source": "owner_approximate_hint",
+      "camera_point": [
+        55.074106,
+        21.903648
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Советск, Гастелло, 22",
+      "osm_ref": "way/193106188",
+      "osm_boundary_rank": 4,
+      "osm_boundary_distance_m": 24.87,
+      "article_url": null,
+      "article_sid": null,
+      "article_body_read": false,
+      "grade": "N",
+      "assessment": "target_not_found_in_bounded_lookup",
+      "observations": "Для главного дома текста не найдено; прочитаны другие №21 и №24.",
+      "limits": "Их история не перенесена на22. Ранее принятая геометрия трёх домов сохраняется.",
+      "scope_detail": "Текст соседних карточек не подтверждает главный №22; ранее принятая геометрическая identity сохраняется.",
+      "discovery_provenance": {
+        "mode": "owner_approximate_point_existing_scene_to_native_street_address_lookup",
+        "owner_point": [
+          55.074106,
+          21.903648
+        ],
+        "gps_route": false,
+        "prior_identity_hint_used": true
+      },
+      "discovery_receipt": {
+        "mode": "owner_approximate_point_existing_scene_to_native_street_address_lookup",
+        "owner_point": [
+          55.074106,
+          21.903648
+        ],
+        "gps_route": false,
+        "prior_identity_hint_used": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": true
+    },
+    {
+      "message_id": 131,
+      "telegram_url": "https://t.me/c/4488229487/2/131",
+      "source_original_sha256": "d1417085cb42c966d2cf4ca6b554a5dc29a91553e935ebcf9a4df8d2dd2ed94b",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        55.073452099722225,
+        21.8899821
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Советск, 9 Января, 13; Дом призрения",
+      "osm_ref": "way/193085155",
+      "osm_boundary_rank": 4,
+      "osm_boundary_distance_m": 43.64,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1110",
+      "article_sid": 1110,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Ступенчатые завершения, формы входа/окон, кирпичный фасад.",
+      "limits": "Часы и зелёные детали видны, но не перечислены в тексте: не считать их текстовым совпадением.",
+      "scope_detail": "Набор описанных фасадных признаков согласуется с SOURCE и локальным адресным объектом.",
+      "discovery_provenance": {
+        "mode": "original_GPS_to_OSM_hospital_address_to_native_address_search",
+        "gps_route": true,
+        "prior_identity_hint_used": false,
+        "native_search": "Советск / Января"
+      },
+      "discovery_receipt": {
+        "mode": "original_GPS_to_OSM_hospital_address_to_native_address_search",
+        "gps_route": true,
+        "prior_identity_hint_used": false,
+        "native_search": "Советск / Января"
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 132,
+      "telegram_url": "https://t.me/c/4488229487/2/132",
+      "source_original_sha256": "4f7dc18d93b6cea0382c206fca8ff7a9707df9c600824e11361ed883cb338b7d",
+      "source_image_reviewed": true,
+      "coordinate_source": "owner_approximate_hint",
+      "camera_point": [
+        55.079386,
+        21.889776
+      ],
+      "exif_gps_present": false,
+      "object_or_candidate": "Советск, Школьная, 13; классическая гимназия",
+      "osm_ref": "way/192217077",
+      "osm_boundary_rank": 10,
+      "osm_boundary_distance_m": 66.98,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1019",
+      "article_sid": 1019,
+      "article_body_read": true,
+      "grade": "A",
+      "assessment": "diagnostic_in_stated_context",
+      "observations": "Центральный выступ с тремя осями и ступенчатым завершением.",
+      "limits": "Есть прежняя identity и приблизительная точка владельца; улица, упирающаяся в фасад, уже даёт самостоятельную геометрию.",
+      "scope_detail": "Архитектурный текст достаточно различающий в локальной сцене; ранний поиск этой статьи мог заменить внешний фотореференс.",
+      "discovery_provenance": {
+        "mode": "prior_identity_hint_then_owner_approximate_camera_existing_OSM_geometry",
+        "owner_point": [
+          55.079386,
+          21.889776
+        ],
+        "gps_route": false,
+        "prior_identity_hint_used": true
+      },
+      "discovery_receipt": {
+        "mode": "prior_identity_hint_then_owner_approximate_camera_existing_OSM_geometry",
+        "owner_point": [
+          55.079386,
+          21.889776
+        ],
+        "gps_route": false,
+        "prior_identity_hint_used": true
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    },
+    {
+      "message_id": 133,
+      "telegram_url": "https://t.me/c/4488229487/2/133",
+      "source_original_sha256": "0536b1fe5e8603771d733aec95340e0f9b74df93f4dfb8e5997e22bb4602dea8",
+      "source_image_reviewed": true,
+      "coordinate_source": "original_exif",
+      "camera_point": [
+        54.6303356,
+        21.816431999722223
+      ],
+      "exif_gps_present": true,
+      "object_or_candidate": "Гипотеза: школа Отто Брауна, Черняховск, Суворова, 11",
+      "osm_ref": "way/210946099",
+      "osm_boundary_rank": 28,
+      "osm_boundary_distance_m": 123.96,
+      "article_url": "https://www.prussia39.ru/sight/index.php?sid=1135",
+      "article_sid": 1135,
+      "article_body_read": true,
+      "grade": "H",
+      "assessment": "history_without_discriminating_exterior",
+      "observations": "Статья описывает главным образом историю и интерьеры.",
+      "limits": "Отличительный наружный фасад текстом не описан. Это дальний кандидат, а не ближайшее депо.",
+      "scope_detail": "Адресный геокандидат и исторические факты получены, но текст не даёт достаточного описания наружного фасада для независимого сопоставления с SOURCE.",
+      "discovery_provenance": {
+        "mode": "original_GPS_to_OSM_pool_then_native_Prussia_nearby_POST",
+        "gps_route": true,
+        "prior_identity_hint_used": false,
+        "native_nearby": "new_coords=54.6303356,21.816432; performed by root"
+      },
+      "discovery_receipt": {
+        "mode": "original_GPS_to_OSM_pool_then_native_Prussia_nearby_POST",
+        "gps_route": true,
+        "prior_identity_hint_used": false,
+        "native_nearby": "new_coords=54.6303356,21.816432; performed by root"
+      },
+      "new_external_reference_images_used": false,
+      "product_inference_calls": 0,
+      "blind_end_to_end_trial": false,
+      "geometry_identity_preserved": false
+    }
+  ],
+  "negative_controls": [
+    {
+      "photos": [
+        108
+      ],
+      "sid": 3149,
+      "result": "different adjacent address scope and storey pattern"
+    },
+    {
+      "photos": [
+        121,
+        122
+      ],
+      "sid": 401,
+      "result": "water tower is not the photographed house"
+    },
+    {
+      "photos": [
+        130
+      ],
+      "sid": 1384,
+      "result": "house21 across street, not main22"
+    },
+    {
+      "photos": [
+        130
+      ],
+      "sid": 1388,
+      "result": "house24 left neighbor, not main22"
+    },
+    {
+      "photos": [
+        119,
+        120
+      ],
+      "sid": 2538,
+      "result": "symmetric clinic wings differ from the corner massing of120;119 remains scope-unresolved"
+    }
+  ]
+}
