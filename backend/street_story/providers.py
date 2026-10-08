@@ -1018,13 +1018,27 @@ class GeminiClient:
         else:
             quota = quota or self.quota
             model = model or self.settings.gemini_model
+        provider_invoked = False
         async def invoke():
+            nonlocal provider_invoked
             guard_research_send()
             if before_provider_send is not None:
                 before_provider_send()
+            provider_invoked = True
             return await self._provider_request(key, timeout, contents, config, model=model)
 
-        return await quota.run(key, timeout, size, invoke)
+        try:
+            return await quota.run(key, timeout, size, invoke)
+        except (Exception, asyncio.CancelledError) as exc:
+            if not provider_invoked:
+                # This local boundary proves that no SDK invocation occurred.
+                # A quota-controller journal can remain uncertain independently;
+                # do not refund it or infer the state of another addressed unit.
+                exc.provider_send_state = 'not_sent'
+                logging.getLogger('uvicorn.error').info(
+                    'street_story_google_request operation=%s model=%s provider_send_state=not_sent error_type=%s',
+                    operation, model, type(exc).__name__)
+            raise
 
     async def _provider_request(self, key: str, timeout: float, contents, config=None, *, model: str | None = None):
         # Async transport is cancellable: no orphan to_thread SDK calls after failover.
