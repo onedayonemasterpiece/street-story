@@ -2,11 +2,131 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 
 import httpx
 
 from .identity_telemetry import record_identity_event
+
+
+async def acquire_selected_wikipedia_text(service, story, candidates, payload, wiki_pages):
+    """Read only closed, explicit page/physical nominations, never rank a page.
+
+    A metadata extract is not article text. The ordinary article reader handles
+    acquisition and extraction; this adapter separately verifies its actual
+    cached raw bytes before exporting a proof-ready SOURCE/text receipt.
+    """
+    from .article_media import public_url
+    from .identity_candidate_policy import candidate_identity_eligible
+    from .identity_subject_binding import article_candidate
+    selected = payload.get('selected_wikipedia_page_ids') if isinstance(payload, dict) else None
+    if not selected:
+        return [], {}
+    receipt = {'kind': 'selected_wikipedia', 'status': 'not_sent', 'articles': []}
+    if (not isinstance(selected, list) or not 1 <= len(selected) <= 2
+            or any(not isinstance(pid, str) for pid in selected) or len(set(selected)) != len(selected)):
+        return [], dict(receipt, reason='one_or_two_explicit_pages_required')
+    pages = {str(page['pageid']): page for page in wiki_pages
+        if isinstance(page, dict) and page.get('pageid')}
+    catalog = {item.get('candidate_id'): item for item in
+        [*(story.get('_identity_observed_candidates') or []), *candidates] if isinstance(item, dict)}
+    bindings = payload.get('subject_article_bindings') or []
+    if not isinstance(bindings, list):
+        return [], dict(receipt, reason='physical_binding_missing')
+    choices = []
+    for pid in selected:
+        page = pages.get(pid)
+        url = public_url(str((page or {}).get('url') or ''))
+        if not page or not url:
+            return [], dict(receipt, reason='selected_page_not_received_with_public_url')
+        matches = [binding for binding in bindings if isinstance(binding, dict)
+            and binding.get('article_id') == 'wiki:' + pid]
+        if len(matches) != 1:
+            return [], dict(receipt, reason='physical_binding_missing_or_ambiguous')
+        binding = matches[0]
+        candidate = catalog.get(binding.get('candidate_id'))
+        if (not candidate or not str(candidate.get('candidate_id') or '').startswith('osm:')
+                or not candidate_identity_eligible(candidate) or article_candidate(candidate)
+                or (candidate.get('map_object') or {}).get('tags', {}).get('entrance')
+                or binding.get('physical_binding_resolved') is not True
+                or not isinstance(binding.get('scope'), str) or not binding['scope'].strip()
+                or not isinstance(binding.get('binding_basis'), str) or not binding['binding_basis'].strip()):
+            return [], dict(receipt, reason='closed_physical_nomination_required')
+        choices.append((pid, url, binding))
+    reader = getattr(getattr(getattr(service, 'providers', None), 'gemini', None), '_fetch_page_documents', None)
+    if not callable(reader):
+        return [], dict(receipt, reason='article_reader_unavailable')
+    urls = list(dict.fromkeys(url for _, url, _ in choices))
+    timeout = 20.0
+    if hasattr(service, 'settings'):
+        from .research_budget import require_remaining, reserve_work
+        timeout = min(timeout, require_remaining(service, story['id'], 'identity'))
+        reserve_work(service, story['id'], 'pages', urls)
+    context = {'research_sources': [{'url': url, 'title': pages[pid].get('title') or ''}
+        for pid, url, _ in choices]}
+    try:
+        async with asyncio.timeout(timeout):
+            documents = await reader(urls, context)
+    except (httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
+        return [], dict(receipt, status='transport_failed', reason=type(exc).__name__)
+    articles, outcomes = [], []
+    for pid, url, binding in choices:
+        document = documents.get(url) or {}
+        text, final = document.get('normalized_text'), public_url(str(document.get('final_url') or ''))
+        status = document.get('read_status')
+        outcome = {'article_id': 'wiki:' + pid, 'requested_url': url, 'read_status': status}
+        outcomes.append(outcome)
+        if (status != 'complete' or not isinstance(text, str) or not text.strip() or not final):
+            outcome['status'] = 'unavailable' if not document else 'partial_or_invalid'
+            continue
+        # Frozen SQL text versions need not contain a raw-body hash. Verify
+        # the actual ordinary acquisition cache, without a replacement read.
+        verified = None
+        for cached_url in dict.fromkeys((final, url)):
+            key = 'public-article-acquisition-v1:' + hashlib.sha256(cached_url.encode()).hexdigest()
+            entry = service.store.cache_get(key) or {}
+            try:
+                raw = base64.b64decode(entry.get('body', ''), validate=True)
+            except (ValueError, TypeError):
+                continue
+            raw_hash = hashlib.sha256(raw).hexdigest()
+            if (raw and entry.get('final_url') == final and entry.get('sha256') == raw_hash
+                    and (not document.get('raw_content_sha256') or document['raw_content_sha256'] == raw_hash)):
+                verified = (raw_hash, entry)
+                break
+        if verified is None:
+            outcome['status'] = 'raw_cache_integrity_failed'
+            continue
+        raw_hash, entry = verified
+        # Verify that the cached body actually produced this text, including
+        # the SQL-reuse case where its original raw hash was not persisted.
+        from bs4 import UnicodeDammit
+        from .providers import _read_article_text
+        decoded = UnicodeDammit(raw, is_html=True)
+        if decoded.unicode_markup is None:
+            outcome['status'] = 'raw_cache_encoding_failed'
+            continue
+        actual_text, limited = _read_article_text(decoded.unicode_markup)
+        if limited or actual_text != text:
+            outcome['status'] = 'raw_cache_text_mismatch'
+            continue
+        text = text[:12_000]
+        article = {'article_id': 'wiki:' + pid, 'url': final, 'text': text,
+            'source_sha256': raw_hash, 'text_sha256': hashlib.sha256(text.encode()).hexdigest(),
+            'raw_body_sha256_verified': True, 'input_kind': 'acquired_article_text',
+            'title': pages[pid].get('title') or '', 'scope': binding['scope'],
+            'lookup_candidate_ids': [binding['candidate_id']], 'fetched_at': entry.get('acquired_at'),
+            'source_encoding': decoded.original_encoding, 'read_status': status}
+        if document.get('source_version_id'):
+            article['source_version_id'] = document['source_version_id']
+        articles.append(article)
+        outcome['status'] = 'completed'
+    receipt.update(status='completed' if len(articles) == len(choices) else 'partial' if articles else 'unavailable',
+                   selected_page_ids=selected, articles=outcomes)
+    record_identity_event(service, story['id'], 'identity_selected_wikipedia_text_completed', {
+        'selected_page_ids': selected, 'status': receipt['status'], 'article_count': len(articles)})
+    return articles, receipt
 
 
 def lookup_schema(candidate_ids):
