@@ -83,12 +83,16 @@ class HeadlessVisionProvider:
         # for this operation; GenerateContent receives separate inline parts.
         import httpx
         from .article_media import fetch_public
-        from .reference_image_codec import MAX_DOWNLOAD_BYTES
+        from .reference_image_codec import MAX_DOWNLOAD_BYTES, validate_reference_resolution
         async with httpx.AsyncClient(timeout=8, follow_redirects=False,
                 headers={'User-Agent': 'StreetStory/0.1 visual-reference'}) as client:
             _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
         if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
             raise PermanentProviderError('headless_vision:reference_not_image')
+        try:
+            validate_reference_resolution(data)
+        except ValueError as exc:
+            raise PermanentProviderError(str(exc)) from exc
         return mime, data
 
     async def compare_visual(self, snapshot, story, schema, context, *, verification_probe=False):

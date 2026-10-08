@@ -24,6 +24,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .identity_telemetry import record_identity_event
+from .reference_image_codec import MIN_REFERENCE_EDGE
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 PUBLIC_MEDIA_USER_AGENT = 'StreetStory/0.1 (https://github.com/onedayonemasterpiece/street-story)'
 
@@ -252,7 +253,7 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
             if any(publisher_chrome(node) for node in ancestors):
                 continue
             try:
-                if any(0 < int(image.get(key, 0)) < 160 for key in ('width', 'height')):
+                if any(0 < int(image.get(key, 0)) < MIN_REFERENCE_EDGE for key in ('width', 'height')):
                     continue
             except ValueError:
                 pass
