@@ -368,9 +368,9 @@ def prepare(adapter, session, args):
                 if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
                     next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
                     raise ConflictError('live_fact_review_evidence_invalid',
-                        f"Fact {decision['fact']}: quote a short literal fragment from its selected evidence, without borrowing another candidate's spans. "
-                        'Do not repeat finalize with the same invalid quote. Read this fact again: '
-                        'next_tool=get_review_packet; next_args=' + canonical(next_args))
+                        'next_tool=get_review_packet; next_args=' + canonical(next_args) +
+                        f". Fact {decision['fact']}: reread own evidence and copy a short literal quote. "
+                        'Do not repeat finalize with the invalid quote or borrow another fact.')
                 if verdict == 'supported' and not quotes:
                     raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
             if 'reason' in decision and (not isinstance(decision['reason'], str) or len(decision['reason']) > 500):

@@ -132,3 +132,23 @@ def test_named_road_is_not_fabricated_into_anonymous_building():
     assert MvpResearchStreetStoryService._candidate_catalog({'nearby': [
         {'type': 'way', 'id': 9, 'tags': {'name': 'Street', 'highway': 'residential'},
          'distance_m': 12, 'selection_bucket': 'nearby'}]}, []) == []
+
+
+def test_nearby_shops_cannot_displace_unnamed_building_and_address_from_three_local_slots():
+    nearby = [{'type': 'node', 'id': n, 'distance_m': n,
+               'selection_bucket': 'nearby', 'tags': {'name': f'Shop {n}', 'shop': 'clothes'}}
+              for n in range(1, 10)]
+    nearby.extend([
+        {'type': 'way', 'id': 100, 'distance_m': 40, 'selection_bucket': 'nearby',
+         'center': {'lat': 54.7, 'lon': 20.5}, 'tags': {'building': 'yes'}},
+        {'type': 'node', 'id': 101, 'distance_m': 30, 'selection_bucket': 'nearby',
+         'lat': 54.7, 'lon': 20.5, 'tags': {'entrance': 'staircase', 'addr:street': 'Example', 'addr:housenumber': '8'}},
+    ])
+    wiki = [{'pageid': n, 'title': f'Far landmark {n}', 'distance_m': 400+n,
+             'url': f'https://ru.wikipedia.org/wiki/Landmark_{n}'} for n in range(20)]
+    candidates = MvpResearchStreetStoryService._candidate_catalog({'nearby': nearby}, wiki)
+    local = [c for c in candidates if c['shortlist_bucket'] == 'nearby']
+    assert len(local) == 3
+    assert {c['candidate_id'] for c in local} == {'osm:way:100', 'osm:node:101', 'osm:node:1'}
+    assert len(candidates) == 16 and any(c['type'] == 'wikipedia' for c in candidates)
+    assert next(c for c in local if c['candidate_id'] == 'osm:way:100')['name'] == 'Здание без названия в OSM'

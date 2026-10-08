@@ -493,7 +493,14 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         )
 
         take(reverse, 1, "reverse")
-        take(nearby, 3, "nearby")
+        # Shops and entrances can be closer to the camera than the center of
+        # their building. Keep a footprint and an address in the same three
+        # local slots instead of letting business points consume all of them.
+        local_start = len(shortlist)
+        take([item for item in nearby
+              if (item.get('map_object') or {}).get('tags', {}).get('building') not in {None, '', 'no'}], 1, 'nearby')
+        take([item for item in nearby if (item.get('map_address') or {}).get('house_number')], 1, 'nearby')
+        take(nearby, 3 - (len(shortlist) - local_start), "nearby")
 
         for low, high, limit, label in (
             (0.0, 200.0, 3, "landmark_near"),

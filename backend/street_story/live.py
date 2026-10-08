@@ -857,6 +857,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
               'Never switch to the current stage again: use its available tools to complete the request. '
               'Changing stage is not consent for new mutations or confirmation of a publication.')
         if capability == 'review':
+            configuration['context_instruction'] = (
+                'The declared review functions read retained local source snapshots and remain available '
+                'when internet search is unavailable. Use get_review_packet/get_review_context to verify '
+                'candidates; prior assistant speech is not a save or review receipt. '
+                + configuration.get('context_instruction', 'Current topic: '))
             configuration['system_instruction'] = (
                 'Current phase: independent verification of unverified candidates. '
                 + review_packets.REVIEW_CHECKS + '\n' + configuration['system_instruction']
@@ -954,7 +959,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     "empty arrays only with numeric passage_ids. Compare known_fact_inventory: equivalent claim -> exact existing_fact_id, genuinely new -> empty string. Never speak unsaved findings; follow next_args."
                     if function["name"] == "save_research_facts" else
                     "First document: choose a competent discovery source and copy source_ref. Follow saved next_args for later pages; empty source_ref follows the next unread source."
-                    if function["name"] == "get_research_chunk" else function["description"].split(". ")[0][:140]
+                    if function["name"] == "get_research_chunk" else function["description"]
+                    if function["name"] in {'get_review_packet', 'get_review_context', 'assess_review_packet',
+                        'repair_research_fact', 'finalize_fact_review'}
+                    else function["description"].split(". ")[0][:140]
                 )} for function in FUNCTIONS],
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
