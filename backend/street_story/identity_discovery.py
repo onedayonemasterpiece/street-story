@@ -133,6 +133,16 @@ def _geometry_binding_issues(decision, manifest):
 
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
+    from .identity_plan_diagnostics import joint_followup_marker
+    addressed_followup = joint_followup_marker(service, story)
+    if addressed_followup:
+        original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
+        if not (callable(original_readback) and original_readback(story)):
+            if addressed_followup['phase'] == 'response_closed':
+                raise PermanentProviderError(addressed_followup.get('code') or 'identity_joint_followup_already_closed')
+            if addressed_followup['phase'] == 'not_sent':
+                raise PermanentProviderError('identity_joint_followup_not_sent')
+            raise RetryableProviderError('identity_joint_followup_outcome_unknown')
     from .identity_source_selection import (regional_source_profile, model_identity_context,
         first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
         wikipedia_metadata_context, grounded_wave_catalog, geometry_decision_schema, identity_transport_schema)
@@ -355,6 +365,9 @@ async def suggest(service, story, transcript, candidates):
     gemini = service.providers.gemini
     text_articles = []
     source_text_receipt = {}
+    joint_followup_used = bool(addressed_followup)
+    joint_followup_failure = None
+    joint_followup_binding = None
     def joint_source_map_receipt():
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
@@ -362,19 +375,27 @@ async def suggest(service, story, transcript, candidates):
             'source_preparation': source_preparation, 'map_identity_labels_required': True,
             'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
             if scene else {})
-    def accept(payload, *, original_schema_readback=False, original_schema=None):
-        from jsonschema import Draft202012Validator
+    def accept(payload, *, original_schema_readback=False, original_schema=None,
+            raw_json=None, raw_json_available=None, provider_response_id=None):
+        from .identity_plan_diagnostics import retain_closed_invalid, validation_details
+        validation_schema = original_schema if original_schema is not None else (legacy_schema if original_schema_readback else schema)
+        errors, errors_truncated = validation_details(validation_schema, payload)
         def reject(code):
             hypotheses = (payload.get('first_wave_hypotheses') or []) if isinstance(payload, dict) else []
+            retain_closed_invalid(service, story, payload, validation_schema, code=code,
+                route=story.get('_identity_search_plan_route', 'google'),
+                original_schema_readback=original_schema_readback, original_schema=original_schema is not None,
+                raw_json=raw_json, raw_json_available=raw_json_available, provider_response_id=provider_response_id,
+                errors=errors, errors_truncated=errors_truncated)
+            if joint_followup_used and joint_followup_binding and story.get('_identity_search_plan_route') == 'google':
+                joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed', code=code)
             record_identity_event(service, story['id'], 'identity_search_plan_rejected', {
                 'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
                 'code': code, 'phase': 'closed_invalid', 'original_schema_readback': original_schema_readback,
-                'selected_subject_ids': [str(item.get('subject_id') or '')[:120] for item in hypotheses[:3]
-                    if isinstance(item, dict)] if isinstance(hypotheses, list) else [],
+                'selected_subject_count': len(hypotheses) if isinstance(hypotheses, list) else 0,
                 'required_grounded_count': first_wave['required_grounded_count']})
             raise PermanentProviderError(code)
-        validation_schema = original_schema or (legacy_schema if original_schema_readback else schema)
-        if not Draft202012Validator(validation_schema).is_valid(payload):
+        if errors:
             reject('identity_search_plan_malformed')
         action = (payload.get('accepted_geometry') or {}).get('next_action') or {}
         if action and (not scene or any(cid not in scene_ids for cid in action.get('target_candidate_ids') or [])):
@@ -462,7 +483,11 @@ async def suggest(service, story, transcript, candidates):
         candidates[:] = selected_candidates(candidates, observed, wiki_pages, payload)
         return result
     async def call(key, timeout, *, model=None, quota=None):
-        nonlocal text_articles, source_text_receipt
+        nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
+        if joint_followup_used:
+            # An executor key/model loop cannot repeat an already addressed
+            # joint2 after a lost/error response. Preserve the original outcome.
+            raise PermanentProviderError('identity_joint_followup_outcome_unknown')
         text_articles, source_text_receipt = [], {}
         from google.genai.errors import APIError
         try:
@@ -483,32 +508,68 @@ async def suggest(service, story, transcript, candidates):
                         json.dumps(response_contract, sort_keys=True).encode()).hexdigest()})
             raise
         story['_identity_search_plan_route'] = 'google'
-        payload = json.loads(response.text or '{}')
+        decode_error = False
+        def decode_joint(response):
+            nonlocal decode_error
+            from .identity_plan_diagnostics import retain_closed_invalid, validation_details
+            decode_error = False
+            raw = response.text if isinstance(response.text, str) else ''
+            raw_available = isinstance(response.text, str)
+            response_id = getattr(response, 'response_id', None)
+            try:
+                decoded = json.loads(raw)
+            except json.JSONDecodeError:
+                decode_error = True
+                retain_closed_invalid(service, story, None, schema, code='identity_search_plan_malformed',
+                    route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
+                    errors=[], errors_truncated=False)
+                return None
+            errors, truncated = validation_details(schema, decoded)
+            if errors:
+                # Retain the first closed response before any optional followup
+                # or qualified fallback. This does not change its acceptance.
+                retain_closed_invalid(service, story, decoded, schema, code='identity_search_plan_malformed',
+                    route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
+                    errors=errors, errors_truncated=truncated)
+            return decoded
+        payload = decode_joint(response)
         issues = (_geometry_binding_issues(payload.get('accepted_geometry'), scene_manifest)
             if scene and isinstance(payload, dict) else {})
+        from .identity_plan_diagnostics import validation_details
+        schema_errors, schema_errors_truncated = validation_details(schema, payload)
+        if decode_error:
+            issues['json_syntax'] = {'validator': 'json_decode', 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()}
+        elif schema_errors:
+            issues['schema_validation'] = {'errors': schema_errors, 'truncated': schema_errors_truncated}
         from .identity_proof import freeze_geometry_proof
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
             joint_source_map_receipt(), [*observed, *candidates]) if isinstance(payload, dict) else None)
         lookup = {}
         if isinstance(payload, dict) and initial_geometry is None:
+            from jsonschema import Draft202012Validator
             from .identity_architectural_context import (acquire_regional_text, acquire_selected_wikipedia_text,
                 acquire_selected_regional_text)
-            regional = payload.get('regional_lookup')
-            if payload.get('regional_article_selections'):
+            def valid_field(key):
+                return key in schema['properties'] and Draft202012Validator(schema['properties'][key]).is_valid(payload.get(key))
+            regional = payload.get('regional_lookup') if valid_field('regional_lookup') else None
+            selected_regional = payload.get('regional_article_selections') if valid_field('regional_article_selections') else None
+            wiki_payload = payload if (valid_field('selected_wikipedia_page_ids')
+                and ('subject_article_bindings' not in payload or valid_field('subject_article_bindings'))) else {}
+            if selected_regional:
                 text_articles, lookup = await acquire_selected_regional_text(service, story, candidates,
-                    payload['regional_article_selections'], regional_catalogue)
+                    selected_regional, regional_catalogue)
             elif isinstance(regional, dict) and regional.get('route') not in {None, 'none'}:
                 text_articles, lookup = await acquire_regional_text(service, story, candidates, regional)
             else:
-                text_articles, lookup = await acquire_selected_wikipedia_text(service, story, candidates, payload, wiki_pages)
-            if not text_articles and (payload.get('regional_article_selections')
+                text_articles, lookup = await acquire_selected_wikipedia_text(service, story, candidates, wiki_payload, wiki_pages)
+            if not text_articles and (selected_regional
                     or isinstance(regional, dict) and regional.get('route') not in {None, 'none'}):
                 # An unavailable regional article does not invalidate the
                 # model's independent, already closed encyclopedia choice.
                 # Both receipts survive; no extra selector or joint call.
                 regional_receipt = lookup
                 text_articles, wiki_lookup = await acquire_selected_wikipedia_text(
-                    service, story, candidates, payload, wiki_pages)
+                    service, story, candidates, wiki_payload, wiki_pages)
                 lookup = {'kind':'independent_selected_text_routes', 'regional':regional_receipt,
                     'wikipedia':wiki_lookup, 'status':wiki_lookup.get('status') if wiki_lookup else 'unavailable'}
             if lookup:
@@ -521,9 +582,12 @@ async def suggest(service, story, transcript, candidates):
             followup_config = config
             followup_contract = response_contract
             if issues:
+                previous = json.dumps(payload, ensure_ascii=False) if not decode_error else (response.text or '')
+                if len(previous.encode()) > 32768:
+                    previous = previous.encode()[:8192].decode('utf-8', errors='ignore') + '\n[Previous response prefix truncated.]'
                 followup_prompt += ('\nThe previous response contains these exact input-binding errors: '
                 + json.dumps(issues, ensure_ascii=False) + '\nPrevious response (data): '
-                + json.dumps(payload, ensure_ascii=False)
+                + previous
                 + '\nReconsider SOURCE+MAP once and return the complete contract. Use only received '
                 'exact IDs/labels; never invent an alternative ID. If geometry is insufficient, '
                 'return uncertain with one useful action. Do not raise confidence to satisfy this check.')
@@ -561,13 +625,48 @@ async def suggest(service, story, transcript, candidates):
             if issues:
                 record_identity_event(service, story['id'], 'identity_geometry_binding_repair',
                     {'issue_types': list(issues), 'attempt': 1, 'article_count': len(text_articles)})
-            response = await gemini._generate(key, timeout, [
-                types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
-                *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
-                followup_prompt], followup_config, operation='grounded_research', model=model, quota=quota)
-            payload = json.loads(response.text or '{}')
-        return accept(payload)
+            joint_followup_used = True
+            from .service import canonical
+            joint_followup_binding = {
+                'input_sha256': hashlib.sha256(canonical([model_source_sha256,
+                    (scene or {}).get('manifest', {}).get('image_sha256'), followup_prompt]).encode()).hexdigest(),
+                'schema_sha256': hashlib.sha256(canonical(schema).encode()).hexdigest()}
+            joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent')
+            try:
+                response = await gemini._generate(key, timeout, [
+                    types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
+                    *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
+                    followup_prompt], followup_config, operation='grounded_research', model=model, quota=quota)
+            except Exception as exc:
+                from .research_budget import ResearchTerminated
+                if isinstance(exc, ResearchTerminated):
+                    raise
+                receipt = getattr(exc, 'receipt', None)
+                send_state = (getattr(exc, 'provider_send_state', None)
+                    or (receipt.get('provider_send_state') if isinstance(receipt, dict) else None))
+                phase = 'not_sent' if send_state == 'not_sent' else 'unknown'
+                joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
+                    code='identity_joint_followup_not_sent' if phase == 'not_sent' else 'identity_joint_followup_outcome_unknown')
+                joint_followup_failure = exc
+                record_identity_event(service, story['id'], 'identity_joint_followup_unavailable',
+                    {'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
+                     'error_type': type(exc).__name__, 'phase': phase, 'provider_send_state': phase,
+                     'fresh_retry_allowed': False})
+                # Stop the executor key loop while preserving the actual
+                # original outcome for the caller/readback path below.
+                raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc
+            joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
+                response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
+            payload = decode_joint(response)
+        return accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
+            raw_json_available=isinstance(response.text, str), provider_response_id=getattr(response, 'response_id', None))
     async def fallback(cause):
+        original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
+        if (joint_followup_used
+                and not (callable(original_readback) and original_readback(story))):
+            # The single correction/TEXT followup already consumed joint2.
+            # Its known invalid answer cannot authorize a third semantic send.
+            raise joint_followup_failure or cause
         planner = getattr(getattr(service.providers, 'research', None), 'plan_identity_search', None)
         if not callable(planner):
             raise cause
@@ -591,7 +690,8 @@ async def suggest(service, story, transcript, candidates):
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',
             {'cause': getattr(cause, 'code', type(cause).__name__)})
         return accept(result.get('result') or {}, original_schema_readback=result.get('original_schema_readback') is True,
-            original_schema=result.get('original_schema'))
+            original_schema=result.get('original_schema'),
+            provider_response_id=(result.get('receipt') or {}).get('provider_response_id'))
     researcher = getattr(service.providers, 'research', None)
     readback = getattr(researcher, 'has_identity_search_plan_readback', None)
     if callable(readback) and readback(story):

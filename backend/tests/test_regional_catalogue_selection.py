@@ -219,7 +219,8 @@ async def test_slow_optional_preparation_has_three_second_bound_and_drains_reque
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("accept_geometry", [False, True])
-async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_calls(tmp_path, monkeypatch, accept_geometry):
+@pytest.mark.parametrize("malformed_first", [False, True])
+async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_calls(tmp_path, monkeypatch, accept_geometry, malformed_first):
     service, s, active = geometry_setup(tmp_path)
     s.update(latitude=54.7, longitude=20.5)
     s["_identity_search_context"] = {"reverse_address": {"city": "Город", "road": "Тестовая улица"}}
@@ -250,11 +251,16 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
             assert len(data["regional_catalogue"]["results"]) == 35
             assert len(reads) == 2
             assert TEXT not in contents[-1]
-            return SimpleNamespace(text=json.dumps(first))
-        assert len(calls) == 2 and len(reads) == 3 and TEXT in contents[-1]
+            initial_payload = {k: v for k, v in first.items() if k != "first_wave_hypotheses"} if malformed_first else first
+            return SimpleNamespace(text=json.dumps(initial_payload))
+        assert len(calls) == 2
+        assert len(reads) == (2 if accept_geometry else 3)
+        assert (TEXT in contents[-1]) is (not accept_geometry)
+        if malformed_first:
+            assert "schema_validation" in contents[-1] and "first_wave_hypotheses" in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
-        return SimpleNamespace(text=json.dumps({**first, "accepted_architectural_text": decision}))
+        return SimpleNamespace(text=json.dumps(first if accept_geometry else {**first, "accepted_architectural_text": decision}))
 
     async def forbidden(*args, **kwargs):
         pytest.fail("No third model, text selector, REF or Wiki replacement")
@@ -264,7 +270,7 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
     history, _ = await identity_discovery.prepare_search_plan(service, s, "", active)
     result = s["_identity_geometry_result"]
     assert result["proof_kind"] == ("geometry" if accept_geometry else "architectural_text")
-    assert len(calls) == (1 if accept_geometry else 2)
+    assert len(calls) == (1 if accept_geometry and not malformed_first else 2)
     assert len(reads) == (2 if accept_geometry else 3)
     assert history["planned_queries"] == []
     assert accepted_identity(result, photo_sha256=s["photo_sha256"], generation=int(s.get("_identity_generation", 0)))
