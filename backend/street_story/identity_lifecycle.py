@@ -487,7 +487,6 @@ class IdentityLifecycleMixin:
         if gps['status'] != 'gps_present':
             record_identity_event(self, story_id, 'photo_location_recovery_failed', {'gps_status': gps['status']})
             raise ConflictError('photo_original_gps_unavailable', 'В выбранной копии GPS недоступен. Выберите исходный файл и разрешите чтение геометок.')
-        self._temporary_photos.put(story_id, original)
         camera_binding = {'photo_sha256': expected_photo_sha256, 'source': 'selected_original_exif',
                           'metadata': read_camera_hints(original)}
         with self.store.tx() as db:
@@ -500,10 +499,12 @@ class IdentityLifecycleMixin:
             if row['latitude'] is not None and row['longitude'] is not None:
                 if abs(row['latitude'] - gps['latitude']) > 0.00001 or abs(row['longitude'] - gps['longitude']) > 0.00001:
                     raise ConflictError('photo_location_conflict', 'Геометки отличаются от уже сохранённых.')
+                self._restore_source_photo(db, story_id, original)
                 # Successful replay may enrich optional metadata, never restart identity.
                 prior['photo_camera_hints'] = camera_binding
                 db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
                 return self._story_repr(db, self._story_row(db, story_id))
+            self._restore_source_photo(db, story_id, original)
             generation = int(prior.get('identity_generation') or 0) + 1
             prior.update({'identity_generation': generation, 'photo_camera_hints': camera_binding, 'location_provenance': {'kind': 'selected_original_exif', 'selected_original_metadata': True}})
             prior.pop('visual_identity', None)

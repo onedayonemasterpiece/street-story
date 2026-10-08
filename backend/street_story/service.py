@@ -195,8 +195,34 @@ class StreetStoryService:
     def _source_photo_bytes(self, story_id: str) -> bytes:
         data = self._temporary_photos.get(story_id)
         if data is None:
-            raise ConflictError('source_unavailable', 'Временное фото недоступно. Загрузите его повторно из галереи.')
+            path = self._saved_source_photo(story_id)
+            if path is None:
+                raise ConflictError('source_unavailable', 'Исходное фото недоступно. Загрузите его повторно из галереи.')
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise ConflictError('source_unavailable', 'Исходное фото недоступно. Загрузите его повторно из галереи.') from exc
+            self._temporary_photos.put(story_id, data)
         return data
+
+    def _saved_source_photo(self, story_id: str) -> Path | None:
+        # Original belongs to the topic, not to an inference session or a RAM
+        # cache. Never read arbitrary database paths or expose it as static media.
+        with self.store.connection() as db:
+            row = db.execute('SELECT photo_path FROM stories WHERE id=?', (story_id,)).fetchone()
+        if not row or not row['photo_path']:
+            return None
+        expected = self.settings.data_dir / 'stories' / story_id / 'source.original'
+        path = Path(row['photo_path'])
+        if path != expected or path.is_symlink() or expected.parent.resolve() != expected.parent.absolute():
+            return None
+        try:
+            return path if path.is_file() and 0 < path.stat().st_size <= self._temporary_photos.capacity_bytes else None
+        except OSError:
+            return None
+
+    def _source_photo_available(self, story_id: str) -> bool:
+        return self._temporary_photos.get(story_id) is not None or self._saved_source_photo(story_id) is not None
 
     def _source_photo_for_job(self, story_id: str) -> bytes:
         try:
@@ -205,8 +231,32 @@ class StreetStoryService:
             raise RetryableProviderError('source_unavailable', retry_at=self.store.now()+300) from exc
 
     def _restore_source_photo(self, db, story_id: str, data: bytes):
+        if not data or len(data) > self._temporary_photos.capacity_bytes:
+            raise ValueError('photo exceeds source transport capacity')
+        path = self.settings.data_dir / 'stories' / story_id / 'source.original'
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
+        # Atomic replacement preserves the prior original on an interrupted
+        # reupload. No encryption or image-content digest is needed.
+        part = path.with_name('source.' + uuid.uuid4().hex + '.part')
+        try:
+            with part.open('xb') as handle:
+                os.chmod(part, 0o600)
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(part, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            part.unlink(missing_ok=True)
+        db.execute('UPDATE stories SET photo_path=? WHERE id=?', (str(path), story_id))
         self._temporary_photos.put(story_id, data)
-        # A normal reupload wakes only tasks waiting for ephemeral photo bytes.
+        logging.getLogger(__name__).info('street_story_original_retained story_id=%s bytes=%s', story_id, len(data))
+        # A normal reupload wakes only tasks waiting for source photo bytes.
         # Unknown external operations keep their existing reconciliation state.
         db.execute("UPDATE jobs SET available_at=?,updated_at=? WHERE story_id=? AND state='retry' "
                    "AND last_error IN ('source_unavailable','identity_source_unavailable')",
@@ -367,7 +417,7 @@ class StreetStoryService:
             "processing": processing,
             "id": row["id"], "client_story_id": row["client_story_id"], "state": row["state"],
             "photo_sha256": row['photo_sha256'], "identity_generation": generation,
-            "source_available": self._temporary_photos.get(row['id']) is not None,
+            "source_available": self._source_photo_available(row['id']),
             "research_control_revision": int(research.get('research_control_revision') or 0),
             "research_controls": {purpose: {
                 'stopped': research_stopped(research, purpose, photo_sha256=row['photo_sha256'], identity_generation=generation),
@@ -414,7 +464,7 @@ class StreetStoryService:
                     req_digest = prior['request_digest']
                 self._idem(db, key, 'create_story', req_digest, 'story', story_id)
                 self._restore_source_photo(db, story_id, photo_bytes)
-                # Reupload refreshes only ephemeral transport, including a new
+                # Reupload refreshes only source transport, including a new
                 # encoding; accumulated editorial/location state is authoritative.
                 db.execute('UPDATE stories SET photo_mime_type=? WHERE id=?', (photo_mime_type, story_id))
                 return self._story_repr(db, self._story_row(db, story_id))
@@ -423,13 +473,13 @@ class StreetStoryService:
                 row = self._story_row(db, replay)
                 self._restore_source_photo(db, story_id, photo_bytes)
                 return self._story_repr(db, row)
-            self._temporary_photos.put(story_id, photo_bytes)
             now = self.store.now()
             db.execute(
                 "INSERT INTO stories(id,client_story_id,photo_sha256,photo_mime_type,photo_path,latitude,longitude,voice_protocol,state,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, '', lat, lon, voice_protocol, "photo_ready", now, now),
             )
+            self._restore_source_photo(db, story_id, photo_bytes)
             return self._story_repr(db, self._story_row(db, story_id))
 
     def open_voice(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:

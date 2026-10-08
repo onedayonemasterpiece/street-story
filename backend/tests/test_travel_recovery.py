@@ -6,17 +6,15 @@ import httpx
 import pytest
 
 from street_story import identity_discovery
-from street_story.app import create_app
-from street_story.config import reveal
 from street_story.errors import RetryableProviderError
 from street_story.identity_telemetry import record_identity_event
 from street_story.mvp_research import MvpResearchStreetStoryService
 from street_story.research_control import stop_research
-from test_identity_lifecycle import PHOTO, PHOTO_SHA, create, make_service
+from test_identity_lifecycle import PHOTO, create, make_service
 
 
 @pytest.mark.asyncio
-async def test_outage_restart_and_original_reupload_resume_same_job_without_losing_editorial_state(tmp_path, monkeypatch):
+async def test_outage_restart_resumes_saved_original_without_closed_client(tmp_path, monkeypatch):
     service, gemini = make_service(tmp_path)
     clock = [1000.0]
     service.store.now = lambda: clock[0]
@@ -61,8 +59,8 @@ async def test_outage_restart_and_original_reupload_resume_same_job_without_losi
     assert service.story(sid)['state'] == 'identifying'
     assert not await service.run_once()  # no hot loop before the durable deadline
 
-    # Restart loses RAM SOURCE; no model call occurs until normal HTTP intake
-    # rehydrates the immutable upload token and wakes the same durable job.
+    # A closed client is no longer needed to restore SOURCE after a restart.
+    # The same durable job and unknown external operation remain authoritative.
     restarted = MvpResearchStreetStoryService(service.settings, service.providers)
     restarted.store.now = lambda: clock[0]
     clock[0] = first_job['available_at'] + 1
@@ -70,18 +68,11 @@ async def test_outage_restart_and_original_reupload_resume_same_job_without_losi
     assert await restarted.run_once()
     with restarted.store.connection() as db:
         wait = dict(db.execute('SELECT * FROM jobs WHERE id=?', (first_job['id'],)).fetchone())
-        assert wait['state'] == 'retry' and wait['last_error'] == 'source_unavailable'
+        assert wait['state'] == 'retry'
+    assert restarted._source_photo_bytes(sid) == PHOTO
     assert not gemini.identity_calls
-    app = create_app(settings=restarted.settings, service=restarted)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver') as client:
-        client.headers.update({'Authorization': 'Bearer ' + reveal(service.settings.device_token), 'Idempotency-Key': 'create-travel-preserve'})
-        response = await client.post('/v1/stories', data={
-            'client_story_id': 'travel-preserve', 'photo_sha256': PHOTO_SHA,
-            'voice_protocol': 'voice-chunks-v2', 'lat': '54.7', 'lon': '20.5'},
-            files={'photo': ('original.jpg', PHOTO, 'image/jpeg')})
-        assert response.status_code == 200, response.text
-        assert response.json()['id'] == sid
     down = False
+    clock[0] = wait['available_at'] + 1
     assert await restarted.run_once()
     result = restarted.story(sid)
     assert result['state'] == 'identity_ready' and result['visual_identity']['status'] == 'match'
