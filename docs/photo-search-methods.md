@@ -89,6 +89,10 @@ Fill free worker slots as results complete under existing resource admission.
 Reserve extraction/review capacity before spending the fallback budget on images.
 Thumbnail sheets only triage the conditional REF route; retain `unclear` images and
 exact tile/image/article binding. Final REF proof uses full images.
+The complex REF fallback has an outer reserve of 6–8 distinct query hypotheses,
+4–6 useful pages and 4–6 exact pairs within admission and the upload deadline.
+These are ceilings for unresolved cases, not mandatory work per photo or separate
+quotas per provider. A sufficient geometry/text proof stops earlier.
 
 | Observed outcome | Required handling |
 |---|---|
@@ -126,15 +130,17 @@ does not pass this gate.
 
 ## Implementation status and remaining gate
 
-At `3c6e49246120132f1949aaf57ee03362aabc3c51`, the existing queues include accepted
+At the integrated code snapshot `b45a92c`, the existing queues include accepted
 geometry/text proofs, common facts/POI handling, bounded deadlines and strict
 original receipts. `prussia39.py` implements both publisher forms, cp1251,
 card/body extraction, canonical cache and observed pagination. The current
 `acquire_regional_text` integration only reads a complete inventory of 1–2 cards;
 model selection from larger/partial inventories remains a concrete integration
-gap. The selected Wiki-body follow-up is separate work and does not replace it.
+gap. The selected Wiki-body follow-up was integrated in `5876421` and passed
+96 affected offline checks; it is complementary and does not replace Prussia39.
+These checks do not establish live product acceptance.
 
-The latest cold 104 canary obtained the correct tower via an actual REF in 80.11 s,
+The cold 104 canary on `c2fed4f` obtained the correct tower via an actual REF in 80.11 s,
 but no eligible facts by its operator stop at 325.5 s. A saved-source-only Live
 contract diagnostic on 3c6e492 completed in 10.66 s; it does not establish product
 acceptance. No final five-case PASS or deployment is claimed. Release evidence
