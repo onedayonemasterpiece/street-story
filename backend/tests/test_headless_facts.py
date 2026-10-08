@@ -1,13 +1,14 @@
 """Controlled provider semantics over the normal public reader and fact ledger."""
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from street_story.errors import RetryableProviderError
 from street_story.fact_ledger import set_owner_selection
-from street_story.headless_facts import HeadlessFacts
+from street_story.headless_facts import HeadlessFacts, reviewed_reference_articles
 from street_story.providers import GeminiClient
 from street_story.research_runs import (
     begin_research_run,
@@ -493,7 +494,7 @@ async def test_direct_comparison_page_mapping_is_joined_only_to_reviewed_image(t
             research = json.loads(story['research_json'])
             research['visual_identity'].update(status='match', visual_reference_verified=True,
                 reference_evidence=[{'reference_id': 'ref-real', 'candidate_id': 'wiki:77', 'image_url': image}],
-                receipt={'reference_mapping': [mapping]})
+                provider_receipt={'reference_mapping': [mapping]})
             db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
         await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         assert researcher.searches == searches and fetches
@@ -502,3 +503,11 @@ async def test_direct_comparison_page_mapping_is_joined_only_to_reviewed_image(t
             assert db.execute('SELECT count(*) FROM live_messages').fetchone()[0] == 0
     finally:
         await reader.search_http.aclose()
+def test_retained_direct_comparison_shape_recovers_its_actual_article():
+    # Reduced real persisted identity: public reference provenance only,
+    # no original image, GPS, credentials or provider prompt.
+    identity = json.loads((Path(__file__).parent / 'fixtures' / 'reviewed-reference-article.json').read_text())
+    expected = identity['provider_receipt']['reference_mapping'][0]['article_url']
+    assert list(reviewed_reference_articles(identity)) == [expected]
+    identity['receipt'] = identity.pop('provider_receipt')
+    assert reviewed_reference_articles(identity) == {}

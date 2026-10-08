@@ -25,6 +25,37 @@ from .service import ConflictError, canonical
 LOG = logging.getLogger(__name__)
 
 
+def reviewed_reference_articles(identity):
+    """Recover only article leads bound to an actually reviewed image."""
+    if identity.get('status') != 'match' or identity.get('visual_reference_verified') is not True:
+        return {}
+    from .article_media import public_url
+    from .identity_subject_binding import subject_aliases
+    aliases = subject_aliases(identity.get('candidates') or []).get(
+        identity.get('candidate_id'), {identity.get('candidate_id')})
+    articles = {}
+    mappings = (identity.get('provider_receipt') or {}).get('reference_mapping') or []
+    for evidence in identity.get('reference_evidence') or []:
+        if (evidence.get('subject_candidate_id', evidence.get('candidate_id')) not in aliases
+                or not evidence.get('reference_id')):
+            continue
+        url = public_url(str(evidence.get('article_url') or ''))
+        if not url:
+            # Initial direct-image comparisons retain the page in
+            # the frozen mapping rather than reference_evidence.
+            # Join only the actual reviewed image and candidate;
+            # the other discovered pages remain unselected leads.
+            image = public_url(str(evidence.get('image_url') or ''))
+            mapped = next((entry for entry in mappings if isinstance(entry, dict)
+                and entry.get('reference_id') == evidence['reference_id']
+                and entry.get('candidate_id') in aliases
+                and image and public_url(str(entry.get('source_url') or '')) == image), {})
+            url = public_url(str(mapped.get('article_url') or ''))
+        if url:
+            articles.setdefault(url, {'url': url, 'title': identity.get('candidate_name') or url})
+    return articles
+
+
 class HeadlessFacts:
     """Up to three independent frozen cores; durable commits remain serial."""
 
@@ -344,30 +375,7 @@ class HeadlessFacts:
         if not sources:
             identity = research['visual_identity']
             if identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
-                from .article_media import public_url
-                from .identity_subject_binding import subject_aliases
-                aliases = subject_aliases(identity.get('candidates') or []).get(
-                    identity.get('candidate_id'), {identity.get('candidate_id')})
-                articles = {}
-                mappings = (identity.get('receipt') or {}).get('reference_mapping') or []
-                for evidence in identity.get('reference_evidence') or []:
-                    if (evidence.get('subject_candidate_id', evidence.get('candidate_id')) not in aliases
-                            or not evidence.get('reference_id')):
-                        continue
-                    url = public_url(str(evidence.get('article_url') or ''))
-                    if not url:
-                        # Initial direct-image comparisons retain the page in
-                        # the frozen mapping rather than reference_evidence.
-                        # Join only the actual reviewed image and candidate;
-                        # the other discovered pages remain unselected leads.
-                        image = public_url(str(evidence.get('image_url') or ''))
-                        mapped = next((entry for entry in mappings if isinstance(entry, dict)
-                            and entry.get('reference_id') == evidence['reference_id']
-                            and entry.get('candidate_id') in aliases
-                            and image and public_url(str(entry.get('source_url') or '')) == image), {})
-                        url = public_url(str(mapped.get('article_url') or ''))
-                    if url:
-                        articles.setdefault(url, {'url': url, 'title': identity.get('candidate_name') or url})
+                articles = reviewed_reference_articles(identity)
                 sources = [item for url, item in articles.items() if url not in rejected_urls]
                 if sources:
                     # These already acquired pages are leads, never accepted
