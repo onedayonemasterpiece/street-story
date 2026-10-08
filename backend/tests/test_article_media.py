@@ -65,6 +65,15 @@ def test_wikipedia_inline_gallery_file_links_are_kept_but_other_articles_are_exc
     assert [item['image_url'] for item in media] == ['https://upload.wikimedia.org/front.jpg', 'https://upload.wikimedia.org/rear.jpg']
 
 
+@pytest.mark.parametrize('link', ['/palomnik/Файл:Front.jpg',
+    'https://example.com/palomnik/%D0%A4%D0%B0%D0%B9%D0%BB:Front.jpg', '/articles/Image:Front.jpg'])
+def test_mediawiki_custom_prefix_file_description_is_not_an_image(link):
+    _, media = extract_media('<div class="mw-parser-output"><a href="' + link + '">'
+        '<img src="/images/front.jpg" srcset="/images/front-large.jpg 1200w"></a></div>',
+        'https://example.com/palomnik/Church')
+    assert [item['image_url'] for item in media] == ['https://example.com/images/front-large.jpg']
+
+
 @pytest.mark.parametrize('url', ['http://example.com/i.jpg', 'https://127.0.0.1/i.jpg',
     'https://169.254.169.254/i.jpg', 'https://[::1]/i.jpg', 'https://localhost/i.jpg',
     'https://example.com:8188/i.jpg', 'https://user:secret@example.com/i.jpg'])

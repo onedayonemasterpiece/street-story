@@ -40,6 +40,7 @@ async def test_live_host_uses_central_shared_resource_controller(monkeypatch, tm
     monkeypatch.setattr(Control, 'acquire', acquire)
 
     async def guarded(**kwargs):
+        assert kwargs['control'].config.timeout_seconds == 10.0
         calls.append({**kwargs, "environment": dict(kwargs["environment"])})
         # Normal initial selection and startup failover both fit actual setup.
         await kwargs['control'].acquire('gemini-3.8-live')

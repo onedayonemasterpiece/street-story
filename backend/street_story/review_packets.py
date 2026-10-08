@@ -410,7 +410,10 @@ def prepare(adapter, session, args):
                 decision.pop('equivalent_to')  # Identity addressing adds no relation or support.
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:
-                raise ConflictError('live_review_decision_replay_mismatch', 'A saved semantic decision cannot be overwritten.')
+                raise ConflictError('live_review_decision_replay_mismatch',
+                    'A saved semantic decision cannot be overwritten. Read get_review_packet with this packet_ref; '
+                    'skip saved_verdict items. If all are decided, finalize with decisions=[] after checking '
+                    'relations_complete. To change meaning, repair or start a superseding packet.')
             decisions[key] = decision
         db.execute('UPDATE live_review_packets SET decisions_json=? WHERE packet_ref=?', (canonical(decisions), ref))
         if len(decisions) < len(payload['items']) or args.get('relations_complete') is not True:
@@ -420,6 +423,11 @@ def prepare(adapter, session, args):
             if remaining:
                 staged.update(next_tool='get_review_packet', next_args={
                     'packet_ref': ref, 'cursor': fact_cursor(payload, remaining[0])})
+            else:
+                staged.update(next_tool='finalize_fact_review', next_args={'packet_ref': ref, 'decisions': []},
+                    instruction='All decisions are saved; review remains incomplete until you assess relations. '
+                    'Keep saved decisions unchanged. After checking relations, finalize with decisions=[], '
+                    'relations_complete=true and your conflicts/coverage assessment.')
             return staged, None, None
         conflicts = []
         for relation in args.get('conflicts') or []:

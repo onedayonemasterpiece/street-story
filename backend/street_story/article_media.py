@@ -257,13 +257,16 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
             if CHROME.search(alt):
                 continue
             parent = image.find_parent('a')
+            linked = public_url(urljoin(page_url, parent['href'])) if parent and parent.get('href') else None
+            # MediaWiki installations use arbitrary article prefixes. File:
+            # links are HTML description pages even when their name ends .jpg;
+            # use the nested actual image/srcset instead of sending HTML to vision.
+            file_link = linked and re.search(r'/(?:File|Файл|Image|Изображение):', unquote(urlsplit(linked).path), re.I)
             if (parent and re.search(r'\.(?:jpe?g|png|webp)(?:\?|$)', str(parent.get('href')), re.I)
-                    and not re.match(r'^/wiki/(?:File|Файл|Image|Изображение):', unquote(str(parent.get('href'))), re.I)):
+                    and not file_link):
                 add(parent.get('href'), 'article_image_link', alt, node=image, root=root)
                 continue
             if parent and parent.get('href') and not str(parent.get('href')).startswith('#'):
-                linked = public_url(urljoin(page_url, parent['href']))
-                file_link = linked and re.match(r'^/wiki/(?:File|Файл|Image|Изображение):', unquote(urlsplit(linked).path), re.I)
                 if linked and not file_link and urlsplit(linked).path.rstrip('/') != urlsplit(page_url).path.rstrip('/'):
                     continue
             srcset = image.get('data-srcset') or image.get('srcset') or ''
