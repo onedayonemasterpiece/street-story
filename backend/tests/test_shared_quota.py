@@ -169,13 +169,58 @@ async def test_unknown_reserve_is_not_repeated_and_is_reconciled(rig):
     assert len(c.rows) == 1
     c.fail = None
     fresh = SharedQuotaGate(g.settings,g.pool,http=g.quota.http)
-    with pytest.raises(GeminiUnavailable):
-        await fresh.recover()
+    await fresh.recover()
+    assert c.rows[next(iter(c.rows))]['finalized_at'] is None
     with g.pool.store.tx() as db:
         db.execute('UPDATE gemini_quota_journal SET deadline=0')
     await fresh.recover()
     assert all(row['finalized_at'] for row in c.rows.values())
     assert sum(name=='google_ai_reserve' for name,_ in c.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_other_model_gate_does_not_block_an_independent_request(rig):
+    import asyncio
+    g,c = rig
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def slow():
+        entered.set()
+        await release.wait()
+        return response()
+    task = asyncio.create_task(g.quota.run(KEYS[0],20,100,slow))
+    await entered.wait()
+    other = SharedQuotaGate(g.settings,g.pool,http=g.quota.http)
+    async def fast():
+        return response()
+    try:
+        assert (await other.run(KEYS[1],20,100,fast)).text == 'transcript'
+        assert not task.done()
+        assert len(c.rows) == 2
+        assert all(row['sent_at'] for row in c.rows.values())
+    finally:
+        release.set()
+        await task
+    await other.recover()
+    assert all(row['finalized_at'] for row in c.rows.values())
+
+
+@pytest.mark.asyncio
+async def test_unknown_send_keeps_address_while_another_request_is_admitted(rig):
+    g,c = rig
+    c.fail = 'google_ai_mark_sent'
+    with pytest.raises(GeminiUnavailable):
+        await g._generate(KEYS[0],20,['fixture'])
+    uid = next(iter(c.rows))
+    c.fail = None
+    async def provider(*args, **kwargs):
+        return response()
+    g._provider_request = provider
+    assert (await g._generate(KEYS[1],20,['independent fixture'])).text == 'transcript'
+    with g.pool.store.connection() as db:
+        old = db.execute('SELECT state FROM gemini_quota_journal WHERE request_uid=?',(uid,)).fetchone()
+        assert old['state'] == 'uncertain'
+    assert c.rows[uid]['sent_at'] is None and c.rows[uid]['finalized_at'] is None
+    assert len(c.rows) == 2
 
 
 @pytest.mark.asyncio

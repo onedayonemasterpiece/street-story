@@ -145,7 +145,12 @@ class SharedQuotaGate:
                         self.queue_finalize(uid, payload)
                         await self.finalize(uid, payload)
                 elif row['state'] == 'uncertain' or uid not in self.active:
-                    raise self.unavailable()
+                    # Another model gate may own this active reservation. An
+                    # unknown send keeps its exact journal row until readback,
+                    # but must not freeze independently admitted requests. The
+                    # controller still counts the outstanding reservation and
+                    # every new request goes through reserve -> mark_sent.
+                    continue
 
     async def run(self, key, timeout, reserved_tpm, call):
         await self.recover()
