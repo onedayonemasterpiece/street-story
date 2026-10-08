@@ -2908,6 +2908,8 @@ class GeminiClient:
         prompt = ('Select useful article pages from the supplied inventory for comparing the current physical building. '
                   'Prefer modern exterior photos, plausible address alternatives and informative sources. '
                   'Prioritize concrete article/gallery pages likely to provide accessible exterior images. '
+                  'Reject general city, style or architectural-element pages unless they plausibly show '
+                  'a particular physical building hypothesis; general context alone is not useful for comparison. '
                   'Map-only address directories are secondary leads when such photographs are unavailable. '
                   'The query is an unverified hypothesis, not the answer. Use SOURCE and mapped alternatives '
                   'to reject irrelevant historical structures or pages offering only archival views. '
