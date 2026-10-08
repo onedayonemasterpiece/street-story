@@ -130,15 +130,27 @@ does not pass this gate.
 
 ## Implementation status and remaining gate
 
-At the integrated code snapshot `b45a92c`, the existing queues include accepted
-geometry/text proofs, common facts/POI handling, bounded deadlines and strict
-original receipts. `prussia39.py` implements both publisher forms, cp1251,
-card/body extraction, canonical cache and observed pagination. The current
-`acquire_regional_text` integration only reads a complete inventory of 1–2 cards;
-model selection from larger/partial inventories remains a concrete integration
-gap. The selected Wiki-body follow-up was integrated in `5876421` and passed
-96 affected offline checks; it is complementary and does not replace Prussia39.
-These checks do not establish live product acceptance.
+The existing queues include accepted geometry/text proofs, common facts/POI
+handling, bounded deadlines and strict original receipts. `prussia39.py`
+implements both publisher forms, cp1251, card/body extraction, canonical cache
+and observed pagination. The regional inventory change prepares received card
+metadata alongside SOURCE/map preparation, exposes large and partial inventories
+to the initial joint call, and reads only its 1–2 explicit physical nominations.
+One actually observed continuation can complete 20+15 rows; distinct address rows
+sharing one article ID remain visible, while article bodies are deduplicated.
+The existing optional joint follow-up compares actual selected text; no third
+mandatory selector/judge is added. Complementary selected Wiki text remains
+available when the independently selected regional route is unavailable.
+
+Optional early catalogue preparation is bounded to three seconds and uses only
+an already received camera street or one unambiguous observed locality/street.
+It does not wait for reverse geocoding or invent a target from a mixed pool.
+A slow or incomplete publisher response remains a recorded limitation. A broad
+inventory received only after the initial call does not trigger automatic
+first-two selection or an additional paid judge. This preserves the operation
+budget but does not demonstrate a cold text fast path for every facade.
+The affected regional/Wiki/geometry/text offline set passed 102 checks. These
+checks do not establish live product acceptance.
 
 The cold 104 canary on `c2fed4f` obtained the correct tower via an actual REF in 80.11 s,
 but no eligible facts by its operator stop at 325.5 s. A saved-source-only Live
