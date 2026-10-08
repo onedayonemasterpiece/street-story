@@ -130,6 +130,8 @@ async def test_packet_revision_and_cross_page_gate(tmp_path):
     args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in range(3)], 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
     staged = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'stage', 'args': args})
     assert staged['review_saved'] and not staged['complete']
+    assert staged['next_tool'] == 'finalize_fact_review'
+    assert staged['next_args'] == {'packet_ref': packet['packet_ref'], 'decisions': []}
     assert all(f['eligibility'] == 'unreviewed' for f in adapter._get_facts(session.resource_id, {})['facts'])
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))

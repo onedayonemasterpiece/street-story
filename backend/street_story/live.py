@@ -5484,9 +5484,26 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
             setup = setup_config(start['model'], start.get('context') or {}, start.get('history'),
                 configuration=configuration, search=bool(configuration.get('search_enabled')))
             requested = estimate_input_tokens(setup)
-            config = Config.from_env('street-story', environment)
+            # The SDK's 3s control timeout interrupted durable tool readback on
+            # this loaded host. Allow its supported 10s bound; all quota, lease,
+            # fence and unknown-outcome protections remain owned by the SDK.
+            config = replace(Config.from_env('street-story', environment), timeout_seconds=10.0)
 
             class SetupAdmissionControl(Control):
+                async def request(self, method, path, *args, **kwargs):
+                    started_at = time.monotonic()
+                    code = None
+                    try:
+                        return await super().request(method, path, *args, **kwargs)
+                    except Exception as exc:
+                        code = getattr(exc, 'code', type(exc).__name__)
+                        raise
+                    finally:
+                        record_live_diagnostic(service, session.resource_id, session.id, 'backend',
+                            'resource_control_request', {'operation': path.split('/')[-1],
+                                'duration_ms': round((time.monotonic() - started_at) * 1000),
+                                'status': 'failed' if code else 'completed', 'code': code})
+
                 async def acquire(self, *args, **kwargs):
                     # Scope selection must fit setup, including startup failover.
                     # The lease then uses the SDK's small recurring audio quantum,

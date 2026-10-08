@@ -296,7 +296,7 @@ async def test_nonempty_search_without_images_continues_saved_alternative_plan(t
     async def suggest(service, context, transcript, candidates):
         context['_identity_article_queries'] = ['address hypothesis A', 'address hypothesis B']
         return '', [], 'visible facade', ''
-    async def search(service, name, visual, *, story):
+    async def search(service, name, visual, *, story, first_ready=False):
         query = story['_identity_search_query']
         queries.append(query)
         return [{'url': 'https://example.com/' + ('empty-directory' if query.endswith('A') else 'exterior-article')}]
