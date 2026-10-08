@@ -451,9 +451,17 @@ class LiveVisualComparisonMixin:
                         and c.get('discovery') != 'web_article_media']
             if observed and callable(selector):
                 from .reference_image_codec import normalize_reference
+                from .errors import PermanentProviderError, RetryableProviderError
+                from .gemini import GeminiUnavailable
                 image = await asyncio.to_thread(normalize_reference, source_bytes)
-                selected = await selector('Select initial reference pages useful for SOURCE; nearby article titles are hypotheses.',
-                    observed, {**story, '_identity_selection_image': image})
+                selection_query = 'Select initial reference pages useful for SOURCE; nearby article titles are hypotheses.'
+                try:
+                    selected = await selector(selection_query, observed, {**story, '_identity_selection_image': image})
+                except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
+                    fallback = getattr(getattr(self.service.providers, 'research', None), 'select_identity_sources', None)
+                    if not callable(fallback):
+                        raise
+                    selected = await fallback(selection_query, observed, story)
                 initial_selection = selected['source_selection']
                 allowed_urls = {x['url'] for x in selected['sources']} & {x['url'] for x in observed}
                 initial_selection = {**initial_selection, 'observed_sources': observed,
