@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from street_story.identity_discovery import suggest
+from street_story.identity_discovery import suggest, region_hint, web_search_hints
 from street_story.identity_map_context import map_entry_context
 from street_story.mvp_research import MvpResearchStreetStoryService
 
@@ -118,3 +118,16 @@ def test_wikipedia_map_coordinates_keep_authoritative_source_not_osm_provenance(
         'provenance': 'wikipedia.geosearch', 'source_url': 'https://ru.wikipedia.org/wiki/Tower'}
     assert candidate['candidate_id'] == 'wiki:77'
     assert 'map_address' not in candidate
+
+
+@pytest.mark.asyncio
+async def test_unknown_geography_is_not_replaced_by_a_default_city():
+    calls = []
+    async def search(query, context):
+        calls.append((query, context))
+        return SimpleNamespace(grounding_sources=[])
+    service = SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(search_web=search)))
+    await web_search_hints(service, 'white church clock tower', story={})
+    assert calls == [('white church clock tower', {'purpose': 'identity_candidate_discovery', 'region': ''})]
+    assert region_hint({'_identity_search_context': {'reverse_address': {
+        'city': 'Саратов', 'state': 'Саратовская область', 'country': 'Россия'}}}) == 'Саратов, Саратовская область, Россия'

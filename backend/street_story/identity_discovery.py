@@ -22,12 +22,17 @@ from .providers import WIKIPEDIA_USER_AGENT, PermanentProviderError, RetryablePr
 
 WIKI = 'https://ru.wikipedia.org/w/api.php'
 COMMONS = 'https://commons.wikimedia.org/w/api.php'
-REGION_HINT = 'Калининградская область'
 IMAGE_SUFFIX = re.compile(r'\.(?:jpe?g|png|webp)$', re.I)
 
 
 def plain(value, limit=700):
     return re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]*>', ' ', str(value or '')))).strip()[:limit]
+
+
+def region_hint(story):
+    address = ((story or {}).get('_identity_search_context') or {}).get('reverse_address') or {}
+    return ', '.join(dict.fromkeys(plain(address[key], 180) for key in
+        ('city', 'town', 'village', 'state', 'country') if address.get(key)))
 
 
 def queries_from(payload):
@@ -76,11 +81,9 @@ async def suggest(service, story, transcript, candidates):
         'неизвестное название. Фото может показывать только часть объекта. '
         'entity_name — короткое наиболее вероятное название именно сооружения/объекта по-русски; '
         'название города, района или общий тип здания не подходит. '
-        'Для исторических зданий Калининградской области полезен дополнительный интернет-запрос '
-        'с адресом или названием и словом prussia39, например «улица номер дома prussia39». '
-        'Используй только адрес, подтверждённый доступными данными; не выдумывай его. '
-        'Это дополнительный источник статей/фотографий, а не обязательная Wikipedia-статья '
-        'и не доказательство identity без сравнения SOURCE и REF. '
+        'Используй только адрес и географию, подтверждённые доступными данными; не выдумывай их. '
+        'Пустой region_hint означает неизвестную географию: используй OCR, авторский контекст '
+        'и визуальные гипотезы, не считай снимок автоматически калининградским. '
         'article_queries — до трёх готовых буквальных интернет-запросов для статей с современными внешними фотографиями. '
         'Сначала используй короткий запрос по реальному адресу или названию и городу без лишних ограничений. '
         'Современный внешний вид — требование к REF, а не обязательные слова каждого запроса. '
@@ -89,14 +92,13 @@ async def suggest(service, story, transcript, candidates):
         'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
         'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
         'или видимым признакам; сначала проверь разные правдоподобные адреса простыми запросами. '
-        'Не расходуй весь план на одну догадку и её повтор с prussia39. '
+        'Не расходуй весь план на одну догадку и её повтор на другом сайте. '
         'SOURCE — современный снимок: для визуального сравнения ищи современные фотографии '
         'нынешнего здания, фасада и адреса. Историческое здание не означает историческую фотографию. '
-        'Не направляй этот поиск в общие довоенные фотоархивы и не подменяй Калининград Кёнигсбергом. '
+        'Не направляй этот поиск в общие старые фотоархивы вместо современных видов. '
         'Исторические названия и архивные материалы полезны для фактов после определения объекта. '
         'Если на фото близкий дом, сначала используй ближайшие улицы/подтверждённые адреса '
         'и видимые признаки, а не имена далёких достопримечательностей. '
-        'prussia39 — дополнительный вариант для исторического здания при нехватке полезных источников. '
         'Статья в Wikipedia не обязательна. '
         'Расстояния и focal_length_35mm помогают оценить правдоподобие гипотез, но не доказывают объект. '
         'Не выводи номер дома из одной геометки на соседней улице. '
@@ -114,7 +116,7 @@ async def suggest(service, story, transcript, candidates):
         'Он нужен, чтобы неверная первая догадка не запирала поиск на одном объекте. '
         'commons_query — аналогичный английский запрос по видимым признакам и region_hint для Wikimedia Commons, '
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
-        json.dumps({'region_hint': REGION_HINT,
+        json.dumps({'region_hint': region_hint(story),
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
                         'camera_alignment', 'map_address', 'map_coordinates', 'road_name', 'map_object') if key in x} for x in candidates[:16]],
                     'location_search_context': _map_query_context(story, candidates),
@@ -529,14 +531,14 @@ async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_nam
         return merge_candidates(enrich_entity_links(candidates, {}, selected), entity_name)[:10]
 
 
-async def web_search_hints(service, visual_query):
+async def web_search_hints(service, visual_query, *, story=None):
     search = getattr(service.providers.gemini, 'search_web', None)
     if not visual_query or not callable(search):
         return []
     try:
         result = await asyncio.wait_for(search(
-            f"{visual_query} {REGION_HINT}",
-            {'purpose': 'identity_candidate_discovery', 'region': REGION_HINT},
+            f"{visual_query} {region_hint(story)}".strip(),
+            {'purpose': 'identity_candidate_discovery', 'region': region_hint(story)},
         ), timeout=12)
     except Exception:
         return []
@@ -559,8 +561,8 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     from .gemini import GeminiUnavailable
     query = story.get('_identity_search_query') if story else None
     if not query:
-        query = (f'{entity_name} {REGION_HINT} современные фотографии фасада' if entity_name
-                 else f'{visual_query} {REGION_HINT} фото').strip()
+        query = (f'{entity_name} {region_hint(story)} современные фотографии фасада' if entity_name
+                 else f'{visual_query} {region_hint(story)} фото').strip()
     routes, failures = [], []
     researcher = getattr(service.providers, 'research', None)
     if researcher is not None and story is not None:
@@ -842,8 +844,8 @@ async def recover(service, story, transcript, candidates, excluded):
             planned_queries=story.get('_identity_article_queries') or [])
         sources, search_failures = [], []
         plan = history.get('planned_queries') or [
-            (f'{entity_name} {REGION_HINT} современные фотографии фасада' if entity_name
-             else f'{visual_query} {REGION_HINT} фото').strip()]
+            (f'{entity_name} {region_hint(story)} современные фотографии фасада' if entity_name
+             else f'{visual_query} {region_hint(story)} фото').strip()]
         for query in plan:
             if already_proved():
                 return None
