@@ -86,6 +86,9 @@ def repair(adapter, session, command_id, args):
                        for n, change in enumerate(changes)]
             result = {'repairs': results, 'review_required': True, 'next_tool': 'get_review_packet',
                       'next_args': {'run_id': row['run_id']}}
+            if payload.get('requested_fact_scope'):
+                result['next_args']['fact_ids'] = list(dict.fromkeys(
+                    fid for repaired in results for fid in repaired['fact_ids']))[:12]
         adapter._store_command(db, session.resource_id, stable_id, 'repair_research_fact', args, result)
         return result
 
@@ -152,6 +155,8 @@ def _apply_repair(adapter, session, db, row, payload, stable_id, args):
     db.execute("UPDATE live_review_attempts SET state='superseded' WHERE packet_ref=?", (ref,))
     result = {'parent_fact_id': item['id'], 'fact_ids': ids, 'selection_preserved': evidence_only,
               'review_required': True, 'next_tool': 'get_review_packet', 'next_args': {'run_id': row['run_id']}}
+    if payload.get('requested_fact_scope'):
+        result['next_args']['fact_ids'] = ids
     return result
 
 

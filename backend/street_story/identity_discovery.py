@@ -553,7 +553,7 @@ async def web_search_hints(service, visual_query, *, story=None):
     ))[:3]
 
 
-async def web_image_sources(service, entity_name, visual_query, *, story=None):
+async def web_image_sources(service, entity_name, visual_query, *, story=None, first_ready=False):
     """Independent grounded search before confirmation, with saved provenance.
 
     Google and OpenCode retain independent availability. URL discovery never
@@ -567,6 +567,11 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                  else f'{visual_query} {region_hint(story)} фото').strip()
     routes, failures = [], []
     researcher = getattr(service.providers, 'research', None)
+    ready_sources, ready = {}, asyncio.Event()
+    def announce(sources):
+        ready_sources.update({source['url']: source for source in sources})
+        if ready_sources:
+            ready.set()
     async def choose_observed(observed):
         selector = getattr(researcher, 'select_identity_sources', None)
         text_selector = getattr(service.providers.gemini, 'select_identity_sources', None)
@@ -610,6 +615,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                                 discovered_sources=observed,
                                 source_selections={'opencode_observed:' + query: {
                                     **selected['source_selection'], 'discovered_sources': observed}})
+                            announce(selected['sources'])
                             record_identity_event(service, story['id'], 'identity_search_observations_ready', {
                                 'provider': 'opencode', 'discovered_count': len(observed),
                                 'source_count': len(selected['sources']), 'original_query_pending': not task.done()})
@@ -697,9 +703,27 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
             record_identity_event(service, story['id'], 'identity_search_route_ready', {
                 'provider': provider, 'source_count': len(sources),
                 'elapsed_ms': round((asyncio.get_running_loop().time()-started)*1000)})
+        announce(sources)
         return sources
-    results = await asyncio.gather(*(discover(provider, call) for provider, call in routes),
-                                   return_exceptions=True)
+    group = asyncio.gather(*(discover(provider, call) for provider, call in routes), return_exceptions=True)
+    retain = getattr(researcher, 'retain_search_observer', None)
+    if first_ready and callable(retain):
+        ready_wait = asyncio.create_task(ready.wait())
+        try:
+            await asyncio.wait({group, ready_wait}, return_when=asyncio.FIRST_COMPLETED)
+            if ready_sources and not group.done():
+                retain(group)
+                record_identity_event(service, story['id'], 'identity_search_first_sources_ready', {
+                    'source_count': len(ready_sources), 'provider_requests_pending': True})
+                return list(ready_sources.values())
+        except BaseException:
+            group.cancel()
+            await asyncio.gather(group, return_exceptions=True)
+            raise
+        finally:
+            ready_wait.cancel()
+            await asyncio.gather(ready_wait, return_exceptions=True)
+    results = await group
     sources = {}
     for result in results:
         if isinstance(result, BaseException):
@@ -941,7 +965,7 @@ async def recover(service, story, transcript, candidates, excluded):
                 else:
                     query_story = {**story, '_identity_search_query': query}
                     try:
-                        query_sources = await web_image_sources(service, entity_name, visual_query, story=query_story)
+                        query_sources = await web_image_sources(service, entity_name, visual_query, story=query_story, first_ready=True)
                         history = _retain_article_discovery(service, story, query_sources,
                             query_results={query: {'sources': query_sources, 'status': 'completed',
                                 'search_unavailable': False, 'claim_id': claim_id}})

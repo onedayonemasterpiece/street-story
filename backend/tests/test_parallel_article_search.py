@@ -11,6 +11,45 @@ from test_visual_search_continuation import prepared
 
 
 @pytest.mark.asyncio
+async def test_first_sources_return_while_registered_original_search_drains_and_delivers_late_urls(tmp_path):
+    from street_story.research_adapter import ProductResearchAdapter
+    svc, _, topic, _ = prepared(tmp_path)
+    story = svc._identity_snapshot(topic['id'])[0]
+    holder = object.__new__(ProductResearchAdapter)
+    holder.native_vision = None
+    release, started = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def search(query, snapshot):
+        calls.append('one-original-send')
+        started.set()
+        await release.wait()
+        return {'sources': [{'url': 'https://news.example/late'}],
+            'source_selection': {'status': 'model_selected'}}
+    async def google(query, *, purpose):
+        await started.wait()
+        return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/early'}],
+            payload={'source_selection': {'status': 'model_selected'}})
+    svc.providers.research = SimpleNamespace(search_articles=search,
+        retain_search_observer=holder.retain_search_observer)
+    svc.providers.gemini.discover_article_urls = google
+    svc.providers.gemini._public_web_search = None
+    try:
+        sources = await asyncio.wait_for(identity_discovery.web_image_sources(
+            svc, '', '', story=story, first_ready=True), 3)
+        assert [s['url'] for s in sources] == ['https://news.example/early']
+        assert len(holder._search_observers) == 1 and not release.is_set()
+        release.set()
+        await asyncio.gather(*holder._search_observers)
+        history = svc._identity_snapshot(story['id'])[1]['identity_article_discovery']
+        assert {s['url'] for s in history['sources']} == {
+            'https://news.example/early', 'https://news.example/late'}
+        assert calls == ['one-original-send']
+    finally:
+        release.set()
+        await holder.close()
+
+
+@pytest.mark.asyncio
 async def test_completed_tool_observations_selected_before_original_search_finishes(tmp_path):
     svc, _, topic, _ = prepared(tmp_path)
     story = svc._identity_snapshot(topic['id'])[0]

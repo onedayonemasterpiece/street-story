@@ -197,8 +197,29 @@ class ProductResearchAdapter:
         return admitted
 
     async def close(self):
+        # Runtime shutdown alone cancels these observers. A useful early source
+        # or proved identity does not cancel already-addressed provider work.
+        pending = list(getattr(self, '_search_observers', ()))
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         if self.native_vision is not None:
             await self.native_vision.close()
+
+    def retain_search_observer(self, task):
+        observers = getattr(self, '_search_observers', None)
+        if observers is None:
+            observers = self._search_observers = set()
+        observers.add(task)
+        def settled(done):
+            observers.discard(done)
+            if not done.cancelled():
+                outcomes = done.result()
+                for outcome in outcomes:
+                    if isinstance(outcome, BaseException):
+                        LOG.warning('street_story_research_search_observer error_type=%s', type(outcome).__name__)
+        task.add_done_callback(settled)
 
     def attempt(self, story, role, unit):
         visual = role.startswith('vision')

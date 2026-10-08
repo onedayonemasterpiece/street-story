@@ -151,7 +151,7 @@ class LiveVisualComparisonMixin:
                     if page.get('status') not in {'completed', 'excluded'}]}
             sources = await web_image_sources(self.service, query, '', story={**story,
                 '_identity_generation': int(research.get('identity_generation') or 0),
-                '_identity_query_context': query_context, '_identity_search_query': query})
+                '_identity_query_context': query_context, '_identity_search_query': query}, first_ready=True)
             result = {'sources': sources, 'status': 'completed', 'search_unavailable': False,
                 'instruction': 'Fetch article illustrations with compare_place_images; titles are hypotheses only.'}
         except Exception as exc:

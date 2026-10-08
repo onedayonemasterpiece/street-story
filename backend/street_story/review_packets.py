@@ -168,20 +168,42 @@ def read(adapter, session, args):
                     raise ConflictError('live_review_decisions_invalid', 'Use fact numbers of the superseded packet.')
                 affected = {old['items'][n]['id'] for n in numbers}
                 db.execute("UPDATE research_runs SET state='verifying',completed_at=NULL WHERE run_id=? AND story_id=? AND state='completed'", (run_id, session.resource_id))
+            requested_scope = args.get('fact_ids')
+            if requested_scope is not None:
+                scoped_story, scoped_research = adapter._fact_research_control_guard(db, session)
+                db.execute("UPDATE research_runs SET state='verifying',completed_at=NULL WHERE run_id=? "
+                           "AND story_id=? AND identity_generation=? AND state='completed'",
+                           (run_id, session.resource_id, int(scoped_research.get('identity_generation') or 0)))
             story, run = adapter._research_run_guard(db, session, run_id)
+            if requested_scope is not None:
+                if (not isinstance(requested_scope, list) or not 1 <= len(requested_scope) <= 12
+                        or any(not isinstance(fid, str) for fid in requested_scope)
+                        or len(set(requested_scope)) != len(requested_scope)):
+                    raise ConflictError('live_review_decisions_invalid', 'Supply 1–12 exact fact_ids from this story; prefer a small independent review.')
+                available = bundle(db, session.resource_id)
+                if any(fid not in available or db.execute('SELECT review_status FROM fact_assertions '
+                        'WHERE story_id=? AND assertion_id=?', (session.resource_id, fid)).fetchone()[0] == 'quarantined'
+                       for fid in requested_scope):
+                    raise ConflictError('live_review_decisions_invalid', 'Review only current own assertions with attached evidence; quarantine requires arbitration.')
+                # An explicit reconsideration must produce new semantic evidence,
+                # rather than reuse the old decision the owner is questioning.
+                affected.update(requested_scope)
             candidate_ids, existing_hints = [], []
             for batch in db.execute('SELECT payload_json FROM research_chunk_batches WHERE run_id=? ORDER BY created_at,batch_index', (run_id,)):
                 saved = json.loads(batch['payload_json'] or '{}')
                 if saved.get('extractor_candidates'):
                     existing_hints.extend(str(fid) for fid in saved.get('extractor_existing_fact_ids', []) if fid)
                     candidate_ids.extend(str(f['fact_id']) for f in saved.get('facts', []) if f.get('fact_id'))
-            candidate_mode = bool(candidate_ids) and not supersedes
+            candidate_mode = requested_scope is not None or bool(candidate_ids) and not supersedes
             if candidate_mode:
-                requested_candidates = args.get('_candidate_ids')
-                candidate_ids = [fid for fid in dict.fromkeys(candidate_ids)
-                                 if (requested_candidates is None or fid in requested_candidates) and db.execute(
-                    "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
-                    (session.resource_id, fid)).fetchone()][:3]
+                if requested_scope is not None:
+                    candidate_ids = requested_scope
+                else:
+                    requested_candidates = args.get('_candidate_ids')
+                    candidate_ids = [fid for fid in dict.fromkeys(candidate_ids)
+                                     if (requested_candidates is None or fid in requested_candidates) and db.execute(
+                        "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
+                        (session.resource_id, fid)).fetchone()][:3]
                 if not candidate_ids:
                     return {'run_id': run_id, 'review_available': False, 'pending_candidates': 0,
                             'instruction': 'All saved extractor candidates already have semantic decisions. Existing publication choices remain unchanged.'}
@@ -205,12 +227,14 @@ def read(adapter, session, args):
                 exact = {fid: exact[fid] for fid in candidate_ids if fid in exact}
                 hints = list(dict.fromkeys(existing_hints))
                 hint_slots = ','.join('?' for _ in hints) or "''"
+                scope_slots = ','.join('?' for _ in candidate_ids)
                 nearby = [dict(row) for row in db.execute(
                     "SELECT f.fact_id,f.text,a.revision_digest FROM facts f JOIN fact_assertions a "
                     "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
                     "WHERE f.story_id=? AND f.evidence_supported=1 AND a.eligibility='eligible' "
+                    f"AND a.assertion_id NOT IN ({scope_slots}) "
                     f"AND length(f.text)<=500 ORDER BY CASE WHEN f.fact_id IN ({hint_slots}) THEN 0 ELSE 1 END, "
-                    "a.owner_selected DESC,f.rowid DESC LIMIT 8", (session.resource_id, *hints))]
+                    "a.owner_selected DESC,f.rowid DESC LIMIT 8", (session.resource_id, *candidate_ids, *hints))]
             items = []
             for fact_id in exact:
                 text = db.execute('SELECT text FROM facts WHERE story_id=? AND fact_id=?', (session.resource_id, fact_id)).fetchone()[0]
@@ -254,6 +278,8 @@ def read(adapter, session, args):
                        'review_as_of_date_utc': datetime.fromtimestamp(adapter.service.store.now(), timezone.utc).date().isoformat()}
             if candidate_mode:
                 payload.update(candidate_scope=list(exact), nearby_existing_claims=nearby)
+                if requested_scope is not None:
+                    payload['requested_fact_scope'] = True
                 if args.get('_parallel_candidate_review') is True:
                     payload.update(parallel_candidate_review=True, owner_fence=candidate_review_fence(db, story),
                                    eligible_bundle=eligible_bundle(db, session.resource_id))
@@ -276,7 +302,7 @@ def read(adapter, session, args):
                 db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
         row, payload = load(adapter, session, db, ref)
         attempt = db.execute('SELECT supersedes_ref FROM live_review_attempts WHERE packet_ref=?', (ref,)).fetchone()
-        superseding = bool(attempt and attempt[0])
+        superseding = bool(attempt and attempt[0]) or payload.get('requested_fact_scope') is True
     cursor = max(0, int(args.get('cursor') or 0))
     # Each domain page contains one fact and one literal evidence slice. Every
     # slice is addressed; a long passage is never silently clipped.
