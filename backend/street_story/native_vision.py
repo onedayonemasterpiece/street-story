@@ -233,7 +233,7 @@ class NativeVisionProvider:
                 elif inline and part['bytes'] is not None:
                     url = f'data:{part["mime_type"]};base64,{base64.b64encode(part["bytes"]).decode("ascii")}'
                 input_parts.extend([{'type': 'text', 'text': part['label']}, {'type': 'image', 'url': url}])
-        except httpx.TransportError as exc:
+        except (httpx.HTTPError, ValueError, PermanentProviderError) as exc:
             # A public REF download is before Native admission/turn submission.
             # Reject only this unsent reference, not the POI or independent peers.
             logger.warning('native_visual_reference_unavailable story_id=%s attempt_id=%s comparison_id=%s phase=%s submitted=%s error_type=%s',

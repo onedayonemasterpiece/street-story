@@ -99,3 +99,22 @@ async def test_unread_navigation_gets_turn_before_retrying_partial_article(tmp_p
     assert state['sources'][useful]['status'] == 'partial'
     assert state['sources'][nav]['status'] == 'completed'
     assert reply['references'][0]['candidate_id'] == 'wiki:0'
+
+
+@pytest.mark.asyncio
+async def test_unread_selected_page_reaches_vision_before_new_planned_search(tmp_path, monkeypatch):
+    svc, adapter, story, session = gallery(tmp_path, 2)
+    state = session.state['visual_comparison']
+    useful = 'https://photos.example/category/building'
+    state.update(sources={useful: page(useful)},
+                 planned_queries=['Alternative street view'], units_since_planned_query=2)
+    async def forbidden(*args, **kwargs):
+        pytest.fail('An unread selected page must not wait for another search provider')
+    monkeypatch.setattr(adapter, '_find_place_articles', forbidden)
+    acquired = []
+    patch_reader(svc, monkeypatch, acquired, useful)
+    reply = await adapter._compare_place_images(session, {}, page_budget=1)
+    assert acquired == [useful]
+    assert reply['references'][0]['candidate_id'] == 'web:actual-article'
+    assert len(state['queue']) == 40
+    assert 'Alternative street view' not in state['searches']
