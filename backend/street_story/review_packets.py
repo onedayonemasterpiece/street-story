@@ -2,11 +2,12 @@
 import hashlib
 import json
 import uuid
+from datetime import datetime, timezone
 
 from .research_budget import PAGE_UNITS, response_units
 from .service import ConflictError, canonical
 
-POLICY_VERSION = 'own-evidence-repair-v5'
+POLICY_VERSION = 'own-evidence-repair-v6'
 
 EXTRACTION_CHECKS = (
     'Before saving, enumerate independently selectable assertions from the source '
@@ -249,7 +250,8 @@ def read(adapter, session, args):
                                 cached.pop('equivalent_to', None)
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
-            payload = {'bundle': exact, 'items': items}
+            payload = {'bundle': exact, 'items': items,
+                       'review_as_of_date_utc': datetime.fromtimestamp(adapter.service.store.now(), timezone.utc).date().isoformat()}
             if candidate_mode:
                 payload.update(candidate_scope=list(exact), nearby_existing_claims=nearby)
                 if args.get('_parallel_candidate_review') is True:
@@ -286,7 +288,7 @@ def read(adapter, session, args):
                                'passage': ev['text'][start:start + 900], 'offset': start,
                                'passage_complete': start + 900 >= len(ev['text']), 'source_url': ev['url'],
                                'saved_verdict': json.loads(row['decisions_json']).get(str(f), {}).get('verdict')})
-    page = {'packet_ref': ref, 'run_id': row['run_id'], 'policy_version': POLICY_VERSION, 'review_checks': REVIEW_CHECKS, 'items': [], 'total_facts': len(payload['items']),
+    page = {'packet_ref': ref, 'run_id': row['run_id'], 'policy_version': POLICY_VERSION, 'review_as_of_date_utc': payload.get('review_as_of_date_utc'), 'review_checks': REVIEW_CHECKS, 'items': [], 'total_facts': len(payload['items']),
             'next_cursor': None, 'has_more': False, 'next_tool': 'finalize_fact_review'}
     if payload.get('candidate_scope') is not None:
         page['nearby_existing_claims'] = payload.get('nearby_existing_claims', [])

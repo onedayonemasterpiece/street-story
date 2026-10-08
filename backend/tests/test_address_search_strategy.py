@@ -30,10 +30,12 @@ def test_full_supplied_address_nodes_survive_physical_shortlist_projection():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('feature_already_planned', [False, True])
-async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(feature_already_planned):
+@pytest.mark.parametrize('extra_address_hypotheses', [0, 3])
+async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(feature_already_planned, extra_address_hypotheses):
     a, b = anchor(1, '31', 24), anchor(2, '33', 39)
     feature = 'brick facade arched windows modern exterior Fixture Region'
     plan = ['Fixture Street 31 modern exterior', 'Fixture Street 33 modern exterior']
+    plan.extend(f'Fixture Street {35 + n} exterior' for n in range(extra_address_hypotheses))
     if feature_already_planned:
         plan.append(feature)
     class Executor:
@@ -53,8 +55,8 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     story = {'id': 'fixture', '_identity_search_context': {'nearby': [a, b]}}
     await identity_discovery.suggest(service, story, '', [])
-    assert story['_identity_article_queries'] == [*plan[:2], feature]
-    history = {q: {'status': 'completed'} for q in plan[:2]}
+    assert story['_identity_article_queries'] == list(dict.fromkeys([*plan, feature]))
+    history = {q: {'status': 'completed'} for q in plan if q != feature}
     assert identity_discovery.next_visual_query({}, 'Wrong guess', history, story['_identity_article_queries']) == feature
     assert 'address' not in story
 
