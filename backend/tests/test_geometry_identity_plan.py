@@ -82,6 +82,32 @@ def test_large_osm_dictionary_stays_in_host_validation_without_repeated_provider
 
 
 @pytest.mark.asyncio
+async def test_invalid_geometry_preserves_explicit_ready_wiki_choice_without_another_planner(tmp_path):
+    service, story, active = geometry_setup(tmp_path)
+    story['_identity_wikipedia_metadata'] = [{'pageid': 99, 'title': 'Observed subject',
+        'thumbnail_url': 'https://example.org/ready.jpg'}]
+    decision = geometry_decision()
+    decision['candidate_label'] = 2  # Bound to the other received building.
+    plan = payload(decision)
+    plan['selected_wikipedia_page_ids'] = ['99']
+    calls = []
+    async def generate(*args, **kwargs):
+        calls.append('joint')
+        return SimpleNamespace(text=json.dumps(plan))
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Valid explicit Wiki choice must survive rejected geometry without paid replanning')
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
+    history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['joint']
+    saved = history['search_plan']['payload']
+    assert saved['selected_wikipedia_page_ids'] == ['99']
+    assert 'accepted_geometry' not in saved and 'geometry_proof' not in saved
+    assert saved['rejected_geometry']['decision'] == decision
+    assert '_identity_geometry_result' not in story
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('label', [None, 2, 999])
 async def test_joint_geometry_rejects_missing_or_wrong_map_label_binding(tmp_path, label):
     service, story, active = geometry_setup(tmp_path)

@@ -285,7 +285,20 @@ async def suggest(service, story, transcript, candidates):
             geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
                 [*observed, *candidates])
             if geometry_proof is None:
-                reject('identity_geometry_proof_invalid')
+                if not (payload.get('selected_wikipedia_page_ids') or payload.get('first_wave_hypotheses')):
+                    reject('identity_geometry_proof_invalid')
+                # A closed joint response can still nominate useful, separately
+                # validated searches/pages. An invalid proof does not establish
+                # identity and does not force another paid planning operation.
+                rejected_geometry = payload['accepted_geometry']
+                payload = {key: value for key, value in payload.items() if key != 'accepted_geometry'}
+                payload['rejected_geometry'] = {'reason': 'identity_geometry_proof_invalid',
+                    'decision': rejected_geometry}
+                action = {}
+                record_identity_event(service, story['id'], 'identity_geometry_not_accepted',
+                    {'candidate_id': rejected_geometry.get('candidate_id'),
+                     'candidate_label': rejected_geometry.get('candidate_label'),
+                     'preserved_search_plan': True})
         try:
             selected_wiki = set(payload.get('selected_wikipedia_page_ids') or [])
             ready_wiki = any(str(page.get('pageid')) in selected_wiki
