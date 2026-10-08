@@ -1,0 +1,10 @@
+photo,target,identity_status,latitude,longitude,focal_length_mm,focal_35mm_mm,digital_zoom_tag,approx_hfov_deg,approx_vfov_deg,gps_heading_available,gps_error_available,complete_groups,unresolved_buildings,rank_bbox_center,rank_boundary,bbox_center_distance_m,whole_boundary_distance_m,whole_polygon_distance_m,camera_inside,nearest_boundary_bearing_deg,centroid_bearing_deg,grouped_parts,outer_components
+104,relation/3665416,parent_verified_target,54.7219008,20.514066799722222,9,72,3,20.44,27.03,False,False,52,3,2,2,72.67,39.75,39.75,False,354.56,8.51,14,1
+105,way/105154961,parent_verified_target,54.714790399722226,20.5081984,9,72,3,20.44,27.03,False,False,67,0,4,4,56.69,39.11,39.11,False,280.63,283.52,0,1
+106,way/150596899,parent_verified_target,54.7331882,20.478384299722222,6.7,24,1,71.59,56.81,False,False,80,1,1,1,22.26,10.59,10.59,False,61.06,43.47,0,1
+107,way/135507463,parent_verified_target,54.730124199722226,20.47844819972222,9,72,3,20.44,27.03,False,False,92,0,15,9,119.56,73.96,73.96,False,181.42,184.26,0,1
+108,relation/1383564,parent_verified_target,54.72164959972223,20.496798999722223,6.7,24,1,71.59,56.81,False,False,63,0,2,3,33.92,18.47,18.47,False,60.15,81.58,0,1
+109,relation/17986347,parent_verified_target,54.713394,20.516686699999998,9,72,3,20.44,27.03,False,False,28,1,1,1,68.36,0.72,0,True,279.74,115.41,0,2
+110,way/1085593396,parent_verified_target,54.3875801,20.6404262,6.7,24,1,56.81,71.59,False,False,90,0,2,3,24.5,14.91,14.91,False,97.45,84.36,0,1
+111,way/95290265,parent_verified_target,54.714176,20.4862,30.6,240,10,6.19,8.25,False,False,73,0,21,21,215.65,188.78,188.78,False,41.86,42.41,0,1
+112,way/91256978,parent_verified_target,54.727142399722226,20.499019199722223,9,72,3,20.44,27.03,False,False,70,2,4,2,67.14,10.32,10.32,False,221.63,234.64,0,1
