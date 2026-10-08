@@ -664,6 +664,8 @@ class OpenCodeResearch:
     async def search_articles(self, query, binding):
         prompt = ('Use websearch to find concrete public articles relevant to the supplied purpose and hypotheses. '
                   'Do not fetch pages or identify the photo from a title. '
+                  'Do not invoke bash, code, file tools, tasks or schema validation commands. '
+                  'After websearch, return the final JSON directly without any other tool. '
                   'Reuse the supplied research history; completed_for_scope sources need no repeat search. '
                   'Return summary and selected_sources in useful reading order. Choose only exact URLs observed '
                   'in completed websearch output, with a short reason based on its title/snippet and the query context. '

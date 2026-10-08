@@ -30,7 +30,7 @@ PUBLIC_MEDIA_USER_AGENT = 'StreetStory/0.1 (https://github.com/onedayonemasterpi
 
 MAX_PAGES = 20
 MAX_PAGE_BYTES = 2 * 1024 * 1024
-CHROME = re.compile(r'(?:^|[\s_/-])(?:ad|ads|advert\w*|banner|logo\w*|icon|avatar|footer|header|sidebar|related|recommend\w*|cookie|social|share|tracking|poster-item|interest-slider|content-right|contact|similar|widget)(?:$|[\s_/-])', re.I)
+CHROME = re.compile(r'(?:^|[\s_/-])(?:ad|ads|advert\w*|banner|logo(?:type)?|icon|avatar|footer|header|sidebar|related|recommend\w*|cookie|social|share|tracking|poster-item|interest-slider|content-right|contact|similar|widget)(?:$|[\s_/-])', re.I)
 CONTENT = re.compile(r'(?:article|entry-content|post-content|news-detail|detail|articleBody|description|gallery|photo|content_container|mw-parser-output)', re.I)
 _PAGE_ACQUISITION_LOCKS = weakref.WeakKeyDictionary()
 _BROWSER_LOCKS = weakref.WeakKeyDictionary()
@@ -200,7 +200,11 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     collection, _detail_sources = collection_cards(soup, page_url)
     collection_ids = {id(card) for card in collection}
     roots = soup.select('article, [itemprop="articleBody"], main, [role="main"]')
-    content_roots = soup.find_all(['div', 'section'], class_=CONTENT)
+    # Older article/photo pages use table cells rather than semantic <main>.
+    # Keep the same chrome/dimension/public-URL checks within declared content.
+    content_roots = soup.find_all(['div', 'section', 'table', 'td'], class_=CONTENT)
+    content_roots.extend(soup.find_all(['div', 'section', 'table', 'td'],
+        id=re.compile(r'^(?:content|main-content|article|article-content|gallery|photo)$', re.I)))
     roots.extend(node for node in content_roots if not any(parent in roots for parent in node.parents))
     media, seen = [], set()
 
@@ -251,6 +255,11 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
             if any(id(node) in collection_ids for node in ancestors):
                 continue
             if any(publisher_chrome(node) for node in ancestors):
+                continue
+            # Hidden counters may sit in legacy content tables; they are not
+            # reference illustrations, irrespective of their hostname.
+            if any(re.search(r'(?:display\s*:\s*none|visibility\s*:\s*hidden|left\s*:\s*-\d+px)',
+                             str(node.get('style', '')), re.I) for node in ancestors):
                 continue
             try:
                 if any(0 < int(image.get(key, 0)) < MIN_REFERENCE_EDGE for key in ('width', 'height')):
