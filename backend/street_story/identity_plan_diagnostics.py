@@ -39,8 +39,11 @@ def _checked_research(service, story, db, scope):
     return research
 
 
-def joint_followup_marker(service, story, *, binding=None, phase=None, code=None, response_sha256=None):
-    """Read/advance one scoped joint2 fence; a send intent never grants a resend."""
+def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
+        response_sha256=None, status_code=None):
+    """One scoped SOURCE+MAP operation; only authoritative not_sent permits reassignment."""
+    if stage not in {'initial', 'followup'}:
+        raise ValueError('invalid joint operation stage')
     from .providers import RetryableProviderError
     from .service import canonical
     if not callable(getattr(service.store, 'tx', None)) or not callable(getattr(service, '_story_row', None)):
@@ -48,24 +51,53 @@ def joint_followup_marker(service, story, *, binding=None, phase=None, code=None
     scope = _scope(story)
     with service.store.tx() as db:
         research = _checked_research(service, story, db, scope)
-        previous = research.get('identity_joint_followup') or {}
+        key = 'identity_joint_initial' if stage == 'initial' else 'identity_joint_followup'
+        previous = research.get(key) or {}
         if previous.get('scope') != scope:
             previous = {}
         if phase is None:
             return previous or None
-        if phase == 'send_intent' and previous:
-            raise RetryableProviderError('identity_joint_followup_outcome_unknown')
+        if phase == 'send_intent' and previous and not (stage == 'initial' and previous['phase'] == 'not_sent'):
+            raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
         if previous and previous.get('binding') != binding:
-            raise RetryableProviderError('identity_joint_followup_binding_changed')
+            raise RetryableProviderError(f'identity_joint_{stage}_binding_changed')
         marker = {**previous, 'scope': scope, 'binding': binding, 'phase': phase,
             'updated_at': service.store.now()}
+        if phase != previous.get('phase') and phase in {'send_intent', 'response_closed'}:
+            for field in ('code', 'status_code', 'response_sha256'):
+                marker.pop(field, None)
         if code is not None:
             marker['code'] = code
         if response_sha256 is not None:
             marker['response_sha256'] = response_sha256
-        research['identity_joint_followup'] = marker
+        if status_code is not None:
+            marker['status_code'] = status_code
+        research[key] = marker
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
         return marker
+
+
+def joint_followup_marker(service, story, **kwargs):
+    """Compatibility for the existing durable joint2 contract."""
+    return joint_operation_marker(service, story, stage='followup', **kwargs)
+
+
+def provider_outcome(error):
+    """Classify transport evidence, never infer dispatch from error prose."""
+    from google.genai.errors import APIError
+    receipt = getattr(error, 'receipt', None)
+    state = (getattr(error, 'provider_send_state', None)
+        or (receipt.get('provider_send_state') if isinstance(receipt, dict) else None))
+    if state == 'not_sent':
+        return 'not_sent', None
+    status = getattr(error, 'code', None) if isinstance(error, APIError) else None
+    response = getattr(error, 'response', None)
+    if status is None and response is not None:
+        status = getattr(response, 'status_code', None)
+    status = status if isinstance(status, int) and not isinstance(status, bool) else None
+    if state == 'response_closed' or status is not None and 400 <= status < 600:
+        return 'closed_failure', status
+    return 'unknown', None
 
 
 def validation_details(schema, payload):

@@ -133,8 +133,15 @@ def _geometry_binding_issues(decision, manifest):
 
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
-    from .identity_plan_diagnostics import joint_followup_marker
+    from .identity_plan_diagnostics import joint_followup_marker, joint_operation_marker, provider_outcome
     addressed_followup = joint_followup_marker(service, story)
+    addressed_initial = joint_operation_marker(service, story, stage='initial')
+    original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
+    original_available = callable(original_readback) and original_readback(story)
+    if addressed_initial and addressed_initial['phase'] in {'send_intent', 'unknown'} and not original_available:
+        raise RetryableProviderError('identity_joint_initial_outcome_unknown')
+    if addressed_initial and addressed_initial['phase'] == 'response_closed' and not addressed_followup and not original_available:
+        raise PermanentProviderError('identity_joint_initial_already_closed')
     if addressed_followup:
         original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
         if not (callable(original_readback) and original_readback(story)):
@@ -142,6 +149,8 @@ async def suggest(service, story, transcript, candidates):
                 raise PermanentProviderError(addressed_followup.get('code') or 'identity_joint_followup_already_closed')
             if addressed_followup['phase'] == 'not_sent':
                 raise PermanentProviderError('identity_joint_followup_not_sent')
+            if addressed_followup['phase'] == 'closed_failure':
+                raise PermanentProviderError('identity_joint_followup_closed_failure')
             raise RetryableProviderError('identity_joint_followup_outcome_unknown')
     from .identity_source_selection import (regional_source_profile, model_identity_context,
         first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
@@ -368,6 +377,10 @@ async def suggest(service, story, transcript, candidates):
     joint_followup_used = bool(addressed_followup)
     joint_followup_failure = None
     joint_followup_binding = None
+    initial_binding = None
+    initial_outcome = addressed_initial.get('phase') if addressed_initial else None
+    initial_failure = None
+    response_id_resolutions = []
     def joint_source_map_receipt():
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
@@ -460,6 +473,7 @@ async def suggest(service, story, transcript, candidates):
             # receives article leads independently of reference acquisition.
             story['_identity_article_queries'] = []
         story['_identity_search_plan_payload'] = {**payload,
+            **({'identity_response_id_resolutions': response_id_resolutions} if response_id_resolutions else {}),
             **({'regional_catalogue': regional_catalogue} if regional_catalogue else {}),
             'article_queries': story['_identity_article_queries'],
             **({'regional_lookup_receipt': story['_identity_regional_lookup_receipt']}
@@ -484,29 +498,62 @@ async def suggest(service, story, transcript, candidates):
         return result
     async def call(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
+        nonlocal initial_binding, initial_outcome, initial_failure
         if joint_followup_used:
             # An executor key/model loop cannot repeat an already addressed
             # joint2 after a lost/error response. Preserve the original outcome.
             raise PermanentProviderError('identity_joint_followup_outcome_unknown')
+        if initial_outcome and initial_outcome != 'not_sent':
+            raise PermanentProviderError('identity_joint_initial_already_addressed')
         text_articles, source_text_receipt = [], {}
         from google.genai.errors import APIError
+        from .service import canonical, ConflictError
+        initial_binding = {'input_sha256': hashlib.sha256(canonical([model_source_sha256,
+            (scene or {}).get('manifest', {}).get('image_sha256'), prompt]).encode()).hexdigest(),
+            'schema_sha256': hashlib.sha256(canonical(schema).encode()).hexdigest()}
+        joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='send_intent')
+        initial_outcome = 'send_intent'
         try:
             response = await gemini._generate(key, timeout, [
                 types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
                 *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []), prompt], config,
                 operation='grounded_research', model=model, quota=quota)
-        except APIError as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            from .research_budget import ResearchTerminated
+            if isinstance(exc, ResearchTerminated):
+                raise
+            phase, status_code = provider_outcome(exc)
+            initial_outcome, initial_failure = phase, exc
+            try:
+                joint_operation_marker(service, story, stage='initial', binding=initial_binding,
+                    phase=phase, status_code=status_code,
+                    code=f'identity_joint_initial_{phase}')
+            except ConflictError:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise exc
+                raise
+            record_identity_event(service, story['id'], 'identity_joint_initial_unavailable', {
+                'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
+                'phase': phase, 'status_code': status_code, 'error_type': type(exc).__name__,
+                'fresh_google_retry_allowed': phase == 'not_sent'})
             # Retain a closed diagnostic category, never provider payloads or keys.
             detail = str(exc).lower()
             reason = ('schema_depth' if 'schema' in detail and 'nest' in detail else
                 'schema_complexity' if 'schema' in detail and any(word in detail for word in
                     ('complex', 'too many', 'too large')) else
                 'schema_invalid' if 'schema' in detail else 'invalid_argument')
-            if getattr(exc, 'code', None) == 400:
+            if isinstance(exc, APIError) and getattr(exc, 'code', None) == 400:
                 record_identity_event(service, story['id'], 'identity_plan_provider_rejected',
                     {'code': 400, 'reason': reason, 'schema_sha256': hashlib.sha256(
                         json.dumps(response_contract, sort_keys=True).encode()).hexdigest()})
-            raise
+            if phase == 'not_sent':
+                raise
+            # Stop key/model failover after a possibly sent or closed failed
+            # operation. Only the latter may use the existing independent route.
+            raise PermanentProviderError(f'identity_joint_initial_{phase}') from exc
+        initial_outcome = 'response_closed'
+        joint_operation_marker(service, story, stage='initial', binding=initial_binding,
+            phase='response_closed', response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
         story['_identity_search_plan_route'] = 'google'
         decode_error = False
         def decode_joint(response):
@@ -524,6 +571,20 @@ async def suggest(service, story, transcript, candidates):
                     route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
                     errors=[], errors_truncated=False)
                 return None
+            from . import identity_source_selection
+            resolver = getattr(identity_source_selection, 'resolve_identity_response_ids', None)
+            if callable(resolver):
+                decoded, resolution = resolver(decoded, packet)
+                if resolution:
+                    resolution = {**resolution, 'joint_stage': 'followup' if joint_followup_used else 'initial',
+                        'provider_id': 'google', 'raw_json_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+                        'raw_json_utf8_bytes': len(raw.encode())}
+                    response_id_resolutions.append(resolution)
+                    record_identity_event(service, story['id'], 'identity_response_ids_resolved', {
+                        'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
+                        'joint_stage': resolution['joint_stage'], 'policy': resolution['policy'],
+                        'resolved_count': resolution['resolved_count'], 'resolutions_truncated': resolution['resolutions_truncated'],
+                        'raw_json_sha256': resolution['raw_json_sha256'], 'context_sha256': resolution['context_sha256']})
             errors, truncated = validation_details(schema, decoded)
             if errors:
                 # Retain the first closed response before any optional followup
@@ -641,17 +702,14 @@ async def suggest(service, story, transcript, candidates):
                 from .research_budget import ResearchTerminated
                 if isinstance(exc, ResearchTerminated):
                     raise
-                receipt = getattr(exc, 'receipt', None)
-                send_state = (getattr(exc, 'provider_send_state', None)
-                    or (receipt.get('provider_send_state') if isinstance(receipt, dict) else None))
-                phase = 'not_sent' if send_state == 'not_sent' else 'unknown'
+                phase, status_code = provider_outcome(exc)
                 joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
-                    code='identity_joint_followup_not_sent' if phase == 'not_sent' else 'identity_joint_followup_outcome_unknown')
+                    status_code=status_code, code=f'identity_joint_followup_{phase}')
                 joint_followup_failure = exc
                 record_identity_event(service, story['id'], 'identity_joint_followup_unavailable',
                     {'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
                      'error_type': type(exc).__name__, 'phase': phase, 'provider_send_state': phase,
-                     'fresh_retry_allowed': False})
+                     'status_code': status_code, 'fresh_retry_allowed': False})
                 # Stop the executor key loop while preserving the actual
                 # original outcome for the caller/readback path below.
                 raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc
@@ -662,8 +720,11 @@ async def suggest(service, story, transcript, candidates):
             raw_json_available=isinstance(response.text, str), provider_response_id=getattr(response, 'response_id', None))
     async def fallback(cause):
         original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
+        original_available = callable(original_readback) and original_readback(story)
+        if initial_outcome in {'send_intent', 'unknown'} and not original_available:
+            raise RetryableProviderError('identity_joint_initial_outcome_unknown') from initial_failure
         if (joint_followup_used
-                and not (callable(original_readback) and original_readback(story))):
+                and not original_available):
             # The single correction/TEXT followup already consumed joint2.
             # Its known invalid answer cannot authorize a third semantic send.
             raise joint_followup_failure or cause
@@ -712,6 +773,11 @@ async def suggest(service, story, transcript, candidates):
         except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
     retry_at = []
+    preferred_model = getattr(getattr(service, 'settings', None), 'gemini_web_search_model', None)
+    if preferred_model:
+        # Keep the existing registered tuple's pool/quota/executor intact.
+        # This only selects its order for the joint image operation.
+        routes = sorted(routes, key=lambda route: route[0] != preferred_model)
     for model, _pool, quota, executor in routes:
         async def routed_call(key, timeout, *, _model=model, _quota=quota):
             return await call(key, timeout, model=_model, quota=_quota)

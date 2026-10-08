@@ -262,7 +262,9 @@ async def test_closed_invalid_geometry_uses_one_qualified_fallback_not_google_ke
 async def test_text_fallback_cannot_claim_geometry_without_actual_joint_images(tmp_path):
     service, story, active = geometry_setup(tmp_path)
     async def generate(*args, **kwargs):
-        raise RetryableProviderError('fixture_google_unavailable')
+        error = RetryableProviderError('fixture_google_unavailable')
+        error.receipt = {'provider_send_state': 'not_sent'}
+        raise error
     async def fallback(*args, **kwargs):
         return {'result': payload(geometry_decision())}
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
@@ -351,8 +353,9 @@ async def test_geometry_response_for_replaced_photo_cannot_persist_or_pass_curre
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     with pytest.raises(ConflictError):
         await identity_discovery.prepare_search_plan(service, story, '', active)
-    raw = story['_identity_geometry_result']
-    changed = copy.deepcopy(story)
-    changed['photo_sha256'] = 'f' * 64
-    assert not geometry_result_valid(raw, active, changed)
+    # The durable operation fence now rejects stale SOURCE before a geometry
+    # result can be constructed, rather than waiting for plan persistence.
+    assert '_identity_geometry_result' not in story
+    marker = service._identity_snapshot(story['id'])[1]['identity_joint_initial']
+    assert marker['scope']['photo_sha256'] == story['photo_sha256'] and marker['phase'] == 'send_intent'
     assert not service._identity_snapshot(story['id'])[1].get('identity_article_discovery', {}).get('search_plan')
