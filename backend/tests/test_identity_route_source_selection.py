@@ -85,6 +85,30 @@ async def test_public_inventory_selection_uses_text_quota_without_search_tools(t
 
 
 @pytest.mark.asyncio
+async def test_source_choice_receives_original_pixels_and_map_alternatives(tmp_path):
+    from test_reference_image_codec import jpeg
+    from street_story.reference_image_codec import normalize_reference
+    client = GeminiClient(config(tmp_path), Store(tmp_path/'db'))
+    class Executor:
+        async def execute(self, operation, call):
+            return await call('fixture', 5)
+    client.research_routes = [('configured-model', None, object(), Executor())]
+    image = normalize_reference(jpeg())
+    async def generate(key, timeout, contents, configuration, **kwargs):
+        assert contents[0].inline_data.data == image[1]
+        assert not configuration.tools
+        supplied = json.loads(contents[1].split('Return JSON.\n')[1])
+        assert supplied['physical_candidates'][0]['map_address']['street'] == 'Alternate Road'
+        assert supplied['observed_sources'][0]['snippet'] == 'Literal observed snippet'
+        return SimpleNamespace(text=json.dumps(choice()))
+    client._generate = generate
+    inventory = [{**OBSERVED[0], 'supports': [{'text': 'Literal observed snippet'}]}]
+    await client.select_identity_sources('Unverified first guess', inventory, {
+        '_identity_selection_image': image, 'research_json': canonical({'visual_identity': {'candidates': [
+            {'candidate_id': 'osm:way:42', 'map_address': {'street': 'Alternate Road'}}]}})})
+
+
+@pytest.mark.asyncio
 async def test_fast_selected_route_persisted_while_peer_search_waits(monkeypatch):
     entered, release = asyncio.Event(), asyncio.Event()
     retained = []

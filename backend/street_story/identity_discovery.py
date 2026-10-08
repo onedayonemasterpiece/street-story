@@ -92,6 +92,8 @@ async def suggest(service, story, transcript, candidates):
         'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
         'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
         'или видимым признакам; сначала проверь разные правдоподобные адреса простыми запросами. '
+        'Для близкого обычного дома включи разные реальные подходящие адресные якоря в начало плана; '
+        'несколько описательных перефразировок одной улицы не дают покрытия других адресных гипотез. '
         'Не расходуй весь план на одну догадку и её повтор на другом сайте. '
         'SOURCE — современный снимок: для визуального сравнения ищи современные фотографии '
         'нынешнего здания, фасада и адреса. Историческое здание не означает историческую фотографию. '
@@ -619,7 +621,13 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                     try:
                         if not callable(text_selector):
                             raise RetryableProviderError('identity_text_selection_unavailable')
-                        result = await text_selector(query, observed, story)
+                        selection_story = dict(story)
+                        photo_reader = getattr(service, '_source_photo_bytes', None)
+                        if callable(photo_reader):
+                            from .reference_image_codec import normalize_reference
+                            selection_story['_identity_selection_image'] = await asyncio.to_thread(
+                                normalize_reference, photo_reader(story['id']))
+                        result = await text_selector(query, observed, selection_story)
                     except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
                         if not callable(selector):
                             raise

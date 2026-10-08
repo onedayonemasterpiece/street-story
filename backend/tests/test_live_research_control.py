@@ -29,6 +29,18 @@ async def control(adapter, session, action, purpose, command):
 
 
 @pytest.mark.asyncio
+async def test_repeated_current_stage_uses_tools_without_provider_reconnect(tmp_path):
+    svc, adapter, session, _ = prepared(tmp_path)
+    session.capability = 'review'
+    call = {'name': 'continue_story', 'id': 'same-review', 'args': {'stage': 'review', 'intent': 'Verify existing candidates'}}
+    before = rows(svc, session.resource_id)
+    assert adapter.resolve_capability(session, call) is None
+    result = await adapter.execute_tool(session, call)
+    assert result['ready'] and result['already_active'] and result['next_tool'] == 'read_topic'
+    assert rows(svc, session.resource_id) == before
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('purpose', ['identity', 'facts', 'all'])
 async def test_explicit_controls_preserve_queues_and_resume_current_epoch(tmp_path, purpose):
     svc, adapter, session, events = prepared(tmp_path)
