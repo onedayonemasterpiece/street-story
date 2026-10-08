@@ -96,10 +96,13 @@ class HeadlessFactReview:
             routes = [route for route in routes if expected == self._route_identity(route)]
             if not routes:
                 return None  # Changed configuration cannot replace an original operation.
-        if routes:
+        provider = getattr(self.service.providers, 'research', None)
+        order = getattr(provider, 'order_fact_routes', None)
+        if routes and not observing and callable(order):
+            routes = order(routes, ordinal, review=True)
+        elif routes:
             offset = ordinal % len(routes)
             routes = routes[offset:] + routes[:offset]
-        provider = getattr(self.service.providers, 'research', None)
         snapshot = self.harness._snapshot(job, packet['run_id'])
         if snapshot is None:
             return None

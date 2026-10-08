@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+from statistics import median
 from weakref import WeakValueDictionary
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -656,6 +657,63 @@ class ProductResearchAdapter:
                 route['available'] = route['qualified'] and route['retry_at'] <= self.service.store.now()
         return routes
 
+    def order_fact_routes(self, routes, ordinal=0, *, review=False):
+        """Assign new units using observed service time and outstanding work.
+
+        Receipts are scheduling evidence, never qualification or permission to
+        resend. Original-operation recovery bypasses this ordering entirely.
+        With no measured history the existing rotation remains the tie-breaker.
+        """
+        if not routes:
+            return routes
+        offset = ordinal % len(routes)
+        rotated = routes[offset:] + routes[:offset]
+        now = self.service.store.now()
+        observations = []
+        with self.service.store.connection() as db:
+            for route in rotated:
+                role = 'facts_review_' + route['model_id'] if review else route['role']
+                rows = db.execute('SELECT receipt_json,created_at,updated_at FROM research_provider_attempts '
+                    'WHERE role=? AND updated_at>? ORDER BY updated_at DESC,rowid DESC LIMIT 32',
+                    (role, now - 1800))
+                durations, successes, outstanding = [], 0, 0
+                for row in rows:
+                    receipt = json.loads(row[0])
+                    if (receipt.get('model_id') != route['model_id']
+                            or receipt.get('provider_id') != route['provider_id']):
+                        continue
+                    directory = (receipt.get('isolation') or {}).get('directory')
+                    if directory and directory != getattr(route['client'], 'directory', None):
+                        continue
+                    phase = receipt.get('phase')
+                    if phase in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}:
+                        outstanding += 1
+                    elapsed = receipt.get('elapsed_ms')
+                    closed_timeout = (phase == 'aborted' and receipt.get('abort_acknowledged') is True
+                                      and receipt.get('error_code') == 'research_worker_timeout')
+                    if elapsed is None and closed_timeout:
+                        # A controller-acknowledged timeout may have no client
+                        # stopwatch field. Durable boundary timestamps still
+                        # measure the time this assignment occupied the route.
+                        elapsed = (row['updated_at'] - row['created_at']) * 1000
+                    if (len(durations) < 8 and (phase == 'completed' or closed_timeout)
+                            and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+                            and math.isfinite(elapsed) and elapsed > 0):
+                        durations.append(elapsed / 1000)
+                        successes += phase == 'completed'
+                # Time spent on closed failures is part of the expected time
+                # to a useful completion, not a successful fast response.
+                expected = sum(durations) / successes if successes else math.inf if durations else None
+                observations.append((route, expected, outstanding, len(durations)))
+        measured = [expected for _, expected, _, _ in observations if expected is not None and math.isfinite(expected)]
+        if not measured:
+            return rotated
+        neutral = median(measured)
+        ranked = sorted(observations, key=lambda item: (neutral if item[1] is None else item[1]) * (item[2] + 1))
+        LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s',
+                 'review' if review else 'extract', ranked[0][0]['model_id'], ranked[0][3], ranked[0][2], ranked[0][1])
+        return [route for route, _, _, _ in ranked]
+
     def _fact_pool_receipts(self, story, unit):
         roles = ('facts_gigachat', 'facts', 'facts_opencode_nemotron')
         logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
@@ -745,8 +803,7 @@ class ProductResearchAdapter:
         ordinal = page.get('_extractor_ordinal', page.get('page_ordinal', page.get('batch_index')))
         if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 0:
             ordinal = int(hashlib.sha256(unit.encode()).hexdigest()[:8], 16)
-        offset = ordinal % len(routes)
-        routes = routes[offset:] + routes[:offset]
+        routes = self.order_fact_routes(routes, ordinal)
         failures, deadlines = [], []
         for route in routes:
             old = prior.get(route['role']) or {}
