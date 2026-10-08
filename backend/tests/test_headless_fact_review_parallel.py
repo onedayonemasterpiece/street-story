@@ -202,7 +202,7 @@ async def test_completed_original_review_is_recovered_after_checkpoint_interrupt
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('case', ['addressed', 'missing_message', 'changed_route'])
+@pytest.mark.parametrize('case', ['addressed', 'saved_contract', 'missing_message', 'changed_route'])
 async def test_restart_observes_exact_addressed_review_without_replacing_its_packet(tmp_path, monkeypatch, case):
     svc, job, harness = await candidates(tmp_path, count=3)
     ControlledReview.mode = 'unknown'
@@ -219,8 +219,11 @@ async def test_restart_observes_exact_addressed_review_without_replacing_its_pac
          'basis_quotes': [item['text']], 'reason': 'Own original passage.'} for item in packet['items']],
         'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
     calls = []
+    from street_story.headless_fact_review import LEGACY_VERIFIER_PROMPT, VERIFIER_PROMPT, VERIFIER_CONTRACT_ID
+    original_prompt = VERIFIER_PROMPT if case == 'saved_contract' else LEGACY_VERIFIER_PROMPT
     async def closed_readback(role, prompt, binding, schema):
         assert role == 'facts' and binding['message_id'] == 'msg_original'
+        assert prompt == original_prompt + json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
         assert json.loads(prompt.split('Frozen packet: ')[1]) == packet
         calls.append('original_readback')
         return {'result': args}
@@ -228,7 +231,13 @@ async def test_restart_observes_exact_addressed_review_without_replacing_its_pac
     route = {'provider_id': 'fixture', 'model_id': 'fixture', 'endpoint': 'existing', 'client': client}
     engine = HeadlessFactReview(harness)
     role = 'facts_review_fixture'
-    engine._put(job, unit, {**saved, 'frozen_packet': packet, 'route_identity': engine._route_identity(route)})
+    original = {**saved, 'frozen_packet': packet, 'route_identity': engine._route_identity(route)}
+    if case == 'saved_contract':
+        original.update(verifier_prompt=original_prompt, verifier_contract_id=VERIFIER_CONTRACT_ID)
+        from street_story import headless_fact_review
+        monkeypatch.setattr(headless_fact_review, 'VERIFIER_PROMPT', 'Changed instructions must not reach original request. ')
+        monkeypatch.setattr(headless_fact_review, 'VERIFIER_CONTRACT_ID', 'changed-later-policy')
+    engine._put(job, unit, original)
     receipt = {'binding': {'fact_unit_id': unit}, 'phase': 'submitted', 'session_id': 'ses_original', 'message_id': 'msg_original'}
     if case == 'missing_message':
         receipt.pop('message_id')
@@ -243,7 +252,7 @@ async def test_restart_observes_exact_addressed_review_without_replacing_its_pac
     svc.providers.research = SimpleNamespace(run=run)
     monkeypatch.setattr(engine, '_qualified_routes', lambda available=True: [route])
     committed = await engine.run(job, RUN, 0)
-    if case != 'addressed':
+    if case in {'missing_message', 'changed_route'}:
         assert committed == 0 and calls == []
         return
     assert committed == 1

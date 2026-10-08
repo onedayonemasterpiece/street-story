@@ -179,9 +179,18 @@ def bind_reference_subject(
         return (raw.get('source_subject_scope') == 'building' and mapped.get('provenance') == 'osm.tags'
                 and str(tags.get('building') or '').casefold() in {'', 'no'}
                 and any(tags.get(key) for key in ('amenity', 'shop', 'office')))
+    def container_in_building(subject):
+        mapped = subject.get('map_object') or {}
+        tags = mapped.get('tags') or {}
+        return (raw.get('source_subject_scope') == 'building' and mapped.get('provenance') == 'osm.tags'
+                and str(tags.get('building') or '').casefold() in {'', 'no'}
+                and (tags.get('place') in {'city', 'town', 'village', 'suburb', 'neighbourhood', 'quarter'}
+                     or tags.get('landuse') in {'residential', 'industrial', 'commercial'}))
     if not article_candidate(selected):
         if occupant_in_building(selected):
             return unresolved('mapped_occupant_is_not_building_subject')
+        if container_in_building(selected):
+            return unresolved('mapped_area_is_not_building_subject')
         return {'status': 'not_required', 'candidate': selected, 'result': raw,
                 'reference_evidence': reference_evidence}
     subject_id = raw.get('reference_subject_candidate_id')
@@ -193,6 +202,8 @@ def bind_reference_subject(
     # selected ID denotes. A mapped occupant cannot stand for the whole house.
     if occupant_in_building(candidate):
         return unresolved('mapped_occupant_is_not_building_subject')
+    if container_in_building(candidate):
+        return unresolved('mapped_area_is_not_building_subject')
     cid = selected['candidate_id']
     evidence = next((item for item in reference_evidence
                      if item.get('candidate_id') == cid
