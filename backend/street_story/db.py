@@ -346,6 +346,7 @@ CREATE TABLE IF NOT EXISTS research_provider_attempts(
   updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_research_provider_logical ON research_provider_attempts(logical_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_research_provider_role_time ON research_provider_attempts(role,updated_at);
 
 CREATE TABLE IF NOT EXISTS source_documents(
   document_id TEXT PRIMARY KEY,
