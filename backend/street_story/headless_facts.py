@@ -161,7 +161,7 @@ class HeadlessFacts:
         the publication goal. Neither is inferred from a server fact count.
         """
         if (result.get('research_sufficient') is not False or result.get('source_matches_poi') is not True
-                or result.get('source_content_valid') is not True):
+                or type(result.get('source_content_valid')) is not bool):
             return False
         query = result.get('next_research_query')
         next_goal = result.get('next_research_goal')
@@ -218,6 +218,77 @@ class HeadlessFacts:
                        (canonical(research), self.service.store.now(), story['id']))
             return True
 
+    def _handoff_rejected_source(self, job, run_id, goal, scope, control_revision):
+        """Use a saved model query when the remaining material is rejected text.
+
+        The old run stays partial, with its failed coverage evidence intact.
+        The ordinary terminal worker hook can then run the joined query.
+        """
+        snapshot = self._snapshot(job, run_id, control_revision)
+        if snapshot is None:
+            return False
+        story = snapshot[0]
+        with self.service.store.connection() as db:
+            if (db.execute("SELECT 1 FROM research_chunk_runs WHERE run_id=? AND status NOT IN "
+                           "('extracted','no_claims') AND COALESCE(error_code,'')<>'not_article_text' LIMIT 1",
+                           (run_id,)).fetchone()
+                    or db.execute('SELECT 1 FROM research_run_sources WHERE run_id=? AND source_version_id IS NULL LIMIT 1',
+                                  (run_id,)).fetchone()
+                    or review_packets.pending_candidates(db, story['id'], run_id)):
+                return False
+            rows = list(db.execute('SELECT stage,value_json FROM research_checkpoints WHERE job_id=?', (job['id'],)))
+            owner = self._owner_fence(db, story, snapshot[1])
+        saved = {row['stage']: json.loads(row['value_json']) for row in rows}
+        for stage, value in saved.items():
+            if (stage.startswith('headless_fact_unit:') and value.get('phase') in {'started', 'unknown'}
+                    and not self._boundary_closed(story, stage.split(':', 1)[1])):
+                return False
+        for stage, value in saved.items():
+            if not stage.startswith('headless_fact_result:'):
+                continue
+            unit = stage.split(':', 1)[1]
+            result = (value.get('extracted') or {}).get('result') or {}
+            if (saved.get('headless_fact_unit:' + unit, {}).get('phase') != 'committed'
+                    or result.get('source_content_valid') is not False):
+                continue
+            research = snapshot[1]
+            pending = research.get('pending_fact_request') or {}
+            joined = [pending, *(pending.get('queued_requests') or [])]
+            matching = [plan for key, plan in (research.get('fact_research_continuations') or {}).items()
+                if plan.get('source_run_id') == run_id and plan.get('query') == result.get('next_research_query')
+                and plan.get('goal') == result.get('next_research_goal')
+                and any(item.get('input_revision') == 'model-facts-' + key[:40] for item in joined)]
+            previous_owner = value.get('owner') or {}
+            same_owner = previous_owner == owner or (
+                {k: v for k, v in previous_owner.items() if k != 'fact_request_revision'}
+                == {k: v for k, v in owner.items() if k != 'fact_request_revision'}
+                and any(plan.get('request_revision') == owner.get('fact_request_revision') for plan in matching))
+            if not same_owner:
+                continue
+            queued = self._queue_model_continuation(job, run_id, goal, scope, result, control_revision)
+            if not queued:
+                current = self._snapshot(job, run_id, control_revision)
+                research = current[1] if current else {}
+                pending = research.get('pending_fact_request') or {}
+                joined = [pending, *(pending.get('queued_requests') or [])]
+                plans = research.get('fact_research_continuations') or {}
+                queued = any(plan.get('source_run_id') == run_id
+                    and plan.get('query') == result.get('next_research_query')
+                    and plan.get('goal') == result.get('next_research_goal')
+                    and any(item.get('input_revision') == 'model-facts-' + key[:40] for item in joined)
+                    for key, plan in plans.items())
+            if not queued:
+                continue
+            with self.service.store.tx() as db:
+                if self._snapshot(job, run_id, control_revision) is None:
+                    return False
+                set_run_state(db, run_id, 'partial', detail='research_rejected_source_replaced',
+                              now=self.service.store.now(), completed=False)
+            LOG.info('street_story_fact_rejected_source_handoff story_id=%s run_id=%s unit_id=%s',
+                     story['id'], run_id, unit)
+            return True
+        return False
+
     def _capacity_phase(self, job, value):
         with self.service.store.tx() as db:
             db.execute('INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) '
@@ -256,6 +327,8 @@ class HeadlessFacts:
             return
         story, research, _ = snapshot
         control_revision = story['_fact_research_control_revision']
+        if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
+            return
         provider = getattr(self.service.providers, 'research', None)
         if not callable(getattr(provider, 'extract_fact_page', None)):
             raise RetryableProviderError('research_fact_executor_unavailable', retry_at=self.service.store.now() + 60)
@@ -263,6 +336,11 @@ class HeadlessFacts:
             sources = [dict(row) for row in db.execute(
                 'SELECT * FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url', (run_id,))]
         search_receipt = {}
+        payload = json.loads(job.get('payload_json') or '{}')
+        with self.service.store.connection() as db:
+            rejected_urls = {row[0] for row in db.execute("SELECT s.url FROM research_run_sources s JOIN research_runs r "
+                "ON r.run_id=s.run_id WHERE r.story_id=? AND r.poi_key=? AND s.error_code='not_article_text'",
+                (story['id'], snapshot[2]['poi_key']))} if payload.get('research_query') else set()
         if not sources:
             identity = research['visual_identity']
             if identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
@@ -276,7 +354,7 @@ class HeadlessFacts:
                             and evidence.get('reference_id')
                             and (url := public_url(str(evidence.get('article_url') or '')))):
                         articles.setdefault(url, {'url': url, 'title': identity.get('candidate_name') or url})
-                sources = list(articles.values())
+                sources = [item for url, item in articles.items() if url not in rejected_urls]
                 if sources:
                     # These already acquired pages are leads, never accepted
                     # facts. The same frozen reader, subject check and qualified
@@ -299,7 +377,7 @@ class HeadlessFacts:
                 by_url = {}
                 for row in remembered:
                     by_url.setdefault(row['url'], {'url': row['url'], 'title': row['title']})
-                sources = list(by_url.values())
+                sources = [item for url, item in by_url.items() if url not in rejected_urls]
             if sources:
                 search_receipt = {'backend': 'poi_memory'}
                 LOG.info('street_story_fact_sources_reused story_id=%s run_id=%s sources=%s',
@@ -440,6 +518,8 @@ class HeadlessFacts:
                 await review_task
         await self._review_candidates(job, run_id, control_revision)
         if self._snapshot(job, run_id, control_revision) is not None:
+            if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
+                return
             for result in suggestions:
                 self._queue_model_continuation(job, run_id, goal, scope, result, control_revision)
             with self.service.store.tx() as db:
