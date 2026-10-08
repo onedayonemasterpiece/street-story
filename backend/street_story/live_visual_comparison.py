@@ -1053,6 +1053,15 @@ class LiveVisualComparisonMixin:
                     saved_feedback = {**feedback, 'candidate_ids': valid_ids,
                         'reason': feedback['reason'][:500], 'next_query': feedback['next_query'].strip()[:240]}
                     verdict_summary['search_feedback'] = saved_feedback
+                    # An unusable reference is not a rejection of its building.
+                    # Retain the gallery, but immediately give unread pages a
+                    # turn instead of consuming more interiors from this page.
+                    if saved_feedback['reference_kind'] in {'interior', 'diagram', 'unclear'}:
+                        state['units_since_acquisition'] = max(2, state.get('units_since_acquisition', 0))
+                        for candidate in pending['candidates']:
+                            source_page = state.get('sources', {}).get(candidate.get('url'))
+                            if source_page is not None:
+                                source_page['last_reference_feedback'] = saved_feedback
                     evaluated = [raw.get('reference_subject_candidate_id')] if raw.get('reference_subject_candidate_id') in physical_ids else [
                         c['candidate_id'] for c in pending['candidates'] if c['candidate_id'] in physical_ids]
                     for candidate_id in evaluated:

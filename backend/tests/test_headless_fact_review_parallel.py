@@ -103,6 +103,8 @@ async def test_two_live_reviews_overlap_serial_commit_refreshes_nearby_claims_an
         assert eligible==3
         assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0]==0
         assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]==3
+        assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='backend_semantic_review'").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='mira_live_review'").fetchone()[0] == 0
         assert svc._story_row(db,sid)['draft_text']=='Owner draft'
     # The deferred sibling now sees the first accepted claims, rather than
     # committing a semantic decision based on a stale POI view.
@@ -122,6 +124,34 @@ async def test_unknown_review_is_not_repeated_and_other_scope_can_finish(tmp_pat
     ControlledReview.mode='positive'
     assert await engine.run(job,RUN,0)==0
     assert ControlledReview.calls==2
+
+
+@pytest.mark.asyncio
+async def test_closed_client_pending_backend_review_retries_and_resumes_without_reextracting(tmp_path, monkeypatch):
+    from street_story.errors import RetryableProviderError
+    svc, job = fixture(tmp_path, count=1)
+    calls = []
+    async def extract(page, story, context):
+        calls.append(page['chunk_id'])
+        return result(page)
+    svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
+    monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, available=True: [{}])
+    first = HeadlessFacts(svc)
+    async def temporarily_unavailable(*args):
+        return 0
+    monkeypatch.setattr(first, '_review_candidates', temporarily_unavailable)
+    with pytest.raises(RetryableProviderError, match='research_fact_review_partial'):
+        await first.run(job, RUN, 'History', 'history')
+    # A newly constructed executor has no client session or in-memory cursor.
+    resumed = HeadlessFacts(svc)
+    async def review(job, run_id, control_revision):
+        return await ControlledReview(resumed).run(job, run_id, control_revision)
+    monkeypatch.setattr(resumed, '_review_candidates', review)
+    await resumed.run(job, RUN, 'History', 'history')
+    assert len(calls) == 1
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='backend_semantic_review'").fetchone()[0] == 1
 
 
 @pytest.mark.asyncio

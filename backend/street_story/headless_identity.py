@@ -37,6 +37,7 @@ def planned_verdict_schema(reply):
     # Only a newly created comparison asks for the planning extension.
     if reply.get('search_feedback_instruction'):
         schema['properties']['search_feedback'] = deepcopy(SEARCH_FEEDBACK_SCHEMA)
+        schema['required'].append('search_feedback')
     return schema
 
 

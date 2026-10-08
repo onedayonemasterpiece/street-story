@@ -8,6 +8,7 @@ import logging
 import math
 from types import SimpleNamespace
 
+from . import review_packets
 from .errors import MalformedProviderResponse, RetryableProviderError
 from .identity_telemetry import record_identity_event
 from .live import StreetStoryLiveAdapter, _search_source_ref
@@ -328,13 +329,16 @@ class HeadlessFacts:
                     "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed' LIMIT 1",
                     (story['id'], run_id)).fetchone()
             if complete and unreviewed:
-                # Restarted intake must exit while Mira owns semantic review.
+                # Keep a durable retry while the backend verifier owns this
+                # scope. A closed client must never be required to resume it.
+                from .headless_fact_review import HeadlessFactReview
+                background_review = bool(HeadlessFactReview(self)._qualified_routes(available=False))
                 with self.service.store.tx() as db:
                     if self._snapshot(job, run_id, control_revision) is not None:
-                        set_run_state(db, run_id, 'verifying', detail='awaiting_live_semantic_review',
+                        set_run_state(db, run_id, 'verifying', detail=('research_fact_review_partial'
+                                      if background_review else 'awaiting_live_semantic_review'),
                                       now=self.service.store.now(), completed=False)
-                from .headless_fact_review import HeadlessFactReview
-                if HeadlessFactReview(self)._qualified_routes(available=False):
+                if background_review:
                     self._partial(run_id, 'research_fact_review_partial', retry_at=self.service.store.now()+60)
                 return
             if complete and not unreviewed:
@@ -423,8 +427,10 @@ class HeadlessFacts:
                 pending = bool(unfinished)
                 unread = db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? "
                     "AND source_version_id IS NULL AND status!='failed' LIMIT 1", (run_id,)).fetchone()
+                unreviewed = bool(review_packets.pending_candidates(db, story['id'], run_id))
                 set_run_state(db, run_id, 'partial' if pending or unread else 'verifying',
-                              detail='research_fact_units_partial' if pending or unread else 'awaiting_live_semantic_review',
+                              detail=('research_fact_units_partial' if pending or unread else
+                                      'research_fact_review_partial' if unreviewed else 'source_batches_reviewed'),
                               now=self.service.store.now(), completed=False)
             if pending or unread:
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
@@ -432,6 +438,10 @@ class HeadlessFacts:
                 due = self._capacity_retry(job, run_id, failures, due, bool(suggestions))
                 self._partial(run_id, 'research_fact_next_page' if unread or unvisited
                               else 'research_fact_source_coverage_partial', retry_at=due)
+            if unreviewed:
+                from .headless_fact_review import HeadlessFactReview
+                if HeadlessFactReview(self)._qualified_routes(available=False):
+                    self._partial(run_id, 'research_fact_review_partial', retry_at=self.service.store.now()+60)
 
     def _owner_fence(self, db, story, research):
         """Candidate additions may change revision, never these author inputs."""

@@ -4358,6 +4358,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     ) -> dict[str, Any]:
         story_id = session.resource_id
         run_id = _bounded_text(args.get("run_id"), 160, required=True)
+        review_detector = ('backend_semantic_review' if session.state.get('fact_review_origin') == 'backend'
+                           else 'mira_live_review')
         raw_reviewed = args.get("reviewed_assertions")
         raw_conflicts = args.get("conflicts")
         raw_missing = args.get("missing_aspects")
@@ -4560,7 +4562,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     story_id,
                     poi_key,
                     records,
-                    detector="mira_live_review",
+                    detector=review_detector,
                     connection=db,
                 )
                 for record in records:
@@ -4571,7 +4573,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                         str(record["suggested_resolution"]),
                         str(record["detector_rationale"] or "Mira semantic review"),
                         float(record["detector_confidence"]),
-                        arbitrated_by="mira_live_review",
+                        arbitrated_by=review_detector,
                         connection=db,
                     )
 
@@ -4583,7 +4585,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 self.service,
                 story_id,
                 poi_key,
-                detector="mira_live_review",
+                detector=review_detector,
                 connection=db,
                 run_id=run_id,
                 revision_bundle=current_bundle,
@@ -4720,7 +4722,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         })
         logger.info("street_story_fact_review_committed %s", canonical({
             "story_id": story_id, "session_id": session.id, "run_id": run_id,
-            "model": "mira_live_review", "complete": complete,
+            "model": str(session.model), "review_origin": review_detector, "complete": complete,
             "eligible_count": eligible_count, "withheld_count": withheld_count,
         }))
         self._emit_research_progress(

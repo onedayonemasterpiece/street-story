@@ -69,6 +69,31 @@ async def full_worker_case(settings, output, args, item, data):
             if not waiting or time.monotonic() >= deadline:
                 break
             await asyncio.sleep(0.5)
+        facts_result = None
+        if getattr(args, 'wait_facts', False) and identity.get('status') == 'match':
+            # No WebSocket/Live session or owner instruction is created. The
+            # ordinary scheduler must collect, verify and persist on its own.
+            facts_deadline = time.monotonic() + args.facts_timeout_seconds
+            while True:
+                with service.store.connection() as db:
+                    accepted = [dict(row) for row in db.execute(
+                        "SELECT f.fact_id,f.text,a.review_status,a.eligibility FROM facts f "
+                        "JOIN fact_assertions a ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
+                        "WHERE f.story_id=? AND a.eligibility='eligible'", (story_id,))]
+                    canonical_facts = [dict(row) for row in db.execute(
+                        "SELECT assertion_id,text,eligibility,review_proof_json FROM poi_research_assertions "
+                        "WHERE eligibility='eligible'")]
+                    live_count = db.execute('SELECT COUNT(*) FROM live_messages WHERE story_id=?', (story_id,)).fetchone()[0]
+                    story_now = service._story_row(db, story_id)
+                proved = [fact for fact in canonical_facts if json.loads(fact.get('review_proof_json') or '{}').get('detector') == 'backend_semantic_review']
+                facts_result = {'facts': accepted, 'canonical_facts': canonical_facts,
+                    'backend_proved_count': len(proved), 'live_message_count': live_count,
+                    'elapsed_since_upload_s': service.store.now() - story_now['created_at']}
+                if (proved and accepted) or time.monotonic() >= facts_deadline:
+                    break
+                await asyncio.sleep(.5)
+            current, research = service._identity_snapshot(story_id)
+            (output / f'facts-{item["message_id"]}.json').write_text(canonical(facts_result) + '\n')
         with service.store.connection() as db:
             attempts = [dict(row) for row in db.execute('SELECT role,receipt_json,created_at,updated_at FROM research_provider_attempts WHERE story_id=?', (story_id,))]
             events = [dict(row) for row in db.execute("SELECT event_type,payload_json,created_at FROM live_diagnostics WHERE story_id=? AND source='identity' ORDER BY id", (story_id,))]
@@ -78,6 +103,7 @@ async def full_worker_case(settings, output, args, item, data):
         return {'story_id': story_id, 'identity': identity, 'state': current['state'],
                 'error_code': current.get('error_code'), 'full_workers': True,
                 'cold_poi_memory': True, 'operator_label_supplied': False,
+                **({'facts_result': facts_result} if facts_result is not None else {}),
                 'terminal': not waiting if identity.get('status') != 'match' else True}
 
 
@@ -107,7 +133,7 @@ async def run(args):
     source_hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(code.glob('*.py'))}
     config = {'models': {'identity': settings.gemini_model,
                         'search_routes': [route[0] for route in service.providers.gemini.web_search_routes]},
-              'source_hashes': source_hashes, 'identity_only': True, 'full_workers': args.full_workers}
+              'source_hashes': source_hashes, 'identity_only': not args.wait_facts, 'full_workers': args.full_workers}
     config_file = output / 'run.json'
     if config_file.exists() and json.loads(config_file.read_text()) != config:
         raise ValueError('Source or model configuration changed; use a new run name')
@@ -161,6 +187,8 @@ def main():
     parser.add_argument('--run-name', required=True)
     parser.add_argument('--messages', default='')
     parser.add_argument('--full-workers', action='store_true', help='Use ordinary application workers and cold per-photo POI memory')
+    parser.add_argument('--wait-facts', action='store_true', help='Wait for backend-verified POI facts with no Live client')
+    parser.add_argument('--facts-timeout-seconds', type=int, default=240)
     parser.add_argument('--timeout-seconds', type=int, default=300)
     parser.add_argument('--model', choices=('gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'))
     args = parser.parse_args()
