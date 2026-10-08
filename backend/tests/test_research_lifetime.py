@@ -72,6 +72,40 @@ async def test_active_worker_is_bounded_and_preserves_unknown_receipt(tmp_path):
     assert state['automatic_research_outcome']['reason'] == 'identity_deadline_exceeded'
 
 
+@pytest.mark.asyncio
+async def test_one_unknown_visual_unit_cannot_end_independent_discovery(tmp_path, monkeypatch):
+    from street_story.errors import RetryableProviderError
+    from street_story.headless_identity import HeadlessIdentity
+    svc, _, story = service(tmp_path)
+    sid = story['id']
+    envelope = ensure_budget(svc, sid)
+    visual = job(svc, sid, 'identity_visual', 'unknown-visual')
+    discovery = job(svc, sid, 'identity', 'independent-discovery')
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET state='running',lease_until=? WHERE id=?",
+                   (envelope['deadline_at'], discovery))
+        db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+            ('frozen-unknown', 'same-comparison', sid, 'vision_google_pair',
+             json.dumps({'phase': 'unknown', 'provider_send_state': 'possibly_sent', 'comparison_id': 'same-comparison'}),
+             svc.store.now(), svc.store.now()))
+    async def unknown(_self, _job):
+        raise RetryableProviderError('research_visual_pair_outcome_unknown', retry_at=svc.store.now()+300)
+    monkeypatch.setattr(HeadlessIdentity, 'run', unknown)
+    assert await svc.run_once(claim_kind='identity_visual')
+    with svc.store.connection() as db:
+        research = json.loads(svc._story_row(db, sid)['research_json'])
+        assert 'automatic_research_outcome' not in research
+        assert tuple(db.execute('SELECT state,available_at FROM jobs WHERE id=?', (visual,)).fetchone()) == (
+            'retry', pytest.approx(envelope['identity_deadline_at'], abs=.02))
+        assert db.execute('SELECT state FROM jobs WHERE id=?', (discovery,)).fetchone()[0] == 'running'
+        assert json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])['comparison_id'] == 'same-comparison'
+    monkeypatch.setattr(svc.store, 'now', lambda: envelope['identity_deadline_at']+1)
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET state='done',lease_until=0 WHERE id=?", (discovery,))
+    svc.recover_jobs()
+    assert svc.story(sid)['research_outcome']['outcome'] == 'deadline_exceeded'
+
+
 def test_explicit_owner_wave_renews_time_without_erasing_history(tmp_path, monkeypatch):
     svc, _, story = service(tmp_path)
     sid = story['id']

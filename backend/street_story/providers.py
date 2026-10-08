@@ -39,7 +39,7 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
-    LOOKUP_POLICY_VERSION = 8
+    LOOKUP_POLICY_VERSION = 9
 
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
@@ -127,7 +127,7 @@ class OSMClient:
                     if item.get('type') == 'way':
                         entry['geometry'] = [{'lat': node['lat'], 'lon': node['lon']} for node in positions]
                     elif item.get('type') == 'relation':
-                        entry['members'] = [{**member, 'geometry': [
+                        entry['members'] = [{**member, 'tags': ways[member['ref']].get('tags') or {}, 'geometry': [
                             {'lat': nodes[node_id]['lat'], 'lon': nodes[node_id]['lon']}
                             for node_id in ways[member['ref']].get('nodes', [])]} for member in members]
                     entry['center'] = {'lat': (min(x['lat'] for x in positions)+max(x['lat'] for x in positions))/2,
@@ -294,17 +294,18 @@ class OSMClient:
                     "salience_rank": salience_rank,
                 }
 
+            from .identity_map_context import expand_disjoint_building_components
             observed_landmarks = [
                 item for item in (
                     normalized(raw, "landmark")
-                    for raw in responses.get("landmark", {}).get("elements", [])
+                    for raw in expand_disjoint_building_components(responses.get("landmark", {}).get("elements", []))
                 )
                 if item is not None
             ]
             observed_nearby = [
                 item for item in (
                     normalized(raw, "nearby")
-                    for raw in responses.get("nearby", {}).get("elements", [])
+                    for raw in expand_disjoint_building_components(responses.get("nearby", {}).get("elements", []))
                 )
                 if item is not None
             ]
@@ -2922,7 +2923,8 @@ class GeminiClient:
     async def select_identity_sources(self, query, observed, story):
         """Select observed URLs without consuming a web-search quota or tools."""
         from google.genai import types
-        from .identity_source_selection import indexed_model_selection, indexed_selection_schema
+        from .identity_source_selection import (indexed_model_selection, indexed_selection_schema,
+            IDENTITY_SOURCE_POLICY, observed_address_context)
         inventory = [{'source_index': index, 'url': source['url'], 'title': str(source.get('title') or '')[:160],
                       'snippet': str(source.get('snippet') or next((support.get('text') for support in source.get('supports', [])
                           if isinstance(support, dict) and support.get('text')), ''))[:300]} for index, source in enumerate(observed)]
@@ -2930,9 +2932,11 @@ class GeminiClient:
         physical = [{key: candidate[key] for key in ('candidate_id', 'name', 'distance_m', 'map_address',
             'map_coordinates', 'map_object') if key in candidate}
             for candidate in (research.get('visual_identity') or {}).get('candidates', [])[:32]]
-        prompt = ('Select useful article pages from the supplied inventory for comparing the current physical building. '
+        prompt = (IDENTITY_SOURCE_POLICY + 'Select useful article pages from the supplied inventory for comparing the current physical building. '
                   'Prefer modern exterior photos, plausible address alternatives and informative sources. '
                   'Prioritize concrete article/gallery pages likely to provide accessible exterior images. '
+                  'For a contemporary partial facade, prefer a current exterior of the specific physical candidate '
+                  'or its actual mapped address/component over archival city scenes and historic panoramas. '
                   'Reject general city, style or architectural-element pages unless they plausibly show '
                   'a particular physical building hypothesis; general context alone is not useful for comparison. '
                   'Map-only address directories are secondary leads when such photographs are unavailable. '
@@ -2943,6 +2947,7 @@ class GeminiClient:
                   'Keep each reason within 400 characters and the summary within 2000 characters. '
                   'Do not browse, execute tools, invent URLs, or establish identity from a title. Return JSON.\n' +
                   json.dumps({'query': query, 'observed_sources': inventory, 'physical_candidates': physical,
+                    'observed_address_context': observed_address_context(story),
                     'map_context': story.get('_identity_search_context') or {},
                     'capture_coordinates': {'latitude': story.get('latitude'), 'longitude': story.get('longitude')}}, ensure_ascii=False))
         contents = [prompt]
@@ -3275,6 +3280,7 @@ class GeminiClient:
     async def discover_article_urls(self, query: str, *, purpose: str = 'facts') -> GroundedResearch:
         """Google grounding URL discovery only; no fact extraction or HTML SERP."""
         from google.genai import types
+        from .identity_source_selection import IDENTITY_SOURCE_POLICY
         query = str(query or '').strip()[:1000]
         if not query:
             raise ValueError('web search query is required')
@@ -3283,7 +3289,8 @@ class GeminiClient:
             'design, documented changes, repairs and use. Prefer concrete object records, dated reporting '
             'and official building/operator pages. Galleries or geographic navigation alone are insufficient; '
             'distinguish the building from its street, ensemble and occupants')
-        prompt = ('Use Google Search for this literal query. Choose concrete pages that may supply '
+        prompt = ((IDENTITY_SOURCE_POLICY if purpose == 'identity' else '')
+                + 'Use Google Search for this literal query. Choose concrete pages that may supply '
                 + intent + '; summaries and titles remain search observations. '
                 'Return JSON {\"summary\":\"brief\",\"selected_sources\":[{\"url\":\"exact tool-observed HTTPS URL\",'
                 '\"reason\":\"why this page is useful\"}]}. Keep useful reading order. '

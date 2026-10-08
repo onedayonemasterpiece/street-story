@@ -188,6 +188,8 @@ def bind_reference_subject(
                 and (tags.get('place') in {'city', 'town', 'village', 'suburb', 'neighbourhood', 'quarter'}
                      or tags.get('landuse') in {'residential', 'industrial', 'commercial'}))
     if not article_candidate(selected):
+        if selected.get('identity_role') == 'multi_component_building_context':
+            return unresolved('mapped_multiple_building_components_require_member')
         if occupant_in_building(selected):
             return unresolved('mapped_occupant_is_not_building_subject')
         if container_in_building(selected):

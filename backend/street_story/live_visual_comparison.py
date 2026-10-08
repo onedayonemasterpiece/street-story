@@ -366,6 +366,7 @@ class LiveVisualComparisonMixin:
                 'url': c.get('url'), 'distance_m': c.get('distance_m'),
                 **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name', 'map_object',
                     'map_geometry', 'boundary_distance_m', 'representative_distance_m', 'distance_provenance',
+                    'physical_component', 'parent_relation_context',
                     'footprint_bearing_interval', 'camera_inside_footprint',
                     'camera_alignment', 'camera_direction_difference_deg') if key in c},
                 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
@@ -377,6 +378,9 @@ class LiveVisualComparisonMixin:
                 'по главному предмету всего SOURCE. Крупный фасад целого дома — building, даже если видна '
                 'вывеска арендатора или удалось сопоставить только его вход. Для building выбери ID самого '
                 'здания либо его адресной точки; mapped amenity/shop/office без building — организация, '
+                'Если multipolygon содержит раздельные корпуса, parent_relation_context — контекст всей '
+                'relation, а identity должна указывать точный physical_component; адрес или имя relation '
+                'не становятся собственными данными каждого корпуса. '
                 'не идентификатор здания. Не подменяй дом организацией даже при доказанном совпадении входа. '
                 'Верни search_feedback: тип REF (modern_exterior/interior/historical/diagram/unclear), '
                 'modern_exterior означает реальную фотографию внешнего вида. Архитектурный рендер, '

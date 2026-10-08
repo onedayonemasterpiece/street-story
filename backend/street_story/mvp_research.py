@@ -395,8 +395,17 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "salience_rank": 0,
             })
 
-        for item in [osm.get("reverse", {}), *(osm.get("observed_pool", osm.get("nearby", [])) if observed_pool
-                                              else osm.get("nearby", []))]:
+        from .identity_map_context import expand_disjoint_building_components
+        full_map_pool = expand_disjoint_building_components(osm.get('observed_pool', osm.get('nearby', [])))
+        map_pool = full_map_pool if observed_pool else expand_disjoint_building_components(osm.get('nearby', []))
+        reverse = dict(osm.get('reverse') or {})
+        reverse_kind, reverse_id = reverse.get('osm_type'), reverse.get('osm_id')
+        observed_reverse = next((item for item in full_map_pool
+            if (item.get('osm_type') or item.get('type')) == reverse_kind
+            and str(item.get('osm_id') or item.get('id')) == str(reverse_id)), {})
+        reverse.update({key: observed_reverse[key] for key in ('members', 'physical_components',
+            'identity_eligible', 'identity_ineligible_reason', 'identity_role') if key in observed_reverse})
+        for item in [reverse, *map_pool]:
             osm_type = str(item.get("osm_type") or item.get("type") or "")
             osm_id = item.get("osm_id") or item.get("id")
             tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
@@ -464,9 +473,21 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         # can be considered after the owner rejects the current result.
         excluded = excluded_ids or set()
         candidates = [item for item in candidates if item.get("candidate_id") not in excluded]
+        from .identity_entity_aliases import enrich_entity_links
+        from .identity_subject_binding import subject_aliases
+        candidates = enrich_entity_links(candidates, {**osm, 'nearby': full_map_pool}, wikipedia)
+        aliases = subject_aliases(candidates)
+        aggregate_aliases = {alias: parent for parent in candidates
+            if parent.get('identity_role') == 'multi_component_building_context'
+            for alias in aliases.get(parent['candidate_id'], {parent['candidate_id']})}
+        for candidate in candidates:
+            parent = aggregate_aliases.get(candidate['candidate_id'])
+            if parent is not None:
+                candidate.update(identity_eligible=False, identity_role='multi_component_building_context',
+                    identity_ineligible_reason='disjoint_outer_building_components',
+                    physical_components=parent['physical_components'])
         if observed_pool:
-            from .identity_entity_aliases import enrich_entity_links
-            return enrich_entity_links(candidates, osm, wikipedia)
+            return candidates
 
         def distance(item: dict[str, Any]) -> float:
             try:
@@ -549,8 +570,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         )
         take(remaining, 16 - len(shortlist), "fill")
         shortlist.sort(key=lambda item: (distance(item), 0 if item.get("reference_image_urls") else 1))
-        from .identity_entity_aliases import enrich_entity_links
-        return enrich_entity_links(shortlist[:16], osm, wikipedia)
+        return shortlist[:16]
 
     async def _candidate_reference_images(self, candidates, limit=6, *, story_id=None, evidence=None):
         from .identity_references import reference_images

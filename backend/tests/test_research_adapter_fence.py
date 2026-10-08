@@ -388,3 +388,38 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
     adapter.native_vision = SimpleNamespace(compare_visual=readback)
     assert (await adapter._visual_pair_route_owned('native', story, schema, context, 'unit'))['result'] == result
     assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == service.settings.identity_max_exact_pairs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['google', 'native', 'opencode'])
+async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, route):
+    import json
+    from types import SimpleNamespace
+    from street_story.research_budget import ResearchTerminated, ensure_budget, reserve_work
+    service, sid, photo = fixture(tmp_path)
+    ensure_budget(service, sid, explicit=True)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter._active_binding = ContextVar('standalone-cap-binding', default=None)
+    with service.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE semantic_key='control-identity_visual'").fetchone())
+    args = visual_args(None, {'id': sid, 'photo_sha256': photo,
+        '_research_job_id': job['id'], '_research_job_attempt': job['attempts']}, {}, {
+        'comparison_id': 'standalone-cap-fixture',
+        'references': [{'candidate_id': 'wiki:1', 'reference_id': 'new-standalone-ref'}]})
+    reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(service.settings.identity_max_exact_pairs)])
+    async def dispatch(*args):
+        pytest.fail('Exact-reference envelope must reject before provider dispatch')
+    adapter.primary_vision = SimpleNamespace(available=route == 'google', compare_visual=dispatch)
+    adapter.native_vision = SimpleNamespace(available=route == 'native', compare_visual=dispatch)
+    adapter.client = SimpleNamespace(endpoint='qualified-opencode', provider_id='opencode',
+                                    model_id='qualified-model', compare_image=dispatch)
+    service.store.cache_put('research-vision-verification-v1', {
+        'model_id': adapter.client.model_id, 'endpoint': adapter.client.endpoint,
+        'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}, ttl_seconds=3600)
+    with pytest.raises(ResearchTerminated, match='identity_exact_pair_envelope_exhausted'):
+        await adapter.visual_verdict(*args)
+    with service.store.connection() as db:
+        receipts = [json.loads(row[0]) for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
+    assert all(receipt['phase'] in {'created', 'failed'} for receipt in receipts)
+    assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == service.settings.identity_max_exact_pairs

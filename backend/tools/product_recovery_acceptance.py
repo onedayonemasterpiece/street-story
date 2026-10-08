@@ -17,6 +17,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import uuid
 
 from devcoveer_story_diag import load_installer
 from identity_corpus import NoPublication
@@ -25,6 +27,48 @@ BACKEND = Path(__file__).resolve().parents[1]
 REPO = BACKEND.parent
 CAPS = {'identity_seconds': 180, 'first_eligible_seconds': 300, 'total_seconds': 480}
 ACTIVE = {'ready', 'retry', 'running'}
+
+
+def instrument_google_sdk(client_type, path):
+    """Journal the real SDK invocation boundary, independent of product receipts."""
+    from street_story.headless_vision import _usage
+    original = client_type._provider_request
+    def append(record):
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + '\n')
+    async def measured(self, key, timeout, contents, config=None, *, model=None):
+        identifier = str(uuid.uuid4())
+        base = {'event': 'google_sdk_invocation', 'sdk_call_id': identifier,
+                'model': model or self.settings.gemini_model}
+        append({**base, 'phase': 'possibly_sent', 'observed_at': time.time()})
+        try:
+            response = await original(self, key, timeout, contents, config, model=model)
+        except BaseException as exc:
+            append({**base, 'phase': 'outcome_unavailable', 'observed_at': time.time(),
+                    'error_type': type(exc).__name__, 'usage': _usage(None)})
+            raise
+        append({**base, 'phase': 'response_closed', 'observed_at': time.time(),
+                'provider_request_id': getattr(response, 'response_id', None), 'usage': _usage(response)})
+        return response
+    client_type._provider_request = measured
+    return lambda: setattr(client_type, '_provider_request', original)
+
+
+def summarize_sdk_journal(path):
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
+    calls = {}
+    for record in records:
+        calls.setdefault(record['sdk_call_id'], {}).update(record)
+    return {'scope': 'entire acceptance run; no inferred per-story allocation',
+        'google_sdk_invocations': len(calls),
+        'response_closed': sum(record['phase'] == 'response_closed' for record in calls.values()),
+        'outcome_unavailable': sum(record['phase'] != 'response_closed' for record in calls.values()),
+        'basis': 'Observed Google SDK invocation boundary after admission and before the SDK call; '
+                 'possibly sent is not proof of provider response or paid usage.',
+        'money': 'unknown unless a provider reports measured cost',
+        'coverage_gaps': ['Other provider transports remain represented by product receipt lower bounds.',
+                          'Provider-internal operations and unreported usage are unknown.'],
+        'details': list(calls.values())}
 
 
 def digest(value):
@@ -329,10 +373,13 @@ async def run(args):
     if 'street_story.app' in sys.modules:
         raise ValueError('Run acceptance in a fresh CLI process with the frozen task environment')
     from street_story.app import app
+    from street_story.providers import GeminiClient
     service = app.state.service
     service.providers.vibepublish = NoPublication()
     for key, value in qualification['caches'].items():
         service.store.cache_put(key, value, 3600)
+    journal_path = output/'google-sdk-calls.jsonl'
+    restore_sdk = instrument_google_sdk(GeminiClient, journal_path)
     try:
         async with app.router.lifespan_context(app):
             for item in items:
@@ -352,6 +399,7 @@ async def run(args):
                 while True:
                     apply_hard_cap(service, case['story_id'])
                     read_case(service, case, item)
+                    report['sdk_accounting'] = summarize_sdk_journal(journal_path)
                     save(report_path, report)
                     save(output/f'case-{item["message_id"]}.json', case)
                     if case['terminal']:
@@ -363,6 +411,8 @@ async def run(args):
                 if case['status'] == 'BLOCKED':
                     break  # Preserve quota; remaining manifest entries stay NOT_RUN.
     finally:
+        restore_sdk()
+        report['sdk_accounting'] = summarize_sdk_journal(journal_path)
         save(report_path, report)
     return report
 

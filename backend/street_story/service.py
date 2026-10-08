@@ -1065,11 +1065,25 @@ class StreetStoryService:
             if job['kind'] in RESEARCH_JOB_KINDS:
                 purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
                 remaining = remaining_seconds(self, job['story_id'], purpose)
-                if remaining <= 0 or retry_at is not None and retry_at >= self.store.now() + remaining:
+                deadline = self.store.now() + max(0, remaining)
+                beyond_deadline = retry_at is not None and retry_at >= deadline
+                with self.store.connection() as db:
+                    independent = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND id<>? "
+                        "AND kind IN ('identity','identity_visual','research','refinement') "
+                        "AND (state='running' OR state IN ('ready','retry') AND available_at<?)",
+                        (job['story_id'], job['id'], deadline)).fetchone() is not None
+                # UNKNOWN belongs to one frozen operation, not to the whole
+                # story. Its original readback may be later than this wave;
+                # keep independent discovery/comparisons alive until the same
+                # absolute deadline, without making its send retryable.
+                unknown = 'unknown' in reason.lower()
+                if remaining <= 0 or beyond_deadline and not independent and not unknown:
                     with self.store.tx() as db:
                         finish_attempt(self, db, job['story_id'], outcome='resource_blocked' if remaining > 0 else 'deadline_exceeded',
                                        reason=reason, purpose=purpose, job=job)
                     return True
+                if beyond_deadline:
+                    retry_at = deadline  # Product expiry; never an early provider readback.
             logging.getLogger('uvicorn.error').info('street_story_worker_waiting %s', canonical({
                 'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
                 'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,

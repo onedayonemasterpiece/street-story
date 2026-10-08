@@ -192,7 +192,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         except ConflictError:
             return True
         routes = getattr(provider, 'parallel_visual_routes', lambda: ())()
-        if (len(routes) > 1 and len(pending['candidates']) > 1
+        if (len(routes) > 1 and pending['candidates']
                 and not self._parallel_parent_attempted(story, pending, generation)):
             self._freeze_parallel_pairs(session, pending, routes[:4])
             return await self._run_parallel_pairs(job, provider, story, session, scope)
@@ -321,6 +321,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 or current.get('error_code') == 'visual_identity_conflict')
             if pair['phase'] == 'result':
                 return pair, {'result': pair['result'], 'receipt': pair['receipt']}, None
+            if pair['phase'] != 'ready' and pair.get('retry_at', 0) > self.service.store.now():
+                return pair, None, RetryableProviderError(
+                    pair.get('last_error') or 'research_visual_pair_outcome_unknown',
+                    retry_at=pair['retry_at'])
             if pair['phase'] == 'ready':
                 frozen = pair['candidates'][0]
                 catalog = {c.get('candidate_id'): c for c in (latest.get('visual_identity') or {}).get('candidates', [])}
@@ -446,6 +450,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                             pair['phase'] = 'failed'
                             freed_routes.append(pair['route'])
                         else:
+                            pair['retry_at'] = error.retry_at or self.service.store.now() + 30
                             waits.append(error)
                         self._save_visual_queue(session, state)
                         LOG.warning('street_story_identity component=parallel_vision stage=waiting story_id=%s comparison_id=%s route=%s phase=%s error_type=%s reason=%s',
@@ -514,6 +519,19 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             if not all(task.done() for task in all_tasks):
                 await asyncio.gather(*all_tasks, return_exceptions=True)
         if waits:
+            current, latest = self.service._identity_snapshot(story['id'])
+            unresolved = (latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+            slots = Counter(getattr(provider, 'parallel_visual_routes', lambda: ())())
+            for child in state.get('parallel_pairs', []):
+                if child.get('phase') not in {'completed', 'failed', 'skipped'}:
+                    slots[child['route']] -= 1
+            with self.service.store.connection() as db:
+                discovery_active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind='identity' "
+                    "AND state IN ('ready','retry','running')", (story['id'],)).fetchone() is not None
+            if unresolved and discovery_active and any(count > 0 for count in slots.values()):
+                # Poll the local queue for late independent sources. Each
+                # unknown child retains its own provider readback cooldown.
+                raise RetryableProviderError('identity_parallel_waiting', retry_at=self.service.store.now()+5)
             raise waits[0]
         current, latest = self.service._identity_snapshot(story['id'])
         return ((latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}

@@ -73,6 +73,38 @@ def test_receipts_count_original_sends_instead_of_attempts_or_readbacks():
     assert result['money'].startswith('unknown')
 
 
+@pytest.mark.asyncio
+async def test_sdk_journal_counts_unreceipted_calls_and_preserves_unknown_usage(tmp_path):
+    from types import SimpleNamespace
+    class Client:
+        settings = SimpleNamespace(gemini_model='configured-model')
+        async def _provider_request(self, key, timeout, contents, config=None, *, model=None):
+            if contents == ['fail']:
+                raise TimeoutError()
+            return SimpleNamespace(response_id='response-id', usage_metadata=SimpleNamespace(
+                prompt_token_count=42, candidates_token_count=7, total_token_count=49))
+    original = Client._provider_request
+    journal = tmp_path/'sdk-calls.jsonl'
+    restore = harness.instrument_google_sdk(Client, journal)
+    try:
+        client = Client()
+        await client._provider_request('secret-never-recorded', 10, ['private-never-recorded'])
+        with pytest.raises(TimeoutError):
+            await client._provider_request('secret-never-recorded', 10, ['fail'])
+        measured = harness.summarize_sdk_journal(journal)
+        assert measured['google_sdk_invocations'] == 2
+        assert measured['response_closed'] == measured['outcome_unavailable'] == 1
+        assert measured['details'][0]['usage']['total_tokens'] == 49
+        assert measured['details'][1]['usage']['total_tokens'] == 'unknown'
+        assert measured['money'].startswith('unknown')
+        assert 'secret-never-recorded' not in journal.read_text()
+        assert 'private-never-recorded' not in journal.read_text()
+        assert 'no inferred per-story' in measured['scope']
+    finally:
+        restore()
+    assert Client._provider_request is original
+
+
 def readback_fixture(tmp_path):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     now = [100.0]

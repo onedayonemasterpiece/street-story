@@ -32,7 +32,8 @@ def osm_identity_eligible(tags: dict) -> bool:
 
 
 def candidate_identity_eligible(candidate: dict) -> bool:
-    return candidate.get("identity_eligible") is not False
+    return (candidate.get("identity_eligible") is not False
+        and candidate.get('identity_role') != 'multi_component_building_context')
 
 
 def promote_observed_candidates(active: list[dict], observed: list[dict], candidate_ids: list[str]) -> list[dict]:

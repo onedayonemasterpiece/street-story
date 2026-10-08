@@ -232,7 +232,7 @@ class HeadlessVisionProvider:
                     contents.append(prompt)
                     def before_send():
                         if story.get('_research_job_id') and verification_probe is not True:
-                            from .research_budget import require_remaining
+                            from .research_budget import require_remaining, reserve_work
                             require_remaining(self.service, story['id'], 'identity')
                             provider = getattr(self.service.providers, 'research', None)
                             guard = getattr(provider, 'guard_binding', None)
@@ -241,6 +241,8 @@ class HeadlessVisionProvider:
                                     'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
                                     'control_revision': story.get('_identity_research_control_revision', 0),
                                     'job_id': story['_research_job_id'], 'job_attempt': story.get('_research_job_attempt')})
+                            reserve_work(self.service, story['id'], 'exact_pairs',
+                                         [item['reference_id'] for item in story['_visual_reference_mapping']])
                         attempt.update(provider_send_state='possibly_sent')
                     response = await self.client._generate(key, timeout,
                         contents,

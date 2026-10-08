@@ -49,6 +49,7 @@ def queries_from(payload):
 
 
 def _map_query_context(story, candidates):
+    from .identity_source_selection import observed_address_context
     context = dict(story.get('_identity_search_context') or {})
     # Addresses identify their mapped entry only. Present every supplied anchor,
     # including address nodes absent from the physical building shortlist.
@@ -63,6 +64,7 @@ def _map_query_context(story, candidates):
         if anchor not in anchors:
             anchors.append(anchor)
     context['nearby_address_hypotheses'] = anchors
+    context['observed_address_context'] = observed_address_context(story, candidates)
     return context
 
 
@@ -79,7 +81,8 @@ async def suggest(service, story, transcript, candidates):
     observed = (story.get('_identity_observed_candidates') or
         (research.get('visual_identity') or {}).get('observed_candidates') or [])
     observed_ids = [item['candidate_id'] for item in observed if item.get('candidate_id')
-        and item.get('identity_eligible') is not False]
+        and item.get('identity_eligible') is not False
+        and not ((item.get('map_object') or {}).get('tags') or {}).get('entrance')]
     if observed_ids:
         schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6,
             'items': {'type': 'string', 'enum': observed_ids}}
@@ -99,6 +102,18 @@ async def suggest(service, story, transcript, candidates):
         'article_queries — готовый план буквальных интернет-запросов для статей с современными внешними фотографиями, достаточный для разных правдоподобных гипотез. '
         'Сначала используй короткий запрос по реальному адресу или названию и городу без лишних ограничений. '
         'Сохраняй полное наблюдавшееся имя населённого пункта, тип улицы, литеру и диапазон номера. '
+        'observed_address_context содержит реальные адресные якоря и точные связи входов '
+        'с наблюдаемыми контурами зданий. Не игнорируй номер дома из адресного входа только потому, '
+        'что у самого контура building нет addr:housenumber: ищи по этому якорю, не присваивая его SOURCE. '
+        'Если SOURCE показывает близкий дом и есть правдоподобные адресные якоря, первые два запроса '
+        'должны проверять конкретные наблюдавшиеся адреса с городом, а не общую архитектуру улицы, '
+        'района или список достопримечательностей. Для каждого выбора сопоставь SOURCE и геометрию; '
+        'ближайший якорь не обязательно верный. Третья гипотеза может быть по видимым признакам. '
+        'Связь нескольких адресных входов с одним контуром не означает разные здания и не позволяет '
+        'сочинить общий номер/диапазон, отсутствующий в исходных данных. '
+        'Город обязателен в каждом запросе, включая английский визуальный запрос, если город наблюдался. '
+        'Не заменяй конкретный адрес запросом «старые дома», «архитектура» или «достопримечательности» '
+        'без номера, когда доступен подходящий реальный адрес. '
         'Первая волна — 2–3 различные сильные гипотезы; всего не более восьми запросов в двух волнах. '
         'Вторую волну выполняй только для конкретного отсутствующего evidence после первой. '
         'regional_source_profile содержит предпочтения источников из наблюдавшейся географии, не ответы. '
