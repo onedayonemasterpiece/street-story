@@ -45,11 +45,11 @@ async def test_address_only_entrance_survives_query_normalization_and_old_cache(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
         result = await OSMClient(store, "StreetStory test", http).lookup(54.7, 20.5)
-    assert "legacy" not in result and store.reads[0].startswith("osm-visible-nearby-v6:")
+    assert "legacy" not in result and store.reads[0].startswith("osm-visible-nearby-v7:")
     assert len(queries) == 2 and '["addr:housenumber"]' in queries[0] and "around:160" not in queries[0]
     assert '["addr:housenumber"="7"]' not in queries[0]
     item = result["nearby"][0]
-    assert result["lookup_policy_version"] == OSMClient.LOOKUP_POLICY_VERSION == 6
+    assert result["lookup_policy_version"] == OSMClient.LOOKUP_POLICY_VERSION == 7
     assert item["id"] == 900 and item["selection_bucket"] == "nearby" and item["distance_m"] < 20
     context = map_entry_context(item)
     assert context["map_address"]["house_number"] == "7"

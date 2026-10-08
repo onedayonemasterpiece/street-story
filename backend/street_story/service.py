@@ -811,16 +811,44 @@ class StreetStoryService:
         )
         return job_id
 
-    def _claim(self, *, claim_kind=None, exclude_kind=None):
-        now = self.store.now()
-        filters, params = [], [now, now]
+    @staticmethod
+    def _worker_filters(*, claim_kind=None, exclude_kind=None, claim_story_id=None):
+        filters, params = [], []
         if claim_kind is not None:
             filters.append('kind=?')
             params.append(claim_kind)
         if exclude_kind is not None:
-            filters.append('kind<>?')
-            params.append(exclude_kind)
-        kind_filter = ''.join(' AND ' + clause for clause in filters)
+            excluded = (exclude_kind,) if isinstance(exclude_kind, str) else tuple(exclude_kind)
+            filters.append('kind NOT IN (' + ','.join('?' for _ in excluded) + ')')
+            params.extend(excluded)
+        if claim_story_id is not None:
+            filters.append('story_id=?')
+            params.append(claim_story_id)
+        return ''.join(' AND ' + clause for clause in filters), params
+
+    def worker_story_ids(self, *, claim_kind=None, exclude_kind=None):
+        """Independent stories can progress while an addressed provider awaits.
+
+        The durable job lease prevents duplicate execution; provider admission
+        controls actual inference capacity. Never serialize stories on a slow
+        provider response from an unrelated story.
+        """
+        self._schedule_identity_visual()
+        if claim_kind not in {'identity', 'identity_visual'}:
+            self._schedule_confirmed_facts()
+        filters, params = self._worker_filters(claim_kind=claim_kind, exclude_kind=exclude_kind)
+        now = self.store.now()
+        with self.store.connection() as db:
+            return list(dict.fromkeys(row[0] for row in db.execute(
+                "SELECT story_id FROM jobs WHERE ((state IN ('ready','retry') AND available_at<=?) "
+                "OR (state='running' AND lease_until<=?))" + filters + " ORDER BY created_at,id",
+                (now, now, *params))))
+
+    def _claim(self, *, claim_kind=None, exclude_kind=None, claim_story_id=None):
+        now = self.store.now()
+        kind_filter, filter_params = self._worker_filters(claim_kind=claim_kind,
+            exclude_kind=exclude_kind, claim_story_id=claim_story_id)
+        params = [now, now, *filter_params]
         with self.store.tx() as db:
             # Owner actions and their visual continuation precede speculative
             # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
@@ -917,11 +945,11 @@ class StreetStoryService:
             logging.getLogger(__name__).info('research_scheduler %s', canonical({
                 'component': 'research_scheduler', 'stage': 'confirmed_facts', 'scheduled': scheduled}))
 
-    async def run_once(self, *, claim_kind=None, exclude_kind=None) -> bool:
+    async def run_once(self, *, claim_kind=None, exclude_kind=None, claim_story_id=None) -> bool:
         self._schedule_identity_visual()
         if claim_kind not in {'identity', 'identity_visual'}:
             self._schedule_confirmed_facts()
-        job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind)
+        job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind, claim_story_id=claim_story_id)
         if not job:
             if claim_kind in {'identity', 'identity_visual'}:
                 return False  # Accounting recovery stays with the original worker.

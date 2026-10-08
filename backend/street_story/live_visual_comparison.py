@@ -1081,8 +1081,12 @@ class LiveVisualComparisonMixin:
                     query = saved_feedback['next_query']
                     if query and not matched and not accepted_before and not conflict_before:
                         discovery = research.get('identity_article_discovery') or {}
-                        planned = list(dict.fromkeys([query, *state.get('planned_queries', []),
-                            *discovery.get('planned_queries', [])]))
+                        existing = [*state.get('planned_queries', []), *discovery.get('planned_queries', [])]
+                        # A rejected/unusable reference must not repeatedly
+                        # displace the still-untried physical hypotheses. A
+                        # promising view or binding question can be urgent.
+                        urgent = saved_feedback['next_action'] in {'another_view', 'verify_binding'}
+                        planned = list(dict.fromkeys([query, *existing] if urgent else [*existing, query]))
                         state['planned_queries'] = planned
                         discovery.update(generation=state['generation'], photo_sha256=state['photo_sha256'],
                                          planned_queries=planned)

@@ -77,6 +77,23 @@ def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[st
         parent[find(right)] = find(left)
 
     owners: dict[tuple[str, str], str] = {}
+    entrance_buildings: dict[str, set[str]] = {}
+    for candidate in candidates:
+        mapped = candidate.get('map_object') or {}
+        receipt = mapped.get('building_entrances') or {}
+        cid = candidate.get('candidate_id') or ''
+        if (cid.startswith('osm:way:') and mapped.get('provenance') == 'osm.tags'
+                and (mapped.get('tags') or {}).get('building') not in {None, '', 'no'}
+                and receipt.get('proof') == 'osm_closed_way_node_membership'
+                and receipt.get('source_url') == candidate.get('url') == mapped.get('source_url')):
+            for entrance_id in receipt.get('candidate_ids') or []:
+                entrance = by_id.get(entrance_id) or {}
+                entrance_map = entrance.get('map_object') or {}
+                tags = entrance_map.get('tags') or {}
+                if (str(entrance_id).startswith('osm:node:') and entrance_map.get('provenance') == 'osm.tags'
+                        and tags.get('entrance') not in {None, '', 'no'}
+                        and not any(tags.get(key) for key in ('amenity', 'shop', 'office'))):
+                    entrance_buildings.setdefault(entrance_id, set()).add(cid)
     for candidate in candidates:
         cid = str(candidate.get('candidate_id') or '')
         if not cid or article_candidate(candidate):
@@ -105,6 +122,9 @@ def subject_aliases(candidates: list[dict[str, Any]], *, poi_aliases: Mapping[st
             for alias in candidate.get('alias_candidate_ids') or []:
                 if isinstance(alias, str) and alias and not alias.startswith('web:') and alias not in institutions:
                     join(cid, alias)
+    for entrance, buildings in entrance_buildings.items():
+        if len(buildings) == 1:
+            join(next(iter(buildings)), entrance)
     groups: dict[str, set[str]] = {}
     for cid in parent:
         groups.setdefault(find(cid), set()).add(cid)

@@ -23,6 +23,12 @@ def map_entry_context(item: dict, *, source_url: str | None = None, coordinate_p
         result['map_object'] = {**mapped_kind, 'tags': mapped_tags,
             'provenance': 'osm.tags' if mapped_tags else 'nominatim.reverse',
             'source_url': source_url, 'scope': 'mapped_entry_only'}
+        entrances = item.get('building_entrance_node_ids')
+        if kind == 'way' and mapped_tags.get('building') not in {None, '', 'no'} and isinstance(entrances, list):
+            result['map_object']['building_entrances'] = {
+                'proof': 'osm_closed_way_node_membership', 'source_url': source_url,
+                'candidate_ids': [f'osm:node:{value}' for value in entrances
+                                  if isinstance(value, int) and not isinstance(value, bool) and value > 0]}
     address = {key: str(tags[field]).strip()[:180] for key, field in (
         ('street', 'addr:street'), ('house_number', 'addr:housenumber')) if tags.get(field)}
     origin = 'osm.tags'

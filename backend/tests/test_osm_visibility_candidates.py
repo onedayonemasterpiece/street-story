@@ -82,8 +82,8 @@ async def test_osm_lookup_uses_visibility_radius_and_orders_nearby_candidates(tm
     assert ids[:2] == [100, 300]
     assert 200 in ids
     assert result["candidate_pool_counts"] == {"landmark": 2, "nearby": 2}
-    nearby_body = parse_qs(requests[1].content.decode("utf-8"))["data"][0]
-    landmark_body = parse_qs(requests[2].content.decode("utf-8"))["data"][0]
+    nearby_body = parse_qs([r for r in requests if r.method == "POST"][0].content.decode("utf-8"))["data"][0]
+    landmark_body = parse_qs([r for r in requests if r.method == "POST"][1].content.decode("utf-8"))["data"][0]
     assert "around:600" in landmark_body
     assert "[historic]" in landmark_body
     assert "[name]" in nearby_body
@@ -269,11 +269,11 @@ async def test_reverse_failure_does_not_block_objects_and_recovers_without_stick
         partial = await osm.lookup(54.7000, 20.5000)
         assert [item["id"] for item in partial["nearby"]] == [100]
         assert partial["partial"] and partial["unavailable_buckets"] == ["reverse"]
-        assert len(calls) == 3
+        assert len(calls) == 4
         reverse_down = False
         complete = await osm.lookup(54.7000, 20.5000)
         assert not complete["partial"] and complete["reverse"]["osm_id"] == 1
-        assert len(calls) == 6
+        assert len(calls) == 8
 
 @pytest.mark.asyncio
 async def test_local_map_api_recovers_addresses_and_real_geometry_after_overpass_failure(tmp_path):
