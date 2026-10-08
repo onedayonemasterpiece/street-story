@@ -384,15 +384,28 @@ class OpenCodeResearch:
                     '_visual_reference_mapping': supplied.get('references')}, supplied)
             except (ValueError, KeyError, IndexError, TypeError):
                 raise ResearchUnavailable('research_image_invalid') from None
-        prompt += '\nResponse JSON schema (validate locally, no retries):\n' + json.dumps(schema, ensure_ascii=False)
-        operation = json.dumps({'role': role, 'binding': {k: v for k, v in binding.items()
-                                    if k not in {'session_id', 'message_id', 'phase', 'image_transport', 'image_preparation'}}, 'prompt': prompt,
-                                'reference_ids': [item.get('reference_id') for item in supplied['references']] if direct_parts else []}, sort_keys=True)
-        logical_hash = hashlib.sha256(operation.encode()).hexdigest()
+        raw_prompt = prompt
+        suffix = '\nResponse JSON schema (return one JSON object directly; do not run local validation, commands or code):\n'
+        def addressed_prompt(schema_instruction):
+            value = raw_prompt + schema_instruction + json.dumps(schema, ensure_ascii=False)
+            operation = json.dumps({'role': role, 'binding': {k: v for k, v in binding.items()
+                if k not in {'session_id', 'message_id', 'phase', 'image_transport', 'image_preparation'}},
+                'prompt': value, 'reference_ids': [item.get('reference_id') for item in supplied['references']]
+                if direct_parts else []}, sort_keys=True)
+            return value, hashlib.sha256(operation.encode()).hexdigest()
+        prompt, logical_hash = addressed_prompt(suffix)
         # Match the installed client's public Identifier format. Retain the
         # original timestamp in the durable binding for crash reconciliation.
         timestamp = int(float(binding.get('attempt_created_at', 0)) * 1000)
         message_id = 'msg_' + f'{(timestamp * 4096 + 1) & ((1 << 48) - 1):012x}' + logical_hash[:14]
+        if binding.get('message_id') and binding['message_id'] != message_id:
+            # Old addressed requests retain their exact historical prompt.
+            # This compatibility path only observes them; no fresh send uses
+            # the ambiguous instruction which tempted models to invoke bash.
+            legacy_prompt, legacy_hash = addressed_prompt('\nResponse JSON schema (validate locally, no retries):\n')
+            legacy_id = 'msg_' + f'{(timestamp * 4096 + 1) & ((1 << 48) - 1):012x}' + legacy_hash[:14]
+            if binding['message_id'] == legacy_id:
+                prompt, logical_hash, message_id = legacy_prompt, legacy_hash, legacy_id
         if binding.get('message_id') and binding['message_id'] != message_id:
             raise ResearchUnavailable('research_attempt_binding_changed')
         receipt = {'role': role, 'message_id': message_id, 'session_id': binding.get('session_id'),
