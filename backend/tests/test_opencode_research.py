@@ -21,6 +21,7 @@ class Harness:
         self.requests, self.checkpoints, self.admissions, self.sends, self.finalized = [], [], [], [], []
         self.message_id, self.parts = None, []
         self.result, self.tool_status = {'summary': 'Actual sources'}, 'completed'
+        self.response_text = 'https://invented.example/fake'
         self.timeout = self.drop_image = self.prompt_timeout = False
         self.client = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
 
@@ -69,7 +70,7 @@ class Harness:
                              'providerID': 'opencode', 'modelID': 'mimo-v2.6-flash-free', 'time': {'created': 1, 'completed': 2},
                              'tokens': {'input': 40, 'output': 20, 'reasoning': 0, 'cache': {'read': 10, 'write': 0}},
                              'cost': 0, 'structured': self.result},
-                     'parts': ([tool] if search else []) + [{'type': 'text', 'text': 'https://invented.example/fake'}]}
+                     'parts': ([tool] if search else []) + [{'type': 'text', 'text': self.response_text}]}
         return [user, assistant]
 
     @asynccontextmanager
@@ -130,6 +131,39 @@ async def test_unstructured_search_summary_does_not_discard_actual_tool_sources(
     assert result['result'] == {'summary': ''}
     assert result['receipt']['summary_json_valid'] is False
     assert result['receipt']['phase'] == 'completed'
+
+
+@pytest.mark.asyncio
+async def test_completed_wrapped_search_selection_uses_only_observed_urls_without_resend():
+    h = Harness()
+    h.result = None
+    payload = {'summary': 'Facade candidates', 'selected_sources': [
+        {'url': 'https://example.org/gallery', 'reason': 'Exterior photographs'},
+        {'url': 'https://invented.example/fake', 'reason': 'Unobserved URL'}]}
+    h.response_text = 'Steps exhausted. Work accomplished.\n\n```json\n' + json.dumps(payload) + '\n```\n\nRemaining acquisition work.'
+    adapter = h.adapter()
+    binding = {'request_id': 'logical', 'purpose': 'identity'}
+    result = await adapter.search_articles('Facade', binding)
+    assert result['result'] == payload
+    assert [s['url'] for s in result['sources']] == ['https://example.org/gallery']
+    assert result['receipt']['source_selection']['unobserved_count'] == 1
+    resumed = await adapter.search_articles('Facade', {**binding, **{key: result['receipt'][key]
+        for key in ('session_id', 'message_id', 'phase')}})
+    assert resumed['sources'] == result['sources']
+    assert len(h.sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_completed_search_blocks_do_not_choose_any_raw_url():
+    h = Harness()
+    h.result = None
+    payload = json.dumps({'summary': 'Facade', 'selected_sources': [
+        {'url': 'https://example.org/gallery', 'reason': 'Exterior'}]})
+    block = '```json\n' + payload + '\n```'
+    h.response_text = block + '\nConflicting alternative:\n' + block
+    result = await h.adapter().search_articles('Facade', {'request_id': 'logical', 'purpose': 'identity'})
+    assert result['sources'] == []
+    assert result['receipt']['source_selection']['status'] == 'selection_unavailable'
 
 
 @pytest.mark.asyncio
