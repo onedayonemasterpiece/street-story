@@ -39,7 +39,7 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
-    LOOKUP_POLICY_VERSION = 5
+    LOOKUP_POLICY_VERSION = 6
 
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
@@ -126,17 +126,26 @@ class OSMClient:
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[bridge][name];
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[leisure~"^(park|garden)$"][name];
             );out center tags 240;"""
+            # Bound the database's spatial scan before filtering tags. The
+            # spherical distance check below retains the original circular scope.
+            dlat = math.degrees(close_radius_m / 6_371_000) * 1.001
+            dlon = dlat / max(0.000001, abs(math.cos(math.radians(lat))))
+            nearby_scope = f"around:{close_radius_m},{lat:.6f},{lon:.6f}"
+            if abs(lat) + dlat < 90 and abs(lon) + dlon < 180:
+                nearby_scope = f"{lat-dlat:.7f},{lon-dlon:.7f},{lat+dlat:.7f},{lon+dlon:.7f}"
             nearby_query = f"""[out:json][timeout:12];(
-                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[building];
-                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[name];
-                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})["addr:housenumber"];
+                nwr({nearby_scope})[building];
+                nwr({nearby_scope})[name];
+                nwr({nearby_scope})["addr:housenumber"];
             );out center tags 180;"""
 
             responses = {}
             preferred = None
             paused: set[str] = set()
             last_error = None
-            for bucket, query in (("landmark", landmark_query), ("nearby", nearby_query)):
+            # Nearby anonymous buildings and address points are the primary
+            # photographic hypotheses; obtain them before broader landmarks.
+            for bucket, query in (("nearby", nearby_query), ("landmark", landmark_query)):
                 try:
                     responses[bucket], preferred = await self._overpass_query(client, query, bucket, preferred, paused)
                 except RetryableProviderError as exc:

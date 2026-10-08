@@ -316,6 +316,11 @@ def read(adapter, session, args):
     return page
 
 
+def fact_cursor(payload, number):
+    return sum((len(ev['text']) + 899) // 900
+               for item in payload['items'][:number] for ev in item['evidence'])
+
+
 def prepare(adapter, session, args):
     ref = str(args.get('packet_ref') or '')
     with adapter.service.store.tx() as db:
@@ -361,7 +366,11 @@ def prepare(adapter, session, args):
             if quotes is not None:
                 # Presentation whitespace may vary; original snapshots/spans remain literal.
                 if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
-                    raise ConflictError('live_fact_review_evidence_invalid', f"Fact {decision['fact']}: quote a short literal fragment from its selected evidence, without borrowing another candidate's spans.")
+                    next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
+                    raise ConflictError('live_fact_review_evidence_invalid',
+                        f"Fact {decision['fact']}: quote a short literal fragment from its selected evidence, without borrowing another candidate's spans. "
+                        'Do not repeat finalize with the same invalid quote. Read this fact again: '
+                        'next_tool=get_review_packet; next_args=' + canonical(next_args))
                 if verdict == 'supported' and not quotes:
                     raise ConflictError('live_fact_review_evidence_invalid', 'Positive review needs a literal own-evidence basis.')
             if 'reason' in decision and (not isinstance(decision['reason'], str) or len(decision['reason']) > 500):
@@ -376,7 +385,13 @@ def prepare(adapter, session, args):
             decisions[key] = decision
         db.execute('UPDATE live_review_packets SET decisions_json=? WHERE packet_ref=?', (canonical(decisions), ref))
         if len(decisions) < len(payload['items']) or args.get('relations_complete') is not True:
-            return {'packet_ref': ref, 'review_saved': True, 'complete': False, 'remaining_facts': len(payload['items']) - len(decisions), 'cross_packet_review_required': True}, None, None
+            remaining = [n for n in range(len(payload['items'])) if str(n) not in decisions]
+            staged = {'packet_ref': ref, 'review_saved': True, 'complete': False,
+                      'remaining_facts': len(remaining), 'cross_packet_review_required': True}
+            if remaining:
+                staged.update(next_tool='get_review_packet', next_args={
+                    'packet_ref': ref, 'cursor': fact_cursor(payload, remaining[0])})
+            return staged, None, None
         conflicts = []
         for relation in args.get('conflicts') or []:
             left, right = relation.get('left'), relation.get('right')

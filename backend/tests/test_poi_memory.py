@@ -92,6 +92,25 @@ def test_alias_review_blocks_older_story_resurrection_and_preserves_newer_decisi
         assert prior_facts(db, {'candidate_id': 'osm:way:memory'}, 'next') == []
 
 
+def test_projection_refresh_uses_model_admission_time_and_reuse_cannot_resurrect_withheld_claim(tmp_path):
+    store = Store(tmp_path / 'memory.sqlite3')
+    with store.tx() as db:
+        _bind_memory_aliases(db)
+        _memory_story(db, 'model-review', 'osm:way:memory', 1)
+        _memory_assertion(db, 'osm:way:memory', 'claim')
+        _memory_review_fact(db, 'model-review', 'claim')
+        db.execute("INSERT INTO fact_assertions(story_id,assertion_id,display_text,revision_digest,review_status,eligibility,created_at,updated_at) VALUES('model-review','claim','Факт.','reviewed-revision','eligible','eligible',1,100)")
+        db.execute("INSERT INTO fact_conflict_scans(story_id,detector,status,pair_count,detected_count,coverage_complete,revision_bundle_json,conflict_ids_json,missing_aspects_json,created_at) VALUES('model-review','mira_live_review','ok',0,0,1,?,'[]','[]',20)",
+                   (json.dumps({'claim': 'reviewed-revision'}),))
+        assert sync_poi_review_from_story(db, 'model-review', 100) == 1
+        assert db.execute('SELECT reviewed_at FROM poi_research_assertions').fetchone()[0] == 20
+        db.execute("UPDATE poi_research_assertions SET eligibility='withheld',review_status='disputed',reviewed_at=30")
+        db.execute("UPDATE fact_conflict_scans SET detector='poi_memory_reuse'")
+        db.execute("UPDATE fact_assertions SET updated_at=200")
+        assert sync_poi_review_from_story(db, 'model-review', 200) == 0
+        assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'withheld'
+
+
 def test_backfill_reviews_exact_alias_family_and_reader_honors_latest_review(tmp_path):
     store = Store(tmp_path / 'memory.sqlite3')
     with store.tx() as db:

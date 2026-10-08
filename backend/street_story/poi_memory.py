@@ -471,7 +471,8 @@ def _review_proof(db, story_id: str, assertion_id: str, text: str, sources_json:
         "WHERE story_id=? AND status IN ('ok','no_candidates') AND coverage_complete=1 ORDER BY id DESC",
         (story_id,),
     ):
-        if json.loads(scan['revision_bundle_json'] or '{}').get(assertion_id) == source['revision_digest']:
+        bundle = json.loads(scan['revision_bundle_json'] or '{}')
+        if source['revision_digest'] and bundle.get(assertion_id) == source['revision_digest']:
             return json.dumps({'snapshot': snapshot, 'source_story_id': story_id,
                 'scan_id': scan['id'], 'detector': scan['detector'], 'reviewed_at': scan['created_at']},
                 ensure_ascii=False, separators=(',', ':'))
@@ -517,6 +518,14 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
     ))
     for row in rows:
         reviewed_at = float(row["updated_at"] or now)
+        proof = _review_proof(db, story_id, row["assertion_id"], row["display_text"], row["sources_json"], key)
+        if proof:
+            admission = json.loads(proof)
+            if admission['detector'] == 'poi_memory_reuse':
+                # Hydration projects the original admission. It cannot become a
+                # fresh semantic decision or overwrite a later canonical review.
+                continue
+            reviewed_at = float(admission['reviewed_at'])
         latest = db.execute(f"SELECT text,sources_json FROM poi_research_assertions WHERE poi_key IN ({placeholders}) AND assertion_id=? ORDER BY updated_at DESC,poi_key LIMIT 1", (*keys, row['assertion_id'])).fetchone()
         if not latest or _review_snapshot(latest['text'], latest['sources_json']) != _review_snapshot(row['display_text'], row['sources_json']):
             continue
@@ -537,7 +546,7 @@ def sync_poi_review_from_story(db, story_id: str, now: float) -> int:
                 str(row["eligibility"]),
                 story_id,
                 reviewed_at,
-                _review_proof(db, story_id, row["assertion_id"], row["display_text"], row["sources_json"], key),
+                proof,
                 reviewed_at,
                 *matching_keys,
                 str(row["assertion_id"]),

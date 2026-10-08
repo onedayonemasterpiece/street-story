@@ -82,8 +82,8 @@ async def test_osm_lookup_uses_visibility_radius_and_orders_nearby_candidates(tm
     assert ids[:2] == [100, 300]
     assert 200 in ids
     assert result["candidate_pool_counts"] == {"landmark": 2, "nearby": 2}
-    landmark_body = parse_qs(requests[1].content.decode("utf-8"))["data"][0]
-    nearby_body = parse_qs(requests[2].content.decode("utf-8"))["data"][0]
+    nearby_body = parse_qs(requests[1].content.decode("utf-8"))["data"][0]
+    landmark_body = parse_qs(requests[2].content.decode("utf-8"))["data"][0]
     assert "around:600" in landmark_body
     assert "[historic]" in landmark_body
     assert "[name]" in nearby_body
