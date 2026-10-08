@@ -1,0 +1,10 @@
+{
+  "url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4974114,54.7104196,20.5042612,54.7143766",
+  "bbox": "20.4974114,54.7104196,20.5042612,54.7143766",
+  "radius_m": 220.0,
+  "size_bytes": 325810,
+  "sha256": "8ad16e350c3d5acee953dd8bcfbaee484eacf6472ae9e9559290ce19e7effa12",
+  "fetched_at_utc": "2026-10-08T19:01:40Z",
+  "gzip_sha256": "3c6e4c9713aede8f78f46ae64114f232649bf16e9645f0089032433bd04a71ee",
+  "gzip_mtime": 0
+}

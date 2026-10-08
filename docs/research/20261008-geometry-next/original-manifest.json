@@ -1,0 +1,590 @@
+{
+  "scope": "Research observations from original files, not runtime answer fixtures; photographs excluded.",
+  "source_observed_at": "2026-10-08T19:00:51.046686+00:00",
+  "original_bytes_source": true,
+  "complete": true,
+  "counts": {
+    "all_items": 17,
+    "all_gps": 10,
+    "new_118_133": 16,
+    "new_gps": 9,
+    "new_without_gps": 7
+  },
+  "normalization_note": "Missing GPS remains null; no coordinates inferred. Non-finite EXIF DigitalZoomRatio in message125 was normalized from NaN to null. Width and height are stored pixel dimensions before EXIF orientation. EXIF dates are camera metadata, not independently verified dates.",
+  "items": [
+    {
+      "message_id": 102,
+      "telegram_url": "https://t.me/c/4488229487/2/102",
+      "bytes": 2888668,
+      "sha256": "f56c6cfeaf4b88a018dd3567e66d6fd75918d42da30100cff718c069b10d7c7e",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": 54.710473399722225,
+      "longitude": 20.5069561,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          42,
+          37.704239
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          30,
+          25.04196
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 44
+      },
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2026:10:07 12:08:36",
+        "DateTimeOriginal": "2026:10:07 12:08:36",
+        "DateTimeDigitized": "2026:10:07 12:08:36",
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 24,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 118,
+      "telegram_url": "https://t.me/c/4488229487/2/118",
+      "bytes": 4101191,
+      "sha256": "5ba6fa94128419094bc81a2b900efed2fb4c8984de19309120da30042be8744a",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "latitude": 54.72022679972223,
+      "longitude": 20.494925699722224,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          43,
+          12.816479
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          29,
+          41.732519
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 51
+      },
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2026:10:07 12:55:43",
+        "DateTimeOriginal": "2026:10:07 12:55:43",
+        "DateTimeDigitized": "2026:10:07 12:55:43",
+        "FocalLength": 2.2,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 13,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 119,
+      "telegram_url": "https://t.me/c/4488229487/2/119",
+      "bytes": 4970691,
+      "sha256": "a5714908eeac3ddbe45df954635718adb1a8fa020d319b58d1214ac8f6ab6bce",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "latitude": 54.7127488,
+      "longitude": 20.5014624,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          42,
+          45.89568
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          30,
+          5.26464
+        ]
+      },
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2026:10:07 12:27:20",
+        "DateTimeOriginal": "2026:10:07 12:27:20",
+        "DateTimeDigitized": "2026:10:07 12:27:20",
+        "FocalLength": 2.2,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 13,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 120,
+      "telegram_url": "https://t.me/c/4488229487/2/120",
+      "bytes": 5306355,
+      "sha256": "e55f7ed56dea1ab4d6eb57e80a0bed9061332ccc38251772f4157fb92ae5af7a",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "latitude": 54.7123981,
+      "longitude": 20.500836299722224,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          42,
+          44.63316
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          30,
+          3.010679
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 46
+      },
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2026:10:07 12:24:53",
+        "DateTimeOriginal": "2026:10:07 12:24:53",
+        "DateTimeDigitized": "2026:10:07 12:24:53",
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 24,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 121,
+      "telegram_url": "https://t.me/c/4488229487/2/121",
+      "bytes": 3446126,
+      "sha256": "3c0889d1a97a2f7e5c52691f7b331f792ddd43ca342964229d2b481b300dcc04",
+      "width": 3979,
+      "height": 2984,
+      "orientation": 1,
+      "latitude": 54.94288409999999,
+      "longitude": 20.154807199999997,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          56,
+          34.38276
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          9,
+          17.30592
+        ],
+        "GPSAltitudeRef": "00",
+        "GPSAltitude": 41
+      },
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2025:12:30 12:53:32",
+        "DateTimeOriginal": "2025:12:30 12:53:32",
+        "FocalLengthIn35mmFilm": 13,
+        "FocalLength": 2.2,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00",
+        "DateTimeDigitized": "2025:12:30 12:53:32",
+        "DigitalZoomRatio": 1
+      }
+    },
+    {
+      "message_id": 122,
+      "telegram_url": "https://t.me/c/4488229487/2/122",
+      "bytes": 3593110,
+      "sha256": "b692b40eb09e14c579a8a686d5e34d2360e72f6c21cf4b7111374b32e7dd74f0",
+      "width": 3925,
+      "height": 2944,
+      "orientation": 1,
+      "latitude": 54.94323599972222,
+      "longitude": 20.154299199999997,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          56,
+          35.649599
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          9,
+          15.47712
+        ],
+        "GPSAltitudeRef": "00",
+        "GPSAltitude": 79
+      },
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2025:12:30 12:48:51",
+        "DateTimeOriginal": "2025:12:30 12:48:51",
+        "FocalLengthIn35mmFilm": 24,
+        "FocalLength": 6.7,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00",
+        "DateTimeDigitized": "2025:12:30 12:48:51",
+        "DigitalZoomRatio": 1
+      }
+    },
+    {
+      "message_id": 123,
+      "telegram_url": "https://t.me/c/4488229487/2/123",
+      "bytes": 4865219,
+      "sha256": "23df96cb36f6aad49fd2ba5b1e9c066d1a1bed6bf24681a592893ab6f100eba9",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": 54.91735899972222,
+      "longitude": 20.175020799722223,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          55,
+          2.492399
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          10,
+          30.074879
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 93
+      },
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2025:10:10 17:46:33",
+        "DateTimeOriginal": "2025:10:10 17:46:33",
+        "DateTimeDigitized": "2025:10:10 17:46:33",
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 24,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 124,
+      "telegram_url": "https://t.me/c/4488229487/2/124",
+      "bytes": 3081143,
+      "sha256": "7057c9a9515a54a16b34ebebdce003388d887d9feef9b1f64601457d1ed8784a",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2024:03:19 18:39:47",
+        "DateTimeOriginal": "2024:03:19 18:39:47",
+        "DateTimeDigitized": "2024:03:19 18:39:47",
+        "FocalLength": 9,
+        "DigitalZoomRatio": 3,
+        "FocalLengthIn35mmFilm": 72,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 125,
+      "telegram_url": "https://t.me/c/4488229487/2/125",
+      "bytes": 2968881,
+      "sha256": "312e5aad64f3285f5b3be260b95b1c2c15bf205c270a5326f03bd1152bf8c411",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2024:03:28 09:58:30",
+        "DateTimeOriginal": "2024:03:28 09:58:30",
+        "DateTimeDigitized": "2024:03:28 09:58:30",
+        "FocalLength": 6.7,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00",
+        "OffsetTimeDigitized": "+02:00",
+        "DigitalZoomRatio": null,
+        "FocalLengthIn35mmFilm": 24
+      }
+    },
+    {
+      "message_id": 126,
+      "telegram_url": "https://t.me/c/4488229487/2/126",
+      "bytes": 2428355,
+      "sha256": "647d44970f06e9c168ce4789d4d319df7ba5b602a7c85ba70a8a9140b2cf0b80",
+      "width": 3512,
+      "height": 3000,
+      "orientation": 1,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2024:04:11 23:56:26",
+        "DateTimeDigitized": "2023:07:22 17:52:27",
+        "FocalLengthIn35mmFilm": 24,
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00",
+        "DateTimeOriginal": "2023:07:22 17:52:27"
+      }
+    },
+    {
+      "message_id": 127,
+      "telegram_url": "https://t.me/c/4488229487/2/127",
+      "bytes": 1974025,
+      "sha256": "3ffa2cab3d623b81c7c97ffa79c7f7ed7d6fa22e2bcc813a44463ce1c0ea6041",
+      "width": 2945,
+      "height": 2905,
+      "orientation": 1,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2024:04:11 23:54:45",
+        "DateTimeDigitized": "2023:07:22 18:09:51",
+        "FocalLengthIn35mmFilm": 13,
+        "FocalLength": 2.2,
+        "DigitalZoomRatio": 1.2,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00",
+        "DateTimeOriginal": "2023:07:22 18:09:51"
+      }
+    },
+    {
+      "message_id": 128,
+      "telegram_url": "https://t.me/c/4488229487/2/128",
+      "bytes": 2176679,
+      "sha256": "45f02593de0fb634dd4533742e438f55c40488406c3e92ba4946dd28dc8e128c",
+      "width": 2645,
+      "height": 2779,
+      "orientation": 1,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2024:04:11 23:51:59",
+        "DateTimeDigitized": "2023:07:24 19:36:50",
+        "FocalLengthIn35mmFilm": 24,
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00",
+        "DateTimeOriginal": "2023:07:24 19:36:50"
+      }
+    },
+    {
+      "message_id": 129,
+      "telegram_url": "https://t.me/c/4488229487/2/129",
+      "bytes": 5149255,
+      "sha256": "575d7d026c8af31786f8fece04ac45e4788f2881fc0fd96d523cd2b2baddd2d1",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": 54.716173499722224,
+      "longitude": 20.46763639972222,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          42,
+          58.224599
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          20,
+          28,
+          3.491039
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 43
+      },
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2024:10:07 15:20:46",
+        "DateTimeOriginal": "2024:10:07 15:20:46",
+        "DateTimeDigitized": "2024:10:07 15:20:46",
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 24,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 130,
+      "telegram_url": "https://t.me/c/4488229487/2/130",
+      "bytes": 4452645,
+      "sha256": "63a06c54726012c68bfcc972de010c3d8922c367f7840abba712620ebb0d3313",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2024:10:13 13:33:21",
+        "DateTimeOriginal": "2024:10:13 13:33:21",
+        "DateTimeDigitized": "2024:10:13 13:33:21",
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 24,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 131,
+      "telegram_url": "https://t.me/c/4488229487/2/131",
+      "bytes": 4779065,
+      "sha256": "d1417085cb42c966d2cf4ca6b554a5dc29a91553e935ebcf9a4df8d2dd2ed94b",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": 55.073452099722225,
+      "longitude": 21.8899821,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          55,
+          4,
+          24.427559
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          21,
+          53,
+          23.93556
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 21
+      },
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2024:10:13 14:45:12",
+        "DateTimeOriginal": "2024:10:13 14:45:12",
+        "DateTimeDigitized": "2024:10:13 14:45:12",
+        "FocalLength": 9,
+        "DigitalZoomRatio": 3,
+        "FocalLengthIn35mmFilm": 72,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 132,
+      "telegram_url": "https://t.me/c/4488229487/2/132",
+      "bytes": 5179508,
+      "sha256": "4f7dc18d93b6cea0382c206fca8ff7a9707df9c600824e11361ed883cb338b7d",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "latitude": null,
+      "longitude": null,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {},
+      "exif": {
+        "Orientation": 6,
+        "DateTime": "2024:10:13 15:25:10",
+        "DateTimeOriginal": "2024:10:13 15:25:10",
+        "DateTimeDigitized": "2024:10:13 15:25:10",
+        "FocalLength": 6.7,
+        "DigitalZoomRatio": 1,
+        "FocalLengthIn35mmFilm": 24,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    },
+    {
+      "message_id": 133,
+      "telegram_url": "https://t.me/c/4488229487/2/133",
+      "bytes": 4407120,
+      "sha256": "0536b1fe5e8603771d733aec95340e0f9b74df93f4dfb8e5997e22bb4602dea8",
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "latitude": 54.6303356,
+      "longitude": 21.816431999722223,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "gps": {
+        "GPSLatitudeRef": "N",
+        "GPSLatitude": [
+          54,
+          37,
+          49.20816
+        ],
+        "GPSLongitudeRef": "E",
+        "GPSLongitude": [
+          21,
+          48,
+          59.155199
+        ],
+        "GPSAltitudeRef": 0,
+        "GPSAltitude": 37
+      },
+      "exif": {
+        "Orientation": 1,
+        "DateTime": "2024:10:26 10:22:43",
+        "DateTimeOriginal": "2024:10:26 10:22:43",
+        "DateTimeDigitized": "2024:10:26 10:22:43",
+        "FocalLength": 2.2,
+        "DigitalZoomRatio": 1.2,
+        "FocalLengthIn35mmFilm": 13,
+        "OffsetTime": "+02:00",
+        "OffsetTimeOriginal": "+02:00"
+      }
+    }
+  ]
+}
