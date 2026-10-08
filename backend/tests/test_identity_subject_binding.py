@@ -97,6 +97,24 @@ def test_explicit_article_subject_resolution_preserves_sent_reference_and_proven
     assert visual_match(resolved['result'], [article()], [candidate])
 
 
+@pytest.mark.parametrize('tag', ['amenity', 'shop', 'office'])
+def test_whole_building_photo_cannot_be_bound_to_a_mapped_occupant(tag):
+    candidate = subject('osm:node:1', map_object={'provenance': 'osm.tags', 'tags': {tag: 'example'}})
+    raw = verdict('web:article', reference_subject_candidate_id=candidate['candidate_id'], source_subject_scope='building')
+    resolved = bind_reference_subject(raw, [article()], [candidate], [image_evidence()])
+    assert resolved['reason'] == 'mapped_occupant_is_not_building_subject'
+    assert resolved['result']['status'] == 'uncertain'
+    direct = verdict(candidate['candidate_id'], source_subject_scope='building')
+    assert bind_reference_subject(direct, [candidate], [candidate], [])['reason'] == 'mapped_occupant_is_not_building_subject'
+    # The organization remains a valid hypothesis when it is the actual
+    # subject, and a separately mapped building keeps its own identity.
+    raw['source_subject_scope'] = 'occupant'
+    assert bind_reference_subject(raw, [article()], [candidate], [image_evidence()])['status'] == 'bound'
+    raw['source_subject_scope'] = 'building'
+    candidate['map_object']['tags']['building'] = 'yes'
+    assert bind_reference_subject(raw, [article()], [candidate], [image_evidence()])['status'] == 'bound'
+
+
 @pytest.mark.parametrize('candidate_id', ['not-in-shortlist', 'web:article', 'wiki:container'])
 def test_article_binding_requires_eligible_existing_physical_subject(candidate_id):
     raw = verdict('web:article', reference_subject_candidate_id=candidate_id)

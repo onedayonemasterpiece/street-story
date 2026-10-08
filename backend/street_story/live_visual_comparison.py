@@ -368,6 +368,11 @@ class LiveVisualComparisonMixin:
                 and not str(c.get('candidate_id', '')).startswith('web:')][:32],
             'remaining_illustrations': remaining,
             'search_feedback_instruction': (
+                'Сначала явно укажи source_subject_scope: building, occupant, other_physical_object или unclear '
+                'по главному предмету всего SOURCE. Крупный фасад целого дома — building, даже если видна '
+                'вывеска арендатора или удалось сопоставить только его вход. Для building выбери ID самого '
+                'здания либо его адресной точки; mapped amenity/shop/office без building — организация, '
+                'не идентификатор здания. Не подменяй дом организацией даже при доказанном совпадении входа. '
                 'Верни search_feedback: тип REF (modern_exterior/interior/historical/diagram/unclear), '
                 'следующее полезное действие (explore_alternative/find_external_view/another_view/verify_binding), '
                 'его reason, буквальный next_query или пустую строку, candidate_ids из physical_candidates. '
@@ -1026,6 +1031,7 @@ class LiveVisualComparisonMixin:
                 'status': status, 'model_status': args.get('status'), 'matched': matched,
                 'candidate_id': raw.get('candidate_id'), 'reference_candidate_id': args.get('candidate_id'),
                 'reference_subject_candidate_id': raw.get('reference_subject_candidate_id'),
+                'source_subject_scope': raw.get('source_subject_scope'),
                 'observations': [str(value)[:300] for value in raw.get('observations', [])[:6]],
                 'reference_subject_observations': [str(value)[:300] for value in raw.get('reference_subject_observations', [])[:6]],
                 'alternative_candidate_ids': raw.get('alternative_candidate_ids') or [],
