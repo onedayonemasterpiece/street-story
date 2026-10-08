@@ -180,6 +180,20 @@ The joint call stably prefers the existing route matching the configured
 still prevents trying another model. The affected integration set passed 90
 checks and the final route/fence set passed 12; neither is product acceptance.
 
+Cold104 on `45197c6` finished naturally in 23.69 s with `resource_blocked`: one
+Google HTTP503, then independent text routes refused the input before dispatch.
+The dedicated text-only planning policy now preserves the entire received
+packet while reducing that saved base prompt from 65,672 to 62,507 characters,
+below the existing Native 65,536-character cap. Its unchanged strict schema is
+still appended (110,579 addressed characters); this remains a substantial input,
+and the 24 KB Live planner limit still correctly refuses it. No candidate or
+address inventory was truncated. Twenty-five offline checks cover retained
+packet equality, foreign-ID rejection and frozen original readback after restart.
+The real Google client also marks admission/guard failures before SDK invocation
+as authoritative `not_sent`; errors after SDK invocation retain their actual
+closed/UNKNOWN state. The shared reservation journal is not refunded by this
+classification. Thirty-eight affected boundary/quota/fence checks passed.
+
 A saved-source-only Live contract diagnostic on `3c6e492` completed in 10.66 s;
 it does not establish product acceptance. No final five-case PASS or deployment
 is claimed. Release evidence
