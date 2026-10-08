@@ -448,6 +448,37 @@ class HeadlessFacts:
             return 0
         return await engine.run(job, run_id, control_revision)
 
+    def _review_retry_at(self, job, run_id, committed):
+        """Continue ready packets promptly after progress, retaining blocked waits."""
+        from .headless_fact_review import HeadlessFactReview
+        now = self.service.store.now()
+        if not committed:
+            return now + 60
+        engine = HeadlessFactReview(self)
+        if not engine._qualified_routes():
+            return now + 60
+        with self.service.store.connection() as db:
+            current = review_packets.bundle(db, job['story_id'])
+            pending = set(review_packets.pending_candidates(db, job['story_id'], run_id))
+            waiting = set()
+            for row in db.execute(
+                "SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'",
+                (job['id'],)):
+                saved = json.loads(row[0])
+                if saved.get('retry_at', 0) <= now:
+                    continue
+                packet = db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=? AND story_id=?',
+                                    (saved.get('packet_ref'), job['story_id'])).fetchone()
+                if not packet:
+                    waiting.update(pending)  # Unknown wait scope cannot authorize a fresh operation.
+                    continue
+                frozen = json.loads(packet[0]).get('bundle', {})
+                waiting.update(fid for fid, digest in frozen.items() if current.get(fid) == digest)
+        ready = pending - waiting - engine.exhausted_candidates(job) - engine._unknown_candidates(job, current)
+        if not ready:
+            return now + 60
+        return now + 1
+
     async def run(self, job, run_id, goal, scope):
         snapshot = self._snapshot(job, run_id)
         if snapshot is None:
@@ -552,7 +583,7 @@ class HeadlessFacts:
         if snapshot is None:
             return
         if not units:
-            await self._review_candidates(job, run_id, control_revision)
+            reviewed = await self._review_candidates(job, run_id, control_revision)
             with self.service.store.connection() as db:
                 manifest = run_manifest(db, run_id)
                 complete = manifest_complete(manifest)
@@ -574,7 +605,7 @@ class HeadlessFacts:
                                       if background_review else 'awaiting_live_semantic_review'),
                                       now=self.service.store.now(), completed=False)
                 if background_review:
-                    self._partial(run_id, 'research_fact_review_partial', retry_at=self.service.store.now()+60)
+                    self._partial(run_id, 'research_fact_review_partial', retry_at=self._review_retry_at(job, run_id, reviewed))
                 return
             if complete and not unreviewed:
                 payload = json.loads(job.get('payload_json') or '{}')
@@ -626,6 +657,7 @@ class HeadlessFacts:
             }
         suggestions, failures = [], []
         review_task = None
+        reviewed = 0
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
         try:
             for ready in asyncio.as_completed(tasks):
@@ -643,7 +675,7 @@ class HeadlessFacts:
                         suggestions.append(extracted['result'])
                         if review_task is None or review_task.done():
                             if review_task is not None:
-                                await review_task
+                                reviewed += await review_task
                             review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision))
                 except (ConflictError, MalformedProviderResponse) as exc:
                     LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
@@ -654,8 +686,8 @@ class HeadlessFacts:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             if review_task is not None:
-                await review_task
-        await self._review_candidates(job, run_id, control_revision)
+                reviewed += await review_task
+        reviewed += await self._review_candidates(job, run_id, control_revision)
         if self._snapshot(job, run_id, control_revision) is not None:
             if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
                 return
@@ -685,7 +717,7 @@ class HeadlessFacts:
             if unreviewed:
                 from .headless_fact_review import HeadlessFactReview
                 if HeadlessFactReview(self)._qualified_routes(available=False):
-                    self._partial(run_id, 'research_fact_review_partial', retry_at=self.service.store.now()+60)
+                    self._partial(run_id, 'research_fact_review_partial', retry_at=self._review_retry_at(job, run_id, reviewed))
 
     def _owner_fence(self, db, story, research):
         """Candidate additions may change revision, never these author inputs."""

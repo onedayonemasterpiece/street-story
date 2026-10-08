@@ -18,6 +18,8 @@ from test_headless_fact_pool import fixture, result, RUN
     ('чужой факт\\n1843', 'чужой факт\\n1843'),
     ('Дата основания\\u000a1843', 'Дата основания\\u000a1843'),
     ('Дата основания\n1843', 'Дата основания\n1843'),
+    ('\\n', '\\n'),
+    ('\\\\n\\t\\r', '\\\\n\\t\\r'),
 ])
 def test_quote_presentation_requires_exact_own_passage(quote, expected):
     assert review_packets.literal_basis_quote(quote, ['Дата основания\n1843']) == expected
@@ -53,8 +55,66 @@ async def test_escaped_quote_preserves_raw_request_and_immutable_replay(tmp_path
     assert replay == value
 
 
-async def candidates(tmp_path, count=6):
-    svc, job = fixture(tmp_path, count=count)
+@pytest.mark.parametrize('quote', [' ', '\n\t\r', '\u2003', '\\n', '\\\\n', '\\n\\t\\r'])
+@pytest.mark.asyncio
+async def test_whitespace_only_quote_never_establishes_own_support(tmp_path, quote):
+    svc, job, harness = await candidates(tmp_path, count=1)
+    session = SimpleNamespace(id='empty-quote', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0],
+        'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+        'claims': [packet['items'][0]['text']], 'basis_quotes': [quote], 'reason': 'Claimed literal support.'}],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
+    with pytest.raises(ConflictError) as error:
+        await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'empty', 'args': args})
+    assert error.value.code == 'live_fact_review_evidence_invalid'
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 0
+        row = db.execute('SELECT decisions_json,request_json FROM live_review_packets WHERE packet_ref=?',
+                         (packet['packet_ref'],)).fetchone()
+        assert json.loads(row['decisions_json']) == {} and row['request_json'] is None
+
+
+@pytest.mark.parametrize('foreign_scope', ['unselected_own', 'sibling'])
+@pytest.mark.asyncio
+async def test_presentation_decoder_cannot_borrow_unselected_or_sibling_passage(tmp_path, foreign_scope):
+    svc, job, harness = await candidates(tmp_path, count=2)
+    session = SimpleNamespace(id='scoped-quote', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
+    with svc.store.tx() as db:
+        payload = json.loads(db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=?',
+                                       (packet['packet_ref'],)).fetchone()[0])
+        foreign = 'Foreign date\n1853'
+        if foreign_scope == 'unselected_own':
+            payload['items'][0]['evidence'].append({**payload['items'][0]['evidence'][0], 'text': foreign})
+        else:
+            payload['items'][1]['evidence'][0]['text'] = foreign
+        db.execute('UPDATE live_review_packets SET payload_json=? WHERE packet_ref=?',
+                   (json.dumps(payload), packet['packet_ref']))
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0],
+        'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+        'claims': [packet['items'][0]['text']], 'basis_quotes': ['Foreign date\\\\n1853'], 'reason': 'Borrowed support.'}],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
+    with pytest.raises(ConflictError) as error:
+        await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'foreign', 'args': args})
+    assert error.value.code == 'live_fact_review_evidence_invalid'
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == 0
+
+
+async def candidates(tmp_path, count=6, source_texts=None):
+    svc, job = fixture(tmp_path, count=count if source_texts is None else 0)
+    if source_texts is not None:
+        from street_story.research_runs import persist_source_version
+        with svc.store.tx() as db:
+            for i, text in enumerate(source_texts):
+                url = f'https://archive.example/history-{i}'
+                persist_source_version(db, run_id=RUN, requested_url=url, final_url=url, title=f'History {i}',
+                    content_type='text/html', http_status=200, redirect_chain=[], normalized_text=text,
+                    read_status='complete', now=svc.store.now())
     async def extract(page, story, context):
         return result(page)
     svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
@@ -176,6 +236,225 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
     committed = await engine.run(job, RUN, 0)
     assert committed == len(calls) and committed > 1
     assert calls and max(calls) < 6
+
+
+@pytest.mark.asyncio
+async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaining_candidates(tmp_path):
+    from contextvars import ContextVar
+    from street_story.headless_fact_review import VERIFIER_PROMPT
+    from street_story.live_research import LiveSemanticClient, RESULT_TOOL
+    from street_story.research_adapter import ProductResearchAdapter
+    from street_story.service import canonical
+
+    texts = [f'Здание {i} сохранило ' + 'кирпичную облицовку фасада с узорчатыми деталями, ' * 8
+             + 'согласно описанию 2005 года.' for i in range(12)]
+    svc, job, harness = await candidates(tmp_path, source_texts=texts)
+    provider = object.__new__(ProductResearchAdapter)
+    provider.service, provider.client, provider.giga = svc, None, None
+    provider._active_binding = ContextVar('bounded-live-review-test', default=None)
+    starts, sends = [], []
+
+    class Host:
+        def __init__(self, _service, _settings, **kwargs):
+            self.adapter = kwargs['operation_adapter_factory']()
+            self.guard = kwargs['before_operation_send']
+            self.session = SimpleNamespace(id=f'bounded-live-{len(starts)}')
+        async def start(self, **kwargs):
+            initialized = self.adapter.initialize(**kwargs)
+            prompt = initialized['context']['frozen_research_operation']['prompt']
+            assert len(prompt.encode('utf-8')) <= 24000
+            self.packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
+            for item in self.packet['items']:
+                assert item['passage'] == item['text'] and item['passage'] in texts
+                assert item['passage_complete'] is True
+            starts.append(prompt)
+            self.adapter.on_event(self.session, {'type': 'ready'})
+            return {'session_id': self.session.id}
+        async def input(self, **kwargs):
+            self.guard()
+            sends.append(self.packet['total_facts'])
+            self.adapter.on_event(self.session, {'type': 'input_timing', 'text_sent_at': 1})
+            args = {'packet_ref': self.packet['packet_ref'], 'decisions': [
+                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+                 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+                 'claims': [item['text']], 'basis_quotes': [item['text']], 'reason': 'Own unchanged passage.'}
+                for item in self.packet['items']], 'relations_complete': True, 'conflicts': [],
+                'coverage_complete': False, 'missing_aspects': []}
+            await self.adapter.execute_tool(self.session, {'name': RESULT_TOOL, 'id': 'bounded', 'args': args})
+        async def stop_all(self):
+            pass
+
+    provider.live_facts = LiveSemanticClient(provider, host_factory=Host)
+    svc.providers.research = provider
+    engine = HeadlessFactReview(harness)
+    session = SimpleNamespace(id='estimate-bytes', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    with svc.store.connection() as db:
+        ids = review_packets.pending_candidates(db, job['story_id'], RUN)
+    full, _, _ = engine._prepare_packet(job, RUN, session, ids)
+    prompt = VERIFIER_PROMPT + canonical(full)
+    assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
+    assert await engine._run_one(job, RUN, 0) == 1
+    with svc.store.connection() as db:
+        assert 0 < len(review_packets.pending_candidates(db, job['story_id'], RUN)) < len(texts)
+    assert await engine.run(job, RUN, 0) > 0
+    assert len(sends) == len(starts) > 1 and sum(sends) == len(texts)
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
+        receipts = [json.loads(row[0]) for row in db.execute('SELECT receipt_json FROM research_provider_attempts')]
+    assert len(receipts) == len(sends)
+    assert all(receipt['phase'] == 'completed' and receipt['text_sends'] == 1 for receipt in receipts)
+
+
+def test_route_capacity_measures_serialized_prompt_with_escaping_and_transport_units():
+    from street_story.headless_fact_review import VERIFIER_PROMPT
+    from street_story.service import canonical
+    live = {'role': 'facts_live', 'client': SimpleNamespace()}
+    native = {'role': 'facts_native', 'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=24000))}
+    prompt = VERIFIER_PROMPT + canonical({'passage': 'Ж' * 11000})
+    assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
+    assert not HeadlessFactReview._route_accepts_prompt(live, prompt)
+    assert HeadlessFactReview._route_accepts_prompt(native, prompt)
+    assert not HeadlessFactReview._packet_fits([live, native], prompt)
+    assert HeadlessFactReview._packet_fits([live, native], prompt, single=True)
+    raw = '\\' * 11000
+    escaped = VERIFIER_PROMPT + canonical({'passage': raw})
+    assert len(raw) < 24000 < len(escaped)
+    assert not HeadlessFactReview._route_accepts_prompt(native, escaped)
+
+
+@pytest.mark.asyncio
+async def test_fresh_oversized_live_packet_uses_fitting_qualified_text_route_without_live_attempt(tmp_path):
+    from street_story.headless_fact_review import VERIFIER_PROMPT
+    from street_story.service import canonical
+    svc, job, harness = await candidates(tmp_path, count=1)
+    engine = HeadlessFactReview(harness)
+    session = SimpleNamespace(id='whole-unit', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
+    # An indivisible frozen unit can contain a large conflict ledger. Its own
+    # assertion and passage remain intact; an unavailable route cannot clip it.
+    packet['nearby_existing_claims'] = [{'fact_id': f'existing-{i}', 'text': 'Ж' * 450} for i in range(23)]
+    prompt = VERIFIER_PROMPT + canonical(packet)
+    assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
+    calls = []
+    class Client:
+        directory = '/existing/qualified'
+        limits = SimpleNamespace(max_input_chars=24000)
+        def __init__(self, model_id):
+            self.model_id = model_id
+        async def _run(self, role, supplied, binding, schema):
+            assert self.model_id == 'qualified-text'
+            assert supplied == prompt and len(supplied) <= self.limits.max_input_chars
+            calls.append(self.model_id)
+            return {'result': {'packet_ref': packet['packet_ref'], 'decisions': [],
+                'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}}
+    routes = [{'role': role, 'qualified': True, 'available': True, 'endpoint': f'fixture:{model}',
+               'model_id': model, 'provider_id': 'fixture', 'client': Client(model)}
+              for role, model in [('facts_live', 'live'), ('facts_native', 'qualified-text')]]
+    engine._qualified_routes = lambda **_: routes
+    async def run(story, role, unit, operation, *, client):
+        return await operation({'attempt_id': 'fresh-whole-unit'})
+    svc.providers.research = SimpleNamespace(run=run)
+    args = await engine._infer(packet, job, 'fresh-whole-unit', {})
+    assert args['packet_ref'] == packet['packet_ref'] and calls == ['qualified-text']
+    saved = svc.store.checkpoint_get(job['id'], 'headless_fact_review:fresh-whole-unit')
+    assert saved['phase'] == 'result' and saved['model_id'] == 'qualified-text'
+
+
+@pytest.mark.asyncio
+async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp_path):
+    texts = [f'Здание {i} сохранило ' + 'кирпичную облицовку фасада с узорчатыми деталями, ' * 8
+             + 'согласно описанию 2005 года.' for i in range(12)]
+    svc, job, harness = await candidates(tmp_path, source_texts=texts)
+    calls = []
+    class AvailableReview(ControlledReview):
+        MAX_PACKET_FACTS = 12
+        async def _infer(self, packet, *args, **kwargs):
+            calls.append(packet['total_facts'])
+            return await super()._infer(packet, *args, **kwargs)
+    engine = AvailableReview(harness)
+    routes = [{'role': 'facts_live', 'available': False, 'client': SimpleNamespace()},
+              {'role': 'facts_native', 'available': True,
+               'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=24000))}]
+    engine._qualified_routes = lambda available=True: [r for r in routes if not available or r['available']]
+    assert await engine.run(job, RUN, 0) == 1
+    assert calls == [12]
+
+
+@pytest.mark.asyncio
+async def test_ready_review_packets_continue_same_job_after_progress_without_claiming_complete(tmp_path, monkeypatch):
+    from street_story.errors import RetryableProviderError
+    svc, job, harness = await candidates(tmp_path, count=3)
+    routes = [{'available': True, 'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=24000))}]
+    monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, **kwargs: routes)
+    class SinglePacketReview(ControlledReview):
+        MAX_PACKET_FACTS = 1
+    engine = SinglePacketReview(harness)
+    async def review_one(job, run_id, control_revision):
+        return await engine._run_one(job, run_id, control_revision)
+    harness._review_candidates = review_one
+    for eligible in (1, 2):
+        now = svc.store.now()
+        with pytest.raises(RetryableProviderError) as error:
+            await harness.run(job, RUN, 'History', 'history')
+        assert str(error.value) == 'research_fact_review_partial'
+        assert now + 1 <= error.value.retry_at <= svc.store.now() + 1
+        with svc.store.connection() as db:
+            run = db.execute('SELECT state,completed_at FROM research_runs WHERE run_id=?', (RUN,)).fetchone()
+            assert run['state'] == 'partial' and run['completed_at'] is None
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == eligible
+    outcome = await harness.run(job, RUN, 'History', 'history')
+    assert outcome['coverage_complete'] is True and outcome['eligible_count'] == 3
+    assert SinglePacketReview.calls == 3
+
+
+@pytest.mark.parametrize('blocked', ['no_progress', 'unknown', 'cooldown', 'exhausted', 'route_unavailable'])
+@pytest.mark.asyncio
+async def test_review_progress_never_shortens_unknown_or_cooldown_wait(tmp_path, monkeypatch, blocked):
+    svc, job, harness = await candidates(tmp_path, count=1)
+    routes = [] if blocked == 'route_unavailable' else [{'available': True, 'client': SimpleNamespace()}]
+    monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, **kwargs: routes)
+    if blocked in {'unknown', 'exhausted'}:
+        session = SimpleNamespace(id='unknown-wait', resource_id=job['story_id'], actor=None,
+                                  closed=False, model='fixture', state={})
+        packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
+        svc.store.checkpoint_put(job['id'], 'headless_fact_review:blocked',
+                                 {'phase': blocked, 'packet_ref': packet['packet_ref']})
+    elif blocked == 'cooldown':
+        svc.store.checkpoint_put(job['id'], 'headless_fact_review:blocked',
+                                 {'phase': 'closed_error', 'retry_at': svc.store.now() + 300})
+    now = svc.store.now()
+    monkeypatch.setattr(svc.store, 'now', lambda: now)
+    assert harness._review_retry_at(job, RUN, 0 if blocked == 'no_progress' else 1) == now + 60
+
+
+@pytest.mark.parametrize('blocked', ['unknown', 'cooldown'])
+@pytest.mark.asyncio
+async def test_review_progress_schedules_ready_assertions_outside_exact_waiting_bundle(tmp_path, monkeypatch, blocked):
+    svc, job, harness = await candidates(tmp_path, count=2)
+    routes = [{'available': True, 'client': SimpleNamespace()}]
+    monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, **kwargs: routes)
+    session = SimpleNamespace(id='scoped-wait', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    with svc.store.connection() as db:
+        ids = review_packets.pending_candidates(db, job['story_id'], RUN)
+    packet = review_packets.read(harness.adapter, session,
+        {'run_id': RUN, '_parallel_candidate_review': True, '_candidate_ids': ids[:1]})
+    now = svc.store.now()
+    monkeypatch.setattr(svc.store, 'now', lambda: now)
+    saved = {'phase': 'unknown' if blocked == 'unknown' else 'closed_error', 'packet_ref': packet['packet_ref']}
+    if blocked == 'cooldown':
+        saved['retry_at'] = now + 300
+    svc.store.checkpoint_put(job['id'], 'headless_fact_review:scoped-wait', saved)
+    assert harness._review_retry_at(job, RUN, 1) == now + 1
+    with svc.store.tx() as db:
+        # Once the independent ready assertion is gone, only the waiting scope
+        # remains and its original wait must be preserved.
+        db.execute("UPDATE fact_assertions SET eligibility='eligible' WHERE story_id=? AND assertion_id=?",
+                   (job['story_id'], ids[1]))
+    assert harness._review_retry_at(job, RUN, 1) == now + 60
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,8 @@ def literal_basis_quote(quote, passages):
     if not isinstance(quote, str):
         return quote
     def contained(value):
-        return any(' '.join(value.split()) in ' '.join(text.split()) for text in passages)
+        normalized = ' '.join(value.split())
+        return bool(normalized) and any(normalized in ' '.join(text.split()) for text in passages)
     if contained(quote):
         return quote
     # Nested JSON setup context can elicit a once- or twice-escaped whitespace
@@ -431,7 +432,7 @@ def prepare(adapter, session, args):
                         quotes = normalized_quotes
                         decision['basis_quotes'] = quotes
                 # Presentation whitespace may vary; original snapshots/spans remain literal.
-                if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
+                if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not q.strip() or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
                     next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
                     raise ConflictError('live_fact_review_evidence_invalid',
                         'next_tool=get_review_packet; next_args=' + canonical(next_args) +
