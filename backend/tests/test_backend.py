@@ -317,9 +317,12 @@ async def test_osm_cache(tmp_path):
     svc, _, _ = service(tmp_path)
     osm = OSMClient(svc.store, "StreetStory tests", client)
     await osm.lookup(54.7, 20.45)
+    first_lookup_calls = list(calls)
     await osm.lookup(54.7, 20.45)
     await client.aclose()
-    assert calls == ["GET", "GET", "POST", "POST"]
+    assert calls == first_lookup_calls  # The cached lookup makes no further requests.
+    # Reverse geocoding and map acquisition run concurrently.
+    assert sorted(calls) == ["GET", "GET", "POST", "POST"]
 
 
 @pytest.mark.asyncio
