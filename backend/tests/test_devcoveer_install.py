@@ -754,6 +754,8 @@ def test_preview_window_is_idempotent_within_half_hour_and_refreshes_intent_afte
     assert len(first_key) <= 128
     assert "Preview only; do not dispatch." in first_text
     assert module.preview_request_key(sha, now=3_600.0) == first_key
+    other_key, other_text = module.preview_window('b' * 40, now=3_600.0)
+    assert other_key != first_key and other_text != first_text
 
 
 def test_preview_preflight_accepts_claimed_dry_run_without_bootstrap_supported(monkeypatch) -> None:
