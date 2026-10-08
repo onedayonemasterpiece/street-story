@@ -115,6 +115,27 @@ def test_whole_building_photo_cannot_be_bound_to_a_mapped_occupant(tag):
     assert bind_reference_subject(raw, [article()], [candidate], [image_evidence()])['status'] == 'bound'
 
 
+@pytest.mark.parametrize('tags', [{'landuse': 'residential', 'place': 'neighbourhood'},
+                                {'landuse': 'industrial'}, {'place': 'suburb'}])
+def test_render_can_identify_building_without_substituting_the_whole_mapped_area(tags):
+    area = subject('osm:way:area', map_object={'provenance': 'osm.tags', 'tags': dict(tags)})
+    building = subject('osm:relation:house', map_object={'provenance': 'nominatim.reverse',
+                       'category': 'building', 'type': 'apartments'})
+    raw = verdict('web:article', reference_subject_candidate_id=area['candidate_id'],
+                  source_subject_scope='building', search_feedback={'reference_kind': 'diagram'})
+    catalog = [area, building]
+    resolved = bind_reference_subject(raw, [article()], catalog, [image_evidence()])
+    assert resolved['reason'] == 'mapped_area_is_not_building_subject'
+    assert not visual_match(resolved['result'], [article()], catalog)
+    raw['reference_subject_candidate_id'] = building['candidate_id']
+    resolved = bind_reference_subject(raw, [article()], catalog, [image_evidence()])
+    assert resolved['status'] == 'bound'
+    assert visual_match(resolved['result'], [article()], catalog)
+    # A territory remains usable when SOURCE actually depicts that territory.
+    raw.update(reference_subject_candidate_id=area['candidate_id'], source_subject_scope='other_physical_object')
+    assert bind_reference_subject(raw, [article()], catalog, [image_evidence()])['status'] == 'bound'
+
+
 @pytest.mark.parametrize('candidate_id', ['not-in-shortlist', 'web:article', 'wiki:container'])
 def test_article_binding_requires_eligible_existing_physical_subject(candidate_id):
     raw = verdict('web:article', reference_subject_candidate_id=candidate_id)
