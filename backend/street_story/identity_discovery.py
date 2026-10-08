@@ -725,6 +725,7 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
                 continue
             queries[key] = result
         unique = {source['url']: source for source in history.get('sources', [])}
+        previous_source_urls = set(unique)
         for source in sources:
             if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
                 unique[url] = {**unique.get(url, {}), **source, 'url': url}
@@ -754,6 +755,13 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
                 page['candidates'] = media
         research['identity_article_discovery'] = history
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+        if set(unique) - previous_source_urls:
+            # A reader can use a late source independently of the failed search
+            # that scheduled this wait. Keep the job and all dispatch receipts.
+            db.execute("UPDATE jobs SET available_at=MIN(available_at,?),updated_at=? "
+                       "WHERE story_id=? AND kind='identity_visual' AND state IN ('ready','retry') "
+                       "AND json_extract(payload_json,'$.identity_generation')=?",
+                       (service.store.now(), service.store.now(), story['id'], generation))
     return history
 
 

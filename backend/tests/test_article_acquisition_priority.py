@@ -118,3 +118,23 @@ async def test_unread_selected_page_reaches_vision_before_new_planned_search(tmp
     assert reply['references'][0]['candidate_id'] == 'web:actual-article'
     assert len(state['queue']) == 40
     assert 'Alternative street view' not in state['searches']
+
+
+@pytest.mark.asyncio
+async def test_recent_reader_turn_allows_feedback_query_without_draining_all_unread_pages(tmp_path, monkeypatch):
+    svc, adapter, story, session = gallery(tmp_path, 2)
+    state = session.state['visual_comparison']
+    state.update(sources={'https://maps.example/geo/42': page('https://maps.example/geo/42')},
+                 units_since_acquisition=0, planned_queries=['Alternative street view'],
+                 units_since_planned_query=2)
+    useful = 'https://photos.example/new-facade'
+    async def find(session, args):
+        assert args['query'] == 'Alternative street view'
+        return {'status': 'completed', 'sources': [page(useful)['source']]}
+    monkeypatch.setattr(adapter, '_find_place_articles', find)
+    acquired = []
+    patch_reader(svc, monkeypatch, acquired, useful)
+    reply = await adapter._compare_place_images(session, {}, page_budget=1)
+    assert acquired == [useful]
+    assert reply['references'][0]['candidate_id'] == 'web:actual-article'
+    assert state['sources']['https://maps.example/geo/42']['status'] == 'pending'

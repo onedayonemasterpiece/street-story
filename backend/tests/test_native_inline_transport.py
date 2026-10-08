@@ -39,7 +39,7 @@ async def test_unsupported_public_mime_known_unsent_no_thread_or_model(tmp_path)
     async def loader(url):
         return 'image/svg+xml', b'<svg></svg>'
     provider.public_image_loader = loader
-    with pytest.raises(PermanentProviderError, match='reference_not_image'):
+    with pytest.raises(PermanentProviderError, match='reference_unavailable'):
         await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id': 'svg'})
     assert client.calls == [] and sends == [] and finalized == []
     assert receipts[-1]['provider_send_state'] == 'not_sent' and receipts[-1]['retry_safe'] is True
