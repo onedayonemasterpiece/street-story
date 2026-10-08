@@ -1,6 +1,7 @@
 """Real queue/store fixtures with controlled provider and reader boundaries."""
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,47 @@ def retained_unknown(svc, story, item, context, *, foreign=False):
         db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
             ('retained-original', logical, story['id'], 'vision', canonical(receipt),
              svc.store.now(), svc.store.now()))
+
+
+@pytest.mark.asyncio
+async def test_late_discovery_wakes_free_lane_and_uses_new_qualified_route(tmp_path, monkeypatch):
+    svc, story, _ = prepare(tmp_path, count=2)
+    svc.settings = replace(svc.settings, worker_poll_seconds=.01)
+    fast_finished, next_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    qualified = ['google', 'opencode']
+    async def read(service, item, sources, rejected, *, receipts):
+        assert sources[0]['url'] == 'https://example.com/late-article'
+        receipts.append({'url': sources[0]['url'], 'status': 'completed'})
+        return [{'candidate_id': 'web:late', 'name': 'Late exterior', 'url': sources[0]['url'],
+            'discovery': 'web_article_media', 'reference_image_urls': ['https://example.com/late.jpg']}]
+    monkeypatch.setattr('street_story.article_media.article_candidates', read)
+    async def pair(route, snapshot, item, schema, context):
+        cid = item['_visual_reference_mapping'][0]['candidate_id']
+        if cid == 'gate:b':
+            await release.wait()
+        elif cid == 'gate:a':
+            qualified[:] = ['native', 'opencode']
+            fast_finished.set()
+        else:
+            assert cid == 'web:late' and route == 'native' and not release.is_set()
+            next_started.set()
+        return response(item, route)
+    provider = install(svc, pair)
+    provider.parallel_visual_routes = lambda: tuple(qualified)
+    task = asyncio.create_task(svc.run_once(claim_kind='identity_visual'))
+    try:
+        await asyncio.wait_for(fast_finished.wait(), 2)
+        await asyncio.sleep(.05)  # No reader work existed when the lane first freed.
+        with svc.store.tx() as db:
+            research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (story['id'],)).fetchone()[0])
+            research['identity_article_discovery'] = {'photo_sha256': story['photo_sha256'], 'generation': 0,
+                'sources': [{'url': 'https://example.com/late-article', 'discovery_provider': 'fixture'}]}
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+        await asyncio.wait_for(next_started.wait(), 2)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import logging
 import asyncio
 import time
 import base64
+from collections import Counter
 from types import SimpleNamespace
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .service import canonical,digest,ConflictError
@@ -405,7 +406,8 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         waits = []
         try:
             while tasks:
-                completed, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                completed, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED,
+                    timeout=self.service.settings.worker_poll_seconds if freed_routes and preparation is None else None)
                 prepared = []
                 # Commit every ready verdict before dispatching a prepared ref:
                 # a match in this batch stops needless new provider sends.
@@ -451,14 +453,31 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                     task = asyncio.create_task(run_pair(new_pair))
                     tasks.add(task)
                     all_tasks.add(task)
-                ready_work = bool(state.get('queue')) or any(
+                current, latest = self.service._identity_snapshot(story['id'])
+                discovery = latest.get('identity_article_discovery') or {}
+                newly_discovered = (discovery.get('generation') == scope['generation']
+                    and discovery.get('photo_sha256') == scope['photo_sha256']
+                    and any(source['url'] not in state.get('sources', {}) for source in discovery.get('sources', [])))
+                ready_work = newly_discovered or bool(state.get('queue')) or any(
                     page.get('status') not in {'completed', 'excluded'}
                     and page.get('retry_at', 0) <= self.service.store.now()
                     for page in state.get('sources', {}).values())
-                qualified_routes = set(getattr(provider, 'parallel_visual_routes', lambda: ())())
-                freed_routes = [route for route in freed_routes if route in qualified_routes]
+                qualified_routes = getattr(provider, 'parallel_visual_routes', lambda: ())()
+                slots = Counter(qualified_routes)
+                for child in state.get('parallel_pairs', []):
+                    if child.get('phase') not in {'completed', 'failed', 'skipped'}:
+                        slots[child['route']] -= 1
+                refills = []
+                for route in freed_routes:
+                    available = route if slots[route] > 0 else next(
+                        (name for name in qualified_routes if slots[name] > 0), None)
+                    if available:
+                        refills.append(available)
+                        slots[available] -= 1
+                # A completed lane may now use another qualified transport.
+                # Unknown children still occupy their original lane/address.
+                freed_routes = refills
                 if freed_routes and preparation is None and ready_work:
-                    current, latest = self.service._identity_snapshot(story['id'])
                     self._assert_visual_current(current, latest, scope)
                     if ((latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
                             and current.get('error_code') != 'visual_identity_conflict'):

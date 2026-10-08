@@ -6,7 +6,7 @@ import uuid
 from .research_budget import PAGE_UNITS, response_units
 from .service import ConflictError, canonical
 
-POLICY_VERSION = 'own-evidence-repair-v4'
+POLICY_VERSION = 'own-evidence-repair-v5'
 
 EXTRACTION_CHECKS = (
     'Before saving, enumerate independently selectable assertions from the source '
@@ -16,6 +16,8 @@ EXTRACTION_CHECKS = (
     'of a request in those passages; neither may be inferred from another candidate. '
     'Preserve modality and time direction exactly: planned, expected, estimated or '
     'future values must not be rewritten as completed, paid or actual outcomes. '
+    'A dated article describes its own time: mutable states (registration, ownership, '
+    'condition or use) need an explicit as-of date unless current evidence verifies them. '
     'Do not merge a news event such as work starting with an adjacent planned budget '
     'into one fact merely because both appear in the same source paragraph. '
     'Preserve uncertainty and subset versus whole. If the source context is incomplete, '
@@ -30,6 +32,8 @@ REVIEW_CHECKS = (
     'get_review_context and attach it using repair_research_fact. Probable subset is not certain whole. '
     'Multiple independent claims: repair/split before supported. Literal basis_quotes cannot borrow '
     'another fact\'s spans. supported requires one claim and complete own support. '
+    'A mutable state reported by an old article is not a current fact: repair it to '
+    'retain the source date, or attach evidence verifying its present status. '
     'Keep correct affirmative candidates; missing context is insufficient, not historically false.'
 )
 

@@ -35,6 +35,18 @@ async def full_worker_case(settings, output, args, item, data):
     case_settings = replace(settings, data_dir=output / f'data-{item["message_id"]}')
     service = RuntimeStreetStoryService(case_settings)
     service.providers.vibepublish = NoPublication()
+    installer = load_installer()
+    installer.require_mode(installer.RESEARCH_QUALIFICATION, 0o600)
+    qualification = json.loads(installer.RESEARCH_QUALIFICATION.read_text())
+    for evidence in qualification['evidence']:
+        path = Path(evidence['path'])
+        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
+            raise ValueError('Provider qualification evidence changed')
+    # Provider transport qualification is global evidence, not POI knowledge.
+    # A cold case must keep the deployed routes available without seeding any
+    # building, article, identity, permission grant or previous comparison.
+    for key, value in qualification['caches'].items():
+        service.store.cache_put(key, value, 3600)
     app = create_app(case_settings, service)
     story_id = None
     async with app.router.lifespan_context(app):
