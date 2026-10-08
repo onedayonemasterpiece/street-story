@@ -89,13 +89,25 @@ async def test_repair_withholds_shared_parent_before_replacement_review_and_resu
         assert {r[0] for r in db.execute('SELECT eligibility FROM poi_research_assertions WHERE assertion_id=?', (fid,))} == {'withheld'}
         assert db.execute('SELECT eligibility FROM fact_assertions WHERE assertion_id=?', (child,)).fetchone()[0] == 'unreviewed'
         assert db.execute('SELECT COUNT(*) FROM poi_research_assertions WHERE assertion_id=? AND eligibility=\'eligible\'', (child,)).fetchone()[0] == 0
-    await adapter.execute_tool(session, {'name': repaired['next_tool'], 'args': repaired['next_args']})
+    replacement = await adapter.execute_tool(session, {'name': repaired['next_tool'], 'args': repaired['next_args']})
     with svc.store.tx() as db:
         db.execute("UPDATE research_runs SET state='partial' WHERE run_id=?", (run_id,))
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
     assert initialized['capability'] == 'review'
     assert initialized['context']['research_run']['pending_review_fact_ids'] == [child]
     assert 'get_review_packet' in {t['name'] for t in initialized['configuration']['functions']}
+    await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-replacement', 'args': {
+        'packet_ref': replacement['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported',
+            'claims': ['Уточнённый первый тезис.'], 'basis_quotes': [QUOTES[0]],
+            'atomic': True, 'support_complete': True, 'qualifiers_preserved': True}],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}})
+    from street_story.poi_memory import prior_facts
+    with svc.store.connection() as db:
+        canonical = db.execute('SELECT * FROM poi_research_assertions WHERE assertion_id=?', (child,)).fetchone()
+        assert canonical['eligibility'] == 'eligible'
+        assert __import__('json').loads(canonical['review_proof_json'])['detector'] == 'mira_live_review'
+        reused = prior_facts(db, {'candidate_id': canonical['poi_key']}, 'next-story')
+        assert child in {f['fact_id'] for f in reused} and fid not in {f['fact_id'] for f in reused}
     await reader.search_http.aclose()
 
 
