@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
+from itertools import islice
 
 from jsonschema import Draft202012Validator
 
@@ -20,6 +22,37 @@ LOG = logging.getLogger(__name__)
 CONTRACT = 'live-bounded-facts-v1'
 RESULT_TOOL = 'submit_research_result'
 TRIGGER = 'Perform the frozen_research_operation supplied in setup context. Submit its schema-bound result once.'
+MALFORMED_ARGS_BYTES = 32768
+MALFORMED_PREFIX_BYTES = 8192
+VALIDATION_ERRORS = 16
+
+
+def _malformed_args(args):
+    """Retain rejected data only in the durable receipt, bounded and immutable."""
+    encoded = canonical(args).encode('utf-8')
+    truncated = len(encoded) > MALFORMED_ARGS_BYTES
+    result = {'malformed_args_sha256': hashlib.sha256(encoded).hexdigest(),
+              'malformed_args_utf8_bytes': len(encoded), 'malformed_args_truncated': truncated}
+    if truncated:
+        result['malformed_args_json_prefix'] = encoded[:MALFORMED_PREFIX_BYTES].decode('utf-8', errors='ignore')
+    else:
+        result['malformed_args'] = json.loads(encoded)
+    return result
+
+
+def _validation_error(error):
+    instance_path, schema_path = list(error.absolute_path), list(error.absolute_schema_path)
+    result = {'validator': error.validator,
+              'instance_path': [part if isinstance(part, int) else str(part)[:80]
+                                for part in instance_path[:12]],
+              'schema_path': [part if isinstance(part, int) else str(part)[:80]
+                              for part in schema_path[:12]],
+              'paths_truncated': any(len(path) > 12 or any(isinstance(part, str) and len(part) > 80 for part in path)
+                                     for path in (instance_path, schema_path))}
+    if error.validator == 'required' and isinstance(error.instance, dict):
+        result['missing_properties'] = [str(key)[:80] for key in error.validator_value
+                                        if key not in error.instance][:16]
+    return result
 
 
 class LiveSemanticClient:
@@ -99,11 +132,30 @@ class LiveSemanticClient:
 
             async def execute_tool(_self, session, call):
                 guard()
+                if done.done():
+                    raise ConflictError('live_research_result_closed', 'Frozen research operation already closed.')
                 args = call.get('args')
-                if call.get('name') != RESULT_TOOL or not Draft202012Validator(schema).is_valid(args):
-                    if not done.done():
-                        done.set_exception(ResearchUnavailable('live_research_result_malformed', receipt={**receipt,
-                            'phase': 'failed', 'provider_send_state': 'response_closed'}))
+                errors = list(islice(Draft202012Validator(schema).iter_errors(args), VALIDATION_ERRORS + 1))
+                if call.get('name') != RESULT_TOOL or errors:
+                    details = [_validation_error(error) for error in errors[:VALIDATION_ERRORS]]
+                    call_id = call.get('id') if isinstance(call.get('id'), str) else None
+                    receipt.update(phase='failed', provider_send_state='response_closed',
+                        error_code='live_research_result_malformed', provider_call_id=call_id[:160] if call_id else None,
+                        provider_call_id_truncated=bool(call_id and len(call_id) > 160),
+                        rejection_reason='unexpected_tool' if call.get('name') != RESULT_TOOL else 'schema_validation',
+                        validation_errors=details, validation_errors_truncated=len(errors) > VALIDATION_ERRORS,
+                        **_malformed_args(args))
+                    persist()  # Preserve the paid closed answer even if executor teardown is interrupted.
+                    # Schema locations are contract metadata. Instance values,
+                    # arbitrary instance keys and validator messages stay out of logs.
+                    LOG.info('street_story_live_result_rejected story_id=%s operation_id=%s provider_call_id=%s '
+                             'reason=%s schema_errors=%s', binding['story_id'], binding['attempt_id'],
+                             json.dumps(receipt['provider_call_id']), receipt['rejection_reason'],
+                             canonical([{'validator': detail['validator'], 'schema_path': detail['schema_path']}
+                                        for detail in details]))
+                    done.set_exception(ResearchUnavailable('live_research_result_malformed', receipt={
+                        'phase': 'failed', 'provider_send_state': 'response_closed',
+                        'error_code': 'live_research_result_malformed'}))
                     raise ConflictError('live_research_result_malformed', 'Invalid frozen research result.')
                 if not done.done():
                     receipt['provider_call_id'] = call.get('id')
@@ -127,6 +179,9 @@ class LiveSemanticClient:
                         {key: event[key] for key in ('status', 'modality', 'code', 'estimated_units',
                          'requested_units', 'granted_units') if key in event}])[-20:]
                 elif kind == 'error':
+                    if receipt.get('error_code') == 'live_research_result_malformed':
+                        persist()
+                        return  # A later transport error cannot replace the first closed answer.
                     code = str(event.get('code') or 'live_research_provider_error')[:100]
                     receipt.update(error_code=code, phase='failed', provider_send_state=(
                         'response_closed' if receipt['text_sends'] else 'not_sent'))
