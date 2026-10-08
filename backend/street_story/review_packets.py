@@ -29,6 +29,11 @@ def literal_basis_quote(quote, passages):
     return decoded if decoded != quote and contained(decoded) else quote
 
 EXTRACTION_CHECKS = (
+    'Write each fact.text in Russian for publication, preserving supported scope and qualifiers. '
+    'For existing_fact_id copy only an exact host fact_id from the supplied known inventory; '
+    'otherwise use the empty string. Never invent IDs or use ordinal placeholders. '
+    'Choose independently selectable claims relevant to coverage_goal; location metadata alone '
+    'does not supply missing substantive history. '
     'Before saving, enumerate independently selectable assertions from the source '
     '(each depicted person, role or event separately). Form each candidate only after '
     'checking all its dates, numbers, parts, stages and qualifiers against its own '
@@ -38,6 +43,11 @@ EXTRACTION_CHECKS = (
     'future values must not be rewritten as completed, paid or actual outcomes. '
     'A dated article describes its own time: mutable states (registration, ownership, '
     'condition or use) need an explicit as-of date unless current evidence verifies them. '
+    'An undated source saying currently or these days does not establish a current as-of date. '
+    'Retrieval time is not publication or event time. Preserve unresolved temporal ambiguity '
+    'and conflicting source accounts rather than inventing a date or selecting one silently. '
+    'Keep the physical building, institution, individual part and larger complex distinct; '
+    'an institution\'s founding date is not automatically the building\'s construction date. '
     'Do not merge a news event such as work starting with an adjacent planned budget '
     'into one fact merely because both appear in the same source paragraph. '
     'Preserve uncertainty and subset versus whole. If the source context is incomplete, '
@@ -54,6 +64,11 @@ REVIEW_CHECKS = (
     'another fact\'s spans. supported requires one claim and complete own support. '
     'A mutable state reported by an old article is not a current fact: repair it to '
     'retain the source date, or attach evidence verifying its present status. '
+    'An undated currently or these days statement does not establish present status; '
+    'the review or retrieval date is not the source\'s publication or event date. '
+    'Preserve temporal ambiguity and source-specific conflicting accounts. Check the exact '
+    'subject: building versus institution, individual part versus larger complex. Do not '
+    'transfer an institution\'s founding date to the physical building. '
     'Keep correct affirmative candidates; missing context is insufficient, not historically false.'
 )
 

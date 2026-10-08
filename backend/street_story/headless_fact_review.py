@@ -50,6 +50,12 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'between a fact and its own passage belongs in its contradicted decision, not in conflicts. '
       'Read JSON passage strings as decoded text. Prefer short single-line literal quotes; '
       'do not copy JSON serialization escapes as literal backslashes into basis_quotes. '
+      'An undated source saying currently or these days does not establish present mutable status. '
+      'The review or retrieval date is not the source\'s publication or event date. Preserve actual '
+      'temporal ambiguity and source-specific conflicting accounts; use insufficient or repair_needed '
+      'when support cannot resolve them, without declaring historical claims false. Check the exact '
+      'physical subject: building versus institution, individual part versus larger complex; an '
+      'institution\'s founding date is not automatically the building\'s construction date. '
       'Frozen packet: ')
 VERIFIER_CONTRACT_ID = 'closed-packet-json-v2:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
