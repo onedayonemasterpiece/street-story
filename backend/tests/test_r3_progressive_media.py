@@ -179,7 +179,8 @@ async def test_failed_js_keeps_partial_static_and_cursor(service):
 
 @pytest.mark.asyncio
 async def test_recovery_uses_first_ready_and_returns_useful_page(service, monkeypatch):
-    service.providers = SimpleNamespace(gemini=SimpleNamespace(_generate=True, executor=True))
+    service.providers = SimpleNamespace(gemini=SimpleNamespace(_generate=lambda: None,
+        executor=SimpleNamespace(execute=lambda *args: None)))
     sources = [{'url': 'https://history.example/' + str(i)} for i in range(30)]
     history = {'sources': sources, 'pages': {}}
     async def suggest(*_):
@@ -210,7 +211,8 @@ async def test_recovery_uses_first_ready_and_returns_useful_page(service, monkey
 
 @pytest.mark.asyncio
 async def test_recovery_does_not_hold_cached_partial_for_new_reads(service, monkeypatch):
-    service.providers = SimpleNamespace(gemini=SimpleNamespace(_generate=True, executor=True))
+    service.providers = SimpleNamespace(gemini=SimpleNamespace(_generate=lambda: None,
+        executor=SimpleNamespace(execute=lambda *args: None)))
     ready = {'candidate_id': 'web:ready', 'url': 'https://history.example/ready'}
     history = {'sources': [{'url': ready['url']}, {'url': 'https://history.example/slow'}],
                'pages': {ready['url']: {'status': 'partial', 'candidates': [ready],

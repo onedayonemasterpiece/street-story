@@ -92,8 +92,8 @@ async def test_outage_restart_resumes_saved_original_without_closed_client(tmp_p
 async def test_discovery_transport_failure_is_not_a_completed_negative(monkeypatch, tmp_path):
     service, gemini = make_service(tmp_path)
     story = create(service, client='discovery-wait')
-    gemini._generate = object()
-    gemini.executor = object()
+    gemini._generate = lambda: None
+    gemini.executor = SimpleNamespace(execute=lambda *args: None)
 
     async def failed(*args):
         raise httpx.ReadTimeout('temporary provider timeout')
