@@ -359,7 +359,8 @@ def prepare(adapter, session, args):
             claims = decision.get('claims')
             if claims is not None:
                 if not isinstance(claims, list) or not 1 <= len(claims) <= 8 or any(not isinstance(c, str) or not 1 <= len(c) <= 500 for c in claims):
-                    raise ConflictError('live_review_decisions_invalid', 'List the independently selectable propositions in this candidate.')
+                    raise ConflictError('live_review_decisions_invalid',
+                        f"Fact {decision['fact']}: claims must be a nonempty list of candidate propositions for EVERY verdict, including insufficient. It does not assert they are supported.")
                 if verdict == 'supported' and len(claims) != 1:
                     raise ConflictError('live_review_decisions_invalid', 'Your decomposition has multiple claims. Split the candidate before positive review.')
             quotes = decision.get('basis_quotes')

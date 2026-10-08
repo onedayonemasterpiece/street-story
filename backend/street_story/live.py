@@ -577,7 +577,7 @@ FUNCTIONS = [
                 "verdict": {"type": "string", "enum": ["supported", "not_supported", "contradicted", "role_mismatch", "insufficient", "repair_needed"]},
                 "reason": {"type": "string", "description": "Brief basis in THIS fact's attached spans; do not borrow unbound evidence from another candidate."},
                 "atomic": {"type": "boolean"}, "support_complete": {"type": "boolean"}, "qualifiers_preserved": {"type": "boolean"},
-                "claims": {"type": "array", "items": {"type": "string"}, "description": "Enumerate independently selectable assertions actually present in the candidate; each depicted person is independently selectable. Multiple entries require repair/split before supported."},
+                "claims": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}, "description": "Nonempty for EVERY verdict, including insufficient: enumerate assertions present in the candidate, not only supported assertions. Each depicted person is independently selectable. Multiple entries require repair/split before supported."},
                 "basis_quotes": {"type": "array", "items": {"type": "string"}, "description": "Literal short quotations from this fact's selected attached evidence. Every substantive attribute must follow; never quote another candidate's passage. Empty only for unsupported decisions."},
                 "evidence": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based evidence numbers within THIS fact, from packet items."},
                 "equivalent_to_existing": {"type": "string", "description": "For extractor candidate packets only: ID from nearby_existing_claims for a supported semantic duplicate. Existing owner claims remain unchanged."},
