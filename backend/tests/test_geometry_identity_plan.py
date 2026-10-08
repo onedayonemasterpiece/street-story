@@ -59,6 +59,27 @@ class Executor:
         return await call('offline-fixture', 5)
 
 
+def test_large_osm_dictionary_stays_in_host_validation_without_repeated_provider_enums():
+    from jsonschema import Draft202012Validator
+    from street_story.identity_source_selection import identity_transport_schema
+    ids = [f'osm:way:{n}' for n in range(1000)]
+    canonical = {'type': 'object', 'properties': {
+        'observed_candidate_ids': {'type': 'array', 'items': {'type': 'string', 'enum': ids}},
+        'spatial_hypotheses': {'type': 'array', 'items': {'type': 'object', 'properties': {
+            'candidate_id': {'type': 'string', 'enum': ids}}}},
+        'first_wave_hypotheses': {'type': 'array', 'items': {'type': 'object', 'properties': {
+            'subject_id': {'type': 'string', 'enum': [*ids, '']}}}}}}
+    original = copy.deepcopy(canonical)
+    transmitted = identity_transport_schema(canonical)
+    assert canonical == original
+    assert len(json.dumps(transmitted)) < 1000
+    assert len(json.dumps(canonical)) > 40000
+    unobserved = {'observed_candidate_ids': ['osm:way:unreceived']}
+    assert Draft202012Validator(transmitted).is_valid(unobserved)
+    assert not Draft202012Validator(canonical).is_valid(unobserved)
+    assert Draft202012Validator(canonical).is_valid({'observed_candidate_ids': [ids[-1]]})
+
+
 @pytest.mark.asyncio
 async def test_one_joint_call_accepts_full_pool_geometry_and_reuses_without_any_reference_search(tmp_path, monkeypatch):
     service, story, active = geometry_setup(tmp_path)

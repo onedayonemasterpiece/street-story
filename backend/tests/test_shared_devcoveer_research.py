@@ -87,6 +87,24 @@ def setup(tmp_path, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_shared_identity_planner_forwards_operation_cap_without_expanding_fact_cap(tmp_path):
+    h, backend, adapter = setup(tmp_path)
+    h.result = {'summary': 'Actual sources'}
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}},
+              'required': ['summary']}
+    limits = adapter.limits
+    result = await adapter.plan_identity_search('Observed map ' + 'x'*30000,
+        {'request_id': 'shared-large-plan'}, schema)
+    assert result['receipt']['phase'] == 'completed'
+    assert adapter.limits is limits and limits.max_input_chars == 24000
+    assert len(h.sends) == 1
+    before = len(backend.calls)
+    with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
+        await adapter._run('facts', 'x'*30000, {'request_id': 'normal-facts'}, schema)
+    assert len(backend.calls) == before and len(h.sends) == 1
+
+
+@pytest.mark.asyncio
 async def test_native_plan_session_overrides_permissions_and_every_request_is_scoped(tmp_path):
     h, backend, adapter = setup(tmp_path)
     result = await adapter.search_articles('Facade alternatives', {'request_id': 'r'})

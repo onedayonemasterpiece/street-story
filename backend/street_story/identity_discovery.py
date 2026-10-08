@@ -94,7 +94,7 @@ async def suggest(service, story, transcript, candidates):
     from google.genai import types
     from .identity_source_selection import (regional_source_profile, model_identity_context,
         first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
-        wikipedia_metadata_context, grounded_wave_catalog, geometry_decision_schema)
+        wikipedia_metadata_context, grounded_wave_catalog, geometry_decision_schema, identity_transport_schema)
     schema = {'type': 'object', 'properties': {
         'entity_name': {'type': 'string'},
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
@@ -229,7 +229,7 @@ async def suggest(service, story, transcript, candidates):
             packet, ensure_ascii=False, separators=(',', ':'))
     config = types.GenerateContentConfig(
         response_mime_type='application/json',
-        response_json_schema=schema,
+        response_json_schema=identity_transport_schema(schema),
         system_instruction='Идентифицируй именно физическое сооружение. Город, район или область не являются ответом об объекте.',
     )
     gemini = service.providers.gemini
@@ -308,10 +308,24 @@ async def suggest(service, story, transcript, candidates):
         candidates[:] = selected_candidates(candidates, observed, wiki_pages, payload)
         return result
     async def call(key, timeout, *, model=None, quota=None):
-        response = await gemini._generate(key, timeout, [
-            types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
-            *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []), prompt], config,
-            operation='grounded_research', model=model, quota=quota)
+        from google.genai.errors import APIError
+        try:
+            response = await gemini._generate(key, timeout, [
+                types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
+                *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []), prompt], config,
+                operation='grounded_research', model=model, quota=quota)
+        except APIError as exc:
+            # Retain a closed diagnostic category, never provider payloads or keys.
+            detail = str(exc).lower()
+            reason = ('schema_depth' if 'schema' in detail and 'nest' in detail else
+                'schema_complexity' if 'schema' in detail and any(word in detail for word in
+                    ('complex', 'too many', 'too large')) else
+                'schema_invalid' if 'schema' in detail else 'invalid_argument')
+            if getattr(exc, 'code', None) == 400:
+                record_identity_event(service, story['id'], 'identity_plan_provider_rejected',
+                    {'code': 400, 'reason': reason, 'schema_sha256': hashlib.sha256(
+                        json.dumps(config.response_json_schema, sort_keys=True).encode()).hexdigest()})
+            raise
         story['_identity_search_plan_route'] = 'google'
         payload = json.loads(response.text or '{}')
         return accept(payload)

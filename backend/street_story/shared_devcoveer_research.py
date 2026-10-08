@@ -246,12 +246,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             holder['value'] = copy.deepcopy(receipt)
         await super()._checkpoint(binding, receipt)
 
-    async def _run(self, role, prompt, binding, schema, *, snapshot=None):
+    async def _run(self, role, prompt, binding, schema, *, snapshot=None, max_input_chars=None):
         deadline_token = self._deadline.set(time.monotonic() + self.limits.timeout_seconds)
         receipt_token = self._receipt.set({'value': {'role': role, 'binding': binding, 'phase': 'attesting'}})
         try:
             async with asyncio.timeout(self.limits.timeout_seconds):
-                return await super()._run(role, prompt, binding, schema, snapshot=snapshot)
+                return await super()._run(role, prompt, binding, schema, snapshot=snapshot,
+                                         max_input_chars=max_input_chars)
         except TimeoutError as exc:
             receipt = (self._receipt.get() or {}).get('value') or {}
             receipt['error_code'] = 'research_worker_timeout'

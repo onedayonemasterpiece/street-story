@@ -434,6 +434,27 @@ def first_wave_catalog(story, candidates=()):
     return {'options': options, 'required_grounded_count': min(2, len(groups)), 'locality_context': locality}
 
 
+def identity_transport_schema(schema):
+    """Send bounded ID strings; validate exact observed membership on the host.
+
+    Repeating the full OSM dictionary in several schema enums can exceed the
+    provider's structured-output complexity limit. The complete dictionary and
+    strict validation schema remain unchanged in the operation context.
+    """
+    import copy
+    result = copy.deepcopy(schema)
+    properties = result['properties']
+    if 'observed_candidate_ids' in properties:
+        properties['observed_candidate_ids']['items'] = {'type': 'string', 'maxLength': 100}
+    if 'spatial_hypotheses' in properties:
+        properties['spatial_hypotheses']['items']['properties']['candidate_id'] = {
+            'type': 'string', 'maxLength': 100}
+    if 'first_wave_hypotheses' in properties:
+        properties['first_wave_hypotheses']['items']['properties']['subject_id'] = {
+            'type': 'string', 'maxLength': 100}
+    return result
+
+
 def geometry_decision_schema(candidate_ids):
     """Evidence from the existing joint call, rather than a second judge."""
     text = {'type': 'string', 'maxLength': 300}
