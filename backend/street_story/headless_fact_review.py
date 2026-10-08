@@ -153,10 +153,41 @@ class HeadlessFactReview:
                 blocked.update(fid for fid, digest in previous.items() if current.get(fid) == digest)
         return blocked
 
+    def _recover_closed_reviews(self, job):
+        """Consume the original durable result after executor interruption.
+
+        No model operation is submitted here. The regular packet guard still
+        decides whether this frozen result may be committed to current facts.
+        """
+        from jsonschema import Draft202012Validator
+        schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
+        with self.service.store.connection() as db:
+            saved_units = [(row['stage'].split(':', 1)[1], json.loads(row['value_json'])) for row in db.execute(
+                "SELECT stage,value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'",
+                (job['id'],))]
+            attempts = [(row['role'], json.loads(row['receipt_json'])) for row in db.execute(
+                'SELECT role,receipt_json FROM research_provider_attempts WHERE story_id=? ORDER BY updated_at DESC,rowid DESC',
+                (job['story_id'],))]
+        for unit, saved in saved_units:
+            if saved.get('phase') not in {'started', 'unknown'}:
+                continue
+            prior = next((receipt for role, receipt in attempts if role == saved.get('route')
+                          and (receipt.get('binding') or {}).get('fact_unit_id') == unit), None)
+            if not prior or prior.get('phase') != 'completed':
+                continue
+            args = prior.get('result')
+            if not Draft202012Validator(schema).is_valid(args) or args.get('packet_ref') != saved.get('packet_ref'):
+                continue
+            self._put(job, unit, {**saved, 'phase': 'result', 'args': args,
+                'model_id': prior.get('model_id') or prior.get('model')})
+            LOG.info('street_story_background_fact_review_recovered story_id=%s unit_id=%s original_result=true',
+                     job['story_id'], unit)
+
     async def run(self, job, run_id, control_revision):
         snapshot = self.harness._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return 0
+        self._recover_closed_reviews(job)
         with self.service.store.connection() as db:
             pending = review_packets.pending_candidates(db, job['story_id'], run_id)
             current = review_packets.bundle(db, job['story_id'])

@@ -404,6 +404,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         tasks = {asyncio.create_task(run_pair(pair)) for pair in pairs}
         all_tasks = set(tasks)
         preparation = None
+        preparation_route = None
         # A resumed batch may contain only one unknown child. Completed lanes
         # are already free even though no completion occurs in this worker turn.
         # Preserve the original unknown lane; acquire independent work elsewhere.
@@ -423,6 +424,12 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                     if finished is preparation:
                         preparation = None
                         new_pair, error = await finished
+                        if new_pair is None and error is None:
+                            # A reader/search turn with no usable image did
+                            # not occupy its visual lane. Keep that slot free
+                            # for the next unread page or late discovery.
+                            freed_routes.append(preparation_route)
+                        preparation_route = None
                         if error:
                             waits.append(error)
                         elif new_pair:
@@ -491,7 +498,8 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                             and current.get('error_code') != 'visual_identity_conflict'):
                         # One acquisition at a time, independent of already
                         # submitted comparisons. UNKNOWN never frees its lane.
-                        preparation = asyncio.create_task(prepare_refill(freed_routes.pop(0)))
+                        preparation_route = freed_routes.pop(0)
+                        preparation = asyncio.create_task(prepare_refill(preparation_route))
                         tasks.add(preparation)
                         all_tasks.add(preparation)
         except asyncio.CancelledError:

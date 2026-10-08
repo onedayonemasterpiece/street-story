@@ -41,7 +41,7 @@ class ControlledReview(HeadlessFactReview):
         await asyncio.sleep(.02)
         type(self).active -= 1
         if type(self).mode == 'unknown':
-            self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref']})
+            self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': 'facts_review_fixture'})
             return None
         decisions=[]
         for fact in sorted({r['fact'] for r in packet['items']}):
@@ -124,6 +124,34 @@ async def test_unknown_review_is_not_repeated_and_other_scope_can_finish(tmp_pat
     ControlledReview.mode='positive'
     assert await engine.run(job,RUN,0)==0
     assert ControlledReview.calls==2
+
+
+@pytest.mark.asyncio
+async def test_completed_original_review_is_recovered_after_checkpoint_interruption_without_new_model(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=3)
+    ControlledReview.mode = 'unknown'
+    assert await ControlledReview(harness).run(job, RUN, 0) == 0
+    with svc.store.connection() as db:
+        row = db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],)).fetchone()
+    unit, saved = row['stage'].split(':', 1)[1], json.loads(row['value_json'])
+    session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'packet_ref': saved['packet_ref']})
+    decisions = [{'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+        'atomic': True, 'support_complete': True, 'qualifiers_preserved': True, 'claims': [item['text']],
+        'basis_quotes': [item['text']], 'reason': 'Original own literal evidence.'} for item in packet['items']]
+    args = {'packet_ref': packet['packet_ref'], 'decisions': decisions, 'relations_complete': True,
+            'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
+    with svc.store.tx() as db:
+        receipt = {'binding': {'fact_unit_id': unit}, 'phase': 'completed', 'model_id': 'original-fixture', 'result': args}
+        db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+            ('original-completed', 'original-logical', job['story_id'], saved['route'], json.dumps(receipt), svc.store.now(), svc.store.now()))
+    # There is no configured review client; recovery must consume the original
+    # closed response, guard its packet, and commit without another inference.
+    assert await HeadlessFactReview(harness).run(job, RUN, 0) == 1
+    assert ControlledReview.calls == 1
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 3
 
 
 @pytest.mark.asyncio

@@ -195,6 +195,21 @@ async def test_missing_attachment_does_not_accept_textual_verdict():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('text,accepted', [('Фасад здания. ' * 100, True), ('a' * 3000, False)])
+async def test_fact_output_character_bound_uses_real_unicode_json(text, accepted):
+    h = Harness()
+    h.result = {'text': text}
+    call = h.adapter(limits=ResearchLimits(max_output_chars=2000)).extract_facts(
+        {'binding': {'request_id': 'unicode-facts'}, 'jsonschema': {'type': 'object'}})
+    if accepted:
+        assert (await call)['result'] == h.result
+    else:
+        with pytest.raises(ResearchUnavailable, match='research_output_too_large'):
+            await call
+    assert len([path for method, path, _ in h.requests if method == 'POST' and path.endswith('prompt_async')]) == 1
+
+
+@pytest.mark.asyncio
 async def test_fact_extraction_uses_supplied_capsule_schema_no_tool_or_new_fetch():
     h = Harness()
     h.result = {'facts': []}
