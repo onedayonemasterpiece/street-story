@@ -227,10 +227,15 @@ async def suggest(service, story, transcript, candidates):
             packet = compact_planner_packet(packet)
         prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
             packet, ensure_ascii=False, separators=(',', ':'))
+    response_contract = identity_transport_schema(schema)
+    # JSON mode keeps the deep spatial evidence contract out of the provider's
+    # constrained-decoding schema. The full host validator below is unchanged.
     config = types.GenerateContentConfig(
         response_mime_type='application/json',
-        response_json_schema=identity_transport_schema(schema),
-        system_instruction='Идентифицируй именно физическое сооружение. Город, район или область не являются ответом об объекте.',
+        system_instruction=('Идентифицируй именно физическое сооружение. Город, район или область '
+            'не являются ответом об объекте. Return one JSON object satisfying this contract; '
+            'exact IDs must belong to the supplied context:\n' + json.dumps(
+                response_contract, ensure_ascii=False, separators=(',', ':'))),
     )
     gemini = service.providers.gemini
     def accept(payload, *, original_schema_readback=False, original_schema=None):
@@ -324,7 +329,7 @@ async def suggest(service, story, transcript, candidates):
             if getattr(exc, 'code', None) == 400:
                 record_identity_event(service, story['id'], 'identity_plan_provider_rejected',
                     {'code': 400, 'reason': reason, 'schema_sha256': hashlib.sha256(
-                        json.dumps(config.response_json_schema, sort_keys=True).encode()).hexdigest()})
+                        json.dumps(response_contract, sort_keys=True).encode()).hexdigest()})
             raise
         story['_identity_search_plan_route'] = 'google'
         payload = json.loads(response.text or '{}')
@@ -335,8 +340,20 @@ async def suggest(service, story, transcript, candidates):
             raise cause
         # The qualified text worker plans from observed anchors, OCR/previous
         # observations and author context. It must not pretend to see SOURCE.
-        result = await planner(story, prompt + '\nSOURCE image is unavailable to this text fallback. '
-            'Use only supplied observed anchors and context; unknown visual details stay unknown.', schema)
+        # Text planning does not receive MAP pixels and cannot accept spatial
+        # identity. Give it the complete literal anchor/catalog tables without
+        # repeating the image's measured scene packet. Geometry stays durable
+        # for the joint worker; this route only selects searches/pages.
+        text_packet = {**plain_packet, 'map_scene': None}
+        if len(json.dumps(text_packet, ensure_ascii=False, separators=(',', ':'))) > 48_000:
+            text_packet = compact_planner_packet(text_packet)
+        text_prompt = (prompt.split('Данные ниже — только контекст:\n', 1)[0]
+            + 'Данные ниже — только контекст:\n'
+            + json.dumps(text_packet, ensure_ascii=False, separators=(',', ':'))
+            + '\nSOURCE image is unavailable to this text fallback. MAP image is unavailable too. '
+            'Use only supplied observed anchors and context; unknown visual details stay unknown. '
+            'Do not return accepted_geometry; select useful article/search hypotheses.')
+        result = await planner(story, text_prompt, schema)
         story['_identity_search_plan_route'] = 'qualified_text_fallback'
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',
             {'cause': getattr(cause, 'code', type(cause).__name__)})

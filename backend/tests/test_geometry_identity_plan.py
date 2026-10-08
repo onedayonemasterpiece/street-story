@@ -88,7 +88,9 @@ async def test_one_joint_call_accepts_full_pool_geometry_and_reuses_without_any_
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
         assert len(contents) == 3 and contents[0].inline_data and contents[1].inline_data
-        assert 'accepted_geometry' in config.response_json_schema['properties']
+        assert config.response_json_schema is None
+        assert config.response_mime_type == 'application/json'
+        assert 'accepted_geometry' in config.system_instruction
         return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
     async def forbidden(*args, **kwargs):
         pytest.fail('Accepted joint geometry must end identity before external reference work')

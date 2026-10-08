@@ -141,7 +141,8 @@ async def test_planner_can_promote_existing_building_outside_active_shortlist(tm
         context = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
         rows = context['location_search_context']['observed_physical_candidates']['rows']
         assert physical['candidate_id'] in [row[0] for row in rows]
-        assert config.response_json_schema['properties']['observed_candidate_ids']['items']['enum'] == [physical['candidate_id']]
+        contract = json.loads(config.system_instruction.rsplit('\n', 1)[1])
+        assert contract['properties']['observed_candidate_ids']['items'] == {'type': 'string', 'maxLength': 100}
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
             'visual_query': '', 'commons_query': '', 'article_queries': ['Observed city Observed street'],
             'observed_candidate_ids': [physical['candidate_id']], 'first_wave_hypotheses': []}))
