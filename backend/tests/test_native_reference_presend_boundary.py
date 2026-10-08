@@ -28,6 +28,22 @@ async def test_reference_network_error_before_inference_closes_only_unsent_refer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('result', [('image/svg+xml', b'<svg/>'), ('image/png', b'not a png'),
+    httpx.HTTPStatusError('private payload', request=httpx.Request('GET','https://ref.test/x'), response=httpx.Response(404))])
+async def test_non_image_and_bad_source_close_only_the_unsent_reference(tmp_path, result):
+    provider, client, _, story, context, receipts, sends, finalized = setup(tmp_path)
+    async def loader(url):
+        if isinstance(result, Exception):
+            raise result
+        return result
+    provider.public_image_loader = loader
+    with pytest.raises(PermanentProviderError, match='native_vision:reference_unavailable'):
+        await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id':'bad-image'})
+    assert receipts[-1]['phase'] == 'failed' and receipts[-1]['provider_send_state'] == 'not_sent'
+    assert not client.calls and not sends and not finalized
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['prompt_intent', 'submitted', 'unknown'])
 async def test_reference_network_error_during_original_readback_preserves_unknown_fence(tmp_path, phase):
     provider, client, _, story, context, receipts, sends, finalized = setup(tmp_path)
