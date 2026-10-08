@@ -33,6 +33,12 @@ def client(svc, behavior):
             return {'session_id': self.session.id}
         async def input(self, **kwargs):
             self.guard()
+            # Exercise the real shared host's text-turn validation instead of a
+            # permissive test double that silently accepts arbitrary prompts.
+            from live_interaction.session_host import LiveSessionHost
+            shim = SimpleNamespace(adapter=SimpleNamespace(), _touch=lambda session: None,
+                _get=lambda *args: self.session, _write=lambda session, frame: 1)
+            await LiveSessionHost.input(shim, **kwargs)
             calls.append(('input', kwargs))
             self.adapter.on_event(self.session, {'type': 'input_timing', 'text_sent_at': 1})
             if behavior == 'pending':
@@ -70,6 +76,33 @@ async def test_live_capability_returns_only_schema_bound_result_and_closes(tmp_p
         saved = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE attempt_id='live-original'").fetchone()[0])
     assert saved['phase'] == 'completed'
     assert saved['result'] == result['result']
+
+
+@pytest.mark.asyncio
+async def test_long_frozen_evidence_is_delivered_in_actual_setup_and_one_small_text_turn(tmp_path):
+    from live_interaction.provider import setup_config
+    svc, _, story = service(tmp_path)
+    provider, calls = client(svc, 'valid')
+    # More than the real host's 4000-character conversation limit, within the
+    # product's existing frozen-operation bound. Nothing is truncated.
+    prompt = 'Exact source passage and subject binding. ' * 300
+    captured = {}
+    original = provider.host_factory
+    class CaptureHost(original):
+        async def start(self, **kwargs):
+            result = await super().start(**kwargs)
+            captured.update(self.initialized)
+            return result
+    provider.host_factory = CaptureHost
+    result = await provider._run('facts', prompt, binding(svc, story), SCHEMA)
+    assert captured['context']['frozen_research_operation']['prompt'] == prompt
+    setup = setup_config(provider.model_id, captured['context'], None,
+        configuration=captured['configuration'], search=False)
+    assert prompt in json.dumps(setup, ensure_ascii=False)
+    turns = [args['message']['text'] for kind, args in calls if kind == 'input']
+    assert len(turns) == 1 and len(turns[0]) < 4000
+    assert result['receipt']['text_sends'] == 1 and result['receipt']['phase'] == 'completed'
+    assert result['receipt']['source_prompt_chars'] == len(prompt)
 
 
 @pytest.mark.asyncio
