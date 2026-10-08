@@ -15,6 +15,36 @@ BODY = '<main><h1>Gate archive</h1><p>A sufficiently long literal public article
 
 
 @pytest.mark.asyncio
+async def test_cached_windows1251_source_reaches_frozen_fact_reader_without_corruption(tmp_path, monkeypatch):
+    from street_story.providers import GeminiClient
+    import hashlib
+    svc, _, session, _ = make_service(tmp_path)
+    mark_identity_ready(svc, session.resource_id)
+    reader = GeminiClient(svc.settings, svc.store)
+    passage = 'Центральный эркер завершается полукругом. Фасад имеет три оконные оси. ' * 3
+    raw = ('<html><head><meta charset="windows-1251"></head><body><main>'
+        '<h1>Описание здания</h1><p>' + passage + '</p></main></body></html>').encode('cp1251')
+    requests = []
+    async def handle(request):
+        requests.append(request)
+        return httpx.Response(200, headers={'content-type': 'text/html'}, content=raw)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        reader.search_http = client
+        await article_media.cached_public_page(svc.store, client, URL)
+        with svc.store.tx() as db:
+            story = dict(svc._story_row(db, session.resource_id))
+            begin_research_run(db, story_id=story['id'], poi_key='wiki:77', goal='Architecture',
+                expected_story_revision=story['revision'], identity_generation=0, run_id='encoded-run', now=svc.store.now())
+        documents = await reader._fetch_page_documents([URL], {'research_run_id': 'encoded-run'})
+    document = documents[URL]
+    assert len(requests) == 1
+    assert passage.strip() in document['normalized_text']
+    assert document['source_encoding'] == 'windows-1251'
+    assert document['raw_content_sha256'] == hashlib.sha256(raw).hexdigest()
+    assert document['source_version_id'] and document['chunks']
+
+
+@pytest.mark.asyncio
 async def test_simultaneous_real_text_and_media_paths_share_acquisition(tmp_path, monkeypatch):
     from street_story.providers import GeminiClient
     svc, _, session, _ = make_service(tmp_path)

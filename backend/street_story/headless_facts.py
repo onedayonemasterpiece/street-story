@@ -98,6 +98,9 @@ def acquired_subject_articles(identity, research):
         for url in urls:
             if url:
                 lead({'url': url, 'title': candidate.get('name')}, {cid})
+    for article in (identity.get('architectural_text_proof') or {}).get('article_sources') or []:
+        if isinstance(article, dict):
+            lead(article, {identity.get('candidate_id')})
     history = research.get('identity_article_discovery') or {}
     plan = history.get('search_plan') or {}
     if (history.get('photo_sha256') == photo and history.get('generation') == generation
@@ -110,6 +113,12 @@ def acquired_subject_articles(identity, research):
             subjects.update(source.get('physical_subject_candidate_ids') or [])
             subjects.update(source.get('memory_candidate_ids') or [])
             lead(source, subjects)
+        pages = {f"wiki:{page.get('pageid')}": page for page in research.get('wikipedia') or [] if isinstance(page, dict)}
+        for binding in (plan.get('payload') or {}).get('subject_article_bindings') or []:
+            if (isinstance(binding, dict) and binding.get('physical_binding_resolved') is True
+                    and str(binding.get('scope') or '').strip() and str(binding.get('binding_basis') or '').strip()
+                    and binding.get('candidate_id') in aliases and binding.get('article_id') in pages):
+                lead(pages[binding['article_id']], {binding['candidate_id']})
     return articles
 
 

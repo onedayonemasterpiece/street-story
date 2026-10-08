@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, UnicodeDammit
 
 from .config import Settings, reveal
 from .db import Store
@@ -1513,7 +1513,13 @@ class GeminiClient:
                         raise ValueError(error_code)
                     body_limited = len(raw_bytes) > 768_000
 
-                    normalized_text, text_limited = _read_article_text(response.text)
+                    # Public acquisition stores raw bytes and MIME, so decoding
+                    # must honor the document charset rather than httpx's UTF-8
+                    # default after recreating the response from cache.
+                    decoded = UnicodeDammit(raw_bytes, is_html=True)
+                    if decoded.unicode_markup is None:
+                        raise ValueError('article_encoding_unreadable')
+                    normalized_text, text_limited = _read_article_text(decoded.unicode_markup)
                     if len(normalized_text) < 80:
                         error_code = "page_text_too_short"
                         raise ValueError(error_code)
@@ -1573,6 +1579,8 @@ class GeminiClient:
                         "content_type": content_type,
                         "normalized_text": normalized_text,
                         "redirect_chain": redirect_chain,
+                        "source_encoding": decoded.original_encoding,
+                        "raw_content_sha256": hashlib.sha256(raw_bytes).hexdigest(),
                     }
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, OSError, ValueError, UnicodeError) as exc:
                     if isinstance(exc,httpx.HTTPStatusError):

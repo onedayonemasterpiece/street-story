@@ -17,14 +17,15 @@ def current_projection(previous: dict, identity: dict | None = None) -> dict:
         for step in result['steps']:
             if step.get('key') == 'references':
                 step.update(label='Эталон выбранного объекта проверен', status='done')
-    if identity and identity.get('proof_kind') in {'geometry', 'combined'}:
+    if identity and identity.get('proof_kind') in {'geometry', 'architectural_text', 'combined'}:
         from .identity_proof import verified_physical_identity
         if verified_physical_identity(identity):
             result['physical_identity_verified'] = True
             result['proof_kind'] = identity['proof_kind']
             for step in result['steps']:
                 if step.get('key') == 'result':
-                    step.update(label='Объект подтверждён по фото и пространственной геометрии', status='done')
+                    step.update(label='Объект подтверждён по фото и архитектурному описанию'
+                        if identity.get('proof_kind') == 'architectural_text' else 'Объект подтверждён по фото и пространственной геометрии', status='done')
     return result
 
 
@@ -118,11 +119,11 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         progress['finished'] = True
     elif event == 'identity_finished':
         reference_verified = fields.get('status') == 'match' and fields.get('reference_verified') is True
-        geometry_verified = fields.get('status') == 'match' and fields.get('proof_kind') in {'geometry', 'combined'} and fields.get('physical_identity_verified') is True
+        geometry_verified = fields.get('status') == 'match' and fields.get('proof_kind') in {'geometry', 'architectural_text', 'combined'} and fields.get('physical_identity_verified') is True
         matched = reference_verified or geometry_verified
         progress['physical_identity_verified'] = matched
         progress['proof_kind'] = fields.get('proof_kind')
-        step('result', 'Объект подтверждён по фото и пространственной геометрии' if geometry_verified else 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · пока недостаточно доказательств' if fields.get('candidate_id') else 'Объект пока не определён · доказательств недостаточно'), 'done' if matched else 'warning')
+        step('result', 'Объект подтверждён по фото и архитектурному описанию' if geometry_verified and fields.get('proof_kind') == 'architectural_text' else 'Объект подтверждён по фото и пространственной геометрии' if geometry_verified else 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · пока недостаточно доказательств' if fields.get('candidate_id') else 'Объект пока не определён · доказательств недостаточно'), 'done' if matched else 'warning')
         if reference_verified:
             step('references', 'Эталон выбранного объекта проверен', 'done')
         if 'compare' in steps:

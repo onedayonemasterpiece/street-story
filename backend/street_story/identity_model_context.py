@@ -1,7 +1,7 @@
 """Small model context for an accepted physical subject; never an auth proof."""
 from __future__ import annotations
 
-from .identity_proof import accepted_identity
+from .identity_proof import accepted_identity, physical_scope
 
 
 def compact_physical_identity(identity, *, photo_sha256=None, generation=None, control_revision=None):
@@ -22,9 +22,9 @@ def compact_physical_identity(identity, *, photo_sha256=None, generation=None, c
     for key in ('generation', 'control_revision', 'visual_reference_verified'):
         if key in identity:
             result[key] = identity[key]
-    scope = identity.get('physical_scope') if projected else ((identity.get('geometry_proof') or {}).get('decision') or {}).get('scope')
+    scope = identity.get('physical_scope') if projected else physical_scope(identity)
     if isinstance(scope, str) and scope:
-        result['physical_scope'] = scope[:300]  # Geometry schema preserves at most 300 literal chars.
+        result['physical_scope'] = scope[:600]  # Preserve either proof contract's bounded literal physical scope.
     result['physical_identity_accepted'] = accepted
     result['observations'] = [str(value)[:300] for value in (identity.get('observations') or [])[:3]]
     if projected:

@@ -82,6 +82,67 @@ def test_large_osm_dictionary_stays_in_host_validation_without_repeated_provider
 
 
 @pytest.mark.asyncio
+async def test_joint_repairs_one_unreceived_alternative_without_another_judge_or_reference(tmp_path):
+    service, story, active = geometry_setup(tmp_path)
+    bad = geometry_decision()
+    bad['rejected_alternatives'][0]['candidate_id'] = 'osm:way:999'
+    calls = []
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            return SimpleNamespace(text=json.dumps(payload(bad)))
+        assert 'unreceived_alternative_ids' in contents[-1] and 'osm:way:999' in contents[-1]
+        assert contents[0].inline_data.data == calls[0][0].inline_data.data
+        assert contents[1].inline_data.data == calls[0][1].inline_data.data
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+    async def forbidden(*args, **kwargs):
+        pytest.fail('A repaired valid joint decision needs no further planner or REF')
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(calls) == 2 and story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+
+
+@pytest.mark.asyncio
+async def test_nominated_architectural_lookup_closes_identity_without_ref_or_extra_text_planner(tmp_path, monkeypatch):
+    from street_story import identity_architectural_context
+    from test_architectural_text_identity import text_inputs
+    service, story, active = geometry_setup(tmp_path)
+    _input, _catalog, text_decision, receipt = text_inputs(candidate_id='osm:way:2')
+    articles = receipt['articles']
+    uncertain = geometry_decision()
+    uncertain['decision'] = 'uncertain'
+    initial = payload(uncertain)
+    initial.update(regional_lookup={'route': 'address', 'candidate_ids': ['osm:way:2'],
+        'reason': 'The isolated facade needs a distinguishing bay description.'})
+    requests, calls = [], []
+    async def acquire(svc, snapshot, candidates, request):
+        requests.append(request)
+        return articles, {'status': 'completed', 'results': []}
+    monkeypatch.setattr(identity_architectural_context, 'acquire_regional_text', acquire)
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            return SimpleNamespace(text=json.dumps(initial))
+        assert contents[0].inline_data.data == calls[0][0].inline_data.data
+        assert articles[0]['text'] in contents[-1]
+        final = payload(uncertain)
+        final['accepted_architectural_text'] = text_decision
+        return SimpleNamespace(text=json.dumps(final))
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Architectural text identity needs no external REF or third planner')
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
+    history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(requests) == 1 and len(calls) == 2
+    accepted = story['_identity_geometry_result']
+    assert accepted['proof_kind'] == 'architectural_text' and accepted['candidate_id'] == 'osm:way:2'
+    assert accepted['visual_reference_verified'] is False
+    assert history['planned_queries'] == []
+    assert history['search_plan']['payload']['architectural_text_proof']['validated'] is True
+
+
+@pytest.mark.asyncio
 async def test_invalid_geometry_preserves_explicit_ready_wiki_choice_without_another_planner(tmp_path):
     service, story, active = geometry_setup(tmp_path)
     story['_identity_wikipedia_metadata'] = [{'pageid': 99, 'title': 'Observed subject',
@@ -99,7 +160,7 @@ async def test_invalid_geometry_preserves_explicit_ready_wiki_choice_without_ano
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert calls == ['joint']
+    assert calls == ['joint', 'joint']  # One bounded exact-pointer repair.
     saved = history['search_plan']['payload']
     assert saved['selected_wikipedia_page_ids'] == ['99']
     assert 'accepted_geometry' not in saved and 'geometry_proof' not in saved

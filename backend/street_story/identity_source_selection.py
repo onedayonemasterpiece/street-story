@@ -452,6 +452,23 @@ def identity_transport_schema(schema):
     if 'first_wave_hypotheses' in properties:
         properties['first_wave_hypotheses']['items']['properties']['subject_id'] = {
             'type': 'string', 'maxLength': 100}
+    if 'regional_lookup' in properties:
+        properties['regional_lookup']['properties']['candidate_ids']['items'] = {
+            'type': 'string', 'maxLength': 100}
+    for name in ('subject_article_bindings', 'accepted_architectural_text'):
+        if name not in properties:
+            continue
+        def bounded_ids(node):
+            if not isinstance(node, dict):
+                return
+            for key, value in (node.get('properties') or {}).items():
+                if key == 'candidate_id':
+                    node['properties'][key] = {'type': 'string', 'maxLength': 100}
+                else:
+                    bounded_ids(value)
+            if isinstance(node.get('items'), dict):
+                bounded_ids(node['items'])
+        bounded_ids(properties[name])
     return result
 
 

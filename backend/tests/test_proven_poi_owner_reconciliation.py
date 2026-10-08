@@ -168,12 +168,17 @@ def test_equal_created_at_uses_stable_owner_id_independent_of_selected_alias(tmp
         assert ensure_poi_identity(db, {**identity, 'candidate_id': WIKI}, now=31) == min(older, newer)
 
 
-def test_host_geometry_reconciles_exact_physical_aliases_without_reference_receipts(tmp_path):
+@pytest.mark.parametrize('proof_kind', ['geometry', 'architectural_text'])
+def test_host_geometry_reconciles_exact_physical_aliases_without_reference_receipts(tmp_path, proof_kind):
     from test_geometry_subject_articles import geometry_identity
     service, sid, identity, older, newer = fixture(tmp_path)
     with service.store.tx() as db:
         row = service._story_row(db, sid)
-        geometry = geometry_identity(candidate_id=OSM, photo=row['photo_sha256'], generation=0)
+        if proof_kind == 'architectural_text':
+            from test_architectural_text_identity import architectural_identity
+            geometry = architectural_identity(candidate_id=OSM, photo=row['photo_sha256'], generation=0)
+        else:
+            geometry = geometry_identity(candidate_id=OSM, photo=row['photo_sha256'], generation=0)
         geometry['candidates'] = identity['candidates']
         before = immutable_snapshot(db)
         assert ensure_poi_identity(db, geometry, now=30) == older

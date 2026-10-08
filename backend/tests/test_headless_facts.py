@@ -603,7 +603,8 @@ async def test_result_checkpoint_crash_retains_original_owner_fence_before_repla
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('source_matches', [True, False])
-async def test_geometry_without_ref_uses_subject_article_and_normal_canonical_review(tmp_path, source_matches):
+@pytest.mark.parametrize('proof_kind', ['geometry', 'architectural_text'])
+async def test_geometry_without_ref_uses_subject_article_and_normal_canonical_review(tmp_path, source_matches, proof_kind):
     from test_geometry_subject_articles import geometry_identity
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     researcher.expected_identity = 'osm:way:7'
@@ -611,8 +612,13 @@ async def test_geometry_without_ref_uses_subject_article_and_normal_canonical_re
     with svc.store.tx() as db:
         row = svc._story_row(db, job['story_id'])
         research = json.loads(row['research_json'])
-        identity = geometry_identity(photo=row['photo_sha256'], generation=0, observed_buildings=120)
-        assert len(json.dumps(identity['geometry_proof'])) > 24000
+        if proof_kind == 'architectural_text':
+            from test_architectural_text_identity import architectural_identity
+            identity = architectural_identity(photo=row['photo_sha256'], generation=0, url=URL)
+        else:
+            identity = geometry_identity(photo=row['photo_sha256'], generation=0, observed_buildings=120)
+            assert len(json.dumps(identity['geometry_proof'])) > 24000
+        proof = identity.get('geometry_proof') or identity['architectural_text_proof']
         identity['candidates'][0]['wikipedia_url'] = URL
         research['visual_identity'] = identity
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), row['id']))
@@ -622,7 +628,7 @@ async def test_geometry_without_ref_uses_subject_article_and_normal_canonical_re
         assert researcher.searches == 0 and len(fetches) == 1
         confirmed = researcher.identity_contexts[0]
         assert len(json.dumps(confirmed)) < 5000 and 'geometry_proof' not in confirmed
-        assert confirmed['physical_scope'] == identity['geometry_proof']['decision']['scope']
+        assert confirmed['physical_scope'] == proof['decision']['scope']
         assert confirmed['physical_identity_accepted'] is True
         assert fetches[0] == 'https://8.8.8.8/gate-history'
         current = svc.story(job['story_id'])
@@ -638,8 +644,8 @@ async def test_geometry_without_ref_uses_subject_article_and_normal_canonical_re
                 assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 1
             context = HeadlessFacts(svc).adapter._compact_context(HeadlessFacts(svc).adapter._topic_state(job['story_id']))
             assert context['physical_identity_accepted'] is True
-            assert context['visual_identity']['proof_kind'] == 'geometry'
-            assert context['visual_identity']['physical_scope'] == identity['geometry_proof']['decision']['scope']
+            assert context['visual_identity']['proof_kind'] == proof_kind
+            assert context['visual_identity']['physical_scope'] == proof['decision']['scope']
             assert context['research_run']['identity_subject_article_sources'][0]['url'] == URL
         else:
             with svc.store.connection() as db:

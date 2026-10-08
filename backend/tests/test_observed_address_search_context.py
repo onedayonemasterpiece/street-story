@@ -63,7 +63,8 @@ async def test_planner_receives_exact_address_geometry_and_nomination_excludes_e
         assert grouped[0]['address_entry_ids'] == ['osm:node:1', 'osm:node:2']
         anchors = context['location_search_context']['address_anchors']['rows']
         assert next(row for row in anchors if row[0] == 'osm:node:1')[3] == '7A'
-        assert config.response_json_schema['properties']['observed_candidate_ids']['items']['enum'] == ['osm:way:4']
+        contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
+        assert contract['properties']['observed_candidate_ids']['items'] == {'type': 'string', 'maxLength': 100}
         assert 'первые два запроса' in prompt and 'Город обязателен в каждом запросе' in prompt
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
             'visual_query': '', 'commons_query': '', 'article_queries': ['Model-owned hypothesis'],

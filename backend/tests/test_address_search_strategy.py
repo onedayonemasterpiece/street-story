@@ -47,7 +47,8 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         rows = context['location_search_context']['address_anchors']['rows']
         assert [(row[0], row[2], row[3]) for row in rows] == [
             (a['candidate_id'], 'Fixture Street', '31'), (b['candidate_id'], 'Fixture Street', '33')]
-        assert 'article_queries' in config.response_json_schema['required']
+        contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
+        assert 'article_queries' in contract['required']
         assert 'современными внешними фотографиями' in prompt
         assert 'содержательно разные запросы' in prompt
         assert contents[0].inline_data.data == normalize_reference(jpeg())[1]

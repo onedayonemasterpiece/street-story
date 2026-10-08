@@ -15,7 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .identity_map_context import map_entry_context
 
-POLICY = 'observed-osm-scene-v1'
+POLICY = 'observed-osm-scene-v2'
 
 
 def _position(item):
@@ -84,7 +84,119 @@ def scene_camera_context(story):
             if verified and hints.get('direction_degrees') is not None else {})}
 
 
-def render_scene(story, candidates):
+def _draw_view(objects, camera_context, anchor_label, *, center, span, caption='', width=1280):
+    """Draw the same observed scene at a declared scale; never select candidates."""
+    margin = 70
+    pixels_per_m = (width - 2 * margin) / span
+    cx, cy = center
+
+    def pixel(point):
+        return (round(width / 2 + (point[0] - cx) * pixels_per_m),
+                round(width / 2 - (point[1] - cy) * pixels_per_m))
+
+    canvas = Image.new('RGB', (width, width + 70), '#fafaf7')
+    draw = ImageDraw.Draw(canvas)
+    try:
+        font = ImageFont.truetype('DejaVuSans.ttf', 17)
+    except OSError:
+        font = ImageFont.load_default()
+    for obj in objects:
+        tags = obj['tags']
+        building = tags.get('building') not in {None, '', 'no'} or bool(tags.get('building:part'))
+        if building:
+            for ring in sorted(obj['rings'], key=lambda ring: ring.get('role') == 'inner'):
+                points = [pixel(point) for point in ring['points']]
+                if ring.get('closed') and len(points) >= 4:
+                    draw.polygon(points, fill='#fafaf7' if ring.get('role') == 'inner' else '#e3e3df')
+        for line in obj['lines']:
+            draw.line([pixel(point) for point in line], fill='#8f8f87' if tags.get('highway') else '#556777',
+                      width=3 if tags.get('highway') else 2)
+        if obj['anchor'] and tags.get('entrance'):
+            x, y = pixel(obj['anchor'])
+            draw.ellipse((x-4, y-4, x+4, y+4), fill='#b17436')
+
+    camera_pixel = pixel((0., 0.))
+    x, y = camera_pixel
+    occupied = [(width-66, 0, width, 105), (25, width-75, width/3, width)]
+    camera_box = draw.textbbox((x+10, y-24), anchor_label, font=font)
+    occupied.append((x-9, y-9, x+9, y+9))
+    occupied.append(camera_box)
+    road_names = {}
+    for obj in objects:
+        name = obj['tags'].get('name') if obj['tags'].get('highway') else None
+        if not name:
+            continue
+        for line in obj['lines']:
+            for a, b in zip(line, line[1:]):
+                p, q = pixel(a), pixel(b)
+                if all(60 < v < width-60 for v in (*p, *q)):
+                    length = math.dist(p, q)
+                    if length > road_names.get(name, (0, None))[0]:
+                        road_names[name] = (length, ((p[0]+q[0])/2, (p[1]+q[1])/2))
+    for name, (_length, anchor) in road_names.items():
+        text = str(name)[:45]
+        box = draw.textbbox(anchor, text, font=font)
+        if not any(box[0] < b[2] and box[2] > b[0] and box[1] < b[3] and box[3] > b[1] for b in occupied):
+            draw.text(anchor, text, font=font, fill='#595950')
+            occupied.append(box)
+
+    placements, suppressed = {}, []
+    offsets = [(0, 0)] + [(radius*dx, radius*dy) for radius in (24, 48, 72, 96, 120, 144)
+                            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1))]
+    for obj in objects:
+        if not obj['anchor'] or obj['tags'].get('highway') and not obj['tags'].get('building'):
+            continue
+        x, y = pixel(obj['anchor'])
+        if not (10 <= x < width-10 and 10 <= y < width-10):
+            continue
+        label = str(obj['metadata']['label'])
+        box = draw.textbbox((0, 0), label, font=font)
+        w, h = box[2] + 6, 23
+        chosen = None
+        for dx, dy in offsets:
+            lx, ly = x+dx, y+dy
+            bounds = (lx-w/2, ly-h/2, lx+w/2, ly+h/2)
+            if bounds[0] < 10 or bounds[1] < 10 or bounds[2] >= width-10 or bounds[3] >= width-10:
+                continue
+            if not any(bounds[0] < b[2] and bounds[2] > b[0] and bounds[1] < b[3] and bounds[3] > b[1] for b in occupied):
+                chosen = (lx, ly, bounds)
+                break
+        if chosen is None:
+            suppressed.append(obj['metadata']['label'])
+            continue  # The exact ID stays in the manifest; never paint a colliding label as readable.
+        lx, ly, bounds = chosen
+        occupied.append(bounds)
+        if (lx, ly) != (x, y):
+            draw.line([(x, y), (lx, ly)], fill='#96968c')
+        draw.rectangle(bounds, fill='white', outline='#9a9a94')
+        draw.text((lx-w/2+3, ly-h/2-1), label, font=font, fill='#151515')
+        # JSON persistence preserves string-key ordering; integer keys would
+        # sort differently after readback and change a frozen receipt digest.
+        placements[str(obj['metadata']['label'])] = {'pixel': [round(lx), round(ly)], 'bounds': list(bounds)}
+
+    x, y = camera_pixel
+    draw.ellipse((x-7, y-7, x+7, y+7), fill='#c24738', outline='white', width=2)
+    if camera_context['accuracy_m'] is not None:
+        radius = camera_context['accuracy_m'] * pixels_per_m
+        draw.ellipse((x-radius, y-radius, x+radius, y+radius), outline='#b5a49b', width=2)
+    draw.text((x+10, y-24), anchor_label, font=font, fill='#a02c23')
+    draw.line([(width-42, 96), (width-42, 43)], fill='#151515', width=3)
+    draw.polygon([(width-42, 35), (width-48, 48), (width-36, 48)], fill='#151515')
+    draw.text((width-48, 12), 'N', font=font, fill='#151515')
+    target_scale = span / 6
+    power = 10**math.floor(math.log10(target_scale))
+    scale_m = max(value*power for value in (1, 2, 5) if value*power <= target_scale)
+    scale_px = round(scale_m * pixels_per_m)
+    draw.line([(45, width-32), (45+scale_px, width-32)], fill='#151515', width=3)
+    draw.text((45, width-61), f'{scale_m:g} m', font=font, fill='#151515')
+    draw.text((30, width+10), caption, font=font, fill='#303030')
+    return canvas, {'image_size': [width, width+70], 'camera_pixel': list(camera_pixel),
+        'scale_bar_m': scale_m, 'meters_per_pixel': round(1/pixels_per_m, 3),
+        'extent_east_north_m': [round(cx-span/2, 1), round(cy-span/2, 1), round(cx+span/2, 1), round(cy+span/2, 1)],
+        'label_placements': placements, 'suppressed_collision_labels': suppressed}
+
+
+def render_scene(story, candidates, *, include_detail=True):
     camera = _position({'lat': story.get('latitude'), 'lon': story.get('longitude')})
     entries = scene_entries(story, candidates)
     if not camera or not entries:
@@ -150,96 +262,40 @@ def render_scene(story, candidates):
     ymin, ymax = min(p[1] for p in extent), max(p[1] for p in extent)
     span = max(xmax-xmin, ymax-ymin, 80.) * 1.12
     cx, cy = (xmin+xmax)/2, (ymin+ymax)/2
-    width, margin = 1280, 70
-    pixels_per_m = (width-2*margin)/span
-    def pixel(point):
-        return (round(width/2 + (point[0]-cx)*pixels_per_m), round(width/2 - (point[1]-cy)*pixels_per_m))
-    canvas = Image.new('RGB', (width, width+70), '#fafaf7')
-    draw = ImageDraw.Draw(canvas)
-    try:
-        font = ImageFont.truetype('DejaVuSans.ttf', 17)
-    except OSError:
-        font = ImageFont.load_default()
-    # All footprints have the same styling. Roads and entries use only literal
-    # OSM object attributes, not model relevance or reference availability.
-    for obj in objects:
-        tags = obj['tags']
-        building = tags.get('building') not in {None, '', 'no'} or bool(tags.get('building:part'))
-        if building:
-            for ring in sorted(obj['rings'], key=lambda ring: ring.get('role') == 'inner'):
-                points = [pixel(point) for point in ring['points']]
-                if ring.get('closed') and len(points) >= 4:
-                    draw.polygon(points, fill='#fafaf7' if ring.get('role') == 'inner' else '#e3e3df')
-        for line in obj['lines']:
-            draw.line([pixel(point) for point in line], fill='#8f8f87' if tags.get('highway') else '#556777', width=3 if tags.get('highway') else 2)
-        if obj['anchor'] and tags.get('entrance'):
-            x, y = pixel(obj['anchor'])
-            draw.ellipse((x-4,y-4,x+4,y+4), fill='#b17436')
-    occupied, road_names = [], {}
-    for obj in objects:
-        name = obj['tags'].get('name') if obj['tags'].get('highway') else None
-        if not name:
-            continue
-        for line in obj['lines']:
-            for a,b in zip(line,line[1:]):
-                p,q=pixel(a),pixel(b)
-                if all(60 < v < width-60 for v in (*p,*q)):
-                    length=math.dist(p,q)
-                    if length>road_names.get(name,(0,None))[0]:
-                        road_names[name]=(length,((p[0]+q[0])/2,(p[1]+q[1])/2))
-    for name, (_length, anchor) in road_names.items():
-        draw.text(anchor,str(name)[:45],font=font,fill='#595950')
-    for obj in objects:
-        if not obj['anchor']:
-            continue
-        x, y = pixel(obj['anchor'])
-        obj['metadata']['label_visible'] = 10 <= x < width-10 and 10 <= y < width-10
-        if obj['tags'].get('highway') and not obj['tags'].get('building'):
-            obj['metadata']['label_visible'] = False
-        if not obj['metadata']['label_visible']:
-            continue  # Long road ways remain context; their remote midpoint need not expand the building overview.
-        label = str(obj['metadata']['label'])
-        box = draw.textbbox((0,0), label, font=font)
-        w, h = box[2]+6, 23
-        chosen = (x, y)
-        for dx, dy in [(0,0), (18,0), (-18,0), (0,22), (0,-22), (35,22), (-35,-22), (48,-35), (-48,35)]:
-            lx, ly = x+dx, y+dy
-            bounds = (lx-w/2, ly-h/2, lx+w/2, ly+h/2)
-            if not any(bounds[0]<b[2] and bounds[2]>b[0] and bounds[1]<b[3] and bounds[3]>b[1] for b in occupied):
-                chosen = (lx, ly)
-                break
-        lx, ly = chosen
-        bounds = (lx-w/2, ly-h/2, lx+w/2, ly+h/2)
-        occupied.append(bounds)
-        if chosen != (x,y):
-            draw.line([(x,y), chosen], fill='#96968c')
-        draw.rectangle(bounds, fill='white', outline='#9a9a94')
-        draw.text((lx-w/2+3,ly-h/2-1), label, font=font, fill='#151515')
-        obj['metadata']['label_pixel'] = [round(lx), round(ly)]
-    camera_pixel = pixel((0., 0.))
-    x, y = camera_pixel
-    draw.ellipse((x-7,y-7,x+7,y+7), fill='#c24738', outline='white', width=2)
-    if owner_approx and camera_context['accuracy_m'] is not None:
-        radius = camera_context['accuracy_m'] * pixels_per_m
-        draw.ellipse((x-radius,y-radius,x+radius,y+radius),outline='#b5a49b',width=2)
     anchor_label = 'CAMERA GPS' if verified else 'CAMERA HINT (OWNER APPROX)' if owner_approx else 'SEARCH CONTEXT'
-    draw.text((x+10,y-24),anchor_label,font=font,fill='#a02c23')
-    draw.line([(width-42,96),(width-42,43)],fill='#151515',width=3)
-    draw.polygon([(width-42,35),(width-48,48),(width-36,48)],fill='#151515')
-    draw.text((width-48,12),'N',font=font,fill='#151515')
-    target_scale = span/6
-    power = 10**math.floor(math.log10(target_scale))
-    scale_m = max(value*power for value in (1,2,5) if value*power <= target_scale)
-    scale_px = round(scale_m*pixels_per_m)
-    draw.line([(45,width-32),(45+scale_px,width-32)],fill='#151515',width=3)
-    draw.text((45,width-61),f'{scale_m:g} m',font=font,fill='#151515')
-    draw.text((30,width+10),'Observed OSM vectors; labels map to exact IDs. No target highlighted. Missing heading/height remain unknown.',font=font,fill='#303030')
+    canvas, overview = _draw_view(objects, camera_context, anchor_label, center=(cx, cy), span=span,
+        caption='FULL OBSERVED POOL — neutral labels; missing heading/height remain unknown.')
+    width = 1280
+    views = [{'name': 'overview', 'panel_pixels': [0, 0, width, width+70], **overview}]
+    for obj in objects:
+        placement = overview['label_placements'].get(str(obj['metadata']['label']))
+        obj['metadata']['label_visible'] = placement is not None
+        if placement:
+            obj['metadata']['label_pixel'] = placement['pixel']
+    # This is a view crop, never a candidate cutoff or a claimed GPS accuracy.
+    # Every received object is drawn through the same transform and retained
+    # in the full overview/manifest. No nearest-K, nominated or expected ID.
+    detail_span = 180.
+    if include_detail and span / detail_span >= 1.5:
+        detail, detail_view = _draw_view(objects, camera_context, anchor_label, center=(0., 0.), span=detail_span,
+            caption='ANCHOR DETAIL — display crop only; not an accuracy radius or candidate exclusion.')
+        composite = Image.new('RGB', (width*2, width+70), '#fafaf7')
+        composite.paste(canvas, (0, 0))
+        composite.paste(detail, (width, 0))
+        canvas = composite
+        views.append({'name': 'anchor_detail', 'panel_pixels': [width, 0, width*2, width+70], **detail_view})
+    camera_pixel = overview['camera_pixel']
+    scale_m = overview['scale_bar_m']
+    pixels_per_m = 1 / overview['meters_per_pixel']
     columns = list(dict.fromkeys(key for obj in objects for key in obj['metadata']))
     manifest = {'policy': POLICY, 'camera': camera_context,
         'anchor':{'latitude':camera[0], 'longitude':camera[1], 'source':provenance.get('kind') or
             ('selected_original_exif' if verified else 'unverified_coordinates'), 'label':anchor_label},
         'north_up':True, 'scale_bar_m':scale_m, 'meters_per_pixel':round(1/pixels_per_m,3),
-        'image_size':[width,width+70], 'camera_pixel':list(camera_pixel),
+        'image_size':list(canvas.size), 'camera_pixel':list(camera_pixel),
+        'views':views, 'detail_policy':'Optional fixed 180 m anchor-centered display crop alongside the full pool. '
+            'Same neutral labels and observed vectors; no nearest-K or target selection. '
+            'Crop extent is not camera accuracy, identity scope or proof that objects outside it are excluded.',
         'projection':'local tangent plane; approximate measured distances',
         'distance_origin':origin, 'default_attribute_provenance':'osm.tags',
         'height_fields':['height','building:levels','roof:levels'], 'address_fields':['street','house_number'],
@@ -311,6 +367,9 @@ def lean_scene_manifest(manifest):
     return {**{key:manifest[key] for key in ('policy','camera','anchor','distance_origin','height_fields',
         'address_fields','default_attribute_provenance','north_up','scale_bar_m','meters_per_pixel',
         'image_size','projection','view_extent_basis','image_sha256','policy_instruction','feature_reference_policy','coverage') if key in manifest},
+        **({'detail_view':{key:view[key] for key in ('panel_pixels','scale_bar_m','meters_per_pixel','extent_east_north_m')},
+            'detail_policy':'Right panel enlarges the same anchor; display crop is not accuracy or candidate exclusion.'}
+            if (view := next((v for v in manifest.get('views') or [] if v['name']=='anchor_detail'), None)) else {}),
         'objects':{'columns':labels,'rows':[[row.get(key) for key in labels] for row in decoded]},
         'physical_geometry':{'columns':geometry,'rows':bodies},
         'point_geometry':{'columns':['label','representative_distance_m','address','geometry_status'],'rows':anchors},

@@ -172,6 +172,57 @@ def test_lean_scene_keeps_all_exact_labels_and_measured_bodies_without_null_road
     assert scene['manifest']==original
 
 
+def test_detail_keeps_full_pool_and_exact_labels_without_claiming_a_camera_pose():
+    raw = [building(i, i*20) for i in range(1, 26)]
+    story = {'latitude':54.7, 'longitude':20.5,
+        '_location_provenance':{'kind':'owner_approx_camera'},
+        '_identity_map_snapshot':{'observed_pool':raw}}
+    original = copy.deepcopy(story)
+    scene = render_scene(story, [])
+    overview_only = render_scene(story, [], include_detail=False)
+    views = scene['manifest']['views']
+    assert [v['name'] for v in views] == ['overview', 'anchor_detail']
+    assert views[1]['meters_per_pixel'] < views[0]['meters_per_pixel']/2
+    assert views[1]['extent_east_north_m'] == [-90., -90., 90., 90.]
+    assert rows(scene) == rows(overview_only)
+    assert scene['manifest']['camera']['position_status'] == 'owner_approximate'
+    assert scene['manifest']['camera']['accuracy_m'] is None
+    assert 'heading_degrees' not in scene['manifest']['camera']
+    far = next(row for row in rows(scene) if row['candidate_id']=='osm:way:25')
+    assert str(far['label']) in views[0]['label_placements']
+    assert str(far['label']) not in views[1]['label_placements']
+    assert 'not camera accuracy' in scene['manifest']['detail_policy']
+    compact = lean_scene_manifest(scene['manifest'])
+    assert compact['detail_view']['extent_east_north_m'] == [-90., -90., 90., 90.]
+    assert len(compact['objects']['rows']) == 25
+    assert story == original
+    import json
+    assert json.loads(json.dumps(scene['manifest'])) == scene['manifest']
+    with Image.open(io.BytesIO(scene['bytes'])) as image, Image.open(io.BytesIO(overview_only['bytes'])) as overview:
+        assert image.size == (2560, 1350)
+        assert image.crop((0, 0, 1280, 1350)).tobytes() == overview.tobytes()
+
+
+def test_dense_labels_never_overlap_and_crowding_does_not_drop_observed_ids():
+    raw = [building(i, 12+i/100) for i in range(1, 85)] + [building(999, 500)]
+    scene = render_scene({'latitude':54.7, 'longitude':20.5,
+        '_identity_map_snapshot':{'observed_pool':raw}}, [])
+    assert len(rows(scene)) == len(raw)
+    assert [r['candidate_id'] for r in rows(scene)] == sorted(f'osm:way:{i}' for i in [*range(1,85),999])
+    for view in scene['manifest']['views']:
+        bounds = [item['bounds'] for item in view['label_placements'].values()]
+        for index, a in enumerate(bounds):
+            assert all(not(a[0]<b[2] and a[2]>b[0] and a[1]<b[3] and a[3]>b[1]) for b in bounds[index+1:])
+        assert len(view['suppressed_collision_labels']) > 0
+    assert len(lean_scene_manifest(scene['manifest'])['objects']['rows']) == len(raw)
+
+
+def test_small_patch_does_not_add_a_redundant_detail_panel():
+    scene = render_scene({'latitude':54.7, 'longitude':20.5}, [map_entry_context(building(1, 20))])
+    assert [v['name'] for v in scene['manifest']['views']] == ['overview']
+    assert scene['manifest']['image_size'] == [1280, 1350]
+
+
 @pytest.mark.asyncio
 async def test_real_planner_transports_separate_source_and_map_then_retains_original_binding(tmp_path):
     import json
@@ -179,7 +230,7 @@ async def test_real_planner_transports_separate_source_and_map_then_retains_orig
     from test_visual_search_continuation import prepared
     from street_story.identity_discovery import suggest
     svc,_adapter,story,_sessions=prepared(tmp_path)
-    observed=[{**map_entry_context(building(i,i*9)), 'name':'', 'identity_eligible':True} for i in range(1,26)]
+    observed=[{**map_entry_context(building(i,i*20)), 'name':'', 'identity_eligible':True} for i in range(1,26)]
     snapshot={**svc._identity_snapshot(story['id'])[0], 'latitude':54.7,'longitude':20.5,
         '_camera_position_verified':True, '_identity_observed_candidates':observed}
     calls=[]
@@ -195,6 +246,9 @@ async def test_real_planner_transports_separate_source_and_map_then_retains_orig
         context=json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
         packet=context['map_scene']
         assert packet['camera']['position_verified']
+        assert packet['detail_view']['panel_pixels'] == [1280, 0, 2560, 1350]
+        with Image.open(io.BytesIO(contents[1].inline_data.data)) as image:
+            assert image.size == (2560, 1350)
         assert any(row[1]=='osm:way:21' for row in packet['objects']['rows'])
         return SimpleNamespace(text=json.dumps({'entity_name':'','wikipedia_queries':[], 'selected_wikipedia_page_ids':[],
             'visual_query':'Visible facade windows','commons_query':'','article_queries':[],

@@ -12,7 +12,7 @@ from .identity_telemetry import record_identity_event
 from .identity_candidate_policy import candidate_identity_eligible
 from .camera_hints import read_camera_hints, metadata_summary, annotate_camera_alignment
 from .photo_metadata import inspect_gps
-from .identity_proof import geometry_result_valid
+from .identity_proof import geometry_result_valid, architectural_text_result_valid, non_reference_result_valid
 from .service import ConflictError, canonical, digest
 
 ACCEPTED = {'match', 'owner_confirmed'}
@@ -328,7 +328,7 @@ class IdentityLifecycleMixin:
                         'observed_candidate_count': len(observed_candidates),
                         'distances_m': [round(distance(item), 1) if math.isfinite(distance(item)) else None for item in candidates],
                         'excluded_count': len(excluded)})
-                    raw = story.get('_identity_geometry_result') or (await self._identify_photo(story, transcript, candidates) if candidates else {
+                    raw = story.get('_identity_accepted_result') or story.get('_identity_geometry_result') or (await self._identify_photo(story, transcript, candidates) if candidates else {
                         'status': 'uncertain', 'candidate_id': '', 'confidence': 0, 'observations': ['Подходящих кандидатов не найдено.']})
                 except Exception as exc:
                     record_identity_event(self, story_id, 'identity_failed', {'generation': generation, 'error_type': type(exc).__name__,
@@ -361,7 +361,7 @@ class IdentityLifecycleMixin:
                 self._schedule_identity_visual()
                 record_identity_event(self, story_id, 'identity_shortlist_ready', {'generation': generation,
                     'candidate_count': len(candidates), 'discovery_may_continue': True})
-            if not (visual_match(raw, candidates) or geometry_result_valid(raw, candidates, story)):
+            if not (visual_match(raw, candidates) or non_reference_result_valid(raw, candidates, story)):
                 from .identity_discovery import recover
                 rejected = set(json.loads(story.get('research_json') or '{}').get('identity_rejected_ids') or [])
                 known_sources = []
@@ -403,7 +403,7 @@ class IdentityLifecycleMixin:
                     }
                     recovery_is_better = (
                         visual_match(recovered_raw, discovered, [*candidates, *discovered])
-                        or geometry_result_valid(recovered_raw, [*candidates, *discovered], story)
+                        or non_reference_result_valid(recovered_raw, [*candidates, *discovered], story)
                         or (raw.get('status') == 'mismatch' and recovered_has_candidate
                             and recovered_raw.get('status') != 'mismatch')
                         or (not raw.get('candidate_id') and recovered_has_candidate)
@@ -460,7 +460,8 @@ class IdentityLifecycleMixin:
             selected = catalog.get(str(raw.get('candidate_id') or '')) if raw.get('status') != 'mismatch' else None
             reference_verified = selected is not None and visual_match(raw, candidates)
             geometry_verified = selected is not None and geometry_result_valid(raw, candidates, story)
-            matched = reference_verified or geometry_verified
+            text_verified = selected is not None and architectural_text_result_valid(raw, candidates, story)
+            matched = reference_verified or geometry_verified or text_verified
             if not matched and (raw.get('_references_rate_limited') or raw.get('_references_unavailable_ids')):
                 from .errors import RetryableProviderError
                 source_waits.append(RetryableProviderError('identity_references_waiting'))
@@ -477,15 +478,17 @@ class IdentityLifecycleMixin:
                 'reference_evidence': [item for item in raw.get('_reference_evidence', [])[:6]
                     if item.get('candidate_id') == raw.get('candidate_id')],
                 'photo_sha256': story['photo_sha256'], 'generation': generation, 'policy': POLICY,
-                'confidence': None if geometry_verified and not reference_verified else confidence(raw), 'observations': [str(x)[:300] for x in raw.get('observations', [])[:6]],
+                'confidence': None if (geometry_verified or text_verified) and not reference_verified else confidence(raw), 'observations': [str(x)[:300] for x in raw.get('observations', [])[:6]],
                 'alternative_candidate_ids': [x for x in raw.get('alternative_candidate_ids', [])[:6] if x in catalog],
                 'candidates': candidates, 'observed_candidates': observed_candidates, 'camera_hints': hints,
                 'camera_position_verified': position_verified,
                 'visual_reference_verified': reference_verified, 'identity_verified': matched, 'resolved_at': self.store.now(),
                 'control_revision': control_revision,
-                'proof_kind': 'combined' if reference_verified and geometry_verified else 'geometry' if geometry_verified
+                'proof_kind': 'combined' if sum([reference_verified, geometry_verified, text_verified]) > 1
+                    else 'geometry' if geometry_verified else 'architectural_text' if text_verified
                     else 'visual_reference' if reference_verified else None,
-                **({'geometry_proof': raw['geometry_proof']} if geometry_verified else {})}
+                **({'geometry_proof': raw['geometry_proof']} if geometry_verified else {}),
+                **({'architectural_text_proof': raw['architectural_text_proof']} if text_verified else {})}
             with self.store.tx() as db:
                 current = self._story_row(db, story_id)
                 latest = json.loads(current['research_json'] or '{}')

@@ -104,3 +104,16 @@ def test_current_geometry_scope_fence_cannot_authorize_old_subject(change):
     current.update(change)
     assert not accepted_identity(identity, **current)
     assert identity['visual_reference_verified'] is False
+
+
+@pytest.mark.parametrize('valid', [True, False])
+def test_current_semantic_wiki_binding_can_supply_unmapped_article_lead(valid):
+    identity, research = subject_fixture()
+    research['wikipedia'][0]['mapped_wikipedia_sources'] = []
+    fence = {'photo_sha256': identity['photo_sha256'], 'generation': 2, 'control_revision': 0}
+    research['identity_article_discovery'] = {**fence, 'search_plan': {**fence, 'payload': {
+        'subject_article_bindings': [{'article_id': 'wiki:77', 'candidate_id': 'osm:way:7',
+            'scope': 'Main physical building', 'binding_basis': 'Actual article describes exact observed building.',
+            'physical_binding_resolved': valid}]}}}
+    assert list(acquired_subject_articles(identity, research)) == ([URL] if valid else [])
+    assert reviewed_reference_articles(identity) == {}
