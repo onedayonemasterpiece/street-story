@@ -862,37 +862,69 @@ async def recover(service, story, transcript, candidates, excluded):
         plan = history.get('planned_queries') or [
             (f'{entity_name} {region_hint(story)} современные фотографии фасада' if entity_name
              else f'{visual_query} {region_hint(story)} фото').strip()]
+
+        async def ready_article_media(query_sources):
+            current_history = _retain_article_discovery(service, story, query_sources)
+            pages = current_history.get('pages') or {}
+            cached, unread = [], []
+            for source in current_history['sources']:
+                page = pages.get(source['url']) or {}
+                if page.get('status') in {'completed', 'partial'}:
+                    cached.extend(page.get('candidates', []))
+                if (page.get('status') not in {'completed', 'excluded'}
+                        and page.get('retry_at', 0) <= service.store.now()):
+                    unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
+                        if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}})
+            if cached:
+                return cached
+            from .live_visual_comparison import _article_acquisition_rank
+            unread.sort(key=lambda source: (pages.get(source['url'], {}).get('attempts', 0),
+                                            _article_acquisition_rank(source)))
+            if not unread:
+                return []
+            receipts = []
+            fetched = await article_candidates(service, story, unread, excluded,
+                                               receipts=receipts, first_ready=True)
+            _retain_article_discovery(service, story, query_sources, receipts=receipts, articles=fetched)
+            return fetched
+
         for query in plan:
             if already_proved():
                 return None
             previous = history.get('queries', {}).get(query) or {}
+            query_sources = []
             if previous.get('status') == 'completed':
-                sources = previous.get('sources') or []
-                if sources:
-                    break
-                continue
-            if previous.get('retry_at', 0) > service.store.now():
-                continue
-            claim_id, previous = _claim_article_query(service, story, query)
-            if not claim_id:
-                if previous.get('status') == 'in_progress':
-                    previous = await _resume_article_query(service, story, query, previous)
-                if previous.get('status') == 'completed' and previous.get('sources'):
-                    sources = previous['sources']
-                    break
-                continue
-            query_story = {**story, '_identity_search_query': query}
-            try:
-                sources = await web_image_sources(service, entity_name, visual_query, story=query_story)
-                history = _retain_article_discovery(service, story, sources,
-                    query_results={query: {'sources': sources, 'status': 'completed', 'search_unavailable': False, 'claim_id': claim_id}})
-                if sources:
-                    break
-            except (RetryableProviderError, GeminiUnavailable) as exc:
-                search_failures.append(exc)
-                history = _retain_article_discovery(service, story, [], query_results={query: {
-                    'sources': [], 'status': 'temporary_failure', 'search_unavailable': True, 'claim_id': claim_id,
-                    'retry_at': getattr(exc, 'retry_at', None) or service.store.now()+15}})
+                query_sources = previous.get('sources') or []
+            elif previous.get('retry_at', 0) <= service.store.now():
+                claim_id, previous = _claim_article_query(service, story, query)
+                if not claim_id:
+                    if previous.get('status') == 'in_progress':
+                        previous = await _resume_article_query(service, story, query, previous)
+                    if previous.get('status') == 'completed':
+                        query_sources = previous.get('sources') or []
+                else:
+                    query_story = {**story, '_identity_search_query': query}
+                    try:
+                        query_sources = await web_image_sources(service, entity_name, visual_query, story=query_story)
+                        history = _retain_article_discovery(service, story, query_sources,
+                            query_results={query: {'sources': query_sources, 'status': 'completed',
+                                'search_unavailable': False, 'claim_id': claim_id}})
+                    except (RetryableProviderError, GeminiUnavailable) as exc:
+                        search_failures.append(exc)
+                        history = _retain_article_discovery(service, story, [], query_results={query: {
+                            'sources': [], 'status': 'temporary_failure', 'search_unavailable': True, 'claim_id': claim_id,
+                            'retry_at': getattr(exc, 'retry_at', None) or service.store.now()+15}})
+            sources = list({source['url']: source for source in [*sources, *query_sources]}.values())
+            if query_sources:
+                articles = await ready_article_media(query_sources)
+                if already_proved():
+                    return None
+                if articles:
+                    return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                        'observations': ['Найдены иллюстрации в статьях; продолжаю визуальное сравнение в Live.'],
+                        '_article_media_pending': True, '_references_sent': []}, articles
+                record_identity_event(service, story['id'], 'identity_query_without_reference', {
+                    'query': query, 'source_count': len(query_sources), 'next_action': 'continue_saved_plan'})
         if not sources and search_failures:
             raise search_failures[0]
         if already_proved():

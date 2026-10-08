@@ -284,3 +284,37 @@ async def test_recovery_reuses_completed_media_and_fetches_deferred_urls_with_ga
     history = svc._identity_snapshot(topic['id'])[1]['identity_article_discovery']
     assert len(history['sources']) == 3
     assert len(history['pages']) == 2  # The unread URL is retained without pretending it was fetched.
+
+
+@pytest.mark.asyncio
+async def test_nonempty_search_without_images_continues_saved_alternative_plan(tmp_path, monkeypatch):
+    svc, _, topic, _ = prepared(tmp_path)
+    story, _ = svc._identity_snapshot(topic['id'])
+    svc.providers.gemini._generate = object()
+    svc.providers.gemini.executor = object()
+    queries, reads = [], []
+    async def suggest(service, context, transcript, candidates):
+        context['_identity_article_queries'] = ['address hypothesis A', 'address hypothesis B']
+        return '', [], 'visible facade', ''
+    async def search(service, name, visual, *, story):
+        query = story['_identity_search_query']
+        queries.append(query)
+        return [{'url': 'https://example.com/' + ('empty-directory' if query.endswith('A') else 'exterior-article')}]
+    async def fetch(service, context, sources, excluded, *, receipts, first_ready=False):
+        reads.extend(source['url'] for source in sources)
+        receipts.extend({'url': source['url'], 'status': 'completed', 'image_count': int('exterior' in source['url'])}
+                        for source in sources)
+        return [article(source['url'], 1) for source in sources if 'exterior' in source['url']]
+    monkeypatch.setattr(identity_discovery, 'suggest', suggest)
+    monkeypatch.setattr(identity_discovery, 'web_image_sources', search)
+    monkeypatch.setattr(article_media, 'article_candidates', fetch)
+    result, discovered = await identity_discovery.recover(svc, story, '', [], set())
+    assert result['_article_media_pending'] and discovered[0]['url'].endswith('exterior-article')
+    assert queries == ['address hypothesis A', 'address hypothesis B']
+    assert reads == ['https://example.com/empty-directory', 'https://example.com/exterior-article']
+    history = svc._identity_snapshot(topic['id'])[1]['identity_article_discovery']
+    assert len(history['sources']) == 2 and len(history['pages']) == 2
+    assert all(page['status'] == 'completed' for page in history['pages'].values())
+    result, retained = await identity_discovery.recover(svc, story, '', [], set())
+    assert result['_article_media_pending'] and retained == discovered
+    assert len(queries) == 2 and len(reads) == 2  # Closed searches and acquired pages are not repeated.
