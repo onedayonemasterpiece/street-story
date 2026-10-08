@@ -127,6 +127,35 @@ async def test_auth_disable_applies_across_workloads_and_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_permission_denial_cools_operation_without_disabling_valid_key(tmp_path):
+    p, executor, clock = pool(tmp_path, keys=KEYS[:1])
+
+    async def forbidden(key, timeout):
+        raise ProviderError(403, status='PERMISSION_DENIED')
+
+    with pytest.raises(GeminiUnavailable):
+        await executor.execute('web_search', forbidden)
+    restarted = GeminiKeyPool(p.store, p.keys, p.model, clock=clock)
+    assert restarted.snapshot()['disabled_keys'] == 0
+    with pytest.raises(GeminiUnavailable):
+        await GeminiExecutor(restarted).execute('web_search', forbidden)
+
+    async def allowed(key, timeout):
+        return 'actual-other-operation'
+
+    assert await GeminiExecutor(restarted).execute('grounded_research', allowed) == 'actual-other-operation'
+    assert restarted.snapshot('web_search')['cooling_down_keys'] == 1
+    clock.value += 300
+    assert await GeminiExecutor(restarted).execute('web_search', allowed) == 'actual-other-operation'
+
+
+@pytest.mark.parametrize('message', ['API_KEY_INVALID', 'API key not valid',
+                                   'Your API key was reported as leaked.'])
+def test_explicit_invalid_403_still_disables_key(message):
+    assert classify_error(ProviderError(403, message=message), now=1000).disable_key
+
+
+@pytest.mark.asyncio
 async def test_concurrent_operations_reserve_different_slots(tmp_path):
     p, executor, _ = pool(tmp_path, keys=KEYS[:2])
     started = asyncio.Event()
@@ -480,9 +509,9 @@ async def test_pipeline_checkpoints_survive_process_restart_and_expired_provider
     fresh = StreetStoryService(svc.settings, ProviderBundle(osm, wiki, fresh_gemini, svc.providers.vibepublish))
     fresh.store.now = clock
     clock.value += 8*86400
-    from test_backend import create
-    assert fresh.story(sid)['source_available'] is False
-    assert create(fresh, key='pipeline', client='pipeline', photo=jpeg())['id'] == sid
+    # The original belongs to the topic now; neither cache expiry nor restart
+    # requires the closed client to re-upload it before provider recovery.
+    assert fresh.story(sid)['source_available'] is True
     assert await fresh.run_once()
     assert fresh.story(sid)['state'] == 'review'
     assert osm.calls == wiki.calls == 1

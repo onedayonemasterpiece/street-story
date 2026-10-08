@@ -103,6 +103,10 @@ pool's budget. The next healthy key is tried immediately without a cooldown slee
 - Invalid request/schema/unsupported model: permanent operation error, no key storm.
 - Auth-invalid: disable key, try other keys. If all disabled/missing, preserve the
   job as a retryable runtime problem so new configuration can recover it.
+- A generic403/PERMISSION_DENIED pauses the denied model/workload for at least
+  five minutes. Only401, UNAUTHENTICATED or explicit invalid/leaked-key evidence
+  disables the credential across workloads. Metadata access alone is not proof
+  of generation permission or remaining search quota.
 
 429 fallback cooldown:60seconds, exponentially grows to3600seconds per key/class.
 Other transient fallback:5seconds growing to60seconds. Honor the larger of that
