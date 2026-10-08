@@ -349,10 +349,24 @@ class HeadlessFacts:
                 aliases = subject_aliases(identity.get('candidates') or []).get(
                     identity.get('candidate_id'), {identity.get('candidate_id')})
                 articles = {}
+                mappings = (identity.get('receipt') or {}).get('reference_mapping') or []
                 for evidence in identity.get('reference_evidence') or []:
-                    if (evidence.get('subject_candidate_id', evidence.get('candidate_id')) in aliases
-                            and evidence.get('reference_id')
-                            and (url := public_url(str(evidence.get('article_url') or '')))):
+                    if (evidence.get('subject_candidate_id', evidence.get('candidate_id')) not in aliases
+                            or not evidence.get('reference_id')):
+                        continue
+                    url = public_url(str(evidence.get('article_url') or ''))
+                    if not url:
+                        # Initial direct-image comparisons retain the page in
+                        # the frozen mapping rather than reference_evidence.
+                        # Join only the actual reviewed image and candidate;
+                        # the other discovered pages remain unselected leads.
+                        image = public_url(str(evidence.get('image_url') or ''))
+                        mapped = next((entry for entry in mappings if isinstance(entry, dict)
+                            and entry.get('reference_id') == evidence['reference_id']
+                            and entry.get('candidate_id') in aliases
+                            and image and public_url(str(entry.get('source_url') or '')) == image), {})
+                        url = public_url(str(mapped.get('article_url') or ''))
+                    if url:
                         articles.setdefault(url, {'url': url, 'title': identity.get('candidate_name') or url})
                 sources = [item for url, item in articles.items() if url not in rejected_urls]
                 if sources:

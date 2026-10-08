@@ -476,3 +476,29 @@ async def test_verified_identity_article_starts_closed_client_facts_without_redu
             assert db.execute("SELECT count(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
     finally:
         await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mapping_change,searches', [({}, 0),
+    ({'reference_id': 'another-image'}, 1), ({'candidate_id': 'wiki:neighbor'}, 1),
+    ({'source_url': 'https://archive.example/another.jpg'}, 1)])
+async def test_direct_comparison_page_mapping_is_joined_only_to_reviewed_image(tmp_path, mapping_change, searches):
+    svc, job, researcher, reader, fetches = await fixture(tmp_path)
+    try:
+        image = 'https://archive.example/exterior.jpg'
+        mapping = {'reference_id': 'ref-real', 'candidate_id': 'wiki:77',
+                   'source_url': image, 'article_url': URL, **mapping_change}
+        with svc.store.tx() as db:
+            story = svc._story_row(db, job['story_id'])
+            research = json.loads(story['research_json'])
+            research['visual_identity'].update(status='match', visual_reference_verified=True,
+                reference_evidence=[{'reference_id': 'ref-real', 'candidate_id': 'wiki:77', 'image_url': image}],
+                receipt={'reference_mapping': [mapping]})
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert researcher.searches == searches and fetches
+        with svc.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == 0
+            assert db.execute('SELECT count(*) FROM live_messages').fetchone()[0] == 0
+    finally:
+        await reader.search_http.aclose()

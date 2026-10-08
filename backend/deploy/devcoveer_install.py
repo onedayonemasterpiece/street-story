@@ -1038,7 +1038,7 @@ def preview_window(sha: str, now: float | None = None) -> tuple[str, str]:
     observed = time.time() if now is None else now
     bucket = int(observed // 1800)
     request_key = f"street-story-deploy-preview-{sha[:20]}-{bucket}"
-    marker = f"Street Story deployment preflight {bucket}. Preview only; do not dispatch."
+    marker = f"Street Story deployment preflight {sha[:20]} {bucket}. Preview only; do not dispatch."
     return request_key, marker
 
 
