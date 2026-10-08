@@ -569,7 +569,7 @@ FUNCTIONS = [
         {"packet_ref": {"type": "string"}, "repairs": {"type": "array", "items": {"type": "object", "properties": REPAIR_FIELDS, "required": ["fact", "reason", "facts"]}}}, ["packet_ref", "repairs"]),
     _tool_schema(
         "finalize_fact_review",
-        "Commit semantic decisions for a frozen packet returned by get_review_packet. Never use a batch ID as packet_ref. Read all packet pages, use exact ZERO-BASED fact/evidence numbers, explicitly assess support/negation/roles/equivalence and compare relations across pages. Does not publish.",
+        "Save bounded semantic decisions for the facts you have actually read from a frozen get_review_packet. Use relations_complete=false until every page and cross-fact relation is reviewed; follow returned next_args for remaining facts. Never invent quotes for unread pages or repeat an invalid finalize. Copy short literal own-evidence quotes and exact ZERO-BASED fact/evidence numbers. Finally set relations_complete=true after comparing all facts. Never use a batch ID as packet_ref. Does not publish.",
         {
             "packet_ref": {"type": "string", "description": "Copy ONLY packet_ref returned by get_review_packet; never invent it."},
             "decisions": {"type": "array", "items": {"type": "object", "properties": {
@@ -1951,7 +1951,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "withheld_count": int(result.get("withheld_count") or 0),
                 "unreviewed_count": int(result.get("unreviewed_count") or 0),
                 "conflict_ids": list(result.get("conflict_ids") or [])[:40],
-                **{key: result[key] for key in ("packet_ref", "review_saved", "remaining_facts", "cross_packet_review_required") if key in result},
+                **{key: result[key] for key in ("packet_ref", "review_saved", "remaining_facts", "cross_packet_review_required", "next_tool", "next_args") if key in result},
             }
         if "visual_identity" in result:
             projected["visual_identity"] = cls._compact_identity(result["visual_identity"])

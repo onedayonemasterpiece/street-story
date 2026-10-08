@@ -91,6 +91,11 @@ async def test_unfinished_semantic_decisions_not_reused_as_final_review(tmp_path
     args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported'}], 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
     staged = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'first', 'args': args})
     assert staged['remaining_facts'] == 2
+    assert staged['next_tool'] == 'get_review_packet'
+    remaining_page = await adapter.execute_tool(session, {
+        'name': staged['next_tool'], 'args': staged['next_args']})
+    assert remaining_page['packet_ref'] == packet['packet_ref']
+    assert remaining_page['items'][0]['fact'] == 1
     with svc.store.tx() as db:
         db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))
     replacement = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})

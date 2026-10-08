@@ -39,7 +39,7 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
-    LOOKUP_POLICY_VERSION = 5
+    LOOKUP_POLICY_VERSION = 6
 
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
@@ -80,6 +80,61 @@ class OSMClient:
                 receipt["duration_ms"] = round((time.monotonic() - started) * 1000)
                 logging.getLogger("uvicorn.error").info("osm_overpass_request %s", json.dumps(receipt))
         raise RetryableProviderError(f"Overpass {bucket} routes unavailable") from last_error
+
+    async def _map_nearby(self, client, lat, lon, radius_m):
+        """Recover a small local object bucket from OSM's read-only map API."""
+        dlat = math.degrees(radius_m / 6_371_000) * 1.001
+        dlon = dlat / max(0.000001, abs(math.cos(math.radians(lat))))
+        if abs(lat) + dlat >= 90 or abs(lon) + dlon >= 180 or 4*dlat*dlon > .25:
+            raise RetryableProviderError('OSM map bounding box unavailable')
+        started = time.monotonic()
+        receipt = {'bucket': 'nearby', 'endpoint_host': 'api.openstreetmap.org', 'transport': 'map_api'}
+        try:
+            response = await client.get('https://api.openstreetmap.org/api/0.6/map.json',
+                params={'bbox': f'{lon-dlon:.7f},{lat-dlat:.7f},{lon+dlon:.7f},{lat+dlat:.7f}'},
+                headers={'User-Agent': self.user_agent})
+            receipt['status_code'] = response.status_code
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get('elements'), list):
+                raise ValueError('Incomplete OSM map response')
+            nodes = {x['id']: x for x in data['elements'] if isinstance(x, dict)
+                     and x.get('type') == 'node' and 'id' in x and 'lat' in x and 'lon' in x}
+            ways = {x['id']: x for x in data['elements'] if isinstance(x, dict)
+                    and x.get('type') == 'way' and 'id' in x}
+            elements = []
+            for item in data['elements']:
+                if not isinstance(item, dict) or not isinstance(item.get('tags'), dict):
+                    continue
+                tags = item['tags']
+                if not any(tags.get(k) for k in ('building', 'name', 'addr:housenumber')):
+                    continue
+                entry = {k: item[k] for k in ('type', 'id', 'tags') if k in item}
+                if item.get('type') == 'node':
+                    if item.get('id') not in nodes:
+                        continue
+                    entry.update(lat=item['lat'], lon=item['lon'])
+                else:
+                    refs = item.get('nodes', [])
+                    if item.get('type') == 'relation':
+                        members = item.get('members', [])
+                        if not members or any(m.get('type') != 'way' or m.get('ref') not in ways for m in members):
+                            continue  # Partial relations never acquire an invented center.
+                        refs = [n for m in members for n in ways[m['ref']].get('nodes', [])]
+                    if not refs or any(n not in nodes for n in refs):
+                        continue
+                    positions = [nodes[n] for n in refs]
+                    entry['center'] = {'lat': (min(x['lat'] for x in positions)+max(x['lat'] for x in positions))/2,
+                                       'lon': (min(x['lon'] for x in positions)+max(x['lon'] for x in positions))/2}
+                elements.append(entry)
+            receipt.update(outcome='success', element_count=len(elements))
+            return {'elements': elements}
+        except (httpx.TransportError, httpx.HTTPStatusError, ValueError, KeyError, TypeError) as exc:
+            receipt.update(outcome='failed', error_type=type(exc).__name__)
+            raise RetryableProviderError('OSM map routes unavailable') from exc
+        finally:
+            receipt['duration_ms'] = round((time.monotonic()-started)*1000)
+            logging.getLogger('uvicorn.error').info('osm_map_request %s', json.dumps(receipt))
 
     async def lookup(self, lat: float, lon: float) -> dict[str, Any]:
         key = _stable_cache_key(f"osm-visible-nearby-v{self.LOOKUP_POLICY_VERSION}", [round(lat, 6), round(lon, 6)])
@@ -126,20 +181,35 @@ class OSMClient:
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[bridge][name];
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[leisure~"^(park|garden)$"][name];
             );out center tags 240;"""
+            # Bound the database's spatial scan before filtering tags. The
+            # spherical distance check below retains the original circular scope.
+            dlat = math.degrees(close_radius_m / 6_371_000) * 1.001
+            dlon = dlat / max(0.000001, abs(math.cos(math.radians(lat))))
+            nearby_scope = f"around:{close_radius_m},{lat:.6f},{lon:.6f}"
+            if abs(lat) + dlat < 90 and abs(lon) + dlon < 180:
+                nearby_scope = f"{lat-dlat:.7f},{lon-dlon:.7f},{lat+dlat:.7f},{lon+dlon:.7f}"
             nearby_query = f"""[out:json][timeout:12];(
-                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[building];
-                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})[name];
-                nwr(around:{close_radius_m},{lat:.6f},{lon:.6f})["addr:housenumber"];
+                nwr({nearby_scope})[building];
+                nwr({nearby_scope})[name];
+                nwr({nearby_scope})["addr:housenumber"];
             );out center tags 180;"""
 
             responses = {}
             preferred = None
             paused: set[str] = set()
             last_error = None
-            for bucket, query in (("landmark", landmark_query), ("nearby", nearby_query)):
+            # Nearby anonymous buildings and address points are the primary
+            # photographic hypotheses; obtain them before broader landmarks.
+            for bucket, query in (("nearby", nearby_query), ("landmark", landmark_query)):
                 try:
                     responses[bucket], preferred = await self._overpass_query(client, query, bucket, preferred, paused)
                 except RetryableProviderError as exc:
+                    if bucket == 'nearby':
+                        try:
+                            responses[bucket] = await self._map_nearby(client, lat, lon, close_radius_m)
+                            continue
+                        except RetryableProviderError:
+                            pass
                     # A failed independent query must not discard useful objects
                     # already returned by another query. Vision still proves identity.
                     unavailable_buckets.append(bucket)
