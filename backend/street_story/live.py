@@ -854,6 +854,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
               'After switching, execute the same author request with the new tools; do not ask the '
               'author to repeat it. Stages: identity (object), research (facts), review (evidence), '
               'editor (selection/concept/text), publication (image/post). '
+              'Never switch to the current stage again: use its available tools to complete the request. '
               'Changing stage is not consent for new mutations or confirmation of a publication.')
         if capability == 'review':
             configuration['system_instruction'] = (
@@ -881,6 +882,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if stage != 'identity' and (initialized['context'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}:
             stage = 'identity'
             continuation = 'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.'
+        if stage == getattr(session, 'capability', None):
+            return None
         return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
             'context': initialized['context'], 'continuation': continuation}
 
@@ -1429,6 +1432,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
         command_id = str(call.get("id") or "")
         story_id = session.resource_id
+
+        if name == 'continue_story' and 'research_action' not in args:
+            stage = args.get('stage')
+            if stage != getattr(session, 'capability', None):
+                raise ConflictError('live_stage_invalid', 'Запрошенный этап ещё не активен.')
+            return {'capability': stage, 'ready': True, 'already_active': True,
+                'next_tool': 'read_topic',
+                'instruction': 'This stage is already active. Use its available tools to finish the accepted request; do not switch again.'}
 
         if name == 'find_place_articles':
             return await self._next_visual_result(session, await self._find_place_articles(session, args))
