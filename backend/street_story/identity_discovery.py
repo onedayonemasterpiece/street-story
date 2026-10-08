@@ -198,7 +198,25 @@ async def suggest(service, story, transcript, candidates):
     original_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     story['_identity_original_source_sha256'] = original_source_sha256
     from .reference_image_codec import normalize_reference
-    source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
+    from .identity_architectural_context import (prepare_regional_catalogue,
+        catalogue_model_context, regional_selection_schema)
+    # Optional bounded HTTP preparation overlaps the existing SOURCE/map CPU
+    # work. No reverse acquisition is awaited; this owned task is always drained.
+    image_planner = getattr(service.providers, 'gemini', None)
+    allow_catalogue_network = (callable(getattr(image_planner, '_generate', None))
+        and callable(getattr(getattr(image_planner, 'executor', None), 'execute', None)))
+    catalogue_task = asyncio.create_task(prepare_regional_catalogue(service, story, candidates,
+        allow_network=allow_catalogue_network),
+        name='street-story-regional-catalogue')
+    try:
+        source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
+        from .identity_scene import planner_scene
+        scene = await planner_scene(service, story, candidates)
+        regional_catalogue = await catalogue_task
+    finally:
+        if not catalogue_task.done():
+            catalogue_task.cancel()
+        await asyncio.gather(catalogue_task, return_exceptions=True)
     model_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     import io
     from PIL import Image
@@ -206,15 +224,16 @@ async def suggest(service, story, transcript, candidates):
         source_preparation = {'mime_type': source_mime, 'width': normalized_image.width,
             'height': normalized_image.height, 'normalizer': 'reference_image_codec.normalize_reference',
             'camera_metadata': story.get('_camera_hints') or {}}
-    from .identity_scene import planner_scene
-    scene = await planner_scene(service, story, candidates)
     scene_manifest = compact_scene_manifest(scene['manifest']) if scene else None
     if scene:
         table = scene_manifest['objects']
         index = table['columns'].index('candidate_id')
         scene_ids = [row[index] for row in table['rows']]
         schema['properties']['accepted_geometry'] = geometry_decision_schema(scene_ids)
+    if regional_catalogue.get('results'):
+        schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     packet = {'region_hint': region_hint(story),
+                    'regional_catalogue': catalogue_model_context(regional_catalogue),
                     'map_scene': scene_manifest,
                     'wikipedia_metadata': wikipedia_metadata_context(wiki_pages),
                     'owner_hint': story.get('_identity_owner_hint') or {},
@@ -238,6 +257,13 @@ async def suggest(service, story, transcript, candidates):
         'Внешнее изображение не обязательно после достаточной геометрии/архитектурного текста. '
         'Если geometry недостаточна и нужен индивидуальный фасадный признак, regional_lookup '
         'может запросить один address/coordinate lookup по exact observed candidate_ids (до двух). '
+        'Если regional_catalogue содержит полученные карточки, regional_article_selections выбирает '
+        'до двух actual article_id с exact physical candidate_id, scope, binding_basis и '
+        'physical_binding_resolved. Это выбор текста, не identity. Полученные адресные aliases '
+        'одного SID сохраняют scope комплекса; не приписывай весь комплекс одному корпусу. '
+        'Подготовленный street/camera address — retrieval anchor, не адрес SOURCE. '
+        'Partial inventory не означает отсутствие остальных карточек/зданий. Не выбирай первые '
+        'две автоматически; при недостатке метаданных сохрани ограничение, без третьего judge. '
         'Если адрес находится на входе, address_entry_id — exact received address anchor, '
         'связанный с nominated footprint по actual building_address_memberships. Не принимай вход '
         'вместо здания и не объединяй номера произвольно. '
@@ -413,6 +439,7 @@ async def suggest(service, story, transcript, candidates):
             # receives article leads independently of reference acquisition.
             story['_identity_article_queries'] = []
         story['_identity_search_plan_payload'] = {**payload,
+            **({'regional_catalogue': regional_catalogue} if regional_catalogue else {}),
             'article_queries': story['_identity_article_queries'],
             **({'regional_lookup_receipt': story['_identity_regional_lookup_receipt']}
                 if story.get('_identity_regional_lookup_receipt') else {}),
@@ -464,12 +491,26 @@ async def suggest(service, story, transcript, candidates):
             joint_source_map_receipt(), [*observed, *candidates]) if isinstance(payload, dict) else None)
         lookup = {}
         if isinstance(payload, dict) and initial_geometry is None:
-            from .identity_architectural_context import acquire_regional_text, acquire_selected_wikipedia_text
+            from .identity_architectural_context import (acquire_regional_text, acquire_selected_wikipedia_text,
+                acquire_selected_regional_text)
             regional = payload.get('regional_lookup')
-            if isinstance(regional, dict) and regional.get('route') not in {None, 'none'}:
+            if payload.get('regional_article_selections'):
+                text_articles, lookup = await acquire_selected_regional_text(service, story, candidates,
+                    payload['regional_article_selections'], regional_catalogue)
+            elif isinstance(regional, dict) and regional.get('route') not in {None, 'none'}:
                 text_articles, lookup = await acquire_regional_text(service, story, candidates, regional)
             else:
                 text_articles, lookup = await acquire_selected_wikipedia_text(service, story, candidates, payload, wiki_pages)
+            if not text_articles and (payload.get('regional_article_selections')
+                    or isinstance(regional, dict) and regional.get('route') not in {None, 'none'}):
+                # An unavailable regional article does not invalidate the
+                # model's independent, already closed encyclopedia choice.
+                # Both receipts survive; no extra selector or joint call.
+                regional_receipt = lookup
+                text_articles, wiki_lookup = await acquire_selected_wikipedia_text(
+                    service, story, candidates, payload, wiki_pages)
+                lookup = {'kind':'independent_selected_text_routes', 'regional':regional_receipt,
+                    'wikipedia':wiki_lookup, 'status':wiki_lookup.get('status') if wiki_lookup else 'unavailable'}
             if lookup:
                 story['_identity_regional_lookup_receipt'] = lookup
         if issues or text_articles:

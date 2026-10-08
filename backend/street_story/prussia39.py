@@ -37,10 +37,14 @@ DEFAULTS = {
 
 class _PublisherGET:
     """Preserve the common acquisition implementation with this site's UA."""
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, client, receipt=None):
+        self.client, self.receipt = client, receipt
 
     def stream(self, method, url, **kwargs):
+        from .research_budget import guard_research_send
+        guard_research_send()
+        if self.receipt is not None:
+            self.receipt['http_dispatch_started'] = True
         kwargs['headers'] = dict(kwargs.get('headers', {}), **{'User-Agent': 'StreetStoryResearch/1.0'})
         return self.client.stream(method, url, **kwargs)
 
@@ -48,6 +52,19 @@ class _PublisherGET:
 def _literal(value):
     # Orthographic transport normalization retains numbers, suffixes and ranges.
     return re.sub(r'\s+', ' ', str(value)).strip().replace('–', '-').replace('—', '-')
+
+
+def _cached_body(store, key):
+    entry = store.cache_get(key) or {}
+    try:
+        raw = base64.b64decode(entry.get('body', ''), validate=True)
+        return bool(raw and entry.get('sha256') == hashlib.sha256(raw).hexdigest())
+    except (ValueError, TypeError):
+        return False
+
+
+def cached_get_available(store, url):
+    return _cached_body(store, 'public-article-acquisition-v1:' + hashlib.sha256(url.encode()).hexdigest())
 
 
 def _address_query(value):
@@ -146,10 +163,14 @@ def parse_address(soup, page_url):
             except ValueError:
                 pass
             continue
-        if card['sid'] in seen:
-            continue
-        seen.add(card['sid'])
         row = node.find_parent('tr')
+        # Thumbnail/text links in one publisher row are one card. Distinct
+        # address rows may name the same canonical complex article; retain
+        # those address aliases while the article cache deduplicates bodies.
+        row_key = (card['sid'], id(row) if row is not None else id(node))
+        if row_key in seen:
+            continue
+        seen.add(row_key)
         if row is not None:
             card['annotation'] = _text(row)[:2000]
             # Publisher card layout qualified 2026-10-08: a justified text
@@ -174,7 +195,8 @@ def parse_address(soup, page_url):
         results.append(card)
     if (total == 0 and results) or (total > 0 and not results) or len(results) > total:
         raise ValueError('address_result_count_mismatch')
-    return {'results': results, 'total_count': total, 'pagination_urls': pages,
+    return {'results': results, 'total_count': total, 'received_row_count':len(results),
+            'unique_article_count':len({card['article_id'] for card in results}), 'pagination_urls': pages,
             'inventory_complete': total == len(results) and not pages}
 
 
@@ -238,16 +260,19 @@ def parse_article(soup):
 class Prussia39Adapter:
     def __init__(self, store, http, *, resolver=resolve_public):
         self.store, self.http, self.resolver = store, http, resolver
-        self._get_http = _PublisherGET(http)
+
+    @staticmethod
+    def address_url(city, address, *, name=''):
+        params = dict(DEFAULTS, text_np=_literal(city), text_adr=_address_query(address))
+        if not params['text_np'] or not params['text_adr']:
+            raise ValueError('address_context_missing')
+        if name:
+            params['text_n'] = _literal(name)
+        return DATABASE + '?' + urlencode(params, encoding='cp1251', errors='strict')
 
     async def address_search(self, city, address, *, name=''):
         try:
-            params = dict(DEFAULTS, text_np=_literal(city), text_adr=_address_query(address))
-            if not params['text_np'] or not params['text_adr']:
-                raise ValueError('address_context_missing')
-            if name:
-                params['text_n'] = _literal(name)
-            url = DATABASE + '?' + urlencode(params, encoding='cp1251', errors='strict')
+            url = self.address_url(city, address, name=name)
         except (ValueError, UnicodeError) as exc:
             return {'status': 'not_sent', 'error_code': str(exc), 'results': []}
         return await self._read(url, 'address', original_query={'city': str(city), 'address': str(address), 'name': str(name)})
@@ -291,6 +316,8 @@ class Prussia39Adapter:
             raise ValueError('article_media_private_address')
         authority = f'[{ip}]' if ':' in ip else ip
         pinned = urlunsplit(('https', authority, urlsplit(url).path, '', ''))
+        from .research_budget import guard_research_send
+        guard_research_send()
         async with self.http.stream('POST', pinned, content=body,
                 headers={'Host': 'www.prussia39.ru', 'User-Agent': 'StreetStoryResearch/1.0',
                          'Content-Type': 'application/x-www-form-urlencoded'},
@@ -312,11 +339,11 @@ class Prussia39Adapter:
                    'query_sha256': digest, 'results': [], 'cache_hit': False}
         if original_query is not None:
             receipt['original_query'] = original_query
-        cooldown = self.store.cache_get(COOLDOWN)
-        if cooldown:
-            return dict(receipt, status='not_sent', error_code='provider_cooldown', retry_at=cooldown['retry_at'])
         key = ('prussia39:coordinate-acquisition-v1:' + digest if body is not None else
                'public-article-acquisition-v1:' + hashlib.sha256(url.encode()).hexdigest())
+        cooldown = self.store.cache_get(COOLDOWN)
+        if cooldown and not _cached_body(self.store, key):
+            return dict(receipt, status='not_sent', error_code='provider_cooldown', retry_at=cooldown['retry_at'])
         locks = _LOCKS.setdefault(asyncio.get_running_loop(), weakref.WeakValueDictionary())
         lock_key = (str(self.store.path.resolve()), key)
         lock = locks.get(lock_key)
@@ -328,7 +355,7 @@ class Prussia39Adapter:
                 cached = self.store.cache_get(key)
                 receipt['cache_hit'] = bool(cached)
                 if body is None:
-                    final, mime, raw = await cached_public_page(self.store, self._get_http, url, resolver=self.resolver)
+                    final, mime, raw = await cached_public_page(self.store, _PublisherGET(self.http, receipt), url, resolver=self.resolver)
                     cached = self.store.cache_get(key)
                 elif cached and hashlib.sha256(base64.b64decode(cached['body'])).hexdigest() == cached['sha256']:
                     final, mime, raw = cached['final_url'], cached['mime'], base64.b64decode(cached['body'])
@@ -377,4 +404,8 @@ class Prussia39Adapter:
             receipt['error_code'] = str(exc)
             if str(exc) == 'empty_body':
                 receipt['status'] = 'transport_failed'
+        finally:
+            # A cancelled optional GET keeps its actual dispatch boundary. The
+            # owned caller drains it; this is not an inference UNKNOWN receipt.
+            self.last_receipt = dict(receipt)
         return receipt

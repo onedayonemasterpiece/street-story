@@ -4,10 +4,213 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
+import math
 
 import httpx
 
 from .identity_telemetry import record_identity_event
+
+
+def _regional_area(story):
+    lat, lon = story.get('latitude'), story.get('longitude')
+    return (not isinstance(lat, bool) and not isinstance(lon, bool)
+        and isinstance(lat, (int, float)) and isinstance(lon, (int, float))
+        and math.isfinite(lat+lon) and 54 <= lat <= 56 and 19 <= lon <= 23)
+
+
+def regional_preparation_query(story, candidates):
+    """One literal retrieval anchor, never a target or first mixed-pool street."""
+    if not _regional_area(story):
+        return None
+    from .identity_source_selection import observed_address_context
+    reverse = (story.get('_identity_search_context') or {}).get('reverse_address') or {}
+    city = next((str(reverse[key]).strip() for key in ('city', 'town', 'village') if reverse.get(key)), '')
+    streets = {str(reverse[key]).strip() for key in ('road', 'pedestrian', 'residential', 'street') if reverse.get(key)}
+    if city and len(streets) == 1:
+        from .identity_scene import scene_camera_context
+        return {'city':city, 'street':next(iter(streets)),
+            'provenance':'already_received_reverse_address',
+            'anchor_kind':scene_camera_context(story)['position_status'],
+            'target_identity_established':False}
+    if streets:
+        return None
+    context = observed_address_context(story, candidates)
+    addresses = [item['address'] for item in context['address_anchors']]
+    addresses += [item.get('map_address') or {} for item in
+        [*(story.get('_identity_observed_candidates') or []), *candidates] if isinstance(item, dict)]
+    queries = {(str(address.get('city') or city).strip(), str(address.get('street') or '').strip())
+        for address in addresses if address.get('street')}
+    if len(queries) != 1:
+        return None
+    locality, street = next(iter(queries))
+    return ({'city':locality, 'street':street, 'provenance':'unambiguous_observed_street',
+        'anchor_kind':'retrieval_context', 'target_identity_established':False} if locality and street else None)
+
+
+async def prepare_regional_catalogue(service, story, candidates, *, allow_network=True):
+    """At most three seconds of optional inventory preparation, not a barrier.
+
+    One observed continuation can expose omitted cards inside the same small
+    preparation envelope. It never cascades through a street's page tree.
+    """
+    from .prussia39 import Prussia39Adapter, cached_get_available
+    from .research_budget import ResearchTerminated
+    query = regional_preparation_query(story, candidates)
+    if query is None or not hasattr(getattr(service, 'store', None), 'cache_get'):
+        return {}
+    try:
+        url = Prussia39Adapter.address_url(query['city'], query['street'])
+    except (ValueError, UnicodeError):
+        return {}
+    research = json.loads(story.get('research_json') or '{}')
+    generation = int(story.get('_identity_generation', research.get('identity_generation') or 0))
+    query_key = hashlib.sha256(url.encode()).hexdigest()
+    revision = int(story.get('_identity_research_control_revision',
+        ((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
+    scope = {'photo_sha256':story.get('photo_sha256'), 'generation':generation,
+        'control_revision':revision, 'query_key':query_key}
+    saved = story.get('_identity_regional_catalogue') or ((research.get('identity_article_discovery') or {})
+        .get('search_plan') or {}).get('payload', {}).get('regional_catalogue') or {}
+    if saved.get('scope') == scope:
+        return saved
+    receipt = {'policy':'prussia-catalogue-v1', 'scope':scope, 'query_scope':query,
+        'status':'not_sent', 'results':[], 'pages':[], 'total_count':None, 'inventory_complete':False,
+        'requested_url':url, 'method':'GET', 'query_key':query_key}
+    if not allow_network and not cached_get_available(service.store, url):
+        return dict(receipt, error_code='joint_image_planner_unavailable')
+    wait = 3.0
+    started = False
+    adapter = None
+    try:
+        if hasattr(service, 'settings'):
+            from .research_budget import require_remaining, reserve_work
+            wait = min(wait, require_remaining(service, story['id'], 'identity'))
+            if not cached_get_available(service.store, url):
+                reserve_work(service, story['id'], 'pages', [url])
+        record_identity_event(service, story['id'], 'identity_regional_preparation_started', {
+            'query_key':query_key, 'anchor_kind':query['anchor_kind'], 'wait_limit_seconds':wait})
+        started = True
+        async with asyncio.timeout(wait), httpx.AsyncClient(timeout=wait, follow_redirects=False) as client:
+            adapter = Prussia39Adapter(service.store, client)
+            lookup = await adapter.address_search(query['city'], query['street'])
+            receipt.update(lookup)
+            receipt['pages'] = [lookup]
+            # Retain every publisher row, including distinct address variants
+            # for one SID. Pagination does not select or read article bodies.
+            continuation = lookup.get('pagination_urls') or []
+            if (lookup.get('status') == 'completed' and lookup.get('inventory_complete') is not True
+                    and len(continuation) == 1 and isinstance(lookup.get('total_count'), int)
+                    and lookup['total_count'] > len(lookup.get('results') or [])
+                    and (allow_network or cached_get_available(service.store, continuation[0]))):
+                if hasattr(service, 'settings'):
+                    require_remaining(service, story['id'], 'identity')
+                    if not cached_get_available(service.store, continuation[0]):
+                        reserve_work(service, story['id'], 'pages', continuation)
+                next_page = await adapter.search_page(continuation[0], previous_receipt=lookup)
+                receipt['pages'].append(next_page)
+                if next_page.get('status') == 'completed':
+                    receipt['results'] = [*(lookup.get('results') or []), *(next_page.get('results') or [])]
+                    receipt['received_row_count'] = len(receipt['results'])
+                    receipt['unique_article_count'] = len({row['article_id'] for row in receipt['results']})
+                    receipt['inventory_complete'] = (next_page.get('total_count') == lookup['total_count']
+                        and len(receipt['results']) == lookup['total_count'])
+                else:
+                    receipt['continuation_outcome'] = next_page.get('status')
+            if receipt.get('inventory_complete') is not True and receipt.get('results'):
+                receipt['limitation'] = 'Only received cards may be selected; inventory is partial, not source exhaustion.'
+    except TimeoutError:
+        if adapter is not None and getattr(adapter, 'last_receipt', None):
+            receipt['interrupted_http_receipt'] = {**adapter.last_receipt, 'outcome':'cancelled_drained'}
+        receipt.update(status='completed' if receipt.get('results') else 'transport_failed',
+            error_code='regional_preparation_wait_expired', inventory_complete=False,
+            limitation='Preparation wait ended; no extra selector/judge is added for late inventory.')
+    except ResearchTerminated as exc:
+        receipt.update(status='completed' if receipt.get('results') else 'not_sent',
+            error_code=exc.reason, inventory_complete=False)
+    receipt['preparation_started'] = started
+    story['_identity_regional_catalogue'] = receipt
+    record_identity_event(service, story['id'], 'identity_regional_preparation_completed', {
+        'query_key':query_key, 'status':receipt['status'], 'received_rows':len(receipt.get('results') or []),
+        'total_count':receipt.get('total_count'), 'inventory_complete':receipt['inventory_complete'],
+        'error_code':receipt.get('error_code')})
+    return receipt
+
+
+def catalogue_model_context(catalogue):
+    if not catalogue:
+        return {}
+    # Metadata only. An annotation is not a fetched/verified article body.
+    context = {key:catalogue.get(key) for key in ('status','query_scope','total_count','received_row_count',
+        'unique_article_count','inventory_complete','pagination_urls','limitation','error_code')}
+    context['results'] = [{key:row[key] for key in ('article_id','canonical_url','coordinates') if key in row}
+        | {key:str(row.get(key) or '')[:limit] for key,limit in
+            (('title',120),('address_text',240),('annotation',160))}
+        | {'metadata_excerpt':True} for row in catalogue.get('results') or []]
+    return context
+
+
+def regional_selection_schema(candidate_ids, catalogue):
+    ids = list(dict.fromkeys(row['article_id'] for row in catalogue.get('results') or []))
+    return {'type':'array', 'maxItems':2, 'items':{'type':'object', 'properties':{
+        'article_id':{'type':'string','enum':ids}, 'candidate_id':{'type':'string','enum':list(candidate_ids)},
+        'scope':{'type':'string','maxLength':400}, 'binding_basis':{'type':'string','maxLength':400},
+        'physical_binding_resolved':{'type':'boolean'}},
+        'required':['article_id','candidate_id','scope','binding_basis','physical_binding_resolved'],
+        'additionalProperties':False}}
+
+
+async def acquire_selected_regional_text(service, story, candidates, selections, catalogue):
+    """Read only model-selected received canonical cards, without ranking."""
+    from jsonschema import Draft202012Validator
+    from .identity_candidate_policy import candidate_identity_eligible
+    from .identity_subject_binding import article_candidate
+    from .prussia39 import Prussia39Adapter
+    catalog = {item.get('candidate_id'):item for item in
+        [*(story.get('_identity_observed_candidates') or []), *candidates] if isinstance(item, dict)}
+    receipt = {'kind':'selected_prussia39', 'status':'not_sent', 'catalogue':catalogue, 'selected_cards':[]}
+    if not selections:
+        return [], receipt
+    if not Draft202012Validator(regional_selection_schema(catalog, catalogue)).is_valid(selections):
+        return [], dict(receipt, reason='selected_card_not_received_or_malformed')
+    cards = {}
+    for card in catalogue.get('results') or []:
+        cards.setdefault(card['article_id'], []).append(card)
+    seen, choices = set(), []
+    for selection in selections:
+        candidate = catalog.get(selection['candidate_id'])
+        aid = selection['article_id']
+        if (aid in seen or not candidate or not str(candidate.get('candidate_id') or '').startswith('osm:')
+                or not candidate_identity_eligible(candidate) or article_candidate(candidate)
+                or (candidate.get('map_object') or {}).get('tags', {}).get('entrance')
+                or selection['physical_binding_resolved'] is not True
+                or not selection['scope'].strip() or not selection['binding_basis'].strip()):
+            return [], dict(receipt, reason='closed_physical_nomination_required')
+        seen.add(aid)
+        choices.append((cards[aid][0]['canonical_url'], selection, cards[aid]))
+    timeout = 20.0
+    if hasattr(service, 'settings'):
+        from .research_budget import require_remaining, reserve_work
+        timeout = min(timeout, require_remaining(service, story['id'], 'identity'))
+        reserve_work(service, story['id'], 'pages', [url for url, _, _ in choices])
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        adapter = Prussia39Adapter(service.store, client)
+        pages = await asyncio.gather(*(adapter.article(url) for url, _, _ in choices))
+    articles = []
+    for page, (_url, selection, variants) in zip(pages, choices):
+        text = page.get('normalized_text') or page.get('text') or ''
+        receipt['selected_cards'].append({'article_id':selection['article_id'], 'status':page.get('status')})
+        if page.get('status') != 'completed' or not text.strip() or page.get('raw_body_sha256_verified') is not True:
+            continue
+        text = text[:12_000]
+        articles.append({'article_id':page['article_id'], 'url':page['canonical_url'],
+            'source_sha256':page['raw_content_sha256'], 'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
+            'text':text, 'raw_body_sha256_verified':True, 'input_kind':'acquired_article_text',
+            'title':page.get('title') or variants[0].get('title') or '', 'scope':selection['scope'],
+            'binding_basis':selection['binding_basis'], 'lookup_candidate_ids':[selection['candidate_id']],
+            'card_variants':variants, 'fetched_at':page.get('fetched_at'), 'cache_hit':page.get('cache_hit',False)})
+    receipt['status'] = 'completed' if len(articles) == len(choices) else 'partial' if articles else 'unavailable'
+    return articles, receipt
 
 
 async def acquire_selected_wikipedia_text(service, story, candidates, payload, wiki_pages):
@@ -197,11 +400,15 @@ async def acquire_regional_text(service, story, candidates, request):
             'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False)})
         if (lookup.get('status') != 'completed' or lookup.get('inventory_complete') is not True
                 or not 1 <= len(results) <= 2):
+            if lookup.get('status') == 'completed' and results:
+                lookup['limitation'] = ('Broad inventory arrived after the initial joint call. '
+                    'No automatic first-two selection or third paid selector/judge; metadata remains retained.')
             return [], lookup
         if hasattr(service, 'settings'):
             from .research_budget import reserve_work
             reserve_work(service, story['id'], 'pages', [item['canonical_url'] for item in results])
-        pages = await asyncio.gather(*(adapter.article(item['canonical_url']) for item in results))
+        urls = list(dict.fromkeys(item['canonical_url'] for item in results))
+        pages = await asyncio.gather(*(adapter.article(url) for url in urls))
     articles = []
     for page in pages:
         text = page.get('normalized_text') or page.get('text') or ''
