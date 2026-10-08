@@ -227,7 +227,8 @@ async def test_all_overpass_routes_fail_bounded_without_empty_success(tmp_path):
         osm = OSMClient(Store(tmp_path / "db.sqlite3"), "StreetStory tests", client)
         with pytest.raises(RetryableProviderError):
             await osm.lookup(54.7000, 20.5000)
-    assert len(calls) == 5  # reverse + two independent queries, at most two routes each
+    assert len(calls) == 6  # reverse, two Overpass routes per bucket, one local map read
+    assert sum(r.url.path == '/api/0.6/map.json' for r in calls) == 1
 
 
 @pytest.mark.asyncio
@@ -273,3 +274,37 @@ async def test_reverse_failure_does_not_block_objects_and_recovers_without_stick
         complete = await osm.lookup(54.7000, 20.5000)
         assert not complete["partial"] and complete["reverse"]["osm_id"] == 1
         assert len(calls) == 6
+
+@pytest.mark.asyncio
+async def test_local_map_api_recovers_addresses_and_real_geometry_after_overpass_failure(tmp_path):
+    map_calls = []
+
+    async def handler(request):
+        if request.method == 'POST':
+            query = parse_qs(request.content.decode())['data'][0]
+            return object_response(100) if '[historic]' in query else httpx.Response(504)
+        if request.url.path != '/api/0.6/map.json':
+            return reverse_response()
+        map_calls.append(request)
+        return httpx.Response(200, json={'elements': [
+            {'type': 'node', 'id': 1, 'lat': 54.7001, 'lon': 20.5},
+            {'type': 'node', 'id': 2, 'lat': 54.7002, 'lon': 20.5001},
+            {'type': 'node', 'id': 3, 'lat': 54.7001, 'lon': 20.5,
+             'tags': {'addr:street': 'Local street', 'addr:housenumber': '17'}},
+            {'type': 'node', 'id': 4, 'lat': 54.7014, 'lon': 20.5024,
+             'tags': {'addr:housenumber': 'outside-circle'}},
+            {'type': 'way', 'id': 5, 'nodes': [1, 2, 1], 'tags': {'building': 'yes'}},
+            {'type': 'relation', 'id': 6, 'members': [{'type': 'way', 'ref': 99}],
+             'tags': {'building': 'yes'}},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        osm = OSMClient(Store(tmp_path / 'db.sqlite3'), 'StreetStory tests', client)
+        result = await osm.lookup(54.7, 20.5)
+        assert await osm.lookup(54.7, 20.5) == result
+    assert not result['partial'] and len(map_calls) == 1
+    objects = {x['id']: x for x in result['nearby']}
+    assert objects[3]['tags']['addr:housenumber'] == '17'
+    assert objects[5]['center'] == {'lat': 54.70015, 'lon': 20.50005}
+    assert 4 not in objects and 6 not in objects
+    assert objects[5]['distance_m'] < 30
