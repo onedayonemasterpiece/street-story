@@ -18,16 +18,18 @@ async def test_independent_searches_overlap_and_partial_sources_are_saved_before
     async def opencode(query, snapshot):
         started.add('opencode')
         await release.wait()
-        return {'sources': [{'url': 'https://archive.example/general'}]}
-    async def google(query):
+        return {'sources': [{'url': 'https://archive.example/general'}], 'source_selection': {'status': 'model_selected'}}
+    async def google(query, *, purpose):
         started.add('google')
         await release.wait()
-        return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/nearby'}])
+        return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/nearby'}], payload={'source_selection': {'status': 'model_selected'}})
     async def public(query):
         started.add('public')
         completed.set()
         return SimpleNamespace(grounding_sources=[{'url': 'https://official.example/building'}])
-    svc.providers.research = SimpleNamespace(search_articles=opencode)
+    async def select(query, observed, snapshot):
+        return {'sources': observed, 'source_selection': {'status': 'model_selected'}}
+    svc.providers.research = SimpleNamespace(search_articles=opencode, select_identity_sources=select)
     svc.providers.gemini.discover_article_urls = google
     svc.providers.gemini._public_web_search = public
     task = asyncio.create_task(identity_discovery.web_image_sources(svc, 'Unproved', '', story=story))
@@ -56,14 +58,16 @@ async def test_unknown_search_is_not_resent_or_cancelled_and_does_not_discard_ot
     async def opencode(query, snapshot):
         calls.append('original-opencode-readback')
         raise RetryableProviderError('research_provider_outcome_unknown')
-    async def google(query):
+    async def google(query, *, purpose):
         calls.append('google')
-        return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/building'}])
+        return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/building'}], payload={'source_selection': {'status': 'model_selected'}})
     async def public(query):
         calls.append('public')
         return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/building'},
             {'url': 'https://official.example/building'}])
-    svc.providers.research = SimpleNamespace(search_articles=opencode)
+    async def select(query, observed, snapshot):
+        return {'sources': observed, 'source_selection': {'status': 'model_selected'}}
+    svc.providers.research = SimpleNamespace(search_articles=opencode, select_identity_sources=select)
     svc.providers.gemini.discover_article_urls = google
     svc.providers.gemini._public_web_search = public
     sources = await identity_discovery.web_image_sources(svc, 'Unproved', '', story=story)
@@ -77,8 +81,10 @@ async def test_late_search_results_cannot_bypass_owner_stop(tmp_path):
     story = svc._identity_snapshot(topic['id'])[0]
     async def opencode(query, snapshot):
         stop_research(svc, story['id'], purpose='identity')
-        return {'sources': [{'url': 'https://archive.example/general'}]}
-    svc.providers.research = SimpleNamespace(search_articles=opencode)
+        return {'sources': [{'url': 'https://archive.example/general'}], 'source_selection': {'status': 'model_selected'}}
+    async def select(query, observed, snapshot):
+        return {'sources': observed, 'source_selection': {'status': 'model_selected'}}
+    svc.providers.research = SimpleNamespace(search_articles=opencode, select_identity_sources=select)
     with pytest.raises(ConflictError):
         await identity_discovery.web_image_sources(svc, 'Unproved', '', story=story)
     assert not svc._identity_snapshot(story['id'])[1].get('identity_article_discovery')

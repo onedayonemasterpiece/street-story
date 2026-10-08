@@ -11,7 +11,8 @@ from test_research_control import fixture
 
 
 @pytest.mark.asyncio
-async def test_unknown_addressed_request_readback_is_not_blocked_by_inference_cooldown(tmp_path):
+@pytest.mark.parametrize('phase', ['abort_outcome_unknown', 'unknown'])
+async def test_unknown_addressed_request_readback_is_not_blocked_by_inference_cooldown(tmp_path, phase):
     import hashlib
     from types import SimpleNamespace
     from street_story.service import canonical
@@ -21,7 +22,7 @@ async def test_unknown_addressed_request_readback_is_not_blocked_by_inference_co
     adapter.client = SimpleNamespace(endpoint='http://existing-opencode:4097', model_id='configured', provider_id='opencode')
     story = {'id': sid, 'photo_sha256': photo}
     binding, _ = adapter.attempt(story, 'search', 'same-unit')
-    saved = {'binding': binding, 'phase': 'abort_outcome_unknown', 'session_id': 'sesExisting', 'message_id': 'msgExisting'}
+    saved = {'binding': binding, 'phase': phase, 'session_id': 'sesExisting', 'message_id': 'msgExisting'}
     with service.store.tx() as db:
         db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
                    (canonical(saved), binding['attempt_id']))
@@ -33,7 +34,7 @@ async def test_unknown_addressed_request_readback_is_not_blocked_by_inference_co
     called = []
     async def readback(current):
         called.append(current)
-        assert current['phase'] == 'abort_outcome_unknown'
+        assert current['phase'] == phase
         assert current['session_id'] == 'sesExisting' and current['message_id'] == 'msgExisting'
         return {'result': 'existing-response'}
     assert await adapter.run(story, 'search', 'same-unit', readback) == {'result': 'existing-response'}

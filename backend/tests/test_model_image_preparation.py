@@ -202,9 +202,8 @@ async def test_adapter_carries_preparation_marker_for_durable_attempt_and_native
 
 
 @pytest.mark.asyncio
-async def test_prepared_opencode_readback_download_failure_preserves_original_receipt():
+async def test_prepared_opencode_readback_succeeds_despite_reference_url_unavailable():
     from test_opencode_research import Harness, sheet
-    from street_story.errors import RetryableProviderError
 
     h = Harness()
     h.result = {"status": "mismatch"}
@@ -219,8 +218,10 @@ async def test_prepared_opencode_readback_download_failure_preserves_original_re
         raise TimeoutError("readback REF unavailable")
 
     adapter.public_image_loader = broken
-    before = len(h.checkpoints)
-    with pytest.raises(RetryableProviderError, match="reference_readback_waiting"):
-        await adapter.compare_image(*opencode_args(sheet(), binding, {"type": "object"}))
-    assert len(h.checkpoints) == before
+    before_admissions = len(h.admissions)
+    result = await adapter.compare_image(*opencode_args(sheet(), binding, {"type": "object"}))
+    assert result["receipt"]["phase"] == "completed"
+    assert result["receipt"]["readback_only"] is True
+    assert result["receipt"]["image_preparation"] == MODEL_PREPARATION
+    assert len(h.admissions) == before_admissions
     assert len(h.sends) == 1

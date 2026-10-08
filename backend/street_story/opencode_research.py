@@ -323,7 +323,7 @@ class OpenCodeResearch:
     @asynccontextmanager
     async def _admitted(self, binding, workload, receipt):
         if (binding.get('session_id') and binding.get('message_id')
-                and binding.get('phase') in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'}):
+                and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'}):
             # Reconcile a durable addressed request even when its inference
             # budget is exhausted. No new dispatch and no refund of unknown
             # usage: that original reservation remains authoritative.
@@ -389,7 +389,7 @@ class OpenCodeResearch:
             submitted = bool(binding.get('message_id')) or receipt['phase'] in {
                 'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}
             from .reference_image_codec import MODEL_PREPARATION, normalize_reference
-            prepare = not submitted or binding.get('image_preparation') == MODEL_PREPARATION
+            prepare = not submitted
             if direct_parts and prepare:
                 # Installed OpenCode normalizes every image before saving the
                 # prompt and requires data URIs. Materialize public REF in RAM
@@ -408,12 +408,6 @@ class OpenCodeResearch:
                             'url': f'data:{mime};base64,' + base64.b64encode(raw).decode('ascii')}
                         resolved.append(part)
                 except Exception as exc:
-                    if submitted:
-                        # Reconstructing the prepared original input says
-                        # nothing about its retained send; preserve that ledger.
-                        from .errors import RetryableProviderError
-                        raise RetryableProviderError('research_image_reference_readback_waiting',
-                                                     retry_at=time.time()+60) from exc
                     receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
                                    error_type=type(exc).__name__)
                     raise ResearchUnavailable('research_image_reference_unavailable', receipt) from exc
@@ -423,6 +417,8 @@ class OpenCodeResearch:
                 receipt['binding']['image_preparation'] = MODEL_PREPARATION
             if submitted and binding.get('image_transport') == 'inline_data_uri_v1':
                 receipt['image_transport'] = binding['image_transport']
+                if binding.get('image_preparation'):
+                    receipt['image_preparation'] = binding['image_preparation']
             receipt['isolation'] = await self._attest(client, role)
             workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': receipt['input_image_bytes'],
                         'max_steps': receipt['isolation']['steps'], 'max_output_chars': self.limits.max_output_chars,
@@ -458,7 +454,7 @@ class OpenCodeResearch:
                     raise ResearchUnavailable('research_session_id_invalid', receipt)
                 messages = await self._request(client, 'GET', f'/session/{sid}/message', params={'limit': 100})
                 already_submitted = any(message.get('info', {}).get('id') == message_id for message in messages)
-                if not already_submitted and receipt['phase'] in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'}:
+                if not already_submitted and receipt['phase'] in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'}:
                     raise ResearchUnavailable('research_submit_outcome_unknown', receipt)
                 if not already_submitted:
                     parts = [{'type': 'text', 'text': prompt}]

@@ -32,7 +32,7 @@ class Store:
             CREATE TABLE stories(id TEXT, photo_sha256 TEXT, photo_mime_type TEXT, state TEXT,
                 research_json TEXT, updated_at REAL, error_code TEXT);
             CREATE TABLE poi_aliases(namespace TEXT, normalized_value TEXT, poi_id TEXT);
-            CREATE TABLE research_provider_attempts(story_id TEXT,role TEXT,receipt_json TEXT);
+            CREATE TABLE research_provider_attempts(story_id TEXT,role TEXT,receipt_json TEXT,logical_id TEXT);
             CREATE TABLE live_commands(story_id TEXT,command_id TEXT,tool_name TEXT,request_digest TEXT,
                 result_json TEXT,created_at REAL);
         ''')
@@ -179,7 +179,7 @@ def test_progress_counts_reference_addresses_not_media_hashes():
 @pytest.mark.asyncio
 async def test_unknown_provider_operation_cannot_create_a_new_comparison(prepared):
     service, adapter, session = prepared
-    service.store.db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?)',
+    service.store.db.execute('INSERT INTO research_provider_attempts(story_id,role,receipt_json) VALUES(?,?,?)',
         (session.resource_id, 'vision_native_direct', json.dumps({'phase': 'unknown',
             'photo_sha256': 'opaque-upload-token', 'generation': 0})))
     with pytest.raises(RetryableProviderError, match='research_visual_outcome_unknown'):

@@ -7,22 +7,25 @@ import pytest
 from street_story.errors import PermanentProviderError, RetryableProviderError
 from street_story.headless_identity import VERDICT_SCHEMA
 from street_story.native_vision import native_rpc_error
+from street_story.reference_image_codec import normalize_reference
 from test_native_vision import setup
+from test_reference_image_codec import jpeg
 
 
 @pytest.mark.asyncio
 async def test_public_reference_inline_separate_parts_and_accounted_bytes(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     fetched = []
+    reference = jpeg((500, 300))
     async def loader(url):
         fetched.append(url)
-        return 'image/jpeg', b'raw-reference-bytes'
+        return 'image/jpeg', reference
     provider.public_image_loader = loader
     result = await provider.compare_visual(None, story, VERDICT_SCHEMA, context, {'attempt_id': 'inline'})
     inputs = next(p['input'] for method, p in client.calls if method == 'turn/start')
     assert [p['text'] for p in inputs if p['type'] == 'text'][1:] == ['SOURCE', 'REF 1']
-    assert inputs[2]['url'] == 'data:image/jpeg;base64,' + base64.b64encode(snapshot).decode()
-    assert inputs[4]['url'] == 'data:image/jpeg;base64,' + base64.b64encode(b'raw-reference-bytes').decode()
+    assert inputs[2]['url'] == 'data:image/jpeg;base64,' + base64.b64encode(normalize_reference(snapshot)[1]).decode()
+    assert inputs[4]['url'] == 'data:image/jpeg;base64,' + base64.b64encode(normalize_reference(reference)[1]).decode()
     assert fetched == ['https://example.org/ref.jpg']
     assert result['receipt']['image_transport'] == 'inline_data_uri_v1'
     assert len(sends) == 1 and finalized[-1][1] == 'completed'

@@ -11,6 +11,7 @@ from street_story.db import Store
 from street_story.gemini import GeminiUnavailable
 from street_story.providers import GeminiClient
 from test_backend import config
+from test_reference_image_codec import jpeg
 
 
 class FailingExecutor:
@@ -73,7 +74,7 @@ async def test_grounded_research_fails_over_to_second_lite_model(tmp_path):
         return SimpleNamespace(text=json.dumps(payload), candidates=[candidate])
 
     client._generate = generate
-    photo = b"photo"
+    photo = jpeg()
 
     result = await client.research(photo, "image/jpeg", "voice", {"label": "place"}, [], [])
 

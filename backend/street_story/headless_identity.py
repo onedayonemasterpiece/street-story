@@ -20,11 +20,29 @@ VERDICT_SCHEMA = {'type':'object','properties':{
     'alternative_candidate_ids':{'type':'array','items':{'type':'string'}}},
     'required':['status','candidate_id','confidence','observations','alternative_candidate_ids'], 'additionalProperties':False}
 
+SEARCH_FEEDBACK_SCHEMA = {'type': 'object', 'properties': {
+    'reference_kind': {'enum': ['modern_exterior', 'interior', 'historical', 'diagram', 'unclear']},
+    'next_action': {'enum': ['explore_alternative', 'find_external_view', 'another_view', 'verify_binding']},
+    'reason': {'type': 'string'}, 'next_query': {'type': 'string'},
+    'candidate_ids': {'type': 'array', 'items': {'type': 'string'}}},
+    'required': ['reference_kind', 'next_action', 'reason', 'next_query', 'candidate_ids'],
+    'additionalProperties': False}
 
-def grouped_verdict_schema():
+
+def planned_verdict_schema(reply):
     from copy import deepcopy
     schema = deepcopy(VERDICT_SCHEMA)
-    item = deepcopy(VERDICT_SCHEMA)
+    # Frozen historical descriptors retain their exact old schema and prompt.
+    # Only a newly created comparison asks for the planning extension.
+    if reply.get('search_feedback_instruction'):
+        schema['properties']['search_feedback'] = deepcopy(SEARCH_FEEDBACK_SCHEMA)
+    return schema
+
+
+def grouped_verdict_schema(reply=None):
+    from copy import deepcopy
+    schema = planned_verdict_schema(reply or {})
+    item = deepcopy(schema)
     item['properties']['reference_id'] = {'type': 'string'}
     item['required'].append('reference_id')
     # Validate each result independently at the host gate. One malformed item
@@ -182,7 +200,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             result = await provider.visual_verdict(None,{**story, **extra, '_identity_generation':generation,
                 '_identity_research_control_revision': scope['control_revision'],
                 '_research_job_id': job['id'], '_research_job_attempt': job['attempts']},
-                grouped_verdict_schema()[0] if grouped else VERDICT_SCHEMA,canonical(pending['reply']))
+                grouped_verdict_schema(pending['reply'])[0] if grouped else planned_verdict_schema(pending['reply']),canonical(pending['reply']))
         except PermanentProviderError as exc:
             if not grouped and str(exc) == 'native_vision:reference_unavailable':
                 self._retire_unsent_reference(provider, story, session, pending, scope)
@@ -255,7 +273,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                        for row in db.execute("SELECT logical_id,role FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'",
                                              (story['id'],)))
 
-    def _freeze_parallel_pairs(self, session, pending, routes):
+    def _freeze_parallel_pairs(self, session, pending, routes, *, append=False):
         state = session.state['visual_comparison']
         pairs = []
         for index, (candidate, evidence, route) in enumerate(zip(pending['candidates'], pending['evidence'], routes)):
@@ -265,13 +283,14 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 'reference_id': candidate['reference_id'], 'candidates': [candidate], 'evidence': [evidence],
                 'reply': {**pending['reply'], 'comparison_id': pair_id, 'references': [reference]}})
         # Only URLs, request addresses and exact proof context persist. No bytes.
-        state['parallel_pairs'] = pairs
+        state['parallel_pairs'] = state.get('parallel_pairs', []) + pairs if append else pairs
         state['queue'] = pending['candidates'][len(pairs):] + state['queue']
         state['pending'] = None
         self._save_visual_queue(session, state)
         record_identity_event(self.service, session.resource_id, 'identity_parallel_pairs_frozen', {
             'generation': state['generation'], 'pair_ids': [pair['id'] for pair in pairs],
-            'routes': [pair['route'] for pair in pairs], 'pair_count': len(pairs)})
+            'routes': [pair['route'] for pair in pairs], 'pair_count': len(pairs), 'refill': append})
+        return pairs
 
     def _parallel_pair_pending(self, story, pair, *, require_source):
         source = None
@@ -347,53 +366,118 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                      story['id'], pair['id'], pair['route'], resume, accepted)
             try:
                 result = await provider.visual_pair_route(pair['route'], None, pair_story,
-                    VERDICT_SCHEMA, canonical(pair['reply']))
+                    planned_verdict_schema(pair['reply']), canonical(pair['reply']))
                 return pair, result, None
             except (RetryableProviderError, PermanentProviderError) as exc:
                 return pair, None, exc
 
-        tasks = [asyncio.create_task(run_pair(pair)) for pair in pairs]
+        async def prepare_refill(route):
+            limit = session.visual_reference_limit
+            session.visual_reference_limit = 1
+            session.state['visual_refill_preparing'] = True
+            try:
+                # Reuse normal source fairness and the single bounded reader.
+                # The completion loop remains free to commit sibling results.
+                await self._compare_place_images(session, {}, page_budget=1,
+                    search_budget=1, expected_scope=scope, parallel_refill=True)
+                pending = state.get('pending')
+                if pending:
+                    current, latest = self.service._identity_snapshot(story['id'])
+                    self._assert_visual_current(current, latest, scope, session=session)
+                    if ((latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+                            or current.get('error_code') == 'visual_identity_conflict'):
+                        state['queue'] = pending['candidates'] + state['queue']
+                        state['pending'] = None
+                        self._save_visual_queue(session, state)
+                        return None, None
+                    return self._freeze_parallel_pairs(session, pending, [route], append=True)[0], None
+                return None, None
+            except RetryableProviderError as exc:
+                return None, exc
+            finally:
+                session.state.pop('visual_refill_preparing', None)
+                session.visual_reference_limit = limit
+
+        tasks = {asyncio.create_task(run_pair(pair)) for pair in pairs}
+        all_tasks = set(tasks)
+        preparation = None
+        freed_routes = []
         waits = []
         try:
-            for completed in asyncio.as_completed(tasks):
-                pair, result, error = await completed
-                if error is not None:
-                    known_codes = {'research_visual_pair_dispatch_unknown', 'research_visual_pair_outcome_unknown',
-                        'research_visual_pair_multiple_outcomes_unknown', 'research_visual_pair_source_required',
-                        'research_visual_pair_observation_closed', 'research_visual_pair_routes_closed',
-                        'research_vision_waiting', 'research_vision_route_unverified'}
-                    pair['last_error'] = str(error) if str(error) in known_codes else type(error).__name__
-                    if isinstance(error, PermanentProviderError):
-                        pair['phase'] = 'failed'
-                    else:
-                        waits.append(error)
+            while tasks:
+                completed, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                prepared = []
+                # Commit every ready verdict before dispatching a prepared ref:
+                # a match in this batch stops needless new provider sends.
+                for finished in completed:
+                    if finished is preparation:
+                        preparation = None
+                        new_pair, error = await finished
+                        if error:
+                            waits.append(error)
+                        elif new_pair:
+                            prepared.append(new_pair)
+                        continue
+                    pair, result, error = await finished
+                    if error is not None:
+                        known_codes = {'research_visual_pair_dispatch_unknown', 'research_visual_pair_outcome_unknown',
+                            'research_visual_pair_multiple_outcomes_unknown', 'research_visual_pair_source_required',
+                            'research_visual_pair_observation_closed', 'research_visual_pair_routes_closed',
+                            'research_vision_waiting', 'research_vision_route_unverified'}
+                        pair['last_error'] = str(error) if str(error) in known_codes else type(error).__name__
+                        if isinstance(error, PermanentProviderError):
+                            pair['phase'] = 'failed'
+                            freed_routes.append(pair['route'])
+                        else:
+                            waits.append(error)
+                        self._save_visual_queue(session, state)
+                        LOG.warning('street_story_identity component=parallel_vision stage=waiting story_id=%s comparison_id=%s route=%s phase=%s error_type=%s reason=%s',
+                                    story['id'], pair['id'], pair['route'], pair['phase'], type(error).__name__, pair['last_error'])
+                        continue
+                    if result is None:
+                        freed_routes.append(pair['route'])
+                        continue
+                    pair.update(phase='result', result=result['result'], receipt=result['receipt'])
                     self._save_visual_queue(session, state)
-                    LOG.warning('street_story_identity component=parallel_vision stage=waiting story_id=%s comparison_id=%s route=%s phase=%s error_type=%s reason=%s',
-                                story['id'], pair['id'], pair['route'], pair['phase'], type(error).__name__, pair['last_error'])
-                    continue
-                if result is None:
-                    continue
-                pair.update(phase='result', result=result['result'], receipt=result['receipt'])
-                self._save_visual_queue(session, state)
-                # Commit one pair through the same subject/geometry/proof gate.
-                # It atomically retains every submitted peer before publishing match.
-                session.model = result['receipt'].get('model') or result['receipt'].get('model_id') or session.model
-                state['pending'] = self._parallel_pair_pending(story, pair, require_source=False)
-                verdict = {**result['result'], 'comparison_id': pair['id'], 'provider_receipt': result['receipt']}
-                self._record_place_comparison(session, 'headless:'+pair['id'], verdict)
-                LOG.info('street_story_identity component=parallel_vision stage=completed story_id=%s comparison_id=%s route=%s model=%s',
-                         story['id'], pair['id'], pair['route'], session.model)
+                    # The existing proof gate atomically retains every peer.
+                    session.model = result['receipt'].get('model') or result['receipt'].get('model_id') or session.model
+                    state['pending'] = self._parallel_pair_pending(story, pair, require_source=False)
+                    verdict = {**result['result'], 'comparison_id': pair['id'], 'provider_receipt': result['receipt']}
+                    self._record_place_comparison(session, 'headless:'+pair['id'], verdict)
+                    LOG.info('street_story_identity component=parallel_vision stage=completed story_id=%s comparison_id=%s route=%s model=%s',
+                             story['id'], pair['id'], pair['route'], session.model)
+                    freed_routes.append(pair['route'])
+                for new_pair in prepared:
+                    task = asyncio.create_task(run_pair(new_pair))
+                    tasks.add(task)
+                    all_tasks.add(task)
+                ready_work = bool(state.get('queue')) or any(
+                    page.get('status') not in {'completed', 'excluded'}
+                    and page.get('retry_at', 0) <= self.service.store.now()
+                    for page in state.get('sources', {}).values())
+                qualified_routes = set(getattr(provider, 'parallel_visual_routes', lambda: ())())
+                freed_routes = [route for route in freed_routes if route in qualified_routes]
+                if freed_routes and preparation is None and ready_work:
+                    current, latest = self.service._identity_snapshot(story['id'])
+                    self._assert_visual_current(current, latest, scope)
+                    if ((latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+                            and current.get('error_code') != 'visual_identity_conflict'):
+                        # One acquisition at a time, independent of already
+                        # submitted comparisons. UNKNOWN never frees its lane.
+                        preparation = asyncio.create_task(prepare_refill(freed_routes.pop(0)))
+                        tasks.add(preparation)
+                        all_tasks.add(preparation)
         except asyncio.CancelledError:
             # Process/session shutdown: provider adapters retain UNKNOWN receipts.
             # A sufficient match never enters this cancellation path.
-            for task in tasks:
+            for task in all_tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*all_tasks, return_exceptions=True)
             raise
         finally:
             # No first-match cancellation: already-submitted siblings drain normally.
-            if not all(task.done() for task in tasks):
-                await asyncio.gather(*tasks, return_exceptions=True)
+            if not all(task.done() for task in all_tasks):
+                await asyncio.gather(*all_tasks, return_exceptions=True)
         if waits:
             raise waits[0]
         current, latest = self.service._identity_snapshot(story['id'])

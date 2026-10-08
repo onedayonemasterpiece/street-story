@@ -23,7 +23,7 @@ async def test_model_search_failures_use_existing_public_discovery(tmp_path):
         calls.append('opencode')
         raise RetryableProviderError('RESOURCE_DAILY_BUDGET', retry_at=10000)
 
-    async def google(*args):
+    async def google(*args, **kwargs):
         calls.append('google')
         raise RetryableProviderError('google_quota', retry_at=5000)
 
@@ -33,11 +33,16 @@ async def test_model_search_failures_use_existing_public_discovery(tmp_path):
         calls.append('public')
         return SimpleNamespace(grounding_sources=sources)
 
-    svc.providers.research = SimpleNamespace(search_articles=opencode)
+    async def select(query, observed, story):
+        assert observed == sources
+        calls.append('semantic_selection')
+        return {'sources': sources, 'source_selection': {'status': 'model_selected'}}
+
+    svc.providers.research = SimpleNamespace(search_articles=opencode, select_identity_sources=select)
     svc.providers.gemini.discover_article_urls = google
     svc.providers.gemini._public_web_search = public
     assert await identity_discovery.web_image_sources(svc, 'building', '', story=topic) == sources
-    assert calls == ['opencode', 'google', 'public']
+    assert calls == ['opencode', 'google', 'public', 'semantic_selection']
     assert svc.story(topic['id'])['place_name'] is None  # snippets are not proof
 
 
@@ -199,6 +204,14 @@ async def test_search_terms_receive_nearby_address_distance_and_camera_context(t
         queries.append(q)
         return SimpleNamespace(grounding_sources=[{'url': 'https://news.example/building'}])
 
+    async def empty_search(*args):
+        return {'sources': [], 'source_selection': {'status': 'model_selected'}}
+
+    async def select(q, observed, story):
+        assert q == query
+        return {'sources': observed, 'source_selection': {'status': 'model_selected'}}
+
+    svc.providers.research = SimpleNamespace(select_identity_sources=select, search_articles=empty_search)
     svc.providers.gemini._public_web_search = public
     await identity_discovery.web_image_sources(svc, 'wrong distant guess', 'building',
         story={**topic, '_identity_search_query': topic['_identity_article_queries'][0]})

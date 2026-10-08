@@ -568,20 +568,68 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     google = getattr(service.providers.gemini, 'discover_article_urls', None)
     if callable(google):
         routes.append(('google', lambda: asyncio.wait_for(
-            google(f'{query} современные фотографии нынешнего здания фасада'), timeout=45)))
+            google(query, purpose='identity'), timeout=45)))
+    frozen_public = None
+    if story:
+        research = json.loads(story.get('research_json') or '{}')
+        if hasattr(service.store, 'connection'):
+            with service.store.connection() as db:
+                research = json.loads(service._story_row(db, story['id'])['research_json'] or '{}')
+        history = research.get('identity_article_discovery') or {}
+        if (history.get('generation', 0) == int(story.get('_identity_generation', research.get('identity_generation') or 0))
+                and history.get('photo_sha256') == story.get('photo_sha256')):
+            previous = (history.get('source_selections') or {}).get('public_web:' + query) or {}
+            if isinstance(previous.get('discovered_sources'), list):
+                frozen_public = previous['discovered_sources']
     public_search = getattr(service.providers.gemini, '_public_web_search', None)
-    if callable(public_search):
+    if callable(public_search) or frozen_public is not None:
         # Existing URL/snippet discovery needs neither model quota nor another
         # framework. Acquired articles and vision still supply identity proof.
-        routes.append(('public_web', lambda: asyncio.wait_for(public_search(query), timeout=15)))
+        async def public_inventory():
+            if frozen_public is not None:
+                return {'sources': frozen_public}
+            return await asyncio.wait_for(public_search(query), timeout=15)
+        routes.append(('public_web', public_inventory))
     async def discover(provider, call):
         started = asyncio.get_running_loop().time()
+        observed = []
         try:
             result = await call()
             sources = (result.get('sources') or []) if isinstance(result, dict) else (getattr(result, 'grounding_sources', None) or [])
+            payload = result if isinstance(result, dict) else (getattr(result, 'payload', None) or {})
+            receipt = payload.get('receipt') or {}
+            observed = payload.get('discovered_sources', receipt.get('discovered_sources', sources))
+            selection = payload.get('source_selection', receipt.get('source_selection'))
+            if provider == 'public_web':
+                # Retain raw sightings before the fenced semantic operation. Raw
+                # inventory is separate from selected reader/vision sources.
+                if story:
+                    _retain_article_discovery(service, story, [], discovered_sources=observed,
+                        source_selections={provider + ':' + query: {'status': 'selection_pending',
+                            'discovered_sources': observed}})
+                selector = getattr(researcher, 'select_identity_sources', None)
+                if not observed:
+                    sources, selection = [], {'status': 'model_selected', 'discovered_count': 0, 'selected_count': 0}
+                elif not callable(selector) or story is None:
+                    raise RetryableProviderError('identity_source_selection_unavailable')
+                else:
+                    result = await selector(query, observed, story)
+                    sources, selection = result['sources'], result['source_selection']
+                selection = {**selection, 'discovered_sources': observed}
+            if story:
+                _retain_article_discovery(service, story, [], discovered_sources=observed,
+                    source_selections={provider + ':' + query: selection or {'status': 'selection_unavailable'}})
+            if not selection or selection.get('status') != 'model_selected':
+                raise RetryableProviderError('identity_source_selection_unavailable')
         except Exception as exc:
             failures.append(exc)
             if story:
+                if observed:
+                    _retain_article_discovery(service, story, [], discovered_sources=observed,
+                        source_selections={provider + ':' + query: {'status': 'selection_unavailable',
+                            'code': getattr(exc, 'code', type(exc).__name__),
+                            'discovered_count': len(observed), 'selected_count': 0,
+                            'discovered_sources': observed}})
                 record_identity_event(service, story['id'], 'identity_search_route_unavailable', {
                     'provider': provider, 'code': getattr(exc, 'code', type(exc).__name__),
                     'retry_at': getattr(exc, 'retry_at', None),
@@ -609,6 +657,8 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     if sources:
         return list(sources.values())
     if failures:
+        if any(str(getattr(exc, 'code', str(exc))).startswith('identity_source_selection_') for exc in failures):
+            raise RetryableProviderError('identity_source_selection_unavailable', retry_at=service.store.now()+30)
         retry = [getattr(exc, 'retry_at', None) or service.store.now() + 30 for exc in failures]
         raise GeminiUnavailable(min(retry) if retry else service.store.now() + 30, 'all_article_search_routes_unavailable')
     if not routes:
@@ -616,7 +666,8 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     return []
 
 
-def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None):
+def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None,
+                              discovered_sources=(), source_selections=None):
     """Keep every URL and fetched media outside the bounded identity catalog."""
     from .article_media import public_url
     from .research_control import research_stopped
@@ -660,6 +711,12 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
             if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
                 unique[url] = {**unique.get(url, {}), **source, 'url': url}
         history['sources'] = list(unique.values())
+        discovered = {source['url']: source for source in history.get('discovered_sources', [])}
+        for source in discovered_sources:
+            if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
+                discovered[url] = {**discovered.get(url, {}), **source, 'url': url}
+        history['discovered_sources'] = list(discovered.values())
+        history.setdefault('source_selections', {}).update(source_selections or {})
         pages = history.setdefault('pages', {})
         for receipt in receipts:
             url = receipt.get('url')

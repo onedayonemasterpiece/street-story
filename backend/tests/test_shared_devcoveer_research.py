@@ -18,6 +18,7 @@ from street_story.shared_devcoveer_research import (
     GUARD_SOURCE, NATIVE_TOOL_IDS, SharedDevCoveerResearch, guard_profile, scoped_research_config,
 )
 from test_opencode_research import Harness, sheet
+from test_reference_image_codec import jpeg
 
 
 class Backend:
@@ -74,7 +75,7 @@ class Backend:
 
 def setup(tmp_path, **kwargs):
     async def public_image_loader(url):
-        return 'image/jpeg', b'reference-fixture-RAM'
+        return 'image/jpeg', jpeg()
     kwargs.setdefault('public_image_loader', public_image_loader)
     h = Harness()
     h.config = scoped_research_config('mimo-v2.6-flash-free', limits=kwargs.get('limits'))
