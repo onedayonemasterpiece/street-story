@@ -511,3 +511,76 @@ def test_retained_direct_comparison_shape_recovers_its_actual_article():
     assert list(reviewed_reference_articles(identity)) == [expected]
     identity['receipt'] = identity.pop('provider_receipt')
     assert reviewed_reference_articles(identity) == {}
+
+
+@pytest.mark.asyncio
+async def test_completed_empty_discovery_finishes_without_polling_or_resending(tmp_path):
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    async def empty(query, story):
+        researcher.searches += 1
+        return {'sources': [], 'outcome': 'completed_empty', 'receipt': {'backend': 'controlled-search'}}
+    researcher.search_articles = empty
+    try:
+        harness = HeadlessFacts(svc)
+        outcome = await harness.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert outcome == {'outcome': 'no_supported_facts', 'reason': 'search_exhausted',
+                           'coverage_complete': False, 'eligible_count': 0}
+        assert await harness.run(job, 'headless-run', 'Find historical facts', 'history') == outcome
+        assert researcher.searches == 1 and not researcher.pages
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('displaced', [False, True])
+async def test_saved_response_after_lease_expiry_commits_immediately_only_for_same_owner_fence(tmp_path, displaced):
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    def expire(story):
+        with svc.store.tx() as db:
+            db.execute('UPDATE research_chunk_runs SET lease_until=0 WHERE run_id=?', ('headless-run',))
+            if displaced:
+                db.execute("UPDATE research_chunk_runs SET lease_owner='new-owner',lease_fence=lease_fence+1 WHERE run_id=?",
+                           ('headless-run',))
+    researcher.after_extract = expire
+    try:
+        try:
+            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        except RetryableProviderError:
+            assert displaced
+        assert len(svc.story(job['story_id'])['facts']) == (0 if displaced else 1)
+        assert len(researcher.pages) == 1
+        with svc.store.connection() as db:
+            saved = db.execute("SELECT 1 FROM research_checkpoints WHERE stage LIKE 'headless_fact_result:%'").fetchone()
+            assert saved
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_result_checkpoint_crash_retains_original_owner_fence_before_replay(tmp_path, monkeypatch):
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    harness = HeadlessFacts(svc)
+    original_put = svc.store.checkpoint_put
+    def lose_result(job_id, stage, value):
+        if stage.startswith('headless_fact_result:'):
+            raise RuntimeError('controlled checkpoint interruption')
+        return original_put(job_id, stage, value)
+    def edit(story):
+        with svc.store.tx() as db:
+            db.execute('UPDATE stories SET draft_text=?,revision=revision+1 WHERE id=?',
+                       ('Changed owner draft', story['id']))
+    researcher.after_extract = edit
+    monkeypatch.setattr(harness, '_boundary_closed', lambda *_: True)
+    monkeypatch.setattr(svc.store, 'checkpoint_put', lose_result)
+    try:
+        with pytest.raises(RetryableProviderError):
+            await harness.run(job, 'headless-run', 'Find historical facts', 'history')
+        monkeypatch.setattr(svc.store, 'checkpoint_put', original_put)
+        researcher.after_extract = None
+        with pytest.raises(RetryableProviderError):
+            await harness.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert len(researcher.pages) == 1
+        assert svc.story(job['story_id'])['facts'] == []
+        assert svc.story(job['story_id'])['draft_text'] == 'Changed owner draft'
+    finally:
+        await reader.search_http.aclose()

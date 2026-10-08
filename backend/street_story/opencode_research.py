@@ -338,6 +338,16 @@ class OpenCodeResearch:
         if self.checkpoint:
             await self.checkpoint(binding, dict(receipt))
 
+    async def observe_original(self, role, binding, schema):
+        """Read one addressed operation through its original transport, never send."""
+        if (role not in {'search', 'facts', 'vision'} or not binding.get('session_id')
+                or not binding.get('message_id') or binding.get('phase') not in {
+                    'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'}):
+            raise ResearchUnavailable('research_original_readback_unaddressed')
+        if role == 'vision':
+            raise ResearchUnavailable('research_original_visual_snapshot_required')
+        return await self._run(role, '', binding, schema)
+
     @asynccontextmanager
     async def _admitted(self, binding, workload, receipt):
         if (binding.get('session_id') and binding.get('message_id')
@@ -384,6 +394,26 @@ class OpenCodeResearch:
                     '_visual_reference_mapping': supplied.get('references')}, supplied)
             except (ValueError, KeyError, IndexError, TypeError):
                 raise ResearchUnavailable('research_image_invalid') from None
+        observing = bool(binding.get('session_id') and binding.get('message_id') and binding.get('phase') in {
+            'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
+        frozen_prompt = binding.get('frozen_prompt') if observing else None
+        if observing and not frozen_prompt:
+            # Legacy UNKNOWN operations predate prompt persistence. Read the
+            # exact accepted user message; changing a capsule cannot replace it.
+            sid = binding['session_id']
+            if not re.fullmatch(r'ses[A-Za-z0-9_-]+', sid):
+                raise ResearchUnavailable('research_session_id_invalid')
+            messages = await self._request(self.client, 'GET', f'/session/{sid}/message', params={'limit': 100})
+            original = next((message for message in messages if message.get('info', {}).get('id') == binding['message_id']), None)
+            texts = [part.get('text') for part in (original or {}).get('parts', []) if part.get('type') == 'text']
+            if not original or not texts or not isinstance(texts[0], str) or not texts[0]:
+                raise ResearchUnavailable('research_submit_outcome_unknown', {
+                    'binding': dict(binding), 'role': role, 'phase': binding['phase'],
+                    'session_id': binding['session_id'], 'message_id': binding['message_id'],
+                    'model_id': self.model_id, 'provider_id': self.provider_id})
+            frozen_prompt = texts[0]
+        if observing and binding.get('frozen_schema'):
+            schema = binding['frozen_schema']
         raw_prompt = prompt
         suffix = '\nResponse JSON schema (return one JSON object directly; do not run local validation, commands or code):\n'
         def addressed_prompt(schema_instruction):
@@ -398,6 +428,8 @@ class OpenCodeResearch:
         # original timestamp in the durable binding for crash reconciliation.
         timestamp = int(float(binding.get('attempt_created_at', 0)) * 1000)
         message_id = 'msg_' + f'{(timestamp * 4096 + 1) & ((1 << 48) - 1):012x}' + logical_hash[:14]
+        if observing:
+            prompt, message_id = frozen_prompt, binding['message_id']
         if binding.get('message_id') and binding['message_id'] != message_id:
             # Old addressed requests retain their exact historical prompt.
             # This compatibility path only observes them; no fresh send uses
@@ -414,6 +446,7 @@ class OpenCodeResearch:
                    'image_attachments': len(direct_parts), 'image_usage': 'unknown',
                    'created_at': time.time(), 'model_id': self.model_id, 'provider_id': self.provider_id}
         receipt['binding'] = dict(binding)
+        receipt.update(frozen_prompt=prompt, frozen_schema=schema)
         client = self.client
         started = time.monotonic()
         try:

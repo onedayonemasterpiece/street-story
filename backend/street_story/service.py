@@ -107,13 +107,17 @@ class StreetStoryService:
             VibePublishClient(settings),
         )
 
-        if self.providers.research is None and (settings.research_endpoint or settings.native_vision_reserve or reveal(settings.research_gigachat_key)):
+        if self.providers.research is None and (settings.research_endpoint or settings.native_vision_reserve
+                or reveal(settings.research_gigachat_key)
+                or settings.gemini_keys and settings.gemini_quota_supabase_url):
             from .research_adapter import ProductResearchAdapter
             self.providers.research = ProductResearchAdapter(self)
 
     def recover_jobs(self) -> int:
         now = self.store.now()
         with self.store.tx() as db:
+            from .research_budget import expire_queued
+            expired = expire_queued(self, db)
             recover_identity = getattr(self, '_recover_transient_identity', None)
             identity_recovered = recover_identity(db) if callable(recover_identity) else 0
             # Upgrade existing long provider waits to the same bounded revisit
@@ -142,7 +146,7 @@ class StreetStoryService:
                 "SELECT * FROM jobs WHERE state IN ('ready','retry','running') AND attempts>=?",
                 (MAX_JOB_ATTEMPTS,),
             )]
-            changed = identity_recovered
+            changed = identity_recovered + expired
             for job in exhausted:
                 if job['kind'] in {'research', 'refinement'}:
                     row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
@@ -425,6 +429,7 @@ class StreetStoryService:
                 'photo_sha256': row['photo_sha256'], 'identity_generation': generation,
             } for purpose in PURPOSES},
             "research_pending": pending_research,
+            "research_outcome": research.get('automatic_research_outcome'),
             "place_name": row["place_name"], "summary": row["summary"], "draft_text": row["draft_text"],
             "processed_image_url": row["processed_image_url"], "scheduled_for": row["scheduled_for"],
             "published_at": row["published_at"], "revision": row["revision"], "error": error,
@@ -480,6 +485,8 @@ class StreetStoryService:
                 (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, '', lat, lon, voice_protocol, "photo_ready", now, now),
             )
             self._restore_source_photo(db, story_id, photo_bytes)
+            from .research_budget import ensure_budget
+            ensure_budget(self, story_id, db=db)
             return self._story_repr(db, self._story_row(db, story_id))
 
     def open_voice(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -619,6 +626,11 @@ class StreetStoryService:
                              expected_identity_generation=generation, expected_control_revision=control_revision, _db=db)
 
     async def close(self):
+        observers = list(getattr(self, '_terminal_observers', ()))
+        for task in observers:
+            task.cancel()
+        if observers:
+            await asyncio.gather(*observers, return_exceptions=True)
         researcher = getattr(self.providers, 'research', None)
         close = getattr(researcher, 'close', None)
         if callable(close):
@@ -855,6 +867,11 @@ class StreetStoryService:
             return existing["id"]
         job_id = "job_" + uuid.uuid4().hex[:24]
         now = self.store.now()
+        if kind in RESEARCH_JOB_KINDS:
+            from .research_budget import ensure_budget
+            budget = ensure_budget(self, story_id, db=db)
+            payload = {**payload, 'research_started_at': budget['started_at'],
+                       'research_deadline_at': budget['deadline_at']}
         db.execute(
             "INSERT INTO jobs(id,story_id,kind,semantic_key,payload_json,state,available_at,created_at,updated_at) VALUES(?,?,?,?,?,'ready',?,?,?)",
             (job_id, story_id, kind, semantic_key, canonical(payload), now, now, now),
@@ -900,6 +917,8 @@ class StreetStoryService:
             exclude_kind=exclude_kind, claim_story_id=claim_story_id)
         params = [now, now, *filter_params]
         with self.store.tx() as db:
+            from .research_budget import expire_queued
+            expire_queued(self, db)
             # Owner actions and their visual continuation precede speculative
             # backfill. Legacy unmarked visual/automatic-fact jobs stay background.
             row = db.execute(
@@ -936,6 +955,7 @@ class StreetStoryService:
                 generation = int(research.get('identity_generation') or 0)
                 from .research_control import research_stopped
                 if (identity.get('status') in {'match','owner_confirmed'} or not identity.get('candidates')
+                        or research.get('automatic_research_outcome')
                         or research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation)):
                     continue
                 semantic = f"identity-visual:{row['id']}:{generation}:{row['photo_sha256']}"
@@ -969,6 +989,7 @@ class StreetStoryService:
                 generation = int(research.get('identity_generation') or 0)
                 automatic = research.get('automatic_fact_request') or {}
                 if (identity.get('status') not in {'match', 'owner_confirmed'} or research.get('input_revision')
+                        or research.get('automatic_research_outcome')
                         or automatic.get('photo_sha256') == row['photo_sha256'] and automatic.get('identity_generation') == generation
                         or research_stopped(research, 'facts', photo_sha256=row['photo_sha256'], identity_generation=generation)
                         or db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind IN ('research','refinement') "
@@ -1003,6 +1024,7 @@ class StreetStoryService:
         if not job:
             if claim_kind in {'identity', 'identity_visual'}:
                 return False  # Accounting recovery stays with the original worker.
+            self._observe_terminal_attempts()
             quota = getattr(self.providers.gemini, 'quota', None)
             if quota is not None:
                 try:
@@ -1018,31 +1040,36 @@ class StreetStoryService:
 
         lease_task = asyncio.create_task(heartbeat())
         try:
-            if job["kind"] == "identity_visual":
-                from .headless_identity import HeadlessIdentity
-                await HeadlessIdentity(self).run(job)
-            elif job["kind"] == "identity":
-                handler = getattr(self, "_run_identity", None)
-                if not callable(handler):
-                    raise PermanentProviderError("Identity worker is unavailable")
-                await handler(job)
-            elif job["kind"] in {"research", "refinement"}:
-                await self._run_research(job)
-            elif job["kind"] == "visual":
-                await self._run_visual(job)
-            elif job["kind"] == "publish":
-                await self._run_publish(job)
-            else:
-                raise PermanentProviderError(f"Unknown job kind {job['kind']}")
+            from .research_budget import ResearchTerminated, finish_attempt, remaining_seconds
+            result = await self._execute_job_with_deadline(job)
+            if isinstance(result, dict) and result.get('outcome'):
+                with self.store.tx() as db:
+                    finish_attempt(self, db, job['story_id'], outcome=result['outcome'],
+                        reason=result.get('reason') or result['outcome'], job=job,
+                        coverage_complete=result.get('coverage_complete', False))
+                return True
             with self.store.tx() as db:
                 changed = db.execute("UPDATE jobs SET state='done',lease_until=0,last_error=NULL,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now(), job["id"], job['attempts'])).rowcount
                 if not changed:
                     return True
                 if job['kind'] in {'research', 'refinement'}:
                     self._resume_joined_fact_request(db, job['story_id'])
+        except ResearchTerminated as exc:
+            with self.store.tx() as db:
+                finish_attempt(self, db, job['story_id'], outcome=exc.outcome, reason=exc.reason,
+                               purpose='identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts', job=job)
+            return True
         except RetryableProviderError as exc:
             reason = str(getattr(exc, 'code', None) or exc)
             retry_at = research_retry_at(reason, self.store.now(), exc.retry_at) if job['kind'] in RESEARCH_JOB_KINDS else exc.retry_at
+            if job['kind'] in RESEARCH_JOB_KINDS:
+                purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
+                remaining = remaining_seconds(self, job['story_id'], purpose)
+                if remaining <= 0 or retry_at is not None and retry_at >= self.store.now() + remaining:
+                    with self.store.tx() as db:
+                        finish_attempt(self, db, job['story_id'], outcome='resource_blocked' if remaining > 0 else 'deadline_exceeded',
+                                       reason=reason, purpose=purpose, job=job)
+                    return True
             logging.getLogger('uvicorn.error').info('street_story_worker_waiting %s', canonical({
                 'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
                 'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
@@ -1053,7 +1080,7 @@ class StreetStoryService:
                 if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
                     return True
                 error = self.settings.redact(str(exc))
-                if job["kind"] in {'identity', 'identity_visual', 'research', 'refinement'}:
+                if job["kind"] in RESEARCH_JOB_KINDS:
                     db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?",
                         (retry_at, error,self.store.now(),job["id"], job['attempts']))
                     self._preserve_background_fact_value(db, job, error=reason, terminal=False)
@@ -1075,41 +1102,94 @@ class StreetStoryService:
                     self._resume_joined_fact_request(db, job['story_id'])
             return True
         except Exception as exc:
-            import traceback
-            logging.getLogger('uvicorn.error').error('street_story_worker_failure %s', canonical({
-                'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
-                'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
-                'frames': [{'file': Path(frame.filename).name, 'function': frame.name, 'line': frame.lineno}
-                           for frame in traceback.extract_tb(exc.__traceback__)[-6:]],
-            }))
-            with self.store.tx() as db:
-                if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
-                    return True
-                error = f"worker_failure:{type(exc).__name__}"
-                failure_attempts = job["attempts"]
-                if job['kind'] in {'research', 'refinement'}:
-                    # Queue claims include quota and lease waits. Only actual
-                    # worker failures consume the research failure budget.
-                    row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
-                                     (job['id'], 'worker_non_wait_failures')).fetchone()
-                    failure_attempts = int(json.loads(row[0]).get('count', 0)) + 1 if row else 1
-                    db.execute("INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) "
-                               "ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json",
-                               (job['id'], 'worker_non_wait_failures', canonical({'count': failure_attempts}), self.store.now()))
-                    logging.getLogger('uvicorn.error').info('street_story_worker_failure_budget %s', canonical({
-                        'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
-                        'kind': job['kind'], 'attempt': job['attempts'], 'failure_count': failure_attempts,
-                        'error_type': type(exc).__name__,
-                    }))
-                if failure_attempts >= MAX_JOB_ATTEMPTS:
-                    self._fail_retry_exhausted(db, job, error)
-                else:
-                    db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+5, error, self.store.now(), job["id"], job['attempts']))
-                    self._preserve_background_fact_value(db, job, error=error, terminal=False)
+            self._handle_worker_failure(job, exc)
             return True
         finally:
             lease_task.cancel()
             await asyncio.gather(lease_task, return_exceptions=True)
+            if job['kind'] in RESEARCH_JOB_KINDS:
+                self._observe_terminal_attempts(story_id=job['story_id'])
+        return True
+
+    def _observe_terminal_attempts(self, *, story_id=None):
+        from .research_reconciliation import reconcile_terminal_attempts
+        tasks = getattr(self, '_terminal_observers', None)
+        if tasks is None:
+            tasks = self._terminal_observers = set()
+        if tasks:
+            return
+        task = asyncio.create_task(reconcile_terminal_attempts(self, story_id=story_id),
+                                   name='street-story-terminal-readback')
+        tasks.add(task)
+        def settled(done):
+            tasks.discard(done)
+            if not done.cancelled() and done.exception() is not None:
+                logging.getLogger('uvicorn.error').warning('street_story_terminal_readback_failed error_type=%s',
+                                                           type(done.exception()).__name__)
+        task.add_done_callback(settled)
+
+    async def _execute_job_with_deadline(self, job):
+        from .research_budget import ResearchTerminated, require_remaining
+        async def execute():
+            if job["kind"] == "identity_visual":
+                from .headless_identity import HeadlessIdentity
+                return await HeadlessIdentity(self).run(job)
+            elif job["kind"] == "identity":
+                handler = getattr(self, "_run_identity", None)
+                if not callable(handler):
+                    raise PermanentProviderError("Identity worker is unavailable")
+                return await handler(job)
+            elif job["kind"] in {"research", "refinement"}:
+                return await self._run_research(job)
+            elif job["kind"] == "visual":
+                return await self._run_visual(job)
+            elif job["kind"] == "publish":
+                return await self._run_publish(job)
+            else:
+                raise PermanentProviderError(f"Unknown job kind {job['kind']}")
+        if job['kind'] not in RESEARCH_JOB_KINDS:
+            return await execute()
+        purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
+        remaining = require_remaining(self, job['story_id'], purpose)
+        try:
+            async with asyncio.timeout(remaining):
+                return await execute()
+        except TimeoutError:
+            raise ResearchTerminated(reason='identity_deadline_exceeded' if purpose == 'identity'
+                                     else 'research_deadline_exceeded') from None
+
+    def _handle_worker_failure(self, job, exc):
+        import traceback
+        logging.getLogger('uvicorn.error').error('street_story_worker_failure %s', canonical({
+            'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
+            'kind': job['kind'], 'attempt': job['attempts'], 'error_type': type(exc).__name__,
+            'frames': [{'file': Path(frame.filename).name, 'function': frame.name, 'line': frame.lineno}
+                       for frame in traceback.extract_tb(exc.__traceback__)[-6:]],
+        }))
+        with self.store.tx() as db:
+            if not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job['id'], job['attempts'])).fetchone():
+                return True
+            error = f"worker_failure:{type(exc).__name__}"
+            failure_attempts = job["attempts"]
+            if job['kind'] in {'research', 'refinement'}:
+                # Queue claims include quota and lease waits. Only actual
+                # worker failures consume the research failure budget.
+                row = db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?",
+                                 (job['id'], 'worker_non_wait_failures')).fetchone()
+                failure_attempts = int(json.loads(row[0]).get('count', 0)) + 1 if row else 1
+                db.execute("INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) "
+                           "ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json",
+                           (job['id'], 'worker_non_wait_failures', canonical({'count': failure_attempts}), self.store.now()))
+                logging.getLogger('uvicorn.error').info('street_story_worker_failure_budget %s', canonical({
+                    'component': 'durable_worker', 'story_id': job['story_id'], 'job_id': job['id'],
+                    'kind': job['kind'], 'attempt': job['attempts'], 'failure_count': failure_attempts,
+                    'error_type': type(exc).__name__,
+                }))
+            if failure_attempts >= MAX_JOB_ATTEMPTS:
+                self._fail_retry_exhausted(db, job, error)
+            else:
+                db.execute("UPDATE jobs SET state='retry',available_at=?,lease_until=0,last_error=?,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+5, error, self.store.now(), job["id"], job['attempts']))
+                self._preserve_background_fact_value(db, job, error=error, terminal=False)
         return True
 
     async def _transcribe_session(self, session_id: str) -> str:

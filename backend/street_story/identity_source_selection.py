@@ -8,6 +8,35 @@ from jsonschema import Draft202012Validator
 from .opencode_research import SEARCH_SCHEMA, selected_search_sources
 
 
+def regional_source_profile(story, candidates=()):
+    """Source preferences from observed map locality, never photo answers."""
+    context = (story or {}).get('_identity_search_context') or {}
+    research = json.loads((story or {}).get('research_json') or '{}')
+    addresses = [context.get('reverse_address') or {},
+                 ((research.get('osm') or {}).get('reverse') or {}).get('address') or {}]
+    addresses.extend(item.get('map_address') or {} for item in
+                     [*(context.get('nearby') or []), *candidates])
+    localities = list(dict.fromkeys(str(address[key]).strip() for address in addresses
+        if isinstance(address, dict) for key in ('city', 'town', 'village', 'state', 'region', 'country')
+        if address.get(key)))
+    profile = {'observed_localities': localities,
+        'preferences': ['official physical-object or operator pages with address evidence',
+                        'municipal heritage registers', 'housing records and documented repairs'],
+        'policy': 'Preferences are discovery hints, not truth or an allowlist; preserve subject and date distinctions.'}
+    # This is a regional catalog, not a building/name/address lookup. Match only
+    # locality fields already observed in map records; unknown geography stays unknown.
+    if any('калининград' in value.casefold() or 'kaliningrad' in value.casefold() for value in localities):
+        profile['regional_sources'] = [
+            {'domain': 'prussia39.ru', 'use': 'local history, aliases and modern reference photographs'},
+            {'domain': 'fkr39.ru', 'use': 'building repair records and dated reports'},
+            {'domain': 'visit-kaliningrad.ru', 'use': 'object pages and photographs'},
+            {'domain': 'gov39.ru', 'use': 'heritage registers and official documents'},
+            {'domain': 'klgd.ru', 'use': 'municipal records'},
+            {'domain': 'kgd.ru', 'use': 'dated local reporting'},
+            {'domain': 'newkaliningrad.ru', 'use': 'dated local reporting'}]
+    return profile
+
+
 def indexed_selection_schema(count):
     return {'type': 'object', 'properties': {
         'summary': {'type': 'string', 'maxLength': 2000},

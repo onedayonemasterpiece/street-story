@@ -53,8 +53,11 @@ def _map_query_context(story, candidates):
     # Addresses identify their mapped entry only. Present every supplied anchor,
     # including address nodes absent from the physical building shortlist.
     anchors = []
-    for item in [*(context.get('nearby') or []), *candidates]:
-        if not item.get('map_address') or item.get('identity_eligible') is False:
+    research = json.loads(story.get('research_json') or '{}')
+    observed = (story.get('_identity_observed_candidates') or
+        (research.get('visual_identity') or {}).get('observed_candidates') or [])
+    for item in [*(context.get('nearby') or []), *observed, *candidates]:
+        if not item.get('map_address'):
             continue
         anchor = {key: item[key] for key in ('candidate_id', 'map_address', 'map_coordinates', 'distance_m') if key in item}
         if anchor not in anchors:
@@ -65,12 +68,21 @@ def _map_query_context(story, candidates):
 
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
+    from .identity_source_selection import regional_source_profile
     schema = {'type': 'object', 'properties': {
         'entity_name': {'type': 'string'},
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
         'visual_query': {'type': 'string'},
         'commons_query': {'type': 'string'},
         'article_queries': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query', 'article_queries']}
+    research = json.loads(story.get('research_json') or '{}')
+    observed = (story.get('_identity_observed_candidates') or
+        (research.get('visual_identity') or {}).get('observed_candidates') or [])
+    observed_ids = [item['candidate_id'] for item in observed if item.get('candidate_id')
+        and item.get('identity_eligible') is not False]
+    if observed_ids:
+        schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6,
+            'items': {'type': 'string', 'enum': observed_ids}}
     source_bytes = service._source_photo_bytes(story['id'])
     from .reference_image_codec import normalize_reference
     source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
@@ -86,6 +98,13 @@ async def suggest(service, story, transcript, candidates):
         'и визуальные гипотезы, не считай снимок автоматически калининградским. '
         'article_queries — готовый план буквальных интернет-запросов для статей с современными внешними фотографиями, достаточный для разных правдоподобных гипотез. '
         'Сначала используй короткий запрос по реальному адресу или названию и городу без лишних ограничений. '
+        'Сохраняй полное наблюдавшееся имя населённого пункта, тип улицы, литеру и диапазон номера. '
+        'Первая волна — 2–3 различные сильные гипотезы; всего не более восьми запросов в двух волнах. '
+        'Вторую волну выполняй только для конкретного отсутствующего evidence после первой. '
+        'regional_source_profile содержит предпочтения источников из наблюдавшейся географии, не ответы. '
+        'observed_candidate_ids — до шести реальных физических кандидатов из observed_physical_candidates, '
+        'которые полезно добавить к активным гипотезам; это не подтверждение identity. '
+        'Обычный дом может иметь данные о строительстве, эксплуатации или ремонте без исторической статьи. '
         'Современный внешний вид — требование к REF, а не обязательные слова каждого запроса. '
         'Предусмотри в плане отдельный запрос по фасаду, внешнему виду или фото с улицы для правдоподобного адреса, если простой запрос может дать лишь адресные справочники. '
         'nearby_address_hypotheses — полный список переданных реальных соседних адресных якорей, '
@@ -119,8 +138,13 @@ async def suggest(service, story, transcript, candidates):
         'commons_query — аналогичный английский запрос по видимым признакам и region_hint для Wikimedia Commons, '
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': region_hint(story),
+                    'regional_source_profile': regional_source_profile(story, candidates),
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
                         'camera_alignment', 'map_address', 'map_coordinates', 'road_name', 'map_object') if key in x} for x in candidates[:16]],
+                    'observed_physical_candidates': [{key: item[key] for key in
+                        ('candidate_id', 'name', 'map_address', 'map_coordinates', 'distance_m',
+                         'nearest_footprint_distance_m', 'camera_alignment', 'map_object') if key in item}
+                        for item in observed],
                     'location_search_context': _map_query_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
@@ -130,25 +154,55 @@ async def suggest(service, story, transcript, candidates):
         response_json_schema=schema,
         system_instruction='Идентифицируй именно физическое сооружение. Город, район или область не являются ответом об объекте.',
     )
+    if hasattr(service, 'settings'):
+        from .research_budget import reserve_work
+        from .service import digest
+        # One semantic plan across provider routes; saved plans never call this.
+        reserve_work(service, story['id'], 'planner_calls',
+            [digest([story['photo_sha256'], prompt, schema])])
     gemini = service.providers.gemini
+    def accept(payload):
+        from jsonschema import Draft202012Validator
+        if not Draft202012Validator(schema).is_valid(payload):
+            raise RetryableProviderError('identity_search_plan_malformed')
+        queries = payload.get('article_queries') or []
+        story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
+            if isinstance(q, str) and q.strip()))[:8]
+        result = queries_from(payload)
+        if result[2] and result[2] not in story['_identity_article_queries']:
+            story['_identity_article_queries'] = [*story['_identity_article_queries'][:7], result[2]]
+        story['_identity_search_plan_payload'] = {**payload,
+            'article_queries': story['_identity_article_queries']}
+        from .identity_candidate_policy import promote_observed_candidates
+        candidates[:] = promote_observed_candidates(candidates, observed,
+            payload.get('observed_candidate_ids') or [])
+        return result
     async def call(key, timeout, *, model=None, quota=None):
         response = await gemini._generate(key, timeout, [
             types.Part.from_bytes(data=source_bytes, mime_type=source_mime), prompt], config,
             operation='grounded_research', model=model, quota=quota)
         payload = json.loads(response.text or '{}')
-        queries = payload.get('article_queries') if isinstance(payload, dict) else None
-        story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
-            if isinstance(q, str) and q.strip())) if isinstance(queries, list) else []
-        result = queries_from(payload)
-        # The independent feature query is already model-owned. Keep it as an
-        # ordinary web alternative instead of abandoning it after an address
-        # guess yields any gallery; existing bounded turns/early proof still apply.
-        if result[2] and result[2] not in story['_identity_article_queries']:
-            story['_identity_article_queries'].append(result[2])
-        return result
+        return accept(payload)
+    async def fallback(cause):
+        planner = getattr(getattr(service.providers, 'research', None), 'plan_identity_search', None)
+        if not callable(planner):
+            raise cause
+        # The qualified text worker plans from observed anchors, OCR/previous
+        # observations and author context. It must not pretend to see SOURCE.
+        result = await planner(story, prompt + '\nSOURCE image is unavailable to this text fallback. '
+            'Use only supplied observed anchors and context; unknown visual details stay unknown.', schema)
+        story['_identity_search_plan_route'] = 'qualified_text_fallback'
+        record_identity_event(service, story['id'], 'identity_search_plan_fallback',
+            {'cause': getattr(cause, 'code', type(cause).__name__)})
+        return accept(result.get('result') or {})
     routes = getattr(gemini, 'research_routes', None)
+    if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
+        return await fallback(RetryableProviderError('identity_google_planner_unavailable'))
     if not routes:
-        return await gemini.executor.execute('grounded_research', call)
+        try:
+            return await gemini.executor.execute('grounded_research', call)
+        except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
+            return await fallback(exc)
     retry_at = []
     for model, _pool, quota, executor in routes:
         async def routed_call(key, timeout, *, _model=model, _quota=quota):
@@ -162,10 +216,9 @@ async def suggest(service, story, transcript, candidates):
         except PermanentProviderError as exc:
             if str(exc) == 'gemini:unsupported_model':
                 continue
-            raise
-    if retry_at:
-        raise GeminiUnavailable(min(retry_at), 'all_identity_discovery_models_unavailable')
-    raise PermanentProviderError('gemini:unsupported_model')
+            return await fallback(exc)
+    return await fallback(GeminiUnavailable(min(retry_at) if retry_at else None,
+        'all_identity_discovery_models_unavailable'))
 
 
 async def api(service, client, endpoint, params):
@@ -430,6 +483,10 @@ async def category_candidates(service, client, searches, excluded, entity_name, 
 
 
 async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_name='', story=None):
+    if story and hasattr(service, 'settings'):
+        from .research_budget import reserve_work
+        reserve_work(service, story['id'], 'query_hypotheses', list(dict.fromkeys(
+            ' '.join(query.split()).casefold() for query in [*wiki_queries, commons_query, entity_name] if query)))
     failures = []
     context = (story or {}).get('_identity_search_context') or {}
     wikipedia = getattr(getattr(service, 'providers', None), 'wikipedia', None)
@@ -656,6 +713,9 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None, f
                 return {'sources': frozen_public}
             return await asyncio.wait_for(public_search(query), timeout=15)
         routes.append(('public_web', public_inventory))
+    assigned_route = (story or {}).get('_identity_search_route')
+    if assigned_route:
+        routes = [(provider, call) for provider, call in routes if provider == assigned_route]
     async def discover(provider, call):
         started = asyncio.get_running_loop().time()
         observed = []
@@ -745,7 +805,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None, f
 
 
 def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None,
-                              discovered_sources=(), source_selections=None):
+                              discovered_sources=(), source_selections=None, search_plan=None):
     """Keep every URL and fetched media outside the bounded identity catalog."""
     from .article_media import public_url
     from .research_control import research_stopped
@@ -769,6 +829,9 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
         history['planned_queries'] = list(dict.fromkeys([
             *history.get('planned_queries', []),
             *(plain(query, 240) for query in planned_queries if isinstance(query, str) and query.strip())]))
+        if search_plan is not None:
+            history['search_plan'] = {**search_plan, 'photo_sha256': story['photo_sha256'],
+                'generation': generation, 'control_revision': revision(research)}
         queries = history.setdefault('queries', {})
         for query, result in (query_results or {}).items():
             key = next((key for key in queries if ' '.join(key.split()).casefold() ==
@@ -828,6 +891,15 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
 def _claim_article_query(service, story, query):
     """Fence this exact query in the existing durable history before sending."""
     import uuid
+    history = _retain_article_discovery(service, story, [])
+    previous = next((result for key, result in history['queries'].items()
+        if ' '.join(key.split()).casefold() == ' '.join(query.split()).casefold()), {})
+    if (previous.get('status') in {'completed', 'in_progress', 'unknown', 'submitted'}
+            or previous.get('retry_at', 0) > service.store.now()):
+        return None, previous
+    if hasattr(service, 'settings'):
+        from .research_budget import reserve_work
+        reserve_work(service, story['id'], 'query_hypotheses', [' '.join(query.split()).casefold()])
     token = uuid.uuid4().hex
     history = _retain_article_discovery(service, story, [], query_results={query: {
         'status': 'in_progress', 'sources': [], 'claim_id': token,
@@ -899,8 +971,22 @@ def next_visual_query(identity, seed, searches, planned_queries=()):
 
 
 async def recover(service, story, transcript, candidates, excluded):
-    gemini = service.providers.gemini
-    if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
+    providers = getattr(service, 'providers', None)
+    gemini = getattr(providers, 'gemini', None)
+    captured = json.loads(story.get('research_json') or '{}')
+    history = captured.get('identity_article_discovery') or {}
+    google_planner = (callable(getattr(gemini, '_generate', None))
+        and callable(getattr(getattr(gemini, 'executor', None), 'execute', None)))
+    independent_planner = callable(getattr(getattr(providers, 'research', None), 'plan_identity_search', None))
+    if (not google_planner and not independent_planner and story.get('id')
+            and callable(getattr(service, '_identity_snapshot', None))):
+        # Callers may hold a snapshot from before the plan checkpoint. Durable
+        # work takes precedence over that snapshot during a provider outage.
+        _current, latest = service._identity_snapshot(story['id'])
+        history = latest.get('identity_article_discovery') or history
+    # Existing plans remain usable during planner outages. A transport fixture
+    # with no planner and no durable plan has no discovery operation to start.
+    if not (google_planner or independent_planner or history.get('search_plan') or history.get('planned_queries')):
         return None
     record_identity_event(service, story['id'], 'identity_discovery_started', {'candidate_count': len(candidates)})
     def already_proved():
@@ -908,10 +994,51 @@ async def recover(service, story, transcript, candidates, excluded):
         return (current['photo_sha256'] == story['photo_sha256']
             and int(latest.get('identity_generation') or 0) == int(story.get('_identity_generation') or 0)
             and (latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'})
+    def remaining():
+        from .research_budget import require_remaining
+        # Lightweight offline transport fixtures do not own durable settings.
+        if hasattr(service, 'settings'):
+            return require_remaining(service, story['id'], 'identity')
+        return 240
 
     async def work():
-        entity_name, wiki_queries, visual_query, commons_query = await suggest(
-            service, story, transcript, candidates)
+        # Read persisted work before invoking any planner. A completed plan and
+        # its closed/UNKNOWN query receipts survive provider outages and wakes.
+        history = _retain_article_discovery(service, story, [])
+        saved = history.get('search_plan') or {}
+        captured = json.loads(story.get('research_json') or '{}')
+        control = (captured.get('research_controls') or {}).get('identity') or {}
+        revision = int(control.get('revision') or 0)
+        valid_saved = (saved.get('photo_sha256') == story['photo_sha256']
+            and saved.get('generation') == int(story.get('_identity_generation', captured.get('identity_generation') or 0))
+            and saved.get('control_revision') == revision)
+        # Legacy plans predate metadata; they remain reusable for the original
+        # revision, preserving all submitted query identities across deployment.
+        legacy_saved = bool(history.get('planned_queries')) and not saved and revision == 0
+        if valid_saved or legacy_saved:
+            payload = saved.get('payload') or {}
+            entity_name, wiki_queries, visual_query, commons_query = queries_from(payload)
+            story['_identity_article_queries'] = history.get('planned_queries') or []
+            from .identity_candidate_policy import promote_observed_candidates
+            observed = story.get('_identity_observed_candidates') or (
+                captured.get('visual_identity') or {}).get('observed_candidates') or []
+            candidates[:] = promote_observed_candidates(candidates, observed,
+                payload.get('observed_candidate_ids') or [])
+            record_identity_event(service, story['id'], 'identity_search_plan_reused',
+                {'query_count': len(story['_identity_article_queries']), 'control_revision': revision})
+        else:
+            remaining()
+            entity_name, wiki_queries, visual_query, commons_query = await suggest(
+                service, story, transcript, candidates)
+            payload = story.get('_identity_search_plan_payload') or {
+                'entity_name': entity_name, 'wikipedia_queries': wiki_queries,
+                'visual_query': visual_query, 'commons_query': commons_query,
+                'article_queries': story.get('_identity_article_queries') or []}
+            history = _retain_article_discovery(service, story, [],
+                planned_queries=story.get('_identity_article_queries') or [],
+                search_plan={'policy_version': 'bounded-search-plan-v2', 'payload': payload,
+                    'route': story.get('_identity_search_plan_route', 'google'),
+                    'created_at': service.store.now()})
         if already_proved():
             return None
         from .article_media import article_candidates
@@ -943,27 +1070,33 @@ async def recover(service, story, transcript, candidates, excluded):
             if not unread:
                 return []
             receipts = []
+            remaining()
             fetched = await article_candidates(service, story, unread, excluded,
                                                receipts=receipts, first_ready=True)
             _retain_article_discovery(service, story, query_sources, receipts=receipts, articles=fetched)
             return fetched
 
-        for query in plan:
+        async def search_query(query, route=None):
+            nonlocal history
             if already_proved():
-                return None
+                return query, []
             previous = history.get('queries', {}).get(query) or {}
             query_sources = []
             if previous.get('status') == 'completed':
                 query_sources = previous.get('sources') or []
             elif previous.get('retry_at', 0) <= service.store.now():
+                if previous.get('status') not in {'in_progress', 'unknown', 'submitted'}:
+                    remaining()
                 claim_id, previous = _claim_article_query(service, story, query)
                 if not claim_id:
-                    if previous.get('status') == 'in_progress':
+                    if previous.get('status') in {'in_progress', 'unknown', 'submitted'}:
                         previous = await _resume_article_query(service, story, query, previous)
                     if previous.get('status') == 'completed':
                         query_sources = previous.get('sources') or []
                 else:
-                    query_story = {**story, '_identity_search_query': query}
+                    remaining()
+                    query_story = {**story, '_identity_search_query': query,
+                        **({'_identity_search_route': route} if route else {})}
                     try:
                         query_sources = await web_image_sources(service, entity_name, visual_query, story=query_story, first_ready=True)
                         history = _retain_article_discovery(service, story, query_sources,
@@ -974,6 +1107,10 @@ async def recover(service, story, transcript, candidates, excluded):
                         history = _retain_article_discovery(service, story, [], query_results={query: {
                             'sources': [], 'status': 'temporary_failure', 'search_unavailable': True, 'claim_id': claim_id,
                             'retry_at': getattr(exc, 'retry_at', None) or service.store.now()+15}})
+            return query, query_sources
+
+        async def consume_query(query, query_sources):
+            nonlocal sources
             sources = list({source['url']: source for source in [*sources, *query_sources]}.values())
             if query_sources:
                 articles = await ready_article_media(query_sources)
@@ -985,6 +1122,51 @@ async def recover(service, story, transcript, candidates, excluded):
                         '_article_media_pending': True, '_references_sent': []}, articles
                 record_identity_event(service, story['id'], 'identity_query_without_reference', {
                     'query': query, 'source_count': len(query_sources), 'next_action': 'continue_saved_plan'})
+            return None
+
+        researcher = getattr(service.providers, 'research', None)
+        retain = getattr(researcher, 'retain_search_observer', None)
+        route_names = []
+        if callable(getattr(researcher, 'search_articles', None)):
+            route_names.append('opencode')
+        if callable(getattr(gemini, 'discover_article_urls', None)):
+            route_names.append('google')
+        if callable(getattr(gemini, '_public_web_search', None)):
+            route_names.append('public_web')
+        # Different first-wave hypotheses receive independent route slots. This
+        # avoids sending every query to the complete provider pool. Keep the
+        # existing observer alive for addressed sibling receipts on early media.
+        concurrent = callable(retain) and len(route_names) > 1
+        wave = plan[:min(3, len(route_names))] if concurrent else []
+        tasks = {asyncio.create_task(search_query(query, route_names[index]))
+                 for index, query in enumerate(wave)}
+        remaining_plan = iter(plan[len(wave):] if concurrent else plan)
+        try:
+            while tasks or remaining_plan is not None:
+                if tasks:
+                    done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    results = [task.result() for task in done]
+                else:
+                    query = next(remaining_plan, None)
+                    if query is None:
+                        remaining_plan = None
+                        continue
+                    # Later hypotheses are already model-planned. Advance only
+                    # after earlier searches produced no usable reference.
+                    results = [await search_query(query, route_names[0] if concurrent else None)]
+                for query, query_sources in results:
+                    result = await consume_query(query, query_sources)
+                    if result is not None:
+                        return result
+        finally:
+            if tasks:
+                # No fresh work is spawned here; these are original dispatched
+                # searches whose completion must remain observable.
+                if callable(retain):
+                    retain(asyncio.gather(*tasks, return_exceptions=True))
+                else:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
         if not sources and search_failures:
             raise search_failures[0]
         if already_proved():
@@ -1007,6 +1189,7 @@ async def recover(service, story, transcript, candidates, excluded):
                 'observations': ['Сохранённые иллюстрации готовы для визуального сравнения.'],
                 '_article_media_pending': True, '_references_sent': []}, cached
         receipts = []
+        remaining()
         fetched = await article_candidates(service, story, unread, excluded, receipts=receipts, first_ready=True)
         _retain_article_discovery(service, story, sources, receipts=receipts, articles=fetched)
         articles = [*cached, *fetched]
@@ -1040,8 +1223,11 @@ async def recover(service, story, transcript, candidates, excluded):
         result = await service._identify_photo_batch(story, transcript, discovered, reference_limit=6)
         return result, discovered
     try:
-        return await asyncio.wait_for(work(), timeout=240)
+        return await asyncio.wait_for(work(), timeout=min(240, remaining()))
     except Exception as exc:
+        from .research_budget import ResearchTerminated
+        if isinstance(exc, ResearchTerminated):
+            raise
         record_identity_event(service, story['id'], 'identity_discovery_unavailable', {'error_type': type(exc).__name__})
         if isinstance(exc, (RetryableProviderError, GeminiUnavailable, httpx.HTTPError, TimeoutError, ValueError)):
             raise RetryableProviderError('identity_discovery_waiting', retry_at=getattr(exc, 'retry_at', None)) from exc

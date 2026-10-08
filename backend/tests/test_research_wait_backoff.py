@@ -41,6 +41,8 @@ async def test_local_daily_wait_rechecks_policy_without_sixty_second_hot_loop(tm
     now = (int(service.store.now()) // 86400 + 1) * 86400 + 12 * 3600
     clock = [now]
     service.store.now = lambda: clock[0]
+    from street_story.research_budget import ensure_budget
+    original_budget = ensure_budget(service, sid, explicit=True)
     frozen = {'passage_cursor': 7, 'source_version_id': 'frozen', 'accepted_fact_ids': ['saved']}
     service.store.checkpoint_put(jid, 'grounded_research_v3', frozen)
     calls = []
@@ -63,7 +65,12 @@ async def test_local_daily_wait_rechecks_policy_without_sixty_second_hot_loop(tm
     assert calls == [jid, jid]
     with service.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
-        assert 'pending_fact_request' in json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        assert research['research_budget'] == original_budget
+        assert research['automatic_research_outcome']['outcome'] == 'resource_blocked'
+        assert db.execute('SELECT state FROM jobs WHERE id=?', (jid,)).fetchone()[0] == 'done'
+        assert 'pending_fact_request' in research
+    assert service.recover_jobs() == 0
 
 
 @pytest.mark.asyncio

@@ -5465,10 +5465,13 @@ def _forward_committed_output(service, session, event, on_event):
     on_event(event)
 
 
-def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSessionHost:
+def create_live_host(service: StreetStoryService, settings: Settings, *, operation_adapter_factory=None,
+                     before_operation_send=None) -> LiveSessionHost:
     ensure_live_schema(service)
 
     def adapter_factory(**kwargs):
+        if operation_adapter_factory is not None:
+            return operation_adapter_factory(**kwargs)
         return StreetStoryLiveAdapter(service, kwargs["emit"], kwargs["write"])
 
     async def managed_runner(*, session, reader, on_event):
@@ -5532,6 +5535,19 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
                         self.config = config
 
             control = SetupAdmissionControl(config)
+            # Product scope/deadline guards compose with the shared resource
+            # guard. Provider transport and sticky lease selection stay in SDK.
+            async def operation_provider_run(**kwargs):
+                from live_interaction.provider import run
+                guarded = kwargs['resource_guard']
+                class OperationGuard:
+                    def __getattr__(self, name):
+                        return getattr(guarded, name)
+                    async def before_send(self, payload):
+                        before_operation_send()
+                        await guarded.before_send(payload)
+                        before_operation_send()
+                await run(**{**kwargs, 'resource_guard': OperationGuard()})
             logger.info('street_story_live_setup_admission %s', canonical({
                 'session_id': session.id, 'estimated_units': requested,
                 'audio_grant_units': config.grant_tokens, 'model': start['model']}))
@@ -5542,6 +5558,7 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
                 control=control,
                 on_event=committed_output,
                 binding=f"street-story:{session.id}",
+                **({'provider_run': operation_provider_run} if before_operation_send is not None else {}),
             )
         finally:
             if control is not None:

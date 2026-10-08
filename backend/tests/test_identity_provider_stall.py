@@ -146,6 +146,7 @@ def test_explicit_vector_urls_never_become_vision_attachments():
 
 @pytest.mark.asyncio
 async def test_google_search_can_use_configured_lite_when_other_model_quota_fails(tmp_path):
+    import json
     svc, _ = make_service(tmp_path)
     client = GeminiClient(svc.settings, svc.store)
     attempted = []
@@ -165,7 +166,9 @@ async def test_google_search_can_use_configured_lite_when_other_model_quota_fail
 
     async def generate(*args, **kwargs):
         assert kwargs['model'] == svc.settings.gemini_model
-        return SimpleNamespace(candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(
+        return SimpleNamespace(text=json.dumps({'summary': 'Concrete building source', 'selected_sources': [
+            {'url': 'https://news.example/building', 'reason': 'Useful material about the building'}]}),
+            candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(
             grounding_chunks=[SimpleNamespace(web=SimpleNamespace(
                 uri='https://news.example/building', title='Building'))]))])
 

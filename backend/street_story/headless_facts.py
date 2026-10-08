@@ -9,13 +9,15 @@ import math
 from types import SimpleNamespace
 
 from . import review_packets
-from .errors import MalformedProviderResponse, RetryableProviderError
+from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .identity_telemetry import record_identity_event
 from .live import StreetStoryLiveAdapter, _search_source_ref
 from .poi_memory import memory_keys, prior_facts, processed_sources
 from .research_control import research_stopped
 from .research_runs import (
     manifest_complete,
+    manifest_exhausted,
+    mark_chunk,
     register_discovered_source,
     run_manifest,
     set_run_state,
@@ -140,6 +142,37 @@ class HeadlessFacts:
         due = self.service.store.now() + delay if retry_at is None else max(self.service.store.now() + 1, retry_at)
         raise RetryableProviderError(reason, retry_at=due)
 
+    def _finish(self, job, run_id, control_revision, reason):
+        with self.service.store.tx() as db:
+            snapshot = self._snapshot(job, run_id, control_revision)
+            if snapshot is None:
+                return None
+            manifest = run_manifest(db, run_id)
+            eligible = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
+                                  (job['story_id'],)).fetchone()[0]
+            complete = (manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
+                        and not review_packets.pending_candidates(db, job['story_id'], run_id))
+            outcome = ('useful_complete' if complete else 'useful_partial') if eligible else 'no_supported_facts'
+            value = {'outcome': outcome, 'reason': reason, 'coverage_complete': complete, 'eligible_count': eligible}
+            set_run_state(db, run_id, 'completed', detail=outcome, now=self.service.store.now(), completed=True)
+            pending = snapshot[1].get('pending_fact_request')
+            joined = (isinstance(pending, dict) and pending.get('photo_sha256', snapshot[0]['photo_sha256']) == snapshot[0]['photo_sha256']
+                      and pending.get('identity_generation', snapshot[0]['_identity_generation']) == snapshot[0]['_identity_generation'])
+        if joined:
+            return None  # Finish this scope; the existing joined request keeps the original envelope.
+        self.service.store.checkpoint_put(job['id'], 'headless_fact_outcome:' + run_id, value)
+        LOG.info('street_story_fact_research_terminal story_id=%s run_id=%s outcome=%s reason=%s coverage_complete=%s eligible=%s',
+                 job['story_id'], run_id, outcome, reason, complete, eligible)
+        return value
+
+    def _unreviewed_actionable(self, job, run_id):
+        from .headless_fact_review import HeadlessFactReview
+        engine = HeadlessFactReview(self)
+        with self.service.store.connection() as db:
+            pending = review_packets.pending_candidates(db, job['story_id'], run_id)
+        exhausted = engine.exhausted_candidates(job)
+        return any(fid not in exhausted for fid in pending)
+
     def _pending_retry_at(self, job, run_id):
         with self.service.store.connection() as db:
             chunks = {row[0] for row in db.execute("SELECT chunk_id FROM research_chunk_runs WHERE run_id=? "
@@ -180,10 +213,8 @@ class HeadlessFacts:
                                 "AND status!='failed' LIMIT 1", (run_id,)).fetchone()
         if unread:
             self._partial(run_id, 'research_fact_next_page')
-        with self.service.store.tx() as db:
-            if self._snapshot(job, run_id, control_revision) is None:
-                return
-            set_run_state(db, run_id, 'completed', now=self.service.store.now(), completed=True)
+        return self._finish(job, run_id, control_revision,
+                            'search_exhausted' if not added else 'source_batches_reviewed')
 
     def _queue_model_continuation(self, job, run_id, goal, scope, result, control_revision):
         """Join an explicit model-owned new aspect after the current run finishes.
@@ -354,8 +385,10 @@ class HeadlessFacts:
 
     async def run(self, job, run_id, goal, scope):
         snapshot = self._snapshot(job, run_id)
-        if snapshot is None or snapshot[2]['state'] == 'completed':
-            return
+        if snapshot is None:
+            return None
+        if snapshot[2]['state'] == 'completed':
+            return self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
         story, research, _ = snapshot
         control_revision = story['_fact_research_control_revision']
         if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
@@ -422,6 +455,11 @@ class HeadlessFacts:
                 return
             sources = [source for source in found.get('sources') or [] if isinstance(source, dict)]
             search_receipt = found.get('receipt') or {}
+            if not sources and found.get('outcome', 'completed_empty') == 'completed_empty':
+                self._bind_discovery(job, run_id, goal, scope, [], search_receipt, control_revision)
+                return self._finish(job, run_id, control_revision, 'search_exhausted')
+            if not sources and found.get('outcome') == 'selection_unavailable':
+                return self._finish(job, run_id, control_revision, 'source_selection_unavailable')
         if not self._bind_discovery(job, run_id, goal, scope, sources, search_receipt, control_revision):
             return
         snapshot = self._snapshot(job, run_id, control_revision)
@@ -444,11 +482,15 @@ class HeadlessFacts:
         if not units:
             await self._review_candidates(job, run_id, control_revision)
             with self.service.store.connection() as db:
-                complete = manifest_complete(run_manifest(db, run_id))
+                manifest = run_manifest(db, run_id)
+                complete = manifest_complete(manifest)
                 unreviewed = db.execute("SELECT 1 FROM fact_assertions a JOIN fact_observations o "
                     "ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
                     "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed' LIMIT 1",
                     (story['id'], run_id)).fetchone()
+            if not complete and manifest_exhausted(manifest) and not self._unreviewed_actionable(job, run_id):
+                return self._finish(job, run_id, control_revision,
+                                    'source_manifest_exhausted' if not complete else 'source_batches_reviewed')
             if complete and unreviewed:
                 # Keep a durable retry while the backend verifier owns this
                 # scope. A closed client must never be required to resume it.
@@ -467,8 +509,8 @@ class HeadlessFacts:
                 cached_only = any(item.get('research_run_id') == run_id and item.get('search_provider') == 'poi_memory'
                                   for item in snapshot[1].get('live_web_searches') or [] if isinstance(item, dict))
                 if snapshot[2]['status_detail'] == 'research_fact_discovery_pending' or (payload.get('research_query') and cached_only):
-                    await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
-                return
+                    return await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
+                return self._finish(job, run_id, control_revision, 'source_batches_reviewed')
             self._partial(run_id, 'research_fact_source_coverage_partial',
                           retry_at=self._pending_retry_at(job, run_id))
         story, research, _ = snapshot
@@ -544,9 +586,13 @@ class HeadlessFacts:
                 return
             for result in suggestions:
                 self._queue_model_continuation(job, run_id, goal, scope, result, control_revision)
+            with self.service.store.connection() as db:
+                manifest = run_manifest(db, run_id)
+            if manifest_exhausted(manifest) and not self._unreviewed_actionable(job, run_id):
+                return self._finish(job, run_id, control_revision, 'source_manifest_exhausted')
             with self.service.store.tx() as db:
                 unfinished = [row[0] for row in db.execute("SELECT chunk_id FROM research_chunk_runs WHERE run_id=? "
-                    "AND status NOT IN ('extracted','no_claims')", (run_id,))]
+                    "AND status NOT IN ('extracted','no_claims','failed','cancelled')", (run_id,))]
                 pending = bool(unfinished)
                 unread = db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? "
                     "AND source_version_id IS NULL AND status!='failed' LIMIT 1", (run_id,)).fetchone()
@@ -581,6 +627,11 @@ class HeadlessFacts:
 
     def _unit_phase(self, job, unit_id, phase, **detail):
         with self.service.store.tx() as db:
+            old = db.execute('SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage=?',
+                             (job['id'], 'headless_fact_unit:' + unit_id)).fetchone()
+            previous = json.loads(old[0]) if old else {}
+            if 'owner' not in detail and previous.get('owner'):
+                detail['owner'] = previous['owner']
             db.execute('INSERT INTO research_checkpoints(job_id,stage,value_json,created_at) VALUES(?,?,?,?) '
                        'ON CONFLICT(job_id,stage) DO UPDATE SET value_json=excluded.value_json',
                        (job['id'], 'headless_fact_unit:' + unit_id, canonical({'phase': phase, **detail}),
@@ -617,12 +668,16 @@ class HeadlessFacts:
                 break
             story, research, _ = snapshot
             with self.service.store.connection() as db:
-                rows = list(db.execute("SELECT r.chunk_id FROM research_chunk_runs r "
+                rows = list(db.execute("SELECT r.chunk_id,c.ordinal FROM research_chunk_runs r "
                     "JOIN source_chunks c ON c.chunk_id=r.chunk_id WHERE r.run_id=? "
-                    "AND r.status NOT IN ('extracted','no_claims') ORDER BY c.source_version_id,c.ordinal", (run_id,)))
+                    "AND r.status NOT IN ('extracted','no_claims','failed','cancelled') ORDER BY c.ordinal,c.source_version_id", (run_id,)))
                 candidate = next((row for row in rows if row['chunk_id'] not in visited), None)
-                source = None if candidate else db.execute("SELECT url FROM research_run_sources WHERE run_id=? "
+                source = db.execute("SELECT url FROM research_run_sources WHERE run_id=? "
                     "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url LIMIT 1", (run_id,)).fetchone()
+                if candidate and (candidate['ordinal'] == 0 or not source):
+                    source = None
+                elif source:
+                    candidate = None  # Read a good source's first core before another page's tenth core.
                 owner = self._owner_fence(db, story, research)
             if candidate is None and source is None:
                 break
@@ -661,6 +716,9 @@ class HeadlessFacts:
             page['_unit_id'] = 'factpage_' + hashlib.sha256(canonical(identity).encode()).hexdigest()[:24]
             old = self.service.store.checkpoint_get(job['id'], 'headless_fact_unit:' + page['_unit_id']) or {}
             saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_result:' + page['_unit_id'])
+            if not saved and old.get('owner') and old['owner'] != owner:
+                self._unit_phase(job, page['_unit_id'], 'deferred', chunk_id=page['chunk_id'])
+                continue  # A result-checkpoint crash cannot rebind old inference to edited inputs.
             due = old.get('retry_at')
             if not saved and isinstance(due, (int, float)) and due > self.service.store.now():
                 continue  # This exact unit remains fenced until its existing route deadline.
@@ -697,7 +755,22 @@ class HeadlessFacts:
         page = unit['page']
         if unit['saved']:
             return unit, unit['saved']['extracted'], None
-        self._unit_phase(job, page['_unit_id'], 'started', chunk_id=page['chunk_id'])
+        self._unit_phase(job, page['_unit_id'], 'started', chunk_id=page['chunk_id'], owner=unit['owner'])
+        async def renew_alive_owner():
+            from .research_runs import renew_chunk_lease
+            while True:
+                await asyncio.sleep(45)
+                alive = self._snapshot(job, story['_research_run_id'], story['_fact_research_control_revision'])
+                if alive is None:
+                    return
+                with self.service.store.tx() as db:
+                    if unit['owner'] != self._owner_fence(db, alive[0], alive[1]):
+                        return
+                    if not renew_chunk_lease(db, run_id=story['_research_run_id'], chunk_id=page['chunk_id'],
+                        owner=unit['session'].id, fence=unit['session'].state['research_chunk_leases'][page['chunk_id']],
+                        now=self.service.store.now()):
+                        return
+        heartbeat = asyncio.create_task(renew_alive_owner())
         try:
             extracted = await provider.extract_fact_page(page, dict(story), dict(context))
             if not isinstance(extracted, dict):
@@ -718,22 +791,43 @@ class HeadlessFacts:
                                  retry_at=self.service.store.now()+300)
             raise
         except (RuntimeError, OSError, ValueError) as exc:
+            if isinstance(exc, PermanentProviderError) and str(exc) == 'research_fact_routes_exhausted':
+                with self.service.store.tx() as db:
+                    if self._snapshot(job, story['_research_run_id'], story['_fact_research_control_revision']) is not None:
+                        mark_chunk(db, run_id=story['_research_run_id'], chunk_id=page['chunk_id'], status='failed',
+                                   error_code=str(exc), observation_count=0, model_name='', prompt_version='',
+                                   now=self.service.store.now())
+                self._unit_phase(job, page['_unit_id'], 'exhausted', chunk_id=page['chunk_id'], error_code=str(exc))
+                return unit, None, exc
             known = isinstance(exc, MalformedProviderResponse) or self._boundary_closed(story, page['_unit_id'])
             self._unit_phase(job, page['_unit_id'], 'closed_error' if known else 'unknown',
                              chunk_id=page['chunk_id'], error_type=type(exc).__name__,
                              error_code=type(exc).__name__,
                              retry_at=getattr(exc, 'retry_at', None) or (None if known else self.service.store.now()+300))
             return unit, None, exc
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
 
     async def _commit_unit(self, unit, extracted, job, run_id, goal, scope, control_revision):
-        from .research_runs import chunk_lease_owned
+        from .research_runs import acquire_chunk_lease, chunk_lease_owned
         page, session = unit['page'], unit['session']
         snapshot = self._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return
         story, research, _ = snapshot
-        with self.service.store.connection() as db:
+        with self.service.store.tx() as db:
             self.adapter._research_run_guard(db, session, run_id)
+            fence = session.state['research_chunk_leases'][page['chunk_id']]
+            if unit['owner'] == self._owner_fence(db, story, research) and not chunk_lease_owned(
+                    db, run_id=run_id, chunk_id=page['chunk_id'], owner=session.id, fence=fence, now=self.service.store.now()):
+                prior = db.execute('SELECT lease_owner,lease_fence FROM research_chunk_runs WHERE run_id=? AND chunk_id=?',
+                                   (run_id, page['chunk_id'])).fetchone()
+                if prior and prior['lease_owner'] == session.id and prior['lease_fence'] == fence:
+                    renewed = acquire_chunk_lease(db, run_id=run_id, chunk_id=page['chunk_id'], owner=session.id,
+                                                  now=self.service.store.now())
+                    if renewed is not None:
+                        session.state['research_chunk_leases'][page['chunk_id']] = renewed
             if (unit['owner'] != self._owner_fence(db, story, research)
                     or not chunk_lease_owned(db, run_id=run_id, chunk_id=page['chunk_id'], owner=session.id,
                         fence=session.state['research_chunk_leases'][page['chunk_id']], now=self.service.store.now())):

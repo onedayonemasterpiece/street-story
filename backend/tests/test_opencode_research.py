@@ -412,3 +412,22 @@ async def test_platform_transport_reuses_existing_service_without_http_client():
     adapter.shared_backend = backend
     assert await adapter._request(None, "GET", "/session/sesExisting/message", params={"limit": 100}) == {"id": "sesExisting"}
     assert backend.calls == [("GET", "/session/sesExisting/message?limit=100", {"payload": None})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_unknown_search_observes_exact_original_prompt_after_policy_capsule_changes(legacy):
+    h = Harness()
+    adapter = h.adapter()
+    first = await adapter.search_articles('Original observed address context', {'request_id': 'frozen-search'})
+    saved = first['receipt']
+    binding = {**saved['binding'], 'phase': 'unknown', 'session_id': saved['session_id'],
+               'message_id': saved['message_id']}
+    if not legacy:
+        binding.update(frozen_prompt=saved['frozen_prompt'], frozen_schema=saved['frozen_schema'])
+    sends = len(h.sends)
+    result = await adapter.search_articles('New source profile and changed prompt context', binding)
+    assert result['receipt']['message_id'] == saved['message_id']
+    assert result['receipt']['frozen_prompt'] == saved['frozen_prompt']
+    assert len(h.sends) == sends
+    assert len([call for call in h.requests if call[0] == 'POST' and call[1].endswith('/prompt_async')]) == 1

@@ -64,3 +64,28 @@ async def test_duplicate_address_cannot_review_or_confirm_a_frame(tmp_path):
         'comparison_id':reply['comparison_id'], 'reference_verdicts':[item,item]})
     assert result['unreviewed_reference_count'] == 3
     assert svc.story(story['id'])['identity_progress'].get('images_reviewed_count',0) == 0
+
+
+@pytest.mark.asyncio
+async def test_uncertain_receipt_without_planning_extension_advances_exact_frame(tmp_path):
+    svc, adapter, story, session, reply = await group(tmp_path)
+    result = adapter._record_place_comparison(session, 'grouped-uncertain', {
+        'comparison_id': reply['comparison_id'],
+        'reference_verdicts': [verdict(reply['references'][1], 'uncertain')]})
+    assert not result['matched'] and result['unreviewed_reference_count'] == 2
+    assert svc.story(story['id'])['identity_progress']['images_reviewed_count'] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('item_change', [
+    {'status': 'match'},
+    {'search_feedback': {'next_action': 'invented_action'}},
+    {'source_subject_scope': 'invented_scope'},
+])
+async def test_planning_schema_relaxation_does_not_accept_match_or_invalid_feedback(tmp_path, item_change):
+    svc, adapter, story, session, reply = await group(tmp_path)
+    result = adapter._record_place_comparison(session, 'grouped-invalid-extension', {
+        'comparison_id': reply['comparison_id'],
+        'reference_verdicts': [{**verdict(reply['references'][0]), **item_change}]})
+    assert not result['matched'] and result['unreviewed_reference_count'] == 3
+    assert svc.story(story['id'])['identity_progress'].get('images_reviewed_count', 0) == 0

@@ -60,10 +60,13 @@ async def test_google_selects_from_same_observed_grounding_response(tmp_path, bo
     assert len(calls) == 1 and len(result.grounding_sources) == expected
     assert len(result.payload['discovered_sources']) == 2
     assert result.payload['source_selection']['status'] == ('selection_unavailable' if body == 'malformed' else 'model_selected')
-    # Existing facts callers still receive grounding inventory even when the
-    # assistant did not provide identity's additional semantic selection.
+    # Facts use the same semantic boundary; raw galleries are retained only as
+    # observations and never automatically scheduled for extraction.
     facts = await client.discover_article_urls('facts about confirmed building')
-    assert len(facts.grounding_sources) == 2
+    assert len(facts.grounding_sources) == expected
+    assert 'different views' not in calls[-1][0]
+    assert facts.payload['status'] == ('selection_unavailable' if body == 'malformed'
+        else 'completed' if expected else 'completed_empty')
 
 
 @pytest.mark.asyncio

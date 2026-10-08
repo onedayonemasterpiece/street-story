@@ -70,16 +70,16 @@ class HeadlessFactReview:
         entries = proof.get('routes') or []
         routes = build() if callable(build) else []
         return [route for route in routes if route.get('qualified') and route.get('endpoint')
-            and (not available or route['available']) and any(isinstance(entry, dict)
+            and (not available or route['available']) and (route.get('role') == 'facts_live' or any(isinstance(entry, dict)
                 and all(entry.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
                 and (not entry.get('directory') or entry['directory'] == route['client'].directory)
                 and all(entry.get(key) is True for key in ('schema_verified', 'own_passages_verified',
-                    'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified')) for entry in entries)]
+                    'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified')) for entry in entries))]
 
     async def _infer(self, packet, job, unit, saved, ordinal=0):
         if saved.get('phase') == 'result':
             return saved['args']
-        if saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale'}:
+        if saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale', 'exhausted'}:
             return None
         if saved.get('retry_at', 0) > self.service.store.now():
             return None
@@ -110,8 +110,13 @@ class HeadlessFactReview:
                  '_fact_pool_input_sha256': hashlib.sha256(canonical([verifier_contract, packet]).encode()).hexdigest()}
         schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
         prompt = verifier_prompt + canonical(packet)
+        closed_routes = set(saved.get('closed_routes') or [])
+        all_routes = self._qualified_routes(available=False)
+        temporary = any(not route.get('available', True) for route in all_routes)
         for route in routes:
             role = 'facts_review_' + route['model_id']
+            if role in closed_routes and not observing:
+                continue
             with self.service.store.connection() as db:
                 rows = list(db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? '
                     'AND role=? ORDER BY created_at DESC,rowid DESC', (story['id'], role)))
@@ -125,6 +130,10 @@ class HeadlessFactReview:
                 self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': role})
                 return None
             if prior.get('phase') in {'failed', 'aborted'}:
+                if prior.get('phase') == 'aborted' or prior.get('provider_send_state') == 'response_closed':
+                    closed_routes.add(role)
+                else:
+                    temporary = True
                 continue  # Closed unchanged semantic unit may use another route.
             client = route['client']
             frozen = {'packet_ref': packet['packet_ref'], 'route': role, 'frozen_packet': packet,
@@ -140,7 +149,8 @@ class HeadlessFactReview:
                 args = response.get('result')
                 if (not Draft202012Validator(schema).is_valid(args)
                         or args.get('packet_ref') != packet['packet_ref']):
-                    self._put(job, unit, {'phase': 'closed_error', 'route': role})
+                    closed_routes.add(role)
+                    self._put(job, unit, {'phase': 'closed_error', 'route': role, 'closed_routes': sorted(closed_routes)})
                     LOG.info('street_story_background_fact_review_fallback story_id=%s unit_id=%s model_id=%s reason=malformed',
                              job['story_id'], unit, client.model_id)
                     continue
@@ -163,8 +173,17 @@ class HeadlessFactReview:
                          job['story_id'], unit, client.model_id, unknown, type(exc).__name__)
                 if unknown:
                     return None
-        self._put(job, unit, {'phase': 'closed_error', 'packet_ref': packet['packet_ref'],
-                             'retry_at': self.service.store.now()+60})
+                if receipt.get('phase') == 'aborted' or receipt.get('provider_send_state') == 'response_closed':
+                    closed_routes.add(role)
+                else:
+                    temporary = True
+        exhausted = bool(all_routes) and not temporary and all(
+            'facts_review_' + route['model_id'] in closed_routes for route in all_routes)
+        self._put(job, unit, {'phase': 'exhausted' if exhausted else 'closed_error',
+                             'packet_ref': packet['packet_ref'], 'closed_routes': sorted(closed_routes),
+                             **({} if exhausted else {'retry_at': self.service.store.now()+60})})
+        LOG.info('street_story_background_fact_review_closed story_id=%s unit_id=%s exhausted=%s',
+                 job['story_id'], unit, exhausted)
         return None
 
     @staticmethod
@@ -232,7 +251,49 @@ class HeadlessFactReview:
             LOG.info('street_story_background_fact_review_recovered story_id=%s unit_id=%s original_result=true',
                      job['story_id'], unit)
 
+    def exhausted_candidates(self, job):
+        exhausted = set()
+        with self.service.store.connection() as db:
+            for row in db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? "
+                                  "AND stage LIKE 'headless_fact_review:%'", (job['id'],)):
+                saved = json.loads(row[0])
+                if saved.get('phase') != 'exhausted':
+                    continue
+                packet = db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=? AND story_id=?',
+                                    (saved.get('packet_ref'), job['story_id'])).fetchone()
+                if packet:
+                    frozen = json.loads(packet[0]).get('bundle', {})
+                    current = review_packets.bundle(db, job['story_id'])
+                    exhausted.update(fid for fid, digest in frozen.items() if current.get(fid) == digest)
+        return exhausted
+
     async def run(self, job, run_id, control_revision):
+        snapshot = self.harness._snapshot(job, run_id, control_revision)
+        if snapshot is None:
+            return 0
+        # Serialize packet preparation, inference and commit at the shared POI.
+        from .poi_memory import memory_keys
+        with self.service.store.connection() as db:
+            keys = memory_keys(db, snapshot[1]['visual_identity'])
+        lock_key = (id(self.service), min(keys) if keys else job['story_id'])
+        lock = _COMMIT_LOCKS.get(lock_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _COMMIT_LOCKS[lock_key] = lock
+        committed = 0
+        async with lock:
+            for _ in range(4):
+                if self.harness._snapshot(job, run_id, control_revision) is None:
+                    break
+                with self.service.store.tx() as db:
+                    self.service._hydrate_poi_memory(db, self.service._story_row(db, job['story_id']))
+                count = await self._run_one(job, run_id, control_revision)
+                committed += count
+                if not count:
+                    break
+        return committed
+
+    async def _run_one(self, job, run_id, control_revision):
         snapshot = self.harness._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return 0
@@ -245,23 +306,18 @@ class HeadlessFactReview:
         if blocked:
             LOG.info('street_story_background_fact_review_unknown_fence story_id=%s run_id=%s blocked_candidates=%s',
                      job['story_id'], run_id, len(blocked))
-            pending = [fid for fid in pending if fid not in blocked]
+            pending = []  # An unresolved original can still change the conflict ledger.
         if not pending and not original_reviews:
             return 0
-        lock_key = (id(self.service), job['story_id'])
-        lock = _COMMIT_LOCKS.get(lock_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _COMMIT_LOCKS[lock_key] = lock
-        prepared = list(original_reviews)
+        prepared = list(original_reviews[:1])
         new_prepared = 0
         routes = self._qualified_routes(available=False)
         input_budget = min((getattr(getattr(route.get('client'), 'limits', None), 'max_input_chars', 24000)
                             for route in routes), default=24000)
         start = 0
-        while start < len(pending) and new_prepared < 4:
+        while start < len(pending) and new_prepared < 1 and not original_reviews:
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
-                model='gemini-3.8-live', actor=None, closed=False,
+                model='unknown', actor=None, closed=False,
                 state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend'})
             candidate_ids = pending[start:start+self.MAX_PACKET_FACTS]
             # Pack related candidates together so their duplicate/conflict
@@ -277,6 +333,8 @@ class HeadlessFactReview:
             if packet is None:
                 continue
             if len(VERIFIER_PROMPT + canonical(packet)) > input_budget:
+                self._put(job, unit, {'phase': 'exhausted', 'packet_ref': packet['packet_ref'],
+                                     'error_code': 'review_input_limit'})
                 LOG.info('street_story_background_fact_review_input_waiting story_id=%s unit_id=%s limit=%s',
                          job['story_id'], unit, input_budget)
                 continue
@@ -295,22 +353,21 @@ class HeadlessFactReview:
                 session, packet, unit, _ = item
                 outcome = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
                 session.model = outcome.get('model_id') or session.model
-                async with lock:
-                    if self.harness._snapshot(job, run_id, control_revision) is None:
-                        continue
-                    try:
-                        value = await self.harness.adapter.execute_tool(session, {
-                            'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': args})
-                        if value.get('eligible_count') is not None:
-                            committed += 1
-                            self._put(job, unit, {'phase': 'committed', 'packet_ref': packet['packet_ref']})
-                            LOG.info('street_story_background_fact_review_committed story_id=%s run_id=%s unit_id=%s eligible=%s',
-                                     job['story_id'], run_id, unit, value['eligible_count'])
-                    except ConflictError as exc:
-                        self._put(job, unit, {'phase': 'stale' if exc.code.endswith('stale') else 'rejected',
-                                             'packet_ref': packet['packet_ref'], 'error_code': exc.code})
-                        LOG.info('street_story_background_fact_review_deferred story_id=%s run_id=%s unit_id=%s reason=%s',
-                                 job['story_id'], run_id, unit, exc.code)
+                if self.harness._snapshot(job, run_id, control_revision) is None:
+                    continue
+                try:
+                    value = await self.harness.adapter.execute_tool(session, {
+                        'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': args})
+                    if value.get('eligible_count') is not None:
+                        committed += 1
+                        self._put(job, unit, {'phase': 'committed', 'packet_ref': packet['packet_ref']})
+                        LOG.info('street_story_background_fact_review_committed story_id=%s run_id=%s unit_id=%s eligible=%s',
+                                 job['story_id'], run_id, unit, value['eligible_count'])
+                except ConflictError as exc:
+                    self._put(job, unit, {'phase': 'stale' if exc.code.endswith('stale') else 'rejected',
+                                         'packet_ref': packet['packet_ref'], 'error_code': exc.code})
+                    LOG.info('street_story_background_fact_review_deferred story_id=%s run_id=%s unit_id=%s reason=%s',
+                             job['story_id'], run_id, unit, exc.code)
         finally:
             for task in tasks:
                 if not task.done():
@@ -327,7 +384,7 @@ class HeadlessFactReview:
                       review_packets.eligible_bundle(db, job['story_id'])]
         unit = hashlib.sha256(canonical(recipe).encode()).hexdigest()[:24]
         saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
-        if (saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale'}
+        if (saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale', 'exhausted'}
                 or saved.get('retry_at', 0) > self.service.store.now()):
             return None, unit, saved
         args = ({'packet_ref': saved['args']['packet_ref']} if saved.get('phase') == 'result' else {

@@ -131,7 +131,8 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
             return await super()._infer(packet, *args, **kwargs)
     engine = BoundedReview(harness)
     engine._qualified_routes = lambda **_: [{'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=budget))}]
-    assert await engine.run(job, RUN, 0) == 1
+    committed = await engine.run(job, RUN, 0)
+    assert committed == len(calls) and committed > 1
     assert calls and max(calls) < 6
 
 
@@ -160,7 +161,7 @@ async def test_independent_packets_stay_pending_but_new_eligible_claim_stales_si
 
 
 @pytest.mark.asyncio
-async def test_two_live_reviews_overlap_serial_commit_refreshes_nearby_claims_and_preserves_owner(tmp_path):
+async def test_two_reviews_prepare_serially_with_current_ledger_and_preserve_owner(tmp_path):
     svc,job,harness=await candidates(tmp_path)
     sid=job['story_id']
     with svc.store.tx() as db:
@@ -169,34 +170,34 @@ async def test_two_live_reviews_overlap_serial_commit_refreshes_nearby_claims_an
         research['publication_concept']='Owner concept'
         db.execute('UPDATE stories SET draft_text=?,research_json=? WHERE id=?',('Owner draft',json.dumps(research),sid))
     engine=ControlledReview(harness)
-    assert await engine.run(job,RUN,0)==1
-    assert ControlledReview.peak==2 and ControlledReview.calls==2
+    assert await engine.run(job,RUN,0)==2
+    assert ControlledReview.peak==1 and ControlledReview.calls==2
     with svc.store.connection() as db:
         eligible=db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]
-        assert eligible==3
+        assert eligible==6
         assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0]==0
-        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]==3
-        assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='backend_semantic_review'").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]==6
+        assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='backend_semantic_review'").fetchone()[0] == 2
         assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='mira_live_review'").fetchone()[0] == 0
         assert svc._story_row(db,sid)['draft_text']=='Owner draft'
-    # The deferred sibling now sees the first accepted claims, rather than
-    # committing a semantic decision based on a stale POI view.
-    assert await engine.run(job,RUN,0)==1
+    # Both packets committed on their first paid review, with no stale sibling.
+    assert await engine.run(job,RUN,0)==0
+    assert ControlledReview.calls==2
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]==6
         assert json.loads(svc._story_row(db,sid)['research_json'])['publication_concept']=='Owner concept'
 
 
 @pytest.mark.asyncio
-async def test_unknown_review_is_not_repeated_and_other_scope_can_finish(tmp_path):
+async def test_unknown_review_fences_conflicting_ledger_without_new_sibling_send(tmp_path):
     svc,job,harness=await candidates(tmp_path)
     ControlledReview.mode='unknown'
     engine=ControlledReview(harness)
     assert await engine.run(job,RUN,0)==0
-    assert ControlledReview.calls==2
+    assert ControlledReview.calls==1
     ControlledReview.mode='positive'
     assert await engine.run(job,RUN,0)==0
-    assert ControlledReview.calls==2
+    assert ControlledReview.calls==1
 
 
 @pytest.mark.asyncio
@@ -316,7 +317,7 @@ async def test_closed_client_pending_backend_review_retries_and_resumes_without_
 
 
 @pytest.mark.asyncio
-async def test_original_readback_does_not_block_independent_candidate_progress(tmp_path):
+async def test_original_readback_serializes_conflicting_candidate_progress(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=6)
     ControlledReview.mode = 'unknown'
     await ControlledReview(harness).run(job, RUN, 0)
@@ -336,19 +337,15 @@ async def test_original_readback_does_not_block_independent_candidate_progress(t
             return await super()._infer(packet, job, unit, saved, ordinal)
     engine = RollingReview(harness)
     engine._put(job, unit, {**saved, 'frozen_packet': packet, 'route_identity': {'fixture': True}})
-    other = saved_units[1]['stage'].split(':', 1)[1]
-    engine._put(job, other, {'phase': 'closed_error'})
+    assert len(saved_units) == 1
     ControlledReview.mode = 'positive'
     task = asyncio.create_task(engine.run(job, RUN, 0))
     try:
         await asyncio.wait_for(waiting.wait(), 1)
-        for _ in range(30):
-            with svc.store.connection() as db:
-                count = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
-            if count:
-                break
-            await asyncio.sleep(.05)
-        assert count == 3 and not task.done()
+        await asyncio.sleep(.05)
+        with svc.store.connection() as db:
+            count = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
+        assert count == 0 and not task.done()
     finally:
         release.set()
         await task
@@ -428,7 +425,7 @@ async def test_repeated_local_capacity_polling_backs_off_without_model_send_or_o
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode',['malformed','unknown','aborted_unknown'])
+@pytest.mark.parametrize('mode',['malformed','unknown','aborted_unknown','exhausted'])
 async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct(tmp_path,mode):
     from contextvars import ContextVar
     from street_story.research_adapter import ProductResearchAdapter
@@ -453,7 +450,7 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
                          'message_id':'msg_existing','model_id':self.model_id}
                 await provider.checkpoint(binding,receipt)
                 raise ResearchUnavailable('research_attempt_unknown',receipt)
-            if self.model_id=='mimo-v2.6-flash-free':
+            if self.model_id=='mimo-v2.6-flash-free' or mode == 'exhausted':
                 args={'decisions':'broken'}
             else:
                 args={'packet_ref':packet['packet_ref'],'decisions':[],
@@ -478,8 +475,46 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
     engine=HeadlessFactReview(harness)
     response=await engine._infer(packet,job,'semantic-controlled-unit',{})
     assert calls==['mimo-v2.6-flash-free']+([] if mode in {'unknown','aborted_unknown'} else ['nemotron-3-ultra-free'])
-    assert (response is None)==(mode in {'unknown','aborted_unknown'})
+    assert (response is None)==(mode in {'unknown','aborted_unknown','exhausted'})
+    if mode == 'exhausted':
+        saved = svc.store.checkpoint_get(job['id'], 'headless_fact_review:semantic-controlled-unit')
+        assert saved['phase'] == 'exhausted'
+        assert await engine._infer(packet, job, 'semantic-controlled-unit', saved) is None
+        assert len(calls) == 2
     if mode in {'unknown','aborted_unknown'}:
         saved=svc.store.checkpoint_get(job['id'],'headless_fact_review:semantic-controlled-unit')
         assert await engine._infer(packet,job,'semantic-controlled-unit',saved) is None
         assert len(calls)==1
+
+
+@pytest.mark.asyncio
+async def test_existing_live_tool_contract_can_review_without_mandatory_helper_qualification(tmp_path):
+    from contextvars import ContextVar
+    from street_story.research_adapter import ProductResearchAdapter
+    svc, job, harness = await candidates(tmp_path, count=1)
+    provider = object.__new__(ProductResearchAdapter)
+    provider.service, provider.client, provider.giga = svc, None, None
+    provider._active_binding = ContextVar('live-review-test', default=None)
+    calls = []
+    class Live:
+        endpoint, provider_id, model_id = 'live-interaction:street-story', 'google-live', 'gemini-3.8-live'
+        async def _run(self, role, prompt, binding, schema):
+            calls.append(binding['attempt_id'])
+            packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
+            args = {'packet_ref': packet['packet_ref'], 'decisions': [
+                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+                 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+                 'claims': [item['text']], 'basis_quotes': [item['text']], 'reason': 'Own literal frozen passage.'}
+                for item in packet['items']], 'relations_complete': True, 'conflicts': [],
+                'coverage_complete': False, 'missing_aspects': []}
+            receipt = {'binding': binding, 'phase': 'completed', 'model_id': self.model_id,
+                       'provider_id': self.provider_id, 'result': args}
+            await provider.checkpoint(binding, receipt)
+            return {'result': args, 'receipt': receipt}
+    provider.live_facts = Live()
+    svc.providers.research = provider
+    assert await HeadlessFactReview(harness).run(job, RUN, 0) == 1
+    assert len(calls) == 1
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+        assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] == 0

@@ -226,3 +226,37 @@ async def test_more_than_three_sources_accumulate_with_bounded_pool_not_a_source
     with svc.store.connection() as db:
         assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (RUN,)).fetchone()[0] == 'verifying'
         assert {row[0] for row in db.execute('SELECT eligibility FROM fact_assertions')} == {'unreviewed'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('useful', [False, True])
+async def test_exhausted_article_ends_automatic_run_without_suppressing_other_supported_facts(tmp_path, useful):
+    from street_story.errors import PermanentProviderError
+    from test_headless_fact_review_parallel import ControlledReview
+    svc, job = fixture(tmp_path, count=2 if useful else 1)
+    calls = []
+    async def extract(page, story, context):
+        calls.append(page['_unit_id'])
+        if not useful or page['_extractor_ordinal'] == 1:
+            raise PermanentProviderError('research_fact_routes_exhausted')
+        return result(page)
+    svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    try:
+        outcome = await harness.run(job, RUN, 'History', 'history')
+    except RetryableProviderError:
+        assert useful
+        outcome = None
+    if useful:
+        ControlledReview.mode = 'positive'
+        assert await ControlledReview(harness).run(job, RUN, 0) == 1
+        outcome = await harness.run(job, RUN, 'History', 'history')
+    assert outcome['outcome'] == ('useful_partial' if useful else 'no_supported_facts')
+    assert outcome['coverage_complete'] is False
+    assert outcome['eligible_count'] == (1 if useful else 0)
+    before = list(calls)
+    assert await harness.run(job, RUN, 'History', 'history') == outcome
+    assert calls == before
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE status='failed'").fetchone()[0] == 1
+        assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] in {0, None}

@@ -70,7 +70,8 @@ async def test_initial_recovery_uses_existing_reader_rank_with_attempt_fairness(
     pages = {sources[1]['url']: {'status': 'temporary_failure', 'attempts': int(tried_article)}}
     history = {'queries': {}, 'sources': sources, 'pages': pages}
     story = {'id': 'fixture', 'photo_sha256': 'opaque-upload'}
-    service = SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(_generate=object(), executor=object())),
+    service = SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(_generate=lambda: None,
+        executor=SimpleNamespace(execute=lambda *args: None))),
         store=SimpleNamespace(now=lambda: 100), _identity_snapshot=lambda _: (story, {}))
     async def suggest(*args):
         story['_identity_article_queries'] = ['literal model exterior query']

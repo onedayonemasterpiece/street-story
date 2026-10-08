@@ -265,6 +265,14 @@ def chunk_lease_owned(db, *, run_id, chunk_id, owner, fence, now):
         'AND lease_owner=? AND lease_fence=? AND lease_until>?', (run_id,chunk_id,owner,fence,now)).fetchone() is not None
 
 
+def renew_chunk_lease(db, *, run_id, chunk_id, owner, fence, now, ttl=180):
+    """A live worker renews its own fence; it cannot revive a displaced lease."""
+    changed = db.execute('UPDATE research_chunk_runs SET lease_until=? WHERE run_id=? AND chunk_id=? '
+        'AND lease_owner=? AND lease_fence=? AND lease_until>?',
+        (now+ttl, run_id, chunk_id, owner, fence, now)).rowcount
+    return changed == 1
+
+
 def begin_research_run(
     db,
     *,
@@ -893,3 +901,11 @@ def manifest_complete(manifest: dict[str, Any]) -> bool:
         and int(counts.get("terminal_chunks_payload_missing") or 0) == 0
         and int(counts.get("chunks_completed") or 0) == int(counts.get("chunks_planned") or 0)
     )
+
+
+def manifest_exhausted(manifest: dict[str, Any]) -> bool:
+    """Automatic work can end honestly even when source coverage is incomplete."""
+    if any(source['status'] in {'discovered', 'fetching', 'deferred'} for source in manifest.get('sources') or []):
+        return False
+    return all(chunk['status'] in {'extracted', 'no_claims', 'failed', 'cancelled'}
+               for chunk in manifest.get('chunks') or [])

@@ -106,10 +106,11 @@ def test_restart_worker_failure_exhaustion_schedules_followup_after_terminalizin
 
 
 @pytest.mark.asyncio
-async def test_provider_waiting_beyond_old_retry_limit_survives_restart_without_losing_joined_work(tmp_path):
+async def test_provider_wait_beyond_envelope_terminates_without_implicit_joined_restart(tmp_path):
     svc, sid, jid = pending_request(tmp_path)
     with svc.store.tx() as db:
         db.execute('UPDATE jobs SET attempts=? WHERE id=?', (MAX_JOB_ATTEMPTS + 5, jid))
+        original_budget = json.loads(svc._story_row(db, sid)['research_json'])['research_budget']
     async def wait(job):
         raise RetryableProviderError('provider_quota_waiting', retry_at=svc.store.now() + 900)
     svc._run_research = wait
@@ -117,8 +118,12 @@ async def test_provider_waiting_beyond_old_retry_limit_survives_restart_without_
     assert svc.recover_jobs() == 0
     with svc.store.connection() as db:
         job = db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
-        assert job['state'] == 'retry' and job['attempts'] > MAX_JOB_ATTEMPTS
-        assert 'pending_fact_request' in json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        assert job['state'] == 'done' and job['attempts'] > MAX_JOB_ATTEMPTS
+        research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (sid,)).fetchone()[0])
+        assert research['research_budget'] == original_budget
+        assert research['automatic_research_outcome']['outcome'] == 'resource_blocked'
+        assert research['automatic_research_outcome']['reason'] == 'provider_quota_waiting'
+        assert 'pending_fact_request' in research  # Owner intent is retained for a new explicit wave.
         assert db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0] == 1
 
 

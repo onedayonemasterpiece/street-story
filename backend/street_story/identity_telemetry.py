@@ -1,6 +1,7 @@
 """Story-scoped identity/import telemetry, available before a Live session exists."""
 from __future__ import annotations
 import json
+import hashlib
 import logging
 import re
 from typing import Any
@@ -51,6 +52,19 @@ def record_identity_event(service, story_id: str, event: str, fields: dict[str, 
                 if field_generation == research.get('identity_generation', 0):
                     research['identity_progress'] = advance(research.get('identity_progress') or {}, event, fields or {}, service.store.now())
                     db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research, ensure_ascii=False), story_id))
+                    meaningful = (event in {'identity_reference_loaded', 'identity_images_reviewed'}
+                        or event == 'identity_osm' and (fields or {}).get('retained_count', 0) > 0
+                        or event == 'identity_discovery_candidates' and (fields or {}).get('candidate_ids')
+                        or event in {'identity_search_route_ready', 'identity_search_observations_ready'}
+                        and (fields or {}).get('source_count', 0) > 0)
+                    if meaningful and (fields or {}).get('available') is not False:
+                        from .research_budget import note_evidence
+                        # The same saved result on another wake is not progress.
+                        evidence_fields = {key: value for key, value in (fields or {}).items()
+                            if key not in {'elapsed_ms', 'duration_ms', 'original_query_pending'}}
+                        stable = json.dumps(evidence_fields, ensure_ascii=False, sort_keys=True)
+                        key = event + ':' + hashlib.sha256(stable.encode()).hexdigest()
+                        note_evidence(service, db, story_id, key, generation=field_generation)
             db.execute('INSERT INTO live_diagnostics(story_id,session_id,source,event_type,payload_json,created_at) VALUES(?,?,?,?,?,?)',
                        (story_id, '', source, event, payload, service.store.now()))
             db.execute('DELETE FROM live_diagnostics WHERE created_at<?', (service.store.now() - 7 * 86400,))

@@ -354,6 +354,8 @@ class LiveVisualComparisonMixin:
     @staticmethod
     def _visual_reply(comparison_id, candidates, identity, remaining):
         return {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
+            'camera_hints': identity.get('camera_hints') or {},
+            'camera_position_verified': identity.get('camera_position_verified') is True,
             'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name'],
                 'source_url': c['reference_image_urls'][0],
                 **({'reference_id': c['reference_id'], 'article_url': c.get('url'),
@@ -362,7 +364,10 @@ class LiveVisualComparisonMixin:
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
                 'url': c.get('url'), 'distance_m': c.get('distance_m'),
-                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name', 'map_object') if key in c},
+                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name', 'map_object',
+                    'map_geometry', 'boundary_distance_m', 'representative_distance_m', 'distance_provenance',
+                    'footprint_bearing_interval', 'camera_inside_footprint',
+                    'camera_alignment', 'camera_direction_difference_deg') if key in c},
                 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
                 for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
                 and not str(c.get('candidate_id', '')).startswith('web:')][:32],
@@ -451,7 +456,8 @@ class LiveVisualComparisonMixin:
                               and 'queue' in lease) else None
         if state is None:
             initial_selection = None
-            selector = getattr(self.service.providers.gemini, 'select_identity_sources', None)
+            providers = getattr(self.service, 'providers', None)
+            selector = getattr(getattr(providers, 'gemini', None), 'select_identity_sources', None)
             observed = [{'url': c['url'], 'title': c.get('name', '')}
                         for c in identity.get('candidates', [])
                         if reference_eligible(c) and c.get('url') and c.get('reference_image_urls')
@@ -465,7 +471,7 @@ class LiveVisualComparisonMixin:
                 try:
                     selected = await selector(selection_query, observed, {**story, '_identity_selection_image': image})
                 except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
-                    fallback = getattr(getattr(self.service.providers, 'research', None), 'select_identity_sources', None)
+                    fallback = getattr(getattr(providers, 'research', None), 'select_identity_sources', None)
                     if not callable(fallback):
                         raise
                     selected = await fallback(selection_query, observed, story)
@@ -666,6 +672,15 @@ class LiveVisualComparisonMixin:
                 or (url and url in {str(c.get('url') or '').rstrip('/'),
                                    str(c.get('wikipedia_url') or '').rstrip('/')})), default=float('inf'))
 
+        def reference_alignment(candidate):
+            subject = (candidate.get('reference_reuse') or {}).get('subject_candidate_id')
+            ids = {candidate.get('candidate_id'), subject}
+            url = str(candidate.get('url') or '').rstrip('/')
+            return min(({'ahead': 0, 'off_axis': 2}.get(c.get('camera_alignment'), 1)
+                for c in physical if ids.intersection({c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])})
+                or (url and url in {str(c.get('url') or '').rstrip('/'),
+                                   str(c.get('wikipedia_url') or '').rstrip('/')})), default=1)
+
         def page_distance(page):
             source = page.get('source') or {}
             ids = set(source.get('memory_candidate_ids') or [])
@@ -686,8 +701,16 @@ class LiveVisualComparisonMixin:
                 for pair in state.get('parallel_pairs', [])
                 if pair.get('phase') not in {'completed', 'failed', 'skipped'})
             state['source_comparison_coverage'] = dict(coverage)
-            state['queue'].sort(key=lambda c: (coverage[c.get('url')],
-                reference_distance(c), 0 if c.get('reference_reuse') else 1))
+            def geometry_priority(candidate):
+                metres = reference_distance(candidate)
+                # Direction is a soft tie-break within a local distance band.
+                # Missing heading contributes no preference or exclusion.
+                band = int(metres // 100) if metres != float('inf') else float('inf')
+                return (coverage[candidate.get('url')], band, reference_alignment(candidate),
+                        {'promising': 0, 'unclear': 1, 'unlikely': 2}.get(
+                            (candidate.get('reference_triage') or {}).get('priority'), 1),
+                        metres, 0 if candidate.get('reference_reuse') else 1)
+            state['queue'].sort(key=geometry_priority)
             if state['queue'][0].get('reference_id') != previous_head:
                 record_identity_event(self.service, story['id'], 'identity_reference_priority', {
                     'generation': generation, 'reason': 'current_shortlist_proximity',
@@ -892,6 +915,10 @@ class LiveVisualComparisonMixin:
                 await acquire_page(page)
             state['web_searched'] = state['searches'].get(query, {}).get('status') == 'completed'
         self._save_visual_queue(session, state)
+        if state['queue'] and not unsettled:
+            from .reference_triage import triage_queue
+            await triage_queue(self, session, state, story, source_bytes, identity,
+                               generation=generation, control_revision=expected['control_revision'])
         references, evidence, candidates = [], [], []
         from .identity_references import unsupported_reference_url
         reference_limit = min(4, max(1, int(getattr(session, 'visual_reference_limit', 1))))
@@ -970,16 +997,28 @@ class LiveVisualComparisonMixin:
         binding = research.get('photo_camera_hints') or {}
         hints = (binding.get('metadata') if binding.get('photo_sha256') == story['photo_sha256']
                  and isinstance(binding.get('metadata'), dict) else read_camera_hints(source_bytes))
-        reply['camera_hints'] = model_camera_hints(hints)
+        reply['camera_hints'] = {**model_camera_hints(hints),
+            'direction_status': hints.get('direction_status', 'missing'),
+            **{key: hints[key] for key in ('pixel_orientation', 'horizontal_error_m') if key in hints},
+            **({key: hints[key] for key in ('direction_degrees', 'direction_ref') if key in hints}
+               if identity.get('camera_position_verified') is True
+               and hints.get('direction_status') == 'true_north' and hints.get('direction_ref') == 'T' else {})}
         reply['camera_hints_instruction'] = (
             'focal_length_35mm уже является эквивалентным фокусным расстоянием. '
             'Не умножай его автоматически на digital_zoom_ratio: поля могут описывать один и тот же зум. '
-            'distance_m — расстояние до координаты POI, которая может обозначать центр здания или территории, '
-            'а не точную дистанцию до видимого фасада.')
+            'distance_provenance указывает, измерено ли distance_m до наблюдаемой границы здания '
+            'или representative point; representative_distance_m может обозначать центр территории. '
+            'Это пространственные подсказки, а не доказательство identity или точная дистанция до видимого фасада.')
         image_parts = [{'label': 'SOURCE', 'mime_type': story.get('photo_mime_type') or 'image/jpeg',
-            'data': base64.b64encode(source_bytes).decode('ascii')}] + [
-            {'label': f'REF {i}', 'mime_type': mime, 'url': url}
-            for i, (_cid, mime, url) in enumerate(references, 1)]
+            'data': base64.b64encode(source_bytes).decode('ascii')}]
+        for i, ((_cid, mime, url), candidate) in enumerate(zip(references, candidates), 1):
+            cached = (session.state.get('_reference_triage_images') or {}).get(candidate['reference_id']) or {}
+            # Reuse downloaded originals only in this RAM session. Atlas tiles
+            # never become final pair images or durable image payloads.
+            image_parts.append({'label': f'REF {i}', 'mime_type': cached.get('mime_type', mime),
+                **({'data': base64.b64encode(cached['bytes']).decode('ascii')}
+                   if cached.get('url') == url and isinstance(cached.get('bytes'), bytes)
+                   else {'url': url})})
         state['pending'] = {'id': comparison_id, 'candidates': candidates,
             'evidence': evidence, 'reply': reply, 'image_parts': image_parts}
         self._save_visual_queue(session, state)
@@ -1029,7 +1068,8 @@ class LiveVisualComparisonMixin:
                 raise ConflictError('visual_comparison_changed', 'Фото или подтверждение объекта изменилось.')
             from .identity_subject_binding import bind_reference_subject
             shortlist = (research.get('visual_identity') or {}).get('candidates', [])
-            bound = bind_reference_subject(raw, pending['candidates'], shortlist, pending['evidence'])
+            bound = bind_reference_subject(raw, pending['candidates'], shortlist, pending['evidence'],
+                observed_candidates=(research.get('visual_identity') or {}).get('observed_candidates') or [])
             raw = bound['result']
             aliases = {r['normalized_value']: r['poi_id'] for r in db.execute(
                 "SELECT normalized_value,poi_id FROM poi_aliases WHERE namespace='street_story_candidate'")}
@@ -1186,6 +1226,14 @@ class LiveVisualComparisonMixin:
                 observable_correspondences={'type':'array','items':{'type':'object'}})
             item_schema['required'] += ['shared_distinctive_geometry','observable_correspondences']
         validator = Draft202012Validator(item_schema)
+        # Planning feedback enriches the next search but does not determine
+        # whether an addressed negative comparison was completed. Keep the
+        # provider request strict, and retain the complete gate for MATCH.
+        from copy import deepcopy
+        negative_schema = deepcopy(item_schema)
+        negative_schema['required'] = [key for key in negative_schema['required']
+            if key not in {'search_feedback', 'source_subject_scope'}]
+        negative_validator = Draft202012Validator(negative_schema)
         items, duplicates = {}, set()
         returned = args.get('reference_verdicts')
         if not isinstance(returned, list):
@@ -1196,7 +1244,9 @@ class LiveVisualComparisonMixin:
             ref = item.get('reference_id')
             if ref in items:
                 duplicates.add(ref)
-            elif ref in catalog and validator.is_valid(item) and item.get('candidate_id') in {'', catalog[ref][0]['candidate_id']}:
+            elif (ref in catalog
+                    and (negative_validator if item.get('status') in {'mismatch', 'uncertain'} else validator).is_valid(item)
+                    and item.get('candidate_id') in {'', catalog[ref][0]['candidate_id']}):
                 items[ref] = item
         for ref in duplicates:
             items.pop(ref, None)

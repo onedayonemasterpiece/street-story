@@ -99,6 +99,47 @@ async def test_all_search_routes_blocked_retains_independent_and_google_failures
     assert 'RESOURCE_NO_CAPACITY' in str(error.value)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('google_status', ['completed_empty', 'selection_unavailable'])
+async def test_completed_empty_search_uses_one_alternative_and_replays_closed_result(tmp_path, google_status):
+    from types import SimpleNamespace
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    calls = []
+    async def independent(query, story):
+        calls.append('opencode')
+        return {'sources': [], 'receipt': {'phase': 'completed'}}
+    async def google(query):
+        calls.append('google')
+        return SimpleNamespace(grounding_sources=[], payload={'status': google_status,
+            'discovered_sources': [{'url': 'https://example.org/a'}], 'source_selection': {'status': 'malformed'}})
+    adapter.search_articles = independent
+    service.providers = SimpleNamespace(gemini=SimpleNamespace(discover_article_urls=google))
+    story = {'id': sid, 'photo_sha256': photo}
+    first = await adapter.search_fact_articles('place history', story)
+    assert first['outcome'] == google_status
+    assert await adapter.search_fact_articles('place history', story) == first
+    assert calls == ['opencode', 'google']
+
+
+@pytest.mark.asyncio
+async def test_unknown_fact_search_keeps_original_route_without_fallback(tmp_path):
+    from types import SimpleNamespace
+    from street_story.errors import RetryableProviderError
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    async def independent(query, story):
+        raise RetryableProviderError('research_attempt_unknown')
+    async def google(query):
+        pytest.fail('UNKNOWN cannot authorize a replacement search')
+    adapter.search_articles = independent
+    service.providers = SimpleNamespace(gemini=SimpleNamespace(discover_article_urls=google))
+    with pytest.raises(RetryableProviderError, match='unknown'):
+        await adapter.search_fact_articles('place history', {'id': sid, 'photo_sha256': photo})
+
+
 @pytest.mark.parametrize('phase', ['created', 'submitted', 'abort_outcome_unknown'])
 def test_route_failure_diagnostics_never_reset_unknown_dispatch_phase(tmp_path, phase):
     import json
@@ -273,3 +314,77 @@ async def test_search_capsule_fits_after_large_visual_history_and_retains_addres
     context = json.loads(captures[0])['visual_evidence_context']
     assert context['nearby_address_hypotheses'][0]['map_address']['house_number'] == '31'
     assert len(context['last_verdict']['observations'][0]) == 400
+
+
+@pytest.mark.asyncio
+async def test_completed_receipt_records_only_novel_current_owned_evidence(tmp_path):
+    import json
+    from street_story.research_budget import ensure_budget
+    service, sid, photo = fixture(tmp_path)
+    clock = [service.store.now()]
+    service.store.now = lambda: clock[0]
+    original = ensure_budget(service, sid, explicit=True)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    with service.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE semantic_key='control-research'").fetchone())
+    story = {'id': sid, 'photo_sha256': photo, '_research_job_id': job['id'],
+             '_research_job_attempt': job['attempts']}
+    binding, _ = adapter.attempt(story, 'facts', 'evidence-unit')
+    clock[0] += 10
+    await adapter.checkpoint(binding, {'phase': 'submitted', 'result': {'partial': True}})
+    assert ensure_budget(service, sid)['last_progress_at'] == original['started_at']
+    await adapter.checkpoint(binding, {'phase': 'completed', 'result': {}})
+    assert ensure_budget(service, sid)['last_progress_at'] == original['started_at']
+    receipt = {'phase': 'completed', 'result': {'facts': ['source-supported evidence']}}
+    await adapter.checkpoint(binding, receipt)
+    saved = ensure_budget(service, sid)
+    assert saved['last_progress_at'] == clock[0]
+    assert saved['evidence_units'] == [binding['attempt_id']]
+    assert saved['deadline_at'] == original['deadline_at']
+    clock[0] += 10
+    await adapter.checkpoint(binding, receipt)
+    assert ensure_budget(service, sid) == saved
+    stale, _ = adapter.attempt(story, 'facts', 'stale-owner-unit')
+    with service.store.tx() as db:
+        db.execute('UPDATE jobs SET attempts=attempts+1 WHERE id=?', (job['id'],))
+    await adapter.checkpoint(stale, receipt)
+    assert ensure_budget(service, sid) == saved
+    with service.store.connection() as db:
+        archived = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                        (stale['attempt_id'],)).fetchone()[0])
+    assert archived == receipt
+
+
+@pytest.mark.asyncio
+async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readback(tmp_path):
+    from types import SimpleNamespace
+    from street_story.research_budget import ResearchTerminated, ensure_budget, reserve_work
+    service, sid, photo = fixture(tmp_path)
+    ensure_budget(service, sid, explicit=True)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    with service.store.connection() as db:
+        job = dict(db.execute("SELECT * FROM jobs WHERE semantic_key='control-identity_visual'").fetchone())
+    args = visual_args(None, {'id': sid, 'photo_sha256': photo,
+        '_research_job_id': job['id'], '_research_job_attempt': job['attempts']}, {}, {
+        'comparison_id': 'cap-fixture', 'references': [{'candidate_id': 'wiki:1', 'reference_id': 'new-ref'}]})
+    _, story, schema, context = args
+    reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(service.settings.identity_max_exact_pairs)])
+    adapter.visual_pair_receipts = lambda *_: {}
+    with pytest.raises(ResearchTerminated, match='identity_exact_pair_envelope_exhausted'):
+        await adapter._visual_pair_route_owned('native', story, schema, context, 'unit')
+    result = {'status': 'mismatch'}
+    completed = {'phase': 'completed', 'result': result}
+    adapter.visual_pair_receipts = lambda *_: {'vision_native': completed}
+    assert (await adapter._visual_pair_route_owned('native', story, schema, context, 'unit'))['result'] == result
+    original = {'binding': {'story_id': sid, 'visual_scope': True, 'generation': 0,
+                 'purpose': 'identity', 'control_revision': 0}, 'phase': 'unknown',
+                'thread_id': 'original-thread', 'turn_id': 'original-turn'}
+    adapter.visual_pair_receipts = lambda *_: {'vision_native': original}
+    async def readback(snapshot, owned, supplied_schema, supplied_context, binding):
+        assert binding['thread_id'] == 'original-thread' and binding['turn_id'] == 'original-turn'
+        return {'result': result, 'receipt': completed}
+    adapter.native_vision = SimpleNamespace(compare_visual=readback)
+    assert (await adapter._visual_pair_route_owned('native', story, schema, context, 'unit'))['result'] == result
+    assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == service.settings.identity_max_exact_pairs

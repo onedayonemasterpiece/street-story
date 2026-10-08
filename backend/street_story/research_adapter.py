@@ -12,7 +12,7 @@ import math
 import re
 from statistics import median
 from weakref import WeakValueDictionary
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
@@ -28,6 +28,18 @@ LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_
 def _failure_code(exc):
     value = getattr(exc, 'code', None) or str(exc)
     return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', value) else type(exc).__name__
+
+
+def _fact_route_exhausted(receipt, digest):
+    status = receipt.get('provider_status')
+    code = str((receipt.get('route_failure') or {}).get('code') or receipt.get('error_code') or '')
+    if (status in {401, 403, 429} or isinstance(status, int) and status >= 500
+            or code.startswith('RESOURCE_') or code in {'research_provider_quota', 'research_provider_credential_or_eligibility'}):
+        return False  # A quota/transport rejection is not a completed semantic unit.
+    same_input = (receipt.get('binding') or {}).get('fact_input_sha256') in {None, digest}
+    return same_input and (receipt.get('phase') == 'aborted' and receipt.get('abort_acknowledged') is True
+        or receipt.get('phase') == 'failed' and (receipt.get('provider_send_state') == 'response_closed'
+                                                or receipt.get('error_type') == 'PermanentProviderError'))
 
 
 def _closed_malformed_visual(receipt):
@@ -131,6 +143,10 @@ class ProductResearchAdapter:
             self.control = Control(Config.from_env('street-story'))
             admission = WorkloadAdmission(self.control, 'opencode:street-story-research')
         self.client = None
+        self.live_facts = None
+        if service.settings.gemini_keys:
+            from .live_research import LiveSemanticClient
+            self.live_facts = LiveSemanticClient(self)
         if service.settings.research_endpoint:
             if client is not None:
                 self.client = OpenCodeResearch(service.settings.research_endpoint,
@@ -160,12 +176,23 @@ class ProductResearchAdapter:
         with self.service.store.tx() as db:
             db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
                 (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+            if (receipt.get('phase') == 'completed' and receipt.get('result')
+                    and binding.get('story_id') and binding.get('photo_sha256')):
+                # Preserve technical receipts after supersession, but count
+                # progress only for evidence owned by this current wave.
+                try:
+                    self.guard_binding(binding, db=db)
+                except ConflictError:
+                    return
+                from .research_budget import note_evidence
+                note_evidence(self.service, db, binding['story_id'], binding['attempt_id'],
+                              generation=binding.get('generation'))
 
-    def guard_binding(self, binding):
+    def guard_binding(self, binding, *, db=None):
         if not binding or not binding.get('story_id'):
             return
         from .research_control import research_stopped
-        with self.service.store.connection() as db:
+        with self.service.store.connection() if db is None else nullcontext(db) as db:
             story = self.service._story_row(db, binding['story_id'])
             research = json.loads(story['research_json'] or '{}')
             generation = int(research.get('identity_generation') or 0)
@@ -194,6 +221,10 @@ class ProductResearchAdapter:
                 class FencedLease:
                     async def before_send(self, metadata):
                         adapter.guard_binding(owned)
+                        if owned and owned.get('story_id'):
+                            from .research_budget import require_remaining
+                            require_remaining(adapter.service, owned['story_id'],
+                                              purpose=owned.get('purpose', 'facts'))
                         return await lease.before_send(metadata)
                     async def finalize(self, metadata, state):
                         return await lease.finalize(metadata, state)
@@ -210,6 +241,8 @@ class ProductResearchAdapter:
             await asyncio.gather(*pending, return_exceptions=True)
         if self.native_vision is not None:
             await self.native_vision.close()
+        if getattr(self, 'live_facts', None) is not None:
+            await self.live_facts.close()
 
     def retain_search_observer(self, task):
         observers = getattr(self, '_search_observers', None)
@@ -250,7 +283,8 @@ class ProductResearchAdapter:
             if rows and old.get('phase') == 'completed':
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
-                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport', 'image_preparation') if k in old}}
+                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission',
+                 'image_transport', 'image_preparation', 'frozen_prompt', 'frozen_schema') if k in old}}
             if rows and old.get('phase') == 'created':
                 resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                                job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
@@ -435,6 +469,7 @@ class ProductResearchAdapter:
         return receipt.get('discovered_sources') or receipt.get('sources') or []
 
     async def search_articles(self, query, story):
+        from .identity_source_selection import regional_source_profile
         unit = canonical([query,story.get('_research_run_id')])
         history = self.search_history(story)
         capsule = canonical({'query': query, 'purpose': 'facts' if '_fact_research_control_revision' in story else 'identity',
@@ -442,10 +477,9 @@ class ProductResearchAdapter:
                                  'Find modern photos of the present-day physical object and its address. '
                                  'A historic building does not call for historic photographs. '
                                  'Do not use pre-war photo archives as visual references; historic material belongs to fact research.'),
-                             'regional_search_hint': 'Для исторических зданий Калининградской области '
-                                 'попробуй дополнительный запрос «адрес или название prussia39». '
-                                 'Адрес должен следовать из доступных данных. Prussia39 может быть '
-                                 'источником статьи и иногда фото; не исключай остальные источники.',
+                             'source_profile': regional_source_profile(story),
+                             'address_query_contract': 'Preserve the observed city, street type and full house number/range. '
+                                 'For facts prefer substantive articles about the confirmed subject; for identity prefer modern exterior views.',
                              'research_history': history,
                              'visual_evidence_context': ({} if '_fact_research_control_revision' in story
                                  else self.identity_search_context(story))})
@@ -565,28 +599,117 @@ class ProductResearchAdapter:
         return history
 
     async def search_fact_articles(self, query, story):
+        # Persist the fallback too: an empty successful search is a closed
+        # query/route, not permission to pay for it again on the next wakeup.
+        key = 'fact-search-v2:' + hashlib.sha256(canonical([
+            story['id'], story.get('photo_sha256'), story.get('_identity_generation', 0),
+            story.get('_research_run_id'), query]).encode()).hexdigest()
+        job_id = story.get('_research_job_id')
+        saved = self.service.store.checkpoint_get(job_id, key) if job_id else self.service.store.cache_get(key)
+        if saved:
+            return saved
+        independent = None
         try:
-            return await self.search_articles(query,story)
+            independent = await self.search_articles(query,story)
         except RetryableProviderError as exc:
-            direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
-            if not callable(direct):
-                raise
+            if 'unknown' in _failure_code(exc).lower() or 'binding_changed' in _failure_code(exc):
+                raise  # Observe the original frozen operation before considering an alternative.
+            independent_error = exc
+        else:
+            if independent.get('sources'):
+                return {**independent, 'outcome': 'completed'}
+            independent_error = None
+        direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
+        if not callable(direct):
+            if independent_error:
+                raise independent_error
+            result = {**independent, 'outcome': 'completed_empty'}
+        else:
             try:
+                from .research_budget import require_remaining
+                require_remaining(self.service, story['id'], purpose='facts')
                 found = await direct(query)
             except RetryableProviderError as fallback:
-                codes = {'opencode': _failure_code(exc), 'google': _failure_code(fallback)}
-                retry = [error.retry_at for error in (exc, fallback) if error.retry_at is not None]
+                codes = {'opencode': _failure_code(independent_error) if independent_error else 'completed_empty',
+                         'google': _failure_code(fallback)}
+                retry = [error.retry_at for error in (independent_error, fallback)
+                         if error is not None and error.retry_at is not None]
                 LOG.warning('street_story_fact_search_waiting story_id=%s routes=%s',
                             story['id'], canonical(codes))
                 failure = RetryableProviderError('all_fact_search_routes_unavailable:' + ':'.join(codes.values()),
                     retry_at=min(retry) if retry else self.service.store.now()+30)
                 failure.route_failures = codes
                 raise failure from fallback
-            return {'sources':found.grounding_sources,'receipt':{
-                'provider':'gemini_google_search','backend':'google_search','independent_failure':_failure_code(exc)}}
+            result = {'sources': found.grounding_sources, 'outcome': 'completed' if found.grounding_sources else 'completed_empty',
+                'receipt': {'provider': 'gemini_google_search', 'backend': 'google_search',
+                    'independent_failure': _failure_code(independent_error) if independent_error else 'completed_empty',
+                    'outcome': 'completed' if found.grounding_sources else 'completed_empty'}}
+            if (getattr(found, 'payload', {}) or {}).get('status') == 'selection_unavailable':
+                result.update(outcome='selection_unavailable', discovered_sources=found.payload.get('discovered_sources', []),
+                              source_selection=found.payload.get('source_selection', {}))
+                result['receipt']['outcome'] = 'selection_unavailable'
+        if job_id:
+            self.service.store.checkpoint_put(job_id, key, result)
+        else:
+            self.service.store.cache_put(key, result, 14*86400)
+        LOG.info('street_story_fact_search_closed story_id=%s outcome=%s sources=%s',
+                 story['id'], result['outcome'], len(result.get('sources') or []))
+        return result
+
+    async def plan_identity_search(self, story, prompt, schema):
+        """One qualified tool-free planning operation on the existing text pool."""
+        role = 'identity_search_plan'
+        unit = canonical(['identity-search-plan-v1', prompt, schema])
+        routes = [route for route in self._fact_pool_routes() if route['qualified'] and route.get('endpoint')]
+        prior = {}
+        with self.service.store.connection() as db:
+            for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                                  'ORDER BY created_at DESC,rowid DESC', (story['id'], role)):
+                receipt = json.loads(row[0])
+                binding = receipt.get('binding') or {}
+                if binding.get('fact_unit_id') == unit:
+                    prior.setdefault((receipt.get('provider_id'), receipt.get('model_id')), receipt)
+        for receipt in prior.values():
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        unknown = next((receipt for receipt in prior.values() if self._fact_pool_unknown(receipt)), None)
+        if unknown:
+            routes = [route for route in routes if (route['provider_id'], route['model_id']) ==
+                      (unknown.get('provider_id'), unknown.get('model_id'))
+                      and (not (unknown.get('isolation') or {}).get('directory') or
+                           (unknown.get('isolation') or {})['directory'] == getattr(route['client'], 'directory', None))]
+            if not routes or not unknown.get('session_id') or not unknown.get('message_id'):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+        else:
+            routes = [route for route in routes if route['available']]
+        waits = []
+        for route in routes:
+            receipt = prior.get((route['provider_id'], route['model_id'])) or {}
+            if receipt.get('phase') in {'failed', 'aborted'} and not self._fact_pool_unknown(receipt):
+                continue
+            owned = {**story, '_fact_pool_unit_id': unit,
+                     '_fact_pool_input_sha256': hashlib.sha256(unit.encode()).hexdigest()}
+            route_unit = canonical([unit, route['provider_id'], route['model_id'], route['endpoint']])
+            client = route['client']
+            try:
+                return await self.run(owned, role, route_unit,
+                    lambda binding: client._run('facts', prompt, binding, schema), client=client)
+            except RetryableProviderError as exc:
+                with self.service.store.connection() as db:
+                    rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                                      'ORDER BY created_at DESC,rowid DESC', (story['id'], role))
+                    current = next((value for row in rows if (value := json.loads(row[0])).get('binding', {}).get('fact_unit_id') == unit), {})
+                if unknown or self._fact_pool_unknown(current):
+                    raise
+                if exc.retry_at is not None:
+                    waits.append(exc.retry_at)
+        raise RetryableProviderError('identity_search_plan_unavailable',
+                                     retry_at=min(waits) if waits else self.service.store.now()+30)
 
     @property
     def facts_available(self):
+        if getattr(self, 'live_facts', None) is not None:
+            return True
         proof = self.service.store.cache_get('research-text-verification-v1') or {}
         if isinstance(proof.get('extractors'), list):
             return any(route['qualified'] for route in self._fact_pool_routes())
@@ -616,7 +739,11 @@ class ProductResearchAdapter:
         Qualification belongs to the existing verification receipt, not catalog.
         """
         primary = getattr(self, 'client', None)
-        routes = [{'role': 'facts_gigachat', 'provider_id': 'gigachat',
+        live = getattr(self, 'live_facts', None)
+        routes = ([{'role': 'facts_live', 'provider_id': live.provider_id, 'model_id': live.model_id,
+                    'endpoint': live.endpoint, 'client': live, 'qualification_origin': 'existing_live_tool_contract'}]
+                  if live is not None else [])
+        routes += [{'role': 'facts_gigachat', 'provider_id': 'gigachat',
                    'model_id': 'GigaChat-2', 'client': getattr(self, 'giga', None)}]
         if primary is not None:
             routes.append({'role': 'facts', 'provider_id': getattr(primary, 'provider_id', 'opencode'),
@@ -643,6 +770,8 @@ class ProductResearchAdapter:
                     'planned_modality_verified', 'known_claim_reuse_verified'))
                 and (not entry.get('directory') or entry['directory'] == getattr(route['client'], 'directory', None))
                 for entry in entries)
+            if route['role'] == 'facts_live':
+                route['qualified'] = True  # The ordinary Live semantic tool contract, not a fabricated helper proof.
             route['available'] = route['qualified']
             if route.get('endpoint') and route['client'] is not None:
                 client = route['client']
@@ -666,6 +795,9 @@ class ProductResearchAdapter:
         """
         if not routes:
             return routes
+        live = [route for route in routes if route['role'] == 'facts_live']
+        if live:
+            return live + self.order_fact_routes([route for route in routes if route['role'] != 'facts_live'], ordinal, review=review)
         offset = ordinal % len(routes)
         rotated = routes[offset:] + routes[:offset]
         now = self.service.store.now()
@@ -715,13 +847,13 @@ class ProductResearchAdapter:
         return [route for route, _, _, _ in ranked]
 
     def _fact_pool_receipts(self, story, unit):
-        roles = ('facts_gigachat', 'facts', 'facts_opencode_nemotron')
+        roles = ('facts_live', 'facts_gigachat', 'facts', 'facts_opencode_nemotron')
         logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
             story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
         latest = {}
         with self.service.store.connection() as db:
             rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
-                              "WHERE story_id=? AND role IN ('facts_gigachat','facts','facts_opencode_nemotron') "
+                              "WHERE story_id=? AND role IN ('facts_live','facts_gigachat','facts','facts_opencode_nemotron') "
                               "ORDER BY created_at DESC,rowid DESC", (story['id'],))
             for row in rows:
                 receipt = json.loads(row['receipt_json'] or '{}')
@@ -784,7 +916,7 @@ class ProductResearchAdapter:
                 raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
             return await self._extract_fact_route(route, fact_page_capsule(page, context), page,
                 {**story, '_fact_pool_unit_id': unit}, context)
-        if not isinstance(proof.get('extractors'), list):
+        if not isinstance(proof.get('extractors'), list) and getattr(self, 'live_facts', None) is None:
             # Preserve legacy single-client installations until explicit rollout.
             return await self._extract_giga_page(page, story, context)
         for receipt in prior.values():
@@ -794,6 +926,9 @@ class ProductResearchAdapter:
         digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
         owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest}
         all_routes = self._fact_pool_routes()
+        qualified = [route for route in all_routes if route['qualified']]
+        if qualified and all(_fact_route_exhausted(prior.get(route['role']) or {}, digest) for route in qualified):
+            raise PermanentProviderError('research_fact_routes_exhausted')
         routes = [route for route in all_routes if route['available']]
         if not routes:
             due = [route['retry_at'] for route in all_routes if route['qualified']
@@ -836,6 +971,12 @@ class ProductResearchAdapter:
                 failures.append(_failure_code(exc))
                 LOG.warning('street_story_fact_pool_fallback story_id=%s unit_id=%s route=%s code=%s',
                             story['id'], unit, route['role'], failures[-1])
+        latest = self._fact_pool_receipts(story, unit)
+        if qualified and all(_fact_route_exhausted(latest.get(route['role']) or {}, digest) for route in qualified):
+            failure = PermanentProviderError('research_fact_routes_exhausted')
+            failure.route_failures = failures
+            LOG.info('street_story_fact_unit_exhausted story_id=%s unit_id=%s', story['id'], unit)
+            raise failure
         failure = RetryableProviderError('research_fact_pool_waiting',
                                      retry_at=min(deadlines) if deadlines else self.service.store.now()+300)
         failure.route_failures = failures
@@ -1109,6 +1250,10 @@ class ProductResearchAdapter:
                                          retry_at=self.service.store.now()+300)
         if len(direct_visual_parts(story, json.loads(context) if isinstance(context, str) else context)) != 2:
             raise PermanentProviderError('research_visual_pair_route_invalid')
+        if story.get('_research_job_id'):
+            from .research_budget import reserve_work
+            reserve_work(self.service, story['id'], 'exact_pairs',
+                         [item['reference_id'] for item in story['_visual_reference_mapping']])
         base_role = {'google': 'vision_google_pair', 'opencode': 'vision', 'native': 'vision_native'}[route]
         prior = receipts.get(base_role)
         # Closed/admission-refused units go only to the existing Native reserve;

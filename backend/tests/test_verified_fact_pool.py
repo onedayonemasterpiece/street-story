@@ -4,7 +4,7 @@ from contextvars import ContextVar
 
 import pytest
 
-from street_story.errors import MalformedProviderResponse, RetryableProviderError
+from street_story.errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from street_story.opencode_research import ResearchUnavailable
 from street_story.research_adapter import ProductResearchAdapter
 from test_gigachat_dispatch_checkpoint import PAGE
@@ -187,7 +187,7 @@ async def test_all_closed_routes_never_repeat_unchanged_chunk(tmp_path):
     adapter, extra, story, _ = setup(tmp_path)
     adapter.giga.mode = adapter.client.mode = extra.mode = 'malformed'
     for _ in range(2):
-        with pytest.raises(RetryableProviderError, match='pool_waiting'):
+        with pytest.raises(PermanentProviderError, match='routes_exhausted'):
             await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Read'})
     assert len(adapter.giga.calls) == len(adapter.client.calls) == len(extra.calls) == 1
 
@@ -225,3 +225,39 @@ async def test_duplicate_unit_lock_does_not_serialize_other_chunks(tmp_path):
     release.set()
     await asyncio.gather(first, duplicate)
     assert len(adapter.client.calls) == len(extra.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fallback', [False, True])
+async def test_live_semantic_contract_runs_first_and_helpers_only_follow_measured_blocker(tmp_path, fallback):
+    adapter, extra, story, _ = setup(tmp_path)
+    live = FactClient('gemini-3.8-live', adapter)
+    live.endpoint, live.provider_id = 'live-interaction:street-story', 'google-live'
+    live.mode = 'quota' if fallback else 'completed'
+    adapter.live_facts = live
+    answer = await adapter.extract_fact_page(page(5), story, {'coverage_goal': 'Read'})
+    assert len(live.calls) == 1
+    if fallback:
+        assert answer['receipt']['model_id'] != live.model_id
+        assert len(adapter.giga.calls) + len(adapter.client.calls) + len(extra.calls) == 1
+    else:
+        assert answer['receipt']['model_id'] == live.model_id
+        assert not adapter.giga.calls and not adapter.client.calls and not extra.calls
+    assert adapter.facts_available
+
+
+@pytest.mark.asyncio
+async def test_unknown_live_unit_retains_original_operation_without_helper_send(tmp_path):
+    adapter, extra, story, _ = setup(tmp_path)
+    live = FactClient('gemini-3.8-live', adapter)
+    live.endpoint, live.provider_id = 'live-interaction:street-story', 'google-live'
+    live.mode = 'submitted'
+    adapter.live_facts = live
+    with pytest.raises(RetryableProviderError, match='unit_outcome_unknown'):
+        await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Read'})
+    original = live.calls[0]
+    live.mode = 'completed'
+    await adapter.extract_fact_page(page(0), story, {'coverage_goal': 'Read'})
+    assert live.calls[1]['attempt_id'] == original['attempt_id']
+    assert live.calls[1]['session_id'] == 'ses_existing' and live.calls[1]['message_id'] == 'msg_existing'
+    assert not adapter.giga.calls and not adapter.client.calls and not extra.calls

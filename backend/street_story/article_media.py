@@ -580,9 +580,35 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
         # Existing four-reader prefetch is enough for a useful first portion.
         # Unstarted/cancelled URLs remain deferred in the caller's source history.
         batch = list(unique.values())[:4 if first_ready else MAX_PAGES]
+        if hasattr(service, 'settings'):
+            from .research_budget import reserve_work, ResearchTerminated
+            admitted, exhausted = [], None
+            for source in batch:
+                host = (urlsplit(source['url']).hostname or '')
+                source_id = (str(source.get('candidate_id') or '') if host.endswith('.wikipedia.org')
+                    else 'web:' + hashlib.sha256(source['url'].encode()).hexdigest()[:16])
+                if host.endswith('wikimedia.org') or source_id in excluded:
+                    admitted.append(source)  # Existing exclusion receipt, no page acquisition.
+                    continue
+                try:
+                    reserve_work(service, story['id'], 'pages', [source['url']])
+                    admitted.append(source)
+                except ResearchTerminated as exc:
+                    if exc.outcome != 'search_exhausted':
+                        raise
+                    exhausted = exc
+                    if receipts is not None:
+                        receipts.append({'url': source['url'], 'status': 'deferred',
+                            'reason': exc.reason})
+            batch = admitted
+            if exhausted is not None and not batch:
+                raise exhausted
         if receipts is not None:
+            batch_urls = {source['url'] for source in batch}
             receipts.extend({'url': str(source.get('url') or ''), 'status': 'deferred'}
-                            for source in list(unique.values())[len(batch):])
+                            for source in unique.values() if source['url'] not in batch_urls
+                            and not any(receipt.get('url') == source['url'] and receipt.get('status') == 'deferred'
+                                        for receipt in receipts))
         if not first_ready:
             values = await asyncio.gather(*(read(source) for source in batch))
             candidates = [value for value in values if value]

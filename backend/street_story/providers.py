@@ -39,7 +39,7 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
-    LOOKUP_POLICY_VERSION = 7
+    LOOKUP_POLICY_VERSION = 8
 
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
@@ -107,7 +107,7 @@ class OSMClient:
                 if not isinstance(item, dict) or not isinstance(item.get('tags'), dict):
                     continue
                 tags = item['tags']
-                if not any(tags.get(k) for k in ('building', 'name', 'addr:housenumber')):
+                if not any(tags.get(k) for k in ('building', 'name', 'addr:housenumber', 'entrance', 'amenity', 'shop', 'office')):
                     continue
                 entry = {k: item[k] for k in ('type', 'id', 'tags') if k in item}
                 if item.get('type') == 'node':
@@ -124,6 +124,12 @@ class OSMClient:
                     if not refs or any(n not in nodes for n in refs):
                         continue
                     positions = [nodes[n] for n in refs]
+                    if item.get('type') == 'way':
+                        entry['geometry'] = [{'lat': node['lat'], 'lon': node['lon']} for node in positions]
+                    elif item.get('type') == 'relation':
+                        entry['members'] = [{**member, 'geometry': [
+                            {'lat': nodes[node_id]['lat'], 'lon': nodes[node_id]['lon']}
+                            for node_id in ways[member['ref']].get('nodes', [])]} for member in members]
                     entry['center'] = {'lat': (min(x['lat'] for x in positions)+max(x['lat'] for x in positions))/2,
                                        'lon': (min(x['lon'] for x in positions)+max(x['lon'] for x in positions))/2}
                     if (item.get('type') == 'way' and tags.get('building') not in {None, '', 'no'}
@@ -184,7 +190,7 @@ class OSMClient:
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[barrier~"^(city_wall|gate)$"];
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[bridge][name];
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[leisure~"^(park|garden)$"][name];
-            );out center tags 240;"""
+            );out geom;"""
             # Bound the database's spatial scan before filtering tags. The
             # spherical distance check below retains the original circular scope.
             dlat = math.degrees(close_radius_m / 6_371_000) * 1.001
@@ -196,7 +202,7 @@ class OSMClient:
                 nwr({nearby_scope})[building];
                 nwr({nearby_scope})[name];
                 nwr({nearby_scope})["addr:housenumber"];
-            );out center tags 180;"""
+            );out geom;"""
 
             responses = {}
             preferred = None
@@ -234,6 +240,12 @@ class OSMClient:
                 ):
                     return None
                 center = raw.get("center") if isinstance(raw.get("center"), dict) else {}
+                from .identity_map_context import osm_geometry_context, geometry_camera_context
+                geometry = osm_geometry_context(raw)
+                positions = [point for line in geometry.get('lines', []) for point in line]
+                if not center and positions:
+                    center = {'lat': (min(p['lat'] for p in positions) + max(p['lat'] for p in positions)) / 2,
+                              'lon': (min(p['lon'] for p in positions) + max(p['lon'] for p in positions)) / 2}
                 try:
                     item_lat = float(raw.get("lat", center.get("lat")))
                     item_lon = float(raw.get("lon", center.get("lon")))
@@ -271,27 +283,33 @@ class OSMClient:
                     salience_rank = 2
                 else:
                     salience_rank = 3
+                spatial = geometry_camera_context(raw, lat, lon)
                 return {
                     **raw,
+                    **({'center': center} if center else {}),
+                    "representative_distance_m": round(distance_m, 1),
                     "distance_m": round(distance_m, 1),
+                    **spatial,
                     "selection_bucket": bucket,
                     "salience_rank": salience_rank,
                 }
 
-            landmarks = [
+            observed_landmarks = [
                 item for item in (
                     normalized(raw, "landmark")
-                    for raw in responses.get("landmark", {}).get("elements", [])[:240]
+                    for raw in responses.get("landmark", {}).get("elements", [])
                 )
-                if item is not None and float(item.get("distance_m", radius_m + 1)) <= radius_m
+                if item is not None
             ]
-            nearby = [
+            observed_nearby = [
                 item for item in (
                     normalized(raw, "nearby")
-                    for raw in responses.get("nearby", {}).get("elements", [])[:180]
+                    for raw in responses.get("nearby", {}).get("elements", [])
                 )
-                if item is not None and float(item.get("distance_m", close_radius_m + 1)) <= close_radius_m
+                if item is not None
             ]
+            landmarks = [item for item in observed_landmarks if float(item.get('distance_m', radius_m + 1)) <= radius_m]
+            nearby = [item for item in observed_nearby if float(item.get('distance_m', close_radius_m + 1)) <= close_radius_m]
 
             def item_key(item: dict[str, Any]) -> tuple[str, str]:
                 return (str(item.get("type") or item.get("osm_type") or ""), str(item.get("id") or item.get("osm_id") or ""))
@@ -324,6 +342,9 @@ class OSMClient:
 
             nearby.sort(key=lambda item: float(item.get("distance_m", close_radius_m + 1)))
             add(nearby, 20)
+            observed = {item_key(item): item for item in [*observed_landmarks, *observed_nearby] if all(item_key(item))}
+            observed_pool = sorted(observed.values(), key=lambda item: (
+                float(item.get('distance_m', radius_m + 1)), item_key(item)))
 
             # Reverse geocoding returns an object's representative position,
             # not necessarily the camera location and never a confirmed identity.
@@ -338,6 +359,7 @@ class OSMClient:
             result = {
                 "reverse": {**reverse, "distance_m": reverse_distance, "selection_bucket": "reverse", "salience_rank": -1},
                 "nearby": selected[:68],
+                "observed_pool": observed_pool,
                 "radius_m": radius_m,
                 "close_radius_m": close_radius_m,
                 "lookup_policy_version": self.LOOKUP_POLICY_VERSION,
@@ -908,6 +930,9 @@ class GeminiClient:
         from google.genai import types
         config = config or types.GenerateContentConfig()
         output_limit = 1024 if operation == 'article_url_discovery' else 8192
+        requested_output = getattr(config, 'max_output_tokens', None)
+        if isinstance(requested_output, int) and not isinstance(requested_output, bool) and 0 < requested_output <= 8192:
+            output_limit = requested_output
         config.max_output_tokens = output_limit
         # Same reservation contract as the existing GoogleAI gateway: estimated
         # input + bounded output + safety margin, reconciled with actual usage.
@@ -3253,11 +3278,13 @@ class GeminiClient:
         query = str(query or '').strip()[:1000]
         if not query:
             raise ValueError('web search query is required')
-        prompt = ('Find articles and photo galleries relevant to this object, including different views. '
-                  'Use Google Search. Return a short list of up to 12 page titles; do not extract facts. Query: ' + query)
-        if purpose == 'identity':
-            prompt = ('Use Google Search for this literal query. Choose concrete pages that may supply modern '
-                'external views of this physical object/address; summaries and titles are hypotheses, not identity. '
+        intent = ('modern external views of this physical object/address' if purpose == 'identity' else
+            'substantive source-backed information about the confirmed physical object: construction, '
+            'design, documented changes, repairs and use. Prefer concrete object records, dated reporting '
+            'and official building/operator pages. Galleries or geographic navigation alone are insufficient; '
+            'distinguish the building from its street, ensemble and occupants')
+        prompt = ('Use Google Search for this literal query. Choose concrete pages that may supply '
+                + intent + '; summaries and titles remain search observations. '
                 'Return JSON {\"summary\":\"brief\",\"selected_sources\":[{\"url\":\"exact tool-observed HTTPS URL\",'
                 '\"reason\":\"why this page is useful\"}]}. Keep useful reading order. '
                 'Choose only URLs actually returned by this search. An empty selection is valid; '
@@ -3301,15 +3328,15 @@ class GeminiClient:
                 observed = list(sources.values())
                 payload = {'search_provider': 'gemini_google_search',
                     'search_model': _model, 'query': query, 'status': 'completed'}
-                chosen = observed[:20]
-                if purpose == 'identity':
-                    from .identity_source_selection import response_selection
-                    chosen, selection = response_selection(observed, response.text)
-                    payload.update(discovered_sources=observed, source_selection=selection)
-                    import logging
-                    logging.getLogger('uvicorn.error.street_story.gemini').info(
-                        'article_source_selection model=%s status=%s discovered=%s selected=%s unobserved=%s',
-                        _model, selection['status'], len(observed), len(chosen), selection.get('unobserved_count', 0))
+                from .identity_source_selection import response_selection
+                chosen, selection = response_selection(observed, getattr(response, 'text', ''))
+                payload.update(discovered_sources=observed, source_selection=selection,
+                    purpose=purpose, status=('selection_unavailable' if selection['status'] != 'model_selected'
+                        else 'completed' if chosen else 'completed_empty'))
+                import logging
+                logging.getLogger('uvicorn.error.street_story.gemini').info(
+                    'article_source_selection model=%s purpose=%s status=%s discovered=%s selected=%s unobserved=%s',
+                    _model, purpose, selection['status'], len(observed), len(chosen), selection.get('unobserved_count', 0))
                 return GroundedResearch(payload=payload, grounding_sources=chosen)
             try:
                 return await executor.execute('web_search', call)

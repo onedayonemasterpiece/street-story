@@ -24,7 +24,7 @@ def test_closed_prompt_preserves_semantics_without_foreground_tool_instructions(
 
 
 @pytest.mark.asyncio
-async def test_old_unknown_scope_not_resent_after_contract_change_but_siblings_commit(tmp_path):
+async def test_old_unknown_scope_not_resent_after_contract_change_and_conflicting_ledger_waits(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=6)
     session = SimpleNamespace(id='legacy-review', resource_id=job['story_id'], actor=None, closed=False, state={})
     with svc.store.connection() as db:
@@ -34,13 +34,13 @@ async def test_old_unknown_scope_not_resent_after_contract_change_but_siblings_c
     engine = ControlledReview(harness)
     old = {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': 'old-contract-route'}
     engine._put(job, 'old-verifier-contract-unit', old)
-    assert await engine.run(job, RUN, 0) == 1
-    assert ControlledReview.calls == 1
+    assert await engine.run(job, RUN, 0) == 0
+    assert ControlledReview.calls == 0
     assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:old-verifier-contract-unit') == old
     with svc.store.connection() as db:
         eligible = {row[0] for row in db.execute("SELECT assertion_id FROM fact_assertions WHERE eligibility='eligible'")}
-        assert eligible == set(pending[3:])
-        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 3
+        assert eligible == set()
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio

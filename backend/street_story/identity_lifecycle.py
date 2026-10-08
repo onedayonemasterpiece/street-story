@@ -78,6 +78,12 @@ def visual_match(result: dict[str, Any], candidates: list[dict[str, Any]],
 
 
 class IdentityLifecycleMixin:
+    @staticmethod
+    def _identity_attempt_finished(research, photo_sha256, generation):
+        terminal = research.get('automatic_research_outcome') or {}
+        return bool(terminal.get('outcome') and terminal.get('photo_sha256') == photo_sha256
+                    and terminal.get('identity_generation') == generation)
+
     def _recover_transient_identity(self, db) -> int:
         """Unseal old uncertain attempts only with retained outage evidence.
 
@@ -91,6 +97,8 @@ class IdentityLifecycleMixin:
         for row in db.execute("SELECT * FROM stories WHERE state='needs_review' AND error_code='visual_identity_uncertain'").fetchall():
             research = json.loads(row['research_json'] or '{}')
             generation = int(research.get('identity_generation') or 0)
+            if self._identity_attempt_finished(research, row['photo_sha256'], generation):
+                continue
             if (research.get('visual_identity') or {}).get('status') != 'uncertain' or research_stopped(
                     research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation):
                 continue
@@ -130,6 +138,8 @@ class IdentityLifecycleMixin:
             research = json.loads(row['research_json'] or '{}')
             identity = research.get('visual_identity') or {}
             generation = int(research.get('identity_generation') or 0)
+            if self._identity_attempt_finished(research, row['photo_sha256'], generation):
+                return self._story_repr(db, row)
             if identity.get('status') in ACCEPTED or row['state'] in PROTECTED:
                 return self._story_repr(db, row)
             # A finished uncertain result is not a reason to resubmit on every
@@ -204,7 +214,7 @@ class IdentityLifecycleMixin:
                 and abs(float(lon) - metadata['longitude']) <= 0.00001)))
             record_identity_event(self, story_id, 'identity_camera_metadata', {
                 'generation': generation, 'position_verified': position_verified, **metadata_summary(hints)})
-            osm, wikipedia, candidates = {}, [], []
+            osm, wikipedia, candidates, observed_candidates = {}, [], [], []
             source_waits = []
             if not valid:
                 raw = {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
@@ -233,6 +243,7 @@ class IdentityLifecycleMixin:
                         source_waits.append(RetryableProviderError('identity_osm_partial'))
                     record_identity_event(self, story_id, 'identity_osm', {'generation': generation,
                         'candidate_pool_counts': osm.get('candidate_pool_counts', {}), 'retained_count': len(osm.get('nearby') or []), 'available': bool(osm),
+                        'observed_count': len(osm.get('observed_pool', osm.get('nearby', []))),
                         'partial': bool(osm.get('partial')), 'unavailable_buckets': osm.get('unavailable_buckets', []),
                         'duration_ms': round((time.monotonic() - started) * 1000)})
                     wikipedia = prior.get('wikipedia')
@@ -253,11 +264,17 @@ class IdentityLifecycleMixin:
                     record_identity_event(self, story_id, 'identity_wikipedia', {'generation': generation, 'count': len(wikipedia)})
                     excluded = set(prior.get('identity_rejected_ids') or [])
                     candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded)
+                    observed_candidates = self._candidate_catalog(osm, wikipedia, excluded_ids=excluded, observed_pool=True)
+                    observed_candidates = annotate_camera_alignment(observed_candidates,
+                        {**osm, 'nearby': osm.get('observed_pool', osm.get('nearby', []))}, wikipedia, lat, lon, hints,
+                                                                    position_verified=position_verified)
+                    story['_identity_observed_candidates'] = observed_candidates
                     candidates.sort(key=lambda item: (distance(item), str(item.get('candidate_id'))))
                     candidates = annotate_camera_alignment(candidates, osm, wikipedia, lat, lon, hints,
                                                            position_verified=position_verified)
                     record_identity_event(self, story_id, 'identity_shortlist', {'generation': generation,
                         'candidate_count': len(candidates), 'candidate_ids': [item.get('candidate_id') for item in candidates],
+                        'observed_candidate_count': len(observed_candidates),
                         'distances_m': [round(distance(item), 1) if math.isfinite(distance(item)) else None for item in candidates],
                         'excluded_count': len(excluded)})
                     raw = await self._identify_photo(story, transcript, candidates) if candidates else {
@@ -284,6 +301,8 @@ class IdentityLifecycleMixin:
                     if job_id and not db.execute("SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?", (job_id, job_attempt)).fetchone():
                         return self._story_repr(db, current)
                     latest['visual_identity'] = {'status': 'uncertain', 'candidates': candidates,
+                        'observed_candidates': observed_candidates, 'camera_hints': hints,
+                        'camera_position_verified': position_verified,
                         'generation': generation, 'photo_sha256': story['photo_sha256']}
                     latest.update(osm=osm, wikipedia=wikipedia, photo_camera_hints=binding)
                     db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
@@ -360,7 +379,7 @@ class IdentityLifecycleMixin:
             if not matched and (raw.get('_references_rate_limited') or raw.get('_references_unavailable_ids')):
                 from .errors import RetryableProviderError
                 source_waits.append(RetryableProviderError('identity_references_waiting'))
-            waiting = bool(source_waits) and not matched
+            waiting = bool(source_waits) and not matched and not (error == 'identity_location_missing' and not candidates)
             identity = {'status': 'match' if matched else 'uncertain',
                 'candidate_id': selected['candidate_id'] if selected else None,
                 'candidate_name': selected['name'] if selected else None,
@@ -375,7 +394,9 @@ class IdentityLifecycleMixin:
                 'photo_sha256': story['photo_sha256'], 'generation': generation, 'policy': POLICY,
                 'confidence': confidence(raw), 'observations': [str(x)[:300] for x in raw.get('observations', [])[:6]],
                 'alternative_candidate_ids': [x for x in raw.get('alternative_candidate_ids', [])[:6] if x in catalog],
-                'candidates': candidates, 'visual_reference_verified': matched, 'resolved_at': self.store.now()}
+                'candidates': candidates, 'observed_candidates': observed_candidates, 'camera_hints': hints,
+                'camera_position_verified': position_verified,
+                'visual_reference_verified': matched, 'resolved_at': self.store.now()}
             with self.store.tx() as db:
                 current = self._story_row(db, story_id)
                 latest = json.loads(current['research_json'] or '{}')

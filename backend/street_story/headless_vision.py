@@ -230,11 +230,23 @@ class HeadlessVisionProvider:
                     for part in resolved_parts:
                         contents.extend([part['label'], types.Part.from_bytes(data=part['bytes'], mime_type=part['mime_type'])])
                     contents.append(prompt)
+                    def before_send():
+                        if story.get('_research_job_id') and verification_probe is not True:
+                            from .research_budget import require_remaining
+                            require_remaining(self.service, story['id'], 'identity')
+                            provider = getattr(self.service.providers, 'research', None)
+                            guard = getattr(provider, 'guard_binding', None)
+                            if callable(guard):
+                                guard({'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                                    'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                                    'control_revision': story.get('_identity_research_control_revision', 0),
+                                    'job_id': story['_research_job_id'], 'job_attempt': story.get('_research_job_attempt')})
+                        attempt.update(provider_send_state='possibly_sent')
                     response = await self.client._generate(key, timeout,
                         contents,
                         types.GenerateContentConfig(response_mime_type='application/json', response_json_schema=contract),
                         operation='grounded_research', model=_model, quota=_quota,
-                        before_provider_send=lambda: attempt.update(provider_send_state='possibly_sent'))
+                        before_provider_send=before_send)
                     attempt.update(usage=_usage(response), provider_request_id=getattr(response, 'response_id', None),
                                    provider_send_state='response_closed')
                     result = json.loads(response.text or '')

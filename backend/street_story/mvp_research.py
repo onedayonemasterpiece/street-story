@@ -184,6 +184,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "request_revision": request_revision,
                 "identity_generation": revision_basis["identity_generation"],
                 "photo_sha256": story["photo_sha256"],
+                "owner_research_wave": True,
             }
             if not ordered_ids:
                 request_payload["live_transcript"] = request_goal or "Найди пригодные новые факты о подтверждённом объекте."
@@ -217,19 +218,15 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 db.execute("UPDATE stories SET research_json=?,updated_at=? WHERE id=?",
                            (canonical(research), self.store.now(), story_id))
                 return self._story_repr(db, self._story_row(db, story_id))
-            self._enqueue_job(
-                db,
-                story_id,
-                "research",
-                f"research-explicit:{input_revision}",
-                request_payload,
-            )
             now = self.store.now()
             db.execute(
                 "UPDATE stories SET state='researching',research_json=?,revision=revision+1,error_code=NULL,error_message=NULL,updated_at=? "
                 "WHERE id=?",
                 (canonical(research), now, story_id),
             )
+            from .research_budget import ensure_budget
+            ensure_budget(self, story_id, db=db, explicit=True)
+            self._enqueue_job(db, story_id, "research", f"research-explicit:{input_revision}", request_payload)
             return self._story_repr(db, self._story_row(db, story_id))
 
     def _schedule_joined_fact_request(self, db, story_id: str) -> bool:
@@ -243,19 +240,30 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         pending = research.pop("pending_fact_request", None)
         if not isinstance(pending, dict):
             return False
+        if research.get('automatic_research_outcome'):
+            # Recovery cannot grant another envelope to a previously queued
+            # request. A fresh explicit owner action must reset the outcome.
+            if pending.get('owner_research_wave'):
+                research['pending_fact_request'] = pending
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
+            return False
         queued = pending.pop("queued_requests", [])
         current_generation = int(research.get("identity_generation") or 0)
         valid = (int(pending.get("identity_generation") or 0) == current_generation
                  and pending.get("photo_sha256") == story["photo_sha256"]
                  and not research.get("fact_research_cancelled"))
         if valid:
-            self._enqueue_job(db, story_id, "research", f"research-explicit:{pending['input_revision']}", pending)
             if queued:
                 research["pending_fact_request"] = queued[0]
                 if len(queued) > 1:
                     research["pending_fact_request"]["queued_requests"] = queued[1:]
         db.execute("UPDATE stories SET research_json=?,state=CASE WHEN ? THEN 'researching' ELSE state END,updated_at=? WHERE id=?",
                    (canonical(research), int(valid), self.store.now(), story_id))
+        if valid:
+            from .research_budget import ensure_budget
+            if pending.get('owner_research_wave'):
+                ensure_budget(self, story_id, db=db, explicit=True)
+            self._enqueue_job(db, story_id, "research", f"research-explicit:{pending['input_revision']}", pending)
         return valid
 
     def _mark_visual_stale(self, db, story, selected_ids: list[str]) -> None:
@@ -346,7 +354,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
             return self._story_repr(db, self._story_row(db, story_id))
 
     @staticmethod
-    def _candidate_catalog(osm: dict[str, Any], wikipedia: list[dict[str, Any]], excluded_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    def _candidate_catalog(osm: dict[str, Any], wikipedia: list[dict[str, Any]], excluded_ids: set[str] | None = None,
+                           *, observed_pool: bool = False) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         wiki_refs: dict[str, list[str]] = {}
@@ -386,7 +395,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 "salience_rank": 0,
             })
 
-        for item in [osm.get("reverse", {}), *osm.get("nearby", [])]:
+        for item in [osm.get("reverse", {}), *(osm.get("observed_pool", osm.get("nearby", [])) if observed_pool
+                                              else osm.get("nearby", []))]:
             osm_type = str(item.get("osm_type") or item.get("type") or "")
             osm_id = item.get("osm_id") or item.get("id")
             tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
@@ -404,6 +414,8 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 and str(tags.get("building")).casefold() != "no")
             if anonymous_building:
                 name = "Здание без названия в OSM"
+            if observed_pool and not name:
+                name = f"OpenStreetMap {osm_type} {osm_id}"
             normalized = re.sub(r"\s+", " ", name.casefold())
             if (
                 not name
@@ -412,7 +424,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 or (
                     str(item.get("selection_bucket") or "") != "reverse"
                     and normalized
-                    and normalized in wikipedia_names
+                    and normalized in wikipedia_names and not observed_pool
                 )
             ):
                 continue
@@ -452,6 +464,9 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         # can be considered after the owner rejects the current result.
         excluded = excluded_ids or set()
         candidates = [item for item in candidates if item.get("candidate_id") not in excluded]
+        if observed_pool:
+            from .identity_entity_aliases import enrich_entity_links
+            return enrich_entity_links(candidates, osm, wikipedia)
 
         def distance(item: dict[str, Any]) -> float:
             try:
@@ -1179,7 +1194,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         researcher = getattr(self.providers, 'research', None)
         if callable(getattr(researcher, 'extract_fact_page', None)) and getattr(researcher, 'facts_available', False):
             from .headless_facts import HeadlessFacts
-            await HeadlessFacts(self).run(job, run_id, request_goal or 'source-backed research',
+            outcome = await HeadlessFacts(self).run(job, run_id, request_goal or 'source-backed research',
                 str(payload.get('extraction_scope') or request_goal or 'source-backed research'))
             with self.store.tx() as db:
                 current = self._story_row(db, story_id)
@@ -1189,7 +1204,7 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 latest['input_revision'] = input_revision
                 db.execute('UPDATE stories SET research_json=?,state=CASE WHEN draft_text IS NULL THEN \'facts_ready\' ELSE state END,updated_at=? WHERE id=?',
                            (canonical(latest),self.store.now(),story_id))
-            return
+            return outcome
         saved = self.store.checkpoint_get(job["id"], "grounded_research_v3")
         if saved is None:
             saved = await self._research_claims(

@@ -34,7 +34,9 @@ async def test_url_discovery_uses_only_grounding_and_no_fact_semantics(tmp_path)
         calls.append(kwargs)
         assert configuration.tools[0].google_search is not None
         assert '32' not in contents[0] and 'known_facts' not in contents[0]
-        return SimpleNamespace(text='https://invented.invalid/ignored', candidates=[
+        return SimpleNamespace(text=json.dumps({'summary': 'Observed article', 'selected_sources': [
+            {'url': 'https://example.com/article', 'reason': 'Source on the subject'},
+            {'url': 'https://invented.invalid/ignored', 'reason': 'Unobserved URL'}]}), candidates=[
             SimpleNamespace(grounding_metadata=SimpleNamespace(grounding_chunks=[
                 SimpleNamespace(web=SimpleNamespace(uri='https://example.com/article', title='Gate')),
                 SimpleNamespace(web=SimpleNamespace(uri='http://unsafe.invalid', title='Bad'))]))])
@@ -236,7 +238,7 @@ async def test_late_urls_partial_and_completed_verdict_resume(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(tmp_path):
-    svc, _ = make_service(tmp_path)
+    svc, _adapter, story, _sessions = prepared(tmp_path)
     async def resolver(host):
         return '93.184.216.34'
     async def handler(request):
@@ -249,7 +251,7 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
             {'image_url': 'https://example.com/late.jpg', 'article_url': url, 'kind': 'article_img'}], 12, True)
     receipts = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        candidates = await article_media.article_candidates(svc, {'id': 'unknown'}, [
+        candidates = await article_media.article_candidates(svc, story, [
             {'url': 'https://example.com/article'}], set(), http=http, resolver=resolver,
             browser=browser, receipts=receipts)
         assert calls == []
@@ -260,7 +262,7 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
             'gallery_cursor': receipts[0]['gallery_cursor'],
             'gallery_slide_cursor': receipts[0]['gallery_slide_cursor']}
         receipts = []
-        candidates = await article_media.article_candidates(svc, {'id': 'unknown'}, [resumed_source],
+        candidates = await article_media.article_candidates(svc, story, [resumed_source],
             set(), http=http, resolver=resolver, browser=browser, receipts=receipts)
     assert calls == ['https://example.com/article']
     assert candidates[0]['reference_image_urls'] == ['https://example.com/lead.jpg', 'https://example.com/late.jpg']
@@ -269,7 +271,7 @@ async def test_static_lead_still_renders_lazy_gallery_and_keeps_partial_cursor(t
 
 @pytest.mark.asyncio
 async def test_blocked_wikipedia_uses_quiet_article_reader_and_keeps_candidate_identity(tmp_path):
-    svc, _ = make_service(tmp_path)
+    svc, _adapter, story, _sessions = prepared(tmp_path)
     page = 'https://ru.wikipedia.org/wiki/Gate'
     calls = []
     async def resolver(host):
@@ -282,7 +284,7 @@ async def test_blocked_wikipedia_uses_quiet_article_reader_and_keeps_candidate_i
             {'image_url': 'https://example.com/unrelated.jpg', 'article_url': url}], 12, True)
     receipts = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(403))) as http:
-        result = await article_media.article_candidates(svc, {'id': 'unknown'}, [
+        result = await article_media.article_candidates(svc, story, [
             {'url': page, 'candidate_id': 'wiki:381537'}], set(), http=http, resolver=resolver,
             browser=browser, receipts=receipts)
     assert calls == [page]

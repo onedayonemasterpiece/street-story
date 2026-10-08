@@ -35,6 +35,23 @@ def candidate_identity_eligible(candidate: dict) -> bool:
     return candidate.get("identity_eligible") is not False
 
 
+def promote_observed_candidates(active: list[dict], observed: list[dict], candidate_ids: list[str]) -> list[dict]:
+    """Promote exact host-observed map IDs without creating an entity or proof."""
+    by_id = {item.get('candidate_id'): item for item in observed if isinstance(item, dict)}
+    output = list(active)
+    present = {item.get('candidate_id') for item in active}
+    for cid in candidate_ids:
+        if not isinstance(cid, str):
+            continue
+        item = by_id.get(cid)
+        if (not cid.startswith('osm:') or cid in present
+                or not item or not candidate_identity_eligible(item)):
+            continue
+        output.append({**item, 'shortlist_bucket': 'observed_promotion'})
+        present.add(cid)
+    return output
+
+
 def wikipedia_coordinate_context(page: dict, story: dict | None, radius_m: float | None) -> dict:
     """Authoritative coordinates constrain this local search, never prove a match.
 

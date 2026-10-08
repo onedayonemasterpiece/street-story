@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,7 +110,7 @@ async def test_restart_hydrates_ordered_plan_and_completed_query_never_repeats(t
 async def test_recovery_persists_plan_before_first_search_and_records_actual_completed_query(tmp_path, monkeypatch):
     svc, _adapter, story, _session = prepared(tmp_path)
     svc.providers.gemini._generate = lambda: None
-    svc.providers.gemini.executor = object()
+    svc.providers.gemini.executor = SimpleNamespace(execute=lambda *args: None)
     async def suggest(service, snapshot, transcript, candidates):
         snapshot['_identity_article_queries'] = PLAN
         return 'Unproved object', [], 'facade features', ''
