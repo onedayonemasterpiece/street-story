@@ -8,6 +8,67 @@ from street_story.research_budget import PAGE_UNITS, response_units
 
 
 @pytest.mark.asyncio
+async def test_scoped_reconsideration_keeps_unrelated_review_and_requires_new_own_decision(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-scope', 'args': findings(chunk, QUOTES)})
+    full = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    args = {'packet_ref': full['packet_ref'], 'decisions': [
+        {'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in range(3)],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}
+    await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'initial-review', 'args': args})
+    with svc.store.connection() as db:
+        ids = [r[0] for r in db.execute('SELECT assertion_id FROM fact_assertions ORDER BY assertion_id')]
+        old_receipt = db.execute('SELECT result_json FROM live_review_packets WHERE packet_ref=?', (full['packet_ref'],)).fetchone()[0]
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': [ids[1]]}})
+    assert packet['total_facts'] == 1 and packet['items'][0]['saved_verdict'] is None
+    assert all(c['fact_id'] != ids[1] for c in packet['nearby_existing_claims'])
+    result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'narrow-review', 'args': {
+        'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0],
+            'verdict': 'insufficient', 'claims': [packet['items'][0]['text']]}],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}})
+    assert not result['complete']
+    with svc.store.connection() as db:
+        statuses = dict(db.execute('SELECT assertion_id,eligibility FROM fact_assertions'))
+        assert statuses == {ids[0]: 'eligible', ids[1]: 'withheld', ids[2]: 'eligible'}
+        assert db.execute('SELECT result_json FROM live_review_packets WHERE packet_ref=?', (full['packet_ref'],)).fetchone()[0] == old_receipt
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_scoped_review_rejects_foreign_claim_without_changing_eligibility(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-foreign', 'args': findings(chunk, QUOTES)})
+    with svc.store.connection() as db:
+        before = list(db.execute('SELECT assertion_id,eligibility FROM fact_assertions'))
+    with pytest.raises(ConflictError, match='current own assertions'):
+        await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': ['foreign-claim']}})
+    with svc.store.connection() as db:
+        assert list(db.execute('SELECT assertion_id,eligibility FROM fact_assertions')) == before
+        assert db.execute('SELECT COUNT(*) FROM live_review_packets').fetchone()[0] == 0
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_scoped_repair_followup_addresses_replacement_without_whole_inventory(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-repair-scope', 'args': findings(chunk, QUOTES)})
+    with svc.store.connection() as db:
+        fid = db.execute('SELECT assertion_id FROM fact_assertions ORDER BY assertion_id LIMIT 1').fetchone()[0]
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': [fid]}})
+    text = packet['items'][0]['text']
+    repaired = await adapter.execute_tool(session, {'name': 'repair_research_fact', 'id': 'repair-small', 'args': {
+        'packet_ref': packet['packet_ref'], 'repairs': [{'fact': 0, 'reason': 'Reattach exact own support.',
+            'facts': [{'text': text, 'claim_key': 'own-scope', 'evidence': [0]}]}]}})
+    assert repaired['next_args']['fact_ids'] == [fid]
+    fresh = await adapter.execute_tool(session, {'name': repaired['next_tool'], 'args': repaired['next_args']})
+    assert fresh['total_facts'] == 1 and fresh['items'][0]['text'] == text
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_short_packet_semantics_negative_scope_stale_and_replay(tmp_path):
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
