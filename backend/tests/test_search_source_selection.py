@@ -8,6 +8,33 @@ from test_opencode_research import Harness
 from street_story import article_media
 
 
+def test_inventory_indices_preserve_exact_urls_order_and_provenance():
+    from street_story.identity_source_selection import indexed_model_selection
+    observed = [{'url': 'https://example.org/%D0%94%D0%BE%D0%BC?x=a%2Fb', 'search_call_id': 'one'},
+                {'url': 'https://example.org/second', 'search_call_id': 'two'}]
+    chosen, selection = indexed_model_selection(observed, {'summary': 'Useful pages', 'selected_sources': [
+        {'source_index': 1, 'reason': 'Exterior view'}, {'source_index': 0, 'reason': 'Another view'},
+        {'source_index': 1, 'reason': 'Duplicate'}]})
+    assert [item['url'] for item in chosen] == [observed[1]['url'], observed[0]['url']]
+    assert [item['search_call_id'] for item in chosen] == ['two', 'one']
+    assert selection['status'] == 'model_selected'
+
+
+@pytest.mark.parametrize('index', [-1, 1, '0', True])
+def test_unobserved_or_malformed_inventory_index_never_promotes_a_page(index):
+    from street_story.identity_source_selection import indexed_model_selection
+    chosen, selection = indexed_model_selection([{'url': 'https://example.org/one'}], {
+        'summary': 'Choice', 'selected_sources': [{'source_index': index, 'reason': 'Useful view'}]})
+    assert chosen == [] and selection['status'] == 'selection_unavailable'
+
+
+def test_empty_inventory_selection_remains_empty():
+    from street_story.identity_source_selection import indexed_model_selection
+    chosen, selection = indexed_model_selection([{'url': 'https://example.org/one'}], {
+        'summary': 'Only irrelevant pages', 'selected_sources': []})
+    assert chosen == [] and selection['status'] == 'model_selected'
+
+
 @pytest.mark.asyncio
 async def test_semantic_selection_retains_tool_provenance_and_rejects_invented_url():
     h = Harness()

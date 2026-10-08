@@ -155,6 +155,57 @@ async def test_completed_original_review_is_recovered_after_checkpoint_interrupt
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['addressed', 'missing_message', 'changed_route'])
+async def test_restart_observes_exact_addressed_review_without_replacing_its_packet(tmp_path, monkeypatch, case):
+    svc, job, harness = await candidates(tmp_path, count=3)
+    ControlledReview.mode = 'unknown'
+    await ControlledReview(harness).run(job, RUN, 0)
+    with svc.store.connection() as db:
+        row = db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],)).fetchone()
+    unit, saved = row['stage'].split(':', 1)[1], json.loads(row['value_json'])
+    session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'packet_ref': saved['packet_ref']})
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [
+        {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported', 'atomic': True,
+         'support_complete': True, 'qualifiers_preserved': True, 'claims': [item['text']],
+         'basis_quotes': [item['text']], 'reason': 'Own original passage.'} for item in packet['items']],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
+    calls = []
+    async def closed_readback(role, prompt, binding, schema):
+        assert role == 'facts' and binding['message_id'] == 'msg_original'
+        assert json.loads(prompt.split('Frozen packet: ')[1]) == packet
+        calls.append('original_readback')
+        return {'result': args}
+    client = SimpleNamespace(model_id='fixture', directory='/fixture', _run=closed_readback)
+    route = {'provider_id': 'fixture', 'model_id': 'fixture', 'endpoint': 'existing', 'client': client}
+    engine = HeadlessFactReview(harness)
+    role = 'facts_review_fixture'
+    engine._put(job, unit, {**saved, 'frozen_packet': packet, 'route_identity': engine._route_identity(route)})
+    receipt = {'binding': {'fact_unit_id': unit}, 'phase': 'submitted', 'session_id': 'ses_original', 'message_id': 'msg_original'}
+    if case == 'missing_message':
+        receipt.pop('message_id')
+    if case == 'changed_route':
+        route['endpoint'] = 'replacement'
+    with svc.store.tx() as db:
+        db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+            ('original-submitted', 'original-logical', job['story_id'], role, json.dumps(receipt), svc.store.now(), svc.store.now()))
+    async def run(story, received_role, received_unit, invoke, *, client):
+        assert received_role == role and received_unit == unit
+        return await invoke({'phase': 'submitted', 'session_id': 'ses_original', 'message_id': 'msg_original'})
+    svc.providers.research = SimpleNamespace(run=run)
+    monkeypatch.setattr(engine, '_qualified_routes', lambda available=True: [route])
+    committed = await engine.run(job, RUN, 0)
+    if case != 'addressed':
+        assert committed == 0 and calls == []
+        return
+    assert committed == 1
+    assert calls == ['original_readback']
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 3
+
+
+@pytest.mark.asyncio
 async def test_closed_client_pending_backend_review_retries_and_resumes_without_reextracting(tmp_path, monkeypatch):
     from street_story.errors import RetryableProviderError
     svc, job = fixture(tmp_path, count=1)
@@ -180,6 +231,45 @@ async def test_closed_client_pending_backend_review_retries_and_resumes_without_
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
         assert db.execute("SELECT COUNT(*) FROM fact_conflict_scans WHERE detector='backend_semantic_review'").fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_original_readback_does_not_block_independent_candidate_progress(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=6)
+    ControlledReview.mode = 'unknown'
+    await ControlledReview(harness).run(job, RUN, 0)
+    with svc.store.connection() as db:
+        saved_units = list(db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%' ORDER BY stage", (job['id'],)))
+    unit, saved = saved_units[0]['stage'].split(':', 1)[1], json.loads(saved_units[0]['value_json'])
+    session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'], model='fixture',
+                              actor=None, closed=False, state={})
+    packet = review_packets.read(harness.adapter, session, {'packet_ref': saved['packet_ref']})
+    waiting, release = asyncio.Event(), asyncio.Event()
+    class RollingReview(ControlledReview):
+        async def _infer(self, packet, job, unit, saved, ordinal=0):
+            if saved.get('phase') == 'observe_original':
+                waiting.set()
+                await release.wait()
+                saved = {}
+            return await super()._infer(packet, job, unit, saved, ordinal)
+    engine = RollingReview(harness)
+    engine._put(job, unit, {**saved, 'frozen_packet': packet, 'route_identity': {'fixture': True}})
+    other = saved_units[1]['stage'].split(':', 1)[1]
+    engine._put(job, other, {'phase': 'closed_error'})
+    ControlledReview.mode = 'positive'
+    task = asyncio.create_task(engine.run(job, RUN, 0))
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        for _ in range(30):
+            with svc.store.connection() as db:
+                count = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
+            if count:
+                break
+            await asyncio.sleep(.05)
+        assert count == 3 and not task.done()
+    finally:
+        release.set()
+        await task
 
 
 @pytest.mark.asyncio

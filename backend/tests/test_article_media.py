@@ -12,6 +12,17 @@ from test_identity_lifecycle import make_service
 from test_reference_image_codec import jpeg
 
 
+def test_legacy_table_content_keeps_photo_and_logon_is_not_logo():
+    title, images = extract_media('''<title>Exterior photo</title><table id="content"><tr>
+        <td id="cencolum_logon"><table><tr><td>
+        <img src="/counter.gif" style="position:absolute;left:-9999px">
+        <div class="logo"><img src="/brand.jpg"></div>
+        <img src="../images/facade.jpg" alt="Modern facade">
+        </td></tr></table></td></tr></table>''', 'https://example.org/photos/view?id=1')
+    assert title == 'Exterior photo'
+    assert [item['image_url'] for item in images] == ['https://example.org/images/facade.jpg']
+
+
 def test_default_https_port_has_one_public_resource_identity():
     assert public_url('https://EXAMPLE.com:443/gallery#view') == 'https://example.com/gallery'
     assert public_url('https://[2606:4700:4700::1111]:443/photo') == 'https://[2606:4700:4700::1111]/photo'

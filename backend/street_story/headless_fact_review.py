@@ -74,7 +74,13 @@ class HeadlessFactReview:
             return None
         if saved.get('retry_at', 0) > self.service.store.now():
             return None
-        routes = self._qualified_routes()
+        observing = saved.get('phase') == 'observe_original'
+        routes = self._qualified_routes(available=not observing)
+        if observing:
+            expected = saved.get('route_identity')
+            routes = [route for route in routes if expected == self._route_identity(route)]
+            if not routes:
+                return None  # Changed configuration cannot replace an original operation.
         if routes:
             offset = ordinal % len(routes)
             routes = routes[offset:] + routes[:offset]
@@ -93,15 +99,21 @@ class HeadlessFactReview:
                     'AND role=? ORDER BY created_at DESC,rowid DESC', (story['id'], role)))
             prior = next((json.loads(row[0]) for row in rows
                 if (json.loads(row[0]).get('binding') or {}).get('fact_unit_id') == unit), {})
+            if observing and (prior.get('phase') not in {'prompt_intent', 'submitted', 'unknown'}
+                    or not all(prior.get(key) or (prior.get('binding') or {}).get(key)
+                               for key in ('session_id', 'message_id'))):
+                return None
             if prior.get('phase') == 'aborted' and prior.get('abort_acknowledged') is not True:
                 self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': role})
                 return None
             if prior.get('phase') in {'failed', 'aborted'}:
                 continue  # Closed unchanged semantic unit may use another route.
             client = route['client']
-            self._put(job, unit, {'phase': 'started', 'packet_ref': packet['packet_ref'], 'route': role})
-            LOG.info('street_story_background_fact_review_started story_id=%s run_id=%s unit_id=%s model_id=%s',
-                     job['story_id'], packet['run_id'], unit, client.model_id)
+            frozen = {'packet_ref': packet['packet_ref'], 'route': role, 'frozen_packet': packet,
+                      'route_identity': self._route_identity(route)}
+            self._put(job, unit, {**frozen, 'phase': 'started'})
+            LOG.info('street_story_background_fact_review_started story_id=%s run_id=%s unit_id=%s model_id=%s original_readback=%s',
+                     job['story_id'], packet['run_id'], unit, client.model_id, observing)
             try:
                 response = await provider.run(story, role, unit,
                     lambda binding, client=client: client._run('facts', prompt, binding, schema), client=client)
@@ -116,7 +128,7 @@ class HeadlessFactReview:
                 self._put(job, unit, {'phase': 'result', 'args': args, 'route': role, 'model_id': client.model_id})
                 return args
             except asyncio.CancelledError:
-                self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': role})
+                self._put(job, unit, {**frozen, 'phase': 'unknown'})
                 raise
             except Exception as exc:
                 with self.service.store.connection() as db:
@@ -126,8 +138,8 @@ class HeadlessFactReview:
                 receipt = json.loads(latest[0]) if latest else {}
                 unknown = (receipt.get('phase') not in {'created', 'failed', 'completed', 'aborted'}
                     or receipt.get('phase') == 'aborted' and not receipt.get('abort_acknowledged'))
-                self._put(job, unit, {'phase': 'unknown' if unknown else 'closed_error', 'route': role,
-                    'packet_ref': packet['packet_ref'], 'error_type': type(exc).__name__})
+                self._put(job, unit, {**frozen, 'phase': 'unknown' if unknown else 'closed_error',
+                    'error_type': type(exc).__name__})
                 LOG.info('street_story_background_fact_review_failed story_id=%s unit_id=%s model_id=%s unknown=%s reason=%s',
                          job['story_id'], unit, client.model_id, unknown, type(exc).__name__)
                 if unknown:
@@ -135,6 +147,24 @@ class HeadlessFactReview:
         self._put(job, unit, {'phase': 'closed_error', 'packet_ref': packet['packet_ref'],
                              'retry_at': self.service.store.now()+60})
         return None
+
+    @staticmethod
+    def _route_identity(route):
+        return {**{key: route.get(key) for key in ('provider_id', 'model_id', 'endpoint')},
+                'directory': getattr(route['client'], 'directory', None)}
+
+    def _original_reviews(self, job, control_revision):
+        """Resume exact addressed requests after restart, never replace an unknown send."""
+        with self.service.store.connection() as db:
+            units = [(row['stage'].split(':', 1)[1], json.loads(row['value_json'])) for row in db.execute(
+                "SELECT stage,value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'",
+                (job['id'],))]
+        pending = [(unit, saved) for unit, saved in units if saved.get('phase') in {'started', 'unknown'}
+                   and saved.get('frozen_packet') and saved.get('route_identity')]
+        return [(SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
+                    model='unknown', actor=None, closed=False,
+                    state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend'}),
+                 saved['frozen_packet'], unit, {**saved, 'phase': 'observe_original'}) for unit, saved in pending]
 
     def _unknown_candidates(self, job, current):
         """A changed verifier contract cannot retry an unresolved old send."""
@@ -188,6 +218,7 @@ class HeadlessFactReview:
         if snapshot is None:
             return 0
         self._recover_closed_reviews(job)
+        original_reviews = self._original_reviews(job, control_revision)
         with self.service.store.connection() as db:
             pending = review_packets.pending_candidates(db, job['story_id'], run_id)
             current = review_packets.bundle(db, job['story_id'])
@@ -196,16 +227,17 @@ class HeadlessFactReview:
             LOG.info('street_story_background_fact_review_unknown_fence story_id=%s run_id=%s blocked_candidates=%s',
                      job['story_id'], run_id, len(blocked))
             pending = [fid for fid in pending if fid not in blocked]
-        if not pending:
+        if not pending and not original_reviews:
             return 0
         lock_key = (id(self.service), job['story_id'])
         lock = _COMMIT_LOCKS.get(lock_key)
         if lock is None:
             lock = asyncio.Lock()
             _COMMIT_LOCKS[lock_key] = lock
-        prepared = []
+        prepared = list(original_reviews)
+        new_prepared = 0
         for start in range(0, len(pending), 3):
-            if len(prepared) == 4:
+            if new_prepared == 4:
                 break
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
                 model='gemini-3.8-live', actor=None, closed=False,
@@ -237,6 +269,7 @@ class HeadlessFactReview:
                 self._put(job, unit, {'phase': 'stale'})
                 continue
             prepared.append((session, packet, unit, saved))
+            new_prepared += 1
         async def review(item, ordinal):
             _session, packet, unit, saved = item
             return item, await self._infer(packet, job, unit, saved, ordinal)

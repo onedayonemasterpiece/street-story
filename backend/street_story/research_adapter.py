@@ -215,7 +215,10 @@ class ProductResearchAdapter:
         def settled(done):
             observers.discard(done)
             if not done.cancelled():
-                outcomes = done.result()
+                try:
+                    outcomes = done.result()
+                except asyncio.CancelledError:
+                    return  # gather can carry cancellation without cancelled()=True.
                 for outcome in outcomes:
                     if isinstance(outcome, BaseException):
                         LOG.warning('street_story_research_search_observer error_type=%s', type(outcome).__name__)

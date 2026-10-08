@@ -77,7 +77,8 @@ async def test_public_inventory_selection_uses_text_quota_without_search_tools(t
     async def generate(key, timeout, contents, configuration, **kwargs):
         assert not configuration.tools
         assert kwargs['operation'] == 'grounded_research'
-        return SimpleNamespace(text=json.dumps(choice()))
+        return SimpleNamespace(text=json.dumps({'summary': 'Useful page', 'selected_sources': [
+            {'source_index': 0, 'reason': 'Useful exterior'}]}))
     client._generate = generate
     result = await client.select_identity_sources('plain address', OBSERVED, {})
     assert result['source_selection']['status'] == 'model_selected'
@@ -100,7 +101,8 @@ async def test_source_choice_receives_original_pixels_and_map_alternatives(tmp_p
         supplied = json.loads(contents[1].split('Return JSON.\n')[1])
         assert supplied['physical_candidates'][0]['map_address']['street'] == 'Alternate Road'
         assert supplied['observed_sources'][0]['snippet'] == 'Literal observed snippet'
-        return SimpleNamespace(text=json.dumps(choice()))
+        return SimpleNamespace(text=json.dumps({'summary': 'Useful page', 'selected_sources': [
+            {'source_index': 0, 'reason': 'Useful exterior'}]}))
     client._generate = generate
     inventory = [{**OBSERVED[0], 'supports': [{'text': 'Literal observed snippet'}]}]
     await client.select_identity_sources('Unverified first guess', inventory, {
