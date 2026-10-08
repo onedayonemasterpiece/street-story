@@ -9,7 +9,21 @@ MAX_MODEL_BYTES = 2 * 1024 * 1024
 MAX_LIVE_BYTES = 480 * 1024
 MAX_PIXELS = 40_000_000
 MAX_EDGE = 1280
+MIN_REFERENCE_EDGE = 160
 MODEL_PREPARATION = 'exif_rgb_longedge1280_v1'
+
+
+def validate_reference_resolution(data: bytes) -> None:
+    """Apply the article illustration floor to actual pixels, not HTML hints."""
+    reference_mime(data)
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.width * image.height > MAX_PIXELS:
+                raise ValueError('reference_pixel_limit')
+            if min(image.size) < MIN_REFERENCE_EDGE:
+                raise ValueError('reference_resolution_insufficient')
+    except (Image.DecompressionBombError, OSError) as exc:
+        raise ValueError('reference_format') from exc
 
 
 def reference_mime(data: bytes) -> str:

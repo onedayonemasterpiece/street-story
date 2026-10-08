@@ -246,10 +246,12 @@ class OpenCodeResearch:
 
     @staticmethod
     async def _load_public_image(url):
+        from .reference_image_codec import validate_reference_resolution
         from .article_media import fetch_public
         from .reference_image_codec import MAX_DOWNLOAD_BYTES
         async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
             _target, mime, raw = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+        validate_reference_resolution(raw)
         return mime, raw
 
     async def _request(self, client, method, path, **kwargs):

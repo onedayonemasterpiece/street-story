@@ -135,11 +135,15 @@ async def native_public_image(url):
     """Existing public DNS/redirect reader, RAM only; Codex requires inline images."""
     import httpx
     from .article_media import fetch_public
-    from .reference_image_codec import MAX_DOWNLOAD_BYTES
+    from .reference_image_codec import MAX_DOWNLOAD_BYTES, validate_reference_resolution
     async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
         _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
     if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
         raise PermanentProviderError('native_vision:reference_not_image')
+    try:
+        validate_reference_resolution(data)
+    except ValueError as exc:
+        raise PermanentProviderError(str(exc)) from exc
     return mime, data
 
 

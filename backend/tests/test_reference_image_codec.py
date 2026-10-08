@@ -19,6 +19,28 @@ def jpeg(size=(80, 120), *, orientation=1):
     return output.getvalue()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['google', 'native', 'opencode'])
+@pytest.mark.parametrize('size', [(60, 60), (400, 100), (160, 320)])
+async def test_real_download_dimensions_protect_all_public_vision_loaders(monkeypatch, route, size):
+    from street_story.headless_vision import HeadlessVisionProvider
+    from street_story.native_vision import native_public_image
+    from street_story.opencode_research import OpenCodeResearch
+    from street_story.errors import PermanentProviderError
+    raw = jpeg(size)
+    async def fetch(*args, **kwargs):
+        return 'https://example.org/illustration.jpg', 'image/jpeg', raw
+    monkeypatch.setattr('street_story.article_media.fetch_public', fetch)
+    loaders = {'google': lambda: HeadlessVisionProvider._load_public_reference(None, 'https://example.org/illustration.jpg'),
+               'native': lambda: native_public_image('https://example.org/illustration.jpg'),
+               'opencode': lambda: OpenCodeResearch._load_public_image('https://example.org/illustration.jpg')}
+    if min(size) < 160:
+        with pytest.raises((ValueError, PermanentProviderError), match='reference_resolution_insufficient'):
+            await loaders[route]()
+    else:
+        assert await loaders[route]() == ('image/jpeg', raw)
+
+
 def test_normalization_honors_orientation_and_removes_metadata():
     mime, data = normalize_reference(jpeg(orientation=6))
     assert mime == 'image/jpeg'
