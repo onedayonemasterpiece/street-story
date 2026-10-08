@@ -269,7 +269,8 @@ def read_case(service, case, item):
         'eligible_minimum': len(proved) >= item['min_useful_facts'],
         'correct_physical_object': identity.get('candidate_id') == expected if expected else None,
         'visual_proof': identity.get('status') == 'match' and identity.get('visual_reference_verified') is True,
-        'canonical_poi_readback': len(proved) >= item['min_useful_facts']}
+        'canonical_poi_readback': len(proved) >= item['min_useful_facts'],
+        'natural_product_terminal': (outcome or {}).get('reason') != 'acceptance_upload_deadline_exceeded'}
     live_receipts = [json.loads(attempt['receipt_json'] or '{}') for attempt in attempts]
     live_receipts = [receipt for receipt in live_receipts if receipt.get('provider_id') == 'google-live']
     case.update(status='RUNNING', uploaded_at=started, elapsed_from_upload_s=max(0, now-started),
@@ -306,7 +307,9 @@ def apply_hard_cap(service, story_id):
             return
         elapsed = service.store.now() - row['created_at']
         matched = (research.get('visual_identity') or {}).get('status') == 'match'
-        if elapsed >= CAPS['total_seconds'] or not matched and elapsed >= CAPS['identity_seconds']:
+        # Allow the application deadline watcher one scheduling tick; if the
+        # harness must intervene, natural_product_terminal explicitly fails.
+        if elapsed >= CAPS['total_seconds']+1 or not matched and elapsed >= CAPS['identity_seconds']+1:
             finish_attempt(service, db, story_id, outcome='deadline_exceeded',
                 reason='acceptance_upload_deadline_exceeded', purpose='facts' if matched else 'identity')
 

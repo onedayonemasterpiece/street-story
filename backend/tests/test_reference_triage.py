@@ -23,6 +23,7 @@ def frame(index):
 
 def ratings(atlas):
     return {'tiles': [{'tile_id': tile['tile_id'], 'kind': 'diagram' if i == 1 else 'unclear',
+        'applicability': 'exterior_geometry' if i == 2 else 'unclear',
         'priority': 'promising' if i == 2 else 'unlikely' if i == 1 else 'unclear',
         'reason': 'Visible target geometry' if i == 2 else 'Need original detail'}
         for i, tile in enumerate(atlas['manifest']['tiles'])]}
@@ -59,13 +60,14 @@ def test_unknown_duplicate_or_missing_tile_id_cannot_change_queue(bad):
         validate_verdict(result, atlas)
 
 
-def test_small_direct_pool_and_structural_noise_bypass_atlas():
-    assert build_atlas(image('white'), [(frame(1), image('red')), (frame(2), image('blue'))], {}) is None
-    assert build_atlas(image('white'), [(frame(1), image('red')), (frame(2), image('blue', 1)),
-                                       (frame(3), b'corrupt-file')], {}) is None
+def test_single_and_double_pool_are_triaged_and_structural_noise_is_deferred():
+    for count in (1, 2):
+        atlas = build_atlas(image('white'), [(frame(i), image(c)) for i, c in enumerate(('red', 'blue')[:count])], {})
+        assert len(atlas['manifest']['tiles']) == count
+    assert build_atlas(image('white'), [(frame(2), image('blue', 1)), (frame(3), b'corrupt-file')], {}) is None
 
 
-def provider_fixture(svc, monkeypatch, *, unknown=False):
+def provider_fixture(svc, monkeypatch, *, unknown=False, decide=None):
     from street_story.research_adapter import ProductResearchAdapter
     provider = ProductResearchAdapter(svc, admission=object())
     class Executor:
@@ -85,7 +87,7 @@ def provider_fixture(svc, monkeypatch, *, unknown=False):
         sends.append(manifest)
         if unknown:
             raise asyncio.TimeoutError('unknown fixture')
-        return SimpleNamespace(text=json.dumps(ratings({'manifest': manifest})), response_id='offline-triage')
+        return SimpleNamespace(text=json.dumps(decide(manifest) if decide else ratings({'manifest': manifest})), response_id='offline-triage')
     monkeypatch.setattr(provider.primary_vision, '_load_public_reference', load)
     monkeypatch.setattr(provider.primary_vision.client, '_generate', generate, raising=False)
     svc.providers.research = provider
@@ -133,10 +135,12 @@ async def test_unknown_triage_retains_original_operation_without_new_send_on_wak
     session = SimpleNamespace(id='offline-live', resource_id=story['id'], state={})
     monkeypatch.setattr(worker, '_save_visual_queue', lambda *args: None)
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    original = [c['reference_id'] for c in state['queue']]
+    original = [c['reference_id'] for c in state['reference_triage_deferred']]
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
     assert len(sends) == 1 and len(downloads) == 3
-    assert [c['reference_id'] for c in state['queue']] == original
+    assert state['queue'] == []
+    assert [c['reference_id'] for c in state['reference_triage_deferred']] == original
+    assert not state.get('reviewed_reference_ids')
     with svc.store.connection() as db:
         rows = list(db.execute("SELECT logical_id,receipt_json FROM research_provider_attempts WHERE role='reference_triage'"))
     assert len(rows) == 1 and json.loads(rows[0]['receipt_json'])['phase'] == 'unknown'
@@ -171,17 +175,135 @@ async def test_explicit_small_output_cap_reduces_shared_reservation_and_keeps_pr
 
 
 @pytest.mark.asyncio
-async def test_two_atlas_envelope_and_small_pool_bypass_without_download_or_send(tmp_path, monkeypatch):
+async def test_four_atlas_envelope_defers_without_download_and_two_images_require_triage(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare
     from street_story.headless_identity import HeadlessIdentity
     svc, story, source = prepare(tmp_path, count=3)
     _, downloads, sends = provider_fixture(svc, monkeypatch)
     _, research = svc._identity_snapshot(story['id'])
     worker = HeadlessIdentity(svc)
+    monkeypatch.setattr(worker, '_save_visual_queue', lambda *args: None)
     session = SimpleNamespace(id='offline-live', resource_id=story['id'], state={})
-    state = {'queue': research['visual_identity']['candidates'],
-             'reference_triage_atlases': {'first': {}, 'second': {}}}
+    candidates = [{**c, 'reference_id': f'ref:{i}'} for i, c in enumerate(research['visual_identity']['candidates'])]
+    state = {'queue': candidates.copy(), 'reference_triage_atlases': {str(i): {} for i in range(4)}}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    state = {'queue': research['visual_identity']['candidates'][:2]}
-    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    assert state['reference_triage_budget_exhausted'] and state['queue'] == []
+    assert len(state['reference_triage_deferred']) == 3
     assert downloads == [] and sends == []
+    state = {'queue': candidates[:2]}
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    assert len(downloads) == 2 and len(sends) == 1
+    assert all(c['reference_triage']['applicability'] == 'unclear' for c in state['queue'])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('count', [1, 2])
+async def test_real_worker_defers_even_small_map_batches_without_exact_pairs(tmp_path, monkeypatch, count):
+    from test_parallel_identity_pairs import prepare
+    svc, story, _ = prepare(tmp_path, count=count)
+    def decision(manifest):
+        return {'tiles': [{'tile_id': t['tile_id'], 'kind': 'map', 'applicability': 'not_comparable',
+            'priority': 'unlikely', 'reason': 'Location map has no facade geometry'} for t in manifest['tiles']]}
+    provider, downloads, sends = provider_fixture(svc, monkeypatch, decide=decision)
+    pairs = []
+    async def pair(*args):
+        pairs.append(args)
+        raise AssertionError('A deferred map cannot become an exact image comparison')
+    monkeypatch.setattr(provider, 'visual_verdict', pair)
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert len(downloads) == count and len(sends) == 1 and pairs == []
+    _, research = svc._identity_snapshot(story['id'])
+    queue = research['visual_search_operation']
+    assert len(queue['reference_triage_deferred']) == count
+    assert not queue['reviewed_reference_ids']
+    assert all(c['triage_deferral'] == 'model_declared_not_comparable' for c in queue['reference_triage_deferred'])
+    assert svc.story(story['id'])['visual_identity']['status'] != 'match'
+
+
+@pytest.mark.asyncio
+async def test_real_worker_accepts_model_applicable_architecture_render_after_map_deferral(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare, response
+    svc, story, _ = prepare(tmp_path, count=2)
+    def decision(manifest):
+        return {'tiles': [{'tile_id': t['tile_id'], 'kind': 'diagram' if i else 'map',
+            'applicability': 'exterior_geometry' if i else 'not_comparable',
+            'priority': 'promising' if i else 'unlikely', 'reason': 'Fixture applicability receipt'}
+            for i, t in enumerate(manifest['tiles'])]}
+    provider, _, sends = provider_fixture(svc, monkeypatch, decide=decision)
+    pairs = []
+    async def pair(snapshot, item, schema, context):
+        pairs.append(item['_visual_reference_mapping'][0]['candidate_id'])
+        assert base64.b64decode(item['_visual_image_parts'][1]['data']) == image('green')
+        return response(item, 'offline-render-full-pair', 'match')
+    monkeypatch.setattr(provider, 'visual_verdict', pair)
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert len(sends) == 1 and pairs == ['gate:b']
+    assert svc.story(story['id'])['visual_identity']['candidate_id'] == 'gate:b'
+    _, research = svc._identity_snapshot(story['id'])
+    queue = research['visual_search_operation']
+    assert len(queue['reviewed_reference_ids']) == 1
+    assert queue['reference_triage_deferred'][0]['candidate_id'] == 'gate:a'
+
+
+@pytest.mark.asyncio
+async def test_unknown_atlas_allows_independent_next_atlas_but_never_resends_original(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare
+    from street_story.headless_identity import HeadlessIdentity
+    svc, story, source = prepare(tmp_path, count=2)
+    _, downloads, sends = provider_fixture(svc, monkeypatch, unknown=True)
+    _, research = svc._identity_snapshot(story['id'])
+    worker = HeadlessIdentity(svc)
+    monkeypatch.setattr(worker, '_save_visual_queue', lambda *args: None)
+    session = SimpleNamespace(id='offline-live', resource_id=story['id'], state={})
+    originals = [{**c, 'reference_id': f'ref:{i}'} for i, c in enumerate(research['visual_identity']['candidates'])]
+    state = {'queue': [originals[0]]}
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    state['queue'].extend(originals)
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    assert len(downloads) == len(sends) == 2
+    assert {c['reference_id'] for c in state['reference_triage_deferred']} == {'ref:0', 'ref:1'}
+    assert state['queue'] == []
+    with svc.store.connection() as db:
+        attempts = list(db.execute("SELECT logical_id FROM research_provider_attempts WHERE role='reference_triage'"))
+    assert len(attempts) == len(set(row[0] for row in attempts)) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_worker_reports_triage_exhaustion_without_download_or_exact_send(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare
+    import street_story.reference_triage as triage
+    svc, story, _ = prepare(tmp_path, count=1)
+    provider, downloads, sends = provider_fixture(svc, monkeypatch)
+    monkeypatch.setattr(triage, 'MAX_ATLASES', 0)
+    pairs = []
+    async def pair(*args):
+        pairs.append(args)
+        raise AssertionError('Exhausted triage cannot send unreviewed references')
+    monkeypatch.setattr(provider, 'visual_verdict', pair)
+    assert await svc.run_once(claim_kind='identity_visual')
+    _, research = svc._identity_snapshot(story['id'])
+    assert downloads == sends == pairs == []
+    assert research['visual_search_operation']['reference_triage_budget_exhausted']
+    assert len(research['visual_search_operation']['reference_triage_deferred']) == 1
+    assert not research['visual_search_operation']['reviewed_reference_ids']
+    assert research['automatic_research_outcome']['reason'] == 'reference_triage_exhausted'
+    assert research['automatic_research_outcome']['purpose'] == 'identity'
+
+
+@pytest.mark.asyncio
+async def test_source_specific_rating_is_not_reused_for_different_source_pixels(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare
+    from street_story.headless_identity import HeadlessIdentity
+    svc, story, source = prepare(tmp_path, count=1)
+    _, _, sends = provider_fixture(svc, monkeypatch)
+    _, research = svc._identity_snapshot(story['id'])
+    candidate = {**research['visual_identity']['candidates'][0], 'reference_id': 'ref:0'}
+    worker = HeadlessIdentity(svc)
+    monkeypatch.setattr(worker, '_save_visual_queue', lambda *args: None)
+    session = SimpleNamespace(id='offline-live', resource_id=story['id'], state={})
+    state = {'queue': [candidate]}
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    old = state['queue'][0]['reference_triage']['atlas_id']
+    await triage_queue(worker, session, state, story, image('black'), research['visual_identity'], generation=0, control_revision=0)
+    assert len(sends) == 2 and state['queue'][0]['reference_triage']['atlas_id'] != old

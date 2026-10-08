@@ -353,6 +353,23 @@ class LiveVisualComparisonMixin:
 
     @staticmethod
     def _visual_reply(comparison_id, candidates, identity, remaining):
+        from .identity_source_selection import compact_candidate_catalog
+        physical = [c for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
+                    and not str(c.get('candidate_id', '')).startswith('web:')][:32]
+        compact = compact_candidate_catalog(physical)
+        physical_packet = []
+        for original, values in zip(physical, compact['rows']):
+            row = {key: value for key, value in zip(compact['columns'], values) if value is not None}
+            component = original.get('physical_component') or {}
+            if component:
+                row['physical_component'] = {key: component[key] for key in
+                    ('proof', 'parent_candidate_id', 'parent_source_url', 'member_candidate_id', 'role') if key in component}
+                context = original.get('parent_relation_context') or {}
+                row['parent_relation_context'] = {'candidate_id': context.get('candidate_id'),
+                    'scope': 'parent_relation_only', 'tags': {key: str(value)[:120]
+                        for key, value in (context.get('tags') or {}).items()
+                        if key in {'name', 'building', 'addr:street', 'addr:housenumber'}}}
+            physical_packet.append(row)
         return {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
             'camera_hints': identity.get('camera_hints') or {},
             'camera_position_verified': identity.get('camera_position_verified') is True,
@@ -362,16 +379,8 @@ class LiveVisualComparisonMixin:
                     'context': [{key: media[key] for key in ('alt','figcaption','section_heading','context_text') if key in media}
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
-            'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
-                'url': c.get('url'), 'distance_m': c.get('distance_m'),
-                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name', 'map_object',
-                    'map_geometry', 'boundary_distance_m', 'representative_distance_m', 'distance_provenance',
-                    'physical_component', 'parent_relation_context',
-                    'footprint_bearing_interval', 'camera_inside_footprint',
-                    'camera_alignment', 'camera_direction_difference_deg') if key in c},
-                'alias_candidate_ids': c.get('alias_candidate_ids', [])}
-                for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
-                and not str(c.get('candidate_id', '')).startswith('web:')][:32],
+            'physical_candidates': physical_packet,
+            'physical_geometry_policy': compact['geometry_policy'],
             'remaining_illustrations': remaining,
             'search_feedback_instruction': (
                 'Сначала явно укажи source_subject_scope: building, occupant, other_physical_object или unclear '
@@ -408,7 +417,7 @@ class LiveVisualComparisonMixin:
                 'за счёт придуманного зума или иной точки съёмки при близкой визуально подходящей '
                 'альтернативе. При неразрешённом противоречии верни uncertain. '
                 'Оценка не является точным измерением или самостоятельным доказательством identity.'),
-            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Map_object описывает именно mapped_entry: парковка, вход, учреждение, улица и здание не становятся одним объектом от близости точек. Если SOURCE показывает целый дом, выбери физическое здание либо документированную адресную точку дома; ресторан, магазин и другое учреждение внутри дома — отдельные сущности. Название арендатора может помочь поиску, но не переименовывает дом и не доказывает связь с ним. Reverse display_name — контекст ближайшего объекта, а не имя здания на SOURCE. Связывай REF с подходящим типом объекта и реальным адресом; при неразрешённой привязке верни uncertain. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Разделяй устойчивую геометрию и изменяемую отделку: цвет стен, вывески и цветочные ящики сами по себе не устанавливают ни match, ни mismatch. Положительный вывод требует видимых общих отличительных положений и пропорций окон, выступов, арок и карниза. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
+            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. object_tags описывает тип точного mapped candidate: парковка, вход, учреждение, улица и здание не становятся одним объектом от близости точек. Если SOURCE показывает целый дом, выбери физическое здание либо документированную адресную точку дома; ресторан, магазин и другое учреждение внутри дома — отдельные сущности. Название арендатора может помочь поиску, но не переименовывает дом и не доказывает связь с ним. Reverse display_name — контекст ближайшего объекта, а не имя здания на SOURCE. Связывай REF с подходящим типом объекта и реальным адресом; при неразрешённой привязке верни uncertain. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Разделяй устойчивую геометрию и изменяемую отделку: цвет стен, вывески и цветочные ящики сами по себе не устанавливают ни match, ни mismatch. Положительный вывод требует видимых общих отличительных положений и пропорций окон, выступов, арок и карниза. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1, parallel_refill=False):
         story, research = self.service._identity_snapshot(session.resource_id)
@@ -695,6 +704,14 @@ class LiveVisualComparisonMixin:
                 or (url and url in {str(c.get('url') or '').rstrip('/'),
                                    str(c.get('wikipedia_url') or '').rstrip('/')})), default=float('inf'))
 
+        if not unsettled:
+            from .reference_triage import triage_queue
+            await triage_queue(self, session, state, story, source_bytes, identity,
+                               generation=generation, control_revision=expected['control_revision'])
+            if state.get('reference_triage_budget_exhausted') and not state['queue']:
+                return {'reference_triage_exhausted': True, 'exhausted': True, 'images_compared': 0,
+                    'instruction': 'Reference relevance allowance exhausted. Untriaged originals retained; '
+                        'no image mismatch or completed comparison was asserted.'}
         if state['queue'] and not unsettled:
             previous_head = state['queue'][0].get('reference_id')
             # Cover distinct source pages before repeatedly consuming one
@@ -932,6 +949,13 @@ class LiveVisualComparisonMixin:
                     if item.get('url') not in {c.get('url') for c in candidates}), None)
                 if other is not None:
                     state['queue'].insert(0, state['queue'].pop(other))
+            if not unsettled:
+                # A later lane may address a newly acquired page outside the
+                # preceding nine-frame atlas. Check it before creating a pair.
+                await triage_queue(self, session, state, story, source_bytes, identity,
+                    generation=generation, control_revision=expected['control_revision'])
+                if not state['queue']:
+                    break
             candidate = state['queue'].pop(0)
             if not reference_eligible(candidate):
                 continue  # Context articles remain URL sources, never physical POI candidates.
@@ -958,6 +982,11 @@ class LiveVisualComparisonMixin:
             state['preferred_units'] = int(state.get('preferred_units') or 0) + 1 if candidate.get('reference_reuse') or source_rank(
                 state['sources'].get(candidate.get('url')) or {'source': {'url': candidate.get('url')}}) < 2 else 0
         if not references:
+            if state.get('reference_triage_budget_exhausted'):
+                self._save_visual_queue(session, state)
+                return {'reference_triage_exhausted': True, 'exhausted': True, 'images_compared': 0,
+                    'instruction': 'Reference relevance allowance exhausted. Untriaged originals retained; '
+                        'no image mismatch or completed comparison was asserted.'}
             # Retry failed media on a later turn; never manufacture a verdict.
             failed = state['fetch_failures']
             state['fetch_failures'] = []

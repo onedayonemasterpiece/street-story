@@ -102,7 +102,9 @@ async def test_source_choice_receives_original_pixels_and_map_alternatives(tmp_p
         assert contents[0].inline_data.data == image[1]
         assert not configuration.tools
         supplied = json.loads(contents[1].split('Return JSON.\n')[1])
-        assert supplied['physical_candidates'][0]['map_address']['street'] == 'Alternate Road'
+        catalog = supplied['observed_address_context']['observed_physical_candidates']
+        assert catalog['rows'][0][0] == 'osm:way:42'
+        assert catalog['rows'][0][2][1] == 'Alternate Road'
         assert supplied['observed_sources'][0]['snippet'] == 'Literal observed snippet'
         return SimpleNamespace(text=json.dumps({'summary': 'Useful page', 'selected_sources': [
             {'source_index': 0, 'reason': 'Useful exterior'}]}))
@@ -230,7 +232,7 @@ async def test_all_37_real_inventory_urls_fit_one_small_text_unit(tmp_path):
     urls=[{'url':f'https://news.example/articles/{i}/long-article-path','title':'Article '*40,
            'supports':[{'text':'Snippet '*1000}]} for i in range(37)]
     async def run(role,prompt,binding,schema):
-        assert len(prompt)<17000
+        assert len(prompt)<20000  # Complete inventory plus shared subject policy and compact context.
         supplied=json.loads(prompt.split('Query and inventory:\n')[1])['observed_sources']
         assert len(supplied)==37
         assert [s['url'] for s in supplied]==[s['url'] for s in urls]

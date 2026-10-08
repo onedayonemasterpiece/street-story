@@ -440,7 +440,11 @@ class NativeVisionProvider:
                     actual = usage.get('totalTokens')
                     known_rejected = (receipt.get('provider_send_state') == 'not_sent'
                                       and (receipt.get('rpc_error') or {}).get('turn_rejected') is True)
-                    if known_rejected:
+                    known_unsent = (not receipt.get('turn_id') and receipt['phase'] in {'created', 'thread_created'}
+                                    and receipt.get('provider_send_state') != 'possibly_sent')
+                    if known_unsent:
+                        receipt.update(provider_send_state='not_sent', retry_safe=True)
+                    if known_rejected or known_unsent:
                         await lease.finalize({'actual_total_tokens': 0, 'usage': usage,
                                               'provider_send_state': 'not_sent'}, 'aborted')
                     else:
@@ -455,6 +459,12 @@ class NativeVisionProvider:
                 self.permission.invalidate(grant, 'native_provider_quota_or_auth')
             if receipt['phase'] == 'response_completed':
                 receipt['phase'] = 'failed'
+            # Admission/quota/profile failures before turn intent are proven
+            # unsent. Preserve any known thread and phase for the same retry;
+            # creation/turn intents and addressed turns remain UNKNOWN.
+            if (not receipt.get('turn_id') and receipt['phase'] in {'created', 'thread_created'}
+                    and receipt.get('provider_send_state') != 'possibly_sent'):
+                receipt.update(provider_send_state='not_sent', retry_safe=True)
             receipt['error_type'] = type(exc).__name__
             if getattr(exc, 'resource_failure', False):
                 code = getattr(exc, 'code', '')
@@ -463,8 +473,9 @@ class NativeVisionProvider:
                 receipt['route_failure'] = {'code': code, 'retry_at': retry_at,
                                             'observed_at': self.service.store.now()}
                 await self._save(binding, receipt)
-                logger.warning('native_visual_resource_wait story_id=%s attempt_id=%s phase=%s code=%s retry_at=%s',
-                               story['id'], binding['attempt_id'], receipt['phase'], code, retry_at)
+                logger.warning('native_visual_resource_wait story_id=%s attempt_id=%s phase=%s code=%s retry_at=%s provider_send_state=%s',
+                               story['id'], binding['attempt_id'], receipt['phase'], code, retry_at,
+                               receipt.get('provider_send_state', 'unknown'))
                 raise RetryableProviderError(code, retry_at=retry_at) from exc
             await self._save(binding, receipt)
             if isinstance(exc, (RetryableProviderError, asyncio.CancelledError)):

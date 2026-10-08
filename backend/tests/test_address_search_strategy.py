@@ -44,7 +44,9 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
     async def generate(key, timeout, contents, config, **kwargs):
         prompt = contents[1]
         context = json.loads(prompt.split('Данные ниже — только контекст:\n')[1])
-        assert context['location_search_context']['nearby_address_hypotheses'] == [a, b]
+        rows = context['location_search_context']['address_anchors']['rows']
+        assert [(row[0], row[2], row[3]) for row in rows] == [
+            (a['candidate_id'], 'Fixture Street', '31'), (b['candidate_id'], 'Fixture Street', '33')]
         assert 'article_queries' in config.response_json_schema['required']
         assert 'современными внешними фотографиями' in prompt
         assert 'содержательно разные запросы' in prompt

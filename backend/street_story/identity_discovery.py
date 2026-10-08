@@ -70,7 +70,7 @@ def _map_query_context(story, candidates):
 
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
-    from .identity_source_selection import regional_source_profile
+    from .identity_source_selection import regional_source_profile, model_identity_context
     schema = {'type': 'object', 'properties': {
         'entity_name': {'type': 'string'},
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
@@ -122,7 +122,7 @@ async def suggest(service, story, transcript, candidates):
         'Обычный дом может иметь данные о строительстве, эксплуатации или ремонте без исторической статьи. '
         'Современный внешний вид — требование к REF, а не обязательные слова каждого запроса. '
         'Предусмотри в плане отдельный запрос по фасаду, внешнему виду или фото с улицы для правдоподобного адреса, если простой запрос может дать лишь адресные справочники. '
-        'nearby_address_hypotheses — полный список переданных реальных соседних адресных якорей, '
+        'address_anchors — полный список переданных реальных соседних адресных якорей, '
         'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
         'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
         'или видимым признакам; сначала проверь разные правдоподобные адреса простыми запросами. '
@@ -154,16 +154,10 @@ async def suggest(service, story, transcript, candidates):
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': region_hint(story),
                     'regional_source_profile': regional_source_profile(story, candidates),
-                    'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
-                        'camera_alignment', 'map_address', 'map_coordinates', 'road_name', 'map_object') if key in x} for x in candidates[:16]],
-                    'observed_physical_candidates': [{key: item[key] for key in
-                        ('candidate_id', 'name', 'map_address', 'map_coordinates', 'distance_m',
-                         'nearest_footprint_distance_m', 'camera_alignment', 'map_object') if key in item}
-                        for item in observed],
-                    'location_search_context': _map_query_context(story, candidates),
+                    'location_search_context': model_identity_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
-                    'author_context': transcript[:1500]}, ensure_ascii=False))
+                    'author_context': transcript[:1500]}, ensure_ascii=False, separators=(',', ':')))
     config = types.GenerateContentConfig(
         response_mime_type='application/json',
         response_json_schema=schema,

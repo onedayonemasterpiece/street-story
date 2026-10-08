@@ -1039,6 +1039,18 @@ class StreetStoryService:
                     db.execute("UPDATE jobs SET lease_until=? WHERE id=? AND state='running' AND attempts=?", (self.store.now()+90, job['id'], job['attempts']))
 
         lease_task = asyncio.create_task(heartbeat())
+        async def close_at_deadline():
+            from .research_budget import remaining_seconds, finish_attempt
+            purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
+            await asyncio.sleep(max(0, remaining_seconds(self, job['story_id'], purpose)))
+            # SDK cancellation can await remote accounting cleanup. Product
+            # waiting ends on its own clock while the original receipt remains
+            # available for bounded reconciliation.
+            with self.store.tx() as db:
+                finish_attempt(self, db, job['story_id'], outcome='deadline_exceeded',
+                    reason='identity_deadline_exceeded' if purpose == 'identity' else 'research_deadline_exceeded',
+                    purpose=purpose, job=job)
+        deadline_task = asyncio.create_task(close_at_deadline()) if job['kind'] in RESEARCH_JOB_KINDS else None
         try:
             from .research_budget import ResearchTerminated, finish_attempt, remaining_seconds
             result = await self._execute_job_with_deadline(job)
@@ -1046,6 +1058,7 @@ class StreetStoryService:
                 with self.store.tx() as db:
                     finish_attempt(self, db, job['story_id'], outcome=result['outcome'],
                         reason=result.get('reason') or result['outcome'], job=job,
+                        purpose='identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts',
                         coverage_complete=result.get('coverage_complete', False))
                 return True
             with self.store.tx() as db:
@@ -1120,7 +1133,9 @@ class StreetStoryService:
             return True
         finally:
             lease_task.cancel()
-            await asyncio.gather(lease_task, return_exceptions=True)
+            if deadline_task is not None:
+                deadline_task.cancel()
+            await asyncio.gather(lease_task, *([deadline_task] if deadline_task is not None else []), return_exceptions=True)
             if job['kind'] in RESEARCH_JOB_KINDS:
                 self._observe_terminal_attempts(story_id=job['story_id'])
         return True

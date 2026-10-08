@@ -106,6 +106,36 @@ async def test_one_unknown_visual_unit_cannot_end_independent_discovery(tmp_path
     assert svc.story(sid)['research_outcome']['outcome'] == 'deadline_exceeded'
 
 
+@pytest.mark.asyncio
+async def test_product_deadline_closes_before_cancelled_sdk_finishes_accounting(tmp_path):
+    svc, _, story = service(tmp_path)
+    sid = story['id']
+    svc.settings = replace(svc.settings, identity_timeout_seconds=.15)
+    ensure_budget(svc, sid, explicit=True)
+    job(svc, sid)
+    entered, cleanup = asyncio.Event(), asyncio.Event()
+    async def delayed_sdk(_job):
+        entered.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await cleanup.wait()  # Existing remote receipt/accounting cleanup.
+            raise
+    svc._run_identity = delayed_sdk
+    task = asyncio.create_task(svc.run_once(claim_story_id=sid))
+    try:
+        await entered.wait()
+        await asyncio.sleep(.2)
+        assert not task.done()
+        outcome = svc.story(sid)['research_outcome']
+        assert outcome['outcome'] == 'deadline_exceeded'
+        assert outcome['reason'] == 'identity_deadline_exceeded'
+        assert not svc.story(sid)['research_pending']['identity']
+    finally:
+        cleanup.set()
+        await task
+
+
 def test_explicit_owner_wave_renews_time_without_erasing_history(tmp_path, monkeypatch):
     svc, _, story = service(tmp_path)
     sid = story['id']

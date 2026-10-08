@@ -423,3 +423,38 @@ async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, 
         receipts = [json.loads(row[0]) for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
     assert all(receipt['phase'] in {'created', 'failed'} for receipt in receipts)
     assert len(ensure_budget(service, sid)['work_units']['exact_pairs']) == service.settings.identity_max_exact_pairs
+
+
+@pytest.mark.asyncio
+async def test_native_unsent_pair_wait_preserves_original_due_then_reuses_unit(tmp_path):
+    from types import SimpleNamespace
+    from street_story.errors import RetryableProviderError
+    service, sid, photo = fixture(tmp_path)
+    clock = [service.store.now()]
+    service.store.now = lambda: clock[0]
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter.client = None
+    args = visual_args(None, {'id': sid, 'photo_sha256': photo}, {}, {
+        'comparison_id': 'same-admission-unit', 'references': [{'candidate_id': 'wiki:1'}]})
+    calls = []
+    async def native(snapshot, story, schema, context, binding):
+        calls.append(binding['attempt_id'])
+        if len(calls) == 1:
+            receipt = {'binding': binding, 'phase': 'created', 'provider_send_state': 'not_sent',
+                       'retry_safe': True, 'route_failure': {'code': 'RESOURCE_NO_CAPACITY', 'retry_at': clock[0]+3}}
+            await adapter.checkpoint(binding, receipt)
+            raise RetryableProviderError('RESOURCE_NO_CAPACITY', retry_at=clock[0]+3)
+        assert 'turn_id' not in binding and 'thread_id' not in binding
+        return {'result': {'status': 'uncertain'}, 'receipt': {'phase': 'completed'}}
+    adapter.native_vision = SimpleNamespace(available=True, compare_visual=native)
+    with pytest.raises(RetryableProviderError) as refused:
+        await adapter.visual_pair_route('native', *args)
+    assert refused.value.retry_at == clock[0]+3
+    assert refused.value.provider_send_state == 'not_sent' and refused.value.retry_safe is True
+    with pytest.raises(RetryableProviderError) as cooling:
+        await adapter.visual_pair_route('native', *args)
+    assert cooling.value.retry_at == refused.value.retry_at and len(calls) == 1
+    clock[0] += 3
+    assert (await adapter.visual_pair_route('native', *args))['result']['status'] == 'uncertain'
+    assert calls[0] == calls[1]

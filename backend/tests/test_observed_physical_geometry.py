@@ -95,7 +95,10 @@ async def test_geometry_and_missing_compass_reach_real_headless_pair_worker(tmp_
         supplied = json.loads(context)
         contexts.append(supplied)
         mapped = next(c for c in supplied['physical_candidates'] if c['candidate_id'] == candidate['candidate_id'])
-        assert mapped['map_geometry'] == candidate['map_geometry']
+        assert 'map_geometry' not in mapped and 'map_object' not in mapped
+        assert mapped['object_tags']['building'] == 'yes'
+        _, retained = svc._identity_snapshot(story['id'])
+        assert retained['visual_identity']['observed_candidates'][0]['map_geometry'] == candidate['map_geometry']
         assert mapped['boundary_distance_m'] < 12
         assert supplied['camera_hints']['focal_length_35mm'] == 24
         assert 'direction_degrees' not in supplied['camera_hints'] and 'camera_alignment' not in mapped

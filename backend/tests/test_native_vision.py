@@ -127,6 +127,9 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
     assert receipts[-1]['phase'] == 'created'
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    assert finalized[-1][1] == 'aborted'
+    assert finalized[-1][0]['actual_total_tokens'] == 0
 
 
 @pytest.mark.asyncio
@@ -149,6 +152,8 @@ async def test_resource_denial_preserves_dispatch_phase_and_authority_retry(tmp_
     assert exc.value.retry_at == provider.service.store.now() + 120
     assert receipts[-1]['phase'] == 'created'
     assert receipts[-1]['route_failure']['code'] == 'RESOURCE_DAILY_BUDGET'
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    assert receipts[-1]['retry_safe'] is True
     assert receipts[-1]['thread_id'] == binding.get('thread_id')
     assert receipts[-1]['turn_id'] == binding.get('turn_id')
     assert not client.calls and not sends and not finalized

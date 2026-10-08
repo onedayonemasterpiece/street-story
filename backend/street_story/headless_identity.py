@@ -92,7 +92,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         try:
             started = time.monotonic()
             for _ in range(4):
-                if await self._run_owned_unit(job, provider, story, session, scope):
+                unit_result = await self._run_owned_unit(job, provider, story, session, scope)
+                if isinstance(unit_result, dict) and unit_result.get('outcome'):
+                    return unit_result
+                if unit_result:
                     return
                 # A completed negative is progress. Yield between units so Stop
                 # and other stories can run; each next send gets fresh admission.
@@ -184,6 +187,14 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             record_identity_event(self.service,story['id'],'identity_background_waiting',{
                 'generation':generation,'reason':'insufficient_evidence' if unit.get('exhausted') else 'resource_or_source_wait'})
             if unit.get('exhausted'):
+                if unit.get('reference_triage_exhausted'):
+                    return {'outcome': 'search_exhausted', 'reason': 'reference_triage_exhausted',
+                            'coverage_complete': False}
+                with self.service.store.connection() as db:
+                    discovery_active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind='identity' "
+                        "AND state IN ('ready','retry','running')", (story['id'],)).fetchone() is not None
+                if discovery_active:
+                    raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+5)
                 return True  # Known finite no-evidence outcome; fresh owner leads may resume it.
             raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+30)
         current,latest = self.service._identity_snapshot(story['id'])
@@ -321,7 +332,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 or current.get('error_code') == 'visual_identity_conflict')
             if pair['phase'] == 'result':
                 return pair, {'result': pair['result'], 'receipt': pair['receipt']}, None
-            if pair['phase'] != 'ready' and pair.get('retry_at', 0) > self.service.store.now():
+            if pair.get('retry_at', 0) > self.service.store.now():
                 return pair, None, RetryableProviderError(
                     pair.get('last_error') or 'research_visual_pair_outcome_unknown',
                     retry_at=pair['retry_at'])
@@ -450,6 +461,23 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                             pair['phase'] = 'failed'
                             freed_routes.append(pair['route'])
                         else:
+                            observe = getattr(provider, 'visual_pair_receipts', None)
+                            receipts = observe({**story, '_identity_generation': scope['generation'],
+                                '_visual_reference_mapping': pair['reply']['references']},
+                                canonical(pair['reply'])) if callable(observe) else {}
+                            unsent = bool(receipts) and all(
+                                receipt.get('provider_send_state') == 'not_sent'
+                                and not receipt.get('turn_id') and not receipt.get('message_id')
+                                and (receipt.get('phase') in {'created', 'thread_created'}
+                                     or receipt.get('phase') == 'failed' and receipt.get('retry_safe') is True)
+                                for receipt in receipts.values())
+                            if unsent:
+                                # A dispatch descriptor is not evidence of a
+                                # send. Keep the exact ID/route but permit its
+                                # first prompt after authoritative admission
+                                # cooldown, rather than a resume-only read of
+                                # a turn which never existed.
+                                pair['phase'] = 'ready'
                             pair['retry_at'] = error.retry_at or self.service.store.now() + 30
                             waits.append(error)
                         self._save_visual_queue(session, state)

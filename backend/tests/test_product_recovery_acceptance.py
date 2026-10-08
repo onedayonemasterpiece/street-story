@@ -177,6 +177,22 @@ def test_between_identity_and_facts_is_not_terminal(tmp_path):
     assert harness.read_case(svc, case, item())['terminal'] is False
 
 
+def test_harness_forced_completion_cannot_pass_as_product_terminal(tmp_path):
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 400
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, case['story_id'])['research_json'])
+        research['automatic_research_outcome'] = {'outcome': 'useful_partial',
+            'finished_at': 400, 'reason': 'acceptance_upload_deadline_exceeded'}
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+            (canonical(research), case['story_id']))
+        db.execute("UPDATE jobs SET state='done' WHERE id='facts'")
+    result = harness.read_case(svc, case, item())
+    assert result['terminal'] and result['total_elapsed_s'] == 300
+    assert result['gates']['natural_product_terminal'] is False
+    assert result['status'] == 'FAIL'
+
+
 def test_resource_block_and_missing_hidden_expected_id_are_distinct_results():
     assert harness.acceptance_status({'terminal': True,
         'product_outcome': {'outcome': 'resource_blocked'}, 'gates': {'identity': False}}) == 'BLOCKED'

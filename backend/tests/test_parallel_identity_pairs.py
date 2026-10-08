@@ -385,6 +385,39 @@ async def test_single_initial_unknown_keeps_original_lane_and_accepts_late_indep
 
 
 @pytest.mark.asyncio
+async def test_proven_unsent_admission_wait_retries_original_pair_as_first_send_after_due(tmp_path):
+    svc, story, _ = prepare(tmp_path, count=1)
+    clock = [svc.store.now()]
+    svc.store.now = lambda: clock[0]
+    receipts, calls = {}, []
+    async def pair(route, snapshot, item, schema, context):
+        identifier = json.loads(context)['comparison_id']
+        calls.append((identifier, item['_visual_pair_resume_only']))
+        if len(calls) == 1:
+            receipts['vision_native'] = {'phase': 'created', 'provider_send_state': 'not_sent',
+                'retry_safe': True, 'binding': {'attempt_id': 'same-native-attempt'}}
+            raise RetryableProviderError('research_vision_waiting', retry_at=clock[0]+3)
+        return response(item, 'native-model', 'match')
+    svc.providers.research = SimpleNamespace(vision_available=True, vision_model='fixture',
+        parallel_visual_routes=lambda: ('native', 'google'), visual_pair_route=pair,
+        visual_pair_receipts=lambda *_args: receipts)
+    assert await svc.run_once(claim_kind='identity_visual')
+    _, research = svc._identity_snapshot(story['id'])
+    original = research['visual_search_operation']['parallel_pairs'][0]
+    assert original['phase'] == 'ready' and original['retry_at'] == clock[0]+3
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='identity_visual'", (story['id'],))
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert len(calls) == 1  # Local queue polling cannot bypass authority due.
+    clock[0] += 4
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='identity_visual'", (story['id'],))
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert calls == [(original['id'], False), (original['id'], False)]
+    assert svc.story(story['id'])['visual_identity']['candidate_id'] == 'gate:a'
+
+
+@pytest.mark.asyncio
 async def test_four_qualified_lanes_commit_first_then_keep_real_conflict_after_later_matches(tmp_path):
     svc, story, _ = prepare(tmp_path, count=4)
     releases = {label: asyncio.Event() for label in 'bcd'}

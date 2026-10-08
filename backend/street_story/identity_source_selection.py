@@ -21,7 +21,107 @@ IDENTITY_SOURCE_POLICY = (
     'Do not promote an entrance, tenant, address label, article title or historical name to building identity. '
     'A housing/repair record with the exact address may be a useful lead; require accessible modern exterior '
     'evidence before comparing it. Empty selection is valid. These preferences are not identity proof. '
+    'Use SOURCE appearance to choose a specific physical facade/corpus; a map, logo, bridge or archival city '
+    'scene is useful only when it depicts the actual kind of subject visible in SOURCE. A rendering may be '
+    'useful when its physical geometry applies; decide this semantically, not by file type. '
 )
+
+
+def _short(value, limit=120):
+    return str(value or '')[:limit]
+
+
+def _number(value, digits=1):
+    try:
+        import math
+        number = float(value)
+        return round(number, digits) if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def compact_candidate_catalog(candidates):
+    """All exact IDs and geometry summaries; full map objects stay durable.
+
+    Column tables avoid repeating schema/provenance and raw OSM node arrays per
+    candidate. Nomination dereferences the original object, not these summaries.
+    """
+    rows = []
+    for entry in candidates:
+        if not isinstance(entry, dict) or not entry.get('candidate_id'):
+            continue
+        address = entry.get('map_address') or {}
+        coordinates = entry.get('map_coordinates') or entry.get('center') or {}
+        tags = (entry.get('map_object') or {}).get('tags') or {}
+        interval = entry.get('footprint_bearing_interval') or {}
+        alignment = entry.get('camera_alignment') or {}
+        # Never copy arbitrary OSM tags (some contain long descriptions), raw
+        # node/geometry arrays, search excerpts, URLs or image inventories.
+        kind = {key: _short(tags[key], 60) for key in
+            ('building', 'entrance', 'amenity', 'shop', 'office', 'historic') if tags.get(key)}
+        camera = {key: alignment[key] for key in
+            ('status', 'bearing_degrees', 'relative_bearing_degrees', 'within_fov', 'heading_difference_degrees')
+            if isinstance(alignment, dict) and key in alignment and isinstance(alignment[key], (str, int, float, bool))}
+        if isinstance(alignment, str):
+            camera['status'] = alignment
+        if entry.get('camera_direction_difference_deg') is not None:
+            camera['heading_difference_degrees'] = _number(entry['camera_direction_difference_deg'])
+        camera = {key: _short(value, 60) if isinstance(value, str) else value for key, value in camera.items()}
+        literal_address = [_short(address.get(key)) for key in ('city', 'street', 'house_number')]
+        point = [_number(coordinates.get('latitude', coordinates.get('lat')), 6),
+            _number(coordinates.get('longitude', coordinates.get('lon')), 6)]
+        bearings = [_number(interval.get(key)) for key in ('start_degrees', 'end_degrees', 'angular_span_degrees')]
+        rows.append([entry['candidate_id'], _short(entry.get('name'), 100),
+            literal_address if any(literal_address) else None,
+            point if any(value is not None for value in point) else None,
+            _number(entry.get('distance_m')), _number(entry.get('boundary_distance_m')),
+            bearings if any(value is not None for value in bearings) else None,
+            camera or None, kind or None, entry.get('identity_eligible') is not False])
+    return {'columns': ['candidate_id', 'name', 'address_city_street_house_number', 'latitude_longitude',
+        'distance_m', 'boundary_distance_m', 'bearing_start_end_span_degrees', 'camera_alignment',
+        'object_tags', 'identity_eligible'], 'rows': rows,
+        'geometry_policy': 'All supplied exact IDs are retained. Rounded coordinates/bearings are search hints. '
+            'Full original geometry and provenance remain durable and are retrieved by nominated ID; no SOURCE binding.'}
+
+
+def model_identity_context(story, candidates=(), *, include_observed=True):
+    """Bounded semantic packet without raw OSM or repeated address objects."""
+    research = json.loads((story or {}).get('research_json') or '{}')
+    observed = (story or {}).get('_identity_observed_candidates') or (
+        research.get('visual_identity') or {}).get('observed_candidates') or []
+    active = (research.get('visual_identity') or {}).get('candidates') or []
+    nearby = ((story or {}).get('_identity_search_context') or {}).get('nearby') or []
+    by_id = {item['candidate_id']: item for item in [*nearby, *active, *observed, *candidates]
+        if isinstance(item, dict) and item.get('candidate_id')}
+    addresses = observed_address_context(story, [*nearby, *active, *candidates])
+    if not include_observed:
+        # Source selection cannot nominate physical IDs. Keep active hypotheses
+        # and exact address-linked buildings; distant unaddressed catalog rows
+        # stay available to the planner rather than repeating in every selector.
+        needed = {item.get('candidate_id') for item in [*active, *candidates]}
+        needed.update(item['physical_candidate_id'] for item in addresses['building_address_memberships'])
+        by_id = {key: value for key, value in by_id.items() if key in needed}
+    reverse = (((story or {}).get('_identity_search_context') or {}).get('reverse_address') or
+        ((research.get('osm') or {}).get('reverse') or {}).get('address') or {})
+    packet = {'observed_localities': [_short(value) for value in addresses['observed_localities']],
+        'reverse_address': {key: _short(reverse[key]) for key in
+            ('city', 'town', 'village', 'state', 'country', 'road', 'house_number') if reverse.get(key)},
+        'address_anchors': {'columns': ['mapped_entry_id', 'city', 'street', 'house_number', 'distance_m', 'entry_kind', 'latitude_longitude'],
+            'rows': [[item['mapped_entry_id'], *[_short(item['address'].get(key)) for key in
+                ('city', 'street', 'house_number')], _number(item['distance_m']), item['entry_kind'],
+                [_number((item.get('map_coordinates') or {}).get(key), 6) for key in ('latitude', 'longitude')]]
+                for item in addresses['address_anchors']]},
+        'building_address_memberships': [{'physical_candidate_id': item['physical_candidate_id'],
+            'address_entry_ids': [anchor['mapped_entry_id'] for anchor in item['address_entries']],
+            'proof': 'osm_closed_way_node_membership'} for item in addresses['building_address_memberships']],
+        'observed_physical_candidates': compact_candidate_catalog(list(by_id.values())),
+        'policy': addresses['policy']}
+    # Fail explicitly instead of silently losing candidates. Radius/pool bounds
+    # normally keep this well below the envelope; all exact IDs remain present.
+    if len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode()) > 65536:
+        from .providers import RetryableProviderError
+        raise RetryableProviderError('identity_semantic_packet_too_large')
+    return packet
 
 
 def observed_address_context(story, candidates=()):

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from street_story.identity_discovery import _map_query_context, suggest
-from street_story.identity_source_selection import IDENTITY_SOURCE_POLICY, observed_address_context
+from street_story.identity_source_selection import (IDENTITY_SOURCE_POLICY, observed_address_context,
+    compact_candidate_catalog, model_identity_context)
 from test_visual_search_continuation import prepared
 
 
@@ -57,9 +58,11 @@ async def test_planner_receives_exact_address_geometry_and_nomination_excludes_e
         prompt = contents[1]
         captured.append(prompt)
         context = json.loads(prompt.split('Данные ниже — только контекст:\n')[1])
-        grouped = context['location_search_context']['observed_address_context']['building_address_memberships']
+        grouped = context['location_search_context']['building_address_memberships']
         assert grouped[0]['physical_candidate_id'] == 'osm:way:4'
-        assert grouped[0]['address_entries'][0]['address']['house_number'] == '7A'
+        assert grouped[0]['address_entry_ids'] == ['osm:node:1', 'osm:node:2']
+        anchors = context['location_search_context']['address_anchors']['rows']
+        assert next(row for row in anchors if row[0] == 'osm:node:1')[3] == '7A'
         assert config.response_json_schema['properties']['observed_candidate_ids']['items']['enum'] == ['osm:way:4']
         assert 'первые два запроса' in prompt and 'Город обязателен в каждом запросе' in prompt
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
@@ -77,3 +80,55 @@ def test_source_policy_names_temporal_geographic_and_subject_checks_without_answ
     assert 'modern exterior' in IDENTITY_SOURCE_POLICY
     assert 'Empty selection is valid' in IDENTITY_SOURCE_POLICY
     assert 'http' not in IDENTITY_SOURCE_POLICY
+
+
+def test_model_packet_retains_full_catalog_without_raw_map_payload_or_mutation():
+    import copy
+    candidates = []
+    for index in range(193):
+        candidates.append({'candidate_id': f'osm:way:{index}', 'name': 'Observed building',
+            'map_address': {'city': 'Observed City', 'street': 'Full avenue', 'house_number': str(index) + 'A'},
+            'map_coordinates': {'latitude': 54.123456789, 'longitude': 20.123456789},
+            'map_geometry': {'lines': [[{'lat': 54, 'lon': 20}] * 1000]},
+            'boundary_distance_m': index + .12, 'distance_m': index + .45,
+            'footprint_bearing_interval': {'start_degrees': 282.12345, 'end_degrees': 319.9876, 'angular_span_degrees': 37.864},
+            'camera_alignment': 'ahead', 'camera_direction_difference_deg': 17.234,
+            'map_object': {'tags': {'building': 'yes', 'description': 'unbounded raw description ' * 1000},
+                'building_entrances': {'candidate_ids': ['osm:node:1'], 'proof': 'osm_closed_way_node_membership'}}})
+    story = {'_identity_observed_candidates': candidates, '_identity_search_context': {
+        'nearby': candidates, 'raw_osm': 'raw map data ' * 100000}}
+    original = copy.deepcopy(story)
+    packet = model_identity_context(story)
+    rows = packet['observed_physical_candidates']['rows']
+    assert [row[0] for row in rows] == [item['candidate_id'] for item in candidates]
+    assert len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode()) < 65536
+    assert 'map_geometry' not in json.dumps(packet) and 'unbounded raw' not in json.dumps(packet)
+    assert rows[-1][3] == [54.123457, 20.123457]
+    assert rows[-1][5] == 192.1 and rows[-1][6] == [282.1, 320.0, 37.9]
+    assert rows[-1][7] == {'status': 'ahead', 'heading_difference_degrees': 17.2}
+    assert story == original  # Durable full geometry remains untouched.
+
+
+def test_catalog_keeps_unknown_coordinates_and_geometry_unknown():
+    catalog = compact_candidate_catalog([{'candidate_id': 'osm:way:1'}])
+    assert catalog['rows'][0][2:8] == [None] * 6
+
+
+def test_selector_keeps_active_and_exact_membership_geometry_with_all_address_anchors():
+    pool = [*observed(), {'candidate_id': 'osm:way:999', 'map_object': {'tags': {'building': 'yes'}}}]
+    story = {'_identity_observed_candidates': pool,
+        'research_json': json.dumps({'visual_identity': {'candidates': [pool[-1]]}}),
+        '_identity_search_context': {'nearby': [{'candidate_id': 'osm:node:777', 'name': 'Unaddressed nearby shop'}]}}
+    packet = model_identity_context(story, include_observed=False)
+    assert {row[0] for row in packet['observed_physical_candidates']['rows']} == {'osm:way:4', 'osm:way:999'}
+    assert {row[0] for row in packet['address_anchors']['rows']} == {'osm:node:1', 'osm:node:2', 'osm:node:3'}
+    assert len(packet['building_address_memberships']) == 1
+
+
+def test_oversized_model_catalog_fails_explicitly_without_dropping_ids():
+    from street_story.providers import RetryableProviderError
+    candidates = [{'candidate_id': f'osm:way:{index}', 'name': 'Long observed name ' * 10}
+        for index in range(1000)]
+    with pytest.raises(RetryableProviderError, match='identity_semantic_packet_too_large'):
+        model_identity_context({'_identity_observed_candidates': candidates})
+    assert len(candidates) == 1000
