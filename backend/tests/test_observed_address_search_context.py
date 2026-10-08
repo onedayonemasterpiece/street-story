@@ -66,11 +66,14 @@ async def test_planner_receives_exact_address_geometry_and_nomination_excludes_e
         assert config.response_json_schema['properties']['observed_candidate_ids']['items']['enum'] == ['osm:way:4']
         assert 'первые два запроса' in prompt and 'Город обязателен в каждом запросе' in prompt
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
-            'visual_query': '', 'commons_query': '', 'article_queries': ['Model-owned hypothesis']}))
+            'visual_query': '', 'commons_query': '', 'article_queries': ['Model-owned hypothesis'],
+            'first_wave_hypotheses': [{'kind': 'address', 'subject_id': f'osm:node:{index}',
+                'query': '', 'reason': 'Plausible observed address'} for index in (1, 3)]}))
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     snapshot = {**svc._identity_snapshot(story['id'])[0], '_identity_observed_candidates': observed()}
     await suggest(svc, snapshot, '', [])
-    assert snapshot['_identity_article_queries'] == ['Model-owned hypothesis']
+    assert snapshot['_identity_article_queries'] == ['Observed City Exact avenue 7A',
+        'Observed City Exact avenue 13', 'Model-owned hypothesis']
     assert len(captured) == 1  # Host supplies evidence; it does not rewrite model semantic queries.
 
 

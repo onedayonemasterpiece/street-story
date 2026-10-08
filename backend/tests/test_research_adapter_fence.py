@@ -458,3 +458,56 @@ async def test_native_unsent_pair_wait_preserves_original_due_then_reuses_unit(t
     clock[0] += 3
     assert (await adapter.visual_pair_route('native', *args))['result']['status'] == 'uncertain'
     assert calls[0] == calls[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('structured_original', [False, True])
+async def test_new_planner_schema_reads_old_unknown_unit_then_replays_closed_plan(tmp_path, structured_original):
+    import hashlib
+    from types import SimpleNamespace
+    from street_story.service import canonical
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter._active_binding = ContextVar('planner-old-schema-binding', default=None)
+    client = SimpleNamespace(endpoint='same-existing-opencode', provider_id='opencode', model_id='qualified-text')
+    adapter.client = client
+    # Losing availability/qualification cannot invent a replacement operation.
+    adapter._fact_pool_routes = lambda: [{'provider_id': client.provider_id, 'model_id': client.model_id,
+        'endpoint': client.endpoint, 'client': client, 'qualified': False, 'available': False}]
+    old_prompt = 'Original address planning capsule'
+    old_schema = {'type': 'object', 'properties': {'article_queries': {'type': 'array'}}, 'required': ['article_queries']}
+    if structured_original:
+        old_schema['properties']['first_wave_hypotheses'] = {'type': 'array'}
+        old_schema['required'].append('first_wave_hypotheses')
+    old_unit = canonical(['identity-search-plan-v1', old_prompt, old_schema])
+    route_unit = canonical([old_unit, client.provider_id, client.model_id, client.endpoint])
+    story = {'id': sid, 'photo_sha256': photo, '_fact_pool_unit_id': old_unit,
+             '_fact_pool_input_sha256': hashlib.sha256(old_unit.encode()).hexdigest()}
+    binding, _ = adapter.attempt(story, 'identity_search_plan', route_unit)
+    receipt = {'binding': binding, 'phase': 'unknown', 'session_id': 'original-session',
+        'message_id': 'original-message', 'provider_id': client.provider_id, 'model_id': client.model_id,
+        'frozen_prompt': old_prompt, 'frozen_schema': old_schema}
+    await adapter.checkpoint(binding, receipt)
+    assert adapter.has_identity_search_plan_readback(story)
+    calls = []
+    async def read_original(role, prompt, current, schema):
+        calls.append(current)
+        assert role == 'facts' and prompt == old_prompt and schema == old_schema
+        assert current['session_id'] == 'original-session' and current['message_id'] == 'original-message'
+        assert current['attempt_id'] == binding['attempt_id'] and current['fact_unit_id'] == old_unit
+        closed = {**receipt, 'phase': 'completed', 'result': {'article_queries': ['Original observed address']}}
+        await adapter.checkpoint(binding, closed)
+        return {'result': closed['result'], 'receipt': closed}
+    client._run = read_original
+    new_schema = {**old_schema, 'required': ['article_queries', 'first_wave_hypotheses']}
+    answer = await adapter.plan_identity_search(story, 'New structured planning capsule', new_schema)
+    assert bool(answer.get('original_schema_readback')) is not structured_original
+    assert answer['original_schema'] == old_schema
+    assert answer['result']['article_queries'] == ['Original observed address']
+    # Covers result readback -> durable plan persistence crash boundary.
+    again = await adapter.plan_identity_search(story, 'New structured planning capsule', new_schema)
+    assert again == answer and len(calls) == 1
+    with service.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM research_provider_attempts WHERE role='identity_search_plan'").fetchone()[0] == 1
+    assert not adapter.has_identity_search_plan_readback({**story, '_identity_research_control_revision': 1})

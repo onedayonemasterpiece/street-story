@@ -52,13 +52,15 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         assert 'содержательно разные запросы' in prompt
         assert contents[0].inline_data.data == normalize_reference(jpeg())[1]
         return SimpleNamespace(text=json.dumps({'entity_name': 'Hypothesis', 'wikipedia_queries': [],
-            'visual_query': feature, 'commons_query': '', 'article_queries': plan}))
+            'visual_query': feature, 'commons_query': '', 'article_queries': plan,
+            'first_wave_hypotheses': [{'kind': 'address', 'subject_id': item['candidate_id'],
+                'query': '', 'reason': 'Plausible observed address'} for item in (a, b)]}))
     service = SimpleNamespace(_source_photo_bytes=lambda _: jpeg(),
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     story = {'id': 'fixture', '_identity_search_context': {'nearby': [a, b]}}
     await identity_discovery.suggest(service, story, '', [])
-    assert story['_identity_article_queries'] == list(dict.fromkeys([*plan, feature]))
-    history = {q: {'status': 'completed'} for q in plan if q != feature}
+    assert story['_identity_article_queries'] == list(dict.fromkeys(['Fixture Street 31', 'Fixture Street 33', feature, *plan]))[:8]
+    history = {q: {'status': 'completed'} for q in story['_identity_article_queries'] if q != feature}
     assert identity_discovery.next_visual_query({}, 'Wrong guess', history, story['_identity_article_queries']) == feature
     assert 'address' not in story
 

@@ -55,7 +55,7 @@ async def test_google_unavailable_uses_qualified_existing_text_planner_once(tmp_
         assert 'SOURCE image is unavailable' in prompt
         assert 'regional_source_profile' in prompt
         return {'result': {'entity_name': '', 'wikipedia_queries': [], 'visual_query': '',
-            'commons_query': '', 'article_queries': ['Observed city Observed road 4']}}
+            'commons_query': '', 'article_queries': ['Observed city Observed road 4'], 'first_wave_hypotheses': []}}
     svc.providers.research = SimpleNamespace(plan_identity_search=qualified)
     async def search(service, entity, visual, *, story, first_ready):
         searches.append(story['_identity_search_query'])
@@ -144,7 +144,7 @@ async def test_planner_can_promote_existing_building_outside_active_shortlist(tm
         assert config.response_json_schema['properties']['observed_candidate_ids']['items']['enum'] == [physical['candidate_id']]
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
             'visual_query': '', 'commons_query': '', 'article_queries': ['Observed city Observed street'],
-            'observed_candidate_ids': [physical['candidate_id']]}))
+            'observed_candidate_ids': [physical['candidate_id']], 'first_wave_hypotheses': []}))
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     snapshot = {**svc._identity_snapshot(story['id'])[0], '_identity_observed_candidates': [physical]}
     active = [{'candidate_id': 'osm:way:1', 'name': 'Original hypothesis'}]

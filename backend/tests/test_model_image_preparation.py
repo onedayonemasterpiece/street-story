@@ -138,7 +138,7 @@ async def test_identity_suggest_source_prepared_before_generate():
     async def generate(key, timeout, contents, config, **kwargs):
         seen.append(contents[0].inline_data.data)
         return SimpleNamespace(
-            text='{"entity_name":"", "wikipedia_queries":[], "visual_query":"", "commons_query":"", "article_queries":[]}'
+            text='{"entity_name":"", "wikipedia_queries":[], "visual_query":"", "commons_query":"", "article_queries":[], "first_wave_hypotheses":[]}'
         )
 
     gemini = SimpleNamespace(executor=Executor(), _generate=generate, research_routes=[])

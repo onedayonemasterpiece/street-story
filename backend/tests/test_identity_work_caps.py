@@ -74,7 +74,7 @@ async def test_planner_cap_counts_distinct_frozen_inputs_before_new_inference(tm
             return await call('fixture', 5)
     async def generate(*args, **kwargs):
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
-            'visual_query': '', 'commons_query': '', 'article_queries': ['Observed address']}))
+            'visual_query': '', 'commons_query': '', 'article_queries': ['Observed address'], 'first_wave_hypotheses': []}))
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     snapshot = svc._identity_snapshot(story['id'])[0]
     await suggest(svc, snapshot, 'First observed context', [])

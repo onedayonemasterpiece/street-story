@@ -22,6 +22,7 @@ from pydantic import SecretStr, ValidationError
 
 from .db import Store
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
+from .research_budget import ResearchTerminated
 
 logger = logging.getLogger('uvicorn.error.street_story.gemini')
 OPERATIONS = ('transcription', 'grounded_research', 'web_search')
@@ -267,6 +268,11 @@ class GeminiExecutor:
                     result = await call(self.pool.keys[self.pool.ids.index(key_id)].get_secret_value(), timeout)
             except asyncio.CancelledError:
                 self.pool.finish(key_id, operation, Failure('cancelled'))
+                raise
+            except ResearchTerminated:
+                # Product completion is not a provider failure and must not
+                # cause failover to another key. Release only the local slot.
+                self.pool.finish(key_id, operation, Failure('research_finished', permanent=True))
                 raise
             except GeminiUnavailable:
                 self.pool.finish(key_id, operation, Failure('shared_control_unavailable'))

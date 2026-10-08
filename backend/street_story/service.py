@@ -1158,7 +1158,7 @@ class StreetStoryService:
         task.add_done_callback(settled)
 
     async def _execute_job_with_deadline(self, job):
-        from .research_budget import ResearchTerminated, require_remaining
+        from .research_budget import ResearchTerminated, require_remaining, RESEARCH_SEND_GUARD
         async def execute():
             if job["kind"] == "identity_visual":
                 from .headless_identity import HeadlessIdentity
@@ -1180,12 +1180,30 @@ class StreetStoryService:
             return await execute()
         purpose = 'identity' if job['kind'] in {'identity', 'identity_visual'} else 'facts'
         remaining = require_remaining(self, job['story_id'], purpose)
+        with self.store.connection() as db:
+            original = self._story_row(db, job['story_id'])
+            source_scope = (original['photo_sha256'],
+                json.loads(original['research_json'] or '{}').get('identity_generation', 0))
+        def guard_send():
+            with self.store.connection() as db:
+                row = self._story_row(db, job['story_id'])
+                current_scope = (row['photo_sha256'],
+                    json.loads(row['research_json'] or '{}').get('identity_generation', 0))
+                active = not job.get('id') or db.execute(
+                    "SELECT 1 FROM jobs WHERE id=? AND state='running' AND attempts=?",
+                    (job['id'], job['attempts'])).fetchone()
+            if current_scope != source_scope or not active:
+                raise ResearchTerminated('search_exhausted', 'research_send_scope_superseded')
+            require_remaining(self, job['story_id'], purpose)
+        send_token = RESEARCH_SEND_GUARD.set(guard_send)
         try:
             async with asyncio.timeout(remaining):
                 return await execute()
         except TimeoutError:
             raise ResearchTerminated(reason='identity_deadline_exceeded' if purpose == 'identity'
                                      else 'research_deadline_exceeded') from None
+        finally:
+            RESEARCH_SEND_GUARD.reset(send_token)
 
     def _handle_worker_failure(self, job, exc):
         import traceback

@@ -657,10 +657,77 @@ class ProductResearchAdapter:
                  story['id'], result['outcome'], len(result.get('sources') or []))
         return result
 
+    def _identity_plan_receipts(self, story):
+        with self.service.store.connection() as db:
+            rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                              'ORDER BY created_at DESC,rowid DESC', (story['id'], 'identity_search_plan'))
+            receipts = [json.loads(row[0]) for row in rows]
+        return [receipt for receipt in receipts if
+                (receipt.get('binding') or {}).get('photo_sha256') == story['photo_sha256']
+                and (receipt.get('binding') or {}).get('generation', 0) == story.get('_identity_generation', 0)
+                and (receipt.get('binding') or {}).get('control_revision', 0) ==
+                    story.get('_identity_research_control_revision', 0)]
+
+    def has_identity_search_plan_readback(self, story):
+        return any(self._fact_pool_unknown(receipt) or
+                   receipt.get('phase') == 'completed' and receipt.get('result')
+                   for receipt in self._identity_plan_receipts(story))
+
     async def plan_identity_search(self, story, prompt, schema):
         """One qualified tool-free planning operation on the existing text pool."""
         role = 'identity_search_plan'
         unit = canonical(['identity-search-plan-v1', prompt, schema])
+        scoped = self._identity_plan_receipts(story)
+        original = next((receipt for receipt in scoped if self._fact_pool_unknown(receipt)), None)
+        if original is None:
+            original = next((receipt for receipt in scoped
+                             if receipt.get('phase') == 'completed' and receipt.get('result')), None)
+        if original:
+            binding = original.get('binding') or {}
+            original_unit = binding.get('fact_unit_id')
+            original_schema = original.get('frozen_schema')
+            if original_schema is None:
+                try:
+                    original_schema = json.loads(original_unit)[2]
+                except (ValueError, TypeError, IndexError):
+                    raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30) from None
+            if not isinstance(original_schema, dict):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+            legacy = ('first_wave_hypotheses' not in original_schema.get('properties', {})
+                      or 'first_wave_hypotheses' not in original_schema.get('required', []))
+            if original.get('phase') == 'completed':
+                return {'result': original['result'], 'receipt': original,
+                        'original_schema': original_schema,
+                        **({'original_schema_readback': True} if legacy else {})}
+            matches = [route for route in self._fact_pool_routes() if route.get('client') is not None
+                       and route.get('endpoint') and (route['provider_id'], route['model_id']) ==
+                           (original.get('provider_id'), original.get('model_id'))
+                       and (not (original.get('isolation') or {}).get('directory') or
+                            (original.get('isolation') or {})['directory'] == getattr(route['client'], 'directory', None))]
+            if (not matches or not original_unit or not original.get('session_id')
+                    or not original.get('message_id')):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+            route = matches[0]
+            route_unit = canonical([original_unit, route['provider_id'], route['model_id'], route['endpoint']])
+            expected = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+                story.get('_identity_generation', 0), role, route_unit]).encode()).hexdigest()
+            if binding.get('request_id') != expected:
+                raise RetryableProviderError('identity_search_plan_binding_changed', retry_at=self.service.store.now()+30)
+            try:
+                original_input = json.loads(original_unit)
+                if (not isinstance(original_input, list) or len(original_input) != 3
+                        or original_input[0] != 'identity-search-plan-v1'
+                        or not isinstance(original_input[1], str) or not isinstance(original_input[2], dict)):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30) from None
+            owned = {**story, '_fact_pool_unit_id': original_unit,
+                     '_fact_pool_input_sha256': binding.get('fact_input_sha256')}
+            result = await self.run(owned, role, route_unit, lambda current:
+                route['client']._run('facts', original_input[1], current,
+                                     original_schema), client=route['client'])
+            return {**result, 'original_schema': original_schema,
+                    **({'original_schema_readback': True} if legacy else {})}
         routes = [route for route in self._fact_pool_routes() if route['qualified'] and route.get('endpoint')]
         prior = {}
         with self.service.store.connection() as db:
@@ -986,6 +1053,7 @@ class ProductResearchAdapter:
     async def _extract_giga_page(self, page, story, context, *, allow_fallback=True):
         from jsonschema import Draft202012Validator
         from .errors import MalformedProviderResponse
+        from .research_budget import ResearchTerminated, require_remaining
         capsule = fact_page_capsule(page, context)
         if self.giga is None:
             return await self._extract_opencode_page(capsule, page, story)
@@ -1020,6 +1088,7 @@ class ProductResearchAdapter:
                  'provider_send_state':'not_sent'}
         async def before_inference(metadata):
             self.guard_binding(binding)
+            require_remaining(self.service, story['id'], 'facts')
             receipt.update(phase='submitted', provider_send_state='possibly_sent', retry_safe=False)
             receipt.setdefault('inference_sends', []).append({key:metadata[key] for key in
                 ('attempt_id','operation','purpose','estimated_input_tokens','output_allowance','images','request_body_sha256')
@@ -1064,6 +1133,8 @@ class ProductResearchAdapter:
             await self.checkpoint(binding,receipt)
             LOG.warning('street_story_fact_provider_failure story_id=%s attempt_id=%s provider=gigachat phase=%s not_sent=%s code=%s error_type=%s',
                         story['id'],binding['attempt_id'],receipt['phase'],not_sent,receipt['error_code'],receipt['error_type'])
+            if isinstance(exc, ResearchTerminated):
+                raise
             if not_sent and isinstance(exc, ValueError):
                 raise PermanentProviderError(receipt['error_code']) from exc
             if allow_fallback and known_closed and self.opencode_facts_available:

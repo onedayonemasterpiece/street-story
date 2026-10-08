@@ -50,10 +50,10 @@ def test_reverse_mapped_object_kind_reaches_visual_subject_resolution():
     ref = {'candidate_id': 'web:reference', 'reference_id': 'ref-one', 'name': 'Building',
            'url': 'https://example.com/article', 'reference_image_urls': ['https://example.com/ref.jpg']}
     context = HeadlessIdentity._visual_reply('comparison', [ref], {'candidates': [candidate]}, 0)
-    mapped = context['physical_candidates'][0]['map_object']
+    mapped = context['physical_candidates'][0]['object_tags']
     assert mapped['category'] == 'amenity' and mapped['type'] == 'parking'
     assert mapped['scope'] == 'mapped_entry_only'
-    assert context['physical_candidates'][0]['map_address']['street'] == 'Nearby Road'
+    assert context['physical_candidates'][0]['address_city_street_house_number'][1] == 'Nearby Road'
 
 
 @pytest.mark.parametrize('item', [
@@ -85,7 +85,7 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
         assert 'неизвестный адрес не блокирует поиск' in prompt
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
             'visual_query': 'brick building', 'commons_query': '',
-            'article_queries': ['First Road brick building', 'Second Road brick building']}))
+            'article_queries': ['First Road brick building', 'Second Road brick building'], 'first_wave_hypotheses': []}))
 
     map_item = {'type': 'way', 'id': 27, 'center': {'lat': 54.71, 'lon': 20.507},
         'tags': {'building': 'yes', 'addr:street': 'Second Road'},
@@ -100,11 +100,12 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     result = await suggest(service, story, '', candidates)
     assert result == ('', [], 'brick building', '')
-    supplied = contexts[0]['nearby_candidates'][0]
-    assert supplied['map_address']['street'] == 'Second Road'
-    assert 'house_number' not in supplied['map_address']
-    assert supplied['map_coordinates']['provenance'] == 'osm.center'
-    assert [item['road_name'] for item in contexts[0]['location_search_context']['nearby']] == ['First Road', 'Second Road']
+    catalog = contexts[0]['location_search_context']['observed_physical_candidates']
+    supplied = next(dict(zip(catalog['columns'], row)) for row in catalog['rows'] if row[0] == 'osm:way:27')
+    assert supplied['address_city_street_house_number'] == ['', 'Second Road', '']
+    assert supplied['latitude_longitude'] == [54.71, 20.507]
+    assert candidates[0]['map_coordinates']['provenance'] == 'osm.center'  # Full provenance remains durable.
+    assert [item['road_name'] for item in contexts[0]['location_search_context']['nearby_context']] == ['First Road', 'Second Road']
     assert story['_identity_article_queries'] == ['First Road brick building', 'Second Road brick building', 'brick building']
     assert contents_seen[0][0].inline_data.data == normalize_reference(jpeg())[1]
     assert 'address' not in story  # no model search hint becomes confirmed subject data

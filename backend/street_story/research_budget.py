@@ -4,9 +4,18 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import nullcontext
+from contextvars import ContextVar
 
 LOG = logging.getLogger(__name__)
 RESEARCH_KINDS = {'identity', 'identity_visual', 'research', 'refinement'}
+RESEARCH_SEND_GUARD = ContextVar('street_story_research_send_guard', default=None)
+
+
+def guard_research_send():
+    """Inherited worker scope fences requests after asynchronous admission."""
+    guard = RESEARCH_SEND_GUARD.get()
+    if guard is not None:
+        guard()
 
 
 class ResearchTerminated(Exception):

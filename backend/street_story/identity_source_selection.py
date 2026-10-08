@@ -59,6 +59,12 @@ def compact_candidate_catalog(candidates):
         # node/geometry arrays, search excerpts, URLs or image inventories.
         kind = {key: _short(tags[key], 60) for key in
             ('building', 'entrance', 'amenity', 'shop', 'office', 'historic') if tags.get(key)}
+        mapped = entry.get('map_object') or {}
+        classification = {key: _short(mapped[key], 100) for key in
+            ('category', 'class', 'type', 'addresstype') if mapped.get(key)}
+        if classification:
+            kind.update(classification)
+            kind.update({key: _short(mapped[key], 80) for key in ('scope', 'provenance') if mapped.get(key)})
         camera = {key: alignment[key] for key in
             ('status', 'bearing_degrees', 'relative_bearing_degrees', 'within_fov', 'heading_difference_degrees')
             if isinstance(alignment, dict) and key in alignment and isinstance(alignment[key], (str, int, float, bool))}
@@ -106,6 +112,10 @@ def model_identity_context(story, candidates=(), *, include_observed=True):
     packet = {'observed_localities': [_short(value) for value in addresses['observed_localities']],
         'reverse_address': {key: _short(reverse[key]) for key in
             ('city', 'town', 'village', 'state', 'country', 'road', 'house_number') if reverse.get(key)},
+        'nearby_context': [{**({'candidate_id': item['candidate_id']} if item.get('candidate_id') else {}),
+            **({'road_name': _short(item['road_name'])} if item.get('road_name') else {}),
+            **({'observed_name': _short((item.get('tags') or {}).get('name'))} if (item.get('tags') or {}).get('name') else {}),
+            'distance_m': _number(item.get('distance_m'))} for item in nearby[:20]],
         'address_anchors': {'columns': ['mapped_entry_id', 'city', 'street', 'house_number', 'distance_m', 'entry_kind', 'latitude_longitude'],
             'rows': [[item['mapped_entry_id'], *[_short(item['address'].get(key)) for key in
                 ('city', 'street', 'house_number')], _number(item['distance_m']), item['entry_kind'],
@@ -122,6 +132,115 @@ def model_identity_context(story, candidates=(), *, include_observed=True):
         from .providers import RetryableProviderError
         raise RetryableProviderError('identity_semantic_packet_too_large')
     return packet
+
+
+def first_wave_catalog(story, candidates=()):
+    """Literal search subjects and coverage groups, never SOURCE identities."""
+    from .identity_candidate_policy import candidate_identity_eligible
+    research = json.loads((story or {}).get('research_json') or '{}')
+    visual = research.get('visual_identity') or {}
+    context = (story or {}).get('_identity_search_context') or {}
+    observed = (story or {}).get('_identity_observed_candidates') or visual.get('observed_candidates') or []
+    entries = {item['candidate_id']: item for item in [*(context.get('nearby') or []),
+        *(visual.get('candidates') or []), *observed, *candidates]
+        if isinstance(item, dict) and item.get('candidate_id')}
+    physical_ids = {item.get('candidate_id') for item in [*(visual.get('candidates') or []), *observed, *candidates]
+        if isinstance(item, dict)}
+    addresses = observed_address_context(story, list(entries.values()))
+    memberships = {}
+    for building in addresses['building_address_memberships']:
+        cid = building['physical_candidate_id']
+        if cid in entries and not candidate_identity_eligible(entries[cid]):
+            continue
+        for anchor in building['address_entries']:
+            memberships.setdefault(anchor['mapped_entry_id'], set()).add(cid)
+    reverse = context.get('reverse_address') or ((research.get('osm') or {}).get('reverse') or {}).get('address') or {}
+    locality = next((str(reverse[key]).strip() for key in ('city', 'town', 'village') if reverse.get(key)), '')
+    options = {}
+    for anchor in addresses['address_anchors']:
+        cid = anchor['mapped_entry_id']
+        linked = memberships.get(cid) or set()
+        # Ambiguous/missing membership remains an entry hypothesis. A direct
+        # building address and an exact entrance membership share one group.
+        group = (next(iter(linked)) if len(linked) == 1 else cid
+            if anchor['entry_kind'] == 'building' and candidate_identity_eligible(entries.get(cid, {}))
+            else 'address-entry:' + cid)
+        address = anchor['address']
+        city = str(address.get('city') or '').strip()
+        literal = ' '.join(str(value).strip() for value in
+            (city or locality, address['street'], address['house_number']) if str(value).strip())
+        options[('address', cid)] = {'kind': 'address', 'subject_id': cid, 'group_key': group,
+            'literal_query': literal, 'address': dict(address),
+            'locality_context': locality if not city else '', 'scope': 'search_hypothesis_only'}
+    for cid, entry in entries.items():
+        tags = (entry.get('map_object') or {}).get('tags') or {}
+        if cid not in physical_ids or not candidate_identity_eligible(entry) or tags.get('entrance'):
+            continue
+        # A host-generated unnamed-building/address display label is not a
+        # literal named object. Preserve only observed tags or article titles.
+        name = tags.get('name') or (entry.get('name') if entry.get('type') == 'wikipedia' else '')
+        if not name:
+            continue
+        city = (entry.get('map_address') or {}).get('city') or locality
+        linked = memberships.get(cid) or set()
+        group = next(iter(linked)) if len(linked) == 1 else cid
+        occupant = (str(tags.get('building') or '').casefold() in {'', 'no'}
+            and any(tags.get(key) for key in ('amenity', 'shop', 'office')))
+        options[('observed_named', cid)] = {'kind': 'observed_named', 'subject_id': cid,
+            'group_key': '' if occupant else group,
+            'coverage_scope': 'mapped_occupant_context' if occupant else 'observed_subject_hypothesis',
+            'literal_query': ' '.join(str(value).strip() for value in (name, city) if value),
+            'scope': 'search_hypothesis_only'}
+    groups = {option['group_key'] for option in options.values() if option['group_key']}
+    return {'options': options, 'required_grounded_count': min(2, len(groups)), 'locality_context': locality}
+
+
+def first_wave_schema(catalog):
+    return {'type': 'array', 'minItems': catalog['required_grounded_count'], 'maxItems': 3,
+        'items': {'type': 'object', 'properties': {
+            'kind': {'type': 'string', 'enum': ['address', 'observed_named', 'unmapped_named', 'appearance']},
+            'subject_id': {'type': 'string', 'enum': list(dict.fromkeys([
+                *(option['subject_id'] for option in catalog['options'].values()), '']))},
+            'query': {'type': 'string', 'maxLength': 240},
+            'reason': {'type': 'string', 'maxLength': 240}},
+            'required': ['kind', 'subject_id', 'query', 'reason'], 'additionalProperties': False}}
+
+
+def render_first_wave(catalog, hypotheses):
+    """Dereference model choices; enforce coverage without interpreting prose."""
+    from .providers import RetryableProviderError
+    rendered, groups, queries = [], set(), set()
+    for hypothesis in hypotheses:
+        kind, subject = hypothesis['kind'], hypothesis['subject_id']
+        option = catalog['options'].get((kind, subject))
+        if kind in {'address', 'observed_named'}:
+            if not option:
+                raise RetryableProviderError('identity_first_wave_unobserved_subject')
+            group = option['group_key']
+            if group and group in groups:
+                raise RetryableProviderError('identity_first_wave_duplicate_group')
+            if group:
+                groups.add(group)
+            query = option['literal_query']
+            if not query or len(query) > 240:
+                raise RetryableProviderError('identity_first_wave_literal_too_long')
+        else:
+            if subject or not hypothesis['query'].strip():
+                raise RetryableProviderError('identity_first_wave_unmapped_subject_invalid')
+            query = ' '.join(hypothesis['query'].split())
+            group = ''  # Unmapped names/appearance cannot inflate mapped coverage.
+        normalized = ' '.join(query.split()).casefold()
+        if normalized in queries:
+            raise RetryableProviderError('identity_first_wave_duplicate_query')
+        queries.add(normalized)
+        rendered.append({**hypothesis, 'query': query, 'group_key': group,
+            **({'literal_subject': {key: value for key, value in option.items()
+                if key in {'address', 'locality_context', 'scope', 'coverage_scope'}}} if option else {})})
+    if len(groups) < catalog['required_grounded_count']:
+        raise RetryableProviderError('identity_first_wave_coverage_incomplete')
+    # Put the required coverage into the earliest transport slots. This is a
+    # stable partition of model selections, not a ranking of candidate truth.
+    return [item for item in rendered if item['group_key']] + [item for item in rendered if not item['group_key']]
 
 
 def observed_address_context(story, candidates=()):

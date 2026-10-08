@@ -929,6 +929,8 @@ class GeminiClient:
         before_provider_send=None,
     ):
         from google.genai import types
+        from .research_budget import guard_research_send
+        guard_research_send()
         config = config or types.GenerateContentConfig()
         output_limit = 1024 if operation == 'article_url_discovery' else 8192
         requested_output = getattr(config, 'max_output_tokens', None)
@@ -954,6 +956,7 @@ class GeminiClient:
             quota = quota or self.quota
             model = model or self.settings.gemini_model
         async def invoke():
+            guard_research_send()
             if before_provider_send is not None:
                 before_provider_send()
             return await self._provider_request(key, timeout, contents, config, model=model)

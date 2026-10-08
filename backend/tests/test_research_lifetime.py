@@ -168,6 +168,54 @@ def test_terminal_attempt_forbids_new_send_even_with_positive_remaining_time(tmp
         require_remaining(svc, story['id'])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('superseded', [False, True])
+async def test_google_admission_cannot_send_after_its_research_scope_expires(tmp_path, monkeypatch, superseded):
+    from types import SimpleNamespace
+    from pydantic import SecretStr
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool
+    from street_story.providers import GeminiClient
+    svc, _, story = service(tmp_path)
+    budget = ensure_budget(svc, story['id'])
+    now = [budget['started_at']]
+    monkeypatch.setattr(svc.store, 'now', lambda: now[0])
+    calls = []
+    admissions = []
+    class Admission:
+        async def run(self, key, timeout, size, invoke):
+            admissions.append('admission')
+            if superseded:
+                with svc.store.tx() as db:
+                    research = json.loads(svc._story_row(db, story['id'])['research_json'])
+                    research['identity_generation'] = 1
+                    db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                        (json.dumps(research), story['id']))
+            else:
+                now[0] = budget['identity_deadline_at'] + 1
+            return await invoke()
+    client = GeminiClient.__new__(GeminiClient)
+    client.settings = svc.settings
+    async def sdk(*args, **kwargs):
+        calls.append('provider_send')
+        return SimpleNamespace(text='unrelated response')
+    client._provider_request = sdk
+    pool = GeminiKeyPool(svc.store, (SecretStr('fixture-one'), SecretStr('fixture-two')),
+        svc.settings.gemini_model, clock=lambda: now[0])
+    executor = GeminiExecutor(pool)
+    async def handler(_job):
+        async def invoke(key, timeout):
+            return await client._generate(key, timeout, ['fixture'], quota=Admission())
+        await executor.execute('grounded_research', invoke)
+    svc._run_identity = handler
+    with pytest.raises(ResearchTerminated, match='scope_superseded' if superseded else 'identity_deadline_exceeded'):
+        await svc._execute_job_with_deadline({'kind': 'identity', 'story_id': story['id']})
+    assert calls == []
+    assert admissions == ['admission'] and pool.snapshot()['in_flight'] == 0
+    # The worker scope is reset; unrelated requests inherit no expired story.
+    await client._generate('fixture', 20, ['fixture'], quota=Admission())
+    assert calls == ['provider_send']
+
+
 def test_late_identity_sibling_cannot_end_confirmed_fact_wave(tmp_path):
     svc, _, story = service(tmp_path)
     sid = story['id']

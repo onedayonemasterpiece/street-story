@@ -70,7 +70,8 @@ def _map_query_context(story, candidates):
 
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
-    from .identity_source_selection import regional_source_profile, model_identity_context
+    from .identity_source_selection import (regional_source_profile, model_identity_context,
+        first_wave_catalog, first_wave_schema, render_first_wave)
     schema = {'type': 'object', 'properties': {
         'entity_name': {'type': 'string'},
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
@@ -86,6 +87,13 @@ async def suggest(service, story, transcript, candidates):
     if observed_ids:
         schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6,
             'items': {'type': 'string', 'enum': observed_ids}}
+    import copy
+    legacy_schema = copy.deepcopy(schema)
+    if 'observed_candidate_ids' in legacy_schema['properties']:
+        legacy_schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6, 'items': {'type': 'string'}}
+    first_wave = first_wave_catalog(story, candidates)
+    schema['properties']['first_wave_hypotheses'] = first_wave_schema(first_wave)
+    schema['required'].append('first_wave_hypotheses')
     source_bytes = service._source_photo_bytes(story['id'])
     from .reference_image_codec import normalize_reference
     source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
@@ -115,6 +123,21 @@ async def suggest(service, story, transcript, candidates):
         'Не заменяй конкретный адрес запросом «старые дома», «архитектура» или «достопримечательности» '
         'без номера, когда доступен подходящий реальный адрес. '
         'Первая волна — 2–3 различные сильные гипотезы; всего не более восьми запросов в двух волнах. '
+        'first_wave_hypotheses — обязательные структурированные выборы для первой волны. '
+        'Выбери разные group_key из first_wave_subjects по SOURCE и геометрии: это реальные поисковые '
+        'гипотезы, не привязка SOURCE. Требуемое число наблюдавшихся групп указано в required_grounded_count. '
+        'kind=address или observed_named требует точный subject_id из first_wave_subjects; query для них '
+        'оставь пустым: хост отправит буквальный реальный адрес или наблюдавшееся имя с населённым пунктом. '
+        'Два входа одного точного контура — одна группа, как и имя этого здания плюс его адрес. '
+        'mapped_occupant_context сохраняет буквальное имя арендатора как поисковую подсказку, '
+        'но пустой group_key не считается отдельным зданием и не покрывает required_grounded_count. '
+        'Не подменяй выборы общей архитектурой улицы и не повторяй одну физическую догадку разными словами. '
+        'kind=unmapped_named или appearance допускает query по распознаваемому сооружению вне каталога '
+        'либо видимым признакам, subject_id тогда пустой; это не увеличивает покрытие наблюдавшихся групп. '
+        'При отсутствии GPS, адресов или названий продолжай такими гипотезами без выдуманной географии. '
+        'При одной доступной группе нужна одна; неизвестная принадлежность входа остаётся гипотезой '
+        'адресной записи, не придуманным зданием. Дай короткий reason каждому выбору. '
+        'article_queries — только оставшиеся альтернативы после этих структурированных выборов. '
         'Вторую волну выполняй только для конкретного отсутствующего evidence после первой. '
         'regional_source_profile содержит предпочтения источников из наблюдавшейся географии, не ответы. '
         'observed_candidate_ids — до шести реальных физических кандидатов из observed_physical_candidates, '
@@ -154,6 +177,10 @@ async def suggest(service, story, transcript, candidates):
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': region_hint(story),
                     'regional_source_profile': regional_source_profile(story, candidates),
+                    'first_wave_subjects': {'columns': ['kind', 'subject_id', 'group_key', 'coverage_scope'],
+                        'rows': [[item[key] for key in ('kind', 'subject_id', 'group_key')] + [item.get('coverage_scope', 'address_hypothesis')]
+                            for item in first_wave['options'].values()],
+                        'required_grounded_count': first_wave['required_grounded_count']},
                     'location_search_context': model_identity_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
@@ -163,28 +190,44 @@ async def suggest(service, story, transcript, candidates):
         response_json_schema=schema,
         system_instruction='Идентифицируй именно физическое сооружение. Город, район или область не являются ответом об объекте.',
     )
-    if hasattr(service, 'settings'):
-        from .research_budget import reserve_work
-        from .service import digest
-        # One semantic plan across provider routes; saved plans never call this.
-        reserve_work(service, story['id'], 'planner_calls',
-            [digest([story['photo_sha256'], prompt, schema])])
     gemini = service.providers.gemini
-    def accept(payload):
+    def accept(payload, *, original_schema_readback=False):
         from jsonschema import Draft202012Validator
-        if not Draft202012Validator(schema).is_valid(payload):
-            raise RetryableProviderError('identity_search_plan_malformed')
-        queries = payload.get('article_queries') or []
+        def reject(code):
+            hypotheses = (payload.get('first_wave_hypotheses') or []) if isinstance(payload, dict) else []
+            record_identity_event(service, story['id'], 'identity_search_plan_rejected', {
+                'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
+                'code': code, 'phase': 'closed_invalid', 'original_schema_readback': original_schema_readback,
+                'selected_subject_ids': [str(item.get('subject_id') or '')[:120] for item in hypotheses[:3]
+                    if isinstance(item, dict)] if isinstance(hypotheses, list) else [],
+                'required_grounded_count': first_wave['required_grounded_count']})
+            raise PermanentProviderError(code)
+        if not Draft202012Validator(legacy_schema if original_schema_readback else schema).is_valid(payload):
+            reject('identity_search_plan_malformed')
+        try:
+            rendered = [] if original_schema_readback else render_first_wave(first_wave, payload['first_wave_hypotheses'])
+        except RetryableProviderError as exc:
+            # A closed invalid answer is not key health or provider quota. Stop
+            # the executor key loop and use the existing qualified fallback.
+            reject(str(exc))
+        queries = [item['query'] for item in rendered]
+        result = queries_from(payload)
+        if rendered and len(queries) < 3 and result[2]:
+            queries.append(result[2])
+        queries.extend(payload.get('article_queries') or [])
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:8]
-        result = queries_from(payload)
         if result[2] and result[2] not in story['_identity_article_queries']:
             story['_identity_article_queries'] = [*story['_identity_article_queries'][:7], result[2]]
         story['_identity_search_plan_payload'] = {**payload,
-            'article_queries': story['_identity_article_queries']}
+            'article_queries': story['_identity_article_queries'],
+            **({'first_wave_hypotheses': rendered, 'first_wave_contract': 'grounded-subjects-v1'} if not original_schema_readback
+                else {'original_schema_readback': True})}
         from .identity_candidate_policy import promote_observed_candidates
         candidates[:] = promote_observed_candidates(candidates, observed,
-            payload.get('observed_candidate_ids') or [])
+            [*(payload.get('observed_candidate_ids') or []),
+             *(item['group_key'] for item in rendered if item['group_key'].startswith('osm:way:')
+                or item['group_key'].startswith('osm:relation:'))])
         return result
     async def call(key, timeout, *, model=None, quota=None):
         response = await gemini._generate(key, timeout, [
@@ -203,7 +246,18 @@ async def suggest(service, story, transcript, candidates):
         story['_identity_search_plan_route'] = 'qualified_text_fallback'
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',
             {'cause': getattr(cause, 'code', type(cause).__name__)})
-        return accept(result.get('result') or {})
+        return accept(result.get('result') or {}, original_schema_readback=result.get('original_schema_readback') is True)
+    researcher = getattr(service.providers, 'research', None)
+    readback = getattr(researcher, 'has_identity_search_plan_readback', None)
+    if callable(readback) and readback(story):
+        # An original addressed operation precedes both fresh Google work and
+        # planner admission. Its frozen response keeps its original contract.
+        return await fallback(RetryableProviderError('identity_search_plan_original_readback'))
+    if hasattr(service, 'settings'):
+        from .research_budget import reserve_work
+        from .service import digest
+        reserve_work(service, story['id'], 'planner_calls',
+            [digest([story['photo_sha256'], prompt, schema])])
     routes = getattr(gemini, 'research_routes', None)
     if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
         return await fallback(RetryableProviderError('identity_google_planner_unavailable'))
@@ -225,6 +279,8 @@ async def suggest(service, story, transcript, candidates):
         except PermanentProviderError as exc:
             if str(exc) == 'gemini:unsupported_model':
                 continue
+            return await fallback(exc)
+        except RetryableProviderError as exc:
             return await fallback(exc)
     return await fallback(GeminiUnavailable(min(retry_at) if retry_at else None,
         'all_identity_discovery_models_unavailable'))
@@ -1045,7 +1101,8 @@ async def recover(service, story, transcript, candidates, excluded):
                 'article_queries': story.get('_identity_article_queries') or []}
             history = _retain_article_discovery(service, story, [],
                 planned_queries=story.get('_identity_article_queries') or [],
-                search_plan={'policy_version': 'bounded-search-plan-v2', 'payload': payload,
+                search_plan={'policy_version': ('bounded-search-plan-v3' if payload.get('first_wave_contract')
+                    else 'bounded-search-plan-v2'), 'payload': payload,
                     'route': story.get('_identity_search_plan_route', 'google'),
                     'created_at': service.store.now()})
         if already_proved():

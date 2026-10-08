@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import sqlite3
 from pathlib import Path
 import sys
 
@@ -52,6 +53,50 @@ def test_upload_preserves_source_sha_and_exif_without_hidden_expectations():
     assert set(result) == {'key', 'client_story_id', 'photo_sha256', 'photo_mime_type',
         'photo_bytes', 'voice_protocol', 'lat', 'lon'}
     assert 'Hidden' not in str(result) and 'provider seed' not in str(result)
+
+
+def test_availability_transfer_is_scoped_negative_history_with_original_expiry(tmp_path):
+    source = tmp_path/'prior'
+    (source/'data').mkdir(parents=True)
+    frozen = {'environment_sha256': {'provider': 'same'}, 'qualification_sha256': 'same',
+              'public_settings': {'gemini_model': 'fixture', 'data_dir': 'new'}}
+    prior = {**frozen, 'source_sha': 'a'*40,
+             'public_settings': {'gemini_model': 'fixture', 'data_dir': 'old'}}
+    (source/'run.json').write_text(json.dumps(prior))
+    key_id = 'b'*64
+    with sqlite3.connect(source/'data/street-story.sqlite3') as db:
+        db.execute('CREATE TABLE gemini_key_health(key_id,model,operation,cooldown_until,'
+                   'consecutive_failures,last_failure)')
+        db.execute('INSERT INTO gemini_key_health VALUES(?,?,?,?,?,?)',
+            (key_id, 'fixture', 'web_search', 10, 2,
+             json.dumps({'category': 'quota_exhausted', 'code': 429, 'private': 'discard-this'})))
+        db.execute('INSERT INTO gemini_key_health VALUES(?,?,?,?,?,?)',
+            (key_id, 'fixture', 'grounded_research', 99, 3, None))
+        db.execute('CREATE TABLE stories(private_original)')
+        db.execute("INSERT INTO stories VALUES('never-transfer-object-material')")
+    snapshots = harness.availability_history([source], frozen)
+    assert len(snapshots[0]['rows']) == 1
+    assert 'discard-this' not in json.dumps(snapshots)
+    assert 'never-transfer-object-material' not in json.dumps(snapshots)
+    svc, _, _, _ = prepared(tmp_path/'current')
+    with svc.store.tx() as db:
+        db.execute('INSERT INTO gemini_credentials(key_id,busy_until,disabled) VALUES(?,55,1)', (key_id,))
+        for operation in ('web_search', 'grounded_research'):
+            db.execute('INSERT INTO gemini_key_health(key_id,model,operation) VALUES(?,?,?)',
+                       (key_id, 'fixture', operation))
+    harness.apply_availability_history(svc.store, snapshots)
+    with svc.store.connection() as db:
+        rows = {row['operation']: dict(row) for row in db.execute('SELECT * FROM gemini_key_health')}
+        credential = dict(db.execute('SELECT * FROM gemini_credentials').fetchone())
+    assert rows['web_search']['consecutive_failures'] == 2
+    assert rows['web_search']['quota_state'] == 'quota_exhausted'
+    assert rows['web_search']['cooldown_until'] == 10 < svc.store.now()
+    assert rows['grounded_research']['consecutive_failures'] == rows['grounded_research']['cooldown_until'] == 0
+    assert credential['busy_until'] == 55 and credential['disabled'] == 1
+    prior['environment_sha256'] = {'provider': 'different'}
+    (source/'run.json').write_text(json.dumps(prior))
+    with pytest.raises(ValueError, match='different configuration'):
+        harness.availability_history([source], frozen)
 
 
 def attempt(identifier, receipt):

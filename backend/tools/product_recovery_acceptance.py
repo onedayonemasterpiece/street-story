@@ -15,6 +15,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -74,6 +75,56 @@ def summarize_sdk_journal(path):
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
         separators=(',', ':')).encode()).hexdigest()
+
+
+def availability_history(paths, frozen):
+    """Provider history only; no source, object, fact, receipt or lease transfer."""
+    def transport(settings):
+        return {key: value for key, value in settings.items()
+                if key.startswith(('gemini_', 'google_ai_'))}
+    snapshots = []
+    for path in paths:
+        path = managed(path)
+        prior = json.loads((path/'run.json').read_text())
+        for key in ('environment_sha256', 'qualification_sha256'):
+            if prior[key] != frozen[key]:
+                raise ValueError('Provider availability history has different configuration/qualification')
+        if transport(prior['public_settings']) != transport(frozen['public_settings']):
+            raise ValueError('Provider availability history has different transport settings')
+        with sqlite3.connect(f'file:{path}/data/street-story.sqlite3?mode=ro', uri=True) as db:
+            db.row_factory = sqlite3.Row
+            rows = []
+            for row in db.execute('SELECT key_id,model,operation,cooldown_until,consecutive_failures,'
+                                  'last_failure FROM gemini_key_health ORDER BY key_id,model,operation'):
+                failure = json.loads(row['last_failure'] or '{}')
+                if failure.get('code') != 429 or failure.get('category') not in {'quota_exhausted', 'rate_limited'}:
+                    continue
+                rows.append({key: row[key] for key in ('key_id', 'model', 'operation', 'cooldown_until',
+                    'consecutive_failures')} | {'last_failure': canonical_failure(failure)})
+        snapshots.append({'path': str(path), 'source_sha': prior['source_sha'],
+                          'history_sha256': digest(rows), 'rows': rows})
+    return snapshots
+
+
+def canonical_failure(failure):
+    return json.dumps({'category': failure['category'], 'code': 429}, separators=(',', ':'))
+
+
+def apply_availability_history(store, snapshots):
+    with store.tx() as db:
+        for snapshot in snapshots:
+            for row in snapshot['rows']:
+                # Preserve actual absolute expiry and negative observation count.
+                # Expired cooldowns stay expired; current configured keys/models
+                # alone are eligible. Busy slots and reservations are untouched.
+                db.execute('UPDATE gemini_key_health SET cooldown_until=max(cooldown_until,?),'
+                    'last_failure=CASE WHEN consecutive_failures<=? THEN ? ELSE last_failure END,'
+                    'quota_state=CASE WHEN consecutive_failures<=? THEN ? ELSE quota_state END,'
+                    'consecutive_failures=max(consecutive_failures,?) '
+                    'WHERE key_id=? AND model=? AND operation=?',
+                    (row['cooldown_until'], row['consecutive_failures'], row['last_failure'],
+                     row['consecutive_failures'], json.loads(row['last_failure'])['category'],
+                     row['consecutive_failures'], row['key_id'], row['model'], row['operation']))
 
 
 def save(path, value):
@@ -363,7 +414,9 @@ async def run(args):
         'source_hashes': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted((BACKEND/'street_story').glob('*.py'))},
         'harness_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    frozen['availability_history'] = availability_history(args.availability_from, frozen)
     run_path = output/'run.json'
+    fresh_run = not run_path.exists()
     if run_path.exists() and json.loads(run_path.read_text()) != frozen:
         raise ValueError('Source/config/qualification/manifest changed; this output cannot be resumed')
     save(run_path, frozen)
@@ -378,6 +431,8 @@ async def run(args):
     from street_story.app import app
     from street_story.providers import GeminiClient
     service = app.state.service
+    if fresh_run:
+        apply_availability_history(service.store, frozen['availability_history'])
     service.providers.vibepublish = NoPublication()
     for key, value in qualification['caches'].items():
         service.store.cache_put(key, value, 3600)
@@ -425,6 +480,8 @@ def main():
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--expected-sha', required=True)
+    parser.add_argument('--availability-from', type=Path, action='append', default=[],
+                        help='Prior frozen run: import only same-config observed provider429 history')
     parser.add_argument('--messages', default='102', help='Comma-separated IDs; default is the one canary')
     args = parser.parse_args()
     if args.messages and not re.fullmatch(r'[0-9]+(?:,[0-9]+)*', args.messages):
