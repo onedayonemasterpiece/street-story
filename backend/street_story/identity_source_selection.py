@@ -434,6 +434,71 @@ def first_wave_catalog(story, candidates=()):
     return {'options': options, 'required_grounded_count': min(2, len(groups)), 'locality_context': locality}
 
 
+def resolve_identity_response_ids(payload, packet):
+    """Dereference exact frozen transport pointers; host schemas still decide validity.
+
+    Only identifier fields participate. Prose, quotes, names and measurements
+    keep their exact model bytes, including text that happens to start with @/$.
+    """
+    import hashlib
+    from collections import Counter
+    if not isinstance(payload, dict) or packet.get('encoding') != 'lossless-literals-and-map-labels-v1':
+        return payload, None
+    plain = expand_planner_packet(packet)
+    table = (plain.get('map_scene') or {}).get('objects') or {}
+    columns = table.get('columns') or []
+    rows = [dict(zip(columns, row)) for row in table.get('rows') or []]
+    counts = Counter(row.get('label') for row in rows)
+    labels = {str(row['label']): row['candidate_id'] for row in rows
+        if type(row.get('label')) is int and isinstance(row.get('candidate_id'), str)
+        and counts[row['label']] == 1}
+    literals = packet.get('literals') or []
+    scalar_ids = {'candidate_id', 'subject_id', 'address_entry_id', 'physical_candidate_id', 'article_id'}
+    list_ids = {'observed_candidate_ids', 'candidate_ids', 'target_candidate_ids',
+        'selected_wikipedia_page_ids', 'alternative_candidate_ids'}
+    resolved = []
+    def pointer(value, path):
+        if (not isinstance(value, str) or not 2 <= len(value) <= 11
+                or not value[1:].isascii() or not value[1:].isdigit()):
+            return value
+        replacement = None
+        if value.startswith('@'):
+            replacement = labels.get(value[1:])
+        elif value.startswith('$'):
+            index = int(value[1:])
+            if index < len(literals) and isinstance(literals[index], str):
+                replacement = literals[index]
+        if replacement is not None and replacement != value:
+            resolved.append({'path': path, 'reference': value, 'resolved_id': replacement})
+            return replacement
+        return value
+    def walk(value, path):
+        if isinstance(value, list):
+            return [walk(item, [*path, index]) for index, item in enumerate(value)]
+        if not isinstance(value, dict):
+            return value
+        result = {}
+        for key, item in value.items():
+            current = [*path, key]
+            if key in scalar_ids:
+                result[key] = pointer(item, current)
+            elif key in list_ids and isinstance(item, list):
+                result[key] = [pointer(entry, [*current, index]) for index, entry in enumerate(item)]
+            else:
+                result[key] = walk(item, current)
+        return result
+    normalized = walk(payload, [])
+    if not resolved:
+        return payload, None
+    def sha(value):
+        return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+            separators=(',', ':')).encode()).hexdigest()
+    return normalized, {'policy': 'exact-context-id-references-v1',
+        'context_sha256': sha(packet), 'original_decoded_sha256': sha(payload),
+        'resolved_decoded_sha256': sha(normalized), 'resolved_count': len(resolved),
+        'resolutions': resolved[:32], 'resolutions_truncated': len(resolved) > 32}
+
+
 def identity_transport_schema(schema):
     """Send bounded ID strings; validate exact observed membership on the host.
 
