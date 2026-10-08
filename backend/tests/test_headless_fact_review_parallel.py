@@ -11,6 +11,48 @@ from street_story.service import ConflictError
 from test_headless_fact_pool import fixture, result, RUN
 
 
+@pytest.mark.parametrize('quote,expected', [
+    ('Дата основания\\n1843', 'Дата основания\n1843'),
+    ('Дата основания\\\\n1843', 'Дата основания\n1843'),
+    ('Дата основания\\n1853', 'Дата основания\\n1853'),
+    ('чужой факт\\n1843', 'чужой факт\\n1843'),
+    ('Дата основания\\u000a1843', 'Дата основания\\u000a1843'),
+    ('Дата основания\n1843', 'Дата основания\n1843'),
+])
+def test_quote_presentation_requires_exact_own_passage(quote, expected):
+    assert review_packets.literal_basis_quote(quote, ['Дата основания\n1843']) == expected
+
+
+@pytest.mark.asyncio
+async def test_escaped_quote_preserves_raw_request_and_immutable_replay(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=1)
+    session = SimpleNamespace(id='escaped-quote', resource_id=job['story_id'], actor=None,
+                              closed=False, model='fixture', state={})
+    packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
+    text = packet['items'][0]['text']
+    with svc.store.tx() as db:
+        row = db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=?',
+                         (packet['packet_ref'],)).fetchone()
+        payload = json.loads(row[0])
+        payload['items'][0]['evidence'][0]['text'] = text + '\nOwn qualifier.'
+        db.execute('UPDATE live_review_packets SET payload_json=? WHERE packet_ref=?',
+                   (json.dumps(payload), packet['packet_ref']))
+    quote = text + '\\nOwn qualifier.'
+    args = {'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0],
+        'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+        'claims': [text], 'basis_quotes': [quote], 'reason': 'Own literal passage.'}],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
+    value = await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'escaped', 'args': args})
+    assert value['eligible_count'] == 1
+    with svc.store.connection() as db:
+        row = db.execute('SELECT request_json,decisions_json FROM live_review_packets WHERE packet_ref=?',
+                         (packet['packet_ref'],)).fetchone()
+    assert json.loads(row['request_json'])['decisions'][0]['basis_quotes'] == [quote]
+    assert json.loads(row['decisions_json'])['0']['basis_quotes'] == [text + '\nOwn qualifier.']
+    replay = await harness.adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'replay', 'args': args})
+    assert replay == value
+
+
 async def candidates(tmp_path, count=6):
     svc, job = fixture(tmp_path, count=count)
     async def extract(page, story, context):

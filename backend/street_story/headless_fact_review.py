@@ -48,6 +48,8 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'present in this packet; never use -1 or an existing-claim ID there. Relations to existing '
       'claims belong solely in equivalent_to_existing or conflicts_with_existing. A contradiction '
       'between a fact and its own passage belongs in its contradicted decision, not in conflicts. '
+      'Read JSON passage strings as decoded text. Prefer short single-line literal quotes; '
+      'do not copy JSON serialization escapes as literal backslashes into basis_quotes. '
       'Frozen packet: ')
 VERIFIER_CONTRACT_ID = 'closed-packet-json-v2:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 

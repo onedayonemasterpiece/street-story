@@ -1,6 +1,8 @@
 """Durable mechanical review addressing; every semantic verdict is model supplied."""
 import hashlib
 import json
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -8,6 +10,22 @@ from .research_budget import PAGE_UNITS, response_units
 from .service import ConflictError, canonical
 
 POLICY_VERSION = 'own-evidence-repair-v6'
+LOG = logging.getLogger(__name__)
+
+
+def literal_basis_quote(quote, passages):
+    """Resolve presentation escapes only when the unchanged own passage proves them."""
+    if not isinstance(quote, str):
+        return quote
+    def contained(value):
+        return any(' '.join(value.split()) in ' '.join(text.split()) for text in passages)
+    if contained(quote):
+        return quote
+    # Nested JSON setup context can elicit a once- or twice-escaped whitespace
+    # character. Never decode words, dates, Unicode, or another fact's evidence.
+    decoded = re.sub(r'(?<!\\)\\{1,2}([nrt])',
+                     lambda match: {'n': '\n', 'r': '\r', 't': '\t'}[match[1]], quote)
+    return decoded if decoded != quote and contained(decoded) else quote
 
 EXTRACTION_CHECKS = (
     'Before saving, enumerate independently selectable assertions from the source '
@@ -404,6 +422,14 @@ def prepare(adapter, session, args):
                     raise ConflictError('live_review_decisions_invalid', 'Your decomposition has multiple claims. Split the candidate before positive review.')
             quotes = decision.get('basis_quotes')
             if quotes is not None:
+                if isinstance(quotes, list) and isinstance(refs, list):
+                    own_passages = [evs[e]['text'] for e in refs]
+                    normalized_quotes = [literal_basis_quote(q, own_passages) for q in quotes]
+                    if normalized_quotes != quotes:
+                        LOG.info('street_story_review_quote_presentation_normalized packet_ref=%s fact=%s',
+                                 ref, decision['fact'])
+                        quotes = normalized_quotes
+                        decision['basis_quotes'] = quotes
                 # Presentation whitespace may vary; original snapshots/spans remain literal.
                 if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
                     next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
