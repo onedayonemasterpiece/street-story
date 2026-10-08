@@ -106,8 +106,14 @@ def classify_error(error: Exception, *, now: float) -> Failure:
     retry = _retry_after(error, now)
     if code == 429 or status == 'RESOURCE_EXHAUSTED' or 'resource_exhausted' in message:
         return Failure('quota_exhausted' if 'quota' in message else 'rate_limited', 429, retry)
-    if code in (401, 403) or 'api_key_invalid' in message or 'api key not valid' in message or status == 'UNAUTHENTICATED':
+    if (code == 401 or 'api_key_invalid' in message or 'api key not valid' in message
+            or 'api key was reported as leaked' in message or status == 'UNAUTHENTICATED'):
         return Failure('auth_invalid', code, disable_key=True)
+    if code == 403 or status == 'PERMISSION_DENIED':
+        # A valid key can lack permission for this model/tool. Do not retire
+        # the credential across every other workload/model on an ambiguous403.
+        # Persist a bounded wait for this operation; independent lanes may run.
+        return Failure('permission_denied', code, max(300, retry or 0))
     if code in (408, 504) or status == 'DEADLINE_EXCEEDED' or isinstance(error, (TimeoutError, httpx.TimeoutException)):
         return Failure('timeout', code, retry)
     if code is not None and 500 <= code <= 599 or status in ('UNAVAILABLE', 'INTERNAL', 'ABORTED'):
