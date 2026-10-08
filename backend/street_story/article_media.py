@@ -500,6 +500,15 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 partial = bool(document.select('[data-gallery], [data-fancybox], [data-swiper], .swiper, .slick-slider, .owl-carousel, [data-lazy-src]'))
             except (httpx.HTTPError, ValueError, OSError) as exc:
                 event('identity_article_unavailable', {'reason': type(exc).__name__})
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {404, 410}:
+                    # A missing/deleted page is a closed acquisition outcome,
+                    # not a reason to spend the single browser on that URL.
+                    if receipts is not None:
+                        receipts.append({'url': raw, 'final_url': page_url, 'status': 'completed',
+                            'image_count': 0, 'http_status': exc.response.status_code})
+                    event('identity_article_closed', {'source_url': raw,
+                        'http_status': exc.response.status_code, 'next_action': 'another_source'})
+                    return None
             static_ready = bool(media) and partial and not source.get('static_media_delivered')
             if static_ready:
                 source = dict(source, static_media_delivered=True)

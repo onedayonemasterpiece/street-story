@@ -11,6 +11,46 @@ from test_visual_search_continuation import prepared
 
 
 @pytest.mark.asyncio
+async def test_completed_tool_observations_selected_before_original_search_finishes(tmp_path):
+    svc, _, topic, _ = prepared(tmp_path)
+    story = svc._identity_snapshot(topic['id'])[0]
+    searched, release, selected = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = []
+    inventory = [{'url': 'https://news.example/exterior'}, {'url': 'https://maps.example/directory'}]
+    async def search(query, snapshot):
+        calls.append('original-send')
+        searched.set()
+        await release.wait()
+        raise RetryableProviderError('research_provider_outcome_unknown')
+    def observations(query, snapshot):
+        return inventory if searched.is_set() else []
+    async def choose(query, observed, snapshot):
+        assert observed == inventory
+        selected.set()
+        return {'sources': observed[:1], 'source_selection': {'status': 'model_selected'}}
+    svc.providers.research = SimpleNamespace(search_articles=search,
+        identity_search_observations=observations, select_identity_sources=choose)
+    svc.providers.gemini.discover_article_urls = None
+    svc.providers.gemini._public_web_search = None
+    task = asyncio.create_task(identity_discovery.web_image_sources(svc, '', '', story=story))
+    try:
+        await asyncio.wait_for(selected.wait(), 3)
+        assert not task.done()
+        history = svc._identity_snapshot(story['id'])[1]['identity_article_discovery']
+        assert [s['url'] for s in history['sources']] == [inventory[0]['url']]
+        assert len(history['discovered_sources']) == 2
+        release.set()
+        with pytest.raises(Exception):
+            await task
+        assert calls == ['original-send']
+        assert [s['url'] for s in svc._identity_snapshot(story['id'])[1]
+            ['identity_article_discovery']['sources']] == [inventory[0]['url']]
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_independent_searches_overlap_and_partial_sources_are_saved_before_slow_route(tmp_path):
     svc, _, topic, _ = prepared(tmp_path)
     story = svc._identity_snapshot(topic['id'])[0]

@@ -120,6 +120,10 @@ async def test_search_uses_actual_tool_urls_admission_and_durable_intent():
                                      {'permission': 'websearch', 'pattern': '*', 'action': 'allow'}]
     assert result['receipt']['assistants'][0]['tokens']['cache']['read'] == 10
     assert h.finalized[0][1] == 'completed'
+    observation = next(receipt for _binding, receipt in h.checkpoints
+        if receipt.get('observed_search_inventory_sha256'))
+    assert observation['phase'] == 'submitted'
+    assert observation['sources'][0]['url'] == 'https://example.org/gallery'
 
 
 @pytest.mark.asyncio

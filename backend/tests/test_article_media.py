@@ -12,6 +12,26 @@ from test_identity_lifecycle import make_service
 from test_reference_image_codec import jpeg
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [404, 410])
+async def test_missing_article_closes_acquisition_without_browser_or_false_mismatch(tmp_path, status):
+    from street_story.article_media import article_candidates
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='missing', client_story_id='missing', photo_sha256='missing',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(*args, **kwargs):
+        raise AssertionError('A missing page must not start Chromium')
+    receipts = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(status))) as client:
+        candidates = await article_candidates(svc, story, [{'url': 'https://example.com/deleted'}], set(),
+            http=client, resolver=resolver, browser=browser, receipts=receipts)
+    assert candidates == []
+    assert receipts == [{'url': 'https://example.com/deleted', 'final_url': 'https://example.com/deleted',
+        'status': 'completed', 'image_count': 0, 'http_status': status}]
+
+
 def test_article_gallery_keeps_later_views_but_excludes_other_objects_and_ads():
     title, images = extract_media('''<h1>Ворота</h1><main><article>
       <a href="/front.jpg"><img src="/small-front.jpg"></a>

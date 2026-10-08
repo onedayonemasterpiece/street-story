@@ -391,6 +391,19 @@ class ProductResearchAdapter:
         context['omitted_address_hypotheses'] = omitted
         return context
 
+    def identity_search_observations(self, query, story):
+        """Read completed tool sightings for this exact original query/scope."""
+        unit = canonical([query, story.get('_research_run_id')])
+        logical = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+            story.get('_identity_generation', 0), 'search', unit]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
+                'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
+        receipt = json.loads(row[0]) if row else {}
+        if not any(call.get('status') == 'completed' for call in receipt.get('search_calls', [])):
+            return []
+        return receipt.get('discovered_sources') or receipt.get('sources') or []
+
     async def search_articles(self, query, story):
         unit = canonical([query,story.get('_research_run_id')])
         history = self.search_history(story)
