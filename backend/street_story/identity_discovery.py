@@ -116,7 +116,7 @@ async def suggest(service, story, transcript, candidates):
         'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
         json.dumps({'region_hint': REGION_HINT,
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
-                        'camera_alignment', 'map_address', 'map_coordinates', 'road_name') if key in x} for x in candidates[:16]],
+                        'camera_alignment', 'map_address', 'map_coordinates', 'road_name', 'map_object') if key in x} for x in candidates[:16]],
                     'location_search_context': _map_query_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
@@ -608,12 +608,20 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                         source_selections={provider + ':' + query: {'status': 'selection_pending',
                             'discovered_sources': observed}})
                 selector = getattr(researcher, 'select_identity_sources', None)
+                text_selector = getattr(service.providers.gemini, 'select_identity_sources', None)
                 if not observed:
                     sources, selection = [], {'status': 'model_selected', 'discovered_count': 0, 'selected_count': 0}
-                elif not callable(selector) or story is None:
+                elif (not callable(selector) and not callable(text_selector)) or story is None:
                     raise RetryableProviderError('identity_source_selection_unavailable')
                 else:
-                    result = await selector(query, observed, story)
+                    try:
+                        if not callable(text_selector):
+                            raise RetryableProviderError('identity_text_selection_unavailable')
+                        result = await text_selector(query, observed, story)
+                    except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
+                        if not callable(selector):
+                            raise
+                        result = await selector(query, observed, story)
                     sources, selection = result['sources'], result['source_selection']
                 selection = {**selection, 'discovered_sources': observed}
             if story:

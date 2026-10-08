@@ -50,10 +50,12 @@ async def test_existing_foreground_lane_claims_initial_identity_while_general_re
                 assert db.execute('SELECT state FROM jobs WHERE id=?', (old_job,)).fetchone()[0] == 'running'
             with svc.store.tx() as db:
                 visual_job = svc._enqueue_job(db, fresh['id'], 'identity_visual', 'visual-current', {})
-            release_identity.set()
             await asyncio.wait_for(visual_finished.wait(), 2)
-            assert calls == [('identity', initial['id'], 'street-story-identity-visual-worker'),
+            assert not release_identity.is_set()  # Ready refs do not wait for discovery's slow tail.
+            assert calls == [('identity', initial['id'], 'street-story-identity-discovery-worker'),
                              ('identity_visual', visual_job, 'street-story-identity-visual-worker')]
+            release_identity.set()
+            await asyncio.sleep(0)
             with svc.store.connection() as db:
                 completed = [dict(row) for row in db.execute('SELECT state,attempts FROM jobs WHERE id IN (?,?)', (initial['id'], visual_job))]
                 assert len(completed) == 2 and all(row == {'state': 'done', 'attempts': 1} for row in completed)

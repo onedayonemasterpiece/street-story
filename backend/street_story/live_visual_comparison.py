@@ -362,7 +362,7 @@ class LiveVisualComparisonMixin:
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
                 'url': c.get('url'), 'distance_m': c.get('distance_m'),
-                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name') if key in c},
+                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name', 'map_object') if key in c},
                 'alias_candidate_ids': c.get('alias_candidate_ids', [])}
                 for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
                 and not str(c.get('candidate_id', '')).startswith('web:')][:32],
@@ -383,7 +383,7 @@ class LiveVisualComparisonMixin:
                 'за счёт придуманного зума или иной точки съёмки при близкой визуально подходящей '
                 'альтернативе. При неразрешённом противоречии верни uncertain. '
                 'Оценка не является точным измерением или самостоятельным доказательством identity.'),
-            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
+            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Map_object описывает именно mapped_entry: парковка, вход, учреждение, улица и здание не становятся одним объектом от близости точек. Reverse display_name — контекст ближайшего объекта, а не имя здания на SOURCE. Связывай REF с подходящим типом объекта и реальным адресом; при неразрешённой привязке верни uncertain. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1, parallel_refill=False):
         story, research = self.service._identity_snapshot(session.resource_id)

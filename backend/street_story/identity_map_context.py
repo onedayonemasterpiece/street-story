@@ -13,6 +13,16 @@ def map_entry_context(item: dict, *, source_url: str | None = None, coordinate_p
     result = {}
     if osm_object:
         result['candidate_id'] = f'osm:{kind}:{object_id}'
+    mapped_tags = {key: str(tags[key])[:180] for key in (
+        'name', 'building', 'building:part', 'entrance', 'amenity', 'shop', 'tourism',
+        'historic', 'highway', 'man_made', 'landuse', 'leisure', 'place') if tags.get(key)}
+    mapped_kind = {key: str(item[key])[:100] for key in ('category', 'class', 'addresstype') if item.get(key)}
+    if item.get('osm_type') and item.get('type'):
+        mapped_kind['type'] = str(item['type'])[:100]
+    if mapped_tags or mapped_kind:
+        result['map_object'] = {**mapped_kind, 'tags': mapped_tags,
+            'provenance': 'osm.tags' if mapped_tags else 'nominatim.reverse',
+            'source_url': source_url, 'scope': 'mapped_entry_only'}
     address = {key: str(tags[field]).strip()[:180] for key, field in (
         ('street', 'addr:street'), ('house_number', 'addr:housenumber')) if tags.get(field)}
     origin = 'osm.tags'
