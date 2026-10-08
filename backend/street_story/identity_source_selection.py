@@ -477,6 +477,7 @@ def geometry_decision_schema(candidate_ids):
     return {'type': 'object', 'properties': {
         'decision': {'type': 'string', 'enum': ['accepted_geometry', 'uncertain']},
         'candidate_id': candidate_id,
+        'candidate_label': {'type': 'integer', 'minimum': 1},
         'scope': text,
         'decisive_relations': {'type': 'array', 'maxItems': 8, 'items': relation},
         'rejected_alternatives': {'type': 'array', 'maxItems': 8, 'items': {

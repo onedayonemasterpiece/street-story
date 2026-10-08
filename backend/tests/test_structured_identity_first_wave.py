@@ -134,7 +134,7 @@ async def test_new_upload_persists_bound_first_wave_before_search_without_second
             plans.append(operation)
             return await call('fixture', 5)
     async def generate(key, timeout, contents, config, **kwargs):
-        contract = json.loads(config.system_instruction.rsplit('\n', 1)[1])
+        contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
         assert 'first_wave_hypotheses' in contract['required']
         return SimpleNamespace(text=json.dumps(payload([choice('address', 'osm:node:1'),
             choice('address', 'osm:node:3')], article_queries=['Unbound model paraphrase'])))

@@ -228,6 +228,16 @@ async def suggest(service, story, transcript, candidates):
         prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
             packet, ensure_ascii=False, separators=(',', ':'))
     response_contract = identity_transport_schema(schema)
+    literal_names = []
+    if scene:
+        original_table = scene['manifest']['objects']
+        original_columns = original_table['columns']
+        for row in original_table['rows']:
+            item = dict(zip(original_columns, row))
+            if item.get('name'):
+                literal_names.append([item['label'], item['candidate_id'], item['name'],
+                    item.get('object_kind'), item.get('address')])
+        response_contract['properties']['accepted_geometry']['required'].append('candidate_label')
     # JSON mode keeps the deep spatial evidence contract out of the provider's
     # constrained-decoding schema. The full host validator below is unchanged.
     config = types.GenerateContentConfig(
@@ -235,7 +245,15 @@ async def suggest(service, story, transcript, candidates):
         system_instruction=('Идентифицируй именно физическое сооружение. Город, район или область '
             'не являются ответом об объекте. Return one JSON object satisfying this contract; '
             'exact IDs must belong to the supplied context:\n' + json.dumps(
-                response_contract, ensure_ascii=False, separators=(',', ':'))),
+                response_contract, ensure_ascii=False, separators=(',', ':'))
+            + '\nLiteral mapped-name index (all received names, not a ranked shortlist): '
+            + json.dumps({'columns': ['map_label', 'candidate_id', 'observed_name', 'object_kind', 'address'],
+                'rows': literal_names}, ensure_ascii=False, separators=(',', ':'))
+            + '\nFor accepted_geometry return candidate_label matching the exact candidate_id in MAP. '
+            'Never assign a remembered name to another ID or invent an alternative name. A SOURCE name/OCR '
+            'is a lead, not a spatial relation. Describe the visible contour/relative volumes/street approach '
+            'and explain their actual MAP correspondence and camera pose; naming the object alone is insufficient. '
+            'If this spatial correspondence is not established, return uncertain and the best next action.'),
     )
     gemini = service.providers.gemini
     def accept(payload, *, original_schema_readback=False, original_schema=None):
@@ -258,6 +276,7 @@ async def suggest(service, story, transcript, candidates):
         source_map_receipt = ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
             'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene_manifest,
+            'map_identity_labels_required': True,
             'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
             if scene and original_schema is None else {})
         geometry_proof = None

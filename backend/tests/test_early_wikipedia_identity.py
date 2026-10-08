@@ -153,7 +153,7 @@ async def test_ready_wiki_plan_joint_images_once_then_zero_paid_search(tmp_path,
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
         assert len(contents) == 3 and contents[0].inline_data and contents[1].inline_data
-        contract = json.loads(config.system_instruction.rsplit('\n', 1)[1])
+        contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
         assert 'selected_wikipedia_page_ids' in contract['required']
         packet = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
         assert len(packet['wikipedia_metadata']['rows']) == 2

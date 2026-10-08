@@ -31,6 +31,7 @@ def geometry_setup(tmp_path):
 
 def geometry_decision():
     return {'decision': 'accepted_geometry', 'candidate_id': 'osm:way:2',
+        'candidate_label': 1,
         'scope': 'Main physical footprint; neighboring body remains scene context.',
         'decisive_relations': [{
             'source_observation': 'Main facade faces the approach and the next volume is behind its right return.',
@@ -78,6 +79,24 @@ def test_large_osm_dictionary_stays_in_host_validation_without_repeated_provider
     assert Draft202012Validator(transmitted).is_valid(unobserved)
     assert not Draft202012Validator(canonical).is_valid(unobserved)
     assert Draft202012Validator(canonical).is_valid({'observed_candidate_ids': [ids[-1]]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('label', [None, 2, 999])
+async def test_joint_geometry_rejects_missing_or_wrong_map_label_binding(tmp_path, label):
+    service, story, active = geometry_setup(tmp_path)
+    decision = geometry_decision()
+    if label is None:
+        decision.pop('candidate_label')
+    else:
+        decision['candidate_label'] = label
+    async def generate(*args, **kwargs):
+        return SimpleNamespace(text=json.dumps(payload(decision)))
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = None
+    with pytest.raises(PermanentProviderError, match='identity_geometry_proof_invalid'):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert '_identity_geometry_result' not in story
 
 
 @pytest.mark.asyncio

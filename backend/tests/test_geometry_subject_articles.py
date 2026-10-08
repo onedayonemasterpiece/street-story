@@ -27,6 +27,9 @@ def geometry_identity(*, candidate_id='osm:way:7', photo='a'*64, generation=2, r
     scene = render_scene(story, [candidate])
     decision = geometry_decision()
     decision.update(candidate_id=candidate_id, rejected_alternatives=[])
+    table = scene['manifest']['objects']
+    decision['candidate_label'] = next(dict(zip(table['columns'], row))['label'] for row in table['rows']
+        if dict(zip(table['columns'], row))['candidate_id'] == candidate_id)
     decision['decisive_relations'][0]['map_features'] = [{'candidate_id': candidate_id, 'kind': 'contour'}]
     source = io.BytesIO()
     Image.new('RGB', (16, 16), 'gray').save(source, format='PNG')

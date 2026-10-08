@@ -69,6 +69,11 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
     received = {dict(zip(columns, row)).get('candidate_id') for row in table.get('rows') or []}
     if cid not in received or manifest.get('image_sha256') != receipt['map_image_sha256']:
         return None
+    labels = {dict(zip(columns, row)).get('label'): dict(zip(columns, row)).get('candidate_id')
+        for row in table.get('rows') or []}
+    if (receipt.get('map_identity_labels_required') is True or 'candidate_label' in decision) and (
+            labels.get(decision.get('candidate_label')) != cid):
+        return None
     coverage = decision['bounded_coverage']
     if (coverage['material_alternatives_resolved'] is not True
             or not decision['scope'].strip() or not coverage['scope'].strip()
