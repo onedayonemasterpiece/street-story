@@ -11,6 +11,8 @@ from types import SimpleNamespace
 from . import review_packets
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .identity_telemetry import record_identity_event
+from .identity_proof import accepted_identity
+from .identity_model_context import compact_physical_identity
 from .live import StreetStoryLiveAdapter, _search_source_ref
 from .poi_memory import memory_keys, prior_facts, processed_sources
 from .research_control import research_stopped
@@ -58,6 +60,59 @@ def reviewed_reference_articles(identity):
     return articles
 
 
+def acquired_subject_articles(identity, research):
+    """Existing text leads for the accepted physical subject, never image proof.
+
+    A selected nearby page, proximity or the page title alone does not bind its
+    subject. Exact mapped links and current explicit subject addresses schedule
+    the normal frozen reader; its semantic subject/fact review remains required.
+    """
+    revision = int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
+    if not accepted_identity(identity, generation=int(research.get('identity_generation') or 0), control_revision=revision):
+        return {}
+    photo, generation = identity.get('photo_sha256'), identity.get('generation')
+    if not photo or generation != int(research.get('identity_generation') or 0):
+        return {}
+    from .article_media import public_url
+    from .identity_subject_binding import subject_aliases
+    aliases = subject_aliases(identity.get('candidates') or []).get(
+        identity.get('candidate_id'), {identity.get('candidate_id')})
+    articles = {}
+    def lead(item, subject_ids):
+        url = public_url(str(item.get('url') or ''))
+        if url and aliases.intersection(subject_ids):
+            articles.setdefault(url, {'url': url, 'title': str(item.get('title') or item.get('name') or url),
+                'subject_candidate_ids': sorted(aliases.intersection(subject_ids)),
+                'acquisition_kind': 'accepted_identity_subject_lead', 'visual_reference_verified': False})
+    for page in research.get('wikipedia') or []:
+        if isinstance(page, dict):
+            lead(page, {str(item.get('candidate_id') or '') for item in
+                page.get('mapped_wikipedia_sources') or [] if isinstance(item, dict)})
+    for candidate in identity.get('candidates') or []:
+        if not isinstance(candidate, dict) or candidate.get('candidate_id') not in aliases:
+            continue
+        cid = candidate['candidate_id']
+        urls = [candidate.get('wikipedia_url')]
+        if str(cid).startswith('wiki:'):
+            urls.append(candidate.get('url'))
+        for url in urls:
+            if url:
+                lead({'url': url, 'title': candidate.get('name')}, {cid})
+    history = research.get('identity_article_discovery') or {}
+    plan = history.get('search_plan') or {}
+    if (history.get('photo_sha256') == photo and history.get('generation') == generation
+            and plan.get('photo_sha256') == photo and plan.get('generation') == generation
+            and plan.get('control_revision') == revision):
+        for source in history.get('sources') or []:
+            if not isinstance(source, dict):
+                continue
+            subjects = {str(source.get('subject_candidate_id') or source.get('physical_subject_candidate_id') or '')}
+            subjects.update(source.get('physical_subject_candidate_ids') or [])
+            subjects.update(source.get('memory_candidate_ids') or [])
+            lead(source, subjects)
+    return articles
+
+
 class HeadlessFacts:
     """Up to three independent frozen cores; durable commits remain serial."""
 
@@ -84,7 +139,8 @@ class HeadlessFacts:
                     or int(run['identity_generation']) != generation
                     or payload.get('identity_generation', generation) != generation
                     or payload.get('photo_sha256', story['photo_sha256']) != story['photo_sha256']
-                    or identity.get('status') not in {'match', 'owner_confirmed'}
+                    or not accepted_identity(identity, photo_sha256=story['photo_sha256'], generation=generation,
+                        control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
                     or run['poi_key'] not in memory_keys(db, identity)):
                 return None
             story.update(_identity_generation=generation, _research_run_id=run_id,
@@ -418,6 +474,13 @@ class HeadlessFacts:
                     LOG.info('street_story_fact_identity_sources_reused story_id=%s run_id=%s sources=%s',
                              story['id'], run_id, len(sources))
         if not sources:
+            articles = acquired_subject_articles(research['visual_identity'], research)
+            sources = [item for url, item in articles.items() if url not in rejected_urls]
+            if sources:
+                search_receipt = {'backend': 'accepted_identity_subject_articles'}
+                LOG.info('street_story_fact_subject_sources_reused story_id=%s run_id=%s sources=%s proof_kind=%s',
+                         story['id'], run_id, len(sources), research['visual_identity'].get('proof_kind'))
+        if not sources:
             # Attach acquisition hints before requiring an external discovery.
             # The reader still checks article subject/content and reuses only
             # exact frozen version/scope checkpoints; URL familiarity is no verdict.
@@ -538,7 +601,10 @@ class HeadlessFacts:
                 'SELECT DISTINCT s.url FROM research_run_sources s JOIN research_runs r ON r.run_id=s.run_id '
                 f'WHERE r.poi_key IN ({placeholders})', tuple(poi_keys)))
             context = {
-                'confirmed_identity': research['visual_identity'], 'coverage_goal': goal, 'extraction_scope': scope,
+                'confirmed_identity': compact_physical_identity(research['visual_identity'],
+                    photo_sha256=story['photo_sha256'], generation=story['_identity_generation'],
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)),
+                'coverage_goal': goal, 'extraction_scope': scope,
                 'known_facts': inventory['facts'], 'known_inventory_complete': not inventory['has_more'],
                 'known_inventory_next_cursor': inventory['next_cursor'],
                 'known_inventory_total': len(complete_inventory),

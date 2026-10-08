@@ -192,7 +192,7 @@ async def test_search_terms_receive_nearby_address_distance_and_camera_context(t
             return await call('fixture', 5)
 
     async def generate(key, timeout, contents, config, **kwargs):
-        context = json.loads(contents[1].split('Данные ниже — только контекст:\n')[1])
+        context = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
         assert context['location_search_context']['nearby_context'][0]['distance_m'] == 18
         assert context['location_search_context']['nearby_context'][0]['observed_name'] == 'Примерная улица'
         assert context['camera_hints']['focal_length_35mm'] == 24

@@ -431,3 +431,56 @@ async def test_unknown_search_observes_exact_original_prompt_after_policy_capsul
     assert result['receipt']['frozen_prompt'] == saved['frozen_prompt']
     assert len(h.sends) == sends
     assert len([call for call in h.requests if call[0] == 'POST' and call[1].endswith('/prompt_async')]) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_planner_has_operation_local_64k_cap_and_real_input_accounting():
+    h = Harness()
+    client = h.adapter()
+    original_limits = client.limits
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string',
+        'enum': ['Actual sources', 'large observed enum ' + 'y'*40000]}}, 'required': ['summary']}
+    try:
+        result = await client.plan_identity_search('Observed SOURCE/map context ' + 'x'*30000,
+            {'request_id': 'large-plan'}, schema)
+        assert result['receipt']['phase'] == 'completed'
+        assert client.limits is original_limits and client.limits.max_input_chars == 24000
+        actual_prompt = next(payload for method, path, payload in h.requests if path.endswith('prompt_async'))['parts'][0]['text']
+        assert h.admissions[0][1]['input_chars'] == len(actual_prompt) > 65536
+        # Base remains below65536; the appended exact enum is fully admitted/accounted.
+        assert len(h.sends) == 1
+        before = len(h.requests)
+        with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
+            await client.plan_identity_search('x'*65537, {'request_id': 'too-big-plan'}, schema)
+        with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
+            await client._run('facts', 'x'*30000, {'request_id': 'normal-facts'}, schema)
+        assert len(h.requests) == before and len(h.sends) == 1
+    finally:
+        await h.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_large_planner_unknown_readback_uses_original_ids_prompt_and_schema():
+    h = Harness()
+    h.prompt_timeout = True
+    client = h.adapter()
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}
+    try:
+        with pytest.raises(ResearchUnavailable):
+            await client.plan_identity_search('Original SOURCE/map ' + 'x'*30000,
+                {'request_id': 'original-large-plan'}, schema)
+        receipt = h.checkpoints[-1][1]
+        assert receipt['session_id'] == 'sesBounded' and receipt['message_id'] == h.message_id
+        h.prompt_timeout = False
+        binding = {**receipt['binding'], **{key: receipt[key] for key in
+            ('session_id', 'message_id', 'phase', 'frozen_prompt', 'frozen_schema')}}
+        result = await client.plan_identity_search('Changed packet', binding,
+            {'type': 'object', 'required': ['new-unavailable-field']})
+        assert result['receipt']['message_id'] == receipt['message_id']
+        assert result['receipt']['frozen_schema'] == schema
+        assert result['receipt']['frozen_prompt'] == receipt['frozen_prompt']
+        assert len([1 for method, path, _ in h.requests if method == 'POST' and path == '/session']) == 1
+        assert len([1 for method, path, _ in h.requests if path.endswith('prompt_async')]) == 1
+        assert len(h.sends) == 1
+    finally:
+        await h.client.aclose()

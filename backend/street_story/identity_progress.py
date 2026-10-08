@@ -17,6 +17,14 @@ def current_projection(previous: dict, identity: dict | None = None) -> dict:
         for step in result['steps']:
             if step.get('key') == 'references':
                 step.update(label='Эталон выбранного объекта проверен', status='done')
+    if identity and identity.get('proof_kind') in {'geometry', 'combined'}:
+        from .identity_proof import verified_physical_identity
+        if verified_physical_identity(identity):
+            result['physical_identity_verified'] = True
+            result['proof_kind'] = identity['proof_kind']
+            for step in result['steps']:
+                if step.get('key') == 'result':
+                    step.update(label='Объект подтверждён по фото и пространственной геометрии', status='done')
     return result
 
 
@@ -37,7 +45,8 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         progress['finished'] = False
     elif event == 'identity_location':
         ok = bool(fields.get('coordinates_usable'))
-        step('gps', 'Геометки найдены' if ok else 'В выбранной копии нет доступных геометок', 'done' if ok else 'warning')
+        step('gps', 'Использую приблизительную точку съёмки, указанную автором' if ok and fields.get('source') == 'owner_approx_camera'
+            else 'Геометки найдены' if ok else 'В выбранной копии нет доступных геометок', 'done' if ok else 'warning')
         if ok:
             step('map', 'Ищу объекты на карте', 'working')
     elif event == 'identity_osm' and fields.get('available') is not False:
@@ -108,15 +117,23 @@ def advance(previous: dict, event: str, fields: dict, now: float) -> dict:
         step('result', 'Объект явно подтверждён автором', 'done')
         progress['finished'] = True
     elif event == 'identity_finished':
-        matched = fields.get('status') == 'match' and fields.get('reference_verified') is True
-        step('result', 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · пока недостаточно доказательств' if fields.get('candidate_id') else 'Объект пока не определён · доказательств недостаточно'), 'done' if matched else 'warning')
-        if matched:
+        reference_verified = fields.get('status') == 'match' and fields.get('reference_verified') is True
+        geometry_verified = fields.get('status') == 'match' and fields.get('proof_kind') in {'geometry', 'combined'} and fields.get('physical_identity_verified') is True
+        matched = reference_verified or geometry_verified
+        progress['physical_identity_verified'] = matched
+        progress['proof_kind'] = fields.get('proof_kind')
+        step('result', 'Объект подтверждён по фото и пространственной геометрии' if geometry_verified else 'Объект подтверждён визуальным сравнением' if matched else ('Найден вероятный вариант · пока недостаточно доказательств' if fields.get('candidate_id') else 'Объект пока не определён · доказательств недостаточно'), 'done' if matched else 'warning')
+        if reference_verified:
             step('references', 'Эталон выбранного объекта проверен', 'done')
         if 'compare' in steps:
             steps['compare']['status'] = 'done' if matched else 'warning'
-        progress['visual_comparison_verified'] = matched
+        progress['visual_comparison_verified'] = reference_verified
         count = progress.get('images_reviewed_count', 0)
-        step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'done' if matched else 'warning')
+        if geometry_verified and not reference_verified:
+            steps.pop('visual_comparison', None)
+            steps.pop('references', None)
+        else:
+            step('visual_comparison', f"Визуальное сравнение · просмотрено иллюстраций: {count}", 'done' if reference_verified else 'warning')
         progress['finished'] = True
         progress['elapsed_ms'] = max(0, round((now - progress['started_at']) * 1000))
     else:

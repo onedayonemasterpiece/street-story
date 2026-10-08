@@ -55,7 +55,7 @@ async def test_planner_receives_exact_address_geometry_and_nomination_excludes_e
         async def execute(self, operation, call):
             return await call('fixture', 5)
     async def generate(key, timeout, contents, config, **kwargs):
-        prompt = contents[1]
+        prompt = contents[-1]
         captured.append(prompt)
         context = json.loads(prompt.split('Данные ниже — только контекст:\n')[1])
         grouped = context['location_search_context']['building_address_memberships']

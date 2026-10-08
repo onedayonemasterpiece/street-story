@@ -25,6 +25,15 @@ def item():
         'report_label': 'Hidden building expectation', 'address': 'Not a provider seed'}
 
 
+def test_requested_canaries_keep_simple_then_complex_order_and_reject_duplicate_spend():
+    items = [{'message_id': identifier} for identifier in (102, 104, 111, 122, 132)]
+    assert [entry['message_id'] for entry in harness.selected_items(items, '104,102,111,122,132')] == [
+        104, 102, 111, 122, 132]
+    for requested in ('104,104', '104,999'):
+        with pytest.raises(ValueError, match='distinct and present'):
+            harness.selected_items(items, requested)
+
+
 def test_manifest_digest_freezes_expectations_but_is_independent_of_json_format(tmp_path):
     source = tmp_path / 'source.jpg'
     source.write_bytes(b'original-source')
@@ -53,6 +62,39 @@ def test_upload_preserves_source_sha_and_exif_without_hidden_expectations():
     assert set(result) == {'key', 'client_story_id', 'photo_sha256', 'photo_mime_type',
         'photo_bytes', 'voice_protocol', 'lat', 'lon'}
     assert 'Hidden' not in str(result) and 'provider seed' not in str(result)
+
+
+def test_explicit_owner_approx_camera_is_input_but_truth_and_geometric_result_are_not():
+    class Service:
+        def create_story(self, **kwargs):
+            return kwargs
+    entry = {**item(), 'owner_approx_camera': {'latitude': 55.074106, 'longitude': 21.903648},
+        'acceptance_mode': 'geometry_without_reference'}
+    result = harness.upload_story(Service(), entry, b'original-source', 'frozen-manifest')
+    assert (result['lat'], result['lon']) == (55.074106, 21.903648)
+    assert result['location_provenance'] == {'kind': 'owner_approx_camera'}
+    assert 'expected_physical_id' not in result and 'report_label' not in result
+    assert 'acceptance_mode' not in result and 'Not a provider seed' not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected_source():
+    from street_story.errors import PermanentProviderError
+    class Service:
+        async def _identify_photo(self, story, *args, **kwargs):
+            return 'ordinary-reference-path'
+        async def _identify_photo_batch(self, story, *args, **kwargs):
+            return 'ordinary-reference-batch'
+    service = Service()
+    restore = harness.block_directed_reference_inference(service, [{**item(),
+        'acceptance_mode': 'geometry_without_reference'}])
+    try:
+        with pytest.raises(PermanentProviderError, match='external_reference_disabled'):
+            await service._identify_photo({'photo_sha256': item()['sha256']}, '', [])
+        assert await service._identify_photo({'photo_sha256': 'other'}, '', []) == 'ordinary-reference-path'
+    finally:
+        restore()
+    assert await service._identify_photo({'photo_sha256': item()['sha256']}, '', []) == 'ordinary-reference-path'
 
 
 def test_availability_transfer_is_scoped_negative_history_with_original_expiry(tmp_path):
@@ -140,6 +182,8 @@ async def test_sdk_journal_counts_unreceipted_calls_and_preserves_unknown_usage(
         assert measured['google_sdk_invocations'] == 2
         assert measured['response_closed'] == measured['outcome_unavailable'] == 1
         assert measured['details'][0]['usage']['total_tokens'] == 49
+        assert measured['details'][0]['key_fingerprint'] == hashlib.sha256(
+            b'secret-never-recorded').hexdigest()
         assert measured['details'][1]['usage']['total_tokens'] == 'unknown'
         assert measured['money'].startswith('unknown')
         assert 'secret-never-recorded' not in journal.read_text()
@@ -214,6 +258,19 @@ def test_wrong_snapshot_is_not_canonical_review_proof(tmp_path):
     assert result['gates']['canonical_poi_readback'] is False
 
 
+def test_report_only_equivalent_identifiers_do_not_accept_neighbor_or_complex(tmp_path):
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    entry = {**item(), 'expected_physical_id': 'wiki:exact-building',
+        'expected_physical_ids': ['wiki:exact-building', 'osm:way:building']}
+    assert harness.read_case(svc, case, entry)['gates']['correct_physical_object'] is True
+    entry['expected_physical_ids'] = ['wiki:neighbor', 'osm:relation:multi-building-complex']
+    assert harness.read_case(svc, case, entry)['gates']['correct_physical_object'] is False
+    assert 'expected_physical_ids' not in harness.upload_story(
+        type('Service', (), {'create_story': lambda self, **kwargs: kwargs})(),
+        entry, b'original-source', 'frozen-manifest')
+
+
 def test_between_identity_and_facts_is_not_terminal(tmp_path):
     svc, now, case = readback_fixture(tmp_path)
     now[0] = 210
@@ -243,3 +300,19 @@ def test_resource_block_and_missing_hidden_expected_id_are_distinct_results():
         'product_outcome': {'outcome': 'resource_blocked'}, 'gates': {'identity': False}}) == 'BLOCKED'
     assert harness.acceptance_status({'terminal': True,
         'gates': {'identity': True, 'correct_physical_object': None}}) == 'REVIEW_REQUIRED'
+
+
+def test_question_and_conditional_source_discussion_are_not_automatic_pass():
+    assert harness.acceptance_status({'terminal': True, 'gates': {'identity': False},
+        'product_outcome': {'outcome': 'clarification_required'},
+        'conditional_identity_context': {'clarification': {'question': 'Which city?'}}}) == 'CLARIFICATION_REQUIRED'
+    assert harness.acceptance_status({'terminal': True, 'gates': {'identity': False},
+        'conditional_identity_context': {'clarification': {'question': 'Which city?'}}}) == 'FAIL'
+    assert harness.acceptance_status({'terminal': True, 'gates': {'identity': False},
+        'conditional_identity_context': {'joint_visual_input_verified': True,
+            'hypotheses': [{'support_status': 'spatially_supported'}],
+            'article_sources': [{'canonical_eligible': False}]}}) == 'CONDITIONAL_CONTEXT_AVAILABLE'
+    assert harness.acceptance_status({'terminal': True, 'gates': {'identity': False},
+        'conditional_identity_context': {'joint_visual_input_verified': False,
+            'hypotheses': [{'support_status': 'spatially_supported'}],
+            'article_sources': [{'canonical_eligible': False}]}}) == 'FAIL'

@@ -42,7 +42,7 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         async def execute(self, operation, call):
             return await call('fixture', 3)
     async def generate(key, timeout, contents, config, **kwargs):
-        prompt = contents[1]
+        prompt = contents[-1]
         context = json.loads(prompt.split('Данные ниже — только контекст:\n')[1])
         rows = context['location_search_context']['address_anchors']['rows']
         assert [(row[0], row[2], row[3]) for row in rows] == [

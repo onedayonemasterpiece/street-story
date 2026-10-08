@@ -77,7 +77,7 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
 
     async def generate(key, timeout, contents, config, **kwargs):
         contents_seen.append(contents)
-        prompt = contents[1]
+        prompt = contents[-1]
         context = json.loads(prompt.split('Данные ниже — только контекст:\n')[1])
         contexts.append(context)
         assert 'Адрес — поисковый якорь наравне с названием' in prompt

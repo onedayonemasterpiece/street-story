@@ -376,12 +376,19 @@ class OpenCodeResearch:
                 await lease.finalize({'assistants': assistants, 'image_tokens': 'unknown', 'actual_total_tokens': actual},
                                      'completed' if receipt['phase'] in {'completed','failed','response_completed'} else receipt['phase'])
 
-    async def _run(self, role, prompt, binding, schema, *, snapshot=None):
+    async def plan_identity_search(self, prompt, binding, schema):
+        """Tool-free planning bounds the base capsule; full schema input is admitted/accounted."""
+        return await self._run('facts', prompt, binding, schema, max_input_chars=65536)
+
+    async def _run(self, role, prompt, binding, schema, *, snapshot=None, max_input_chars=None):
         if not self.admission:
             raise ResearchUnavailable('research_admission_required')
         if not self.checkpoint:
             raise ResearchUnavailable('research_durable_checkpoint_required')
-        if len(prompt) > self.limits.max_input_chars:
+        input_limit = self.limits.max_input_chars if max_input_chars is None else max_input_chars
+        observing = bool(isinstance(binding, dict) and binding.get('session_id') and binding.get('message_id')
+            and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
+        if not observing and len(prompt) > input_limit:
             raise ResearchUnavailable('research_input_too_large')
         if not isinstance(binding, dict) or not binding:
             raise ResearchUnavailable('research_binding_required')

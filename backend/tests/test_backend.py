@@ -339,7 +339,7 @@ async def test_wikipedia_cache(tmp_path):
     await wiki.nearby(54.7, 20.45)
     await wiki.nearby(54.7, 20.45)
     await client.aclose()
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

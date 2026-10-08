@@ -138,7 +138,7 @@ async def test_planner_can_promote_existing_building_outside_active_shortlist(tm
         async def execute(self, operation, call):
             return await call('fixture', 5)
     async def generate(key, timeout, contents, config, **kwargs):
-        context = json.loads(contents[1].split('Данные ниже — только контекст:\n')[1])
+        context = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
         rows = context['location_search_context']['observed_physical_candidates']['rows']
         assert physical['candidate_id'] in [row[0] for row in rows]
         assert config.response_json_schema['properties']['observed_candidate_ids']['items']['enum'] == [physical['candidate_id']]

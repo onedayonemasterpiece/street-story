@@ -1,8 +1,4 @@
-"""One bounded visual-query recovery when coordinate-only recall misses an object.
-
-Vision proposes search terms, never proof. Only fetched Wikimedia records become
-candidates, and the existing visual proof gate must still accept actual images.
-"""
+"""Bounded joint SOURCE/map identity decision and conditional source recovery."""
 from __future__ import annotations
 import asyncio
 import hashlib
@@ -68,10 +64,37 @@ def _map_query_context(story, candidates):
     return context
 
 
+def _plan_physical_ids(payload):
+    """Replay the model's exact observed nominations; geometry supplies no rank."""
+    return list(dict.fromkeys([*(payload.get('observed_candidate_ids') or []),
+        *(item.get('group_key') for item in payload.get('first_wave_hypotheses') or []
+            if str(item.get('group_key') or '').startswith(('osm:way:', 'osm:relation:'))),
+        *(item.get('candidate_id') for item in payload.get('spatial_hypotheses') or []
+            if item.get('support_status') in {'plausible', 'spatially_supported'}),
+        *([payload['accepted_geometry']['candidate_id']] if
+            (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry' else [])]))
+
+
+def _geometry_plan_result(story, payload, candidates):
+    """Read the frozen joint decision through the common accepted proof gate."""
+    proof = payload.get('geometry_proof')
+    if not isinstance(proof, dict):
+        return None
+    decision = proof.get('decision') or {}
+    raw = {'status': 'match', 'candidate_id': decision.get('candidate_id'),
+        'proof_kind': 'geometry', 'geometry_proof': proof, 'confidence': None,
+        'visual_reference_verified': False, '_references_sent': [],
+        'observations': [item['source_observation'] for item in decision.get('decisive_relations') or []],
+        'alternative_candidate_ids': []}
+    from .identity_proof import geometry_result_valid
+    return raw if geometry_result_valid(raw, candidates, story) else None
+
+
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
     from .identity_source_selection import (regional_source_profile, model_identity_context,
-        first_wave_catalog, first_wave_schema, render_first_wave)
+        first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
+        wikipedia_metadata_context, grounded_wave_catalog, geometry_decision_schema)
     schema = {'type': 'object', 'properties': {
         'entity_name': {'type': 'string'},
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
@@ -92,106 +115,125 @@ async def suggest(service, story, transcript, candidates):
     if 'observed_candidate_ids' in legacy_schema['properties']:
         legacy_schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6, 'items': {'type': 'string'}}
     first_wave = first_wave_catalog(story, candidates)
+    wiki_pages = story.get('_identity_wikipedia_metadata') or research.get('wikipedia') or []
+    wiki_ids = [str(page['pageid']) for page in wiki_pages if isinstance(page, dict) and page.get('pageid')]
+    if wiki_ids:
+        schema['properties']['selected_wikipedia_page_ids'] = {'type': 'array', 'maxItems': 3,
+            'uniqueItems': True, 'items': {'type': 'string', 'enum': list(dict.fromkeys(wiki_ids))}}
+        schema['required'].append('selected_wikipedia_page_ids')
     schema['properties']['first_wave_hypotheses'] = first_wave_schema(first_wave)
+    if wiki_ids:
+        # A selected ready encyclopedia REF can replace paid search hypotheses.
+        # Acceptance below still checks coverage when no ready page is chosen.
+        schema['properties']['first_wave_hypotheses']['minItems'] = 0
     schema['required'].append('first_wave_hypotheses')
+    text_list = {'type': 'array', 'maxItems': 6, 'items': {'type': 'string', 'maxLength': 180}}
+    if observed_ids:
+        schema['properties']['spatial_hypotheses'] = {'type': 'array', 'maxItems': 3,
+            'items': {'type': 'object', 'properties': {
+                'candidate_id': {'type': 'string', 'enum': observed_ids},
+                'support_status': {'type': 'string', 'enum': ['spatially_supported', 'plausible', 'contradicted', 'unknown']},
+                'basis': text_list, 'counterevidence': text_list, 'assumptions': text_list,
+                'next_action': {'type': 'string', 'maxLength': 180}},
+                'required': ['candidate_id', 'support_status', 'basis', 'counterevidence', 'assumptions', 'next_action'],
+                'additionalProperties': False}}
+    schema['properties']['source_scene_observations'] = {'type': 'object', 'properties': {
+        key: text_list for key in ('observed', 'inferred', 'unknown')},
+        'required': ['observed', 'inferred', 'unknown'], 'additionalProperties': False}
+    schema['properties']['clarification_question'] = {'type': 'string', 'maxLength': 200}
     source_bytes = service._source_photo_bytes(story['id'])
+    original_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    story['_identity_original_source_sha256'] = original_source_sha256
     from .reference_image_codec import normalize_reference
     source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
-    prompt = (
-        'Определи, что следует искать для установления конкретного физического объекта на фото. '
-        'Это только поисковые гипотезы, не доказательство. Не выбирай заведомо неподходящее '
-        'ближайшее здание. Разрешено узнавать известные сооружения без GPS, но не выдумывать '
-        'неизвестное название. Фото может показывать только часть объекта. '
-        'entity_name — короткое наиболее вероятное название именно сооружения/объекта по-русски; '
-        'название города, района или общий тип здания не подходит. '
-        'Используй только адрес и географию, подтверждённые доступными данными; не выдумывай их. '
-        'Пустой region_hint означает неизвестную географию: используй OCR, авторский контекст '
-        'и визуальные гипотезы, не считай снимок автоматически калининградским. '
-        'article_queries — готовый план буквальных интернет-запросов для статей с современными внешними фотографиями, достаточный для разных правдоподобных гипотез. '
-        'Сначала используй короткий запрос по реальному адресу или названию и городу без лишних ограничений. '
-        'Сохраняй полное наблюдавшееся имя населённого пункта, тип улицы, литеру и диапазон номера. '
-        'observed_address_context содержит реальные адресные якоря и точные связи входов '
-        'с наблюдаемыми контурами зданий. Не игнорируй номер дома из адресного входа только потому, '
-        'что у самого контура building нет addr:housenumber: ищи по этому якорю, не присваивая его SOURCE. '
-        'Если SOURCE показывает близкий дом и есть правдоподобные адресные якоря, первые два запроса '
-        'должны проверять конкретные наблюдавшиеся адреса с городом, а не общую архитектуру улицы, '
-        'района или список достопримечательностей. Для каждого выбора сопоставь SOURCE и геометрию; '
-        'ближайший якорь не обязательно верный. Третья гипотеза может быть по видимым признакам. '
-        'Связь нескольких адресных входов с одним контуром не означает разные здания и не позволяет '
-        'сочинить общий номер/диапазон, отсутствующий в исходных данных. '
-        'Город обязателен в каждом запросе, включая английский визуальный запрос, если город наблюдался. '
-        'Не заменяй конкретный адрес запросом «старые дома», «архитектура» или «достопримечательности» '
-        'без номера, когда доступен подходящий реальный адрес. '
-        'Первая волна — 2–3 различные сильные гипотезы; всего не более восьми запросов в двух волнах. '
-        'first_wave_hypotheses — обязательные структурированные выборы для первой волны. '
-        'Выбери разные group_key из first_wave_subjects по SOURCE и геометрии: это реальные поисковые '
-        'гипотезы, не привязка SOURCE. Требуемое число наблюдавшихся групп указано в required_grounded_count. '
-        'kind=address или observed_named требует точный subject_id из first_wave_subjects; query для них '
-        'оставь пустым: хост отправит буквальный реальный адрес или наблюдавшееся имя с населённым пунктом. '
-        'Два входа одного точного контура — одна группа, как и имя этого здания плюс его адрес. '
-        'mapped_occupant_context сохраняет буквальное имя арендатора как поисковую подсказку, '
-        'но пустой group_key не считается отдельным зданием и не покрывает required_grounded_count. '
-        'Не подменяй выборы общей архитектурой улицы и не повторяй одну физическую догадку разными словами. '
-        'kind=unmapped_named или appearance допускает query по распознаваемому сооружению вне каталога '
-        'либо видимым признакам, subject_id тогда пустой; это не увеличивает покрытие наблюдавшихся групп. '
-        'При отсутствии GPS, адресов или названий продолжай такими гипотезами без выдуманной географии. '
-        'При одной доступной группе нужна одна; неизвестная принадлежность входа остаётся гипотезой '
-        'адресной записи, не придуманным зданием. Дай короткий reason каждому выбору. '
-        'article_queries — только оставшиеся альтернативы после этих структурированных выборов. '
-        'Вторую волну выполняй только для конкретного отсутствующего evidence после первой. '
-        'regional_source_profile содержит предпочтения источников из наблюдавшейся географии, не ответы. '
-        'observed_candidate_ids — до шести реальных физических кандидатов из observed_physical_candidates, '
-        'которые полезно добавить к активным гипотезам; это не подтверждение identity. '
-        'Обычный дом может иметь данные о строительстве, эксплуатации или ремонте без исторической статьи. '
-        'Современный внешний вид — требование к REF, а не обязательные слова каждого запроса. '
-        'Предусмотри в плане отдельный запрос по фасаду, внешнему виду или фото с улицы для правдоподобного адреса, если простой запрос может дать лишь адресные справочники. '
-        'address_anchors — полный список переданных реальных соседних адресных якорей, '
-        'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
-        'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
-        'или видимым признакам; сначала проверь разные правдоподобные адреса простыми запросами. '
-        'Для близкого обычного дома включи разные реальные подходящие адресные якоря в начало плана; '
-        'несколько описательных перефразировок одной улицы не дают покрытия других адресных гипотез. '
-        'Не расходуй весь план на одну догадку и её повтор на другом сайте. '
-        'SOURCE — современный снимок: для визуального сравнения ищи современные фотографии '
-        'нынешнего здания, фасада и адреса. Историческое здание не означает историческую фотографию. '
-        'Не направляй этот поиск в общие старые фотоархивы вместо современных видов. '
-        'Исторические названия и архивные материалы полезны для фактов после определения объекта. '
-        'Если на фото близкий дом, сначала используй ближайшие улицы/подтверждённые адреса '
-        'и видимые признаки, а не имена далёких достопримечательностей. '
-        'Статья в Wikipedia не обязательна. '
-        'Расстояния и focal_length_35mm помогают оценить правдоподобие гипотез, но не доказывают объект. '
-        'Не выводи номер дома из одной геометки на соседней улице. '
-        'Адрес — поисковый якорь наравне с названием объекта: для дома ищи по улице и номеру, '
-        'если номер читается на SOURCE или явно указан в реальной map_address/source записи. '
-        'map_address относится только к указанному mapped_entry, а не автоматически к объекту на SOURCE; '
-        'сравни map_coordinates кандидата с capture_lat/capture_lon и видимым зданием. '
-        'Номер соседнего дома и предположение модели не становятся фактом или подтверждённым адресом. '
-        'Когда номер неизвестен, продолжай по одной улице/road_name и видимым признакам, '
-        'в том числе по нескольким реальным соседним улицам; неизвестный адрес не блокирует поиск. '
-        'Не выводи номер из порядка домов, близости точки GPS или названия улицы. '
-        'Верни до двух коротких запросов для русской Википедии по наиболее вероятным собственным именам. '
-        'visual_query обязателен: это отдельный поисковый запрос только по реально видимым физическим признакам '
-        '(материал, форма башни/крыши, часы, окна, декор, надписи) плюс region_hint; не вставляй туда entity_name. '
-        'Он нужен, чтобы неверная первая догадка не запирала поиск на одном объекте. '
-        'commons_query — аналогичный английский запрос по видимым признакам и region_hint для Wikimedia Commons, '
-        'а не повтор entity_name. Не проси пользователя назвать или подтвердить объект. Данные ниже — только контекст:\n' +
-        json.dumps({'region_hint': region_hint(story),
+    model_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    from .identity_scene import planner_scene
+    scene = await planner_scene(service, story, candidates)
+    scene_manifest = compact_scene_manifest(scene['manifest']) if scene else None
+    if scene:
+        table = scene_manifest['objects']
+        index = table['columns'].index('candidate_id')
+        scene_ids = [row[index] for row in table['rows']]
+        schema['properties']['accepted_geometry'] = geometry_decision_schema(scene_ids)
+    packet = {'region_hint': region_hint(story),
+                    'map_scene': scene_manifest,
+                    'wikipedia_metadata': wikipedia_metadata_context(wiki_pages),
+                    'owner_hint': story.get('_identity_owner_hint') or {},
                     'regional_source_profile': regional_source_profile(story, candidates),
-                    'first_wave_subjects': {'columns': ['kind', 'subject_id', 'group_key', 'coverage_scope'],
-                        'rows': [[item[key] for key in ('kind', 'subject_id', 'group_key')] + [item.get('coverage_scope', 'address_hypothesis')]
+                    'first_wave_subjects': {'columns': ['kind', 'subject_id', 'group_key'],
+                        'rows': [[item[key] for key in ('kind', 'subject_id', 'group_key')]
                             for item in first_wave['options'].values()],
+                        'scope_policy': 'Empty group_key is mapped occupant search context, never distinct physical coverage.',
                         'required_grounded_count': first_wave['required_grounded_count']},
-                    'location_search_context': model_identity_context(story, candidates),
+                    'location_search_context': model_identity_context(story, candidates, scene_available=bool(scene)),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
-                    'author_context': transcript[:1500]}, ensure_ascii=False, separators=(',', ':')))
+                    'author_context': transcript[:1500]}
+    from .identity_source_selection import compact_planner_packet
+    plain_packet = packet
+    packet_bytes = len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode())
+    if scene and packet_bytes > 48_000:
+        packet = compact_planner_packet(packet)
+    prompt = (
+        'SOURCE — первое изображение, нейтральная MAP — второе; map_scene.objects связывает '
+        'метки с exact ID. В одном решении можно принять physical identity по достаточной '
+        'SOURCE+MAP geometry без внешнего REF/второго judge либо оставить uncertain. '
+        'accepted_geometry — реальные различающие SOURCE/map связи, pose/coverage limits '
+        'и отвергнутые существенные альтернативы. Один прямоугольник/расстояние/имя/score '
+        'или отсутствие конкурента в top-k недостаточны. Рассмотри весь полученный пул. '
+        'Правее в кадре определяется относительным азимутом/yaw, не востоком карты. '
+        'Учти меняющие выбор crop/FOV/неполный контур/цель за bbox; не требуй '
+        'исключить весь город/круг60м. Камерный сдвиг — сценарий, '
+        'не восстановленный EXIF/accuracy. Высоты/этажность/арки/проходимость/направление '
+        'без данных неизвестны; 2D-пересечение не доказывает заслонение. '
+        'Ссылайся на actual features по feature_reference_policy, не выдумывай их. '
+        'Принятая geometry: identity next_action=none, поисковые массивы могут быть пустыми; '
+        'далее сведения без ожидания REF/Wiki. Scope здания/комплекса не доказывает '
+        'все адреса/части/арендаторов. uncertain next_action: одно различающее kind/reason '
+        'с exact target_candidate_ids; одна адресная гипотеза может проверить его. '
+        'spatially_supported остаётся условной '
+        'гипотезой; достаточный исход — accepted_geometry. Раздели observed/inferred/unknown. '
+        'Wiki не доказывает SOURCE; selected_wikipedia_page_ids при страницах обязателен: '
+        'до трёх page_id для текста/REF либо []. Не подменяй '
+        'нынешний корпус парком/районом/учреждением/снесённым зданием. Готовый выбранный '
+        'Wiki REF не требует платного поиска, first_wave_hypotheses может быть пустым. '
+        'Нет Wiki — не исключай объект. Для нерешённой identity без готового REF первые '
+        'два запроса проверяют разные реальные group_key по required_grounded_count, '
+        'не перефразы улицы; максимум2–3, не квота. Одна spatially_supported группа с basis '
+        'без plausible альтернатив допускает одну гипотезу. address/observed_named: '
+        'exact subject_id, query пустой — хост отправит буквальное имя/адрес с городом. '
+        'Входы одного контура группируются только по точной membership; адрес не здание. '
+        'Пустой group_key магазина/офиса — контекст. unmapped_named/appearance: subject_id пустой. '
+        'Адрес — поисковый якорь наравне с названием. Сохраняй город, тип/имя улицы, '
+        'литеру/диапазон; не объединяй входы. Номер соседнего дома и предположение модели '
+        'не становятся фактом. Город обязателен в каждом запросе, включая английский, '
+        'если наблюдался; неизвестный адрес не блокирует поиск по OCR/признакам. '
+        'article_queries — содержательно разные запросы: адрес/имя и город, современные '
+        'источники; при пробеле REF нужны статьи с современными внешними фотографиями. '
+        'Архив не заменяет современный REF. До восьми запросов, новая волна лишь при пробеле. '
+        'entity_name/wikipedia_queries — имена; visual_query/commons_query — независимые '
+        'RU/EN SOURCE+география. regional_source_profile — предпочтения. '
+        'Не назначай неизвестный город. owner_hint — буквальная подсказка с provenance, '
+        'не EXIF/подтверждение; owner-approx остаётся приблизительной. Если '
+        'OCR/имя/контекст не дают шага без географии, clarification_question — вопрос '
+        'о городе/районе, иначе пусто; не проси подтвердить догадку. Данные ниже — только контекст:\n' +
+        json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
+    if len(prompt) > 65_200 and wiki_pages:
+        # The tool-free text route has an actual per-operation character cap.
+        # Shorten transport excerpts only; every page/ID/coordinate/title and
+        # the full acquired metadata remain available in durable state.
+        packet = {**plain_packet, 'wikipedia_metadata': wikipedia_metadata_context(wiki_pages, intro_limit=30)}
+        if scene and packet_bytes > 48_000:
+            packet = compact_planner_packet(packet)
+        prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
+            packet, ensure_ascii=False, separators=(',', ':'))
     config = types.GenerateContentConfig(
         response_mime_type='application/json',
         response_json_schema=schema,
         system_instruction='Идентифицируй именно физическое сооружение. Город, район или область не являются ответом об объекте.',
     )
     gemini = service.providers.gemini
-    def accept(payload, *, original_schema_readback=False):
+    def accept(payload, *, original_schema_readback=False, original_schema=None):
         from jsonschema import Draft202012Validator
         def reject(code):
             hypotheses = (payload.get('first_wave_hypotheses') or []) if isinstance(payload, dict) else []
@@ -202,37 +244,75 @@ async def suggest(service, story, transcript, candidates):
                     if isinstance(item, dict)] if isinstance(hypotheses, list) else [],
                 'required_grounded_count': first_wave['required_grounded_count']})
             raise PermanentProviderError(code)
-        if not Draft202012Validator(legacy_schema if original_schema_readback else schema).is_valid(payload):
+        validation_schema = original_schema or (legacy_schema if original_schema_readback else schema)
+        if not Draft202012Validator(validation_schema).is_valid(payload):
             reject('identity_search_plan_malformed')
+        action = (payload.get('accepted_geometry') or {}).get('next_action') or {}
+        if action and (not scene or any(cid not in scene_ids for cid in action.get('target_candidate_ids') or [])):
+            reject('identity_geometry_action_unreceived_target')
+        source_map_receipt = ({'source_photo_sha256': story.get('photo_sha256'),
+            'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
+            'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene_manifest,
+            'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
+            if scene and original_schema is None else {})
+        geometry_proof = None
+        if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
+            from .identity_proof import freeze_geometry_proof
+            geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
+                [*observed, *candidates])
+            if geometry_proof is None:
+                reject('identity_geometry_proof_invalid')
         try:
-            rendered = [] if original_schema_readback else render_first_wave(first_wave, payload['first_wave_hypotheses'])
+            selected_wiki = set(payload.get('selected_wikipedia_page_ids') or [])
+            ready_wiki = any(str(page.get('pageid')) in selected_wiki
+                and (page.get('image_url') or page.get('thumbnail_url')) for page in wiki_pages)
+            effective_wave = grounded_wave_catalog(first_wave, payload,
+                ready_wikipedia=ready_wiki or geometry_proof is not None,
+                joint_geometry=source_map_receipt.get('joint_image_input') is True)
+            rendered = [] if original_schema_readback else render_first_wave(effective_wave, payload['first_wave_hypotheses'])
         except RetryableProviderError as exc:
             # A closed invalid answer is not key health or provider quota. Stop
             # the executor key loop and use the existing qualified fallback.
             reject(str(exc))
         queries = [item['query'] for item in rendered]
         result = queries_from(payload)
-        if rendered and len(queries) < 3 and result[2]:
+        single_geometry_action = (source_map_receipt.get('joint_image_input') is True
+            and (payload.get('accepted_geometry') or {}).get('decision') == 'uncertain'
+            and bool(action.get('reason', '').strip()) and len(rendered) == 1)
+        if rendered and not ready_wiki and not single_geometry_action and len(queries) < 3 and result[2]:
             queries.append(result[2])
         queries.extend(payload.get('article_queries') or [])
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:8]
-        if result[2] and result[2] not in story['_identity_article_queries']:
+        if result[2] and not ready_wiki and not single_geometry_action and result[2] not in story['_identity_article_queries']:
             story['_identity_article_queries'] = [*story['_identity_article_queries'][:7], result[2]]
+        if geometry_proof is not None:
+            # Accepted geometry ends identity search; the normal fact path
+            # receives article leads independently of reference acquisition.
+            story['_identity_article_queries'] = []
         story['_identity_search_plan_payload'] = {**payload,
             'article_queries': story['_identity_article_queries'],
+            **({'source_map_receipt': source_map_receipt} if source_map_receipt else {}),
+            **({'geometry_proof': geometry_proof} if geometry_proof is not None else {}),
             **({'first_wave_hypotheses': rendered, 'first_wave_contract': 'grounded-subjects-v1'} if not original_schema_readback
                 else {'original_schema_readback': True})}
         from .identity_candidate_policy import promote_observed_candidates
         candidates[:] = promote_observed_candidates(candidates, observed,
-            [*(payload.get('observed_candidate_ids') or []),
-             *(item['group_key'] for item in rendered if item['group_key'].startswith('osm:way:')
-                or item['group_key'].startswith('osm:relation:'))])
+            _plan_physical_ids(story['_identity_search_plan_payload']))
+        if geometry_proof is not None:
+            story['_identity_geometry_result'] = _geometry_plan_result(
+                story, story['_identity_search_plan_payload'], candidates)
+            if story['_identity_geometry_result'] is None:
+                reject('identity_geometry_result_invalid')
+        from .identity_wikipedia_metadata import selected_candidates
+        candidates[:] = selected_candidates(candidates, observed, wiki_pages, payload)
         return result
     async def call(key, timeout, *, model=None, quota=None):
         response = await gemini._generate(key, timeout, [
-            types.Part.from_bytes(data=source_bytes, mime_type=source_mime), prompt], config,
+            types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
+            *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []), prompt], config,
             operation='grounded_research', model=model, quota=quota)
+        story['_identity_search_plan_route'] = 'google'
         payload = json.loads(response.text or '{}')
         return accept(payload)
     async def fallback(cause):
@@ -246,7 +326,8 @@ async def suggest(service, story, transcript, candidates):
         story['_identity_search_plan_route'] = 'qualified_text_fallback'
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',
             {'cause': getattr(cause, 'code', type(cause).__name__)})
-        return accept(result.get('result') or {}, original_schema_readback=result.get('original_schema_readback') is True)
+        return accept(result.get('result') or {}, original_schema_readback=result.get('original_schema_readback') is True,
+            original_schema=result.get('original_schema'))
     researcher = getattr(service.providers, 'research', None)
     readback = getattr(researcher, 'has_identity_search_plan_readback', None)
     if callable(readback) and readback(story):
@@ -1035,6 +1116,63 @@ def next_visual_query(identity, seed, searches, planned_queries=()):
     return next((query for query in variants if normalized(query) not in completed), '')
 
 
+async def prepare_search_plan(service, story, transcript, candidates):
+    # Read persisted work before invoking any planner. A completed plan and
+    # its closed/UNKNOWN query receipts survive provider outages and wakes.
+    story.pop('_identity_geometry_result', None)
+    history = _retain_article_discovery(service, story, [])
+    saved = history.get('search_plan') or {}
+    captured = json.loads(story.get('research_json') or '{}')
+    control = (captured.get('research_controls') or {}).get('identity') or {}
+    revision = int(control.get('revision') or 0)
+    valid_saved = (saved.get('photo_sha256') == story['photo_sha256']
+        and saved.get('generation') == int(story.get('_identity_generation', captured.get('identity_generation') or 0))
+        and saved.get('control_revision') == revision)
+    # Legacy plans predate metadata; they remain reusable for the original
+    # revision, preserving all submitted query identities across deployment.
+    legacy_saved = bool(history.get('planned_queries')) and not saved and revision == 0
+    if valid_saved or legacy_saved:
+        payload = saved.get('payload') or {}
+        if payload.get('geometry_proof'):
+            # Opaque legacy upload tokens do not substitute for actual bytes.
+            # This is an original local read, never a fresh provider operation.
+            story['_identity_original_source_sha256'] = hashlib.sha256(
+                service._source_photo_bytes(story['id'])).hexdigest()
+        entity_name, wiki_queries, visual_query, commons_query = queries_from(payload)
+        story['_identity_article_queries'] = history.get('planned_queries') or []
+        from .identity_candidate_policy import promote_observed_candidates
+        observed = story.get('_identity_observed_candidates') or (
+            captured.get('visual_identity') or {}).get('observed_candidates') or []
+        candidates[:] = promote_observed_candidates(candidates, observed,
+            _plan_physical_ids(payload))
+        record_identity_event(service, story['id'], 'identity_search_plan_reused',
+            {'query_count': len(story['_identity_article_queries']), 'control_revision': revision})
+    else:
+        if hasattr(service, 'settings'):
+            from .research_budget import require_remaining
+            require_remaining(service, story['id'], 'identity')
+        entity_name, wiki_queries, visual_query, commons_query = await suggest(
+            service, story, transcript, candidates)
+        payload = story.get('_identity_search_plan_payload') or {
+            'entity_name': entity_name, 'wikipedia_queries': wiki_queries,
+            'visual_query': visual_query, 'commons_query': commons_query,
+            'article_queries': story.get('_identity_article_queries') or []}
+        history = _retain_article_discovery(service, story, [],
+            planned_queries=story.get('_identity_article_queries') or [],
+            search_plan={'policy_version': ('bounded-search-plan-v3' if payload.get('first_wave_contract')
+                else 'bounded-search-plan-v2'), 'payload': payload,
+                'route': story.get('_identity_search_plan_route', 'google'),
+                'created_at': service.store.now()})
+    from .identity_wikipedia_metadata import selected_candidates
+    pages = story.get('_identity_wikipedia_metadata') or captured.get('wikipedia') or []
+    observed = story.get('_identity_observed_candidates') or (captured.get('visual_identity') or {}).get('observed_candidates') or []
+    candidates[:] = selected_candidates(candidates, observed, pages, payload)
+    geometry_result = _geometry_plan_result(story, payload, candidates)
+    if geometry_result is not None:
+        story['_identity_geometry_result'] = geometry_result
+    return history, (entity_name, wiki_queries, visual_query, commons_query)
+
+
 async def recover(service, story, transcript, candidates, excluded):
     providers = getattr(service, 'providers', None)
     gemini = getattr(providers, 'gemini', None)
@@ -1067,44 +1205,14 @@ async def recover(service, story, transcript, candidates, excluded):
         return 240
 
     async def work():
-        # Read persisted work before invoking any planner. A completed plan and
-        # its closed/UNKNOWN query receipts survive provider outages and wakes.
-        history = _retain_article_discovery(service, story, [])
-        saved = history.get('search_plan') or {}
-        captured = json.loads(story.get('research_json') or '{}')
-        control = (captured.get('research_controls') or {}).get('identity') or {}
-        revision = int(control.get('revision') or 0)
-        valid_saved = (saved.get('photo_sha256') == story['photo_sha256']
-            and saved.get('generation') == int(story.get('_identity_generation', captured.get('identity_generation') or 0))
-            and saved.get('control_revision') == revision)
-        # Legacy plans predate metadata; they remain reusable for the original
-        # revision, preserving all submitted query identities across deployment.
-        legacy_saved = bool(history.get('planned_queries')) and not saved and revision == 0
-        if valid_saved or legacy_saved:
-            payload = saved.get('payload') or {}
-            entity_name, wiki_queries, visual_query, commons_query = queries_from(payload)
-            story['_identity_article_queries'] = history.get('planned_queries') or []
-            from .identity_candidate_policy import promote_observed_candidates
-            observed = story.get('_identity_observed_candidates') or (
-                captured.get('visual_identity') or {}).get('observed_candidates') or []
-            candidates[:] = promote_observed_candidates(candidates, observed,
-                payload.get('observed_candidate_ids') or [])
-            record_identity_event(service, story['id'], 'identity_search_plan_reused',
-                {'query_count': len(story['_identity_article_queries']), 'control_revision': revision})
-        else:
-            remaining()
-            entity_name, wiki_queries, visual_query, commons_query = await suggest(
-                service, story, transcript, candidates)
-            payload = story.get('_identity_search_plan_payload') or {
-                'entity_name': entity_name, 'wikipedia_queries': wiki_queries,
-                'visual_query': visual_query, 'commons_query': commons_query,
-                'article_queries': story.get('_identity_article_queries') or []}
-            history = _retain_article_discovery(service, story, [],
-                planned_queries=story.get('_identity_article_queries') or [],
-                search_plan={'policy_version': ('bounded-search-plan-v3' if payload.get('first_wave_contract')
-                    else 'bounded-search-plan-v2'), 'payload': payload,
-                    'route': story.get('_identity_search_plan_route', 'google'),
-                    'created_at': service.store.now()})
+        history, (entity_name, wiki_queries, visual_query, commons_query) = await prepare_search_plan(
+            service, story, transcript, candidates)
+        geometry_result = story.get('_identity_geometry_result')
+        if geometry_result is not None:
+            record_identity_event(service, story['id'], 'identity_geometry_accepted', {
+                'candidate_id': geometry_result['candidate_id'], 'proof_kind': 'geometry',
+                'generation': story.get('_identity_generation', 0), 'paid_reference_search_required': False})
+            return geometry_result, candidates
         if already_proved():
             return None
         from .article_media import article_candidates
@@ -1112,6 +1220,17 @@ async def recover(service, story, transcript, candidates, excluded):
         history = _retain_article_discovery(service, story, [],
             planned_queries=story.get('_identity_article_queries') or [])
         sources, search_failures = [], []
+        payload = (history.get('search_plan') or {}).get('payload') or {}
+        if (str(payload.get('clarification_question') or '').strip()
+                and (story.get('latitude') is None or story.get('longitude') is None)):
+            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': [payload['clarification_question']], '_references_sent': []}, candidates
+        if payload.get('selected_wikipedia_page_ids') and not history.get('planned_queries'):
+            record_identity_event(service, story['id'], 'identity_ready_wikipedia_reference', {
+                'selected_page_ids': payload['selected_wikipedia_page_ids'], 'paid_search_required': False})
+            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': ['Выбраны готовые Wiki-иллюстрации; продолжаю визуальное сравнение.'],
+                '_comparison_deferred': True, '_references_sent': []}, candidates
         plan = history.get('planned_queries') or [
             (f'{entity_name} {region_hint(story)} современные фотографии фасада' if entity_name
              else f'{visual_query} {region_hint(story)} фото').strip()]

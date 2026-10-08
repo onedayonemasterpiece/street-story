@@ -1,8 +1,10 @@
 """Bounded photo→physical identity→reviewed POI facts acceptance on one frozen SHA.
 
 Use a retained managed manifest/output. Expected IDs, labels and minimum counts
-are report-only fields; provider input contains original photo bytes and EXIF.
-Run canary --messages 102 first, then reuse this output for the other cases.
+are report-only fields; provider input contains original photo bytes, EXIF and
+explicit owner-provided approximate camera context where specified.
+Run the simple canary --messages 104 first, then the complex control 102.
+Reuse this output for the remaining selected cases after both pass.
 """
 from __future__ import annotations
 
@@ -40,13 +42,16 @@ def instrument_google_sdk(client_type, path):
     async def measured(self, key, timeout, contents, config=None, *, model=None):
         identifier = str(uuid.uuid4())
         base = {'event': 'google_sdk_invocation', 'sdk_call_id': identifier,
-                'model': model or self.settings.gemini_model}
+                'model': model or self.settings.gemini_model,
+                'key_fingerprint': hashlib.sha256(key.encode()).hexdigest()}
         append({**base, 'phase': 'possibly_sent', 'observed_at': time.time()})
         try:
             response = await original(self, key, timeout, contents, config, model=model)
         except BaseException as exc:
             append({**base, 'phase': 'outcome_unavailable', 'observed_at': time.time(),
-                    'error_type': type(exc).__name__, 'usage': _usage(None)})
+                    'error_type': type(exc).__name__,
+                    'error_code': getattr(exc, 'code', None) if isinstance(getattr(exc, 'code', None), int) else None,
+                    'usage': _usage(None)})
             raise
         append({**base, 'phase': 'response_closed', 'observed_at': time.time(),
                 'provider_request_id': getattr(response, 'response_id', None), 'usage': _usage(response)})
@@ -179,19 +184,64 @@ def require_frozen_checkout(expected_sha):
     return head
 
 
+def selected_items(items, messages):
+    """Keep the requested simple→complex order, independent of manifest order."""
+    requested = [int(value.strip()) for value in messages.split(',')] if messages else [
+        item['message_id'] for item in items]
+    by_id = {item['message_id']: item for item in items}
+    if len(requested) != len(set(requested)) or not set(requested) <= by_id.keys():
+        raise ValueError('Requested messages must be distinct and present in the manifest')
+    return [by_id[identifier] for identifier in requested]
+
+
 def blank_result(item):
     return {'message_id': item['message_id'], 'report_label': item.get('report_label'),
         'input_sha256': item['sha256'], 'min_useful_facts': item['min_useful_facts'],
         'expected_physical_id': item.get('expected_physical_id'), 'status': 'NOT_RUN',
+        'expected_physical_ids': item.get('expected_physical_ids'),
         'operator_labels_supplied': False}
 
 
 def upload_story(service, item, data, manifest_digest):
     """The ordinary upload contract has no acceptance labels/expected IDs."""
+    camera = item.get('owner_approx_camera') or {}
     return service.create_story(key=f'acceptance:{manifest_digest}:{item["message_id"]}',
         client_story_id=f'acceptance:{manifest_digest}:{item["message_id"]}',
         photo_sha256=item['sha256'], photo_mime_type=item['mime'], photo_bytes=data,
-        voice_protocol='voice-chunks-v2', lat=None, lon=None)
+        voice_protocol='voice-chunks-v2', lat=camera.get('latitude'), lon=camera.get('longitude'),
+        **({'location_provenance': {'kind': 'owner_approx_camera'}} if camera else {}))
+
+
+def block_directed_reference_inference(service, items):
+    """Test seam: directed spatial cases cannot use an external REF as evidence.
+
+    Truth IDs/labels are never supplied. An attempted reference operation fails
+    before image/pair dispatch; ordinary SOURCE+neutral MAP planning is intact.
+    """
+    from street_story.errors import PermanentProviderError
+    from street_story.live_visual_comparison import LiveVisualComparisonMixin
+    restricted = {item['sha256'] for item in items
+        if item.get('acceptance_mode') == 'geometry_without_reference'}
+    original_reply = LiveVisualComparisonMixin._visual_reply
+    original_photo, original_batch = service._identify_photo, service._identify_photo_batch
+    async def photo(story, *args, **kwargs):
+        if story.get('photo_sha256') in restricted:
+            raise PermanentProviderError('directed_acceptance_external_reference_disabled')
+        return await original_photo(story, *args, **kwargs)
+    async def batch(story, *args, **kwargs):
+        if story.get('photo_sha256') in restricted:
+            raise PermanentProviderError('directed_acceptance_external_reference_disabled')
+        return await original_batch(story, *args, **kwargs)
+    def reply(comparison_id, candidates, identity, remaining):
+        if identity.get('photo_sha256') in restricted:
+            raise PermanentProviderError('directed_acceptance_external_reference_disabled')
+        return original_reply(comparison_id, candidates, identity, remaining)
+    service._identify_photo, service._identify_photo_batch = photo, batch
+    LiveVisualComparisonMixin._visual_reply = staticmethod(reply)
+    def restore():
+        service._identify_photo, service._identify_photo_batch = original_photo, original_batch
+        LiveVisualComparisonMixin._visual_reply = staticmethod(original_reply)
+    return restore
 
 
 def acceptance_status(case):
@@ -200,6 +250,12 @@ def acceptance_status(case):
         return 'BLOCKED'
     if not case.get('terminal'):
         return 'RUNNING'
+    conditional = case.get('conditional_identity_context') or {}
+    if outcome == 'clarification_required' and conditional.get('clarification'):
+        return 'CLARIFICATION_REQUIRED'  # This checks dialogue, never automatic identity PASS.
+    if conditional.get('joint_visual_input_verified') is True and conditional.get('article_sources') and any(item.get('support_status') == 'spatially_supported'
+            for item in conditional.get('hypotheses') or []):
+        return 'CONDITIONAL_CONTEXT_AVAILABLE'  # Readable context is not proof of delivered facts.
     gates = case.get('gates') or {}
     if any(value is False for value in gates.values()):
         return 'FAIL'
@@ -261,7 +317,9 @@ def summarize_receipts(attempts):
 
 
 def read_case(service, case, item):
+    from street_story.identity_proof import verified_physical_identity
     from street_story.poi_memory import memory_keys, _review_snapshot
+    from street_story.live_identity_context import identity_research_context
     with service.store.connection() as db:
         row = service._story_row(db, case['story_id'])
         research = json.loads(row['research_json'] or '{}')
@@ -313,18 +371,25 @@ def read_case(service, case, item):
     total = max(0, finish - started) if terminal else max(0, now - started)
     candidate = next((candidate for candidate in identity.get('candidates') or []
         if candidate.get('candidate_id') == identity.get('candidate_id')), {})
-    expected = item.get('expected_physical_id')
+    expected = item.get('expected_physical_ids') or [item.get('expected_physical_id')]
+    expected = [value for value in expected if value]
     gates = {'identity_in_180s': case.get('identity_elapsed_s', float('inf')) <= CAPS['identity_seconds'],
         'first_eligible_in_300s': case.get('first_eligible_elapsed_s', float('inf')) <= CAPS['first_eligible_seconds'],
         'terminal_in_480s': terminal and total <= CAPS['total_seconds'],
         'eligible_minimum': len(proved) >= item['min_useful_facts'],
-        'correct_physical_object': identity.get('candidate_id') == expected if expected else None,
-        'visual_proof': identity.get('status') == 'match' and identity.get('visual_reference_verified') is True,
+        'correct_physical_object': identity.get('candidate_id') in expected if expected else None,
+        'identity_proof': verified_physical_identity(identity, photo_sha256=row['photo_sha256'],
+            generation=int(research.get('identity_generation') or 0)),
         'canonical_poi_readback': len(proved) >= item['min_useful_facts'],
         'natural_product_terminal': (outcome or {}).get('reason') != 'acceptance_upload_deadline_exceeded'}
+    if item.get('acceptance_mode') == 'geometry_without_reference':
+        gates['geometry_without_reference'] = (identity.get('proof_kind') == 'geometry'
+            and identity.get('visual_reference_verified') is False
+            and not identity.get('reference_evidence'))
     live_receipts = [json.loads(attempt['receipt_json'] or '{}') for attempt in attempts]
     live_receipts = [receipt for receipt in live_receipts if receipt.get('provider_id') == 'google-live']
     case.update(status='RUNNING', uploaded_at=started, elapsed_from_upload_s=max(0, now-started),
+        conditional_identity_context=identity_research_context(service, row, research),
         total_elapsed_s=total, terminal=terminal, state=row['state'], error_code=row['error_code'],
         identity=identity, candidate_map_object=candidate.get('map_object'), physical_id=identity.get('candidate_id'),
         poi_id=research.get('poi_id'), mode='warm' if research.get('poi_reused_fact_count') else 'cold',
@@ -337,6 +402,8 @@ def read_case(service, case, item):
             'the harness applies no text/year/address heuristics.',
         coverage=research.get('fact_acquisition_manifest'),
         shared_core_evidence={'identity_provider_receipt': identity.get('provider_receipt'),
+            'proof_kind': identity.get('proof_kind'), 'geometry_proof': identity.get('geometry_proof'),
+            'visual_reference_verified': identity.get('visual_reference_verified') is True,
             'reference_evidence': identity.get('reference_evidence'),
             'fact_review_proofs': [entry['review_proof'] for fact in proved
                 for entry in fact['canonical_evidence']],
@@ -371,9 +438,7 @@ async def run(args):
     items, manifest_digest = load_manifest(args.manifest)
     output = managed(args.output)
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
-    selected = {int(value) for value in args.messages.split(',')} if args.messages else {item['message_id'] for item in items}
-    if not selected <= {item['message_id'] for item in items}:
-        raise ValueError('Requested message absent from manifest')
+    selected = selected_items(items, args.messages)
     installer = load_installer()
     environment_digests = {}
     for config in (installer.PROVIDERS_ENV, installer.SERVICE_ENV):
@@ -438,11 +503,14 @@ async def run(args):
         service.store.cache_put(key, value, 3600)
     journal_path = output/'google-sdk-calls.jsonl'
     restore_sdk = instrument_google_sdk(GeminiClient, journal_path)
+    restore_references = block_directed_reference_inference(service, selected)
     try:
         async with app.router.lifespan_context(app):
-            for item in items:
+            for item in selected:
                 case = cases[item['message_id']]
-                if item['message_id'] not in selected or case.get('terminal'):
+                if case.get('terminal'):
+                    if case['status'] != 'PASS_CANDIDATE':
+                        break
                     continue  # Canary completion is reused without any provider send.
                 require_frozen_checkout(sha)
                 data = Path(item['path']).read_bytes()
@@ -466,9 +534,10 @@ async def run(args):
                             'eligible_proved_count', 'product_outcome')}, ensure_ascii=False), flush=True)
                         break
                     await asyncio.sleep(.5)
-                if case['status'] == 'BLOCKED':
-                    break  # Preserve quota; remaining manifest entries stay NOT_RUN.
+                if case['status'] != 'PASS_CANDIDATE':
+                    break  # Inspect the affected path before spending on other photos.
     finally:
+        restore_references()
         restore_sdk()
         report['sdk_accounting'] = summarize_sdk_journal(journal_path)
         save(report_path, report)
@@ -482,7 +551,7 @@ def main():
     parser.add_argument('--expected-sha', required=True)
     parser.add_argument('--availability-from', type=Path, action='append', default=[],
                         help='Prior frozen run: import only same-config observed provider429 history')
-    parser.add_argument('--messages', default='102', help='Comma-separated IDs; default is the one canary')
+    parser.add_argument('--messages', default='104', help='Ordered IDs; default is the simple canary')
     args = parser.parse_args()
     if args.messages and not re.fullmatch(r'[0-9]+(?:,[0-9]+)*', args.messages):
         parser.error('Invalid --messages selection')

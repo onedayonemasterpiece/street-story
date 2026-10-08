@@ -6,6 +6,8 @@ import logging
 import uuid
 from typing import Any
 
+from .identity_proof import accepted_identity
+
 logger = logging.getLogger(__name__)
 
 
@@ -577,12 +579,14 @@ def record_chunk_batch(
 
 
 def _confirmed_run_keys(db, run) -> set[str]:
-    story = db.execute('SELECT research_json FROM stories WHERE id=?', (run['story_id'],)).fetchone()
+    story = db.execute('SELECT research_json,photo_sha256 FROM stories WHERE id=?', (run['story_id'],)).fetchone()
     if not story:
         return set()
     research = json.loads(story['research_json'] or '{}')
     identity = research.get('visual_identity') or {}
-    if (identity.get('status') not in {'match', 'owner_confirmed'}
+    if (not accepted_identity(identity, photo_sha256=story['photo_sha256'],
+            generation=int(research.get('identity_generation') or 0),
+            control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
             or int(research.get('identity_generation') or 0) != int(run['identity_generation'])
             or not identity.get('candidate_id')):
         return set()

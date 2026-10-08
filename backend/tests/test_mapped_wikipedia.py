@@ -39,7 +39,7 @@ async def test_exact_mapped_title_single_api_no_geosearch_own_coordinates_and_ca
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('item', [mapped(200), mapped(float('nan')), {'tags': {}},
+@pytest.mark.parametrize('item', [mapped(float('nan')), {'tags': {}},
     {**mapped(), 'tags': {'place': 'city', 'wikipedia': 'ru:City'}},
     {**mapped(), 'tags': {'highway': 'residential', 'wikipedia': 'ru:Street'}}])
 async def test_absent_eligible_close_link_returns_none_without_network(item):

@@ -59,6 +59,9 @@ def compact_candidate_catalog(candidates):
         # node/geometry arrays, search excerpts, URLs or image inventories.
         kind = {key: _short(tags[key], 60) for key in
             ('building', 'entrance', 'amenity', 'shop', 'office', 'historic') if tags.get(key)}
+        for key in ('height', 'building:levels', 'roof:levels'):
+            if tags.get(key) is not None:
+                kind[key] = _short(tags[key], 30)
         mapped = entry.get('map_object') or {}
         classification = {key: _short(mapped[key], 100) for key in
             ('category', 'class', 'type', 'addresstype') if mapped.get(key)}
@@ -90,7 +93,225 @@ def compact_candidate_catalog(candidates):
             'Full original geometry and provenance remain durable and are retrieved by nominated ID; no SOURCE binding.'}
 
 
-def model_identity_context(story, candidates=(), *, include_observed=True):
+def compact_scene_manifest(manifest):
+    """Neutral map labels retain all exact IDs and measured contour summaries."""
+    from .identity_scene import lean_scene_manifest
+    return lean_scene_manifest(manifest)
+
+
+def wikipedia_metadata_context(pages, *, intro_limit=70):
+    """All metadata choices, no raw article bodies or downloaded images."""
+    return {'columns': ['page_id', 'title', 'wikidata_id', 'latitude_longitude', 'intro',
+        'has_reference_image', 'mapped_osm_ids', 'discovery'],
+        'rows': [[str(page['pageid']), _short(page.get('title'), 150),
+            (page.get('pageprops') or {}).get('wikibase_item') or page.get('wikidata_id'),
+            [_number(page.get('lat'), 6), _number(page.get('lon'), 6)],
+            _short(page.get('extract'), intro_limit), bool(page.get('image_url') or page.get('thumbnail_url')),
+            [item['candidate_id'] for item in page.get('mapped_wikipedia_sources') or []],
+            page.get('discovery', 'wikipedia_nearby_metadata')]
+            for page in pages if isinstance(page, dict) and page.get('pageid')],
+        'policy': 'Coordinates and links belong to the article or exact mapped object only. '
+            'A nearby park, institution, complex or district article is not automatically the SOURCE building. '
+            'Choose up to three physically applicable pages; image URLs will be fetched only after selection.'}
+
+
+def compact_planner_packet(packet):
+    """Lossless shared literals and exact neutral map-label joins, never ranking."""
+    from collections import Counter
+    original_packet = packet
+    table = (original_packet.get('map_scene') or {}).get('objects') or {}
+    columns = table.get('columns') or []
+    labels = {}
+    if 'label' in columns and 'candidate_id' in columns:
+        li, ci = columns.index('label'), columns.index('candidate_id')
+        labels = {row[ci]: row[li] for row in table.get('rows') or [] if row[ci]}
+    grid_origin = [round(float(packet.get(key) or 0) * 1_000_000) for key in ('capture_lat', 'capture_lon')]
+    def tables(value):
+        if isinstance(value, list):
+            return [tables(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: tables(item) for key, item in value.items()}
+        rows, columns = result.get('rows'), result.get('columns')
+        if isinstance(rows, list) and rows and isinstance(columns, list) and all(len(row) == len(columns) for row in rows):
+            label_columns = [index for index, key in enumerate(columns)
+                if key in {'candidate_id', 'subject_id', 'group_key', 'mapped_entry_id'}
+                and 'label' not in columns and any(isinstance(row[index], str) and row[index] in labels for row in rows)]
+            for row in rows:
+                for index in label_columns:
+                    value = row[index]
+                    if isinstance(value, str) and value in labels:
+                        row[index] = labels[value]
+                    elif value is not None and not isinstance(value, str):
+                        row[index] = {'literal_candidate_value': value}
+            if label_columns:
+                result['candidate_label_columns'] = label_columns
+            coordinate_columns = [index for index, key in enumerate(columns) if key == 'latitude_longitude']
+            if coordinate_columns:
+                for row in rows:
+                    for index in coordinate_columns:
+                        point = row[index]
+                        if isinstance(point, list) and len(point) == 2 and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in point):
+                            row[index] = [round(value*1_000_000) - origin for value, origin in zip(point, grid_origin)]
+                result['coordinate_offset_columns'] = coordinate_columns
+            defaults = {str(index): rows[0][index] for index in range(len(columns))
+                if all(row[index] == rows[0][index] for row in rows)}
+            if defaults:
+                varying = [index for index in range(len(columns)) if str(index) not in defaults]
+                projected = []
+                for row in rows:
+                    compact = [row[index] for index in varying]
+                    while compact and compact[-1] is None:
+                        compact.pop()
+                    projected.append(compact)
+                result.update(rows=projected, variable_columns=varying, column_defaults=defaults)
+        return result
+    packet = tables(packet)
+    counts = Counter()
+    composites = Counter()
+    composite_values = {}
+    def signature(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    def count(value):
+        if isinstance(value, str):
+            counts[value] += 1
+        elif isinstance(value, list):
+            if value:
+                key = signature(value)
+                composites[key] += 1
+                composite_values[key] = value
+            for item in value:
+                count(item)
+        elif isinstance(value, dict):
+            if value:
+                key = signature(value)
+                composites[key] += 1
+                composite_values[key] = value
+            for item in value.values():
+                count(item)
+    count(packet)
+    literals = [value for value, amount in counts.items() if value not in labels
+        and amount >= 2 and (len(value.encode()) + 2 - 5) * amount > len(value.encode()) + 3]
+    indexes = {value: index for index, value in enumerate(literals)}
+    composite_indexes = {}
+    for key, amount in composites.items():
+        if amount >= 2 and (len(key.encode()) - 5) * amount > len(key.encode()) + 1:
+            composite_indexes[key] = len(literals)
+            literals.append(composite_values[key])
+    def encode(value, *, preserve_id=False):
+        if isinstance(value, str):
+            if value in labels and not preserve_id:
+                return '@' + str(labels[value])
+            if value in indexes:
+                return '$' + str(indexes[value])
+            return '=' + value if value.startswith(('@', '$', '=')) else value
+        if isinstance(value, list):
+            index = composite_indexes.get(signature(value))
+            if index is not None:
+                return '$' + str(index)
+            return [encode(item, preserve_id=preserve_id) for item in value]
+        if isinstance(value, dict):
+            index = composite_indexes.get(signature(value))
+            if index is not None:
+                return '$' + str(index)
+            return {key: encode(item, preserve_id=preserve_id or key == 'objects') for key, item in value.items()}
+        return value
+    encoded = encode(packet)
+    used = set()
+    def references(value):
+        if isinstance(value, str) and value.startswith('$') and value[1:].isdigit():
+            used.add(int(value[1:]))
+        elif isinstance(value, list):
+            for item in value:
+                references(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                references(item)
+    references(encoded)
+    remap = {old: new for new, old in enumerate(sorted(used))}
+    def renumber(value):
+        if isinstance(value, str) and value.startswith('$') and value[1:].isdigit():
+            return '$' + str(remap[int(value[1:])])
+        if isinstance(value, list):
+            return [renumber(item) for item in value]
+        if isinstance(value, dict):
+            return {key: renumber(item) for key, item in value.items()}
+        return value
+    return {'encoding': 'lossless-literals-and-map-labels-v1',
+        'join_policy': 'A string @N means the exact candidate_id at map_scene.objects label N; '
+            'a string $N means literals[N]. A string starting = escapes its remaining literal text. Decode these references in every table/value. '
+            'Table rows follow variable_columns indices when present; other columns use column_defaults. '
+            'Missing trailing row cells mean null. These are exact lossless joins/defaults, not omitted objects. '
+            'In candidate_label_columns, integer values mean exact map labels; literal_candidate_value wraps original nonstring values. '
+            'In coordinate_offset_columns, numeric pairs are offsets from coordinate_grid_origin_microdegrees '
+            'in millionths of a degree; add the origin and divide by 1000000 to recover rounded observed lat/lon. '
+            'Output actual exact IDs and literal strings required by the response schema, never these references. '
+            'Missing/null values remain unknown; references do not bind SOURCE or rank hypotheses.',
+        'coordinate_grid_origin_microdegrees': grid_origin,
+        'literals': [literals[index] for index in sorted(used)], **renumber(encoded)}
+
+
+def expand_planner_packet(packet):
+    """Offline round-trip check of the packet supplied to the model."""
+    import copy
+    literals = packet.get('literals') or []
+    grid_origin = packet.get('coordinate_grid_origin_microdegrees') or [0, 0]
+    labels = {}
+    def tables(value):
+        if isinstance(value, list):
+            return [tables(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: tables(item) for key, item in value.items()}
+        if 'variable_columns' in result:
+            columns = result['columns']
+            defaults = result.pop('column_defaults')
+            varying = result.pop('variable_columns')
+            rows = []
+            for compact in result['rows']:
+                row = [defaults.get(str(index)) for index in range(len(columns))]
+                for offset, index in enumerate(varying):
+                    row[index] = compact[offset] if offset < len(compact) else None
+                rows.append(row)
+            result['rows'] = rows
+        for index in result.pop('candidate_label_columns', []):
+            for row in result['rows']:
+                value = row[index]
+                if isinstance(value, int) and not isinstance(value, bool):
+                    row[index] = labels[value]
+                elif isinstance(value, dict) and 'literal_candidate_value' in value:
+                    row[index] = value['literal_candidate_value']
+        if 'coordinate_offset_columns' in result:
+            coordinate_columns = result.pop('coordinate_offset_columns')
+            for row in result['rows']:
+                for index in coordinate_columns:
+                    point = row[index]
+                    if isinstance(point, list) and len(point) == 2 and all(isinstance(value, int) and not isinstance(value, bool) for value in point):
+                        row[index] = [(value + origin)/1_000_000 for value, origin in zip(point, grid_origin)]
+        return result
+    def decode(value):
+        if isinstance(value, str):
+            if value.startswith('='):
+                return value[1:]
+            if value.startswith('$') and value[1:].isdigit():
+                return copy.deepcopy(literals[int(value[1:])])
+            if value.startswith('@') and value[1:].isdigit():
+                return labels[int(value[1:])]
+            return value
+        if isinstance(value, dict):
+            return {key: decode(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [decode(item) for item in value]
+        return value
+    table = tables(decode((packet.get('map_scene') or {}).get('objects') or {}))
+    columns = table.get('columns') or []
+    if 'label' in columns and 'candidate_id' in columns:
+        labels = {row[columns.index('label')]: row[columns.index('candidate_id')] for row in table.get('rows') or []}
+    return tables(decode({key: value for key, value in packet.items()
+        if key not in {'encoding', 'join_policy', 'literals', 'coordinate_grid_origin_microdegrees'}}))
+
+
+def model_identity_context(story, candidates=(), *, include_observed=True, scene_available=False):
     """Bounded semantic packet without raw OSM or repeated address objects."""
     research = json.loads((story or {}).get('research_json') or '{}')
     observed = (story or {}).get('_identity_observed_candidates') or (
@@ -126,9 +347,27 @@ def model_identity_context(story, candidates=(), *, include_observed=True):
             'proof': 'osm_closed_way_node_membership'} for item in addresses['building_address_memberships']],
         'observed_physical_candidates': compact_candidate_catalog(list(by_id.values())),
         'policy': addresses['policy']}
-    # Fail explicitly instead of silently losing candidates. Radius/pool bounds
-    # normally keep this well below the envelope; all exact IDs remain present.
-    if len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode()) > 65536:
+    if scene_available:
+        # Measured contour geometry is supplied once by MAP's labeled manifest;
+        # literal address records/memberships remain in the separate tables.
+        table = packet['observed_physical_candidates']
+        columns = ['candidate_id', 'name', 'address_city_street_house_number', 'latitude_longitude', 'object_tags', 'identity_eligible']
+        indexes = [table['columns'].index(key) for key in columns]
+        packet['observed_physical_candidates'] = {**table, 'columns': columns,
+            'rows': [[row[index] for index in indexes] for row in table['rows']]}
+        name_index, tags_index = columns.index('name'), columns.index('object_tags')
+        for row, entry in zip(packet['observed_physical_candidates']['rows'], by_id.values()):
+            tags = (entry.get('map_object') or {}).get('tags') or {}
+            # Display names generated from addresses, locality or unnamed OSM
+            # objects duplicate other tables and are not observed proper names.
+            row[name_index] = _short(tags.get('name') or (
+                entry.get('name') if entry.get('type') == 'wikipedia' else ''), 100)
+            if row[tags_index]:
+                row[tags_index] = {key: value for key, value in row[tags_index].items()
+                    if key not in {'scope', 'provenance'}} or None
+    # Non-scene selectors have their own small packet envelope. Joint packets
+    # compact this full leaf losslessly before the actual provider admission.
+    if not scene_available and len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode()) > 65536:
         from .providers import RetryableProviderError
         raise RetryableProviderError('identity_semantic_packet_too_large')
     return packet
@@ -195,8 +434,54 @@ def first_wave_catalog(story, candidates=()):
     return {'options': options, 'required_grounded_count': min(2, len(groups)), 'locality_context': locality}
 
 
+def geometry_decision_schema(candidate_ids):
+    """Evidence from the existing joint call, rather than a second judge."""
+    text = {'type': 'string', 'maxLength': 300}
+    # The exact ID dictionary is already in the map packet. The common proof
+    # validator dereferences these IDs against all received observed features.
+    candidate_id = {'type': 'string', 'maxLength': 100}
+    texts = {'type': 'array', 'maxItems': 8, 'items': text}
+    feature = {'type': 'object', 'properties': {
+        'candidate_id': candidate_id,
+        'kind': {'type': 'string', 'enum': ['contour', 'road_axis', 'segment', 'point', 'attribute']},
+        'ring_index': {'type': 'integer', 'minimum': 0},
+        'line_index': {'type': 'integer', 'minimum': 0},
+        'segment_index': {'type': 'integer', 'minimum': 0},
+        'key': {'type': 'string', 'maxLength': 60}},
+        'required': ['candidate_id', 'kind'], 'additionalProperties': False}
+    relation = {'type': 'object', 'properties': {
+        'source_observation': text, 'map_features': {'type': 'array', 'maxItems': 6, 'items': feature},
+        'correspondence': text},
+        'required': ['source_observation', 'map_features', 'correspondence'], 'additionalProperties': False}
+    return {'type': 'object', 'properties': {
+        'decision': {'type': 'string', 'enum': ['accepted_geometry', 'uncertain']},
+        'candidate_id': candidate_id,
+        'scope': text,
+        'decisive_relations': {'type': 'array', 'maxItems': 8, 'items': relation},
+        'rejected_alternatives': {'type': 'array', 'maxItems': 8, 'items': {
+            'type': 'object', 'properties': {
+                'candidate_id': candidate_id, 'reason': text},
+            'required': ['candidate_id', 'reason'], 'additionalProperties': False}},
+        'assumptions': texts,
+        'bounded_coverage': {'type': 'object', 'properties': {
+            'scope': text, 'limitations': texts, 'material_alternatives_resolved': {'type': 'boolean'}},
+            'required': ['scope', 'limitations', 'material_alternatives_resolved'], 'additionalProperties': False},
+        'camera_pose': {'type': 'object', 'properties': {
+            'position_basis': text, 'yaw_basis': text, 'sensitivity': text},
+            'required': ['position_basis', 'yaw_basis', 'sensitivity'], 'additionalProperties': False},
+        'next_action': {'type': 'object', 'properties': {
+            'kind': {'type': 'string', 'enum': ['none', 'map_detail', 'address_text', 'ready_article',
+                'reference_image', 'owner_context']},
+            'reason': text, 'target_candidate_ids': {'type': 'array', 'maxItems': 3,
+                'uniqueItems': True, 'items': candidate_id}},
+            'required': ['kind', 'reason', 'target_candidate_ids'], 'additionalProperties': False}},
+        'required': ['decision', 'candidate_id', 'scope', 'decisive_relations', 'rejected_alternatives',
+            'assumptions', 'bounded_coverage', 'camera_pose'], 'additionalProperties': False}
+
+
 def first_wave_schema(catalog):
-    return {'type': 'array', 'minItems': catalog['required_grounded_count'], 'maxItems': 3,
+    # Coverage is checked after grounded Wiki/spatial choices are known.
+    return {'type': 'array', 'minItems': 0, 'maxItems': 3,
         'items': {'type': 'object', 'properties': {
             'kind': {'type': 'string', 'enum': ['address', 'observed_named', 'unmapped_named', 'appearance']},
             'subject_id': {'type': 'string', 'enum': list(dict.fromkeys([
@@ -204,6 +489,32 @@ def first_wave_schema(catalog):
             'query': {'type': 'string', 'maxLength': 240},
             'reason': {'type': 'string', 'maxLength': 240}},
             'required': ['kind', 'subject_id', 'query', 'reason'], 'additionalProperties': False}}
+
+
+def grounded_wave_catalog(catalog, payload, *, ready_wikipedia=False, joint_geometry=False):
+    if ready_wikipedia:
+        return {**catalog, 'required_grounded_count': 0}
+    decision = payload.get('accepted_geometry') or {}
+    action = decision.get('next_action') or {}
+    hypotheses = payload.get('first_wave_hypotheses') or []
+    if (joint_geometry and decision.get('decision') == 'uncertain'
+            and action.get('kind') != 'none' and str(action.get('reason') or '').strip()
+            and len(hypotheses) == 1):
+        hypothesis = hypotheses[0]
+        option = catalog['options'].get((hypothesis.get('kind'), hypothesis.get('subject_id')))
+        if option and option['group_key'] in (action.get('target_candidate_ids') or []):
+            return {**catalog, 'required_grounded_count': min(1, catalog['required_grounded_count'])}
+    spatial = payload.get('spatial_hypotheses') or []
+    supported = [item for item in spatial if item.get('support_status') == 'spatially_supported'
+        and any(isinstance(value, str) and value.strip() for value in item.get('basis') or [])]
+    alternatives = [item for item in spatial if item.get('support_status') == 'plausible']
+    if len(supported) == 1 and not alternatives:
+        selected = supported[0]['candidate_id']
+        choices = [catalog['options'].get((item.get('kind'), item.get('subject_id')))
+            for item in payload.get('first_wave_hypotheses') or []]
+        if any(option and option['group_key'] == selected for option in choices):
+            return {**catalog, 'required_grounded_count': min(1, catalog['required_grounded_count'])}
+    return catalog
 
 
 def render_first_wave(catalog, hypotheses):

@@ -137,16 +137,34 @@ def osm_geometry_context(item: dict, *, source_url: str | None = None) -> dict:
                 return []
             result.append({'lat': lat, 'lon': lon})
         return result if len(result) >= 2 else []
-    lines = []
+    lines, fragments = [], []
     line = points(item.get('geometry'))
     if line:
         lines.append(line)
+        fragments.append(('outer', line, None))
     for member in item.get('members') or []:
         if isinstance(member, dict) and member.get('type') == 'way':
             line = points(member.get('geometry'))
             if line:
                 lines.append(line)
-    return {'lines': lines, 'provenance': 'osm.observed_geometry', 'source_url': source_url,
+                fragments.append((member.get('role') or 'outer', line, member.get('ref')))
+    rings = []
+    for role in dict.fromkeys(role for role, _line, _ref in fragments):
+        pending = [(list(line), [ref] if ref else []) for r, line, ref in fragments if r == role]
+        while pending:
+            chain, refs = pending.pop(0)
+            while chain[0] != chain[-1]:
+                next_edges = [(i, edge, ids) for i, (edge, ids) in enumerate(pending)
+                    if edge[0] == chain[-1] or edge[-1] == chain[-1]]
+                if len(next_edges) != 1:
+                    break
+                index, edge, ids = next_edges[0]
+                pending.pop(index)
+                chain.extend((edge if edge[0] == chain[-1] else list(reversed(edge)))[1:])
+                refs.extend(ids)
+            rings.append({'role': role, 'points': chain, 'closed': chain[0] == chain[-1],
+                'member_candidate_ids': [f'osm:way:{ref}' for ref in refs]})
+    return {'lines': lines, 'rings': rings, 'provenance': 'osm.observed_geometry', 'source_url': source_url,
             'scope': 'mapped_entry_only'} if lines else {}
 
 
@@ -164,7 +182,6 @@ def geometry_camera_context(item: dict, lat: float, lon: float) -> dict:
     inside = False
     bearings = []
     for line in local:
-        in_ring = False
         for x, y in line:
             bearings.append(math.degrees(math.atan2(x, y)) % 360)
         for (ax, ay), (bx, by) in zip(line, line[1:]):
@@ -172,9 +189,16 @@ def geometry_camera_context(item: dict, lat: float, lon: float) -> dict:
             length2 = dx * dx + dy * dy
             t = min(1.0, max(0.0, -(ax * dx + ay * dy) / length2)) if length2 else 0.0
             nearest = min(nearest, math.hypot(ax + t * dx, ay + t * dy))
+    for ring in geometry.get('rings') or []:
+        if not ring.get('closed'):
+            continue
+        points = [(((p['lon'] - lon + 180) % 360 - 180) * scale * cos_lat,
+                   (p['lat'] - lat) * scale) for p in ring['points']]
+        in_ring = False
+        for (ax, ay), (bx, by) in zip(points,points[1:]):
             if (ay > 0) != (by > 0) and ax + (bx - ax) * (-ay) / (by - ay) > 0:
                 in_ring = not in_ring
-        if line[0] == line[-1] and in_ring:
+        if in_ring:
             inside = not inside
     bearings.sort()
     gaps = [(bearings[(i + 1) % len(bearings)] + (360 if i == len(bearings) - 1 else 0) - value, i)
@@ -202,7 +226,8 @@ def map_entry_context(item: dict, *, source_url: str | None = None, coordinate_p
         result['candidate_id'] = f'osm:{kind}:{object_id}'
     mapped_tags = {key: str(tags[key])[:180] for key in (
         'name', 'building', 'building:part', 'entrance', 'amenity', 'shop', 'office', 'tourism',
-        'historic', 'highway', 'man_made', 'landuse', 'leisure', 'place') if tags.get(key)}
+        'historic', 'highway', 'man_made', 'landuse', 'leisure', 'place',
+        'height', 'building:levels', 'roof:levels') if tags.get(key)}
     mapped_kind = {key: str(item[key])[:100] for key in ('category', 'class', 'addresstype') if item.get(key)}
     if item.get('osm_type') and item.get('type'):
         mapped_kind['type'] = str(item['type'])[:100]

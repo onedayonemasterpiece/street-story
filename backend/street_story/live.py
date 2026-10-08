@@ -19,7 +19,8 @@ from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .config import Settings
-from .research_budget import PAGE_UNITS, response_units, bounded_inventory
+from .identity_proof import accepted_identity
+from .research_budget import PAGE_UNITS, response_units, bounded_inventory, require_remaining, remaining_seconds, ResearchTerminated
 from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
@@ -451,7 +452,7 @@ FUNCTIONS = [
         "Live conversation and never rewrites publication text by itself.",
         {
             "extraction_scope": {"type": "string", "description": "Stable model-supplied coverage scope; preserve it when requesting more of the same aspect."},
-            "confirmed_poi_id": {"type": "string", "description": "Copy candidate_id of the currently confirmed visual_identity."},
+            "confirmed_poi_id": {"type": "string", "description": "Copy candidate_id of the currently accepted physical identity (geometry or reference proof)."},
             "query_matches_poi": {"type": "boolean", "description": "Your semantic check of query and goal against confirmed canonical name, aliases and geography. False means correct the query before searching."},
             "query": {
                 "type": "string",
@@ -740,20 +741,21 @@ Voice and intent:
 - Russian is the owner's default language. Short foreign fragments in silence/rustling are likely ASR noise: do not invent speech or answer unintelligible sounds. Support deliberate coherent foreign speech and explicit language changes.
 - A one-word or clearly fragmented input (однословный или явно обрывочный ввод) must not start expensive tools. Clarify intent without asking the owner to name an object they are trying to identify.
 - Use only available product functions: no shell/SQL/HTTP or hidden external actions. A mutation is complete only after its result/readback. Never repeat an unknown-result mutation; read state first. Continue the same Live conversation after tool results.
-- A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim.
+- A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim. Story-local conditional source discussion is allowed only via identity_research_context, clearly qualified; it is not a saved or verified fact.
 
 Photo and identity:
 - The topic photo is supplied as a separate visual snapshot. Describe only visible features; admit when the snapshot is unavailable. A question "что видно/что ты видишь на фото" is visual: не вызывай resolve_place/search_web just to answer it.
-- Backend identification runs automatically after photo selection. EXIF coordinates center nearby OSM/Wikipedia discovery; coordinates alone do not identify the object. visual_identity match/owner_confirmed is mandatory before factual research, final generate_visual or prepare_publication.
-- Reuse an automatic match and briefly say the object was found; do not rerun resolve_place without reason. Reuse confirmed identity from the topic.
-- For uncertain/mismatch, call compare_place_images and visually compare SOURCE against each REF in this same Live session. After EVERY group call record_place_comparison so the owner sees the processed-illustration counter grow during the work. On no match continue the later gallery photos; broad article search starts automatically after Wikipedia. Stop on proved match or exhausted. If the helper search is unavailable, use native Google Search and pass article_urls; unavailable images are not visual mismatches. Do not ask the owner to name the unknown object. Different pages of one physical building are not competing objects.
+- Backend identification runs automatically after photo selection. EXIF coordinates center nearby OSM/Wikipedia discovery; coordinates alone do not identify the object. Accepted physical identity (SOURCE+map geometry, SOURCE+external REF or explicit owner confirmation) is mandatory before canonical factual research, final generate_visual or prepare_publication. Story-local conditional dialogue may use identity_research_context without claiming a verified identity.
+- Reuse an accepted physical identity and briefly say the object was found; geometry proof does not require an external REF. Keep proof_kind separate from visual_reference_verified and do not rerun resolve_place without reason. Reuse confirmed identity from the topic.
+- For uncertain/mismatch, call compare_place_images and visually compare SOURCE against each REF in this same Live session. After EVERY group call record_place_comparison so the owner sees the processed-illustration counter grow during the work. On no match continue the later gallery photos; broad article search starts automatically after Wikipedia. Stop on proved match or exhausted. If the helper search is unavailable, use native Google Search and pass article_urls; unavailable images are not visual mismatches. If saved spatial hypotheses remain ambiguous, ask one short distinguishing question about city, street or scene; do not demand the unknown object name or mandatory house selection. Different pages of one physical building are not competing objects.
 - confirm_place requires fresh voluntary explicit owner speech naming and confirming the object. Greetings, "what?", silence, your inference or tool arguments are not consent. Не проси автора подтвердить объект, который он сам пытается определить.
 - If the owner says it is the wrong object, call reject_place with current candidate_id instead of repeating confirmation.
-- Missing GPS in the supplied copy does not prove the original lacks coordinates. Explain granting geotag access and selecting the original with the topic button.
+- Missing GPS must not be replaced with current device location or another photo. Use existing owner city/address/name context first; if absent, ask one short question about the city/place. Original selection can recover metadata when the copy lacks it.
+- identity_research_context contains story-only model hypotheses and already acquired article text. Unresolved spatially_supported with joint_visual_input_verified=true permits a probable hypothesis with its basis and contradictions. A sufficient host-validated geometry proof is accepted physical identity through the normal topic, even without any external REF. Never invent visual_reference_verified. Unresolved conditional hypotheses are never visual MATCH. Text-only planning remains a hypothesis without SOURCE+map visual support. Explain useful claims only conditionally and cite the article, preserving subject/time and uncertainty; do not save/select/publish them or transfer them to POI memory. Ask one distinguishing question only when it changes the subject. An owner hint has owner provenance and is not independent proof.
 
 Research and durable evidence:
 - Facts returned with eligibility=eligible have already passed backend evidence verification. Trust and reuse that saved verdict regardless of whether the verifier was a background model or Mira. Do not call get_review_packet or repeat research merely to reconfirm them in Live. Mira handles explicitly requested corrections, unresolved candidates and fallback when background verification cannot finish.
-- Never invent facts. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
+- Never invent facts. The accepted identity physical_scope names the exact building or part; keep institutional, neighboring and whole-complex history separate and retain explicit subject and time qualifiers. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
 - Separate retrieval query from coverage_goal. Short queries must retain all owner requirements in coverage_goal, including positions such as left/center/right. Use visible sculptures, figures, inscriptions, coats of arms and plaques as coverage hints: targeted search must answer the named detail concretely, not merely describe the building.
 - For more findings within the same scope, retain the previous exact coverage_goal. Use a different goal only for a genuinely different question or verification; explain the new missing aspect. Completed unchanged chunks in the same scope are reused. Menu/challenge fragments require source_content_valid=false and facts=[]; do not call them an article without facts.
 - discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
@@ -885,7 +887,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             raise ConflictError('live_stage_invalid', 'Неизвестный этап.')
         initialized = self.initialize(resource_id=session.resource_id, actor=session.actor, model=session.model, full_configuration=True)
         continuation = str((call.get('args') or {}).get('intent') or '')[:1200]
-        if stage != 'identity' and (initialized['context'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}:
+        if stage != 'identity' and not initialized['context'].get('physical_identity_accepted'):
             stage = 'identity'
             continuation = 'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.'
         if stage == getattr(session, 'capability', None):
@@ -969,8 +971,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
                 "manual_activity_detection": True,
-                "search_enabled": (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'},
-                "application_search_function": 'find_place_articles' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'} else 'search_web',
+                "search_enabled": not context['physical_identity_accepted'],
+                "application_search_function": 'find_place_articles' if not context['physical_identity_accepted'] else 'search_web',
             },
             "response": {
                 "story_id": resource_id,
@@ -989,7 +991,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 and not saved_visual.get('stale', False))
             publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
                 or ready_visual)
-            capability = ('identity' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+            capability = ('identity' if not context['physical_identity_accepted']
                           else 'publication' if publication_ready else 'review' if reviewing else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
@@ -1691,11 +1693,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         selected = next((item for item in candidates if str(item.get('candidate_id') or '') == chosen), {})
         return {
             key: identity.get(key)
-            for key in ("status", "candidate_id", "candidate_name", "canonical_name", "aliases", "locality", "country", "confidence", "candidate_url", "photo_sha256", "generation")
+            for key in ("status", "candidate_id", "candidate_name", "canonical_name", "aliases", "locality", "country", "confidence", "candidate_url", "photo_sha256", "generation", "proof_kind", "identity_verified", "visual_reference_verified")
         } | {
             "canonical_name": identity.get('canonical_name') or identity.get('candidate_name') or selected.get('name'),
             "aliases": identity.get('aliases') or selected.get('entity_aliases') or [],
             "observations": [str(value)[:300] for value in identity.get("observations", [])[:3]],
+            "physical_scope": str(((identity.get('geometry_proof') or {}).get('decision') or {}).get('scope') or '')[:300],
             "candidate_count": len(candidates),
             "candidates": [
                 {key: item.get(key) for key in ("candidate_id", "name", "type", "url")}
@@ -2009,6 +2012,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     (story_id,),
                 )
             ]
+            from .live_identity_context import identity_research_context
+            research = json.loads(row['research_json'] or '{}')
+            conditional_context = identity_research_context(self.service, row, research)
             fact_conflict_state = conflict_rows(db, story_id, limit=20)
             from .poi_memory import previous_editorial_context
             previous_editorial = previous_editorial_context(db, story.get('visual_identity') or {}, story_id)
@@ -2038,6 +2044,22 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             'status': source['status'], 'source_version_id': source['source_version_id'],
                             'identity_article_source_sha256': reference.get('article_source_sha256')})
                 latest_run['identity_article_sources'] = identity_sources
+                from .headless_facts import acquired_subject_articles
+                subject_sources = []
+                if (accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                        generation=int(research.get('identity_generation') or 0),
+                        control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
+                        and latest_run['identity_generation'] == int(research.get('identity_generation') or 0)):
+                    for url, lead in acquired_subject_articles(identity, research).items():
+                        source = db.execute('SELECT url,title,status,source_version_id FROM research_run_sources '
+                            "WHERE run_id=? AND rtrim(url,'/')=?", (latest_run['run_id'], url.rstrip('/'))).fetchone()
+                        if source:
+                            subject_sources.append({'source_ref': _search_source_ref(source['url']),
+                                'url': source['url'], 'title': str(source['title'] or '')[:100],
+                                'status': source['status'], 'source_version_id': source['source_version_id'],
+                                'subject_candidate_ids': lead['subject_candidate_ids'],
+                                'acquisition_kind': lead['acquisition_kind'], 'visual_reference_verified': False})
+                latest_run['identity_subject_article_sources'] = subject_sources
                 pending_candidates = review_packets.pending_candidates(db, story_id, latest_run['run_id'])
                 if pending_candidates:
                     latest_run['pending_extractor_candidates'] = len(pending_candidates)
@@ -2081,6 +2103,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "fact_conflicts": fact_conflict_state,
             "previous_editorial_context": previous_editorial,
             "research_run": dict(latest_run) if latest_run else None,
+            "identity_research_context": conditional_context,
         }
 
     def _get_facts(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -2253,6 +2276,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
+            "physical_identity_accepted": accepted_identity(identity, photo_sha256=story.get('photo_sha256'),
+                generation=story.get('identity_generation'),
+                control_revision=int(((story.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)),
+            "identity_research_context": state.get("identity_research_context"),
             "identity_progress": {key: value for key, value in (story.get('identity_progress') or {}).items()
                 if key in {'generation', 'updated_at', 'steps', 'attempt', 'finished', 'elapsed_ms',
                            'images_reviewed_count', 'visual_comparison_verified'}},
@@ -2359,19 +2386,45 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         story_id = session.resource_id
         with self.service.store.connection() as db:
             row = dict(self.service._story_row(db, story_id))
+        if owner_hint.strip():
+            # A reply to our outstanding question continues the original clock.
+            # Other terminal outcomes need the existing explicit new-wave action.
+            with self.service.store.connection() as db:
+                prior = json.loads(self.service._story_row(db, story_id)['research_json'] or '{}')
+            if (prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required':
+                if remaining_seconds(self.service, story_id, 'identity') <= 0:
+                    raise ResearchTerminated(reason='identity_deadline_exceeded')
+                with self.service.store.tx() as db:
+                    fresh = self.service._story_row(db, story_id)
+                    prior = json.loads(fresh['research_json'] or '{}')
+                    if (prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required':
+                        prior.pop('automatic_research_outcome', None)
+                        if isinstance(prior.get('identity_clarification'), dict):
+                            prior['identity_clarification']['answered'] = True
+                        prior['identity_owner_hint'] = {'text': owner_hint[:500],
+                            'provenance': 'owner_live_text_or_voice', 'independently_verified': False}
+                        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
+            require_remaining(self.service, story_id, "identity")
         if (row.get("latitude") is None or row.get("longitude") is None) and owner_hint.strip():
             # Only the author's explicit address, never infer a geocode query
             # from a clipped VAD fragment or substitute current device position.
             resolver = getattr(self.service, "_resolve_place_query", None)
             resolved = await resolver(owner_hint.strip()) if callable(resolver) else None
             if resolved:
+                require_remaining(self.service, story_id, "identity")
                 with self.service.store.tx() as db:
                     fresh = self.service._story_row(db, story_id)
                     prior = json.loads(fresh["research_json"] or "{}")
                     prior["identity_generation"] = int(prior.get("identity_generation") or 0) + 1
+                    # A city reply continues this wave, retaining its original clock/work.
+                    if prior.get("research_budget"):
+                        prior["research_budget"]["identity_generation"] = prior["identity_generation"]
+                    prior["identity_owner_hint"] = {"text": owner_hint[:500], "provenance": "owner_live_text_or_voice", "independently_verified": False}
                     prior["location_provenance"] = {"kind": "owner_live_place_query", "query": owner_hint[:300], "not_device_current_location": True}
                     db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?",
                                (float(resolved["lat"]), float(resolved["lon"]), canonical(prior), story_id))
+        if owner_hint.strip():
+            require_remaining(self.service, story_id, "identity")
         story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint), owner_hint=owner_hint)
         identity = story.get("visual_identity") or {}
         with self.service.store.connection() as db:
@@ -2592,7 +2645,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             snapshot_story_revision = int(story.get("revision") or 0)
             research = json.loads(story.get("research_json") or "{}")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=story['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -3479,7 +3534,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 if isinstance(research.get("visual_identity"), dict)
                 else {}
             )
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=story['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -5147,7 +5204,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             row = self.service._story_row(db, story_id)
             research = json.loads(row["research_json"] or "{}")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -5215,7 +5274,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if research.get("content_identity_changed"):
                 raise InvalidStateError("identity_content_review_required", "После смены объекта нужно проверить и обновить текст публикации.")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",

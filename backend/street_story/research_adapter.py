@@ -87,9 +87,8 @@ def fact_page_capsule(page, context):
               if key not in {'_known_fact_inventory', 'known_facts', 'prior_poi_facts'}}
     identity = public.get('confirmed_identity')
     if isinstance(identity, dict):
-        public['confirmed_identity'] = {key: identity[key] for key in (
-            'status', 'candidate_id', 'candidate_name', 'candidate_url', 'wikipedia_url', 'wikidata', 'osm_id')
-            if key in identity}
+        from .identity_model_context import compact_physical_identity
+        public['confirmed_identity'] = compact_physical_identity(identity)
     if isinstance(public.get('previously_processed_sources'), list):
         history = [{key: source[key] for key in ('url', 'title') if key in source}
                    for source in public['previously_processed_sources'] if isinstance(source, dict)]
@@ -676,6 +675,10 @@ class ProductResearchAdapter:
     async def plan_identity_search(self, story, prompt, schema):
         """One qualified tool-free planning operation on the existing text pool."""
         role = 'identity_search_plan'
+        def dispatch(client, original_prompt, binding, original_schema):
+            planner = getattr(client, 'plan_identity_search', None)
+            return (planner(original_prompt, binding, original_schema) if callable(planner) else
+                    client._run('facts', original_prompt, binding, original_schema))
         unit = canonical(['identity-search-plan-v1', prompt, schema])
         scoped = self._identity_plan_receipts(story)
         original = next((receipt for receipt in scoped if self._fact_pool_unknown(receipt)), None)
@@ -724,8 +727,7 @@ class ProductResearchAdapter:
             owned = {**story, '_fact_pool_unit_id': original_unit,
                      '_fact_pool_input_sha256': binding.get('fact_input_sha256')}
             result = await self.run(owned, role, route_unit, lambda current:
-                route['client']._run('facts', original_input[1], current,
-                                     original_schema), client=route['client'])
+                dispatch(route['client'], original_input[1], current, original_schema), client=route['client'])
             return {**result, 'original_schema': original_schema,
                     **({'original_schema_readback': True} if legacy else {})}
         routes = [route for route in self._fact_pool_routes() if route['qualified'] and route.get('endpoint')]
@@ -761,7 +763,7 @@ class ProductResearchAdapter:
             client = route['client']
             try:
                 return await self.run(owned, role, route_unit,
-                    lambda binding: client._run('facts', prompt, binding, schema), client=client)
+                    lambda binding: dispatch(client, prompt, binding, schema), client=client)
             except RetryableProviderError as exc:
                 with self.service.store.connection() as db:
                     rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '

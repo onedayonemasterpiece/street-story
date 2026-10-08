@@ -270,12 +270,17 @@ class StreetStoryService:
         from .poi_memory import ensure_poi_identity, hydrate_story_facts, memory_keys
         research = json.loads(row['research_json'] or '{}')
         identity = research.get('visual_identity') or {}
-        if identity.get('status') not in {'match', 'owner_confirmed'} or row['state'] in {'scheduling', 'scheduled', 'published'}:
+        from .identity_proof import accepted_identity
+        if not accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)) or row['state'] in {'scheduling', 'scheduled', 'published'}:
             return 0
         keys = memory_keys(db, identity)
         chosen = next((item for item in identity.get('candidates') or [] if item.get('candidate_id') == identity.get('candidate_id')), {})
         bound = db.execute("SELECT 1 FROM poi_aliases WHERE namespace='street_story_candidate' AND value=?", (identity.get('candidate_id'),)).fetchone()
-        verified = identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
+        from .identity_proof import verified_physical_identity
+        verified = verified_physical_identity(identity, photo_sha256=row['photo_sha256'],
+            generation=int(research.get('identity_generation') or 0))
         aliases = set(chosen.get('alias_candidate_ids') or [])
         if verified:
             from .identity_subject_binding import subject_aliases
@@ -447,6 +452,7 @@ class StreetStoryService:
         voice_protocol: str,
         lat: float | None,
         lon: float | None,
+        location_provenance: dict | None = None,
     ) -> dict[str, Any]:
         # Legacy API field is an opaque upload token, never an image checksum.
         if not photo_bytes:
@@ -457,6 +463,21 @@ class StreetStoryService:
             "client_story_id": client_story_id, "photo_sha256": photo_sha256.lower(), "photo_mime_type": photo_mime_type,
             "voice_protocol": voice_protocol, "lat": lat, "lon": lon,
         }
+        if location_provenance is not None:
+            import math
+            if (not isinstance(location_provenance, dict)
+                    or location_provenance.get('kind') != 'owner_approx_camera'
+                    or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) for value in (lat, lon))
+                    or not -90 <= lat <= 90 or not -180 <= lon <= 180):
+                raise ConflictError('camera_context_invalid', 'Approximate camera coordinates require explicit owner provenance')
+            accuracy = location_provenance.get('accuracy_m')
+            if accuracy is not None and (isinstance(accuracy, bool) or not isinstance(accuracy, (int, float))
+                    or not math.isfinite(accuracy) or accuracy < 0):
+                raise ConflictError('camera_context_invalid', 'Invalid owner-reported accuracy')
+            location_provenance = {'kind': 'owner_approx_camera', 'source': 'owner_supplied',
+                **({'accuracy_m': accuracy} if accuracy is not None else {})}
+            identity['location_provenance'] = location_provenance
         req_digest = digest(identity)
         story_id = "story_" + hashlib.sha256(client_story_id.encode()).hexdigest()[:24]
         with self.store.tx() as db:
@@ -485,6 +506,11 @@ class StreetStoryService:
                 (story_id, client_story_id, photo_sha256.lower(), photo_mime_type, '', lat, lon, voice_protocol, "photo_ready", now, now),
             )
             self._restore_source_photo(db, story_id, photo_bytes)
+            if location_provenance is not None:
+                current = self._story_row(db, story_id)
+                research = json.loads(current['research_json'] or '{}')
+                research['location_provenance'] = location_provenance
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
             from .research_budget import ensure_budget
             ensure_budget(self, story_id, db=db)
             return self._story_repr(db, self._story_row(db, story_id))
@@ -988,7 +1014,9 @@ class StreetStoryService:
                 identity = research.get('visual_identity') or {}
                 generation = int(research.get('identity_generation') or 0)
                 automatic = research.get('automatic_fact_request') or {}
-                if (identity.get('status') not in {'match', 'owner_confirmed'} or research.get('input_revision')
+                from .identity_proof import accepted_identity
+                if (not accepted_identity(identity, photo_sha256=row['photo_sha256'], generation=generation,
+                        control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)) or research.get('input_revision')
                         or research.get('automatic_research_outcome')
                         or automatic.get('photo_sha256') == row['photo_sha256'] and automatic.get('identity_generation') == generation
                         or research_stopped(research, 'facts', photo_sha256=row['photo_sha256'], identity_generation=generation)
@@ -1062,6 +1090,10 @@ class StreetStoryService:
                         coverage_complete=result.get('coverage_complete', False))
                 return True
             with self.store.tx() as db:
+                if job['kind'] == 'identity':
+                    from .research_budget import finish_requested_clarification
+                    if finish_requested_clarification(self, db, job['story_id'], job=job):
+                        return True
                 changed = db.execute("UPDATE jobs SET state='done',lease_until=0,last_error=NULL,updated_at=? WHERE id=? AND state='running' AND attempts=?", (self.store.now(), job["id"], job['attempts'])).rowcount
                 if not changed:
                     return True

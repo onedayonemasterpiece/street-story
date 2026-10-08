@@ -18,6 +18,7 @@ from live_interaction import with_live_tool_parts
 
 from .identity_lifecycle import PROTECTED, confidence, distance, visual_match
 from .identity_telemetry import record_identity_event
+from .identity_proof import accepted_identity
 from .service import ConflictError, canonical, digest
 
 
@@ -199,7 +200,9 @@ class LiveVisualComparisonMixin:
         if (_story.get('error_code') == 'visual_identity_conflict'
                 and int(identity.get('generation') or 0) == int(research.get('identity_generation') or 0)):
             return
-        if identity.get('status') in {'match', 'owner_confirmed'}:
+        if accepted_identity(identity, photo_sha256=_story['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
             return
         now = self.service.store.now()
         pages = state.get('sources') or {}
@@ -442,7 +445,8 @@ class LiveVisualComparisonMixin:
         if (story.get('error_code') == 'visual_identity_conflict'
                 and int(identity.get('generation') or 0) == generation):
             return {'identity_conflict': True, 'exhausted': True, 'visual_identity': identity}
-        if identity.get('status') in {'match', 'owner_confirmed'}:
+        if accepted_identity(identity, photo_sha256=story['photo_sha256'], generation=generation,
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
             return {'already_resolved': True, 'visual_identity': identity}
         try:
             source_bytes = self.service._source_photo_bytes(story['id'])
@@ -1093,7 +1097,9 @@ class LiveVisualComparisonMixin:
             self._assert_visual_current(row, research, state, session=session)
             pair = next((item for item in state.get('parallel_pairs', [])
                          if item['id'] == pending['id'] and item.get('phase') == 'result'), None)
-            accepted_before = (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+            accepted_before = accepted_identity(research.get('visual_identity') or {}, photo_sha256=row['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
             conflict_before = row['error_code'] == 'visual_identity_conflict'
             if (int(research.get('identity_generation') or 0) != state['generation']
                     or row['photo_sha256'] != state['photo_sha256']
@@ -1199,7 +1205,7 @@ class LiveVisualComparisonMixin:
                 identity = {**(research.get('visual_identity') or {}), 'status': 'match',
                     'candidate_id': selected['candidate_id'], 'candidate_name': selected['name'][:180],
                     'candidate_url': selected.get('url'), 'source_links': selected.get('source_urls') or [selected.get('url')],
-                    'visual_reference_verified': True, 'confidence': confidence(raw),
+                    'visual_reference_verified': True, 'identity_verified': True, 'proof_kind': 'visual_reference', 'confidence': confidence(raw),
                     'observations': [str(v)[:300] for v in raw['observations'][:6]],
                     'reference_evidence': [e for e in evidence if e.get('subject_candidate_id', e['candidate_id']) == raw['candidate_id']],
                     'reference_subject_binding': bound.get('binding'),

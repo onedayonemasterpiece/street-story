@@ -46,6 +46,8 @@ class Researcher:
         self.source_matches = True
         self.content_valid = True
         self.after_extract = None
+        self.expected_identity = 'wiki:77'
+        self.identity_contexts = []
 
     async def search_articles(self, query, story):
         self.searches += 1
@@ -54,7 +56,8 @@ class Researcher:
 
     async def extract_fact_page(self, page, story, context):
         self.pages.append(page)
-        assert context['confirmed_identity']['candidate_id'] == 'wiki:77'
+        self.identity_contexts.append(context['confirmed_identity'])
+        assert context['confirmed_identity']['candidate_id'] == self.expected_identity
         assert page['evidence_passages']
         unit = page['_unit_id']
         if unit not in self.model_units:
@@ -339,9 +342,19 @@ async def test_new_scope_adds_support_without_changing_owner_selection_concept_o
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('guard', ['generation', 'stop', 'photo', 'poi'])
-async def test_stale_or_stopped_model_result_cannot_commit(tmp_path, guard):
+@pytest.mark.parametrize('guard', ['generation', 'stop', 'photo', 'poi', 'control'])
+@pytest.mark.parametrize('proof_kind', ['owner', 'geometry'])
+async def test_stale_or_stopped_model_result_cannot_commit(tmp_path, guard, proof_kind):
     svc, job, researcher, reader, _ = await fixture(tmp_path)
+    if proof_kind == 'geometry':
+        from test_geometry_subject_articles import geometry_identity
+        researcher.expected_identity = 'osm:way:7'
+        with svc.store.tx() as db:
+            row = svc._story_row(db, job['story_id'])
+            research = json.loads(row['research_json'])
+            research['visual_identity'] = geometry_identity(photo=row['photo_sha256'], generation=0)
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), row['id']))
+            db.execute("UPDATE research_runs SET poi_key='osm:way:7' WHERE run_id='headless-run'")
 
     def change(story):
         with svc.store.tx() as db:
@@ -352,6 +365,8 @@ async def test_stale_or_stopped_model_result_cannot_commit(tmp_path, guard):
                 research['fact_research_cancelled'] = True
             elif guard == 'poi':
                 research['visual_identity']['candidate_id'] = 'wiki:88'
+            elif guard == 'control':
+                research.setdefault('research_controls', {}).setdefault('facts', {})['revision'] = 1
             else:
                 db.execute('UPDATE stories SET photo_sha256=? WHERE id=?', ('b' * 64, story['id']))
             db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), story['id']))
@@ -582,5 +597,52 @@ async def test_result_checkpoint_crash_retains_original_owner_fence_before_repla
         assert len(researcher.pages) == 1
         assert svc.story(job['story_id'])['facts'] == []
         assert svc.story(job['story_id'])['draft_text'] == 'Changed owner draft'
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_matches', [True, False])
+async def test_geometry_without_ref_uses_subject_article_and_normal_canonical_review(tmp_path, source_matches):
+    from test_geometry_subject_articles import geometry_identity
+    svc, job, researcher, reader, fetches = await fixture(tmp_path)
+    researcher.expected_identity = 'osm:way:7'
+    researcher.source_matches = source_matches
+    with svc.store.tx() as db:
+        row = svc._story_row(db, job['story_id'])
+        research = json.loads(row['research_json'])
+        identity = geometry_identity(photo=row['photo_sha256'], generation=0, observed_buildings=120)
+        assert len(json.dumps(identity['geometry_proof'])) > 24000
+        identity['candidates'][0]['wikipedia_url'] = URL
+        research['visual_identity'] = identity
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), row['id']))
+        db.execute("UPDATE research_runs SET poi_key='osm:way:7' WHERE run_id='headless-run'")
+    try:
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert researcher.searches == 0 and len(fetches) == 1
+        confirmed = researcher.identity_contexts[0]
+        assert len(json.dumps(confirmed)) < 5000 and 'geometry_proof' not in confirmed
+        assert confirmed['physical_scope'] == identity['geometry_proof']['decision']['scope']
+        assert confirmed['physical_identity_accepted'] is True
+        assert fetches[0] == 'https://8.8.8.8/gate-history'
+        current = svc.story(job['story_id'])
+        assert current['visual_identity']['visual_reference_verified'] is False
+        assert reviewed_reference_articles(current['visual_identity']) == {}
+        assert len(current['facts']) == int(source_matches)
+        if source_matches:
+            assert current['facts'][0]['eligibility'] == 'unreviewed'
+            await review_candidates(svc, job['story_id'], 'headless-run')
+            assert svc.story(job['story_id'])['facts'][0]['eligibility'] == 'eligible'
+            with svc.store.connection() as db:
+                assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'eligible'
+                assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 1
+            context = HeadlessFacts(svc).adapter._compact_context(HeadlessFacts(svc).adapter._topic_state(job['story_id']))
+            assert context['physical_identity_accepted'] is True
+            assert context['visual_identity']['proof_kind'] == 'geometry'
+            assert context['visual_identity']['physical_scope'] == identity['geometry_proof']['decision']['scope']
+            assert context['research_run']['identity_subject_article_sources'][0]['url'] == URL
+        else:
+            with svc.store.connection() as db:
+                assert db.execute('SELECT COUNT(*) FROM poi_research_assertions').fetchone()[0] == 0
     finally:
         await reader.search_http.aclose()

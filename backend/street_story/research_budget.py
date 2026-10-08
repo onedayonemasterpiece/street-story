@@ -136,6 +136,23 @@ def note_evidence(service, db, story_id, evidence_id, *, generation=None):
                (json.dumps(research, ensure_ascii=False), story_id))
 
 
+def finish_requested_clarification(service, db, story_id, *, job=None):
+    """A current model question ends waiting while retaining the original clock."""
+    row = service._story_row(db, story_id)
+    research = json.loads(row['research_json'] or '{}')
+    question = research.get('identity_clarification') or {}
+    revision = int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)
+    if (research.get('automatic_research_outcome') or question.get('answered')
+            or (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+            or question.get('photo_sha256') != row['photo_sha256']
+            or question.get('generation') != int(research.get('identity_generation') or 0)
+            or question.get('control_revision') != revision
+            or not isinstance(question.get('question'), str) or not question['question'].strip()):
+        return False
+    return finish_attempt(service, db, story_id, outcome='clarification_required',
+        reason='model_requested_geographic_clarification', purpose='identity', job=job)
+
+
 def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', job=None,
                    coverage_complete=False):
     """End product waiting without destroying addressed sends or evidence."""
@@ -173,6 +190,8 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
                  for step in progress.get('steps') or []]
         message = ('Найдены подтверждённые факты · исследование завершено' if matched and eligible else
                    'Объект определён · подтверждённых фактов пока нет' if matched else
+                   str((research.get('identity_clarification') or {}).get('question') or '')[:500]
+                       if outcome == 'clarification_required' else
                    'Поиск завершён · источники временно недоступны' if outcome == 'resource_blocked' else
                    'Поиск завершён · доказательств недостаточно')
         steps = [step for step in steps if step.get('key') != 'research_result']
@@ -192,8 +211,10 @@ def finish_attempt(service, db, story_id, *, outcome, reason, purpose='facts', j
     if not identity_already_proved and state in {'photo_ready', 'identifying', 'needs_review', 'identity_ready', 'researching'}:
         state = 'facts_ready' if matched and eligible else 'identity_ready' if matched else 'needs_review'
     db.execute('UPDATE stories SET research_json=?,state=?,error_code=?,error_message=?,revision=revision+1,updated_at=? WHERE id=?',
-        (json.dumps(research, ensure_ascii=False), state, None if matched else 'visual_identity_uncertain',
-         None if matched else 'Не удалось надёжно определить объект за время исследования.',
+        (json.dumps(research, ensure_ascii=False), state, None if matched else
+            'identity_clarification_required' if outcome == 'clarification_required' else 'visual_identity_uncertain',
+         None if matched else str((research.get('identity_clarification') or {}).get('question') or '')[:500]
+            if outcome == 'clarification_required' else 'Не удалось надёжно определить объект за время исследования.',
          service.store.now(), story_id))
     LOG.info('street_story_research_terminal story_id=%s outcome=%s reason=%s eligible=%s coverage_complete=%s',
              story_id, outcome, reason, eligible, coverage_complete)

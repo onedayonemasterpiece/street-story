@@ -462,7 +462,8 @@ async def test_native_unsent_pair_wait_preserves_original_due_then_reuses_unit(t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('structured_original', [False, True])
-async def test_new_planner_schema_reads_old_unknown_unit_then_replays_closed_plan(tmp_path, structured_original):
+@pytest.mark.parametrize('dedicated_wrapper', [False, True])
+async def test_new_planner_schema_reads_old_unknown_unit_then_replays_closed_plan(tmp_path, structured_original, dedicated_wrapper):
     import hashlib
     from types import SimpleNamespace
     from street_story.service import canonical
@@ -496,10 +497,24 @@ async def test_new_planner_schema_reads_old_unknown_unit_then_replays_closed_pla
         assert role == 'facts' and prompt == old_prompt and schema == old_schema
         assert current['session_id'] == 'original-session' and current['message_id'] == 'original-message'
         assert current['attempt_id'] == binding['attempt_id'] and current['fact_unit_id'] == old_unit
-        closed = {**receipt, 'phase': 'completed', 'result': {'article_queries': ['Original observed address']}}
+        payload = {'article_queries': ['Original observed address']}
+        if structured_original:
+            payload['first_wave_hypotheses'] = [{'kind': 'address', 'subject_id': 'osm:node:1',
+                'query': 'Original observed address', 'reason': 'Original observed address anchor'}]
+        from jsonschema import Draft202012Validator
+        Draft202012Validator(old_schema).validate(payload)
+        closed = {**receipt, 'phase': 'completed', 'result': payload}
         await adapter.checkpoint(binding, closed)
         return {'result': closed['result'], 'receipt': closed}
-    client._run = read_original
+    if dedicated_wrapper:
+        async def planner(prompt, current, schema):
+            return await read_original('facts', prompt, current, schema)
+        client.plan_identity_search = planner
+        async def forbidden_generic(*args):
+            pytest.fail('Original planner must use its dedicated wrapper')
+        client._run = forbidden_generic
+    else:
+        client._run = read_original
     new_schema = {**old_schema, 'required': ['article_queries', 'first_wave_hypotheses']}
     answer = await adapter.plan_identity_search(story, 'New structured planning capsule', new_schema)
     assert bool(answer.get('original_schema_readback')) is not structured_original

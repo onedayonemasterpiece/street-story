@@ -39,7 +39,7 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
-    LOOKUP_POLICY_VERSION = 9
+    LOOKUP_POLICY_VERSION = 10
 
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
@@ -107,7 +107,8 @@ class OSMClient:
                 if not isinstance(item, dict) or not isinstance(item.get('tags'), dict):
                     continue
                 tags = item['tags']
-                if not any(tags.get(k) for k in ('building', 'name', 'addr:housenumber', 'entrance', 'amenity', 'shop', 'office')):
+                if not any(tags.get(k) for k in ('building', 'building:part', 'highway', 'name',
+                                                'addr:housenumber', 'entrance', 'amenity', 'shop', 'office')):
                     continue
                 entry = {k: item[k] for k in ('type', 'id', 'tags') if k in item}
                 if item.get('type') == 'node':
@@ -153,32 +154,39 @@ class OSMClient:
             return cached
         own = self.http is None
         client = self.http or httpx.AsyncClient(timeout=20, headers={"User-Agent": self.user_agent})
+        reverse_task = None
+        reverse_cancel_reason = 'lookup_cancelled'
         try:
             unavailable_buckets = []
             reverse = {}
-            reverse_started = time.monotonic()
-            receipt = {"bucket": "reverse", "endpoint_host": urlparse(self.reverse_url).hostname}
-            try:
-                reverse_response = await client.get(
-                    self.reverse_url,
-                    params={"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1, "namedetails": 1},
-                    headers={"User-Agent": self.user_agent},
-                )
-                receipt["status_code"] = reverse_response.status_code
-                reverse_response.raise_for_status()
-                reverse = reverse_response.json()
-                if not isinstance(reverse, dict) or reverse.get("error"):
-                    raise ValueError("Incomplete Nominatim response")
-                receipt["outcome"] = "success"
-            except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
-                reverse = {}
-                unavailable_buckets.append("reverse")
-                receipt.update(outcome="failed", error_type=type(exc).__name__)
-            finally:
-                receipt["duration_ms"] = round((time.monotonic() - reverse_started) * 1000)
-                logging.getLogger("uvicorn.error").info("osm_reverse_request %s", json.dumps(receipt))
+            async def fetch_reverse():
+                reverse_started = time.monotonic()
+                receipt = {"bucket": "reverse", "endpoint_host": urlparse(self.reverse_url).hostname}
+                try:
+                    response = await client.get(self.reverse_url,
+                        params={"format":"jsonv2","lat":lat,"lon":lon,"zoom":18,"addressdetails":1,"namedetails":1},
+                        headers={"User-Agent":self.user_agent})
+                    receipt["status_code"] = response.status_code
+                    response.raise_for_status()
+                    value = response.json()
+                    if not isinstance(value,dict) or value.get('error'):
+                        raise ValueError('Incomplete Nominatim response')
+                    receipt['outcome'] = 'success'
+                    return value
+                except asyncio.CancelledError:
+                    receipt.update(outcome='cancelled',reason=reverse_cancel_reason)
+                    raise
+                except (httpx.TransportError,httpx.HTTPStatusError,ValueError) as exc:
+                    unavailable_buckets.append('reverse')
+                    receipt.update(outcome='failed',error_type=type(exc).__name__)
+                    return {}
+                finally:
+                    receipt['duration_ms'] = round((time.monotonic()-reverse_started)*1000)
+                    logging.getLogger('uvicorn.error').info('osm_reverse_request %s',json.dumps(receipt))
+            reverse_task = asyncio.create_task(fetch_reverse(),name='street-story-osm-reverse')
             radius_m = 600
             close_radius_m = 160
+            map_patch_radius_m = 320
             landmark_query = f"""[out:json][timeout:12];(
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[historic];
                 nwr(around:{radius_m},{lat:.6f},{lon:.6f})[wikipedia];
@@ -193,13 +201,16 @@ class OSMClient:
             );out geom;"""
             # Bound the database's spatial scan before filtering tags. The
             # spherical distance check below retains the original circular scope.
-            dlat = math.degrees(close_radius_m / 6_371_000) * 1.001
+            dlat = math.degrees(map_patch_radius_m / 6_371_000) * 1.001
             dlon = dlat / max(0.000001, abs(math.cos(math.radians(lat))))
-            nearby_scope = f"around:{close_radius_m},{lat:.6f},{lon:.6f}"
+            nearby_scope = f"around:{map_patch_radius_m},{lat:.6f},{lon:.6f}"
             if abs(lat) + dlat < 90 and abs(lon) + dlon < 180:
                 nearby_scope = f"{lat-dlat:.7f},{lon-dlon:.7f},{lat+dlat:.7f},{lon+dlon:.7f}"
             nearby_query = f"""[out:json][timeout:12];(
                 nwr({nearby_scope})[building];
+                nwr({nearby_scope})["building:part"];
+                way({nearby_scope})[highway];
+                node({nearby_scope})[entrance];
                 nwr({nearby_scope})[name];
                 nwr({nearby_scope})["addr:housenumber"];
             );out geom;"""
@@ -208,14 +219,18 @@ class OSMClient:
             preferred = None
             paused: set[str] = set()
             last_error = None
+            local_map_succeeded = False
             # Nearby anonymous buildings and address points are the primary
             # photographic hypotheses; obtain them before broader landmarks.
             for bucket, query in (("nearby", nearby_query), ("landmark", landmark_query)):
+                if bucket == 'landmark' and local_map_succeeded:
+                    continue  # A ready full local patch need not wait for a broader optional query.
                 if bucket == 'nearby':
                     try:
                         # The small read-only map response includes actual way
                         # membership and avoids two overloaded query engines.
-                        responses[bucket] = await self._map_nearby(client, lat, lon, close_radius_m)
+                        responses[bucket] = await self._map_nearby(client, lat, lon, map_patch_radius_m)
+                        local_map_succeeded = True
                         continue
                     except RetryableProviderError:
                         pass
@@ -228,6 +243,15 @@ class OSMClient:
                     last_error = exc
             if not responses:
                 raise RetryableProviderError("OSM object queries unavailable") from last_error
+            try:
+                reverse = await asyncio.wait_for(asyncio.shield(reverse_task),timeout=.25)
+            except TimeoutError:
+                reverse_cancel_reason = 'local_geometry_ready'
+                reverse_task.cancel()
+                await asyncio.gather(reverse_task,return_exceptions=True)
+                unavailable_buckets.append('reverse')
+                logging.getLogger('uvicorn.error').info('osm_lookup_geometry_ready reverse=deferred_map_ready map_source=%s',
+                    'osm_api_map' if local_map_succeeded else 'overpass_fallback')
 
             def normalized(raw: Any, bucket: str) -> dict[str, Any] | None:
                 if not isinstance(raw, dict):
@@ -363,6 +387,12 @@ class OSMClient:
                 "observed_pool": observed_pool,
                 "radius_m": radius_m,
                 "close_radius_m": close_radius_m,
+                "map_patch_radius_m": map_patch_radius_m,
+                "coverage": {"source":"osm_api_map" if local_map_succeeded else "overpass_fallback",
+                    "local_patch_radius_m":map_patch_radius_m,
+                    "broader_landmarks_queried":'landmark' in responses,
+                    "broader_landmark_radius_m":radius_m if 'landmark' in responses else None,
+                    "completeness":"unknown"},
                 "lookup_policy_version": self.LOOKUP_POLICY_VERSION,
                 "candidate_pool_counts": {
                     "landmark": len(landmarks),
@@ -374,10 +404,15 @@ class OSMClient:
             # Incomplete coverage must not become a week-long negative cache.
             if not unavailable_buckets:
                 self.store.cache_put(key, result, 7 * 24 * 3600)
+            elif local_map_succeeded and set(unavailable_buckets) == {'reverse'}:
+                self.store.cache_put(key, result, 300)  # Reuse ready vectors briefly; reverse outage is not negative physical coverage.
             return result
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
             raise RetryableProviderError(f"OSM lookup failed: {exc}") from exc
         finally:
+            if reverse_task is not None and not reverse_task.done():
+                reverse_task.cancel()
+                await asyncio.gather(reverse_task,return_exceptions=True)
             if own:
                 await client.aclose()
 
@@ -408,53 +443,81 @@ class WikipediaClient:
         return await linked_pages(self, osm)
 
     async def nearby(self, lat: float, lon: float) -> list[dict[str, Any]]:
-        key = _stable_cache_key("wikipedia-pageimages-position-v4", [round(lat, 6), round(lon, 6)])
+        key = _stable_cache_key("wikipedia-nearby-metadata-v5", [self.endpoint, self.search_radius_m, round(lat, 6), round(lon, 6)])
+        region_key = _stable_cache_key('wikipedia-nearby-region-v1',
+            [self.endpoint, self.search_radius_m, round(lat, 3), round(lon, 3)])
+        def positioned(pages):
+            result = []
+            for page in pages:
+                copy = dict(page)
+                plat, plon = copy.get('lat'), copy.get('lon')
+                copy['distance_m'] = None
+                if plat is not None and plon is not None:
+                    dlat, dlon = math.radians(plat-lat), math.radians(plon-lon)
+                    value = math.sin(dlat/2)**2 + math.cos(math.radians(lat))*math.cos(math.radians(plat))*math.sin(dlon/2)**2
+                    copy['distance_m'] = 6_371_000 * 2 * math.asin(math.sqrt(min(1, max(0, value))))
+                result.append(copy)
+            return sorted(result, key=lambda page: page['distance_m'] if page['distance_m'] is not None else float('inf'))
         cached = self.store.cache_get(key)
         if cached is not None:
-            return cached
+            return positioned(cached)
+        regional = self.store.cache_get(region_key)
+        if isinstance(regional, dict) and regional.get('pages'):
+            # Positive area inventory only, never an empty-neighborhood verdict
+            # for another photo. Actual article coordinates remain unchanged.
+            return positioned(regional['pages'])
+        from .wikipedia_transport import check_cooldown, check_response
+        check_cooldown(self.store, self.endpoint, role='nearby')
         own = self.http is None
         client = self.http or httpx.AsyncClient(timeout=20, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
         try:
-            geo = await client.get(self.endpoint, params={
-                "action": "query", "list": "geosearch", "gscoord": f"{lat}|{lon}", "gsradius": self.search_radius_m,
-                "gslimit": 20, "format": "json", "formatversion": 2,
-            }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
-            geo.raise_for_status()
-            hits = geo.json().get("query", {}).get("geosearch", [])[:20]
-            hit_by_page = {
-                str(hit.get("pageid")): hit
-                for hit in hits
-                if isinstance(hit, dict) and hit.get("pageid") is not None
-            }
-            if not hits:
-                self.store.cache_put(key, [], 24 * 3600)
-                return []
-            ids = "|".join(str(hit["pageid"]) for hit in hits)
-            extracts = await client.get(self.endpoint, params={
-                "action": "query", "pageids": ids, "prop": "extracts|info|pageimages", "exintro": 1,
-                "explaintext": 1, "inprop": "url", "piprop": "original|thumbnail", "pithumbsize": 1200,
+            response = await client.get(self.endpoint, params={
+                "action": "query", "generator": "geosearch", "ggscoord": f"{lat}|{lon}",
+                "ggsradius": self.search_radius_m, "ggslimit": 20, "ggsnamespace": 0,
+                "prop": "extracts|info|pageimages|pageprops|coordinates", "exintro": 1,
+                "explaintext": 1, "exchars": 700, "exlimit": 20, "inprop": "url",
+                "piprop": "original|thumbnail", "pithumbsize": 1200,
+                "ppprop": "wikibase_item", "coprimary": "primary", "colimit": 1,
                 "format": "json", "formatversion": 2,
             }, headers={"User-Agent": WIKIPEDIA_USER_AGENT})
-            extracts.raise_for_status()
-            pages = extracts.json().get("query", {}).get("pages", [])
-            result = [{
-                "pageid": page.get("pageid"), "title": page.get("title", ""),
-                "extract": page.get("extract", "")[:6000],
-                "url": page.get("fullurl") or f"https://ru.wikipedia.org/wiki/{quote(page.get('title', '').replace(' ', '_'))}",
-                "image_url": (page.get("original") or {}).get("source"),
-                "thumbnail_url": (page.get("thumbnail") or {}).get("source"),
-                "lat": hit_by_page.get(str(page.get("pageid")), {}).get("lat"),
-                "lon": hit_by_page.get(str(page.get("pageid")), {}).get("lon"),
-                "distance_m": (
-                    float(hit_by_page.get(str(page.get("pageid")), {}).get("dist"))
-                    if hit_by_page.get(str(page.get("pageid")), {}).get("dist") is not None
-                    else None
-                ),
-            } for page in pages if page.get("title")]
-            self.store.cache_put(key, result, 7 * 24 * 3600)
-            return result
+            check_response(self.store, self.endpoint, response, role='nearby')
+            payload = response.json()
+            if payload.get('error'):
+                raise ValueError('wikipedia_api_error')
+            pages = payload.get('query', {}).get('pages', [])
+            if not isinstance(pages, list):
+                raise ValueError('wikipedia_pages_malformed')
+            result = []
+            from .article_media import public_url
+            for page in pages[:20]:
+                if not isinstance(page, dict) or not page.get('title') or page.get('missing') or not page.get('pageid'):
+                    continue
+                coordinates = next((point for point in page.get('coordinates', [])
+                    if isinstance(point, dict) and point.get('globe', 'earth') == 'earth'
+                    and point.get('primary') is not False), {})
+                plat, plon = coordinates.get('lat'), coordinates.get('lon')
+                valid = (isinstance(plat, (int, float)) and not isinstance(plat, bool)
+                    and isinstance(plon, (int, float)) and not isinstance(plon, bool)
+                    and math.isfinite(plat + plon) and -90 <= plat <= 90 and -180 <= plon <= 180)
+                result.append({
+                    "pageid": page['pageid'], "title": page['title'], "extract": str(page.get('extract') or '')[:700],
+                    "url": page.get("fullurl") or f"https://ru.wikipedia.org/wiki/{quote(page['title'].replace(' ', '_'))}",
+                    "image_url": public_url(str((page.get("original") or {}).get("source") or '')),
+                    "thumbnail_url": public_url(str((page.get("thumbnail") or {}).get("source") or '')),
+                    "wikidata_id": str((page.get('pageprops') or {}).get('wikibase_item') or ''),
+                    "lat": plat if valid else None, "lon": plon if valid else None,
+                    "coordinate_provenance": 'wikipedia.primary_coordinates' if valid else 'missing',
+                    "discovery": 'wikipedia_nearby_metadata',
+                    "metadata_only": True,
+                    "metadata_query": {'latitude': lat, 'longitude': lon, 'radius_m': self.search_radius_m,
+                        'provenance': 'wikipedia.generator_geosearch_request', 'scope': 'positive_area_inventory_only'},
+                })
+            self.store.cache_put(key, result, (7 if result else 1) * 24 * 3600)
+            if result:
+                self.store.cache_put(region_key, {'pages': result}, 7 * 24 * 3600)
+            return positioned(result)
         except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError, ValueError) as exc:
-            raise RetryableProviderError(f"Wikipedia lookup failed: {exc}") from exc
+            raise RetryableProviderError(f"Wikipedia lookup failed: {type(exc).__name__}") from exc
         finally:
             if own:
                 await client.aclose()
