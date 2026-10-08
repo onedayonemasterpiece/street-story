@@ -35,6 +35,46 @@ def retained_unknown(svc, story, item, context, *, foreign=False):
 
 
 @pytest.mark.asyncio
+async def test_empty_page_keeps_fast_slot_free_for_next_source_before_slow_pair_finishes(tmp_path, monkeypatch):
+    svc, story, _ = prepare(tmp_path, count=2)
+    svc.settings = replace(svc.settings, worker_poll_seconds=.01)
+    release, useful_started = asyncio.Event(), asyncio.Event()
+    reads = []
+    async def read(service, item, sources, rejected, *, receipts):
+        url = sources[0]['url']
+        reads.append(url)
+        receipts.append({'url': url, 'status': 'completed'})
+        if url.endswith('/empty'):
+            return []
+        return [{'candidate_id': 'web:useful', 'name': 'Useful exterior', 'url': url,
+                 'discovery': 'web_article_media', 'reference_image_urls': ['https://example.com/useful.jpg']}]
+    monkeypatch.setattr('street_story.article_media.article_candidates', read)
+    async def pair(route, snapshot, item, schema, context):
+        cid = item['_visual_reference_mapping'][0]['candidate_id']
+        if cid == 'gate:b':
+            await release.wait()
+        elif cid == 'gate:a':
+            with svc.store.tx() as db:
+                row = svc._story_row(db, story['id'])
+                research = json.loads(row['research_json'])
+                research['identity_article_discovery'] = {'generation': 0, 'photo_sha256': row['photo_sha256'],
+                    'sources': [{'url': 'https://example.com/empty'}, {'url': 'https://example.com/useful'}]}
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+        else:
+            assert cid == 'web:useful' and route == 'google' and not release.is_set()
+            useful_started.set()
+        return response(item, route)
+    install(svc, pair)
+    task = asyncio.create_task(svc.run_once(claim_kind='identity_visual'))
+    try:
+        await asyncio.wait_for(useful_started.wait(), 3)
+        assert reads == ['https://example.com/empty', 'https://example.com/useful']
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
 async def test_late_discovery_wakes_free_lane_and_uses_new_qualified_route(tmp_path, monkeypatch):
     svc, story, _ = prepare(tmp_path, count=2)
     svc.settings = replace(svc.settings, worker_poll_seconds=.01)

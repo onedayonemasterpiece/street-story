@@ -592,7 +592,10 @@ class OpenCodeResearch:
                                     receipt['image_delivery_verification'] = 'original_server_inline_parts_labels_mime'
                             if role == 'search' and not any(call['status'] == 'completed' for call in calls):
                                 raise ResearchUnavailable('research_search_backend_failed' if calls else 'research_search_not_performed', receipt)
-                            if len(json.dumps(result)) > self.limits.max_output_chars:
+                            # The contract bounds JSON characters, not the
+                            # artificial six-character ASCII escape for each
+                            # Cyrillic letter in an otherwise short response.
+                            if len(json.dumps(result, ensure_ascii=False)) > self.limits.max_output_chars:
                                 raise ResearchUnavailable('research_output_too_large', receipt)
                             if role == 'search':
                                 discovered = sources
