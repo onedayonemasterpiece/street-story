@@ -162,6 +162,20 @@ the first invalid response and strict evidence validation; a second invalid
 answer must not launch another planner chain. Late original-operation readback
 is separate from acceptance and cannot restart an expired attempt.
 
+The subsequent cold 104 diagnostic on `c09a123` was stopped through ordinary
+research Stop at 105.18 s after the initial joint operation retried unknown
+transport outcomes across keys. Its journal records three timeouts, one closed
+HTTP503 failure, and one closed answer reporting 64,912 total tokens. That answer
+used exact neutral map references (`@338`) from the supplied compact packet in
+identifier fields; the host rejected them before physical-proof validation.
+No object or fact was accepted. A deterministic transport join now resolves only
+exact identifier references from that frozen packet, preserves raw-response and
+context hashes, and leaves prose, choices and the strict physical-proof validator
+unchanged. Unknown/ambiguous references remain invalid. The initial operation
+also needs the same durable UNKNOWN fence as the optional follow-up; one lost
+response cannot authorize another paid send through a different key or restart.
+These are observed transport defects, not evidence of global quota exhaustion.
+
 A saved-source-only Live contract diagnostic on `3c6e492` completed in 10.66 s;
 it does not establish product acceptance. No final five-case PASS or deployment
 is claimed. Release evidence
