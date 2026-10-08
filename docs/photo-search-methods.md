@@ -172,9 +172,13 @@ No object or fact was accepted. A deterministic transport join now resolves only
 exact identifier references from that frozen packet, preserves raw-response and
 context hashes, and leaves prose, choices and the strict physical-proof validator
 unchanged. Unknown/ambiguous references remain invalid. The initial operation
-also needs the same durable UNKNOWN fence as the optional follow-up; one lost
+now has the same durable UNKNOWN fence as the optional follow-up; one lost
 response cannot authorize another paid send through a different key or restart.
 These are observed transport defects, not evidence of global quota exhaustion.
+The joint call stably prefers the existing route matching the configured
+`gemini_web_search_model`, preserving its pool, quota and executor. A lost outcome
+still prevents trying another model. The affected integration set passed 90
+checks and the final route/fence set passed 12; neither is product acceptance.
 
 A saved-source-only Live contract diagnostic on `3c6e492` completed in 10.66 s;
 it does not establish product acceptance. No final five-case PASS or deployment
