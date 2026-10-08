@@ -67,3 +67,31 @@ def test_historical_comparison_preserves_exact_original_verdict_schema():
     assert 'search_feedback' in new['properties']
     assert 'search_feedback' in new['required']
     assert json.loads(json.dumps(old)) == old
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action,expected', [
+    ('explore_alternative', 'Alternative building exterior'),
+    ('find_external_view', 'Alternative building exterior'),
+    ('another_view', 'Current building additional view'),
+    ('verify_binding', 'Current building additional view'),
+])
+async def test_feedback_respects_untried_hypotheses_and_promising_view_priority(tmp_path, action, expected):
+    from street_story.identity_discovery import next_visual_query
+    svc, story, _ = prepare(tmp_path, count=2)
+    adapter = HeadlessIdentity(svc)
+    session = SimpleNamespace(id='headless:feedback-order', resource_id=story['id'],
+                              state={}, model='fixture', closed=False, visual_reference_limit=1)
+    reply = await adapter._compare_place_images(session, {})
+    session.state['visual_comparison']['planned_queries'] = ['Initial building exterior', 'Alternative building exterior']
+    adapter._record_place_comparison(session, 'feedback-order', {
+        'comparison_id': reply['comparison_id'], 'status': 'uncertain', 'candidate_id': '',
+        'confidence': .2, 'observations': ['The view does not yet establish identity.'],
+        'alternative_candidate_ids': [],
+        'search_feedback': {'reference_kind': 'modern_exterior', 'next_action': action,
+            'reason': 'Next model-owned action.', 'next_query': 'Current building additional view',
+            'candidate_ids': ['gate:b']}})
+    _, research = svc._identity_snapshot(story['id'])
+    plan = research['identity_article_discovery']['planned_queries']
+    assert next_visual_query({}, '', {'Initial building exterior': {'phase': 'completed'}}, plan) == expected
+    assert set(plan) == {'Initial building exterior', 'Alternative building exterior', 'Current building additional view'}

@@ -102,3 +102,42 @@ async def test_initial_identity_claim_does_not_consume_visual_publish_or_researc
         rows = [dict(row) for row in db.execute('SELECT kind,state,attempts FROM jobs')]
     assert {row['kind'] for row in rows} == {'identity_visual', 'research', 'visual', 'publish'}
     assert all(row['state'] == 'ready' and row['attempts'] == 0 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_closed_client_facts_for_fresh_story_progress_while_older_research_waits(tmp_path, monkeypatch):
+    svc, _ = make_service(tmp_path)
+    older, fresh = create(svc, 'slow-facts'), create(svc, 'closed-client')
+    entered, newer_finished, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls = []
+    async def research(job):
+        calls.append(job['story_id'])
+        if job['story_id'] == older['id']:
+            entered.set()
+            await release.wait()
+        else:
+            newer_finished.set()
+    monkeypatch.setattr(svc, '_run_research', research)
+    monkeypatch.setattr(svc, '_schedule_identity_visual', lambda: None)
+    monkeypatch.setattr(svc, '_schedule_confirmed_facts', lambda: None)
+    monkeypatch.setattr(app_module, 'create_live_host', lambda *args: SimpleNamespace(stop_all=AsyncMock()))
+    monkeypatch.setattr(app_module, 'install_live_socket_routes', lambda *args: None)
+    with svc.store.tx() as db:
+        slow = svc._enqueue_job(db, older['id'], 'research', 'slow-facts', {})
+    app = app_module.create_app(svc.settings, svc)
+    async with app.router.lifespan_context(app):
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            with svc.store.tx() as db:
+                new = svc._enqueue_job(db, fresh['id'], 'research', 'closed-client-facts', {})
+                svc._enqueue_job(db, older['id'], 'research', 'same-story-continuation', {})
+            await asyncio.wait_for(newer_finished.wait(), 2)
+            await asyncio.sleep(0)
+            assert calls == [older['id'], fresh['id']]
+            assert not release.is_set()
+            with svc.store.connection() as db:
+                assert db.execute('SELECT state FROM jobs WHERE id=?', (slow,)).fetchone()[0] == 'running'
+                assert db.execute('SELECT state FROM jobs WHERE id=?', (new,)).fetchone()[0] == 'done'
+                assert db.execute('SELECT count(*) FROM live_messages').fetchone()[0] == 0
+        finally:
+            release.set()

@@ -39,7 +39,7 @@ def _stable_cache_key(prefix: str, payload: Any) -> str:
 
 
 class OSMClient:
-    LOOKUP_POLICY_VERSION = 6
+    LOOKUP_POLICY_VERSION = 7
 
     def __init__(self, store: Store, user_agent: str, http: httpx.AsyncClient | None = None):
         self.store = store
@@ -126,6 +126,10 @@ class OSMClient:
                     positions = [nodes[n] for n in refs]
                     entry['center'] = {'lat': (min(x['lat'] for x in positions)+max(x['lat'] for x in positions))/2,
                                        'lon': (min(x['lon'] for x in positions)+max(x['lon'] for x in positions))/2}
+                    if (item.get('type') == 'way' and tags.get('building') not in {None, '', 'no'}
+                            and len(refs) >= 4 and refs[0] == refs[-1]):
+                        entry['building_entrance_node_ids'] = [node_id for node_id in dict.fromkeys(refs)
+                            if (nodes[node_id].get('tags') or {}).get('entrance') not in {None, '', 'no'}]
                 elements.append(entry)
             receipt.update(outcome='success', element_count=len(elements))
             return {'elements': elements}
@@ -201,15 +205,17 @@ class OSMClient:
             # Nearby anonymous buildings and address points are the primary
             # photographic hypotheses; obtain them before broader landmarks.
             for bucket, query in (("nearby", nearby_query), ("landmark", landmark_query)):
+                if bucket == 'nearby':
+                    try:
+                        # The small read-only map response includes actual way
+                        # membership and avoids two overloaded query engines.
+                        responses[bucket] = await self._map_nearby(client, lat, lon, close_radius_m)
+                        continue
+                    except RetryableProviderError:
+                        pass
                 try:
                     responses[bucket], preferred = await self._overpass_query(client, query, bucket, preferred, paused)
                 except RetryableProviderError as exc:
-                    if bucket == 'nearby':
-                        try:
-                            responses[bucket] = await self._map_nearby(client, lat, lon, close_radius_m)
-                            continue
-                        except RetryableProviderError:
-                            pass
                     # A failed independent query must not discard useful objects
                     # already returned by another query. Vision still proves identity.
                     unavailable_buckets.append(bucket)

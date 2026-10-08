@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import secrets
 from contextlib import asynccontextmanager
@@ -94,17 +95,30 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     source_sha = checkout_source_sha()
 
     async def worker_loop(*, visual_only=False, identity_only=False) -> None:
-        while True:
-            if identity_only:
-                # Initial discovery must not wait behind a background research
-                # await. Keep both identity stages in the existing foreground lane.
-                worked = await service.run_once(claim_kind='identity')
-            elif visual_only:
-                worked = await service.run_once(claim_kind='identity_visual')
-            else:
-                worked = await service.run_once(exclude_kind='identity_visual')
-            if not worked:
+        lane = ({'claim_kind': 'identity'} if identity_only else
+                {'claim_kind': 'identity_visual'} if visual_only else
+                {'exclude_kind': ('identity', 'identity_visual')})
+        name = asyncio.current_task().get_name()
+        active = {}
+        try:
+            while True:
+                for story_id, task in list(active.items()):
+                    if task.done():
+                        error = task.exception()
+                        if error is not None:
+                            logging.getLogger('uvicorn.error').error(
+                                'street_story_worker_lane_failure lane=%s story_id=%s error_type=%s',
+                                name, story_id, type(error).__name__)
+                        del active[story_id]
+                for story_id in service.worker_story_ids(**lane):
+                    if story_id not in active:
+                        active[story_id] = asyncio.create_task(
+                            service.run_once(**lane, claim_story_id=story_id), name=name)
                 await asyncio.sleep(settings.worker_poll_seconds)
+        finally:
+            for task in active.values():
+                task.cancel()
+            await asyncio.gather(*active.values(), return_exceptions=True)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

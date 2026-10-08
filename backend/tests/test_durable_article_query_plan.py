@@ -20,11 +20,11 @@ def retain_plan(svc, story):
 
 def readers(monkeypatch, svc):
     searches, pages = [], []
-    async def discover(service, entity_name, visual_query, *, story):
+    async def discover(service, entity_name, visual_query, *, story, first_ready=False):
         searches.append(story['_identity_search_query'])
         assert story['_identity_search_query'] == PLAN[1]
         return [{'url': 'https://news.example/second-street', 'discovery_provider': 'opencode'}]
-    async def articles(service, snapshot, sources, excluded, *, receipts):
+    async def articles(service, snapshot, sources, excluded, *, receipts, first_ready=False):
         pages.append(sources[0]['url'])
         receipts.append({'status': 'completed'})
         return [{'candidate_id': 'web:second', 'name': 'Article facade', 'url': sources[0]['url'],
@@ -114,7 +114,7 @@ async def test_recovery_persists_plan_before_first_search_and_records_actual_com
         snapshot['_identity_article_queries'] = PLAN
         return 'Unproved object', [], 'facade features', ''
     calls = []
-    async def search(service, entity, visual, *, story):
+    async def search(service, entity, visual, *, story, first_ready=False):
         history = svc._identity_snapshot(story['id'])[1]['identity_article_discovery']
         assert history['planned_queries'] == PLAN
         calls.append(story['_identity_search_query'])
