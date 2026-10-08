@@ -1,5 +1,7 @@
 # Optional camera metadata in photo identification
 
+> Historical October2 reference-priority implementation. Nearest-first16, unchanged4/6/6 batches and reference-only acceptance below are superseded by [Photo search methods](photo-search-methods.md). Standard EXIF validation, source provenance and privacy requirements remain; a missing heading/height/accuracy remains unknown.
+
 Date: 2026-10-02. Extends `photo-identity-and-stop.md`; keeps the nearest-first
 shortlist, visual evidence threshold and same-photo recovery intact.
 

@@ -31,6 +31,8 @@ Street Story backend and VibePublish are intended to run persistently on **DevCo
 The live smoke chain covers real photo+GPS, durable initial voice, a second refinement, raw/display transcript persistence, OSM/Wikipedia/grounded Gemini evidence, manual facts, selected-toggle preservation, VibePublish source ingress replay, visual generation/selection/reconciliation, processed-image hash readback, draft and Telegram/VK projection. Full social acceptance additionally requires an explicitly safe test destination and proves schedule → provider readback → cancel → cancelled readback with no residual test publication.
 
 See:
+- [`docs/photo-search-methods.md`](docs/photo-search-methods.md) — current target identity methods, Prussia39 discovery and acceptance;
+- [`docs/README.md`](docs/README.md) — documentation authority and historical research;
 - [`docs/backend-contract.md`](docs/backend-contract.md) — Android/backend and VibePublish protocol;
 - [`docs/backend-runtime.md`](docs/backend-runtime.md) — DevCoveer deployment/recovery runbook;
 - [`docs/gemini-reliability.md`](docs/gemini-reliability.md) — shared Gemini quota/failover rules.

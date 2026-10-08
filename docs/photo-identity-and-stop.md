@@ -1,5 +1,7 @@
 # Selected-photo GPS, persistent identity and immediate Live Stop
 
+> The identity/candidate/reference sections below document the October1–2 implementation and retained incidents. They are historical, including shortlist16, 4/6/6 batches, regional default and mandatory external-reference acceptance. Current target methods, physical-pool coverage and3/5/8 caps are specified in [Photo search methods](photo-search-methods.md) and the [unified implementation brief](prompts/street-story-unified-photo-search-20261008.md). Original-byte recovery, Stop, cancellation and privacy requirements remain applicable.
+
 Date: 2026-10-01. Incident: `inc_181ca71615174ed50b347a31`.
 This document describes implemented behavior and remaining acceptance boundaries;
 it is not a claim of a successful physical-phone retest.
