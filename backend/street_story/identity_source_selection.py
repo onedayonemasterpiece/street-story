@@ -455,7 +455,7 @@ def identity_transport_schema(schema):
     if 'regional_lookup' in properties:
         properties['regional_lookup']['properties']['candidate_ids']['items'] = {
             'type': 'string', 'maxLength': 100}
-    for name in ('subject_article_bindings', 'accepted_architectural_text'):
+    for name in ('subject_article_bindings', 'regional_article_selections', 'accepted_architectural_text'):
         if name not in properties:
             continue
         def bounded_ids(node):

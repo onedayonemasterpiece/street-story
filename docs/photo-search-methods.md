@@ -149,12 +149,21 @@ A slow or incomplete publisher response remains a recorded limitation. A broad
 inventory received only after the initial call does not trigger automatic
 first-two selection or an additional paid judge. This preserves the operation
 budget but does not demonstrate a cold text fast path for every facade.
-The affected regional/Wiki/geometry/text offline set passed 102 checks. These
-checks do not establish live product acceptance.
+The affected regional/Wiki/geometry/text offline set passed 102 checks, followed
+by 38 affected checks after receipt/fence changes. These checks do not establish
+live product acceptance.
 
-The cold 104 canary on `c2fed4f` obtained the correct tower via an actual REF in 80.11 s,
-but no eligible facts by its operator stop at 325.5 s. A saved-source-only Live
-contract diagnostic on 3c6e492 completed in 10.66 s; it does not establish product
-acceptance. No final five-case PASS or deployment is claimed. Release evidence
+The cold 104 canary on `c033e33` received all 12 regional cards before the joint
+call, but the closed model plan failed schema validation. It ended naturally at
+180.05 s with `identity_deadline_exceeded`, no accepted object and no eligible
+facts. The remaining live cases were not started. Exact schema diagnostics and
+contract correction must use the existing optional joint follow-up, retaining
+the first invalid response and strict evidence validation; a second invalid
+answer must not launch another planner chain. Late original-operation readback
+is separate from acceptance and cannot restart an expired attempt.
+
+A saved-source-only Live contract diagnostic on `3c6e492` completed in 10.66 s;
+it does not establish product acceptance. No final five-case PASS or deployment
+is claimed. Release evidence
 must report the final source/deployed SHA, per-building facts/sources, first useful
 fact and full times, actual sends/usage, known costs and remaining unknowns.
