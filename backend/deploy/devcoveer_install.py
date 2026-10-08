@@ -1291,7 +1291,9 @@ async def main():
  if disabled and any(not isinstance(value,dict) or value.get('enabled') is not False for value in inherited.values()):
   # Directory-scoped config disables inherited integrations; inference inputs,
   # existing session addresses and shared global MCP settings remain intact.
-  await client.shared_backend.request('PATCH','/config',directory=str(directory),payload={'mcp':disabled},timeout=30)
+  isolated=json.loads(profile.read_text());isolated['mcp']=disabled
+  profile.write_text(json.dumps(isolated));profile.chmod(0o600)
+  await client.shared_backend.request('POST','/instance/dispose',directory=str(directory),timeout=30)
  result=await client._attest(None,'search')
  if len(models)>1:
   for selected in models:
