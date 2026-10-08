@@ -301,3 +301,37 @@ async def test_unknown_selection_model_change_never_uses_new_route(tmp_path):
     adapter.client._run = forbidden
     with pytest.raises(RetryableProviderError, match='binding_changed'):
         await adapter.select_identity_sources('plain address', OBSERVED, story)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unknown', [False, True])
+async def test_source_selection_uses_qualified_extra_only_after_known_not_sent(tmp_path, unknown):
+    svc, adapter, story = adapter_fixture(tmp_path)
+    primary = adapter.client
+    extra = SimpleNamespace(endpoint=primary.endpoint, model_id='qualified-extra', provider_id='opencode')
+    calls = []
+    adapter._fact_pool_routes = lambda: [
+        {'client': c, 'qualified': True, 'available': True, 'endpoint': c.endpoint} for c in (primary, extra)]
+    async def waiting(role, prompt, binding, schema):
+        calls.append('primary')
+        if unknown:
+            await adapter.checkpoint(binding, {'phase': 'unknown', 'binding': binding,
+                'model_id': primary.model_id, 'session_id': 'original', 'message_id': 'original-message'})
+        raise RetryableProviderError('RESOURCE_DAILY_BUDGET', retry_at=svc.store.now()+300)
+    async def selected(role, prompt, binding, schema):
+        calls.append('extra')
+        receipt = {'phase': 'completed', 'result': choice(), 'binding': binding, 'model_id': extra.model_id}
+        await adapter.checkpoint(binding, receipt)
+        return {'result': choice(), 'receipt': receipt}
+    primary._run, extra._run = waiting, selected
+    if unknown:
+        with pytest.raises(RetryableProviderError):
+            await adapter.select_identity_sources('plain address', OBSERVED, story)
+        assert calls == ['primary']
+    else:
+        selected = await adapter.select_identity_sources('plain address', OBSERVED, story)
+        assert selected['sources'][0]['url'] == OBSERVED[0]['url']
+        assert calls == ['primary', 'extra']
+        cached = await adapter.select_identity_sources('plain address', OBSERVED, story)
+        assert cached['sources'] == selected['sources']
+        assert calls.count('extra') == 1

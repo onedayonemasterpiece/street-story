@@ -27,6 +27,7 @@ async def candidates(tmp_path, count=6):
 
 
 class ControlledReview(HeadlessFactReview):
+    MAX_PACKET_FACTS = 3  # Deliberately force siblings to exercise stale/unknown fences.
     active = 0
     peak = 0
     calls = 0
@@ -60,6 +61,52 @@ class ControlledReview(HeadlessFactReview):
 def reset_host():
     ControlledReview.active=ControlledReview.peak=ControlledReview.calls=0
     ControlledReview.mode='positive'
+
+
+@pytest.mark.asyncio
+async def test_one_bounded_packet_reviews_twelve_candidates_without_stale_sibling_rework(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=12)
+    class GroupedReview(ControlledReview):
+        MAX_PACKET_FACTS = HeadlessFactReview.MAX_PACKET_FACTS
+    engine = GroupedReview(harness)
+    assert await engine.run(job, RUN, 0) == 1
+    assert GroupedReview.calls == 1
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == 12
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 12
+        assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] == 0
+    assert await engine.run(job, RUN, 0) == 0
+    assert GroupedReview.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidence(tmp_path):
+    from street_story.headless_fact_review import VERIFIER_PROMPT
+    from street_story.service import canonical
+    svc, job, harness = await candidates(tmp_path, count=6)
+    session = SimpleNamespace(id='estimate', resource_id=job['story_id'], model='fixture',
+        actor=None, closed=False, state={})
+    with svc.store.connection() as db:
+        ids = review_packets.pending_candidates(db, job['story_id'], RUN)
+    first = review_packets.read(harness.adapter, session, {'run_id': RUN, '_candidate_ids': ids})
+    items = list(first['items'])
+    while first.get('has_more'):
+        first = review_packets.read(harness.adapter, session, first['next_args'])
+        items.extend(first['items'])
+    budget = len(VERIFIER_PROMPT + canonical({**first, 'items': items})) - 300
+    calls = []
+    class BoundedReview(ControlledReview):
+        MAX_PACKET_FACTS = 12
+        async def _infer(self, packet, *args, **kwargs):
+            assert len(VERIFIER_PROMPT + canonical(packet)) <= budget
+            for item in packet['items']:
+                assert item['passage'] == item['text'] and item['passage_complete'] is True
+            calls.append(packet['total_facts'])
+            return await super()._infer(packet, *args, **kwargs)
+    engine = BoundedReview(harness)
+    engine._qualified_routes = lambda **_: [{'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=budget))}]
+    assert await engine.run(job, RUN, 0) == 1
+    assert calls and max(calls) < 6
 
 
 @pytest.mark.asyncio

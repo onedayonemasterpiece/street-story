@@ -45,6 +45,7 @@ VERIFIER_CONTRACT_ID = 'closed-packet-json-v1:' + hashlib.sha256(VERIFIER_PROMPT
 
 
 class HeadlessFactReview:
+    MAX_PACKET_FACTS = 12  # Existing semantic tool contract, bounded again by actual input size.
     def __init__(self, harness):
         self.harness, self.service = harness, harness.service
 
@@ -236,37 +237,30 @@ class HeadlessFactReview:
             _COMMIT_LOCKS[lock_key] = lock
         prepared = list(original_reviews)
         new_prepared = 0
-        for start in range(0, len(pending), 3):
-            if new_prepared == 4:
-                break
+        routes = self._qualified_routes(available=False)
+        input_budget = min((getattr(getattr(route.get('client'), 'limits', None), 'max_input_chars', 24000)
+                            for route in routes), default=24000)
+        start = 0
+        while start < len(pending) and new_prepared < 4:
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
                 model='gemini-3.8-live', actor=None, closed=False,
                 state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend'})
-            candidate_ids = pending[start:start+3]
-            with self.service.store.connection() as db:
-                story, _ = self.harness.adapter._research_run_guard(db, session, run_id)
-                current = review_packets.bundle(db, job['story_id'])
-                candidate_bundle = {fid: current[fid] for fid in candidate_ids if fid in current}
-                recipe = [VERIFIER_CONTRACT_ID, run_id, candidate_bundle, review_packets.candidate_review_fence(db, story),
-                          review_packets.eligible_bundle(db, job['story_id'])]
-            unit = hashlib.sha256(canonical(recipe).encode()).hexdigest()[:24]
-            saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
-            if (saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale'}
-                    or saved.get('retry_at', 0) > self.service.store.now()):
+            candidate_ids = pending[start:start+self.MAX_PACKET_FACTS]
+            # Pack related candidates together so their duplicate/conflict
+            # decisions see the same frozen ledger and one accepted claim does
+            # not stale three unnecessarily small sibling operations. Never
+            # truncate own passages to fit; reduce the number of whole facts.
+            while candidate_ids:
+                packet, unit, saved = self._prepare_packet(job, run_id, session, candidate_ids)
+                if packet is None or len(VERIFIER_PROMPT + canonical(packet)) <= input_budget or len(candidate_ids) == 1:
+                    break
+                candidate_ids = candidate_ids[:max(1, len(candidate_ids)//2)]
+            start += len(candidate_ids)
+            if packet is None:
                 continue
-            args = ({'packet_ref': saved['args']['packet_ref']} if saved.get('phase') == 'result' else {
-                'run_id': run_id, '_candidate_ids': candidate_ids, '_parallel_candidate_review': True})
-            try:
-                packet = review_packets.read(self.harness.adapter, session, args)
-                if not packet.get('packet_ref'):
-                    continue
-                items = list(packet['items'])
-                while packet.get('has_more'):
-                    packet = review_packets.read(self.harness.adapter, session, packet['next_args'])
-                    items.extend(packet['items'])
-                packet = {**packet, 'items': items}
-            except ConflictError:
-                self._put(job, unit, {'phase': 'stale'})
+            if len(VERIFIER_PROMPT + canonical(packet)) > input_budget:
+                LOG.info('street_story_background_fact_review_input_waiting story_id=%s unit_id=%s limit=%s',
+                         job['story_id'], unit, input_budget)
                 continue
             prepared.append((session, packet, unit, saved))
             new_prepared += 1
@@ -305,3 +299,31 @@ class HeadlessFactReview:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         return committed
+
+    def _prepare_packet(self, job, run_id, session, candidate_ids):
+        with self.service.store.connection() as db:
+            story, _ = self.harness.adapter._research_run_guard(db, session, run_id)
+            current = review_packets.bundle(db, job['story_id'])
+            candidate_bundle = {fid: current[fid] for fid in candidate_ids if fid in current}
+            recipe = [VERIFIER_CONTRACT_ID, run_id, candidate_bundle, review_packets.candidate_review_fence(db, story),
+                      review_packets.eligible_bundle(db, job['story_id'])]
+        unit = hashlib.sha256(canonical(recipe).encode()).hexdigest()[:24]
+        saved = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
+        if (saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale'}
+                or saved.get('retry_at', 0) > self.service.store.now()):
+            return None, unit, saved
+        args = ({'packet_ref': saved['args']['packet_ref']} if saved.get('phase') == 'result' else {
+            'run_id': run_id, '_candidate_ids': candidate_ids, '_parallel_candidate_review': True})
+        try:
+            packet = review_packets.read(self.harness.adapter, session, args)
+            if not packet.get('packet_ref'):
+                return None, unit, saved
+            items = list(packet['items'])
+            while packet.get('has_more'):
+                packet = review_packets.read(self.harness.adapter, session, packet['next_args'])
+                items.extend(packet['items'])
+            packet = {**packet, 'items': items}
+        except ConflictError:
+            self._put(job, unit, {'phase': 'stale'})
+            return None, unit, saved
+        return packet, unit, saved

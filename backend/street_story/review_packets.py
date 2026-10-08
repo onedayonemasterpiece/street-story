@@ -200,10 +200,15 @@ def read(adapter, session, args):
                     candidate_ids = requested_scope
                 else:
                     requested_candidates = args.get('_candidate_ids')
+                    if requested_candidates is not None and (not isinstance(requested_candidates, list)
+                            or not 1 <= len(requested_candidates) <= 12
+                            or any(not isinstance(fid, str) for fid in requested_candidates)
+                            or len(set(requested_candidates)) != len(requested_candidates)):
+                        raise ConflictError('live_review_decisions_invalid', 'Supply 1–12 distinct candidate IDs.')
                     candidate_ids = [fid for fid in dict.fromkeys(candidate_ids)
                                      if (requested_candidates is None or fid in requested_candidates) and db.execute(
                         "SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
-                        (session.resource_id, fid)).fetchone()][:3]
+                        (session.resource_id, fid)).fetchone()][:12 if requested_candidates is not None else 3]
                 if not candidate_ids:
                     return {'run_id': run_id, 'review_available': False, 'pending_candidates': 0,
                             'instruction': 'All saved extractor candidates already have semantic decisions. Existing publication choices remain unchanged.'}
