@@ -716,7 +716,8 @@ class LiveVisualComparisonMixin:
                         and page.get('retry_at', 0) <= self.service.store.now()
                         for page in state['sources'].values())
         planned_reference_ready = False
-        if (untried and not unsettled and search_budget > 0 and not unread_due
+        first_page_due = unread_due and int(state.get('units_since_acquisition') or 0) >= 2
+        if (untried and not unsettled and search_budget > 0 and not first_page_due
                 and (int(state['units_since_planned_query']) >= 2 or (not state['queue'] and not useful_due))):
             session.state.setdefault('identity_search_queries', {}).update(state['searches'])
             result = await self._find_place_articles(session, {'query': planned})

@@ -36,6 +36,27 @@ def reject(adapter, session, reply, index=0):
         'confidence': 1, 'observations': ['Different object in the reference.'], 'alternative_candidate_ids': []})
 
 
+@pytest.mark.parametrize('state', ['ready', 'retry', 'running', 'done'])
+def test_new_selected_source_wakes_only_waiting_visual_job_of_current_generation(tmp_path, state):
+    svc, adapter, topic, sessions = prepared(tmp_path)
+    with svc.store.tx() as db:
+        job = svc._enqueue_job(db, topic['id'], 'identity_visual', 'late-source-test',
+                               {'identity_generation': 0})
+        old = svc._enqueue_job(db, topic['id'], 'identity_visual', 'old-generation-test',
+                               {'identity_generation': 1})
+        future = svc.store.now() + 300
+        db.execute('UPDATE jobs SET state=?,available_at=? WHERE id IN (?,?)',
+                   (state, future, job, old))
+    story, _ = svc._identity_snapshot(topic['id'])
+    identity_discovery._retain_article_discovery(svc, story, [{'url': 'https://photos.example/new-source'}])
+    with svc.store.connection() as db:
+        current = dict(db.execute('SELECT state,available_at FROM jobs WHERE id=?', (job,)).fetchone())
+        previous = dict(db.execute('SELECT state,available_at FROM jobs WHERE id=?', (old,)).fetchone())
+    assert current['state'] == state
+    assert (current['available_at'] < future) is (state in {'ready', 'retry'})
+    assert previous['available_at'] == future
+
+
 @pytest.mark.asyncio
 async def test_search_keeps_every_discovered_url_and_existing_completed_media(tmp_path, monkeypatch):
     svc, adapter, topic, sessions = prepared(tmp_path)
