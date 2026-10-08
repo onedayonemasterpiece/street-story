@@ -69,6 +69,37 @@ async def test_scoped_repair_followup_addresses_replacement_without_whole_invent
 
 
 @pytest.mark.asyncio
+async def test_repair_withholds_shared_parent_before_replacement_review_and_resumes_review(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-original', 'args': findings(chunk, QUOTES)})
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+    await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'admit-original', 'args': {
+        'packet_ref': packet['packet_ref'], 'decisions': [
+            {'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in range(3)],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}})
+    with svc.store.connection() as db:
+        fid = db.execute('SELECT assertion_id FROM poi_research_assertions WHERE eligibility=\'eligible\' LIMIT 1').fetchone()[0]
+    scoped = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': [fid]}})
+    repaired = await adapter.execute_tool(session, {'name': 'repair_research_fact', 'id': 'replace-meaning', 'args': {
+        'packet_ref': scoped['packet_ref'], 'repairs': [{'fact': 0, 'reason': 'Narrow the independently reviewed meaning.',
+            'facts': [{'text': 'Уточнённый первый тезис.', 'claim_key': 'narrowed', 'evidence': [0]}]}]}})
+    child = repaired['next_args']['fact_ids'][0]
+    with svc.store.connection() as db:
+        assert {r[0] for r in db.execute('SELECT eligibility FROM poi_research_assertions WHERE assertion_id=?', (fid,))} == {'withheld'}
+        assert db.execute('SELECT eligibility FROM fact_assertions WHERE assertion_id=?', (child,)).fetchone()[0] == 'unreviewed'
+        assert db.execute('SELECT COUNT(*) FROM poi_research_assertions WHERE assertion_id=? AND eligibility=\'eligible\'', (child,)).fetchone()[0] == 0
+    await adapter.execute_tool(session, {'name': repaired['next_tool'], 'args': repaired['next_args']})
+    with svc.store.tx() as db:
+        db.execute("UPDATE research_runs SET state='partial' WHERE run_id=?", (run_id,))
+    initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
+    assert initialized['capability'] == 'review'
+    assert initialized['context']['research_run']['pending_review_fact_ids'] == [child]
+    assert 'get_review_packet' in {t['name'] for t in initialized['configuration']['functions']}
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_short_packet_semantics_negative_scope_stale_and_replay(tmp_path):
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})

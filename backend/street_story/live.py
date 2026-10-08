@@ -922,7 +922,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "If truncated, read all get_facts pages. Read get_facts/get_evidence for selection or verification."
         )
         reviewing = ((state.get('research_run') or {}).get('state') == 'verifying'
-                     or bool((state.get('research_run') or {}).get('pending_extractor_candidates')))
+                     or bool((state.get('research_run') or {}).get('pending_extractor_candidates'))
+                     or bool((state.get('research_run') or {}).get('pending_review_fact_ids')))
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
         # duplicating it on every setup consumes the same lease as bootstrap.
@@ -2042,6 +2043,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     latest_run['candidate_review_instruction'] = ('Use continue_story(stage=review), then get_review_packet with this run_id. '
                         'Review the bounded candidates and nearby existing claims. Partial review is sufficient; '
                         'do not reread documents or delay publication using already eligible facts.')
+                pending_review = []
+                for pending in db.execute('SELECT p.payload_json FROM live_review_packets p '
+                    'JOIN live_review_attempts a ON a.packet_ref=p.packet_ref WHERE p.story_id=? '
+                    "AND p.run_id=? AND a.state='pending' AND a.policy_version=? AND p.identity_generation=?",
+                    (story_id, latest_run['run_id'], review_packets.POLICY_VERSION, latest_run['identity_generation'])):
+                    packet = json.loads(pending['payload_json'])
+                    for fid in packet.get('bundle', {}):
+                        if db.execute("SELECT 1 FROM fact_assertions WHERE story_id=? AND assertion_id=? AND eligibility='unreviewed'",
+                                      (story_id, fid)).fetchone():
+                            pending_review.append(fid)
+                if pending_review:
+                    latest_run['pending_review_fact_ids'] = list(dict.fromkeys(pending_review))[:12]
+                    latest_run['candidate_review_instruction'] = ('Resume review of these saved own assertions with '
+                        'get_review_packet(run_id, fact_ids=pending_review_fact_ids). Read own passages, '
+                        'repair if needed and finalize current revisions. No new search or whole-document reread required.')
             confirmation = db.execute(
                 "SELECT * FROM live_publication_confirmations WHERE story_id=? ORDER BY created_at DESC LIMIT 1",
                 (story_id,),
