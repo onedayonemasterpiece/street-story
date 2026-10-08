@@ -567,8 +567,64 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                  else f'{visual_query} {region_hint(story)} фото').strip()
     routes, failures = [], []
     researcher = getattr(service.providers, 'research', None)
+    async def choose_observed(observed):
+        selector = getattr(researcher, 'select_identity_sources', None)
+        text_selector = getattr(service.providers.gemini, 'select_identity_sources', None)
+        if not observed:
+            return {'sources': [], 'source_selection': {'status': 'model_selected',
+                'discovered_count': 0, 'selected_count': 0}}
+        if (not callable(selector) and not callable(text_selector)) or story is None:
+            raise RetryableProviderError('identity_source_selection_unavailable')
+        try:
+            if not callable(text_selector):
+                raise RetryableProviderError('identity_text_selection_unavailable')
+            selection_story = dict(story)
+            photo_reader = getattr(service, '_source_photo_bytes', None)
+            if callable(photo_reader):
+                from .reference_image_codec import normalize_reference
+                selection_story['_identity_selection_image'] = await asyncio.to_thread(
+                    normalize_reference, photo_reader(story['id']))
+            return await text_selector(query, observed, selection_story)
+        except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
+            if not callable(selector):
+                raise
+            return await selector(query, observed, story)
+
+    async def progressive_search():
+        observer = getattr(researcher, 'identity_search_observations', None)
+        if not callable(observer):
+            return await researcher.search_articles(query, story)
+        task = asyncio.create_task(researcher.search_articles(query, story))
+        seen = set()
+        try:
+            while not task.done():
+                observed = observer(query, story)
+                urls = {source['url'] for source in observed}
+                if urls - seen:
+                    seen.update(urls)
+                    _retain_article_discovery(service, story, [], discovered_sources=observed)
+                    try:
+                        selected = await choose_observed(observed)
+                        if selected['source_selection'].get('status') == 'model_selected':
+                            _retain_article_discovery(service, story, selected['sources'],
+                                discovered_sources=observed,
+                                source_selections={'opencode_observed:' + query: {
+                                    **selected['source_selection'], 'discovered_sources': observed}})
+                            record_identity_event(service, story['id'], 'identity_search_observations_ready', {
+                                'provider': 'opencode', 'discovered_count': len(observed),
+                                'source_count': len(selected['sources']), 'original_query_pending': not task.done()})
+                    except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
+                        # The addressed search continues. No raw sighting is
+                        # promoted to a reader or visual proof after refusal.
+                        pass
+                await asyncio.wait({task}, timeout=1)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
     if researcher is not None and story is not None:
-        routes.append(('opencode', lambda: researcher.search_articles(query, story)))
+        routes.append(('opencode', progressive_search))
     google = getattr(service.providers.gemini, 'discover_article_urls', None)
     if callable(google):
         routes.append(('google', lambda: asyncio.wait_for(
@@ -611,28 +667,8 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
                     _retain_article_discovery(service, story, [], discovered_sources=observed,
                         source_selections={provider + ':' + query: {'status': 'selection_pending',
                             'discovered_sources': observed}})
-                selector = getattr(researcher, 'select_identity_sources', None)
-                text_selector = getattr(service.providers.gemini, 'select_identity_sources', None)
-                if not observed:
-                    sources, selection = [], {'status': 'model_selected', 'discovered_count': 0, 'selected_count': 0}
-                elif (not callable(selector) and not callable(text_selector)) or story is None:
-                    raise RetryableProviderError('identity_source_selection_unavailable')
-                else:
-                    try:
-                        if not callable(text_selector):
-                            raise RetryableProviderError('identity_text_selection_unavailable')
-                        selection_story = dict(story)
-                        photo_reader = getattr(service, '_source_photo_bytes', None)
-                        if callable(photo_reader):
-                            from .reference_image_codec import normalize_reference
-                            selection_story['_identity_selection_image'] = await asyncio.to_thread(
-                                normalize_reference, photo_reader(story['id']))
-                        result = await text_selector(query, observed, selection_story)
-                    except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
-                        if not callable(selector):
-                            raise
-                        result = await selector(query, observed, story)
-                    sources, selection = result['sources'], result['source_selection']
+                result = await choose_observed(observed)
+                sources, selection = result['sources'], result['source_selection']
                 selection = {**selection, 'discovered_sources': observed}
             if story:
                 _retain_article_discovery(service, story, [], discovered_sources=observed,

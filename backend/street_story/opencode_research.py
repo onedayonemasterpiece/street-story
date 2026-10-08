@@ -505,6 +505,14 @@ class OpenCodeResearch:
                         raise ResearchUnavailable('research_unexpected_tool', receipt)
                     sources, calls = search_tool_sources(related, prompt)
                     receipt.update({'sources': sources, 'search_calls': calls, 'assistants': [self._usage(message['info']) for message in related]})
+                    if role == 'search' and sources:
+                        inventory_sha = hashlib.sha256(json.dumps(sources, sort_keys=True).encode()).hexdigest()
+                        if inventory_sha != receipt.get('observed_search_inventory_sha256'):
+                            # Completed tool observations can feed an independent
+                            # source selector before the final assistant finishes.
+                            # This checkpoint leaves the original send unsettled.
+                            receipt['observed_search_inventory_sha256'] = inventory_sha
+                            await self._checkpoint(binding, receipt)
                     if len(related) > self.limits.max_steps:
                         await self._abort(client, receipt, 'attempt_bound_exceeded')
                         raise ResearchUnavailable('research_attempt_bound_exceeded', receipt)
