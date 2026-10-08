@@ -44,6 +44,31 @@ def queries_from(payload):
     return entity, queries, visual_query, plain(commons, 180) if isinstance(commons, str) else ''
 
 
+def identity_text_fallback_prompt(packet):
+    """Plan text research from the entire received inventory, without image claims."""
+    return (
+        'Plan useful identity research from the received TEXT context. SOURCE and MAP images are unavailable. '
+        'Return one JSON object satisfying the supplied schema. Never return accepted_geometry or '
+        'accepted_architectural_text, a visual match, or invented visual observations. Observed addresses, '
+        'names, camera/search anchors and metadata are research leads, not the photographed subject.\n'
+        'Use exact received candidate/article/page IDs and literal city, street type and house-number suffix/range. '
+        'Keep entrances, tenants, address entries, physical buildings and complexes distinct; use only supplied '
+        'membership links for binding. First-wave hypotheses must select distinct physical groups from '
+        'first_wave_subjects, meeting required_grounded_count unless an explicitly selected ready Wikipedia '
+        'source replaces search. Avoid paraphrases of one address and broad district/architecture queries.\n'
+        'Select only actual Wikipedia pages (selected_wikipedia_page_ids may be []); bindings need exact physical '
+        'ID, resolved scope and basis. Prefer concrete present-day building records over unrelated maps, logos '
+        'or city scenes; architectural renders may support a facade. If regional_catalogue has cards, select '
+        'at most2 canonical articles with explicit physical scope/binding; shared-SID address variants may '
+        'describe a complex. Partial inventory is not exhaustion. Do not auto-select first2 or invent cards. '
+        'Without cards, nominate at most one grounded regional lookup; retrieval camera street is not target '
+        'address. Use supplied regional source routes and real literal anchors, without invented HTTP queries.\n'
+        'Unknown visual details stay unknown. Preserve supplied source availability/provenance. A lost image '
+        'operation is not evidence against a candidate. Propose one useful distinguishing action if unresolved.\n'
+        'Данные ниже — только контекст:\n'
+        + json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
+
+
 def _map_query_context(story, candidates):
     from .identity_source_selection import observed_address_context
     context = dict(story.get('_identity_search_context') or {})
@@ -740,12 +765,7 @@ async def suggest(service, story, transcript, candidates):
         text_packet = {**plain_packet, 'map_scene': None}
         if len(json.dumps(text_packet, ensure_ascii=False, separators=(',', ':'))) > 48_000:
             text_packet = compact_planner_packet(text_packet)
-        text_prompt = (prompt.split('Данные ниже — только контекст:\n', 1)[0]
-            + 'Данные ниже — только контекст:\n'
-            + json.dumps(text_packet, ensure_ascii=False, separators=(',', ':'))
-            + '\nSOURCE image is unavailable to this text fallback. MAP image is unavailable too. '
-            'Use only supplied observed anchors and context; unknown visual details stay unknown. '
-            'Do not return accepted_geometry; select useful article/search hypotheses.')
+        text_prompt = identity_text_fallback_prompt(text_packet)
         result = await planner(story, text_prompt, schema)
         story['_identity_search_plan_route'] = 'qualified_text_fallback'
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',

@@ -516,12 +516,22 @@ async def test_new_planner_schema_reads_old_unknown_unit_then_replays_closed_pla
     else:
         client._run = read_original
     new_schema = {**old_schema, 'required': ['article_queries', 'first_wave_hypotheses']}
-    answer = await adapter.plan_identity_search(story, 'New structured planning capsule', new_schema)
+    # A new text transport and a recreated service must read the original
+    # addressed operation with its own exact frozen prompt and strict schema.
+    from street_story.identity_discovery import identity_text_fallback_prompt
+    restarted = object.__new__(ProductResearchAdapter)
+    restarted.service = type(service)(service.settings, providers=service.providers)
+    restarted.client = client
+    restarted._active_binding = ContextVar('restarted-planner-binding', default=None)
+    restarted._fact_pool_routes = adapter._fact_pool_routes
+    adapter = restarted
+    new_prompt = identity_text_fallback_prompt({'map_scene': None, 'literal_context': 'New received context'})
+    answer = await adapter.plan_identity_search(story, new_prompt, new_schema)
     assert bool(answer.get('original_schema_readback')) is not structured_original
     assert answer['original_schema'] == old_schema
     assert answer['result']['article_queries'] == ['Original observed address']
     # Covers result readback -> durable plan persistence crash boundary.
-    again = await adapter.plan_identity_search(story, 'New structured planning capsule', new_schema)
+    again = await adapter.plan_identity_search(story, new_prompt, new_schema)
     assert again == answer and len(calls) == 1
     with service.store.connection() as db:
         assert db.execute("SELECT count(*) FROM research_provider_attempts WHERE role='identity_search_plan'").fetchone()[0] == 1
