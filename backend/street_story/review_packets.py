@@ -377,6 +377,12 @@ def prepare(adapter, session, args):
                 if type(other) is not int or not 0 <= other < len(payload['items']):
                     raise ConflictError('live_review_decisions_invalid', 'equivalent_to must be a canonical fact number from this packet.')
             if payload.get('candidate_scope') is not None:
+                # Optional relation fields may use an empty string to mean no
+                # existing claim. This carries no relation or support verdict;
+                # every nonempty ID still must resolve in this frozen packet.
+                if decision.get('equivalent_to_existing') == '':
+                    decision = dict(decision)
+                    decision.pop('equivalent_to_existing')
                 nearby_ids = {claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])}
                 duplicate = decision.get('equivalent_to_existing')
                 conflicts_existing = decision.get('conflicts_with_existing', [])
