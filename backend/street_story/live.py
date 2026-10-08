@@ -4597,7 +4597,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             self._research_run_guard(db, session, run_id)
             now = self.service.store.now()
             refresh_review_status(db, story_id, now)
-            from .poi_memory import sync_poi_review_from_story
+            from .poi_memory import persist_research_memory, sync_poi_review_from_story
+            # Repairs create new own assertions outside the extraction save path.
+            # Project exactly this reviewed bundle before propagating its proof;
+            # otherwise a successful review exists only in the current story.
+            reviewed_facts = []
+            for fact_id in current_bundle:
+                fact = db.execute('SELECT f.fact_id,f.text,f.confidence,f.sources_json,a.semantic_key '
+                    'FROM facts f JOIN fact_assertions a ON a.story_id=f.story_id AND a.assertion_id=f.fact_id '
+                    'WHERE f.story_id=? AND f.fact_id=?', (story_id, fact_id)).fetchone()
+                if fact:
+                    reviewed_facts.append({'fact_id': fact['fact_id'], 'text': fact['text'],
+                        'confidence': fact['confidence'], 'claim_key': fact['semantic_key'],
+                        'sources': json.loads(fact['sources_json'] or '[]')})
+            persist_research_memory(db, identity, reviewed_facts, [], str(run['goal'] or ''),
+                                    now, research_run_id=run_id)
             sync_poi_review_from_story(db, story_id, now)
             manifest = run_manifest(db, run_id)
             complete = bool(
