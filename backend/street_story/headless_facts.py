@@ -264,6 +264,27 @@ class HeadlessFacts:
                 'SELECT * FROM research_run_sources WHERE run_id=? ORDER BY discovered_at,url', (run_id,))]
         search_receipt = {}
         if not sources:
+            identity = research['visual_identity']
+            if identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
+                from .article_media import public_url
+                from .identity_subject_binding import subject_aliases
+                aliases = subject_aliases(identity.get('candidates') or []).get(
+                    identity.get('candidate_id'), {identity.get('candidate_id')})
+                articles = {}
+                for evidence in identity.get('reference_evidence') or []:
+                    if (evidence.get('subject_candidate_id', evidence.get('candidate_id')) in aliases
+                            and evidence.get('reference_id')
+                            and (url := public_url(str(evidence.get('article_url') or '')))):
+                        articles.setdefault(url, {'url': url, 'title': identity.get('candidate_name') or url})
+                sources = list(articles.values())
+                if sources:
+                    # These already acquired pages are leads, never accepted
+                    # facts. The same frozen reader, subject check and qualified
+                    # own-evidence verifier still process every claim.
+                    search_receipt = {'backend': 'visual_reference_articles'}
+                    LOG.info('street_story_fact_identity_sources_reused story_id=%s run_id=%s sources=%s',
+                             story['id'], run_id, len(sources))
+        if not sources:
             # Attach acquisition hints before requiring an external discovery.
             # The reader still checks article subject/content and reuses only
             # exact frozen version/scope checkpoints; URL familiarity is no verdict.

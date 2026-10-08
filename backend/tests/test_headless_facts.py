@@ -450,3 +450,29 @@ async def test_known_poi_article_is_read_without_fresh_search_when_search_is_una
             assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
     finally:
         await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('proved,subject,searches', [(True, 'wiki:77', 0), (False, 'wiki:77', 1), (True, 'wiki:neighbor', 1)])
+async def test_verified_identity_article_starts_closed_client_facts_without_redundant_search(tmp_path, proved, subject, searches):
+    svc, job, researcher, reader, fetches = await fixture(tmp_path)
+    try:
+        with svc.store.tx() as db:
+            story = svc._story_row(db, job['story_id'])
+            research = json.loads(story['research_json'])
+            research['visual_identity'].update(status='match', visual_reference_verified=proved,
+                reference_evidence=[{'article_url': URL, 'reference_id': 'ref-real',
+                    'subject_candidate_id': subject, 'source_url': 'https://archive.example/exterior.jpg'}])
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert researcher.searches == searches
+        assert researcher.pages and fetches
+        with svc.store.connection() as db:
+            # An acquisition receipt cannot make extractor candidates eligible.
+            assert db.execute("SELECT count(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == 0
+            assert db.execute('SELECT count(*) FROM live_messages').fetchone()[0] == 0
+        await review_candidates(svc, job['story_id'], 'headless-run')
+        with svc.store.connection() as db:
+            assert db.execute("SELECT count(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+    finally:
+        await reader.search_http.aclose()
