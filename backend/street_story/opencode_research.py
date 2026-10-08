@@ -9,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -18,6 +19,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+
+LOG = logging.getLogger(__name__)
 
 
 class ResearchUnavailable(RuntimeError):
@@ -40,8 +43,29 @@ class ResearchLimits:
     max_image_bytes: int = 2 * 1024 * 1024
 
 
-SEARCH_SCHEMA = {'type': 'object', 'properties': {'summary': {'type': 'string', 'maxLength': 2000}},
-                 'required': ['summary'], 'additionalProperties': False}
+SEARCH_SCHEMA = {'type': 'object', 'properties': {
+    'summary': {'type': 'string', 'maxLength': 2000},
+    'selected_sources': {'type': 'array', 'items': {'type': 'object', 'properties': {
+        'url': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 400}},
+        'required': ['url', 'reason'], 'additionalProperties': False}}},
+    'required': ['summary', 'selected_sources'], 'additionalProperties': False}
+
+
+def selected_search_sources(sources, result):
+    """A model may choose tool-observed URLs; it cannot create provenance."""
+    observed = {source['url']: source for source in sources}
+    chosen, rejected, seen = [], 0, set()
+    for item in result.get('selected_sources', []):
+        url = _public_article_url(item['url'])
+        if url not in observed:
+            rejected += 1
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        chosen.append({**observed[url], 'source_selection_reason': item['reason']})
+    return chosen, rejected
+
 DISABLED_TOOLS = ('bash', 'read', 'edit', 'write', 'apply_patch', 'glob', 'grep', 'list', 'task', 'question',
                   'webfetch', 'skill', 'lsp', 'todowrite', 'todoread')
 
@@ -299,7 +323,7 @@ class OpenCodeResearch:
     @asynccontextmanager
     async def _admitted(self, binding, workload, receipt):
         if (binding.get('session_id') and binding.get('message_id')
-                and binding.get('phase') in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'}):
+                and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'}):
             # Reconcile a durable addressed request even when its inference
             # budget is exhausted. No new dispatch and no refund of unknown
             # usage: that original reservation remains authoritative.
@@ -344,7 +368,7 @@ class OpenCodeResearch:
                 raise ResearchUnavailable('research_image_invalid') from None
         prompt += '\nResponse JSON schema (validate locally, no retries):\n' + json.dumps(schema, ensure_ascii=False)
         operation = json.dumps({'role': role, 'binding': {k: v for k, v in binding.items()
-                                    if k not in {'session_id', 'message_id', 'phase', 'image_transport'}}, 'prompt': prompt,
+                                    if k not in {'session_id', 'message_id', 'phase', 'image_transport', 'image_preparation'}}, 'prompt': prompt,
                                 'reference_ids': [item.get('reference_id') for item in supplied['references']] if direct_parts else []}, sort_keys=True)
         logical_hash = hashlib.sha256(operation.encode()).hexdigest()
         # Match the installed client's public Identifier format. Retain the
@@ -364,7 +388,9 @@ class OpenCodeResearch:
         try:
             submitted = bool(binding.get('message_id')) or receipt['phase'] in {
                 'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'abort_outcome_unknown'}
-            if direct_parts and not submitted:
+            from .reference_image_codec import MODEL_PREPARATION, normalize_reference
+            prepare = not submitted
+            if direct_parts and prepare:
                 # Installed OpenCode normalizes every image before saving the
                 # prompt and requires data URIs. Materialize public REF in RAM
                 # before admission; never rewrite historical submitted inputs.
@@ -377,16 +403,22 @@ class OpenCodeResearch:
                                 raise ValueError('reference_not_image')
                             part = {**part, 'mime_type': mime, 'bytes': raw,
                                 'url': f'data:{mime};base64,' + base64.b64encode(raw).decode('ascii')}
+                        mime, raw = await asyncio.to_thread(normalize_reference, part['bytes'])
+                        part = {**part, 'mime_type': mime, 'bytes': raw,
+                            'url': f'data:{mime};base64,' + base64.b64encode(raw).decode('ascii')}
                         resolved.append(part)
                 except Exception as exc:
                     receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
                                    error_type=type(exc).__name__)
                     raise ResearchUnavailable('research_image_reference_unavailable', receipt) from exc
                 direct_parts = resolved
-                receipt.update(image_transport='inline_data_uri_v1',
+                receipt.update(image_transport='inline_data_uri_v1', image_preparation=MODEL_PREPARATION,
                                input_image_bytes=sum(len(part['bytes']) for part in direct_parts))
+                receipt['binding']['image_preparation'] = MODEL_PREPARATION
             if submitted and binding.get('image_transport') == 'inline_data_uri_v1':
                 receipt['image_transport'] = binding['image_transport']
+                if binding.get('image_preparation'):
+                    receipt['image_preparation'] = binding['image_preparation']
             receipt['isolation'] = await self._attest(client, role)
             workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': receipt['input_image_bytes'],
                         'max_steps': receipt['isolation']['steps'], 'max_output_chars': self.limits.max_output_chars,
@@ -396,6 +428,10 @@ class OpenCodeResearch:
             # Each model round sends the full native agent/tool schema and the
             # growing search transcript. Reserve their overhead too; counting
             # only the user prompt underestimates real native Plan usage.
+            if role == 'vision':
+                # Pair comparison has no search/tool loop. Reserve its one
+                # provider turn once, independently of the shared agent profile.
+                workload['max_provider_sends'] = 1
             workload['estimated_tokens'] = (
                 (len(prompt.encode('utf-8')) + 2) // 3 + 10000
                 + (workload['max_search_context_chars'] + 2) // 3 * workload['max_steps']
@@ -418,7 +454,7 @@ class OpenCodeResearch:
                     raise ResearchUnavailable('research_session_id_invalid', receipt)
                 messages = await self._request(client, 'GET', f'/session/{sid}/message', params={'limit': 100})
                 already_submitted = any(message.get('info', {}).get('id') == message_id for message in messages)
-                if not already_submitted and receipt['phase'] in {'prompt_intent', 'submitted', 'abort_intent', 'aborted', 'abort_outcome_unknown'}:
+                if not already_submitted and receipt['phase'] in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'}:
                     raise ResearchUnavailable('research_submit_outcome_unknown', receipt)
                 if not already_submitted:
                     parts = [{'type': 'text', 'text': prompt}]
@@ -534,6 +570,22 @@ class OpenCodeResearch:
                                 raise ResearchUnavailable('research_search_backend_failed' if calls else 'research_search_not_performed', receipt)
                             if len(json.dumps(result)) > self.limits.max_output_chars:
                                 raise ResearchUnavailable('research_output_too_large', receipt)
+                            if role == 'search':
+                                discovered = sources
+                                if 'selected_sources' in result:
+                                    sources, rejected = selected_search_sources(discovered, result)
+                                    selection_status = 'model_selected'
+                                elif binding.get('purpose') == 'identity':
+                                    sources, rejected, selection_status = [], 0, 'selection_unavailable'
+                                else:
+                                    sources, rejected, selection_status = discovered, 0, 'legacy_discovery'
+                                receipt.update(discovered_sources=discovered, sources=sources,
+                                    source_selection={'status': selection_status, 'discovered_count': len(discovered),
+                                        'selected_count': len(sources), 'unobserved_count': rejected})
+                                LOG.info('street_story_search_selection story_id=%s attempt_id=%s purpose=%s '
+                                         'status=%s discovered=%s selected=%s unobserved=%s',
+                                         binding.get('story_id'), binding.get('attempt_id'), binding.get('purpose'),
+                                         selection_status, len(discovered), len(sources), rejected)
                             receipt.update({'phase': 'completed', 'elapsed_ms': round((time.monotonic() - started) * 1000),
                                             'assistant_message_id': info.get('id'), 'result': result})
                             await self._checkpoint(binding, receipt)
@@ -581,11 +633,17 @@ class OpenCodeResearch:
                 'time': info.get('time'), 'finish': info.get('finish'), 'image_tokens': 'unknown'}
 
     async def search_articles(self, query, binding):
-        prompt = ('Use websearch to find concrete public articles/gallery pages relevant to the photo identity hypotheses. '
-                  'Do not fetch pages or identify the photo from a title. Broaden searches toward missing evidence/aspects. '
-                  'Reuse the supplied research history. Prioritize new sources; completed_for_scope sources need no repeat search. '
-                  'Found but unfinished sources remain useful; a new scope may reuse a previously read page. '
-                  'The product reads actual websearch tool URLs. Return a short summary JSON. Hypotheses/query:\n' + str(query))
+        prompt = ('Use websearch to find concrete public articles relevant to the supplied purpose and hypotheses. '
+                  'Do not fetch pages or identify the photo from a title. '
+                  'Reuse the supplied research history; completed_for_scope sources need no repeat search. '
+                  'Return summary and selected_sources in useful reading order. Choose only exact URLs observed '
+                  'in completed websearch output, with a short reason based on its title/snippet and the query context. '
+                  'For identity, choose sources plausibly showing the present-day exterior of the nearby object; '
+                  'omit apartment/hotel interiors, broad maps/directories and unrelated locations or historical-photo '
+                  'collections. An address match alone is not enough. If results are irrelevant, refine the search '
+                  'using the supplied alternatives, or return an empty selection. '
+                  'For facts, choose relevant source-backed articles about the confirmed subject, including historical material. '
+                  'This choice is acquisition guidance only, never proof of identity or facts. Hypotheses/query:\n' + str(query))
         return await self._run('search', prompt, binding, SEARCH_SCHEMA)
 
     async def compare_image(self, snapshot, binding, jsonschema, context=''):

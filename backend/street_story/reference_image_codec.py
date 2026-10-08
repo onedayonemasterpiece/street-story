@@ -9,6 +9,7 @@ MAX_MODEL_BYTES = 2 * 1024 * 1024
 MAX_LIVE_BYTES = 480 * 1024
 MAX_PIXELS = 40_000_000
 MAX_EDGE = 1280
+MODEL_PREPARATION = 'exif_rgb_longedge1280_v1'
 
 
 def reference_mime(data: bytes) -> str:

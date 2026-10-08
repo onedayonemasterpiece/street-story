@@ -9,6 +9,7 @@ from street_story.gemini import GeminiUnavailable
 from street_story.headless_identity import VERDICT_SCHEMA
 from street_story.headless_vision import HeadlessVisionProvider
 from test_reference_image_codec import jpeg
+from street_story.reference_image_codec import normalize_reference
 
 
 class Executor:
@@ -53,7 +54,7 @@ def setup(status='match', usage=None):
     provider = HeadlessVisionProvider(service)
     async def load_reference(url):
         assert url.startswith('https://')
-        return 'image/png', b'original-ref-fixture'
+        return 'image/jpeg', jpeg((64, 40))
     provider._load_public_reference = load_reference
     return provider, verdict, context, calls, first, second
 
@@ -76,7 +77,7 @@ async def test_native_image_transport_schema_admission_full_shortlist_and_receip
     result = await provider.compare_visual(*visual_args(snapshot, {'id': 'story', 'photo_sha256': 'b' * 64,
                                                      '_identity_generation': 4}, VERDICT_SCHEMA, json.dumps(context)))
     assert first.operations == ['grounded_research'] and not second.operations
-    assert calls[0]['contents'][1].inline_data.data == snapshot
+    assert calls[0]['contents'][1].inline_data.data == normalize_reference(snapshot)[1]
     assert calls[0]['contents'][1].inline_data.mime_type == 'image/jpeg'
     prompt = calls[0]['contents'][-1]
     assert 'wiki:2' in prompt and 'osm:way:1' in prompt and 'reference_subject_observations' in prompt
@@ -89,8 +90,8 @@ async def test_native_image_transport_schema_admission_full_shortlist_and_receip
     receipt = result['receipt']
     assert 'sha256' not in json.dumps(receipt)
     assert receipt['image_attachments'] == 2
-    assert calls[0]['contents'][3].inline_data.data == b'original-ref-fixture'
-    assert receipt['model_image_bytes'] == len(snapshot) + len(b'original-ref-fixture')
+    assert calls[0]['contents'][3].inline_data.data == normalize_reference(jpeg((64, 40)))[1]
+    assert receipt['model_image_bytes'] == len(normalize_reference(snapshot)[1]) + len(normalize_reference(jpeg((64, 40)))[1])
     assert receipt['reference_evidence'] == context['reference_evidence']
     assert receipt['generation'] == 4 and receipt['provider_request_id'] == 'provider-test-response'
     assert receipt['usage'] == {'input_tokens': 800, 'output_tokens': 140, 'total_tokens': 940,

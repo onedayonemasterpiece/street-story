@@ -43,6 +43,21 @@ def queries_from(payload):
     return entity, queries, visual_query, plain(commons, 180) if isinstance(commons, str) else ''
 
 
+def _map_query_context(story, candidates):
+    context = dict(story.get('_identity_search_context') or {})
+    # Addresses identify their mapped entry only. Present every supplied anchor,
+    # including address nodes absent from the physical building shortlist.
+    anchors = []
+    for item in [*(context.get('nearby') or []), *candidates]:
+        if not item.get('map_address') or item.get('identity_eligible') is False:
+            continue
+        anchor = {key: item[key] for key in ('candidate_id', 'map_address', 'map_coordinates', 'distance_m') if key in item}
+        if anchor not in anchors:
+            anchors.append(anchor)
+    context['nearby_address_hypotheses'] = anchors
+    return context
+
+
 async def suggest(service, story, transcript, candidates):
     from google.genai import types
     schema = {'type': 'object', 'properties': {
@@ -50,9 +65,10 @@ async def suggest(service, story, transcript, candidates):
         'wikipedia_queries': {'type': 'array', 'items': {'type': 'string'}},
         'visual_query': {'type': 'string'},
         'commons_query': {'type': 'string'},
-        'article_queries': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query']}
+        'article_queries': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['entity_name', 'wikipedia_queries', 'visual_query', 'commons_query', 'article_queries']}
     source_bytes = service._source_photo_bytes(story['id'])
-    source_mime = story.get('photo_mime_type') or 'image/jpeg'
+    from .reference_image_codec import normalize_reference
+    source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
     prompt = (
         'Определи, что следует искать для установления конкретного физического объекта на фото. '
         'Это только поисковые гипотезы, не доказательство. Не выбирай заведомо неподходящее '
@@ -65,14 +81,23 @@ async def suggest(service, story, transcript, candidates):
         'Используй только адрес, подтверждённый доступными данными; не выдумывай его. '
         'Это дополнительный источник статей/фотографий, а не обязательная Wikipedia-статья '
         'и не доказательство identity без сравнения SOURCE и REF. '
-        'article_queries — до трёх обычных интернет-запросов для статей и фотографий. '
+        'article_queries — до трёх готовых буквальных интернет-запросов для статей с современными внешними фотографиями. '
+        'Сначала используй короткий запрос по реальному адресу или названию и городу без лишних ограничений. '
+        'Современный внешний вид — требование к REF, а не обязательные слова каждого запроса. '
+        'Если простой поиск не даёт полезных статей, уточни его по фасаду, внешнему виду или фото с улицы. '
+        'nearby_address_hypotheses — полный список переданных реальных соседних адресных якорей, '
+        'а не подтверждённый адрес SOURCE. Рассмотри их вместе с самим фото. '
+        'Если несколько адресов правдоподобны, предложи содержательно разные запросы по этим адресам '
+        'или видимым признакам; сначала проверь разные правдоподобные адреса простыми запросами. '
+        'Не расходуй весь план на одну догадку и её повтор с prussia39. '
         'SOURCE — современный снимок: для визуального сравнения ищи современные фотографии '
         'нынешнего здания, фасада и адреса. Историческое здание не означает историческую фотографию. '
         'Не направляй этот поиск в общие довоенные фотоархивы и не подменяй Калининград Кёнигсбергом. '
         'Исторические названия и архивные материалы полезны для фактов после определения объекта. '
         'Если на фото близкий дом, сначала используй ближайшие улицы/подтверждённые адреса '
         'и видимые признаки, а не имена далёких достопримечательностей. '
-        'Добавь вариант с prussia39 для исторического здания. Статья в Wikipedia не обязательна. '
+        'prussia39 — дополнительный вариант для исторического здания при нехватке полезных источников. '
+        'Статья в Wikipedia не обязательна. '
         'Расстояния и focal_length_35mm помогают оценить правдоподобие гипотез, но не доказывают объект. '
         'Не выводи номер дома из одной геометки на соседней улице. '
         'Адрес — поисковый якорь наравне с названием объекта: для дома ищи по улице и номеру, '
@@ -92,7 +117,7 @@ async def suggest(service, story, transcript, candidates):
         json.dumps({'region_hint': REGION_HINT,
                     'nearby_candidates': [{key: x[key] for key in ('candidate_id', 'name', 'distance_m',
                         'camera_alignment', 'map_address', 'map_coordinates', 'road_name') if key in x} for x in candidates[:16]],
-                    'location_search_context': story.get('_identity_search_context', {}),
+                    'location_search_context': _map_query_context(story, candidates),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
                     'author_context': transcript[:1500]}, ensure_ascii=False))
@@ -110,7 +135,13 @@ async def suggest(service, story, transcript, candidates):
         queries = payload.get('article_queries') if isinstance(payload, dict) else None
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:3] if isinstance(queries, list) else []
-        return queries_from(payload)
+        result = queries_from(payload)
+        # The independent feature query is already model-owned. Keep it as an
+        # ordinary web alternative instead of abandoning it after an address
+        # guess yields any gallery; existing bounded turns/early proof still apply.
+        if result[2] and result[2] not in story['_identity_article_queries']:
+            story['_identity_article_queries'].append(result[2])
+        return result
     routes = getattr(gemini, 'research_routes', None)
     if not routes:
         return await gemini.executor.execute('grounded_research', call)
@@ -537,20 +568,68 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     google = getattr(service.providers.gemini, 'discover_article_urls', None)
     if callable(google):
         routes.append(('google', lambda: asyncio.wait_for(
-            google(f'{query} современные фотографии нынешнего здания фасада'), timeout=45)))
+            google(query, purpose='identity'), timeout=45)))
+    frozen_public = None
+    if story:
+        research = json.loads(story.get('research_json') or '{}')
+        if hasattr(service.store, 'connection'):
+            with service.store.connection() as db:
+                research = json.loads(service._story_row(db, story['id'])['research_json'] or '{}')
+        history = research.get('identity_article_discovery') or {}
+        if (history.get('generation', 0) == int(story.get('_identity_generation', research.get('identity_generation') or 0))
+                and history.get('photo_sha256') == story.get('photo_sha256')):
+            previous = (history.get('source_selections') or {}).get('public_web:' + query) or {}
+            if isinstance(previous.get('discovered_sources'), list):
+                frozen_public = previous['discovered_sources']
     public_search = getattr(service.providers.gemini, '_public_web_search', None)
-    if callable(public_search):
+    if callable(public_search) or frozen_public is not None:
         # Existing URL/snippet discovery needs neither model quota nor another
         # framework. Acquired articles and vision still supply identity proof.
-        routes.append(('public_web', lambda: asyncio.wait_for(public_search(query), timeout=15)))
+        async def public_inventory():
+            if frozen_public is not None:
+                return {'sources': frozen_public}
+            return await asyncio.wait_for(public_search(query), timeout=15)
+        routes.append(('public_web', public_inventory))
     async def discover(provider, call):
         started = asyncio.get_running_loop().time()
+        observed = []
         try:
             result = await call()
             sources = (result.get('sources') or []) if isinstance(result, dict) else (getattr(result, 'grounding_sources', None) or [])
+            payload = result if isinstance(result, dict) else (getattr(result, 'payload', None) or {})
+            receipt = payload.get('receipt') or {}
+            observed = payload.get('discovered_sources', receipt.get('discovered_sources', sources))
+            selection = payload.get('source_selection', receipt.get('source_selection'))
+            if provider == 'public_web':
+                # Retain raw sightings before the fenced semantic operation. Raw
+                # inventory is separate from selected reader/vision sources.
+                if story:
+                    _retain_article_discovery(service, story, [], discovered_sources=observed,
+                        source_selections={provider + ':' + query: {'status': 'selection_pending',
+                            'discovered_sources': observed}})
+                selector = getattr(researcher, 'select_identity_sources', None)
+                if not observed:
+                    sources, selection = [], {'status': 'model_selected', 'discovered_count': 0, 'selected_count': 0}
+                elif not callable(selector) or story is None:
+                    raise RetryableProviderError('identity_source_selection_unavailable')
+                else:
+                    result = await selector(query, observed, story)
+                    sources, selection = result['sources'], result['source_selection']
+                selection = {**selection, 'discovered_sources': observed}
+            if story:
+                _retain_article_discovery(service, story, [], discovered_sources=observed,
+                    source_selections={provider + ':' + query: selection or {'status': 'selection_unavailable'}})
+            if not selection or selection.get('status') != 'model_selected':
+                raise RetryableProviderError('identity_source_selection_unavailable')
         except Exception as exc:
             failures.append(exc)
             if story:
+                if observed:
+                    _retain_article_discovery(service, story, [], discovered_sources=observed,
+                        source_selections={provider + ':' + query: {'status': 'selection_unavailable',
+                            'code': getattr(exc, 'code', type(exc).__name__),
+                            'discovered_count': len(observed), 'selected_count': 0,
+                            'discovered_sources': observed}})
                 record_identity_event(service, story['id'], 'identity_search_route_unavailable', {
                     'provider': provider, 'code': getattr(exc, 'code', type(exc).__name__),
                     'retry_at': getattr(exc, 'retry_at', None),
@@ -578,6 +657,8 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     if sources:
         return list(sources.values())
     if failures:
+        if any(str(getattr(exc, 'code', str(exc))).startswith('identity_source_selection_') for exc in failures):
+            raise RetryableProviderError('identity_source_selection_unavailable', retry_at=service.store.now()+30)
         retry = [getattr(exc, 'retry_at', None) or service.store.now() + 30 for exc in failures]
         raise GeminiUnavailable(min(retry) if retry else service.store.now() + 30, 'all_article_search_routes_unavailable')
     if not routes:
@@ -585,7 +666,8 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None):
     return []
 
 
-def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None):
+def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None,
+                              discovered_sources=(), source_selections=None):
     """Keep every URL and fetched media outside the bounded identity catalog."""
     from .article_media import public_url
     from .research_control import research_stopped
@@ -629,6 +711,12 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
             if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
                 unique[url] = {**unique.get(url, {}), **source, 'url': url}
         history['sources'] = list(unique.values())
+        discovered = {source['url']: source for source in history.get('discovered_sources', [])}
+        for source in discovered_sources:
+            if isinstance(source, dict) and (url := public_url(str(source.get('url') or ''))):
+                discovered[url] = {**discovered.get(url, {}), **source, 'url': url}
+        history['discovered_sources'] = list(discovered.values())
+        history.setdefault('source_selections', {}).update(source_selections or {})
         pages = history.setdefault('pages', {})
         for receipt in receipts:
             url = receipt.get('url')
@@ -793,7 +881,9 @@ async def recover(service, story, transcript, candidates, excluded):
             if page.get('status') not in {'completed', 'excluded'}:
                 unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
                     if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}})
-        unread.sort(key=lambda source: pages.get(source['url'], {}).get('attempts', 0))
+        from .live_visual_comparison import _article_acquisition_rank
+        unread.sort(key=lambda source: (pages.get(source['url'], {}).get('attempts', 0),
+                                        _article_acquisition_rank(source)))
         if cached:
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                 'observations': ['Сохранённые иллюстрации готовы для визуального сравнения.'],

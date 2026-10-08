@@ -1,3 +1,6 @@
+from test_reference_image_codec import jpeg
+from test_opencode_research import sheet
+from street_story.reference_image_codec import normalize_reference
 import base64
 import json
 from types import SimpleNamespace
@@ -21,21 +24,21 @@ def direct(story, context, count=1):
             for i in range(1, count+1)]
     context = {**context, 'references': refs}
     story = {**story, '_visual_image_parts': [
-        {'label': 'SOURCE', 'mime_type': 'image/png', 'data': base64.b64encode(b'original-untransformed-source').decode()},
+        {'label': 'SOURCE', 'mime_type': 'image/png', 'data': base64.b64encode(jpeg()).decode()},
         *[{'label': ref['label'], 'url': ref['source_url']} for ref in refs]],
         '_visual_reference_mapping': refs}
     return story, context
 
 
 @pytest.mark.asyncio
-async def test_google_source_and_ref_are_separate_original_bytes_and_public_url():
+async def test_google_source_and_ref_are_separate_prepared_bytes_and_public_url():
     provider, verdict, context, calls, first, second = google_setup()
     story, context = direct({'id': 'story', '_identity_generation': 1}, context)
     result = await provider.compare_visual(None, story, VERDICT_SCHEMA, context)
     contents = calls[0]['contents']
-    assert contents[0] == 'SOURCE' and contents[1].inline_data.data == b'original-untransformed-source'
-    assert contents[1].inline_data.mime_type == 'image/png'
-    assert contents[2] == 'REF 1' and contents[3].inline_data.data == b'original-ref-fixture'
+    assert contents[0] == 'SOURCE' and contents[1].inline_data.data == normalize_reference(jpeg())[1]
+    assert contents[1].inline_data.mime_type == 'image/jpeg'
+    assert contents[2] == 'REF 1' and contents[3].inline_data.data == normalize_reference(jpeg((64,40)))[1]
     assert result['receipt']['image_attachments'] == 2
     assert 'sha256' not in json.dumps(result['receipt'])
     assert len(calls) == 1 and not second.operations
@@ -84,9 +87,9 @@ async def test_native_direct_image_urls_ram_no_image_file_and_permission_lease(t
     turns = [params for method, params in client.calls if method == 'turn/start']
     images = [part for part in turns[0]['input'] if part['type'] == 'image']
     assert images[0]['url'].startswith('data:image/jpeg;base64,')
-    assert base64.b64decode(images[0]['url'].split(',', 1)[1]) == snapshot
+    assert base64.b64decode(images[0]['url'].split(',', 1)[1]) == normalize_reference(snapshot)[1]
     assert images[1]['url'].startswith('data:image/jpeg;base64,')
-    assert base64.b64decode(images[1]['url'].split(',', 1)[1]) == b'reference RAM bytes'
+    assert base64.b64decode(images[1]['url'].split(',', 1)[1]) == normalize_reference(snapshot)[1]
     assert len(images) == 2 and not list(tmp_path.rglob('*.jpg'))
     assert 'localImage' not in json.dumps(turns) and 'sha256' not in json.dumps(receipts)
     assert sum(method == 'account/rateLimits/read' for method, _ in client.calls) == 1
@@ -128,10 +131,10 @@ async def test_opencode_direct_two_parts_roundtrip_readback_without_contact_shee
     story, context = direct({'id': 'story'}, {'comparison_id': 'op'})
     result = await h.adapter().compare_image(story['_visual_image_parts'], {'request_id': 'op'}, {'type': 'object'}, context)
     files = [part for part in h.parts if part['type'] == 'file']
-    assert len(files) == 2 and files[0]['mime'] == 'image/png'
-    assert base64.b64decode(files[0]['url'].split(',', 1)[1]) == b'original-untransformed-source'
+    assert len(files) == 2 and files[0]['mime'] == 'image/jpeg'
+    assert base64.b64decode(files[0]['url'].split(',', 1)[1]) == normalize_reference(jpeg())[1]
     assert files[1]['mime'] == 'image/jpeg'
-    assert base64.b64decode(files[1]['url'].split(',', 1)[1]) == b'reference-fixture-RAM'
+    assert base64.b64decode(files[1]['url'].split(',', 1)[1]) == normalize_reference(sheet())[1]
     assert result['receipt']['image_attachment_readback_verified'] is True
     assert 'sha256' not in json.dumps(result['receipt'])
     assert not result['sources'] and len(h.sends) == 1
@@ -272,14 +275,14 @@ async def test_google_default_url_loader_uses_existing_bounded_public_fetch_in_r
     fetched = []
     async def fetch(client, url, limit):
         fetched.append((url, limit))
-        return url, 'image/webp', b'original-webp-body-unchanged'
+        return url, 'image/jpeg', jpeg((32,64))
     monkeypatch.setattr(media, 'fetch_public', fetch)
     provider._load_public_reference = HeadlessVisionProvider._load_public_reference.__get__(provider)
     story, context = direct({'id': 'story'}, context)
     result = await provider.compare_visual(None, story, VERDICT_SCHEMA, context)
     assert fetched == [('https://example.org/ref-1.jpg', MAX_DOWNLOAD_BYTES)]
-    assert calls[0]['contents'][3].inline_data.data == b'original-webp-body-unchanged'
-    assert calls[0]['contents'][3].inline_data.mime_type == 'image/webp'
+    assert calls[0]['contents'][3].inline_data.data == normalize_reference(jpeg((32,64)))[1]
+    assert calls[0]['contents'][3].inline_data.mime_type == 'image/jpeg'
     assert len(calls) == 1 and result['receipt']['image_attachments'] == 2
 
 

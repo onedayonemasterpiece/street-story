@@ -1,4 +1,5 @@
 from __future__ import annotations
+from test_reference_image_codec import jpeg
 
 import asyncio
 import json
@@ -423,7 +424,7 @@ def pipeline(tmp_path, failures):
 
 def admit(svc, name='pipeline'):
     from test_backend import add_chunk, create, finish, open_voice
-    story = create(svc, key=name, client=name)
+    story = create(svc, key=name, client=name, photo=jpeg())
     open_voice(svc, story['id'], session=name)
     sha = add_chunk(svc, story['id'], name, 0, 'test')[1]
     finish(svc, story['id'], name, [sha])
@@ -481,7 +482,7 @@ async def test_pipeline_checkpoints_survive_process_restart_and_expired_provider
     clock.value += 8*86400
     from test_backend import create
     assert fresh.story(sid)['source_available'] is False
-    assert create(fresh, key='pipeline', client='pipeline')['id'] == sid
+    assert create(fresh, key='pipeline', client='pipeline', photo=jpeg())['id'] == sid
     assert await fresh.run_once()
     assert fresh.story(sid)['state'] == 'review'
     assert osm.calls == wiki.calls == 1

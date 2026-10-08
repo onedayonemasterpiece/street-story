@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import Counter
 import hashlib
 import json
 import time
@@ -17,7 +18,7 @@ from live_interaction import with_live_tool_parts
 
 from .identity_lifecycle import PROTECTED, confidence, distance, visual_match
 from .identity_telemetry import record_identity_event
-from .service import ConflictError, canonical
+from .service import ConflictError, canonical, digest
 
 
 def _article_acquisition_rank(source):
@@ -366,6 +367,13 @@ class LiveVisualComparisonMixin:
                 for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
                 and not str(c.get('candidate_id', '')).startswith('web:')][:32],
             'remaining_illustrations': remaining,
+            'search_feedback_instruction': (
+                'Верни search_feedback: тип REF (modern_exterior/interior/historical/diagram/unclear), '
+                'следующее полезное действие (explore_alternative/find_external_view/another_view/verify_binding), '
+                'его reason, буквальный next_query или пустую строку, candidate_ids из physical_candidates. '
+                'Для интерьера не отвергай здание: запроси внешний вид либо другую страницу. '
+                'Для действительно другого фасада переходи к альтернативе; для перспективного частичного вида '
+                'запроси недостающий ракурс. Не выдумывай адрес и не повторяй сравнение ради положительного ответа.'),
             'shooting_distance_instruction': (
                 'Оцени по SOURCE, перспективе, размеру объекта в кадре и доступным camera_hints '
                 'правдоподобный диапазон дистанции съёмки и приблизительную верхнюю границу в метрах. '
@@ -377,7 +385,7 @@ class LiveVisualComparisonMixin:
                 'Оценка не является точным измерением или самостоятельным доказательством identity.'),
             'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
-    async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1):
+    async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1, parallel_refill=False):
         story, research = self.service._identity_snapshot(session.resource_id)
         generation = int(research.get('identity_generation') or 0)
         identity = research.get('visual_identity') or {}
@@ -544,15 +552,36 @@ class LiveVisualComparisonMixin:
         # scan or old SOURCE verdict. Unknown sends retain their original pair.
         with self.service.store.connection() as db:
             unsettled = False
-            for row in db.execute("SELECT role,receipt_json FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'", (story['id'],)):
+            for row in db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts WHERE story_id=? AND role LIKE 'vision%'", (story['id'],)):
                 receipt = json.loads(row['receipt_json'])
                 binding = receipt.get('binding') or {}
+                if parallel_refill and session.id.startswith('headless:'):
+                    from .visual_attachments import visual_operation_unit
+                    # Only exact saved children of this owned queue may run
+                    # independently. A legacy/group/unrelated UNKNOWN still
+                    # fences new dispatch, even with a similar comparison ID.
+                    addressed = {**story, '_identity_generation': generation}
+                    owned = any(row['logical_id'] == digest([story['id'], generation, row['role'],
+                        canonical(visual_operation_unit({**addressed,
+                            '_visual_reference_mapping': pair['reply']['references']}, pair['reply']))])
+                        for pair in state.get('parallel_pairs', [])
+                        if pair.get('phase') not in {'completed', 'failed', 'skipped'})
+                    if owned:
+                        continue
+                # Local admission refusals stay CREATED but never sent a
+                # comparison. They must not suppress other article/query work.
+                # Contradictory send markers still fence the original operation.
+                send_marked = (receipt.get('provider_send_state') not in {None, 'not_sent'}
+                    or any(container.get(key) for container in (receipt, binding)
+                           for key in ('message_id', 'messageID', 'turn_id', 'turnId', 'possibly_sent')))
+                created_unsent = receipt.get('phase') == 'created' and not send_marked
                 if (receipt.get('phase') not in {'completed', 'failed', 'aborted'}
+                        and not created_unsent
                         and (binding.get('visual_scope') is True
                              or receipt.get('photo_sha256', binding.get('photo_sha256')) == story['photo_sha256'])
                         and receipt.get('generation', binding.get('generation', generation)) == generation):
                     unsettled = True
-                    if receipt.get('phase') not in {'created', 'completed', 'failed', 'aborted'}:
+                    if receipt.get('phase') not in {'created', 'completed', 'failed', 'aborted'} or send_marked:
                         from .errors import RetryableProviderError
                         # Restarts must not turn a possibly-sent group into a
                         # brand new pair. Its exact outcome remains unresolved.
@@ -601,7 +630,16 @@ class LiveVisualComparisonMixin:
 
         if state['queue'] and not unsettled:
             previous_head = state['queue'][0].get('reference_id')
-            state['queue'].sort(key=lambda c: (reference_distance(c), 0 if c.get('reference_reuse') else 1))
+            # Cover distinct source pages before repeatedly consuming one
+            # gallery. Counts are scheduling evidence, never identity evidence.
+            coverage = Counter(ref.get('url') for item in state.get('verdict_history', [])
+                for ref in item.get('references', []))
+            coverage.update(pair['candidates'][0].get('url')
+                for pair in state.get('parallel_pairs', [])
+                if pair.get('phase') not in {'completed', 'failed', 'skipped'})
+            state['source_comparison_coverage'] = dict(coverage)
+            state['queue'].sort(key=lambda c: (coverage[c.get('url')],
+                reference_distance(c), 0 if c.get('reference_reuse') else 1))
             if state['queue'][0].get('reference_id') != previous_head:
                 record_identity_event(self.service, story['id'], 'identity_reference_priority', {
                     'generation': generation, 'reason': 'current_shortlist_proximity',
@@ -732,7 +770,8 @@ class LiveVisualComparisonMixin:
             prefer_broad = int(state.get('preferred_units') or 0) >= 2
             target = min((i for i, candidate in enumerate(state['queue'])
                 if (queued_rank(candidate) == 2 if prefer_broad else queued_rank(candidate) < 2)),
-                key=lambda i: reference_distance(state['queue'][i]), default=None)
+                key=lambda i: (state.get('source_comparison_coverage', {}).get(state['queue'][i].get('url'), 0),
+                               reference_distance(state['queue'][i])), default=None)
             if target is not None:
                 state['queue'].insert(0, state['queue'].pop(target))
             if int(state.get('units_since_acquisition') or 0) >= 2 and read_pages < page_budget:
@@ -816,7 +855,8 @@ class LiveVisualComparisonMixin:
             reference_id = candidate.get('reference_id') or next(self._image_entries(candidate))['reference_id']
             if (reference_id in state['reviewed_reference_ids']
                     or reference_id in state.get('unavailable_reference_ids', [])
-                    or reference_id in {e['reference_id'] for e in evidence}):
+                    or reference_id in {e['reference_id'] for e in evidence}
+                    or reference_id in {p['reference_id'] for p in state.get('parallel_pairs', [])}):
                 continue
             receipts = []
             images = await self.service._candidate_reference_images([candidate], limit=1,
@@ -845,11 +885,13 @@ class LiveVisualComparisonMixin:
                 # Skip already-reviewed leads mechanically. Share one bounded
                 # page allowance across refills, stopping at the first new frame.
                 return await self._compare_place_images(session, args, page_budget=remaining_pages,
-                    expected_scope=expected_scope, search_budget=search_budget-searches_performed)
+                    expected_scope=expected_scope, search_budget=search_budget-searches_performed,
+                    parallel_refill=parallel_refill)
             if not state['web_searched'] and state['query'] and not partial and not unavailable:
                 if search_budget > searches_performed:
                     return await self._compare_place_images(session, args, page_budget=remaining_pages,
-                        expected_scope=expected_scope, search_budget=search_budget-searches_performed)
+                        expected_scope=expected_scope, search_budget=search_budget-searches_performed,
+                    parallel_refill=parallel_refill)
                 return {'partial': True, 'next_query': state['query'], 'autonomous_continuation': True,
                     'instruction': 'The next saved visual hypothesis awaits search admission; continue this same operation.'}
             if partial or unavailable:
@@ -965,6 +1007,40 @@ class LiveVisualComparisonMixin:
                 'generation': state['generation'], 'control_revision': state.get('control_revision', 0)}
             state['verdict_history'] = [item for item in state.get('verdict_history', [])
                 if item.get('comparison_id') != pending['id']] + [verdict_summary]
+            feedback = args.get('search_feedback')
+            if feedback is not None:
+                from jsonschema import Draft202012Validator
+                from .headless_identity import SEARCH_FEEDBACK_SCHEMA
+                if Draft202012Validator(SEARCH_FEEDBACK_SCHEMA).is_valid(feedback):
+                    # The model owns the interpretation and next query. Code
+                    # validates addresses and retains per-reference evidence.
+                    physical_ids = {c['candidate_id'] for c in shortlist}
+                    valid_ids = [cid for cid in feedback['candidate_ids'] if cid in physical_ids]
+                    saved_feedback = {**feedback, 'candidate_ids': valid_ids,
+                        'reason': feedback['reason'][:500], 'next_query': feedback['next_query'].strip()[:240]}
+                    verdict_summary['search_feedback'] = saved_feedback
+                    evaluated = [raw.get('reference_subject_candidate_id')] if raw.get('reference_subject_candidate_id') in physical_ids else [
+                        c['candidate_id'] for c in pending['candidates'] if c['candidate_id'] in physical_ids]
+                    for candidate_id in evaluated:
+                        hypothesis = state.setdefault('hypotheses', {}).setdefault(candidate_id,
+                            {'candidate_id': candidate_id, 'comparisons': []})
+                        hypothesis['comparisons'].append({'comparison_id': pending['id'],
+                            'status': status, 'reference_ids': [e['reference_id'] for e in pending['evidence']],
+                            'reference_kind': saved_feedback['reference_kind'],
+                            'observations': verdict_summary['observations']})
+                        hypothesis['next_action'] = saved_feedback
+                    query = saved_feedback['next_query']
+                    if query and not matched and not accepted_before and not conflict_before:
+                        discovery = research.get('identity_article_discovery') or {}
+                        planned = list(dict.fromkeys([query, *state.get('planned_queries', []),
+                            *discovery.get('planned_queries', [])]))
+                        state['planned_queries'] = planned
+                        discovery.update(generation=state['generation'], photo_sha256=state['photo_sha256'],
+                                         planned_queries=planned)
+                        research['identity_article_discovery'] = discovery
+                        # A model-directed missing view gets the next ordinary
+                        # bounded search turn; original UNKNOWNs still fence it.
+                        state['units_since_planned_query'] = max(2, state.get('units_since_planned_query', 0))
             if conflicting_peer:
                 previous_identity = research['visual_identity']
                 research['visual_identity'] = {**previous_identity, 'status': 'uncertain',
@@ -1011,8 +1087,9 @@ class LiveVisualComparisonMixin:
                 pair.update(phase='completed', matched=matched, receipt=args.get('provider_receipt'))
                 pair.pop('result', None)
             state['pending'] = None
-            if not any(item.get('phase') not in {'completed', 'failed', 'skipped'}
-                       for item in state.get('parallel_pairs', [])):
+            if (not session.state.get('visual_refill_preparing')
+                    and not any(item.get('phase') not in {'completed', 'failed', 'skipped'}
+                                for item in state.get('parallel_pairs', []))):
                 state.update(lease_owner=None, lease_until=0)
             self._save_visual_queue(session, state, db=db, research=research)
             self._store_command(db, row['id'], command_id, 'record_place_comparison', args, result)
@@ -1035,7 +1112,7 @@ class LiveVisualComparisonMixin:
         state = session.state['visual_comparison']
         pending = state['pending']
         catalog = {c['reference_id']: (c, e) for c, e in zip(pending['candidates'], pending['evidence'])}
-        item_schema = grouped_verdict_schema()[1]
+        item_schema = grouped_verdict_schema(pending['reply'])[1]
         if (args.get('provider_receipt') or {}).get('semantic_visual_contract') == 'observable_geometry_v1':
             item_schema['properties'].update(shared_distinctive_geometry={'type':'boolean'},
                 observable_correspondences={'type':'array','items':{'type':'object'}})

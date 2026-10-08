@@ -3116,7 +3116,7 @@ class GeminiClient:
         ):
             return None
 
-    async def discover_article_urls(self, query: str) -> GroundedResearch:
+    async def discover_article_urls(self, query: str, *, purpose: str = 'facts') -> GroundedResearch:
         """Google grounding URL discovery only; no fact extraction or HTML SERP."""
         from google.genai import types
         query = str(query or '').strip()[:1000]
@@ -3124,6 +3124,14 @@ class GeminiClient:
             raise ValueError('web search query is required')
         prompt = ('Find articles and photo galleries relevant to this object, including different views. '
                   'Use Google Search. Return a short list of up to 12 page titles; do not extract facts. Query: ' + query)
+        if purpose == 'identity':
+            prompt = ('Use Google Search for this literal query. Choose concrete pages that may supply modern '
+                'external views of this physical object/address; summaries and titles are hypotheses, not identity. '
+                'Return JSON {\"summary\":\"brief\",\"selected_sources\":[{\"url\":\"exact tool-observed HTTPS URL\",'
+                '\"reason\":\"why this page is useful\"}]}. Keep useful reading order. '
+                'Choose only URLs actually returned by this search. An empty selection is valid; '
+                'do not include unrelated galleries, interiors or generic geographic pages merely because they occur. '
+                'Do not infer object identity or extract facts. Query: ' + query)
         config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
         retry_at = []
         for model, _pool, quota, executor in self.web_search_routes:
@@ -3159,9 +3167,19 @@ class GeminiClient:
                                 'title': str(getattr(web, 'title', '') or '')[:180],
                                 'query': query, 'model': _model, 'provider': 'gemini_google_search',
                                 'discovered_at': self.store.now()})
-                return GroundedResearch(payload={'search_provider': 'gemini_google_search',
-                    'search_model': _model, 'query': query, 'status': 'completed'},
-                    grounding_sources=list(sources.values())[:20])
+                observed = list(sources.values())
+                payload = {'search_provider': 'gemini_google_search',
+                    'search_model': _model, 'query': query, 'status': 'completed'}
+                chosen = observed[:20]
+                if purpose == 'identity':
+                    from .identity_source_selection import response_selection
+                    chosen, selection = response_selection(observed, response.text)
+                    payload.update(discovered_sources=observed, source_selection=selection)
+                    import logging
+                    logging.getLogger('uvicorn.error.street_story.gemini').info(
+                        'article_source_selection model=%s status=%s discovered=%s selected=%s unobserved=%s',
+                        _model, selection['status'], len(observed), len(chosen), selection.get('unobserved_count', 0))
+                return GroundedResearch(payload=payload, grounding_sources=chosen)
             try:
                 return await executor.execute('web_search', call)
             except GeminiUnavailable as exc:
@@ -3850,7 +3868,8 @@ class GeminiClient:
             "draft_text должен быть короткой публикацией, а не research dump. Structured context:\n"
             + json.dumps(context, ensure_ascii=False)
         )
-        data = photo_path
+        from .reference_image_codec import normalize_reference
+        photo_mime, data = await asyncio.to_thread(normalize_reference, photo_path)
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
             response_mime_type="application/json",

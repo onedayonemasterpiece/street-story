@@ -47,6 +47,10 @@ class ControlledClient(NativeClient):
             message = result['thread']['turns'][0]['items'][1]
             verdict = json.loads(message['text'])
             verdict['candidate_id'] = start['outputSchema']['properties']['candidate_id']['enum'][1]
+            if 'search_feedback' in start['outputSchema']['properties']:
+                verdict['search_feedback'] = {'reference_kind': 'modern_exterior',
+                    'next_action': 'explore_alternative', 'reason': 'Distinct facade',
+                    'next_query': '', 'candidate_ids': []}
             message['text'] = canonical(verdict)
         return result
 

@@ -1,3 +1,6 @@
+from io import BytesIO
+from PIL import Image
+from street_story.reference_image_codec import MAX_EDGE, MAX_LIVE_BYTES, normalize_reference
 import base64
 from copy import deepcopy
 from types import SimpleNamespace
@@ -28,7 +31,12 @@ async def test_group_uses_separate_sdk_parts_and_exact_frame_mapping():
     result = await provider.compare_visual(jpeg(), story, grouped_verdict_schema()[0], context)
     contents = calls[0]['contents']
     assert [contents[i] for i in (0, 2, 4)] == ['SOURCE', 'REF 1', 'REF 2']
-    assert [contents[i].inline_data.data for i in (1, 3, 5)] == images
+    assert [contents[i].inline_data.data for i in (1, 3, 5)] == [normalize_reference(data)[1] for data in images]
+    for index in (1, 3, 5):
+        raw = contents[index].inline_data.data
+        assert len(raw) <= MAX_LIVE_BYTES
+        with Image.open(BytesIO(raw)) as image:
+            assert max(image.size) <= MAX_EDGE
     assert len(calls) == 1 and not second.operations
     assert result['receipt']['image_attachments'] == 3
     assert result['receipt']['reference_mapping'] == context['references']
@@ -154,7 +162,7 @@ async def test_group_executor_does_not_retry_unknown_timeout_on_another_key_or_m
 
 
 @pytest.mark.asyncio
-async def test_valid_source_above_legacy_collage_cap_keeps_group_pixels():
+async def test_valid_source_above_live_byte_budget_prepares_group_frames():
     import io
     import random
     from PIL import Image
@@ -165,7 +173,12 @@ async def test_valid_source_above_legacy_collage_cap_keeps_group_pixels():
     assert 480 * 1024 < len(pixels) < 2 * 1024 * 1024
     story['_visual_image_parts'][0]['data'] = base64.b64encode(pixels).decode()
     response = await provider.compare_visual(jpeg(), story, grouped_verdict_schema()[0], context)
-    assert calls[0]['contents'][1].inline_data.data == pixels
+    prepared = calls[0]['contents'][1].inline_data.data
+    assert prepared == normalize_reference(pixels)[1]
+    assert len(prepared) <= MAX_LIVE_BYTES
+    with Image.open(BytesIO(prepared)) as image:
+        assert image.size == (1280, 720)
+    assert response['receipt']['reference_mapping'] == context['references']
     assert response['receipt']['image_attachments'] == 3
 
 

@@ -224,7 +224,7 @@ async def test_independent_search_route_returns_all_sources(tmp_path):
     svc, _, topic, _ = prepared(tmp_path)
     sources = [{'url': f'https://example.com/article-{i}'} for i in range(90)]
     async def search_articles(query, story):
-        return {'sources': sources}
+        return {'sources': sources, 'source_selection': {'status': 'model_selected'}}
     svc.providers.research = SimpleNamespace(search_articles=search_articles)
     assert await identity_discovery.web_image_sources(svc, 'gate', '', story=topic) == sources
 
