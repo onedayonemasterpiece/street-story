@@ -65,10 +65,13 @@ def test_single_visible_facade_accepts_without_pretend_yaw_or_three_alternatives
          if row[1]=='osm:way:150596899')
     label=next(int(k) for k,v in packet['private_label_to_osm_id'].items() if v==cid)
     first=check(opinion(label),packet)
-    assert first['status']=='needs_detail'
+    assert first['status']=='accepted_visual_scope_v3'
     assert first['candidate_id']==cid
-    assert first['requested_detail_labels']==[label]
-    assert not first['accepted']
+    assert first['accepted'] is True
+    assert first['evidence_grade']=='llm_source_map_scope'
+    assert first['proof']['canonical_poi_fact_binding_granted'] is False
+    # The model may optionally ask for a more detailed OSM option; the first
+    # semantic decision is not discarded just because no wall indices were sent.
     # No arbitrary top-N heuristic; expand exactly the LLM-selected received
     # physical body, never any test expected identity in real inference.
     detail=spatial_option_catalog(story,[],manifest,physical,
@@ -132,8 +135,33 @@ def test_impossible_map_reference_and_mismatched_image_remain_hard_invalid():
         focus_candidate_ids=[packet['private_label_to_osm_id'][str(label)]])
     bad=check(opinion(label,selected=['C999999.0.9.10']),detail)
     assert not bad['accepted']
-    assert bad['status']=='candidate_unconfirmed'
+    assert bad['status']=='needs_detail'
     assert 'unreceived_osm_option_reference' in bad['reason_codes']
     assert check(opinion(label),packet,map_hash='0'*64)['status']=='invalid'
     forged=check(opinion(123456789),packet)
     assert forged['status']=='invalid'
+
+
+def test_real_model_style_body_labels_are_not_synthetic_walls():
+    # A closed real SOURCE+MAP model once placed the visible physical body
+    # labels ('314', '318') into the optional wall-option field. This is a
+    # transport-format issue, not a reason to discard a confident semantic
+    # physical match or to fabricate a specific wall index.
+    story,manifest,physical,packet=scene_and_packet(106)
+    physical_labels=[row[0] for row in packet['all_received_physical_bodies'][:2]]
+    selected, companion=physical_labels
+    details=spatial_option_catalog(story,[],manifest,physical,
+        focus_candidate_ids=[packet['private_label_to_osm_id'][str(selected)],
+                             packet['private_label_to_osm_id'][str(companion)]])
+    response=opinion(selected,selected=[str(selected),str(companion)])
+    response['source_observations']=[
+        'The broad main facade and one differently oriented neighbouring mass '
+        'match these two real buildings on the neutral map.']
+    out=check(response,details)
+    assert out['status']=='accepted_visual_scope_v3'
+    assert out['accepted'] is True
+    assert out['selected_measured_options']==[]
+    assert out['model_body_label_references']==[selected,companion]
+    assert 'model_cited_physical_body_label_not_geometry_option' in out['geometric_warnings']
+    assert out['proof']['chosen_measured_options']=={}
+    assert out['proof']['canonical_poi_fact_binding_granted'] is False
