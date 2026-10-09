@@ -7,7 +7,7 @@ import pytest
 
 from street_story import prussia39
 from street_story.identity_architectural_comparison import (
-    combine_architectural_decision, prepare_architectural_comparison, publisher_address_relation,
+    combine_architectural_decision, prepare_architectural_comparison,
     source_subject_competition_guard, verified_publisher_physical_scope)
 from street_story.identity_architectural_context import (
     _subject_addresses, acquire_regional_text, literal_address_card_selection, regional_preparation_query)
@@ -357,35 +357,6 @@ async def test_observed_subject_coordinates_allow_regional_lookup_without_photo_
     assert receipt['query_scope']['position_kind'] == 'subject_point_not_camera'
 
 
-def test_publisher_card_address_links_are_literally_bound_and_not_identity():
-    text = 'An article may describe a historical complex with changed facades.'
-    first = {'article_id':'prussia39:sid:100', 'url':'https://www.prussia39.ru/sight/index.php?sid=100',
-        'text':text, 'card_variants':[{
-            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=100',
-            'address_text':'г. Калининград, ул. Камерная, 22, 24'}]}
-    second = {'article_id':'prussia39:sid:101', 'url':'https://www.prussia39.ru/sight/index.php?sid=101',
-        'text':text, 'card_variants':[{
-            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=101',
-            'address_text':'г. Калининград, ул. Камерная, 6'}]}
-    bodies = [
-        {'candidate_id':'osm:way:1', 'literal_address_entries':[{
-            'entry_id':'osm:node:11',
-            'address':{'street':'Камерная улица', 'house_number':'22/24'}}]},
-        {'candidate_id':'osm:way:2', 'literal_address_entries':[{
-            'entry_id':'osm:node:12',
-            'address':{'street':'Камерная улица', 'house_number':'6А'}}]},
-    ]
-    relations = publisher_address_relation([first, second], bodies)
-    assert relations[0]['physical_links'][0]['exact_literal_entry_ids'] == ['osm:node:11']
-    assert relations[0]['physical_links'][1]['exact_literal_entry_ids'] == []
-    assert all(not link['physical_identity_inferred'] for row in relations
-        for link in row['physical_links'])
-    # A publisher card for 6 does not physically bind the 6A corpus.
-    assert relations[1]['physical_links'][1]['link_kind'] == 'no_exact_publisher_address_join_observed'
-    assert relations[0]['publisher_modern_address_metadata'] == [
-        'г. Калининград, ул. Камерная, 22, 24']
-
-
 def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
     story, candidates, _decision, receipt = _comparison_fixture()
     url = receipt['articles'][0]['url']
@@ -393,61 +364,9 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
         {'canonical_url':url, 'address_text':'Город, Тестовая улица, 6'}]
     packet = prepare_architectural_comparison(story, candidates, receipt)
     assert 'publisher_and_OSM_literal_evidence_unjoined' in packet['prompt']
-    assert 'no_exact_publisher_address_join_observed' in packet['prompt']
-    assert 'physical-scope uncertainty' in packet['prompt']
+    assert 'postal_relationship_decision_by' in packet['prompt']
+    assert 'physical_link_evidence' in packet['schema']['properties']
     assert packet['utf8_bytes'] < 20_000
-
-
-def test_article_page_address_joins_without_catalogue_result_metadata():
-    # Coordinate search cards lack postal data; the actual acquired article
-    # includes the modern publisher address in a separate metadata table.
-    article = {'article_id':'prussia39:sid:51',
-        'url':'https://www.prussia39.ru/sight/index.php?sid=51',
-        'address':'Калининградская область, г. Калининград, ул. Житомирская, 22, 24',
-        'address_provenance':'publisher_article_metadata_table'}
-    bodies = [
-        {'candidate_id':'osm:way:101','literal_address_entries':[{
-            'entry_id':'osm:node:1',
-            'address':{'street':'Житомирская улица','house_number':'22/24'}}]},
-        {'candidate_id':'osm:way:102','literal_address_entries':[{
-            'entry_id':'osm:node:2',
-            'address':{'street':'Житомирская улица','house_number':'22'}}]},
-    ]
-    links=publisher_address_relation([article],bodies)[0]
-    assert links['physical_links'][0]['exact_literal_entry_ids']==['osm:node:1']
-    assert links['physical_links'][1]['exact_literal_entry_ids']==[]
-    assert all(not x['physical_identity_inferred'] for x in links['physical_links'])
-    assert links['publisher_modern_address_metadata']==[article['address']]
-
-
-def test_exact_compound_publisher_group_can_cover_two_verified_osm_entrances_without_identity():
-    article={'article_id':'prussia39:sid:51',
-        'url':'https://www.prussia39.ru/sight/index.php?sid=51',
-        'address':'Калининградская область, г. Калининград, ул. Житомирская, 22, 24',
-        'address_provenance':'publisher_article_metadata_table'}
-    def entrance(node, number):
-        return {'entry_id':f'osm:node:{node}',
-            'address':{'street':'Житомирская улица','house_number':number},
-            'provenance':'osm_closed_way_node_membership'}
-    bodies=[
-        {'candidate_id':'osm:way:1','literal_address_entries':[
-            entrance(101,'22'),entrance(102,'24')]},
-        {'candidate_id':'osm:way:2','literal_address_entries':[
-            entrance(103,'22')]},
-        {'candidate_id':'osm:way:3','literal_address_entries':[
-            entrance(104,'22'),entrance(105,'26')]},
-        {'candidate_id':'osm:way:4','literal_address_entries':[
-            dict(entrance(106,'22'),provenance='osm_physical_own_address'),
-            entrance(107,'24')]},
-    ]
-    result=publisher_address_relation([article],bodies)[0]
-    links=result['physical_links']
-    assert links[0]['publisher_full_group_covered_by_distinct_verified_entrances']==[
-        'osm:node:101','osm:node:102']
-    assert links[0]['link_kind']=='publisher_compound_group_matches_verified_entrances'
-    assert all(not link['physical_identity_inferred'] for link in links)
-    assert all(not link['publisher_full_group_covered_by_distinct_verified_entrances']
-        for link in links[1:])
 
 
 def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantics():
@@ -522,69 +441,9 @@ def test_model_self_rejection_never_turns_distance_into_physical_proof():
 
 
 
-def _observed_publisher_link_case(article_url='https://www.prussia39.ru/sight/index.php?sid=123'):
-    article={'article_id':'prussia39:sid:123', 'url':article_url,
-        'raw_body_sha256_verified':True,'input_kind':'acquired_article_text',
-        'text':'A subject with individually described facade.', 'address':'',
-        'address_provenance':'unavailable'}
-    body={'candidate_id':'osm:way:1234','identity_eligible':True,
-        'map_object':{'tags':{'building':'yes','ref:prussia39':'123'}},
-        'map_address':{'street':'Текущая улица','house_number':'8'}}
-    story={'_identity_observed_candidates':[body]}
-    decision={'decision':'accepted_architectural_text',
-        'candidate_id':'osm:way:1234',
-        'article_bindings':[{'article_id':article['article_id'],
-            'candidate_id':'osm:way:1234','scope':'Physical building',
-            'binding_basis':'Publisher link is explicitly recorded on the OSM body.',
-            'physical_binding_resolved':True}]}
-    return story,[body],{'articles':[article]},decision
-
-
-def test_observed_osm_direct_publisher_ref_is_independent_physical_link():
-    story,bodies,receipt,decision=_observed_publisher_link_case()
-    outcome=verified_publisher_physical_scope(story,bodies,receipt,decision)
-    assert outcome['supported'] is True
-    assert outcome['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_publisher_ref'
-    story,bodies,receipt,decision=_observed_publisher_link_case()
-    bodies[0]['map_object']['tags'].pop('ref:prussia39')
-    bodies[0]['map_object']['tags']['website:prussia39']='https://www.prussia39.ru/sight/index.php?sid=123'
-    outcome=verified_publisher_physical_scope(story,bodies,receipt,decision)
-    assert outcome['supported'] is True
-    assert outcome['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_publisher_URL'
-
-
-def test_a_model_claimed_crosslink_cannot_replace_observed_osm_evidence():
-    story,bodies,receipt,decision=_observed_publisher_link_case()
-    bodies[0]['map_object']['tags'].pop('ref:prussia39')
-    decision['article_bindings'][0]['binding_basis']='I am sure ref:prussia39 123 belongs to OSM way 1234.'
-    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
-    assert result['supported'] is False
-    assert result['reason']=='publisher_modern_address_not_observed'
-
-
-def test_explicit_publisher_link_on_two_bodies_leaves_corpus_unresolved():
-    story,bodies,receipt,decision=_observed_publisher_link_case()
-    other={'candidate_id':'osm:way:1235','identity_eligible':True,
-        'map_object':{'tags':{'building':'yes','ref:prussia39':'123'}}}
-    bodies.append(other)
-    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
-    assert result['supported'] is False
-    assert result['reason']=='publisher_explicit_ref_still_ambiguous_between_physical_corpora'
-    assert set(result['matching_candidate_ids'])=={'osm:way:1234','osm:way:1235'}
-
-
-def test_literal_historic_osm_address_is_valid_without_merging_6_and_6a():
-    story,bodies,receipt,decision=_observed_publisher_link_case()
-    tags=bodies[0]['map_object']['tags']
-    tags.pop('ref:prussia39')
-    tags.update({'old_addr:street':'Историческая улица',
-        'old_addr:housenumber':'6А'})
-    receipt['articles'][0].update(address='Город, Историческая улица, 6А',
-        address_provenance='publisher_article_metadata_table')
-    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
-    assert result['supported'] is True
-    assert result['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_historical_postal_tags'
-    receipt['articles'][0]['address']='Город, Историческая улица, 6'
-    denied=verified_publisher_physical_scope(story,bodies,receipt,decision)
-    assert denied['supported'] is False
-    assert denied['reason']=='article_modern_address_not_bound_to_nominated_physical_body'
+def test_legacy_postal_proof_cannot_be_promoted_without_llm_refs():
+    story,candidates,decision,receipt=_comparison_fixture()
+    admission=verified_publisher_physical_scope(
+        story,candidates,receipt,decision)
+    assert admission['supported'] is False
+    assert admission['reason']=='llm_first_publisher_and_osm_evidence_receipt_required'
