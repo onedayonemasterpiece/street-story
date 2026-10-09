@@ -312,6 +312,33 @@ class HeadlessFactReview:
                 blocked.update(fid for fid, digest in previous.items() if current.get(fid) == digest)
         return blocked
 
+    def unobservable_live_candidates(self, job, current):
+        """Exact pending review scope whose original Live socket closed empty."""
+        blocked = set()
+        with self.service.store.connection() as db:
+            for row in db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? "
+                                  "AND stage LIKE 'headless_fact_review:%'", (job['id'],)):
+                saved = json.loads(row['value_json'])
+                if (saved.get('phase') != 'unknown' or saved.get('args')
+                        or (saved.get('route_identity') or {}).get('provider_id') != 'google-live'):
+                    continue
+                unit = row['stage'].split(':', 1)[1]
+                prior = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? '
+                    "AND role=? AND json_extract(receipt_json,'$.binding.fact_unit_id')=? "
+                    'ORDER BY updated_at DESC,rowid DESC LIMIT 1',
+                    (job['story_id'], saved.get('route'), unit)).fetchone()
+                receipt = json.loads(prior[0]) if prior else {}
+                if (receipt.get('provider_id') != 'google-live' or receipt.get('phase') != 'unknown'
+                        or receipt.get('error_code') != 'live_research_timeout'
+                        or receipt.get('provider_send_state') not in {'submitted', 'unknown'}):
+                    continue
+                packet = db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=? AND story_id=?',
+                    (saved.get('packet_ref'), job['story_id'])).fetchone()
+                if packet:
+                    frozen = json.loads(packet[0]).get('bundle') or {}
+                    blocked.update(fid for fid, digest in frozen.items() if current.get(fid) == digest)
+        return blocked
+
     def _recover_closed_reviews(self, job):
         """Consume the original durable result after executor interruption.
 
@@ -415,7 +442,10 @@ class HeadlessFactReview:
         if blocked:
             LOG.info('street_story_background_fact_review_unknown_fence story_id=%s run_id=%s blocked_candidates=%s',
                      job['story_id'], run_id, len(blocked))
-            pending = []  # An unresolved original can still change the conflict ledger.
+            # Fence only the original packet's unchanged candidate scope.
+            # Other candidates get their own current eligible ledger. Existing
+            # packet guards reject stale commits if either review changes it.
+            pending = [fid for fid in pending if fid not in blocked]
         if not pending and not original_reviews:
             return 0
         prepared = list(original_reviews[:1])
@@ -426,7 +456,7 @@ class HeadlessFactReview:
             schema = headless_review_quotes.response_schema(packet, public_schema)
             return self._packet_fits(routes, VERIFIER_PROMPT + canonical(packet), single=single, schema=schema)
         start = 0
-        while start < len(pending) and new_prepared < 1 and not original_reviews:
+        while start < len(pending) and new_prepared < 1:
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
                 model='unknown', actor=None, closed=False,
                 state={'fact_research_control_revision': control_revision, 'fact_review_origin': 'backend'})

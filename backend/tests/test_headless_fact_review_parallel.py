@@ -549,15 +549,20 @@ async def test_two_reviews_prepare_serially_with_current_ledger_and_preserve_own
 
 
 @pytest.mark.asyncio
-async def test_unknown_review_fences_conflicting_ledger_without_new_sibling_send(tmp_path):
+async def test_unknown_review_fences_original_candidates_and_allows_unsent_siblings(tmp_path):
     svc,job,harness=await candidates(tmp_path)
     ControlledReview.mode='unknown'
     engine=ControlledReview(harness)
     assert await engine.run(job,RUN,0)==0
     assert ControlledReview.calls==1
+    with svc.store.connection() as db:
+        original = list(db.execute("SELECT stage,value_json FROM research_checkpoints WHERE stage LIKE 'headless_fact_review:%'"))
     ControlledReview.mode='positive'
-    assert await engine.run(job,RUN,0)==0
-    assert ControlledReview.calls==1
+    assert await engine.run(job,RUN,0)==1
+    assert ControlledReview.calls==2
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 3
+    assert svc.store.checkpoint_get(job['id'], original[0]['stage']) == json.loads(original[0]['value_json'])
 
 
 @pytest.mark.asyncio
@@ -679,7 +684,7 @@ async def test_closed_client_pending_backend_review_retries_and_resumes_without_
 
 
 @pytest.mark.asyncio
-async def test_original_readback_serializes_conflicting_candidate_progress(tmp_path):
+async def test_original_readback_allows_other_candidates_and_rejects_changed_ledger_commit(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=6)
     ControlledReview.mode = 'unknown'
     await ControlledReview(harness).run(job, RUN, 0)
@@ -707,10 +712,11 @@ async def test_original_readback_serializes_conflicting_candidate_progress(tmp_p
         await asyncio.sleep(.05)
         with svc.store.connection() as db:
             count = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
-        assert count == 0 and not task.done()
+        assert count == 3 and not task.done()
     finally:
         release.set()
         await task
+    assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit)['phase'] == 'stale'
 
 
 @pytest.mark.asyncio

@@ -309,17 +309,21 @@ class HeadlessFacts:
         unknowns and Live sends without closure evidence retain normal waiting.
         """
         from .research_adapter import ProductResearchAdapter
+        from .headless_fact_review import HeadlessFactReview
         with self.service.store.connection() as db:
-            if (db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? "
-                           "AND source_version_id IS NULL AND status!='failed' LIMIT 1", (run_id,)).fetchone()
-                    or review_packets.pending_candidates(db, job['story_id'], run_id)):
+            if db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? "
+                          "AND source_version_id IS NULL AND status!='failed' LIMIT 1", (run_id,)).fetchone():
                 return False
+            pending_reviews = set(review_packets.pending_candidates(db, job['story_id'], run_id))
+            current = review_packets.bundle(db, job['story_id'])
             chunks = {row[0] for row in db.execute("SELECT chunk_id FROM research_chunk_runs WHERE run_id=? "
                 "AND status NOT IN ('extracted','no_claims','failed','cancelled')", (run_id,))}
             checkpoints = list(db.execute("SELECT stage,value_json FROM research_checkpoints "
                 "WHERE job_id=? AND stage LIKE 'headless_fact_unit:%'", (job['id'],)))
-        if not chunks:
+        if pending_reviews and not pending_reviews <= HeadlessFactReview(self).unobservable_live_candidates(job, current):
             return False
+        if not chunks:
+            return bool(pending_reviews)
         fenced = set()
         for row in checkpoints:
             state = json.loads(row['value_json'])
@@ -687,6 +691,8 @@ class HeadlessFacts:
                     and not self._unreviewed_actionable(job, run_id)):
                 return self._finish(job, run_id, control_revision,
                                     'source_manifest_exhausted' if not complete else 'fact_review_exhausted')
+            if self._only_unobservable_live_work(job, run_id, story):
+                return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
             if complete and unreviewed:
                 # Keep a durable retry while the backend verifier owns this
                 # scope. A closed client must never be required to resume it.

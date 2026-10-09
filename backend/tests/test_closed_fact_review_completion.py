@@ -8,6 +8,7 @@ from street_story import headless_fact_review, review_packets
 from street_story.errors import RetryableProviderError
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.research_runs import manifest_exhausted, run_manifest
+from street_story.service import ConflictError
 from test_headless_fact_review_parallel import ControlledReview, candidates, controlled_review_route, qualify_controlled_review
 from test_headless_fact_pool import RUN
 
@@ -136,6 +137,63 @@ async def test_unknown_original_still_fences_new_contract_on_restart(tmp_path, m
     with svc.store.connection() as db:
         assert engine._unknown_candidates(job, review_packets.bundle(db, job['story_id'])) == set(ids)
     assert svc.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + RUN) is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_review_scope_allows_other_candidates_without_resending_or_stale_commit(tmp_path, monkeypatch):
+    svc, job, harness = await candidates(tmp_path, count=4)
+    class IndependentReview(ControlledReview):
+        async def _infer(self, packet, job, unit, saved, ordinal=0):
+            if saved.get('phase') == 'observe_original':
+                return None
+            return await super()._infer(packet, job, unit, saved, ordinal)
+    engine = IndependentReview(harness)
+    with svc.store.connection() as db:
+        ids = review_packets.pending_candidates(db, job['story_id'], RUN)
+    packet, unit, _ = frozen_unit(engine, job, harness, ids[:1])
+    original = {'phase':'unknown','packet_ref':packet['packet_ref'], 'frozen_packet':packet,
+        'route':'facts_review_fixture','route_identity':engine._route_identity(engine.fixture_route)}
+    engine._put(job, unit, original)
+    use_review(harness, engine, monkeypatch)
+    assert await engine.run(job, RUN, 0) == 1
+    with svc.store.connection() as db:
+        eligible = {row[0] for row in db.execute("SELECT assertion_id FROM fact_assertions WHERE eligibility='eligible'")}
+        assert eligible == set(ids[1:])
+        assert engine._unknown_candidates(job, review_packets.bundle(db, job['story_id'])) == {ids[0]}
+        with pytest.raises(ConflictError, match='Revisions changed'):
+            review_packets.load(harness.adapter, session(job), db, packet['packet_ref'])
+    assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) == original
+    assert IndependentReview.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_only_closed_empty_live_review_finishes_without_replacing_unknown(tmp_path, monkeypatch):
+    from street_story.service import canonical
+    svc, job, harness = await candidates(tmp_path, count=1)
+    engine = HeadlessFactReview(harness)
+    packet, unit, ids = frozen_unit(engine, job, harness)
+    role = 'facts_review_gemini-3.8-live'
+    original = {'phase':'unknown','packet_ref':packet['packet_ref'], 'frozen_packet':packet,
+        'route':role,'route_identity':{'provider_id':'google-live','model_id':'gemini-3.8-live',
+                                     'endpoint':'fixture:closed-live'}}
+    engine._put(job, unit, original)
+    receipt = {'phase':'unknown','provider_id':'google-live','provider_send_state':'submitted',
+        'error_code':'live_research_timeout','text_sends':1,'binding':{'fact_unit_id':unit}}
+    with svc.store.tx() as db:
+        now = svc.store.now()
+        db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+            ('review-unknown','review-unknown',job['story_id'],role,canonical(receipt),now,now))
+    async def no_replacement(*args):
+        return 0
+    monkeypatch.setattr(harness, '_review_candidates', no_replacement)
+    outcome = await harness.run(job, RUN, 'History', 'history')
+    assert outcome['outcome'] == 'resource_blocked'
+    assert outcome['reason'] == 'live_research_original_outcome_unavailable'
+    assert not outcome['coverage_complete']
+    with svc.store.connection() as db:
+        assert json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0]) == receipt
+        assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'unreviewed'
+    assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) == original
 
 
 @pytest.mark.asyncio
