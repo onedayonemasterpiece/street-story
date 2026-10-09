@@ -110,6 +110,27 @@ actual SDK/quota boundaries remain covered. These sets overlap and are not summe
 All 11 critical requirements remain unchanged (requirements digest
 `f40c8766cca8f7d49519f1fe76c4caff8c6d39a14e895a6288b4735963dd35e3`).
 
+The follow-up preparation and admission correction now releases the initial key
+before article HTTP work. A useful second joint uses its own ordinary executor;
+only typed, definitively unsent shared admission with a finite delay can retry once
+outside leases while waiting plus the call still fit the original identity cap.
+The exact prepared request and once-only transition persist. Restart during that
+wait conservatively reuses the closed initial plan rather than sending again.
+The combined affected identity, regional source/fact leads, freeze/restart,
+admission and acceptance/installer fixture checks passed **208 tests in 87.42 s**;
+Ruff and diff checks passed. The saved invalid Wiki-number-to-OSM alternative stays
+rejected. Explicit received Prussia cards and verified acquired bodies now reach
+ordinary facts even after geometry acceptance; mixed-subject nominations preserve
+only the accepted subject's article. Fact review and POI eligibility remain required.
+
+Hosted backend CI on `4cdd3f6` failed 12 checks while 2,324 passed; it was not a billing
+blocker. Causes included incomplete minimal-adapter compatibility, stale initial
+planning expectations, an obsolete text-unavailability fixture, devserver-only
+installer transport and filesystem assumptions. The targeted corrections above
+passed locally. Hosted Android checks and emulator jobs on that old version passed;
+they are not final product E2E. New candidate CI and the bounded product canary
+remain pending; these offline results establish no release PASS.
+
 ## Usage and remaining acceptance
 
 Observed diagnostic totals as of 01:09 UTC: 85 Google SDK invocations, 39 closed

@@ -86,6 +86,15 @@ Catalog metadata and selected-body acquisition must be arranged within that
 operation budget; simply adding a third mandatory judge is not the target.
 
 Fill free worker slots as results complete under existing resource admission.
+The initial joint SDK call releases its key before reading selected article bodies
+or validating its semantic result. A useful second joint gets its own ordinary
+executor timeout. If the shared controller definitively refused it before send,
+one finite Retry-After of at most 60 seconds may be observed outside the key lease,
+only when both waiting and an ordinary call still fit the identity deadline.
+The retry preserves the exact SOURCE/MAP/TEXT, prompt, schema and configuration;
+it re-enters the same route's admission without refund or a third joint operation.
+UNKNOWN and closed provider failures do not qualify. An interrupted wait retains
+the original plan for conservative restart reuse and does not automatically resend.
 Reserve extraction/review capacity before spending the fallback budget on images.
 Thumbnail sheets only triage the conditional REF route; retain `unclear` images and
 exact tile/image/article binding. Final REF proof uses full images.
@@ -117,6 +126,12 @@ meaning and subject scope. Architecture and historical claims from Prussia39 sti
 require review; institution founding is not building construction. Display the
 first substantive accepted fact immediately. Address-only, upload status and generic
 city summaries do not count as useful facts.
+Explicitly selected, received regional cards can schedule the ordinary fact reader
+after identity without delaying geometry for their bodies. Already acquired and
+bound text remains a source lead even if geometry established identity. Validate
+each nominated article's physical scope independently; a neighbouring selection
+neither supplies facts for the target nor discards its valid article. These leads
+never become REF proof or eligible claims by themselves.
 
 Headless extraction assigns an opaque candidate ID from its frozen batch and
 position. A model `claim_key` is advisory here; its absence does not establish
