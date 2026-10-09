@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 
 def model_nominated_detail(story, previous_response, previous_options, *,
-                           candidates=(), max_bodies=4, prior_host_unaccepted=False):
+                           candidates=(), max_bodies=3, prior_host_unaccepted=False):
     from .identity_spatial_choice import visual_spatial_choice_schema
     from .identity_scene import render_scene
     from .identity_model_context import physical_decision_context
@@ -40,8 +40,15 @@ def model_nominated_detail(story, previous_response, previous_options, *,
             return None
         if cid not in proposed:
             proposed.append(cid)
-    if not 1<=len(proposed)<=max_bodies:
+    if not proposed:
         return None
+    # The existing core map renderer safely supports at most three detail
+    # bodies. Preserve the MODEL's priority: nominated subject, requested
+    # local detail, then contrasted rivals. The unexpanded remainder is kept
+    # in the unfiltered overview and may be requested in a later user action,
+    # never silently treated as geometrically rejected.
+    omitted_by_display=proposed[max_bodies:]
+    proposed=proposed[:max_bodies]
     scene=render_scene(story,list(candidates),detail_candidate_ids=proposed)
     if (not scene or not scene.get('manifest')
             or not any(v.get('name')=='nominated_detail'
@@ -59,4 +66,5 @@ def model_nominated_detail(story, previous_response, previous_options, *,
             'map':scene,'physical_context':ctx,'spatial_options':opts,
             'previous_map_sha256':previous_options['map_sha256'],
             'all_body_labels_preserved':True,
+            'model_proposed_unexpanded_body_count':len(omitted_by_display),
             'detail_is_not_an_identity_acceptance':True}
