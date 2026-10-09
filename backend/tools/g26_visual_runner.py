@@ -175,7 +175,7 @@ def load_case(cid):
     row=json.loads(receipt.read_text())
     if row.get('status')!='ready':
         return base,row,None
-    packet_path=base/'spatial-options-v3-llm-first.json'
+    packet_path=base/'spatial-options-v3-bearing-v2.json'
     if not packet_path.is_file():
         raise RuntimeError('offline_spatial_preflight_required_first')
     packet=json.loads(packet_path.read_text())
