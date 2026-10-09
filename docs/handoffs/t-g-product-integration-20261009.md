@@ -104,3 +104,35 @@ Private receipts:
 - .../prussia-cache.json
 
 T-branch tests (isolated DevCoveer): **145 passed** across funnel, actual article transport, evidence/REF pointers and negative controls. Actual native REF bridge replay passed with the original 19 links and 10 already downloaded assets; this validates compatibility and saves next search work, not deployed E2E. PR#249 has moving-base conflicts with #246; port the small T-owned native adapter and methods into Codex's latest checkout instead of overriding common discovery/proof files.
+
+
+## NEW actual Photo106 NATIVE SOURCE/REF accepted verdict — original bytes frozen
+
+T completed one NEW current Street Story native schema comparison using the previously acquired genuine original SOURCE photo, the best image of the actual already-fetched Prussia39 gallery, and TWO independent closed model-nominated OSM bodies (not seeded from owner control).
+
+| Stage | Result |
+|---|---|
+| Original SOURCE SHA | ec1717997abf9a78b5443c2315fe28311709ecbe9be0c594ccc0b7c8b2e9f04f |
+| Actual REF URL | https://www.prussia39.ru/phsight/1619459454_sm.jpg |
+| Previously acquired REF SHA | b3ed7003f7501c03b3cf4a6fc5fcb44b99aadb950cf023450f1316fdb0dff974 |
+| Distinct original model leads | osm:way:100659357 and osm:way:150596899 |
+| Current native model | gemini-3.5-flash-lite |
+| Model decision | match; confidence 0.99; individual body osm:way:150596899 |
+| Model still-plausible alternative_candidate_ids | Empty (no unclosed physical alternative) |
+| Actual existing bind_reference_subject | bound |
+| Actual existing identity_lifecycle.visual_match | **TRUE** |
+| Model time / current single-model tokens | **5.319 s**; **3,681 input / 365 output**, cost unknown |
+| Full native SOURCE+REF isolated call wall time | 7.408 s; SOURCE+publisher acquisition was done earlier |
+
+Both original model-input image byte streams, the precise actual prompt, native response schema, system instruction, SHA hashes, original raw model JSON reply, call count and usage are retained in:
+- /home/dev/artifacts/street-story/20261009T111952Z-architecture-t-full-corpus-20261009/t-photo106-native-source-gallery-visual-match-v2-alternative-semantics.json
+- Replayed independent host proof manifest: /home/dev/artifacts/street-story/20261009T111952Z-architecture-t-full-corpus-20261009/t-photo106-native-visual-host-verified-manifest.json
+- Original normalized pixel bytes: .../native-SOURCE-REF-106/SOURCE.bin and REF.bin
+
+**Host byte-exact offline replay (zero new model calls):** validates original SOURCE/ref SHA, normalized image SHA, frozen prompt and schema, original raw model response SHA, native JSON schema and then recomputes existing bind_reference_subject + visual_match with the same actual OSM shortlist and article-image provenance; both checks pass, accepted physical id osm:way:150596899.
+
+**Universal model contract defect found/fixed at prompt level, NOT by overriding the gate:** An initial equally real native model answer said match with confidence 0.98 and nominated the same correct physical body, but also listed the rejected neighbor in alternative_candidate_ids; the unchanged native visual_match gate CORRECTLY withheld approval. For the second independently addressed model operation the prompt explicitly clarified the meaning of that field: alternative_candidate_ids must contain ONLY genuinely unresolved still-plausible physical peers, NEVER neighbors already visually rejected. If any peer remains plausible, the model must say uncertain rather than match. No image, source, candidate list or physical validator was changed. The new answer listed no unresolved peers, supplied feature-specific SOURCE/REF observations, and passed the SAME host matcher. This is a generic schema semantics clarification, not a threshold relaxation or Photo106-specific rule.
+
+**Codex-owned minimum new-comparison instruction in LiveVisualComparisonMixin._visual_reply** (do not rewrite existing historical addressed prompts, source or REF system): "alternative_candidate_ids перечисляет только физические объекты, которые остаются возможными после сравнения SOURCE/REF; уже отвергнутые по фактическим различиям фасада НЕ включай. При наличии хотя бы одной реальной альтернативы выбирай uncertain, а не match; при match объясни, какие наблюдаемые детали исключили конкурентов." This should become ordinary new-operation guidance, not a host semantic parser.
+
+**This is a product-valid standalone visual acceptance using the actual existing native host gates, not an already deployed original owner-story job or a claim that the full SOURCE->POI->facts->post E2E completed.** #246 owns the latter integration and deploy; this real receipt is enough to replay and diagnose a native match before rollout.
