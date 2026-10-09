@@ -1181,10 +1181,14 @@ def validate_fact_semantic_pool(caches, evidence, text):
             raise DeployError('fact semantic qualification incomplete')
         model = route.get('model_id')
         path = route.get('qualification_receipt')
-        if (model not in expected or model in seen or ('opencode', model) not in qualified
-                or route.get('provider_id') != 'opencode'
-                or route.get('endpoint') != 'http://127.0.0.1:4097'
-                or route.get('directory') != str(RESEARCH_DIRECTORY)
+        live = (route.get('provider_id') == 'google-live' and model == 'gemini-3.8-live'
+                and route.get('endpoint') == 'live-interaction:street-story'
+                and route.get('directory') is None)
+        text_route = (model in expected and ('opencode', model) in qualified
+                      and route.get('provider_id') == 'opencode'
+                      and route.get('endpoint') == 'http://127.0.0.1:4097'
+                      and route.get('directory') == str(RESEARCH_DIRECTORY))
+        if (not (live or text_route) or model in seen
                 or not all(route.get(flag) is True for flag in flags)
                 or not route.get('qualification_sha256')
                 or proofs.get(path) != route['qualification_sha256']):
@@ -1195,10 +1199,15 @@ def validate_fact_semantic_pool(caches, evidence, text):
         report = json.loads(raw_report)
         receipt = report.get('receipt') or {}
         if (report.get('qualified') is not True or report.get('phase') != 'completed'
-                or report.get('model_id') != model or report.get('provider_id') != 'opencode'
+                or report.get('model_id') != model or report.get('provider_id') != route['provider_id']
                 or report.get('endpoint') != route['endpoint']
                 or not all(report.get(flag) is True for flag in flags)
                 or receipt.get('phase') != 'completed' or receipt.get('model_id') != model):
+            raise DeployError('fact semantic qualification receipt incomplete')
+        if live and (receipt.get('provider_id') != route['provider_id']
+                     or receipt.get('contract_version') != 'live-bounded-facts-v1'
+                     or receipt.get('provider_send_state') != 'response_closed'
+                     or type(receipt.get('text_sends')) is not int or receipt['text_sends'] < 1):
             raise DeployError('fact semantic qualification receipt incomplete')
         # Export only a measured cold-start scheduling hint from the already
         # verified review receipt. Product scheduling never opens receipt paths.
