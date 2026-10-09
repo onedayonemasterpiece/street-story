@@ -606,3 +606,10 @@ suite passed **86 checks in 34.00 s**, including two-source T to ordinary
 facts/POI and zero new HTTP/semantic sends after known-unsent restart. Next actual
 T/fact verification starts with the retained completed G turn, explicitly marked
 as receipt continuation rather than a new cold G inference.
+# Latest T transport integration
+
+The ca37cbb retained-G continuation is **FAIL**, not a cold acceptance: actual original G readback (zero new G inferences) reached two acquired articles and actual T HTTP 200 in 7.326 seconds. The host rejected the response format with `identity_architectural_comparison_invalid`; the old exception branch did not retain that response body. Its semantic cause is unknown. No identity or eligible fact was accepted. Both hosted ca37cbb workflows passed.
+
+Selectively integrated T PR #249 through `000fe93ff78993585ca32fb9fb6fae05424638e3`: publisher article address provenance, compound publisher groups matched against distinct verified OSM entrances as retrieval evidence, and normalization of only the inert top-level `type=object` schema echo. Other additional/malformed fields remain invalid. Existing full host proof authority is unchanged; no new character/candidate refusal gate was imported.
+
+The existing compact T request now supplies its own small JSON schema to constrained decoding. The closed-invalid exception branch retains original raw response/hash, response ID, schema errors and operation binding. Tests cover malformed JSON and missing fields, rejection without identity/facts, and restart with no resend. This repairs the concrete format/diagnostic boundary, rather than providing a third semantic method. Actual verification will reuse the completed original G and public article bodies; its result remains explicitly NOT_COLD until the separate cold acceptance.

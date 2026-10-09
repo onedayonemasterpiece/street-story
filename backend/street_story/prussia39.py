@@ -240,6 +240,14 @@ def parse_coordinates(soup):
 
 
 def parse_article(soup):
+    # The publisher puts the modern postal address in a metadata table,
+    # separate from the historical prose. It can distinguish a neighboring
+    # building or a multi-building complex; it is NOT a physical identity.
+    address_label = soup.find(string=lambda item: isinstance(item, str)
+        and item.strip().casefold() in {'адрес:', 'адрес'})
+    address_td = address_label.find_parent('td') if address_label is not None else None
+    next_td = address_td.find_next_sibling('td') if address_td is not None else None
+    modern_address = next_td.get_text(' ', strip=True)[:360] if next_td is not None else ''
     blocks = []
     for node in soup.find_all('td', style=True):
         styles = dict(part.strip().lower().split(':', 1) for part in node['style'].split(';') if ':' in part)
@@ -254,7 +262,8 @@ def parse_article(soup):
         raise ValueError('article_body_unavailable')
     body = max(blocks, key=len)
     return {'title': soup.title.get_text(' ', strip=True) if soup.title else '',
-            'text': body, 'address_text': '', 'coordinates': None,
+            'text': body, 'address_text': modern_address, 'coordinates': None,
+            'address_provenance': 'publisher_article_metadata_table' if modern_address else 'unavailable',
             'extraction_method': 'publisher_justify_td_v1'}
 
 

@@ -1126,6 +1126,7 @@ async def _suggest(service, story, transcript, candidates):
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
+                    response_json_schema=followup_contract,
                     system_instruction='Return only the SOURCE/architectural-text decision object. '
                         'Use the attached actual image and acquired article text, never a prior identity claim.\n'
                         + json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')))
@@ -1269,6 +1270,7 @@ async def _suggest(service, story, transcript, candidates):
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
             if compact_t:
                 from .identity_architectural_comparison import combine_architectural_decision
+                answer = None
                 try:
                     from .identity_source_selection import resolve_identity_response_ids
                     answer, resolution = resolve_identity_response_ids(json.loads(response.text or ''), resolution_packet)
@@ -1277,6 +1279,11 @@ async def _suggest(service, story, transcript, candidates):
                             'provider_id': 'google', 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
                     payload = combine_architectural_decision(payload, answer, compact_t['schema'])
                 except (ValueError, TypeError) as exc:
+                    from .identity_plan_diagnostics import retain_closed_invalid
+                    retain_closed_invalid(service, story, answer, compact_t['schema'],
+                        code='identity_architectural_comparison_invalid', route='google', raw_json=response.text,
+                        provider_response_id=getattr(response, 'response_id', None),
+                        joint_stage='followup', operation_binding=joint_followup_binding)
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                         code='identity_architectural_comparison_invalid')
                     raise PermanentProviderError('identity_architectural_comparison_invalid') from exc

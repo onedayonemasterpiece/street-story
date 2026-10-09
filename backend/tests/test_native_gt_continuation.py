@@ -35,7 +35,7 @@ async def test_sufficient_original_native_readback_needs_no_google_executor_or_t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown'])
+@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown', 'malformed_json', 'malformed_object'])
 async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_one_joint2(tmp_path, monkeypatch, outcome):
     svc, snapshot, active = geometry_setup(tmp_path)
     sid = snapshot['id']
@@ -160,6 +160,10 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         assert TEXT in contents[-1] and CLAIM in contents[-1]
         assert 'previous_model_hypotheses_not_evidence' in contents[-1]
         assert 'first_wave_hypotheses' not in config.system_instruction
+        assert config.response_json_schema == json.loads(config.system_instruction.split('\n', 1)[1])
+        if outcome.startswith('malformed_'):
+            return SimpleNamespace(text=('{' if outcome == 'malformed_json' else
+                '{"decision":"accepted_architectural_text"}'), response_id='closed-malformed-T')
         if address_route:
             assert address_reads == [('Калининград', 'Тестовая улица, 7'), url]
             assert 'insufficient_geometry_address_text' in contents[-1] or article_id in contents[-1]
@@ -188,13 +192,21 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         await svc.run_once()
         current = svc.story(sid)
         assert calls == ['google_not_sent', 'native_original', 'joint2'] and executor.leases == 0
-        if outcome in {'uncertain', 'unknown'}:
+        if outcome in {'uncertain', 'unknown', 'malformed_json', 'malformed_object'}:
             assert not accepted_identity(current['visual_identity']) and current['facts'] == []
+            if outcome.startswith('malformed_'):
+                with svc.store.connection() as db:
+                    diagnostic = json.loads(svc._story_row(db, sid)['research_json'])['identity_closed_invalid_followup_plan']
+                raw = '{' if outcome == 'malformed_json' else '{"decision":"accepted_architectural_text"}'
+                assert diagnostic['raw_json'] == raw
+                assert diagnostic['raw_json_sha256'] == hashlib.sha256(raw.encode()).hexdigest()
+                assert diagnostic['provider_response_id'] == 'closed-malformed-T'
+                assert diagnostic['validation_errors'] and diagnostic['joint_stage'] == 'followup'
             fresh, _research = svc._identity_snapshot(sid)
             fresh.update(_identity_map_snapshot=snapshot['_identity_map_snapshot'],
                 _identity_observed_candidates=snapshot['_identity_observed_candidates'])
-            expected = PermanentProviderError if outcome == 'uncertain' else RetryableProviderError
-            with pytest.raises(expected, match='identity_architectural_text_uncertain|identity_joint_followup_outcome_unknown'):
+            expected = RetryableProviderError if outcome == 'unknown' else PermanentProviderError
+            with pytest.raises(expected, match='identity_architectural_text_uncertain|identity_joint_followup_outcome_unknown|identity_architectural_comparison_invalid'):
                 await identity_discovery.prepare_search_plan(svc, fresh, '', active)
             assert len(calls) == 3
             return
