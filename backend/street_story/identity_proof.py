@@ -186,7 +186,8 @@ TEXT_CONTRACT = 'source-text-architecture-v2'
 STRUCTURAL_FEATURES = {'levels', 'window_axes', 'bay', 'roof', 'openings', 'composition', 'outline'}
 
 
-def architectural_text_decision_schema(candidate_ids, article_ids, *, material_alternative_limit=8, structural=False):
+def architectural_text_decision_schema(candidate_ids, article_ids, *, material_alternative_limit=8, structural=False,
+        source_span_refs=None):
     """The joint SOURCE/text model decides sufficiency and physical scope."""
     text = {'type': 'string', 'maxLength': 600}
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
@@ -218,6 +219,11 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         correspondence['properties']['feature_kind'] = {'type': 'string', 'enum': sorted(
             STRUCTURAL_FEATURES | {'color_or_finish', 'generic_style', 'historical_fact'})}
         correspondence['required'].append('feature_kind')
+    if source_span_refs:
+        correspondence = schema['properties']['correspondences']['items']
+        correspondence['properties']['source_span_ref'] = {'type': 'string', 'enum': list(source_span_refs)}
+        correspondence['required'].remove('source_quote')
+        correspondence['oneOf'] = [{'required': ['source_quote']}, {'required': ['source_span_ref']}]
     return schema
 
 
@@ -263,6 +269,13 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
                 or article.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest()):
             return None
         table[aid] = article
+    if isinstance(decision, dict) and any('source_span_ref' in item
+            for item in decision.get('correspondences') or [] if isinstance(item, dict)):
+        from .identity_architectural_pool import resolve_joint_source_spans
+        try:
+            decision = resolve_joint_source_spans(decision, receipt)
+        except (ValueError, KeyError, TypeError):
+            return None
     observed = story.get('_identity_observed_candidates') or []
     catalog = {item.get('candidate_id'): item for item in [*candidates, *observed] if isinstance(item, dict)}
     prior = receipt.get('conditional_initial_decision')

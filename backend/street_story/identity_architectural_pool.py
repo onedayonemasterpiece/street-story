@@ -128,7 +128,7 @@ def _source_span_options(checked, *, max_spans_per_article=14):
                         chunks.append((start, end))
         if not chunks:
             chunks = [(0, min(len(text), 420))]
-        selected = chunks[:max_spans_per_article]
+        selected = chunks if max_spans_per_article is None else chunks[:max_spans_per_article]
         passages = []
         for start,end in selected:
             span_ref = f'p{len(refs):04d}'
@@ -140,8 +140,37 @@ def _source_span_options(checked, *, max_spans_per_article=14):
             passages.append({'span_ref': span_ref, 'literal_text': literal})
         results.append({'article_id': row['article_id'],
             'passages': passages,
-            'all_passages_displayed': len(chunks) <= max_spans_per_article})
+            'all_passages_displayed': max_spans_per_article is None or len(chunks) <= max_spans_per_article})
     return results, refs
+
+
+def joint_source_spans(articles):
+    """Expose every literal passage of the already acquired joint input."""
+    return _source_span_options(articles, max_spans_per_article=None)
+
+
+def resolve_joint_source_spans(decision, receipt):
+    """Resolve model-selected pointers without correcting any semantic claim."""
+    converted = copy.deepcopy(decision)
+    articles = {row['article_id']: row for row in receipt.get('articles') or []}
+    refs = receipt.get('source_span_refs') or {}
+    for relation in converted.get('correspondences') or []:
+        if 'source_span_ref' not in relation:
+            continue
+        if 'source_quote' in relation:
+            raise ValueError('ambiguous_source_quote_and_span')
+        span = refs.get(relation['source_span_ref'])
+        if not isinstance(span, dict) or span.get('article_id') != relation.get('article_id'):
+            raise ValueError('source_span_ref_wrong_article')
+        article = articles.get(span['article_id'])
+        if (not article or article['text_sha256'] != span.get('source_text_sha256')
+                or not isinstance(span.get('start'), int) or not isinstance(span.get('end'), int)
+                or not 0 <= span['start'] < span['end'] <= len(article['text'])
+                or article['text'][span['start']:span['end']] != span.get('source_quote')):
+            raise ValueError('source_span_ref_text_changed')
+        relation.pop('source_span_ref')
+        relation['source_quote'] = span['source_quote']
+    return converted
 
 
 def _verified_articles(receipt, max_articles):

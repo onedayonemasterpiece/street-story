@@ -67,6 +67,53 @@ def test_text_identity_has_actual_source_hash_and_exact_lead_without_fake_ref():
     assert 'Main physical building' in compact['physical_scope']
 
 
+def test_joint_model_selected_span_freezes_same_literal_proof_without_rewriting_claims():
+    from street_story.identity_architectural_pool import joint_source_spans
+    from street_story.identity_proof import architectural_text_decision_schema
+    from jsonschema import Draft202012Validator
+    story, candidates, decision, receipt = text_inputs()
+    passages, refs = joint_source_spans(receipt['articles'])
+    assert passages[0]['all_passages_displayed']
+    chosen = next(ref for ref, span in refs.items()
+        if span['source_quote'] == decision['correspondences'][0]['source_quote'])
+    expected = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    requested = copy.deepcopy(decision)
+    relation = requested['correspondences'][0]
+    relation.pop('source_quote')
+    relation['source_span_ref'] = chosen
+    schema = architectural_text_decision_schema([candidates[0]['candidate_id']],
+        [receipt['articles'][0]['article_id']], structural=True, source_span_refs=refs)
+    assert Draft202012Validator(schema).is_valid(requested)
+    receipt['source_span_refs'] = refs
+    proof = freeze_architectural_text_proof(story, requested, receipt, candidates)
+    assert proof and proof['decision'] == expected['decision']
+    assert requested['correspondences'][0]['source_span_ref'] == chosen
+    assert 'source_quote' not in requested['correspondences'][0]
+
+
+@pytest.mark.parametrize('change', ['unreceived_ref', 'wrong_article', 'changed_offset', 'changed_text', 'both'])
+def test_joint_literal_span_cannot_repair_unreceived_or_changed_evidence(change):
+    from street_story.identity_architectural_pool import joint_source_spans
+    story, candidates, decision, receipt = text_inputs()
+    _, refs = joint_source_spans(receipt['articles'])
+    chosen = next(iter(refs))
+    relation = decision['correspondences'][0]
+    literal = relation.pop('source_quote')
+    relation['source_span_ref'] = chosen
+    receipt['source_span_refs'] = refs
+    if change == 'unreceived_ref':
+        relation['source_span_ref'] = 'invented'
+    elif change == 'wrong_article':
+        refs[chosen]['article_id'] = 'another-article'
+    elif change == 'changed_offset':
+        refs[chosen]['start'] += 1
+    elif change == 'changed_text':
+        refs[chosen]['source_quote'] += ' invented'
+    else:
+        relation['source_quote'] = literal
+    assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
+
+
 @pytest.mark.parametrize('change', ['text_hash', 'raw_unverified', 'snippet', 'no_source_image', 'invented_quote',
     'wrong_physical_binding', 'unresolved_scope', 'general_history', 'material_alternative', 'structural_contradiction'])
 def test_missing_or_wrong_evidence_cannot_freeze_text_identity(change):

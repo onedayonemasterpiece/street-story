@@ -108,6 +108,14 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         g['decision'] = 'uncertain'
         if invalid_geometry:
             g['candidate_id'] = 'osm:way:unreceived'
+            from street_story.identity_architectural_pool import joint_source_spans
+            _, refs = joint_source_spans(articles)
+            for relation in decision['correspondences']:
+                literal = relation.pop('source_quote')
+                chosen = next(ref for ref, span in refs.items()
+                    if span['article_id'] == relation['article_id'] and literal == span['source_quote'])
+                assert chosen in contents[-1]
+                relation['source_span_ref'] = chosen
         return SimpleNamespace(text=json.dumps({**payload(g),'accepted_architectural_text':decision}))
 
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)

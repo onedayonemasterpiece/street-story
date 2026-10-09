@@ -770,3 +770,14 @@ The closed initial receipt and Native frozen context preserve supplied bodies
 for existing readback. The focused source/decoding/receipt suite passed 156
 checks before the final symmetric-admission regression run. Actual product
 acceptance and deployment remain pending, with prior-SHA evidence separate.
+# Literal T citations and measured plan shape (following 7788716)
+
+The changed first-joint photo102 segment on 7788716 closed after 74.131s with no accepted identity or facts. The actual initial request contained acquired articles3875 and903. Existing Luna fallback returned a positive architectural decision, but both quote strings joined non-contiguous source phrases with ellipses. The host correctly refused them. The original closed answer remains unchanged; no positive response was imported into a product story.
+
+The joint input now exposes identifiers for every literal passage of its already acquired full article texts. A model may select a passage identifier instead of copying the quote. Admission checks the original article, text SHA and character range, then resolves that exact literal string. SOURCE observations, classifications, physical binding, alternatives and sufficiency remain model decisions. Legacy literal citations and proof digests remain compatible; invented, cross-article and modified pointers fail. The early optional HTTP catalogue has a12s reader wait envelope and cannot indefinitely block independent SOURCE/MAP work.
+
+Selectively integrated G PR250's numeric `observed_plan_shape` supplier and original geometry tests. All received bodies now expose measured rotated footprint dimensions, elongation, area and explicit OSM height/levels when available. Shape does not remove candidates, fit yaw, invent height, or grant identity. No mixed PR247 or G inference pipeline was imported.
+
+Offline replay of the genuine closed Luna132 through G PR250's current strict validator at79084505ee72e302ce22853e9b9aaa9526156943 accepts the same original proof digest, with its original owner-approximate camera provenance preserved. T102's previously closed successful parsed response also reproduces its original proof digest after these changes. Both are component replays with zero new inference and no administrative product identity import. Neither constitutes current release acceptance.
+
+Focused literal/geometry/continuity/pool checks:75 passed. Final joint/span/shape checks:59 passed. A fresh changed-input product segment and same-candidate cold acceptance remain required; no deployment or release PASS is claimed here.

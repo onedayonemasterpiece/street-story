@@ -377,7 +377,14 @@ async def _suggest(service, story, transcript, candidates):
         # already linked descriptions to the first joint decision, so T need
         # not await a failed spatial inference. Excess alternatives remain in
         # the catalogue for model selection; never take arbitrary first rows.
-        regional_catalogue = await catalogue_task
+        try:
+            regional_catalogue = await asyncio.wait_for(asyncio.shield(catalogue_task), 12.0)
+        except Exception as exc:
+            # A stalled optional reader cannot prevent independent SOURCE/MAP
+            # work. The owned task is drained by the existing outer lifecycle.
+            regional_catalogue = {}
+            record_identity_event(service, story['id'], 'identity_early_catalogue_unavailable',
+                {'error_type': type(exc).__name__, 'independent_joint_continues': True})
         prefetched_ids = (regional_catalogue.get('physical_prefetch_plan') or {}).get('prefetch_article_ids') or []
         catalogue_article_ids = {row['article_id'] for row in regional_catalogue.get('results') or []}
         if (not prefetched_ids and 0 < len(catalogue_article_ids) <= 8
@@ -404,10 +411,14 @@ async def _suggest(service, story, transcript, candidates):
         index = table['columns'].index('candidate_id')
         scene_ids = [row[index] for row in table['rows']]
         schema['properties']['accepted_geometry'] = geometry_decision_schema(scene_ids, structured=True)
+    early_text_passages, early_text_span_refs = [], {}
     if early_text_articles:
+        from .identity_architectural_pool import joint_source_spans
+        early_text_passages, early_text_span_refs = joint_source_spans(early_text_articles)
         from .identity_proof import architectural_text_decision_schema, TEXT_CONTRACT
         schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
-            observed_ids, [article['article_id'] for article in early_text_articles], structural=True)
+            observed_ids, [article['article_id'] for article in early_text_articles], structural=True,
+            source_span_refs=early_text_span_refs)
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     from .identity_model_context import physical_decision_context
@@ -445,13 +456,17 @@ async def _suggest(service, story, transcript, candidates):
     if early_text_articles:
         packet['acquired_architectural_text'] = {
             'articles': early_text_articles,
+            'literal_source_passages': early_text_passages,
             'retrieval_receipt': early_text_lookup,
             'physical_identity_inferred': False,
             'policy': 'Observe SOURCE independently first. Compare acquired descriptions to its actual '
                 'facade/volumes, including neighboring bodies and crop. Article/address links are retrieval '
                 'hypotheses. Accept sufficient G OR sufficient architectural T in this same decision; '
                 'agreement of both is unnecessary. A positive T binds only its supporting articles and '
-                'quotes their literal structural descriptions; reject material physical alternatives.'}
+                'selects source_span_ref from literal_source_passages for each correspondence. The host '
+                'resolves the exact literal quote; never join phrases with ellipses or paraphrase a citation. '
+                'Each span must belong to that correspondence article_id. Describe SOURCE observations '
+                'separately and reject material physical alternatives.'}
     # The response may name any neutral label in the full MAP, including roads
     # and distant bodies. Resolve against that exact frozen dictionary, even
     # when its context row was unnecessary in the compact presentation.
@@ -620,7 +635,8 @@ async def _suggest(service, story, transcript, candidates):
     source_text_receipt = ({'source_photo_sha256': story['photo_sha256'],
         'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
         'source_image_input': True, 'text_contract': TEXT_CONTRACT,
-        'source_preparation': source_preparation, 'articles': early_text_articles, 'lookup': early_text_lookup}
+        'source_preparation': source_preparation, 'articles': early_text_articles, 'lookup': early_text_lookup,
+        'source_span_refs': early_text_span_refs}
         if early_text_articles else {})
     early_source_text_receipt = copy.deepcopy(source_text_receipt)
     geometry_prior_ids = []
