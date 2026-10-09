@@ -169,3 +169,40 @@ def test_original_106_prior_model_nominated_pair_has_signed_osm_order_and_gap():
     assert sorted(packet['expanded_labels'])==sorted(
         int(label) for label,cid in packet['private_label_to_osm_id'].items()
         if cid in alternatives)
+
+
+def test_model_only_106_detail_keeps_all_observed_bodies_and_adds_signed_offset():
+    from street_story.identity_spatial_detail import model_nominated_detail
+    story,scene,packet=prepared(106)
+    lookup={cid:int(label) for label,cid in packet['private_label_to_osm_id'].items()}
+    previously_model_nominated=lookup['osm:way:150596903']
+    model_alt=lookup['osm:way:150596899']
+    proposal=response(previously_model_nominated,[],pattern='frontage_sequence',
+       alternative=model_alt,decision='needs_detail')
+    proposal['request_detail_labels']=[model_alt]
+    result=model_nominated_detail(story,proposal,packet)
+    assert result is not None
+    assert result['all_body_labels_preserved'] is True
+    assert set(result['candidate_ids'])=={'osm:way:150596899','osm:way:150596903'}
+    choices=result['spatial_options']
+    assert choices['physical_body_count']==packet['physical_body_count']
+    pair=[r for r in choices['options'].values() if r['kind']=='physical_pair']
+    assert len(pair)==1
+    assert pair[0]['observed_boundary_gap_m']<1.
+    assert isinstance(pair[0]['second_centroid_clockwise_from_first_deg'],float)
+    assert isinstance(pair[0]['second_centroid_outward_offset_from_first_wall_m'],float)
+    assert pair[0]['frontage_setback_requires_SOURCE'] is True
+    assert result['detail_is_not_an_identity_acceptance'] is True
+    assert result['map']['manifest']['image_sha256']!=scene['manifest']['image_sha256']
+
+
+def test_outside_label_and_accepted_prior_cannot_force_truth_detail():
+    from street_story.identity_spatial_detail import model_nominated_detail
+    story,_scene,packet=prepared(106)
+    label=next(iter(packet['all_received_physical_bodies']))[0]
+    wrong=response(label,[],pattern='single_frontage',decision='needs_detail')
+    wrong['request_detail_labels']=[99999999]
+    assert model_nominated_detail(story,wrong,packet) is None
+    accepted=response(label,[],pattern='single_frontage',decision='accept')
+    accepted['request_detail_labels']=[label]
+    assert model_nominated_detail(story,accepted,packet) is None
