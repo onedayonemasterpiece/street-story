@@ -336,7 +336,8 @@ def combine_architectural_decision(original_plan, answer, schema, *,
                 and t_context['effect']!='confirmed'):
             raise ValueError('architectural_G_T_semantic_claims_inconsistent')
         t_result=close_t_g_funnel(g_funnel_prepared,t_context,
-            source_sha256=source_sha256,t_accepted=False)
+            source_sha256=source_sha256,t_accepted=False,
+            same_model_visible_architecture=normalized.get('discriminating_combination'))
         guidance=to_existing_research_priority(t_result,source_articles)
     elif t_context is not None:
         raise ValueError('unbound_T_G_shortlist_model_response')
