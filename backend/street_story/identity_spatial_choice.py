@@ -126,7 +126,11 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
     for alternative in alternatives:
         other = alternative['label']
         if other==label or other not in labels:
-            errors.append('alternative_label_not_received')
+            # Optional alternative prose may accidentally cite the already
+            # selected primary body (real 132 did this). It neither changes
+            # the nominated physical ID nor supplies competing evidence.
+            # Keep a warning; don't erase otherwise usable SOURCE findings.
+            warnings.append('optional_contrast_not_distinct_received_body')
             continue
         mapped=[]
         for oid in alternative.get('observed_option_ids') or []:
@@ -135,7 +139,7 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
                     opt.get('body_label')==other
                     or opt.get('kind')=='physical_pair'
                        and other in (opt.get('body_labels') or [])):
-                errors.append('alternative_option_not_in_received_map')
+                warnings.append('optional_contrast_option_not_in_received_map')
             else:
                 mapped.append(oid)
         compared.append({'label':other,'candidate_id':labels[other],
