@@ -53,10 +53,15 @@ def test_independent_wrong_direction_or_courtyard_only_does_not_accept():
     for invalid_type in ('opposite','not_visible','missing_cross_street',
                           'made_up_road','visual_contradiction'):
         bad=copy.deepcopy(correct)
-        if invalid_type=='opposite':bad['road_direction_index']=0
-        elif invalid_type=='not_visible':bad['route_kind']='uncertain'
-        elif invalid_type=='missing_cross_street':bad['transverse_cross_street_visible']=False
-        elif invalid_type=='made_up_road':bad['road_candidate_id']='osm:way:999999'
-        elif invalid_type=='visual_contradiction':bad['visible_contradictions']=['No transverse road visible']
+        if invalid_type=='opposite':
+            bad['road_direction_index']=0
+        elif invalid_type=='not_visible':
+            bad['route_kind']='uncertain'
+        elif invalid_type=='missing_cross_street':
+            bad['transverse_cross_street_visible']=False
+        elif invalid_type=='made_up_road':
+            bad['road_candidate_id']='osm:way:999999'
+        elif invalid_type=='visual_contradiction':
+            bad['visible_contradictions']=['No transverse road visible']
         value=combine_independent_road_direction(prior,bad,ctx,receipt['manifest'])
         assert value is None
