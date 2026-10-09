@@ -67,6 +67,24 @@ def measured_correspondence(story, candidates, decision, receipt):
             return None
         if not any(a == b for a in features[0]['coordinates'] for b in features[1]['coordinates']):
             return None
+        # A true joined OSM corner need not be the photographed corner.
+        # With ORIGINAL EXIF position (not search context/owner guess), a
+        # confidently rear-facing exterior wall at that camera anchor
+        # contradicts a model claim that BOTH adjoining walls are visible.
+        # Do not silently substitute other joined sides, adjust yaw or
+        # infer undocumented GPS accuracy. Positive exterior halfplanes
+        # alone never prove SOURCE visibility.
+        camera_basis = ((receipt.get('manifest') or {}).get('camera') or {}).get('position_status')
+        if camera_basis == 'original_exif':
+            from .identity_camera_visibility import observed_corner_halfplane
+            first, second = refs
+            if (first.get('ring_index') != second.get('ring_index') or
+                    observed_corner_halfplane(
+                        story, receipt['manifest'], cid,
+                        first.get('ring_index'), first.get('segment_index'),
+                        second.get('segment_index'), candidates=candidates
+                    ).get('status') != 'both_walls_nominally_exterior'):
+                return None
     elif pattern == 'frontage_sequence':
         if len(ids) < 2 or not fronts or axis is not None:
             return None
