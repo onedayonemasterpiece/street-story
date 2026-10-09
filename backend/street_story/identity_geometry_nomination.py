@@ -44,6 +44,15 @@ def visual_geometry_nomination_schema():
             'maxItems': 5},
         'source_horizontal_extent': {'type': 'string',
             'enum': ['broad', 'medium', 'narrow', 'unknown']},
+        # Optional for backwards-compatible closed G v1 model receipts.
+        # These describe SOURCE pixels, not OSM dimensions or guessed yaw.
+        'source_silhouette_form': {'type': 'string',
+            'enum': ['tall_narrow', 'broad_low', 'elongated_horizontal',
+                     'blocky', 'multi_volume', 'unknown']},
+        'source_crop_scope': {'type': 'string',
+            'enum': ['full_building', 'upper_or_partial', 'unknown']},
+        'source_shape_observations': {'type': 'array', 'items': statement,
+            'maxItems': 4},
         'spatial_relations': {'type': 'array', 'items': item, 'maxItems': 3},
         'alternative_labels': {'type': 'array', 'items': {'type': 'integer'},
             'maxItems': 5},
@@ -143,6 +152,24 @@ def check_visual_geometry_nomination(response, scene_manifest, physical_context,
             alternative_ids.append(by_label[label]['candidate_id'])
     if response['decision'] == 'uncertain':
         reasons.append('model_declared_uncertain')
+    shape_review = None
+    if 'source_silhouette_form' in response:
+        from .identity_shape_context import compare_visual_shape_to_mapped_bodies
+        other_rows = [r for r in physical_rows if r.get('candidate_id') in
+                      {by_label[label]['candidate_id'] for label in
+                       response['alternative_labels'] if label in by_label and label != index}]
+        shape_review = compare_visual_shape_to_mapped_bodies(
+            response['source_silhouette_form'],
+            response.get('source_crop_scope', 'unknown'),
+            subject.get('plan_morphology'), other_rows,
+            angular_ratio=subject.get('outline_span_over_exif_diagonal'),
+            camera_basis=(physical_context.get('source_angular_reference') or {}).get(
+                'camera_position_status'))
+        if 'entire_building_source_vs_nominal_fov_extent_conflict' in (
+                shape_review.get('warnings') or []):
+            reasons.append('source_shape_vs_nominal_camera_fov_needs_review')
+        # A valid plan contrast is ADVISORY, never an identity acceptance,
+        # and never an unconditional way to drop a distant telephoto candidate.
     if not response['source_observations'] or not any(
             isinstance(text, str) and text.strip()
             for text in response['source_observations']):
@@ -151,6 +178,7 @@ def check_visual_geometry_nomination(response, scene_manifest, physical_context,
                         response['decision'] == 'nominated' else 'uncertain'),
         'candidate_id': cid, 'candidate_label': index,
         'supported_spatial_kinds': list(dict.fromkeys(kinds)),
+        'source_shape_evidence': shape_review,
         'alternative_candidate_ids': list(dict.fromkeys(alternative_ids)),
         'reason_codes': list(dict.fromkeys(reasons)),
         'authorizes_identity': False,
