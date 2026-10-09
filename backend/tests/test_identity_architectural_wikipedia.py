@@ -5,7 +5,8 @@ import json
 import httpx
 import pytest
 
-from street_story.identity_architectural_wikipedia import ArchitecturalWikipediaReader
+from street_story.identity_architectural_wikipedia import (ArchitecturalWikipediaReader,
+    wikipedia_title_choice_schema)
 
 
 class Cache:
@@ -121,3 +122,50 @@ async def test_wikipedia_article_conveys_current_and_historic_facade_without_hos
     assert result['scope'].startswith('Encyclopedia article')
     assert result['physical_identity_inferred'] is False
     assert 'candidate_id' not in result
+
+
+
+@pytest.mark.asyncio
+async def test_mediawiki_search_offers_actual_alternative_titles_without_suffix_rules(tmp_path):
+    import jsonschema
+    requests=[]
+    search_raw=json.dumps({'query':{'search':[{
+        'pageid':411,'title':'Архитектурная вилла','snippet':'some matching words'},
+        {'pageid':412,'title':'Архитектурная вилла (другой район)',
+         'snippet':'another possible building'}]}},ensure_ascii=False).encode()
+    title_raw=actual_article(pageid=411,title='Архитектурная вилла',
+        body='Две оконные оси под фронтоном, вокруг них общий каменный наличник.')
+    def handler(request):
+        requests.append(request)
+        assert request.headers['Host']=='ru.wikipedia.org'
+        if request.url.params.get('list')=='search':
+            assert request.url.params['srsearch']=='Архитектурная вилла (историческая) — город'
+            return httpx.Response(200,content=search_raw,
+                headers={'content-type':'application/json'})
+        assert request.url.params['titles']=='Архитектурная вилла'
+        return httpx.Response(200,content=title_raw,
+            headers={'content-type':'application/json'})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        reader=ArchitecturalWikipediaReader(Cache(tmp_path),http,resolver=resolver)
+        candidates=await reader.search_observed_title(
+            'Архитектурная вилла (историческая) — город')
+        schema=wikipedia_title_choice_schema(candidates)
+        assert jsonschema.Draft202012Validator(schema).is_valid({
+            'pageid':411,'title_fit':'same_subject','reason':'SOURCE and article facade match'})
+        assert jsonschema.Draft202012Validator(schema).is_valid({
+            'pageid':None,'title_fit':'ambiguous','reason':'Several facades possible'})
+        assert not jsonschema.Draft202012Validator(schema).is_valid({
+            'pageid':999,'title_fit':'same_subject','reason':'Invented ID'})
+        with pytest.raises(ValueError,match='not_received'):
+            await reader.article_by_model_selected_pageid(candidates,999)
+        selected=await reader.article_by_model_selected_pageid(candidates,411)
+        again=await reader.search_observed_title('Архитектурная вилла (историческая) — город')
+    assert candidates['status']=='completed'
+    assert candidates['identity_inferred'] is False
+    assert len(candidates['results'])==2
+    assert [x['pageid'] for x in candidates['results']]==[411,412]
+    assert selected['article_id']=='wiki:411'
+    assert selected['raw_body_sha256_verified'] is True
+    assert 'Две оконные оси' in selected['text']
+    assert again['cache_hit'] is True
+    assert len(requests)==2  # one search + one selected full article, no variant loops
