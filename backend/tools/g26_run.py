@@ -26,7 +26,8 @@ from jsonschema import Draft202012Validator
 
 from street_story.config import Settings
 from street_story.runtime import RuntimeStreetStoryService
-from street_story.identity_spatial_choice import visual_spatial_choice_schema
+from street_story.identity_spatial_choice import (
+    visual_spatial_choice_schema, parse_spatial_choice_json)
 from street_story.identity_spatial_funnel import project_g_funnel
 from street_story.identity_spatial_options import for_vision
 from street_story.identity_plan_diagnostics import provider_outcome
@@ -191,7 +192,7 @@ def replay_closed(cid, model, *, schema_transport='json-mode'):
         return {**result,'status':'reused_host_revalidation',
             'model_calls_this_operation':0}
     packet=json.loads(options_path.read_text())
-    model_answer=json.loads(raw)
+    model_answer,transport_repairs=parse_spatial_choice_json(raw)
     receipt=json.loads((case/'input-receipt.json').read_text())
     original=Path(receipt['source_path']).read_bytes()
     observed_entries=frozen_physical_observations(_json(case/'physical_context.json'))
@@ -216,6 +217,7 @@ def replay_closed(cid, model, *, schema_transport='json-mode'):
        'next_step':handoff.get('next_step'),
        'reason_codes':handoff.get('reason_codes'),
        'schema_errors':[list(e.absolute_path) for e in errors],
+       'transport_repairs':transport_repairs,
        'original_provider_response_sha256':old['response_sha256'],
        'original_provider_model_calls':1,
        'model_calls_this_operation':0,
@@ -403,10 +405,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
        usage_total_tokens=getattr(getattr(resp,'usage_metadata',None),'total_token_count',None),
        elapsed_ms=round((time.monotonic()-start)*1000))
     save_marker()
-    try:
-        model_answer=json.loads(received)
-    except ValueError:
-        model_answer={}
+    model_answer,transport_repairs=parse_spatial_choice_json(received)
     errors=list(Draft202012Validator(schema).iter_errors(model_answer))
     handoff=project_g_funnel(model_answer,packet,observed_entries,
          source_sha256=original_sha,
@@ -430,6 +429,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
         'total_tokens':marker['usage_total_tokens'],
         'whole_method_elapsed_ms':marker['elapsed_ms'],
         'schema_errors':[list(e.absolute_path) for e in errors],
+        'transport_repairs':transport_repairs,
         'source_sha256':original_sha,'map_sha256':input_receipt['map_sha256'],
         'raw_response_sha256':marker['response_sha256'],
         'oracle_absent_from_model':True}
