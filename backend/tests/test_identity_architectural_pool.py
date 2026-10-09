@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 from street_story.identity_architectural_pool import (
-    _excerpt, prepare_architectural_pool, close_architectural_pool_response)
+    _excerpt, _source_span_options, prepare_architectural_pool, close_architectural_pool_response)
 from test_architectural_text_identity import text_inputs
 
 
@@ -30,8 +30,16 @@ def _three_documents():
     return story,candidates,decision,receipt
 
 
-def _closed_answer(decision,ids):
-    return {**copy.deepcopy(decision), 'article_comparisons':[{
+def _closed_answer(decision,ids,packet):
+    result=copy.deepcopy(decision)
+    for relation in result['correspondences']:
+        candidates=[ref for ref,span in packet['source_span_refs'].items()
+            if span['article_id']==relation['article_id']
+            and relation['source_quote'] in span['source_quote']]
+        assert candidates
+        relation.pop('source_quote')
+        relation['source_span_ref']=candidates[0]
+    return {**result, 'article_comparisons':[{
         'article_id':cid,
         'visual_fit':'distinctive_match' if cid==decision['article_bindings'][0]['article_id'] else 'generic_only',
         'architectural_difference':'Observed bay and cornice combination differs from neighboring buildings.',
@@ -60,11 +68,12 @@ def test_three_actual_articles_reach_one_contrastive_model_call_and_correct_thir
     packet=prepare_architectural_pool(story,candidates,receipt,candidate_ids=['osm:way:7'])
     assert packet['article_ids']==[
         'catalog:neighbor-one','catalog:neighbor-two','catalog:physical-building']
-    assert packet['input_contract']=='source-multiple-architecture-pool-v1'
+    assert packet['input_contract']=='source-multiple-architecture-pool-v2-literal-span-refs'
     assert packet['text_utf8_bytes']<16000
-    assert 'source_quote' in str(packet['schema'])
+    assert 'source_span_ref' in str(packet['schema'])
+    assert 'source_quote' not in str(packet['schema'])
     assert packet['schema']['properties']['article_comparisons']['minItems']==3
-    output=_closed_answer(decision,packet['article_ids'])
+    output=_closed_answer(decision,packet['article_ids'],packet)
     final=close_architectural_pool_response(story,candidates,packet,output,
         source_text_receipt=receipt)
     assert final['accepted'] is True
@@ -95,9 +104,17 @@ def test_incomplete_contrast_and_wrong_article_quote_cannot_yield_identity():
     assert result['accepted'] is False
     assert result['reason']=='positive_binding_not_supported_by_model_contrast'
     invented=copy.deepcopy(good)
-    invented['correspondences'][0]['source_quote']='Never observed invented quote'
-    assert close_architectural_pool_response(story,candidates,packet,invented,
-        source_text_receipt=receipt)['accepted'] is False
+    invented['correspondences'][0]['source_span_ref']='not-received-span'
+    with pytest.raises(ValueError,match='model_architectural_pool_response_malformed'):
+        close_architectural_pool_response(story,candidates,packet,invented,
+            source_text_receipt=receipt)
+    crossed=copy.deepcopy(good)
+    crossed['correspondences'][0]['source_span_ref']=next(ref
+        for ref,span in packet['source_span_refs'].items()
+        if span['article_id']=='catalog:neighbor-one')
+    with pytest.raises(ValueError,match='source_span_ref_wrong_article'):
+        close_architectural_pool_response(story,candidates,packet,crossed,
+            source_text_receipt=receipt)
 
 
 def test_verified_architecture_pool_never_silently_drops_excess_articles():
@@ -121,3 +138,14 @@ def test_bad_article_hash_or_unobserved_physical_id_stops_before_any_model_call(
     receipt['articles'][0]['text_sha256']=hashlib.sha256(receipt['articles'][0]['text'].encode()).hexdigest()
     with pytest.raises(ValueError,match='unobserved_physical_candidate'):
         prepare_architectural_pool(story,candidates,receipt,candidate_ids=['osm:way:999'])
+
+
+def test_literal_evidence_refs_are_exact_and_never_semantically_rewritten():
+    body='Старинная пристройка. Центральный фасад имеет фигурный эркер. Утрачен декор портала.'
+    article=_article('catalog:ref',body)
+    result,refs=_source_span_options([article])
+    assert result[0]['article_id']=='catalog:ref'
+    assert all(body[ref['start']:ref['end']]==ref['source_quote'] for ref in refs.values())
+    assert all(ref['source_text_sha256']==article['text_sha256'] for ref in refs.values())
+    assert len(result[0]['passages'])>=2
+    assert any('Утрачен декор' in span['source_quote'] for span in refs.values())
