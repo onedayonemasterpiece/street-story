@@ -141,3 +141,34 @@ def test_originals_without_gps_preserve_owner_approximation(case_number):
     assert camera['position_status']=='owner_approximate'
     assert camera['heading_status']=='missing'
     assert camera['accuracy_m'] is None
+
+
+def test_original_132_source_free_bidirectional_road_cues_expose_both_physical_futures():
+    story=story_for(132)
+    scene=render_scene(story,[])
+    context=physical_decision_context(story,[],scene['manifest'])
+    cues=context['bidirectional_road_axis_cues']
+    assert cues['camera_basis']=='owner_approximate'
+    assert cues['observed_road_count']>=2
+    nearest=next((row for row in cues['rows'] if row[0]=='osm:way:67826885'),None)
+    assert nearest is not None
+    assert nearest[4]==pytest.approx(4.67,abs=.1)
+    assert len(nearest[-1])==2
+    directional=[row[1] for row in nearest[-1]]
+    firsts={direction[0][1] for direction in directional if direction}
+    # Neither the correct-facing road nor its opposite is chosen by the host;
+    # both geometries are available to the SOURCE-using LLM.
+    assert 'osm:way:192217077' in firsts
+    assert 'osm:way:192220354' in {
+        hit[1] for direction in directional for hit in direction}
+    assert context['received_body_count']==2
+
+
+def test_search_context_is_not_a_fake_camera_heading_or_road_hit_oracle():
+    story=story_for(132)
+    story['_location_provenance']={}
+    scene=render_scene(story,[])
+    assert scene['manifest']['camera']['position_status']=='search_context'
+    cues=physical_decision_context(story,[],scene['manifest'])['bidirectional_road_axis_cues']
+    assert cues['rows']==[]
+    assert cues['camera_basis']=='search_context'
