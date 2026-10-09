@@ -259,6 +259,13 @@ def catalogue_physical_address_links(story, candidates, received_cards):
             for link in row['physical_links']
             if (link['exact_literal_entry_ids']
                 or link['publisher_full_group_covered_by_distinct_verified_entrances'])],
+        'complex_postal_membership_hypotheses':[
+            {'candidate_id':link['candidate_id'],
+             'mapped_entry_ids':link['publisher_complex_postal_membership_entry_ids'],
+             'join_policy':'publisher_complex_postal_member_only',
+             'corpus_identity_inferred':False}
+            for link in row['physical_links']
+            if link.get('publisher_complex_postal_membership_entry_ids')],
         'provenance':'received_literal_publisher_card_and_observed_OSM_membership',
         'identity_inferred':False
         } for row in relations}
@@ -277,7 +284,9 @@ def bounded_physically_linked_article_ids(catalogue, *, max_articles=2):
     links = (catalogue or {}).get('physical_address_links') or {}
     ids = list(dict.fromkeys(row['article_id'] for row in rows
         if isinstance(row, dict) and isinstance(row.get('article_id'), str)
-        and (links.get(row['article_id']) or {}).get('matched_observed_physical_subjects')))
+        and (links.get(row['article_id']) or {}).get('matched_observed_physical_subjects')
+        or isinstance(row,dict) and isinstance(row.get('article_id'),str)
+        and (links.get(row['article_id']) or {}).get('complex_postal_membership_hypotheses')))
     if not isinstance(max_articles, int) or isinstance(max_articles, bool) or max_articles < 1:
         raise ValueError('invalid_architectural_article_prefetch_limit')
     return {'candidate_article_ids':ids,
@@ -301,7 +310,10 @@ def catalogue_model_context(catalogue):
         | {'metadata_excerpt':True,
             'publisher_address_to_OSM_hypotheses':(
                 physical_links.get(row.get('article_id')) or {}).get(
-                    'matched_observed_physical_subjects', [])}
+                    'matched_observed_physical_subjects', []),
+            'publisher_complex_postal_membership_not_identity':(
+                physical_links.get(row.get('article_id')) or {}).get(
+                    'complex_postal_membership_hypotheses', [])}
         for row in catalogue.get('results') or []]
     context['physical_prefetch_plan'] = catalogue.get('physical_prefetch_plan') or {}
     context['coverage_policy'] = ('Inventory completeness applies only to this literal query scope, not the MAP scene. '
