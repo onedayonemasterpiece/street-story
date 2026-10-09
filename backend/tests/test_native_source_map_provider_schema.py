@@ -1,6 +1,8 @@
 """Native JSON schema subset is a provider transport, never geometry proof relaxation."""
 from copy import deepcopy
 
+import pytest
+
 from jsonschema import Draft202012Validator
 
 from street_story.identity_source_selection import geometry_decision_schema
@@ -54,3 +56,52 @@ def test_host_still_rejects_missing_accepted_geometry_structure():
         'next_action': {'kind': 'none', 'reason': '', 'target_candidate_ids': []}}
     assert not Draft202012Validator(original).is_valid(candidate)
     assert provider['type'] == 'object'
+
+
+@pytest.mark.asyncio
+async def test_completed_native_invalid_uncertain_plan_recovers_through_text_only(tmp_path):
+    """Wrong address pointer cannot strand a real closed SOURCE/MAP attempt."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from street_story import identity_discovery
+    from street_story.gemini import GeminiUnavailable
+    from test_geometry_identity_plan import geometry_setup, payload, geometry_decision
+
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='text',
+                               gemini_web_search_tertiary_model='visual')
+    calls = []
+    class QuotaUnavailable:
+        async def execute(self, operation, call):
+            calls.append('google_not_sent')
+            raise GeminiUnavailable(service.store.now() + 3600, 'fixture_rpd')
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Native closed: no duplicate Google send')
+    async def native(s, prompt, schema, images, host_context):
+        calls.append('native_received_source_map')
+        assert [label for label, _mime, _raw in images] == ['SOURCE', 'MAP']
+        invalid = payload(geometry_decision())
+        invalid['accepted_geometry'].update(decision='uncertain', candidate_id='',
+                                            candidate_label=0)
+        invalid['first_wave_hypotheses'] = [
+            {'kind': 'address', 'subject_id': 'osm:way:2', 'query': '',
+             'reason': 'Wrong kind of address subject returned by the model.'}]
+        return {'result': invalid, 'host_context': host_context,
+            'receipt': {'phase': 'completed', 'turn_id': 'native-durable-turn'}}
+    async def text_fallback(s, prompt, schema):
+        calls.append('text_after_invalid_native')
+        assert 'SOURCE and MAP images are unavailable' in prompt
+        result = {k: v for k, v in payload(geometry_decision()).items()
+                  if k != 'accepted_geometry'}
+        return {'result': result}
+    google = QuotaUnavailable()
+    service.providers.gemini = SimpleNamespace(executor=google, _generate=forbidden,
+        web_search_routes=[('visual', object(), object(), google)], research_routes=[])
+    service.providers.research = SimpleNamespace(
+        source_map_available=True, plan_source_map=native,
+        source_map_receipt=lambda s: None, plan_identity_search=text_fallback)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['google_not_sent', 'native_received_source_map',
+                     'text_after_invalid_native']
+    assert story['_identity_search_plan_route'] == 'qualified_text_fallback'
+    assert '_identity_geometry_result' not in story
