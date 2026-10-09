@@ -143,12 +143,16 @@ def test_model_not_frozen_proof_cannot_approve_an_individual_building():
         source_sha256=receipt['original_source_sha256'],
         t_accepted=False,accepted_candidate_id='osm:way:7')
     assert bad['status']=='conditional_T_shortlist'
-    assert bad['after_T_active_count']==1
-    assert bad['after_T_reserved_count']==3
+    assert bad['after_T_active_count']==2
+    assert bad['after_T_reserved_count']==2
+    assert bad['active_physical_candidate_ids']==['osm:way:7','osm:way:8']
+    assert bad['T_reduced_active_count'] is False
+    assert bad['model_proposed_research_priority_ids']==['osm:way:7']
+    assert bad['request_reserve_expansion'] is True
     assert bad['T_proof_accepted'] is False
     assert bad['accepted_physical_id'] is None
     assert bad['conditional_T_research_priority_not_identity'] is True
-    assert bad['reserve_physical_candidate_ids']==['osm:way:9','osm:way:10','osm:way:8']
+    assert bad['reserve_physical_candidate_ids']==['osm:way:9','osm:way:10']
     assert bad['t_explicit_contradictions'][0]['review_state']=='model_contradiction_not_authorized'
     accepted=close_t_g_funnel(prepared,proposed,
         source_sha256=receipt['original_source_sha256'],
@@ -304,8 +308,8 @@ def test_unaccepted_T_reuses_actual_G_model_question_as_targeted_ref_hint():
     result=close_t_g_funnel(prepared,claim,
         source_sha256=receipt['original_source_sha256'])
     assert result['status']=='conditional_T_shortlist'
-    assert result['after_T_active_count']==1
-    assert result['after_T_reserved_count']==3
+    assert result['after_T_active_count']==2
+    assert result['after_T_reserved_count']==2
     assert result['accepted_physical_id'] is None
     assert result['T_proof_accepted'] is False
     assert result['downstream_REF']['image_goal_provenance']=='G_previously_closed_model_distinguishing_question'
@@ -330,13 +334,13 @@ def test_unaccepted_T_uses_its_own_model_authored_ref_question_if_G_had_none():
         source_sha256=receipt['original_source_sha256'])
     assert result['status']=='conditional_T_shortlist'
     assert result['T_proof_accepted'] is False
-    assert result['after_T_active_count']==1
+    assert result['after_T_active_count']==2
     assert result['downstream_REF']['image_goal_provenance']==(
         'T_same_closed_response_distinguishing_question')
     assert result['downstream_REF']['image_research_goals'][0][
         'needed_view_or_feature']=='Are courtyard portals needed to distinguish both wings?'
     assert result['reserve_physical_candidate_ids']==[
-        'osm:way:9','osm:way:10','osm:way:8']
+        'osm:way:9','osm:way:10']
 
 
 
@@ -574,7 +578,10 @@ def test_failed_T_one_body_proof_keeps_prior_independent_T_reserve_lead_in_REF()
         t_accepted=False)
     assert closed['status']=='conditional_T_shortlist'
     assert closed['T_proof_accepted'] is False
-    assert closed['active_physical_candidate_ids']==['osm:way:7']
+    assert closed['active_physical_candidate_ids']==['osm:way:7','osm:way:9']
+    assert closed['after_T_reserved_count']==2
+    assert closed['T_reduced_active_count'] is False
+    assert closed['request_reserve_expansion'] is True
     assert closed['downstream_REF']['target_candidate_ids']==[
         'osm:way:7','osm:way:9']
     native=to_existing_research_priority(closed,receipt['articles'])
@@ -612,3 +619,36 @@ def test_closed_T_structural_observation_becomes_precise_peer_REF_without_new_mo
     assert native['next_step']=='targeted_search'
     assert architecture in native['next_question']
     assert native['contradictions']==[]
+
+
+
+def test_unaccepted_T_high_confidence_cannot_collapse_active_peers_or_blacklist_them():
+    """A model may confidently choose the wrong wing without a physical proof.
+
+    The host carries the model nomination as RESEARCH priority only; all
+    model-G active peers and all original reserve bodies stay reconsiderable.
+    This is generic, not a test-corpus house/address-specific rule.
+    """
+    story,candidates,decision,receipt,g=_inputs()
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    assertion=_t_result(effect='confirmed',retained=['osm:way:7'])
+    result=close_t_g_funnel(prepared,assertion,
+        source_sha256=receipt['original_source_sha256'],t_accepted=False)
+    assert result['status']=='conditional_T_shortlist'
+    assert result['model_proposed_research_priority_ids']==['osm:way:7']
+    assert result['active_physical_candidate_ids']==['osm:way:7','osm:way:8']
+    assert result['reserve_physical_candidate_ids']==['osm:way:9','osm:way:10']
+    assert result['after_T_active_count']==2
+    assert result['T_reduced_active_count'] is False
+    assert result['request_reserve_expansion'] is True
+    assert not result['T_proof_accepted']
+    assert set(result['active_physical_candidate_ids']).isdisjoint(
+        result['reserve_physical_candidate_ids'])
+    assert result['t_explicit_contradictions'][0]['review_state']==(
+        'model_contradiction_not_authorized')
+    priority=to_existing_research_priority(result,receipt['articles'])
+    assert priority['candidate_ids']==['osm:way:7','osm:way:8']
+    assert priority['contradictions']==[]
+    assert priority['next_step']=='targeted_search'
