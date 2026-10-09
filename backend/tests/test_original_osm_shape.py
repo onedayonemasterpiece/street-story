@@ -176,3 +176,58 @@ def test_oriented_rectangle_ratio_is_nearly_rotation_invariant(degrees):
     assert val['long_axis_m']==pytest.approx(50,abs=.5)
     assert val['short_axis_m']==pytest.approx(10,abs=.5)
     assert val['footprint_elongation']==pytest.approx(5,abs=.18)
+
+
+def test_original_102_tall_narrow_photo_shape_is_not_a_single_plan_aspect_threshold():
+    # These were the TWO separately closed real SOURCE/MAP model nominees.
+    # The correct body is from report-only owner acceptance, never from an
+    # inference input. Both observed plans are elongated; a hard threshold
+    # cannot safely discard one from physical identity.
+    story=story_for(102)
+    scene=render_scene(story,[])
+    ctx=physical_decision_context(story,[],scene['manifest'])
+    byid={r[1]:dict(zip(ctx['columns'],r)) for r in ctx['rows']}
+    target=byid['osm:way:133035113']
+    rival=byid['osm:way:133035111']
+    a=dict(zip(SHAPE_COLUMNS,target['plan_morphology']))
+    b=dict(zip(SHAPE_COLUMNS,rival['plan_morphology']))
+    assert a['status']==b['status']=='observed_closed_outer'
+    assert a['long_axis_m']==pytest.approx(33.37,abs=.2)
+    assert a['short_axis_m']==pytest.approx(10.93,abs=.2)
+    assert b['long_axis_m']==pytest.approx(31.55,abs=.2)
+    assert b['short_axis_m']==pytest.approx(13.19,abs=.2)
+    assert a['footprint_elongation']==pytest.approx(3.05,abs=.05)
+    assert b['footprint_elongation']==pytest.approx(2.39,abs=.05)
+    assert a['explicit_height_m'] is None and b['explicit_height_m'] is None
+    assert a['footprint_area_m2']<b['footprint_area_m2']
+    assert target['outline_span_over_exif_diagonal']==pytest.approx(.423,abs=.005)
+    assert rival['outline_span_over_exif_diagonal']==pytest.approx(.138,abs=.005)
+    assert ctx['received_body_count']==4
+
+
+def test_original_102_joined_rear_wall_cannot_certify_a_tall_narrow_visual_candidate():
+    story=story_for(102)
+    scene=render_scene(story,[],detail_candidate_ids=['osm:way:133035113'])
+    ctx=physical_decision_context(story,[],scene['manifest'])
+    byid={r[1]:r[0] for r in ctx['rows']}
+    label=byid['osm:way:133035113']
+    evidence={'decision':'nominated','candidate_label':label,
+      'source_observations':['SOURCE shows a tall narrow corner building with a return wall'],
+      'source_horizontal_extent':'broad',
+      'source_silhouette_form':'tall_narrow',
+      'source_crop_scope':'upper_or_partial',
+      'source_shape_observations':['Five or more visible facade tiers and a narrow frontage'],
+      'spatial_relations':[{
+        'kind':'corner',
+        'source_observation':'SOURCE reveals two connected building walls at a corner',
+        'map_body_labels':[label],
+        'road_candidate_id':'','road_direction_index':0,
+        'segment_ring_index':0,'first_segment_index':0,'second_segment_index':5}],
+      'alternative_labels':[byid['osm:way:133035111']],
+      'uncertainties':['Camera yaw missing; OSM outer ring cannot prove SOURCE visibility']}
+    result=check_visual_geometry_nomination(evidence,scene['manifest'],ctx)
+    assert result['candidate_id']=='osm:way:133035113'
+    assert 'model_claimed_corner_includes_nominally_rear_wall' in result['reason_codes']
+    assert result['source_shape_evidence']['source_profile']=='tall_narrow'
+    assert result['source_shape_evidence']['authorizes_identity'] is False
+    assert result['authorizes_identity'] is False
