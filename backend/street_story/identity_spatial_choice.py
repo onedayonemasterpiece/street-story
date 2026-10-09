@@ -37,156 +37,158 @@ def visual_spatial_choice_schema():
             'required':['label','source_vs_map_difference','observed_option_ids']}},
         'request_detail_labels':{'type':'array','items':{'type':'integer'},'maxItems':4},
         'uncertainties':{'type':'array','items':string,'maxItems':5}},
-        'required':['decision','candidate_label','source_pattern','crop_scope',
-            'source_observations','selected_option_ids','contrasted_alternatives',
-            'request_detail_labels','uncertainties']}
+        'required':['decision','candidate_label','source_observations']}
 
 
 def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256,
                          actual_source_sha256, actual_map_sha256):
-    """Safe host check; accepted output has v3 spatial proof, not old POI proof.
+    """Validate MEASURED references, not semantic strength by hand-coded rules.
 
-    The semantic SOURCE judgment comes solely from the model. Deterministic
-    checks enforce exact body/option membership and measured spatial claims.
-    A candidate with no specific or incompatible evidence is retained as a
-    conditional lead. No option/camera yaw gets changed after model response.
+    PHOTO interpretation, distinctive visible features and decision confidence
+    belong to the visual model. The host checks only source/map hashes, real
+    OSM identity/option pointers and genuine contradictions in its own data.
+    A first-pass physical nomination is useful even before map_detail, so it
+    requests expansion instead of failing the whole case. No one is forced to
+    invent yaw, two visible corners, three observations or a contrast table.
+
+    Accepted G-v3 is an independent candidate certificate for evaluation.
+    Codex explicitly approves integration into canonical POI/fact gates after
+    measured accuracy; this helper never updates POI or story identity itself.
     """
-    bad={'status':'invalid','candidate_id':None,'accepted':False,'proof':None,
-         'reason_codes':['invalid_spatial_option_response']}
+    invalid = {'status':'invalid', 'candidate_id':None, 'accepted':False,
+        'proof':None, 'reason_codes':['invalid_spatial_option_response']}
     if not isinstance(response,dict) or not isinstance(packet,dict):
-        return bad
+        return invalid
     if not Draft202012Validator(visual_spatial_choice_schema()).is_valid(response):
-        return bad
-    if (packet.get('version')!='street_story.g_spatial_options.v3' or
-            packet.get('map_sha256')!=actual_map_sha256 or
-            source_sha256!=actual_source_sha256 or
-            not isinstance(source_sha256,str) or len(source_sha256)!=64 or
-            not isinstance(model_source_sha256,str) or len(model_source_sha256)!=64):
-        return {**bad,'reason_codes':['source_map_not_original_bound']}
-    labels={int(label):cid for label,cid in
-            (packet.get('private_label_to_osm_id') or {}).items()}
-    candidate=response['candidate_label']
-    cid=labels.get(candidate)
-    if response['decision']=='unknown' and candidate==0:
+        return invalid
+    if (packet.get('version')!='street_story.g_spatial_options.v3'
+            or packet.get('map_sha256')!=actual_map_sha256
+            or not isinstance(source_sha256,str) or len(source_sha256)!=64
+            or source_sha256!=actual_source_sha256
+            or not isinstance(model_source_sha256,str) or len(model_source_sha256)!=64):
+        return {**invalid,'reason_codes':['source_map_not_original_bound']}
+
+    labels = {int(label):cid for label,cid in
+              (packet.get('private_label_to_osm_id') or {}).items()}
+    decision = response['decision']
+    label = response['candidate_label']
+    option_ids = response.get('selected_option_ids') or []
+    claims = response.get('source_observations') or []
+    detail_labels = response.get('request_detail_labels') or []
+    alternatives = response.get('contrasted_alternatives') or []
+    pattern = response.get('source_pattern') or 'unknown'
+
+    if decision=='unknown' and label==0:
         return {'status':'unknown','candidate_id':None,'accepted':False,
-            'proof':None,'reason_codes':['model_declared_unknown']}
-    if cid is None or not cid.startswith(('osm:way:','osm:relation:')):
-        return {**bad,'reason_codes':['model_body_not_received']}
-    all_options=packet.get('options') or {}
-    reasons=[]
-    warnings=[]
-    nominal_inward_corner=False
-    valid=[]
-    for oid in response['selected_option_ids']:
-        option=all_options.get(oid)
-        if not isinstance(option,dict):
-            reasons.append('model_option_id_not_in_frozen_osm')
+            'proof':None,'reason_codes':['model_declared_unknown'],
+            'requested_detail_labels':[x for x in detail_labels if x in labels]}
+    if label==0 and decision=='needs_detail':
+        return {'status':'needs_detail','candidate_id':None,'accepted':False,
+            'proof':None,'reason_codes':[],
+            'requested_detail_labels':[x for x in detail_labels if x in labels]}
+    cid = labels.get(label)
+    if not isinstance(cid,str) or not cid.startswith(('osm:way:','osm:relation:')):
+        return {**invalid,'reason_codes':['selected_label_is_not_received_building']}
+    if decision=='unknown':
+        return {'status':'unknown','candidate_id':cid,'accepted':False,
+            'proof':None,'reason_codes':['model_declared_unknown_with_candidate']}
+
+    options = packet.get('options') or {}
+    errors, warnings, selected, compared = [], [], {}, []
+    for oid in option_ids:
+        opt = options.get(oid)
+        if not isinstance(opt,dict):
+            errors.append('unreceived_osm_option_reference')
             continue
-        kind=option.get('kind')
-        owned=(option.get('body_label')==candidate
-               or kind=='physical_pair' and candidate in option.get('body_labels',[])
-               or kind=='road_axis_direction' and option.get('first_plan_hit_body_label')==candidate)
-        if not owned:
-            reasons.append('option_not_bound_to_chosen_physical_body')
+        kind = opt.get('kind')
+        bound = (opt.get('body_label')==label
+            or kind=='physical_pair' and label in (opt.get('body_labels') or [])
+            or kind=='road_axis_direction' and opt.get('first_plan_hit_body_label')==label)
+        if not bound:
+            errors.append('osM_option_does_not_belong_to_model_selected_body')
             continue
-        valid.append((oid,option))
-        if kind=='road_axis_direction' and response['source_pattern']!='street_termination':
-            reasons.append('street_ray_without_street_source_pattern')
-        if kind=='observed_corner':
-            side=option.get('camera_side_advisory') or []
-            if 'nominal_interior' in side:
-                nominal_inward_corner=True
-                warnings.append('nominal_camera_rear_wall_requires_position_review')
-    refs=[]
-    for alt in response['contrasted_alternatives']:
-        label=alt['label']
-        if label==candidate or label not in labels or not alt['source_vs_map_difference'].strip():
-            reasons.append('material_alternative_not_grounded')
+        selected[oid] = opt
+        if kind=='observed_corner' and 'nominal_interior' in (
+                opt.get('camera_side_advisory') or []):
+            warnings.append('camera_anchor_uncertain_for_selected_corner')
+    for alternative in alternatives:
+        other = alternative['label']
+        if other==label or other not in labels:
+            errors.append('alternative_label_not_received')
             continue
-        observed=[]
-        for oid in alt['observed_option_ids']:
-            other=all_options.get(oid)
-            if not isinstance(other,dict):
-                reasons.append('contrast_option_not_in_frozen_osm')
-            elif not (other.get('body_label')==label
-                  or other.get('kind')=='physical_pair'
-                      and label in other.get('body_labels',[])):
-                reasons.append('contrast_option_does_not_reference_alternative')
+        mapped=[]
+        for oid in alternative.get('observed_option_ids') or []:
+            opt = options.get(oid)
+            if opt is None or not (
+                    opt.get('body_label')==other
+                    or opt.get('kind')=='physical_pair'
+                       and other in (opt.get('body_labels') or [])):
+                errors.append('alternative_option_not_in_received_map')
             else:
-                observed.append(oid)
-        refs.append({'label':label,'candidate_id':labels[label],'option_ids':observed,
-            'model_visual_difference':alt['source_vs_map_difference']})
-    if response['request_detail_labels']:
-        if any(label not in labels for label in response['request_detail_labels']):
-            reasons.append('requested_unreceived_detail_label')
-        if response['decision']=='accept':
-            reasons.append('acceptance_with_unresolved_map_detail')
-    if response['decision']=='accept':
-        # A 2D right-angle can be present on the WRONG physical building;
-        # model observations of decorative banding, statues or window arches
-        # do not independently bind that image feature to an OSM polygon.
-        # If a model-selected corner has a wall nominally facing AWAY from
-        # the supplied camera point, retain it as a useful candidate but
-        # require an independent precomputed OSM road-axis first-hit (R) or
-        # physical two-body relation (P) before an autonomous G acceptance.
-        # This does NOT declare the wall impossible for all plausible camera
-        # positions, or impose a universal two-visible-corner rule.
-        if (nominal_inward_corner
-                and not any(opt['kind'] in {'physical_pair','road_axis_direction'}
-                    for _key,opt in valid)):
-            reasons.append('corner_camera_uncertain_without_independent_spatial_anchor')
-        if len(response['source_observations'])<2:
-            reasons.append('insufficient_distinct_source_observations')
-        if not response['source_observations'] or any(not s.strip()
-              for s in response['source_observations']):
-            reasons.append('no_source_spatial_observation')
-        if not valid:
-            reasons.append('no_measured_osm_option_selected')
-        kinds={obj['kind'] for _oid,obj in valid}
-        strong={'observed_corner','road_axis_direction','physical_pair','single_frontage'}
-        if not kinds.intersection(strong):
-            reasons.append('plan_shape_alone_not_physical_identity')
-        if response['source_pattern']=='corner' and 'observed_corner' not in kinds:
-            reasons.append('corner_not_selected_from_true_osm')
-        if response['source_pattern']=='street_termination' and 'road_axis_direction' not in kinds:
-            reasons.append('street_without_selected_measured_road')
-        if response['source_pattern'] in {'setback','frontage_sequence'} and 'physical_pair' not in kinds:
-            reasons.append('multi_body_relation_without_observed_pair')
-        if response['source_pattern']=='single_frontage' and not (
-                'single_frontage' in kinds and len(refs)>0):
-            reasons.append('single_facade_without_distinguishing_competitor')
-        if response['source_pattern']=='partial_complex':
-            reasons.append('partial_complex_scope_unresolved')
-        if response['source_pattern']=='unknown':
-            reasons.append('source_spatial_pattern_unknown')
-        if not refs:
-            reasons.append('no_material_alternative_contrast')
-    accepted=response['decision']=='accept' and not reasons
-    result={'status':('accepted_geometry_v3' if accepted else
-                'candidate_unconfirmed' if response['decision']!='unknown' else 'unknown'),
-        'candidate_id':cid,'candidate_label':candidate,
-        'accepted':accepted,'proof':None,'reason_codes':list(dict.fromkeys(reasons)),
-        'model_pattern':response['source_pattern'],
-        'conditional_geometric_warnings':list(dict.fromkeys(warnings)),
-        'selected_measured_options':[oid for oid,_v in valid],
-        'alternatives':refs,'requested_detail_labels':response['request_detail_labels']}
+                mapped.append(oid)
+        compared.append({'label':other,'candidate_id':labels[other],
+            'option_ids':mapped,
+            'model_visual_difference':alternative['source_vs_map_difference']})
+    requested = [label_value for label_value in detail_labels if label_value in labels]
+    if len(requested)!=len(detail_labels):
+        warnings.append('unreceived_detail_request_skipped')
+
+    # Semantic comparison is LLM-first. We do not decide that every PHOTO
+    # requires a road, explicit second facade, precise pose or two distinct
+    # observations. An independently selected single front wall can suffice
+    # if the SOURCE-using model states that it is a distinctive match.
+    if decision=='accept' and not claims:
+        errors.append('no_image_observation_provided')
+    if decision=='accept' and not selected:
+        # On the initial overview, the correct measured options were not even
+        # shown to the model. Request one candidate-led expansion instead of
+        # rejecting its otherwise useful first-pass physical nomination.
+        warnings.append('candidate_needs_map_detail_for_measured_support')
+    if decision=='accept' and requested:
+        warnings.append('model_requests_more_detail_before_final_identity')
+    accepted = (decision=='accept' and not errors and bool(selected)
+        and any(isinstance(obs,str) and obs.strip() for obs in claims)
+        and not requested)
+
+    # The model nominates the focus group, not a distance/score heuristic.
+    # Never force a follow-up where the model actually returned UNKNOWN.
+    expanded = {int(x) for x in packet.get('expanded_labels') or []}
+    suggested = list(dict.fromkeys([
+        *requested,
+        *([label] if label not in expanded and not accepted else []),
+        *(x['label'] for x in compared if x['label'] not in expanded)][:4]))
+    if decision=='needs_detail' or (decision=='accept' and not accepted and suggested):
+        status='needs_detail'
+    elif accepted:
+        status='accepted_geometry_v3'
+    else:
+        status='candidate_unconfirmed'
+    result={'status':status,'candidate_id':cid,'candidate_label':label,
+        'accepted':accepted,'proof':None,
+        'reason_codes':list(dict.fromkeys(errors)),
+        'geometric_warnings':list(dict.fromkeys(warnings)),
+        'model_pattern':pattern,'selected_measured_options':list(selected),
+        'alternatives':compared,'requested_detail_labels':suggested,
+        'initial_semantic_decision':decision,
+        'source_observations':claims}
     if accepted:
-        evidence={
-            'policy':POLICY,'validated':True,'candidate_id':cid,
+        evidence={'policy':POLICY,'validated':True,'candidate_id':cid,
             'source_sha256':source_sha256,'model_source_sha256':model_source_sha256,
-            'map_image_sha256':actual_map_sha256,
-            'source_pattern':response['source_pattern'],
-            'model_source_observations':response['source_observations'],
-            'model_crop_scope':response['crop_scope'],
-            'chosen_measured_options':{oid:value for oid,value in valid},
-            'compared_alternatives':refs,
+            'map_image_sha256':actual_map_sha256,'model_pattern':pattern,
+            'model_source_observations':claims,
+            'model_crop_scope':response.get('crop_scope','unknown'),
+            'chosen_measured_options':selected,'compared_alternatives':compared,
             'source_map_options_digest':hashlib.sha256(json.dumps(
-                packet,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+               packet,sort_keys=True,ensure_ascii=False,
+               separators=(',',':')).encode()).hexdigest(),
             'model_answer_digest':hashlib.sha256(json.dumps(
-                response,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
-            'scope':'Model SOURCE judgment matched to literal precomputed OSM options. '
-               'This G-v3 evidence is NOT a v2 canonical POI/facts approval.'}
+               response,sort_keys=True,ensure_ascii=False,
+               separators=(',',':')).encode()).hexdigest(),
+            'scope':'SOURCE-based model identity supported by actual mapped OSM '
+              'option references, WITHOUT model-fitted camera pose. This is '
+              'independent G-v3 evidence, not automatic canonical POI/facts approval.'}
         evidence['proof_sha256']=hashlib.sha256(json.dumps(
-            evidence,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
+            evidence,sort_keys=True,ensure_ascii=False,
+            separators=(',',':')).encode()).hexdigest()
         result['proof']=evidence
     return result
