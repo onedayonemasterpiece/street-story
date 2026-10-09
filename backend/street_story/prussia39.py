@@ -353,6 +353,51 @@ def observed_article_image_links(soup, article_url, *, max_links=24):
     return images
 
 
+def observed_article_image_records(soup, article_url, *, max_links=24):
+    """Immutable publisher HTML media captions and real linked page URLs.
+
+    The host reads ALT/title and literal gallery anchor provenance; it never
+    interprets the caption as the photographed object, building ID, modern
+    address or a successful REF comparison. All links originate in the
+    already acquired publisher article; no extra network calls.
+    """
+    links=observed_article_image_links(soup,article_url,max_links=max_links)
+    eligible=set(links)
+    results=[]
+    for image in soup.find_all('img'):
+        raw=image.get('src')
+        if not isinstance(raw,str):
+            continue
+        url=urljoin(article_url,raw.strip())
+        if url not in eligible or any(row['image_url']==url for row in results):
+            continue
+        anchor=image.find_parent('a')
+        href=anchor.get('href') if anchor is not None else None
+        linked=None
+        if isinstance(href,str):
+            destination=urljoin(article_url,href.strip())
+            parsed=urlsplit(destination)
+            if (parsed.scheme=='https' and parsed.hostname in {
+                    'www.prussia39.ru','prussia39.ru'}
+                    and not parsed.username and not parsed.password
+                    and parsed.port in (None,443) and not parsed.fragment
+                    and len(destination)<=4096):
+                linked=destination
+        title=str(image.get('title') or '').strip()[:260]
+        alt=str(image.get('alt') or '').strip()[:260]
+        results.append({'image_url':url,
+            'publisher_img_title':title,
+            'publisher_img_alt':alt,
+            'linked_publisher_page_url':linked,
+            'publisher_article_url':article_url,
+            'raw_image_fetched':False,
+            'visual_subject_confirmed':False,
+            'reference_identity_inferred':False})
+        if len(results)>=max_links:
+            break
+    return results
+
+
 def parse_article(soup, *, article_url=BASE+'/sight/index.php'):
     # The publisher puts the modern postal address in a metadata table,
     # separate from the historical prose. It can distinguish a neighboring
@@ -378,6 +423,7 @@ def parse_article(soup, *, article_url=BASE+'/sight/index.php'):
     return {'title': soup.title.get_text(' ', strip=True) if soup.title else '',
             'text': body, 'address_text': modern_address, 'coordinates': None,
             'source_image_links':observed_article_image_links(soup,article_url),
+            'source_image_records':observed_article_image_records(soup,article_url),
             'address_provenance': 'publisher_article_metadata_table' if modern_address else 'unavailable',
             'extraction_method': 'publisher_justify_td_v1'}
 
