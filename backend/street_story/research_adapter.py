@@ -5,6 +5,7 @@ credential hopping or new POI/job system is involved.
 """
 from __future__ import annotations
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -23,6 +24,44 @@ LOG = logging.getLogger(__name__)
 
 # A local SOURCE/REF acquisition failure describes this unit, not model health.
 LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_source_unavailable'}
+
+
+def identity_text_discovery_schema(joint_schema):
+    """The text planner selects research leads; it cannot assert image proof.
+
+    Membership stays in the received context and the host validator, rather
+    than repeated ID enumerations in every output field. The caller must check
+    returned pointers against its frozen canonical inventory before use.
+    """
+    allowed = {'entity_name', 'wikipedia_queries', 'visual_query', 'commons_query',
+        'article_queries', 'observed_candidate_ids', 'selected_wikipedia_page_ids',
+        'subject_article_bindings', 'first_wave_hypotheses', 'regional_lookup',
+        'regional_article_selections', 'clarification_question', 'next_action'}
+    pointers = {'candidate_id', 'subject_id', 'address_entry_id', 'article_id',
+        'physical_candidate_id', 'candidate_ids', 'target_candidate_ids',
+        'observed_candidate_ids', 'selected_wikipedia_page_ids'}
+    properties = {key: copy.deepcopy(value) for key, value in joint_schema.get('properties', {}).items()
+                  if key in allowed}
+
+    def bounded(node, name=''):
+        if not isinstance(node, dict):
+            return
+        if name in pointers and node.get('type') == 'string':
+            node.pop('enum', None)
+            node.update(maxLength=100, description='Exact received ID; host validates frozen inventory membership.')
+        if node.get('type') == 'string' and 'maxLength' not in node:
+            node['maxLength'] = 240
+        if node.get('type') == 'array' and 'maxItems' not in node:
+            node['maxItems'] = 8 if name == 'article_queries' else 2
+        for key, child in node.get('properties', {}).items():
+            bounded(child, key)
+        bounded(node.get('items'), name)
+
+    for key, value in properties.items():
+        bounded(value, key)
+    return {'type': 'object', 'properties': properties,
+        'required': [key for key in joint_schema.get('required', []) if key in properties],
+        'additionalProperties': False}
 
 
 def _failure_code(exc):
@@ -757,9 +796,15 @@ class ProductResearchAdapter:
         else:
             routes = [route for route in routes if route['available']]
         waits = []
+        input_refusals, other_failure = [], False
         for route in routes:
             receipt = prior.get((route['provider_id'], route['model_id'])) or {}
             if receipt.get('phase') in {'failed', 'aborted'} and not self._fact_pool_unknown(receipt):
+                if (receipt.get('provider_send_state') == 'not_sent' and receipt.get('error_code') in {
+                        'research_input_too_large', 'live_research_unit_oversize'}):
+                    input_refusals.append(receipt['error_code'])
+                else:
+                    other_failure = True
                 continue
             owned = {**story, '_fact_pool_unit_id': unit,
                      '_fact_pool_input_sha256': hashlib.sha256(unit.encode()).hexdigest()}
@@ -775,8 +820,14 @@ class ProductResearchAdapter:
                     current = next((value for row in rows if (value := json.loads(row[0])).get('binding', {}).get('fact_unit_id') == unit), {})
                 if unknown or self._fact_pool_unknown(current):
                     raise
-                if exc.retry_at is not None:
-                    waits.append(exc.retry_at)
+                if str(exc) in {'research_input_too_large', 'live_research_unit_oversize'}:
+                    input_refusals.append(str(exc))
+                else:
+                    other_failure = True
+                    if exc.retry_at is not None:
+                        waits.append(exc.retry_at)
+        if input_refusals and not other_failure:
+            raise PermanentProviderError('identity_search_plan_input_oversize')
         raise RetryableProviderError('identity_search_plan_unavailable',
                                      retry_at=min(waits) if waits else self.service.store.now()+30)
 

@@ -438,20 +438,27 @@ async def test_identity_planner_has_operation_local_64k_cap_and_real_input_accou
     h = Harness()
     client = h.adapter()
     original_limits = client.limits
-    schema = {'type': 'object', 'properties': {'summary': {'type': 'string',
-        'enum': ['Actual sources', 'large observed enum ' + 'y'*40000]}}, 'required': ['summary']}
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}
     try:
         result = await client.plan_identity_search('Observed SOURCE/map context ' + 'x'*30000,
             {'request_id': 'large-plan'}, schema)
         assert result['receipt']['phase'] == 'completed'
         assert client.limits is original_limits and client.limits.max_input_chars == 24000
         actual_prompt = next(payload for method, path, payload in h.requests if path.endswith('prompt_async'))['parts'][0]['text']
-        assert h.admissions[0][1]['input_chars'] == len(actual_prompt) > 65536
-        # Base remains below65536; the appended exact enum is fully admitted/accounted.
+        assert h.admissions[0][1]['input_chars'] == len(actual_prompt) > 30000
+        assert result['receipt']['input_utf8_bytes'] == h.admissions[0][1]['input_bytes'] < 65536
         assert len(h.sends) == 1
         before = len(h.requests)
         with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
             await client.plan_identity_search('x'*65537, {'request_id': 'too-big-plan'}, schema)
+        # Base alone fits; schema and non-ASCII encoding are part of the bound.
+        large_schema = {'type': 'object', 'description': 'y'*40000}
+        with pytest.raises(ResearchUnavailable, match='research_input_too_large') as oversized:
+            await client.plan_identity_search('x'*30000, {'request_id': 'schema-overflow'}, large_schema)
+        assert oversized.value.receipt['input_utf8_bytes'] > 65536
+        assert oversized.value.receipt['provider_send_state'] == 'not_sent'
+        with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
+            await client.plan_identity_search('ж'*33000, {'request_id': 'utf8-overflow'}, schema)
         with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
             await client._run('facts', 'x'*30000, {'request_id': 'normal-facts'}, schema)
         assert len(h.requests) == before and len(h.sends) == 1
@@ -467,11 +474,15 @@ async def test_large_planner_unknown_readback_uses_original_ids_prompt_and_schem
     schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}
     try:
         with pytest.raises(ResearchUnavailable):
-            await client.plan_identity_search('Original SOURCE/map ' + 'x'*30000,
-                {'request_id': 'original-large-plan'}, schema)
+            # Model a historically accepted input under the old base-only
+            # policy. The new full-input preflight applies only to new sends.
+            await client._run('facts', 'Original SOURCE/map ' + 'x'*70000,
+                {'request_id': 'original-large-plan'}, schema, max_input_chars=100000)
         receipt = h.checkpoints[-1][1]
         assert receipt['session_id'] == 'sesBounded' and receipt['message_id'] == h.message_id
         h.prompt_timeout = False
+        # An already addressed UNKNOWN remains observable even when its frozen
+        # input exceeds a newly enforced bound. No replacement is dispatched.
         binding = {**receipt['binding'], **{key: receipt[key] for key in
             ('session_id', 'message_id', 'phase', 'frozen_prompt', 'frozen_schema')}}
         result = await client.plan_identity_search('Changed packet', binding,
@@ -479,6 +490,7 @@ async def test_large_planner_unknown_readback_uses_original_ids_prompt_and_schem
         assert result['receipt']['message_id'] == receipt['message_id']
         assert result['receipt']['frozen_schema'] == schema
         assert result['receipt']['frozen_prompt'] == receipt['frozen_prompt']
+        assert result['receipt']['input_utf8_bytes'] > 65536
         assert len([1 for method, path, _ in h.requests if method == 'POST' and path == '/session']) == 1
         assert len([1 for method, path, _ in h.requests if path.endswith('prompt_async')]) == 1
         assert len(h.sends) == 1

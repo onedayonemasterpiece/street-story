@@ -332,7 +332,9 @@ class OpenCodeResearch:
         if effective['websearch'] != ('allow' if role == 'search' else 'deny'):
             raise ResearchUnavailable('research_effective_permissions_invalid')
         return {'agent': selected['name'], 'steps': selected['steps'], 'allowed_tools': sorted(allowed),
-                'mcp_count': 0, 'deny_default': True, 'max_output_tokens': output_limit, 'max_tool_bytes': tool_bytes}
+                'mcp_count': 0, 'deny_default': True, 'max_output_tokens': output_limit, 'max_tool_bytes': tool_bytes,
+                '_system_prompt': selected.get('prompt') or
+                    (config.get('agent', {}).get(self.agents[role]) or {}).get('prompt') or ''}
 
     async def _checkpoint(self, binding, receipt):
         if self.checkpoint:
@@ -377,7 +379,7 @@ class OpenCodeResearch:
                                      'completed' if receipt['phase'] in {'completed','failed','response_completed'} else receipt['phase'])
 
     async def plan_identity_search(self, prompt, binding, schema):
-        """Tool-free planning bounds the base capsule; full schema input is admitted/accounted."""
+        """Tool-free planning uses its existing 64K bound on addressed input."""
         return await self._run('facts', prompt, binding, schema, max_input_chars=65536)
 
     async def _run(self, role, prompt, binding, schema, *, snapshot=None, max_input_chars=None):
@@ -388,8 +390,6 @@ class OpenCodeResearch:
         input_limit = self.limits.max_input_chars if max_input_chars is None else max_input_chars
         observing = bool(isinstance(binding, dict) and binding.get('session_id') and binding.get('message_id')
             and binding.get('phase') in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'})
-        if not observing and len(prompt) > input_limit:
-            raise ResearchUnavailable('research_input_too_large')
         if not isinstance(binding, dict) or not binding:
             raise ResearchUnavailable('research_binding_required')
         direct_parts = []
@@ -454,6 +454,33 @@ class OpenCodeResearch:
                    'created_at': time.time(), 'model_id': self.model_id, 'provider_id': self.provider_id}
         receipt['binding'] = dict(binding)
         receipt.update(frozen_prompt=prompt, frozen_schema=schema)
+        def prompt_request():
+            parts = [{'type': 'text', 'text': prompt}]
+            for part in direct_parts:
+                parts.extend([{'type': 'text', 'text': part['label']},
+                              {'type': 'file', 'mime': part['mime_type'],
+                               'filename': part['label'], 'url': part['url']}])
+            return {'messageID': message_id, 'model': {'providerID': self.provider_id, 'modelID': self.model_id},
+                    'agent': self.agents[role], 'parts': parts}
+
+        async def check_input(system_prompt=''):
+            # Images retain their separate existing byte bound. Count every
+            # text part, schema, request field and the attested agent prompt.
+            request = prompt_request()
+            request['parts'] = [part for part in request['parts'] if part['type'] != 'file']
+            encoded = json.dumps({'system': system_prompt, 'request': request},
+                                 ensure_ascii=getattr(self, 'input_json_ensure_ascii', False),
+                                 separators=(',', ':')).encode('utf-8')
+            receipt.update(input_utf8_bytes=len(encoded), input_limit_bytes=input_limit,
+                           input_size_scope='addressed_text_request_plus_attested_agent_prompt_v1')
+            if not observing and len(encoded) > input_limit:
+                receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
+                               error_code='research_input_too_large')
+                await self._checkpoint(binding, receipt)
+                raise ResearchUnavailable('research_input_too_large', dict(receipt))
+
+        # Catch schema oversize before even the read-only isolation requests.
+        await check_input()
         client = self.client
         started = time.monotonic()
         try:
@@ -491,7 +518,10 @@ class OpenCodeResearch:
                 if binding.get('image_preparation'):
                     receipt['image_preparation'] = binding['image_preparation']
             receipt['isolation'] = await self._attest(client, role)
+            system_prompt = receipt['isolation'].pop('_system_prompt')
+            await check_input(system_prompt)
             workload = {'role': role, 'input_chars': len(prompt), 'image_bytes': receipt['input_image_bytes'],
+                        'input_bytes': receipt['input_utf8_bytes'],
                         'max_steps': receipt['isolation']['steps'], 'max_output_chars': self.limits.max_output_chars,
                         'max_output_tokens': receipt['isolation']['max_output_tokens'],
                         'max_search_context_chars': (self.limits.max_search_context_chars
@@ -528,21 +558,13 @@ class OpenCodeResearch:
                 if not already_submitted and receipt['phase'] in {'prompt_intent', 'submitted', 'unknown', 'abort_intent', 'aborted', 'abort_outcome_unknown'}:
                     raise ResearchUnavailable('research_submit_outcome_unknown', receipt)
                 if not already_submitted:
-                    parts = [{'type': 'text', 'text': prompt}]
-                    for part in direct_parts:
-                        parts.extend([{'type': 'text', 'text': part['label']},
-                                      {'type': 'file', 'mime': part['mime_type'],
-                                       'filename': part['label'], 'url': part['url']}])
                     receipt['phase'] = 'prompt_intent'
                     await self._checkpoint(binding, receipt)
                     await lease.before_send({**workload, 'session_id': sid, 'message_id': message_id,
                                              'image_attachments': receipt['image_attachments']})
-                    await self._request(client, 'POST', f'/session/{sid}/prompt_async', json={
-                        'messageID': message_id, 'model': {'providerID': self.provider_id, 'modelID': self.model_id},
-                        'agent': self.agents[role],
-                        # v1.18 prompt.tools replaces session.permission. Keep the
-                        # explicit deny-by-default session policy authoritative.
-                        'parts': parts})
+                    # v1.18 prompt.tools replaces session.permission. Keep the
+                    # explicit deny-by-default session policy authoritative.
+                    await self._request(client, 'POST', f'/session/{sid}/prompt_async', json=prompt_request())
                     receipt['phase'] = 'submitted'
                     await self._checkpoint(binding, receipt)
                 deadline = started + self.limits.timeout_seconds
