@@ -313,7 +313,7 @@ def catalogue_model_context(catalogue):
 def regional_selection_schema(candidate_ids, catalogue):
     ids = list(dict.fromkeys(row['article_id'] for row in catalogue.get('results') or []))
     return {'type':'array', 'maxItems':2, 'items':{'type':'object', 'properties':{
-        'article_id':{'type':'string','enum':ids}, 'candidate_id':{'type':'string','enum':list(candidate_ids)},
+        'article_id':{'type':'string','enum':ids}, 'candidate_id':{'type':'string','enum':list(dict.fromkeys([*candidate_ids, '']))},
         'scope':{'type':'string','maxLength':400}, 'binding_basis':{'type':'string','maxLength':400},
         'physical_binding_resolved':{'type':'boolean'}},
         'required':['article_id','candidate_id','scope','binding_basis','physical_binding_resolved'],
@@ -340,12 +340,17 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
     for selection in selections:
         candidate = catalog.get(selection['candidate_id'])
         aid = selection['article_id']
-        if (aid in seen or not candidate or not str(candidate.get('candidate_id') or '').startswith('osm:')
-                or not candidate_identity_eligible(candidate) or article_candidate(candidate)
-                or (candidate.get('map_object') or {}).get('tags', {}).get('entrance')
-                or selection['physical_binding_resolved'] is not True
+        # Article acquisition must not depend on the model already proving
+        # the physical building. In particular a historical complex or SOURCE
+        # without GPS can provide useful body text before the corpus/wings
+        # are resolved. A nominated observed body is a *lead*, never identity.
+        valid_lead = (selection['candidate_id'] == '' or
+            candidate is not None and str(candidate.get('candidate_id') or '').startswith('osm:')
+            and candidate_identity_eligible(candidate) and not article_candidate(candidate)
+            and not (candidate.get('map_object') or {}).get('tags', {}).get('entrance'))
+        if (aid in seen or not valid_lead
                 or not selection['scope'].strip() or not selection['binding_basis'].strip()):
-            return [], dict(receipt, reason='closed_physical_nomination_required')
+            return [], dict(receipt, reason='unobserved_source_lead_or_invalid_selection')
         seen.add(aid)
         choices.append((cards[aid][0]['canonical_url'], selection, cards[aid]))
     timeout = 20.0
@@ -369,10 +374,84 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
             'title':page.get('title') or variants[0].get('title') or '', 'scope':selection['scope'],
             'address':page.get('address_text') or '',
             'address_provenance':page.get('address_provenance') or '',
-            'binding_basis':selection['binding_basis'], 'lookup_candidate_ids':[selection['candidate_id']],
+            'binding_basis':selection['binding_basis'],
+            'lookup_candidate_ids':[selection['candidate_id']] if selection['candidate_id'] else [],
+            'initial_physical_binding_hypothesis':selection['physical_binding_resolved'],
+            'physical_identity_inferred':False,
             'card_variants':variants, 'fetched_at':page.get('fetched_at'), 'cache_hit':page.get('cache_hit',False)})
     receipt['status'] = 'completed' if len(articles) == len(choices) else 'partial' if articles else 'unavailable'
     return articles, receipt
+
+
+
+async def acquire_architectural_pool_text(service, story, publisher_catalogue,
+        selected_article_ids, *, max_articles=8):
+    """Read 1..8 *actual received* publisher bodies without pre-proving a wing.
+
+    An article retrieval choice is not an acceptance decision. Preserve
+    physical uncertainty and true publisher modern addresses in each article
+    so the later SOURCE+TEXT model can decide which building/corpus fits.
+    Never silently drop overflow articles or pick first two catalog rows.
+    """
+    from .prussia39 import Prussia39Adapter
+    from .research_budget import require_remaining, reserve_work
+    if (not isinstance(selected_article_ids,list) or not selected_article_ids
+            or len(selected_article_ids)>max_articles
+            or len(set(selected_article_ids))!=len(selected_article_ids)):
+        raise ValueError('bounded_distinct_publisher_articles_required')
+    rows=(publisher_catalogue or {}).get('results') or []
+    by_id={}
+    for row in rows:
+        if isinstance(row,dict) and isinstance(row.get('article_id'),str):
+            by_id.setdefault(row['article_id'],[]).append(row)
+    if any(aid not in by_id for aid in selected_article_ids):
+        raise ValueError('unreceived_article_id')
+    urls=[by_id[aid][0].get('canonical_url') for aid in selected_article_ids]
+    if any(not isinstance(url,str) or not url for url in urls):
+        raise ValueError('publisher_article_url_missing')
+    timeout=22.0
+    if hasattr(service,'settings'):
+        timeout=min(timeout,require_remaining(service,story['id'],'identity'))
+        reserve_work(service,story['id'],'pages',list(dict.fromkeys(urls)))
+    async with httpx.AsyncClient(timeout=timeout,follow_redirects=False) as client:
+        adapter=Prussia39Adapter(service.store,client)
+        gate=asyncio.Semaphore(4)
+        async def read(url):
+            async with gate:
+                return await adapter.article(url)
+        fetched=await asyncio.gather(*(read(url) for url in urls))
+    result=[]
+    receipt={'kind':'bounded_multiarticle_architecture',
+        'publisher_query_scope':publisher_catalogue.get('query_scope'),
+        'chosen_article_ids':list(selected_article_ids),
+        'article_acquisitions':[], 'identity_inferred':False}
+    for aid,page in zip(selected_article_ids,fetched):
+        variants=by_id[aid]
+        receipt['article_acquisitions'].append({'article_id':aid,'status':page.get('status'),
+            'source_sha256':page.get('source_sha256')})
+        if (page.get('status')!='completed'
+                or page.get('article_id')!=aid
+                or page.get('raw_body_sha256_verified') is not True
+                or not (page.get('text') or '').strip()):
+            continue
+        body=page['text'][:12_000]
+        result.append({'article_id':aid, 'url':page['canonical_url'],
+            'source_sha256':page['raw_content_sha256'],
+            'text_sha256':hashlib.sha256(body.encode()).hexdigest(),
+            'text':body,'raw_body_sha256_verified':True,
+            'input_kind':'acquired_article_text',
+            'title':page.get('title') or variants[0].get('title') or '',
+            'address':page.get('address_text') or '',
+            'address_provenance':page.get('address_provenance') or '',
+            'card_variants':variants, 'lookup_candidate_ids':[],
+            'physical_identity_inferred':False,
+            'scope':'Publisher body acquired for semantic physical comparison; no corpus implied.',
+            'fetched_at':page.get('fetched_at'),
+            'cache_hit':page.get('cache_hit',False)})
+    receipt['status']=('completed' if len(result)==len(selected_article_ids)
+        else 'partial' if result else 'unavailable')
+    receipt['articles_read']=len(result)
+    return result,receipt
 
 
 async def acquire_selected_wikipedia_text(service, story, candidates, payload, wiki_pages):
