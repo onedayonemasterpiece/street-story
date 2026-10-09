@@ -437,57 +437,52 @@ def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantic
         combine_architectural_decision({}, {'type':'object','made_up_identity':True, **decision}, packet['schema'])
 
 
-def test_t_cannot_accept_a_farther_neighbor_on_verified_camera_geometry():
+def test_closer_map_contour_is_only_an_observed_competitor_not_a_T_veto():
     def body(cid, meters):
-        return {'candidate_id':cid, 'identity_eligible':True,
+        return {'candidate_id':cid,'identity_eligible':True,
             'map_object':{'tags':{'building':'yes'}},
             'boundary_distance_m':meters}
-    subject=body('osm:way:101',50.1)
-    competing=body('osm:way:102',43.6)
-    ignored_artwork={'candidate_id':'osm:node:1',
-        'map_object':{'tags':{'historic':'memorial'}},
-        'boundary_distance_m':1.0}
-    story={'_camera_position_verified':True}
-    decision={'decision':'accepted_architectural_text','candidate_id':subject['candidate_id']}
-    guard=source_subject_competition_guard(
-        story,[subject,competing,ignored_artwork],decision)
-    assert guard['supported'] is False
-    assert guard['closer_physical_count']==1
-    assert guard['closer_candidate_ids']==[competing['candidate_id']]
-    assert guard['reason']=='closer_observed_physical_footprints_need_independent_SOURCE_to_G_link'
+    target=body('osm:way:101',50.1)
+    nearer=body('osm:way:102',43.6)
+    monument={'candidate_id':'osm:node:1','identity_eligible':True,
+        'map_object':{'tags':{'historic':'memorial'}},'boundary_distance_m':1.0}
+    decision={'decision':'accepted_architectural_text','candidate_id':target['candidate_id']}
+    result=source_subject_competition_guard(
+        {'_camera_position_verified':True},[target,nearer,monument],decision)
+    assert result['supported'] is True and result['applicable'] is False
+    assert result['reason']=='proximity_is_not_SOURCE_subject_evidence'
+    assert result['potential_competitor_count']==1
+    assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
+    assert result['potential_competitors'][0]['proximity_not_visibility'] is True
 
 
-def test_t_proximity_guard_does_not_override_an_unverified_camera_or_nearest_building():
-    target={'candidate_id':'osm:way:1','identity_eligible':True,
-        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':21.1}
-    other={'candidate_id':'osm:way:2','identity_eligible':True,
-        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':29.1}
-    claim={'decision':'accepted_architectural_text','candidate_id':'osm:way:1'}
-    guard=source_subject_competition_guard({'_camera_position_verified':True},
-        [target,other],claim)
-    assert guard['supported'] is True
-    assert guard['reason']=='no_closer_observed_footprint_competes_at_verified_camera_position'
-    guard=source_subject_competition_guard({'_camera_position_verified':False},
-        [other,target],claim)
-    assert guard['supported'] is True and guard['applicable'] is False
-    assert guard['reason']=='camera_geography_not_verified_no_distance_veto'
-    guard=source_subject_competition_guard({'_camera_position_verified':True},
-        [{k:v for k,v in target.items() if k!='boundary_distance_m'},other],claim)
-    assert guard['supported'] is True and guard['applicable'] is False
-    assert guard['reason']=='no_measured_contour_distance_no_distance_veto'
-
-
-def test_t_closer_candidates_are_not_eliminated_by_fake_llm_alternative_rejections():
-    target={'candidate_id':'osm:way:7','identity_eligible':True,
-        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':22.0}
-    foreground={'candidate_id':'osm:way:8','identity_eligible':True,
-        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':18.5}
+def test_unknown_GPS_and_unmeasured_distances_do_not_block_architectural_T():
+    body=lambda cid,meters:{'candidate_id':cid,'identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},
+        **({'boundary_distance_m':meters} if meters is not None else {})}
     decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
-        'material_alternatives':[{'candidate_id':'osm:way:8',
-            'reason':'One model says facade 8 looks different'}],
         'material_alternatives_resolved':True}
-    evidence=source_subject_competition_guard(
-        {'_camera_position_verified':True},[target,foreground],decision)
-    assert evidence['supported'] is False
-    # The model's own self-assessed rejection cannot establish which body SOURCE
-    # depicts; that requires independently sufficient G or a reference proof.
+    for camera_verified in (True,False):
+        for distances in ((22.0,18.5),(18.5,22.0),(None,18.5)):
+            a,b=body('osm:way:7',distances[0]),body('osm:way:8',distances[1])
+            result=source_subject_competition_guard(
+                {'_camera_position_verified':camera_verified},[a,b],decision)
+            assert result['supported'] is True
+            assert result['applicable'] is False
+            assert result['potential_competitor_count']==1
+
+
+def test_model_self_rejection_never_turns_distance_into_physical_proof():
+    target={'candidate_id':'osm:way:7','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':40.0}
+    nearer={'candidate_id':'osm:way:8','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':25.0}
+    for reason in ('Clearly differs in gable geometry',''):
+        decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
+            'material_alternatives':[{'candidate_id':'osm:way:8','reason':reason}]}
+        result=source_subject_competition_guard(
+            {'_camera_position_verified':True},[target,nearer],decision)
+        assert result['supported'] is True
+        assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
+        # Whether the model's architecture-based alternative rejection is valid
+        # remains a question for LLM semantics + strict source quote proof.
