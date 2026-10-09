@@ -170,7 +170,11 @@ def frozen_physical_observations(context):
 def replay_closed(cid, model):
     """Revalidate ONE completed provider answer without another image-model send."""
     case=ROOT/'cases'/str(cid)
-    path=case/('inference-'+model.replace('/','-'))
+    path=case/('inference-'+model.replace('/','-')+'-bearing-v2')
+    if not path.exists():
+        old=case/('inference-'+model.replace('/','-'))
+        if old.exists():
+            path=old
     raw_path=path/'closed-model-response.json'
     receipt_path=path/'provider-intent.json'
     options_path=path/'sent-options.json'
