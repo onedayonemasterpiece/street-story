@@ -368,11 +368,16 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     else:
         final=('accepted_T_identity' if model_effect=='confirmed' else
             'active_shortlist' if model_effect=='narrowed' else 'no_useful_text')
-    effective = retained if final in {'active_shortlist','conditional_T_shortlist'} else (
+    # A model that asserted "confirmed" but failed real SOURCE/publisher/
+    # physical proof did NOT provide an authorizing narrow. Keep its body as
+    # a model-authored RESEARCH PRIORITY while retaining the entire G+T active
+    # peer group. Otherwise a wrong overconfident wing would evict the true
+    # subject into reserve and falsely report improved T recall.
+    effective = retained if final=='active_shortlist' else (
         [accepted_candidate_id] if final=='accepted_T_identity' else before)
     deferred=[cid for cid in before if cid not in effective and cid not in contradicted]
     reserved=list(dict.fromkeys([*prepared['original_reserve_ids'],
-        *contradicted,*deferred]))
+        *(cid for cid in contradicted if cid not in effective),*deferred]))
     if final=='unconfirmed_model_claim':
         effective=before
         reserved=prepared['original_reserve_ids']
@@ -380,8 +385,7 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     # A conditional model-nominated one-body priority is not a factual
     # negative finding against any other physical body. Even an explicit
     # model contradiction is provisional when physical scope failed proof.
-    is_reduced=(len(effective)<len(before) and final in {
-        'active_shortlist','conditional_T_shortlist'})
+    is_reduced=(len(effective)<len(before) and final=='active_shortlist')
     # A T model's one-body nomination is NOT a REF whitelist when the
     # source-to-individual-body proof failed. Carry *independent closed*
     # prior G/T physical nominees into the targeted comparison without
@@ -412,7 +416,7 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
             {'candidate_id':cid,'review_state':'not_selected_not_refuted'}
             for cid in deferred]
     expand=(model_result['new_map_evidence_needed']
-        or final=='unconfirmed_model_claim')
+        or final in {'unconfirmed_model_claim','conditional_T_shortlist'})
     explanation=model_result['reserve_expansion_reason']
     if final in {'unconfirmed_model_claim','conditional_T_shortlist'}:
         explanation=('T proposed one physical body but its full publisher/OSM/'
@@ -481,6 +485,8 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'G_group_not_ground_truth':True,
         'T_proof_accepted':final=='accepted_T_identity',
         'conditional_T_research_priority_not_identity':final=='conditional_T_shortlist',
+        'model_proposed_research_priority_ids':list(retained)
+            if final in {'conditional_T_shortlist','unconfirmed_model_claim'} else [],
         'accepted_physical_id':accepted_candidate_id if final=='accepted_T_identity' else None,
         'source_support':copy.deepcopy(model_result['supporting_observations']),
         'next_distinguishing_question':(
@@ -552,10 +558,15 @@ def to_existing_research_priority(funnel_result, actual_articles):
     if not reason:
         # Pure transport default; no inferred scene-level fact.
         reason='Source-bound T result retained for reversible physical research.'
-    if funnel_result.get('request_reserve_expansion'):
+    # Research order: already observed images, a model-defined targeted
+    # image search, then wider map only if these do not settle physical scope.
+    # Widening remains requested in the machine receipt and is not forgotten.
+    if acquired_images:
+        next_step='existing_images'
+    elif image_goals:
+        next_step='targeted_search'
+    elif funnel_result.get('request_reserve_expansion'):
         next_step='expand_reserve'
-    elif image_goals or acquired_images:
-        next_step='existing_images' if acquired_images else 'targeted_search'
     else:
         next_step='text'
     contradictions=[]
