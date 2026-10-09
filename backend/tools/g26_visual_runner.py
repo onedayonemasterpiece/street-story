@@ -36,6 +36,14 @@ from street_story.identity_plan_diagnostics import provider_outcome
 ROOT=Path('/home/dev/artifacts/street-story/20261009-G-spatial-v3')
 ALL=[102,*range(104,113),*range(118,134)]
 MODEL='gemini-3.8-flash'
+OTHER_QUALIFIED_MODELS={'gemini-3.1-flash-lite','gemini-3.5-flash-lite'}
+
+
+def model_dir(base, model, *, detail=False):
+    if model!=MODEL and model not in OTHER_QUALIFIED_MODELS:
+        raise ValueError('model_not_in_stock_qualified_google_routes')
+    tag=('' if model==MODEL else '-'+model)
+    return base/('model-G-v3'+tag+('-detail' if detail else ''))
 MODEL_PHASE='G-visual-spatial-options-v3'
 MAX_INITIAL_SENDS=5
 UNKNOWN_SEND_STATES={'send_intent','unknown','submitted','possibly_sent','failed'}
@@ -175,7 +183,7 @@ def load_case(cid):
 
 
 
-def prepare_model_detail(cid, base, initial_input, initial_packet):
+def prepare_model_detail(cid, base, initial_input, initial_packet, *, model=MODEL):
     """Create exactly one model-chosen enlarged map, never an answer-key zoom."""
     from jsonschema import Draft202012Validator
     from street_story.identity_spatial_choice import visual_spatial_choice_schema
@@ -183,7 +191,7 @@ def prepare_model_detail(cid, base, initial_input, initial_packet):
     from street_story.camera_hints import read_camera_hints
     from g26_prepare_inputs import SOURCE_INDEX, observed_osm
 
-    first=base/'model-G-v3'
+    first=model_dir(base,model)
     marker=first/'provider-intent.json'
     raw=first/'closed-model-response.json'
     if not marker.is_file() or not raw.is_file():
@@ -250,17 +258,18 @@ def report():
     for cid in ALL:
         base,inp,pkt=load_case(cid)
         original=base/'model-G-v3'
-        detail=base/'model-G-v3-detail'
-        output=detail if (detail/'provider-intent.json').is_file() else original
+        candidates=[model_dir(base,model,detail=detail)
+            for model in [MODEL,*sorted(OTHER_QUALIFIED_MODELS)]
+            for detail in (False,True)]
+        completed=[stage for stage in candidates if (stage/'result.json').exists()]
+        output=completed[-1] if completed else next(
+            (stage for stage in candidates if (stage/'provider-intent.json').exists()),original)
         result=output/'result.json'
         marker=output/'provider-intent.json'
         data=json.loads(result.read_text()) if result.exists() else {}
         sent=json.loads(marker.read_text()) if marker.exists() else {}
-        requests=[]
-        for stage in (original,detail):
-            file=stage/'provider-intent.json'
-            if file.is_file():
-                requests.append(json.loads(file.read_text()))
+        requests=[json.loads((stage/'provider-intent.json').read_text())
+            for stage in candidates if (stage/'provider-intent.json').exists()]
         rows.append({'photo':cid,
             'input_status':(inp or {}).get('status','missing_geopoint'),
             'camera_basis':(inp or {}).get('camera_point_basis'),
@@ -282,8 +291,8 @@ def report():
     return rows
 
 
-def replay(cid,base,inp,pkt,*,detail=False):
-    out=base/('model-G-v3-detail' if detail else 'model-G-v3')
+def replay(cid,base,inp,pkt,*,detail=False,model=MODEL):
+    out=model_dir(base,model,detail=detail)
     receipt=json.loads((out/'provider-intent.json').read_text())
     if receipt.get('phase')!='response_closed':
         return {'id':cid,'status':'provider_no_closed_response',
@@ -314,23 +323,23 @@ def replay(cid,base,inp,pkt,*,detail=False):
     return result
 
 
-async def run_one(cid,*,send=False,detail=False):
+async def run_one(cid,*,send=False,detail=False,model=MODEL):
     base,inp,pkt=load_case(cid)
     if inp is None or inp.get('status')!='ready':
         return {'id':cid,'status':'missing_geopoint'}
     if pkt is None:
         return {'id':cid,'status':'no_spatial_options'}
     if detail:
-        inp,pkt=prepare_model_detail(cid,base,inp,pkt)
+        inp,pkt=prepare_model_detail(cid,base,inp,pkt,model=model)
         if inp is None:
             return {'id':cid,'status':'no_model_nominated_detail'}
-    out=base/('model-G-v3-detail' if detail else 'model-G-v3')
+    out=model_dir(base,model,detail=detail)
     out.mkdir(exist_ok=True,mode=0o700)
     marker=out/'provider-intent.json'
     if marker.exists():
         data=json.loads(marker.read_text())
         if data.get('phase')=='response_closed':
-            return replay(cid,base,inp,pkt,detail=detail)
+            return replay(cid,base,inp,pkt,detail=detail,model=model)
         return {'id':cid,'status':'frozen_provider_intent_no_resend',
                 'phase':data.get('phase')}
     compact=model_input(pkt)
@@ -341,7 +350,7 @@ async def run_one(cid,*,send=False,detail=False):
     map_data=Path(inp['map_file']).read_bytes()
     if not send:
         return {'id':cid,'dry_run':True,'status':'ready_to_send',
-          'model':MODEL,'model_payload_bytes':len(context_json.encode()),
+          'model':model,'model_payload_bytes':len(context_json.encode()),
           'total_prompt_bytes':len(prompt.encode()),
           'schema_bytes':len(json.dumps(schema).encode()),
           'source_model_bytes':len(source),'map_bytes':len(map_data),
@@ -360,7 +369,7 @@ async def run_one(cid,*,send=False,detail=False):
     for key,value in qualification.get('caches',{}).items():
         service.store.cache_put(key,value,3600)
     route=next((r for r in service.providers.gemini.web_search_routes
-                if r[0]==MODEL),None)
+                if r[0]==model),None)
     if route is None:
         return {'id':cid,'status':'strong_visual_route_not_configured'}
     model,pool,quota,executor=route
@@ -398,7 +407,7 @@ async def run_one(cid,*,send=False,detail=False):
          system_instruction='Use actual SOURCE pixels and the separate neutral OSM MAP. '
             'Return only your grounded model-selected option IDs or uncertainty. '
             'No imagined 3D features, yaw or correct-ID priors.',
-         max_output_tokens=6000)
+         max_output_tokens=(6000 if model==MODEL else 3072))
     async def call(key,timeout):
         return await service.providers.gemini._generate(
             key,timeout,
@@ -429,13 +438,14 @@ async def run_one(cid,*,send=False,detail=False):
       usage_total_tokens=getattr(getattr(reply,'usage_metadata',None),'total_token_count',None),
       elapsed_ms=round((time.monotonic()-t0)*1000))
     record()
-    return replay(cid,base,inp,pkt,detail=detail)
+    return replay(cid,base,inp,pkt,detail=detail,model=model)
 
 
 async def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--ids',type=int,nargs='*',default=[])
     parser.add_argument('--send',action='store_true')
+    parser.add_argument('--model',choices=[MODEL,*sorted(OTHER_QUALIFIED_MODELS)],default=MODEL)
     parser.add_argument('--replay',action='store_true')
     parser.add_argument('--detail',action='store_true')
     parser.add_argument('--report',action='store_true')
@@ -457,13 +467,13 @@ async def main():
             if args.replay:
                 base,inp,pkt=load_case(id)
                 if args.detail:
-                    inp,pkt=prepare_model_detail(id,base,inp,pkt)
+                    inp,pkt=prepare_model_detail(id,base,inp,pkt,model=args.model)
                 if inp is None or pkt is None:
                     value={'id':id,'status':'no_model_nominated_detail'}
                 else:
-                    value=replay(id,base,inp,pkt,detail=args.detail)
+                    value=replay(id,base,inp,pkt,detail=args.detail,model=args.model)
             else:
-                value=await run_one(id,send=args.send,detail=args.detail)
+                value=await run_one(id,send=args.send,detail=args.detail,model=args.model)
             rows.append(value)
             print(json.dumps({'photo':id,'result':{
                 k:v for k,v in value.items() if k not in ('proof','source_observations','alternatives')
