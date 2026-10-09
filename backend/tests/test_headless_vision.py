@@ -217,3 +217,53 @@ async def test_nonfinite_confidence_or_blank_subject_resolution_is_not_valid(val
     verdict.update(values)
     with pytest.raises(MalformedProviderResponse):
         await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure, sent, expected_calls', [
+    ('quota', False, 2), ('timeout', False, 2), ('timeout', True, 1),
+    ('control', False, 1), ('all_quota', False, 2),
+])
+async def test_real_visual_executor_only_fails_over_before_send(tmp_path, failure, sent, expected_calls):
+    from pydantic import SecretStr
+    from street_story.db import Store
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool
+    from street_story.quota import SharedQuotaDenied
+    provider, verdict, context, _calls, _first, _second = setup()
+    store = Store(tmp_path / 'visual.sqlite3')
+    pool = GeminiKeyPool(store, (SecretStr('key-a'), SecretStr('key-b')), 'gemini-primary')
+    provider.client.research_routes = [('gemini-primary', pool, None, GeminiExecutor(pool))]
+    calls = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(key)
+        if len(calls) == 1 or failure == 'all_quota':
+            if sent:
+                kwargs['before_provider_send']()
+            if failure in {'quota', 'all_quota'}:
+                raise SharedQuotaDenied(60)
+            if failure == 'control':
+                raise GeminiUnavailable(2000, 'shared_control_unavailable')
+            raise TimeoutError
+        kwargs['before_provider_send']()
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=None, response_id='closed')
+
+    provider.client._generate = generate
+    if expected_calls == 2 and failure != 'all_quota':
+        response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+        assert [a['provider_send_state'] for a in response['receipt']['model_attempts']] == [
+            'not_sent', 'response_closed']
+    else:
+        with pytest.raises(GeminiUnavailable) as failed:
+            await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+        if sent:
+            assert failed.value.receipt['category'] == 'visual_outcome_unknown'
+        assert all(a['provider_send_state'] == ('possibly_sent' if sent else 'not_sent')
+                   for a in failed.value.receipt['model_attempts'])
+    assert len(calls) == expected_calls
+    assert pool.snapshot()['in_flight'] == 0
+    if expected_calls == 1:
+        with store.connection() as db:
+            other = db.execute('SELECT consecutive_failures,minute_used FROM gemini_key_health '
+                               'WHERE key_id=? AND operation=?', (pool.ids[1], 'grounded_research')).fetchone()
+        assert tuple(other) == (0, 0)

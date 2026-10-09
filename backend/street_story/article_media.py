@@ -689,7 +689,33 @@ async def load_article_reference(client, candidate, raw, *, resolver=resolve_pub
     descriptor = next((item for item in candidate.get('article_media', []) if item.get('image_url') == raw), None)
     if not descriptor:
         raise ValueError('article_media_not_extracted')
-    target, mime, data = await fetch_public(client, raw, MAX_DOWNLOAD_BYTES, resolver=resolver)
+    selected = raw
+    detail_result = 'not_requested'
+    detail = descriptor.get('detail_page_url')
+    caption = descriptor.get('alt')
+    if detail and caption:
+        # Follow only the publisher's received link to this photo. Literal
+        # caption equality associates representations of that photo; it never
+        # decides which building is depicted or whether SOURCE matches REF.
+        try:
+            page, _mime, body = await fetch_public(client, detail, MAX_PAGE_BYTES, resolver=resolver)
+            _title, entries = extract_media(body, page)
+            matching = {item['image_url'] for item in entries if item.get('alt') == caption}
+            if len(matching) == 1:
+                selected = matching.pop()
+                detail_result = 'resolved'
+            else:
+                detail_result = 'ambiguous'
+        except (httpx.HTTPError, ValueError, TimeoutError):
+            detail_result = 'unavailable'
+    try:
+        target, mime, data = await fetch_public(client, selected, MAX_DOWNLOAD_BYTES, resolver=resolver)
+    except (httpx.HTTPError, ValueError, TimeoutError):
+        if selected == raw:
+            raise
+        target, mime, data = await fetch_public(client, raw, MAX_DOWNLOAD_BYTES, resolver=resolver)
+        detail_result = 'image_unavailable'
     if mime not in {'image/jpeg', 'image/png', 'image/webp'} or not data:
         raise ValueError('article_media_not_image')
-    return (mime, data), {**descriptor, 'resolved_image_url': target, 'retrieval_method': 'http_raw_ram'}
+    return (mime, data), {**descriptor, 'resolved_image_url': target, 'retrieval_method': 'http_raw_ram',
+                         'detail_resolution': detail_result}

@@ -66,13 +66,19 @@ class SharedQuotaGate:
             raise self.unavailable()
         own = self.http is None
         client = self.http or httpx.AsyncClient(timeout=3, follow_redirects=False)
+        started = time.monotonic()
         try:
             async with asyncio.timeout(4):
                 response = await client.request(method, self.url+'/rest/v1/'+path,
                     headers={'apikey':reveal(self.token), 'Authorization':'Bearer '+reveal(self.token)}, **kwargs)
                 response.raise_for_status()
                 return response.json() if response.content else None
-        except (httpx.HTTPError, ValueError, TimeoutError):
+        except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+            response = getattr(exc, 'response', None)
+            self.pool.event('shared_control_request_failed', 'shared_model',
+                method=method, endpoint_kind='rpc' if path.startswith('rpc/') else 'registry',
+                error_type=type(exc).__name__, status_code=getattr(response, 'status_code', None),
+                duration_ms=round((time.monotonic() - started) * 1000))
             raise self.unavailable() from None
         finally:
             if own:

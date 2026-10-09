@@ -245,12 +245,17 @@ class OpenCodeResearch:
         self.agents = agent_names or {role: 'street-story-' + role for role in ('search', 'vision', 'facts')}
 
     @staticmethod
-    async def _load_public_image(url):
+    async def _load_public_image(url, *, descriptor=None):
         from .reference_image_codec import validate_reference_resolution
         from .article_media import fetch_public
         from .reference_image_codec import MAX_DOWNLOAD_BYTES
         async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
-            _target, mime, raw = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+            if descriptor is not None:
+                from .article_media import load_article_reference
+                (mime, raw), resolved = await load_article_reference(client, {'article_media': [descriptor]}, url)
+                descriptor.update(resolved)
+            else:
+                _target, mime, raw = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
         validate_reference_resolution(raw)
         return mime, raw
 
@@ -492,7 +497,8 @@ class OpenCodeResearch:
                 try:
                     for part in direct_parts:
                         if part['bytes'] is None:
-                            mime, raw = await self.public_image_loader(part['url'])
+                            details = {'descriptor': part['descriptor']} if 'descriptor' in part else {}
+                            mime, raw = await self.public_image_loader(part['url'], **details)
                             if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not raw:
                                 raise ValueError('reference_not_image')
                             part = {**part, 'mime_type': mime, 'bytes': raw,
@@ -506,6 +512,7 @@ class OpenCodeResearch:
                                    error_type=type(exc).__name__)
                     raise ResearchUnavailable('research_image_reference_unavailable', receipt) from exc
                 direct_parts = resolved
+                receipt['reference_acquisitions'] = [part['descriptor'] for part in direct_parts if 'descriptor' in part]
                 receipt.update(image_transport='inline_data_uri_v1', image_preparation=MODEL_PREPARATION,
                                input_image_bytes=sum(len(part['bytes']) for part in direct_parts))
                 receipt['binding']['image_preparation'] = MODEL_PREPARATION

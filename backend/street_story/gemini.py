@@ -259,7 +259,8 @@ class GeminiExecutor:
         return await self.execute(operation, call, call_timeout=self.pool.policy.attempt_timeout)
 
     async def execute(self, operation: str, call: Callable[[str, float], Awaitable[T]],
-                      *, call_timeout: float | None = None) -> T:
+                      *, call_timeout: float | None = None,
+                      can_failover: Callable[[], bool] | None = None) -> T:
         started = time.monotonic()
         attempted: set[str] = set()
         while len(attempted) < min(len(self.pool.keys), self.pool.policy.max_failover_keys):
@@ -295,6 +296,11 @@ class GeminiExecutor:
                                 latency_ms=round((time.monotonic()-call_started)*1000), failover_count=len(attempted)-1)
                 if failure.permanent and not failure.block_model:
                     raise PermanentProviderError('gemini:'+failure.category) from None
+                if can_failover is not None and not can_failover():
+                    # The adapter owns the addressed request's send boundary.
+                    # Do not reserve or penalize another key after an outcome
+                    # that must be recovered through the original request.
+                    raise self.pool.unavailable(operation) from None
                 continue
             self.pool.finish(key_id, operation, None)
             self.pool.event('success', operation, key_id, latency_ms=round((time.monotonic()-call_started)*1000), failover_count=len(attempted)-1)

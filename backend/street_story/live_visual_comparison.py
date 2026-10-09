@@ -94,7 +94,7 @@ class LiveVisualComparisonMixin:
             if not url or unsupported_reference_url(url):
                 continue
             reference_id = 'ref_' + uuid.uuid5(uuid.NAMESPACE_URL, str(candidate['candidate_id']) + '\n' + url).hex
-            allowed = ('image_url', 'article_url', 'kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title')
+            allowed = ('image_url', 'article_url', 'kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title', 'detail_page_url')
             media = [{key: m[key] for key in allowed if key in m} for m in candidate.get('article_media', []) if m.get('image_url') == supplied]
             copied = {key: value for key, value in candidate.items() if key not in
                 {'reference_evidence', 'model_image_sha256', 'image_sha256', 'source_sha256'}}
@@ -381,7 +381,7 @@ class LiveVisualComparisonMixin:
             'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name'],
                 'source_url': c['reference_image_urls'][0],
                 **({'reference_id': c['reference_id'], 'article_url': c.get('url'),
-                    'context': [{key: media[key] for key in ('alt','figcaption','section_heading','context_text') if key in media}
+                    'context': [{key: media[key] for key in ('alt','figcaption','section_heading','context_text','detail_page_url') if key in media}
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': physical_packet,

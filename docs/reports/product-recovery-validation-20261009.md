@@ -3,7 +3,7 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
-Current `62fb7ad` cold batch produced an actual architectural-text identity for
+The `62fb7ad` cold batch produced an actual architectural-text identity for
 120 at111.640s and its first eligible claim at163.438s; eight canonical eligible
 claims and natural terminal at401.3s meet the time/minimum gates. Its object has
 no owner-labelled expected ID, so that accuracy gate remains explicitly unset.
@@ -17,8 +17,38 @@ review completed. After that review, a known-failure continuation on the same SH
 saved the615-character draft, accepted30.077s prepared PCM (301/301 acknowledgements,
 max0.372s), refined the evening concept/text, generated and inspected a1,809,996-byte
 preview, acknowledged Stop and preserved selection/source/text on reopening.
-The original failed attempt remains retained: this is recovery E2E, not an original
-cold-first-attempt PASS, public WSS, Android or physical-microphone evidence.
+The original failed attempt remains retained. This is mechanical recovery E2E,
+not a product PASS: an ordinary same-SOURCE upload on `77d4222` accepted a
+different physical body (`133035135`, versus the first story's `96057156`).
+Canonical POI/fact reuse failed. The bodies have distinct footprints and addresses;
+aliases have not been established, and the unlabeled photo has no agreed accuracy
+expectation. The continuation is explicitly `MECHANICAL_PASS_IDENTITY_UNCONFIRMED`.
+Prepared PCM is not public WSS, Android or physical-microphone evidence.
+
+Exact `77d4222` full backend verification: 2677 passed, 2 skipped in 827.33s.
+The hosted backend job was cancelled at its 15-minute job limit during pytest;
+this is not a hosted green check. Its Android checks and emulator passed. The
+workflow allowance is now 25 minutes to accommodate installation plus the suite;
+product identity/fact/usefulness deadlines remain unchanged.
+
+The exact-version second corpus group (109/110/112/118/121/122/123/127/128/131/133)
+finished with no established identities. Four Native SOURCE/MAP responses closed;
+the later cases failed resource-controller admission before dispatch. Fresh-process
+Native comparison remained available, so the shared failure's cause is unresolved.
+These blocked cases do not count as measured recognition decisions or accuracy.
+
+Actual SOURCE130/full publisher REF closed through the existing Native comparator
+as mismatch (confidence 0.97, 12.04s), without committing identity. This validates
+the negative pair, not automatic selection of the correct body. Google's registered
+reasoning comparator was denied before send at the first key's RPD limit. A fixed
+one-key restriction in the REF adapter incorrectly prevented trying independently
+admitted keys. The existing executor now permits key failover only before any send;
+regressions also prove UNKNOWN, shared-controller failure and common quota denial
+do not trigger duplicate sends or penalize an untouched key. Article photo-detail
+links now survive the queue and let existing public readers retrieve a uniquely
+associated full image by a received link; no filename guessing or semantic
+identity decision is performed in code. 188 affected tests passed. Runtime model
+qualification and the negative/positive control gates remain mandatory.
 
 Full offline `62fb7ad` had2663 passes,10 failures and2 skips. Follow-up fixes keep
 the positive T binding enum separate from the complete reserve-alternative enum,

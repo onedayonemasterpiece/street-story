@@ -16,7 +16,7 @@ jobs:
     defaults:
       run:
         working-directory: backend
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

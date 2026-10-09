@@ -132,13 +132,18 @@ def safe_rpc_message(exc):
     return message[:512]
 
 
-async def native_public_image(url):
+async def native_public_image(url, *, descriptor=None):
     """Existing public DNS/redirect reader, RAM only; Codex requires inline images."""
     import httpx
     from .article_media import fetch_public
     from .reference_image_codec import MAX_DOWNLOAD_BYTES, validate_reference_resolution
     async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
-        _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+        if descriptor is not None:
+            from .article_media import load_article_reference
+            (mime, data), resolved = await load_article_reference(client, {'article_media': [descriptor]}, url)
+            descriptor.update(resolved)
+        else:
+            _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
     if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
         raise PermanentProviderError('native_vision:reference_not_image')
     try:
@@ -344,7 +349,8 @@ class NativeVisionProvider:
             for part in image_parts:
                 url = part['url']
                 if inline and part['bytes'] is None:
-                    mime, data = await self.public_image_loader(url)
+                    details = {'descriptor': part['descriptor']} if 'descriptor' in part else {}
+                    mime, data = await self.public_image_loader(url, **details)
                     if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
                         raise PermanentProviderError('native_vision:reference_not_image')
                     part['bytes'], part['mime_type'] = data, mime
@@ -355,6 +361,8 @@ class NativeVisionProvider:
                 elif inline and part['bytes'] is not None:
                     url = f'data:{part["mime_type"]};base64,{base64.b64encode(part["bytes"]).decode("ascii")}'
                 input_parts.extend([{'type': 'text', 'text': part['label']}, {'type': 'image', 'url': url}])
+            if not submitted:
+                receipt['reference_acquisitions'] = [dict(part['descriptor']) for part in image_parts if 'descriptor' in part]
         except (httpx.HTTPError, ValueError, PermanentProviderError) as exc:
             # A public REF download is before Native admission/turn submission.
             # Reject only this unsent reference, not the POI or independent peers.

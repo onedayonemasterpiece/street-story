@@ -82,7 +82,7 @@ class HeadlessVisionProvider:
     def available(self):
         return bool(self._verified_routes())
 
-    async def _load_public_reference(self, url):
+    async def _load_public_reference(self, url, *, descriptor=None):
         # Reuse the existing validated public HTTP reader. Raw bytes live only
         # for this operation; GenerateContent receives separate inline parts.
         import httpx
@@ -90,7 +90,12 @@ class HeadlessVisionProvider:
         from .reference_image_codec import MAX_DOWNLOAD_BYTES, validate_reference_resolution
         async with httpx.AsyncClient(timeout=8, follow_redirects=False,
                 headers={'User-Agent': 'StreetStory/0.1 visual-reference'}) as client:
-            _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+            if descriptor is not None:
+                from .article_media import load_article_reference
+                (mime, data), resolved = await load_article_reference(client, {'article_media': [descriptor]}, url)
+                descriptor.update(resolved)
+            else:
+                _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
         if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
             raise PermanentProviderError('headless_vision:reference_not_image')
         try:
@@ -225,7 +230,8 @@ class HeadlessVisionProvider:
                     if resolved_parts is None:
                         materialized = []
                         for part in image_parts:
-                            mime, data = (part['mime_type'], part['bytes']) if part['bytes'] is not None else await self._load_public_reference(part['url'])
+                            details = {'descriptor': part['descriptor']} if 'descriptor' in part else {}
+                            mime, data = (part['mime_type'], part['bytes']) if part['bytes'] is not None else await self._load_public_reference(part['url'], **details)
                             from .reference_image_codec import normalize_reference
                             mime, data = await asyncio.to_thread(normalize_reference, data)
                             materialized.append({**part, 'mime_type': mime, 'bytes': data})
@@ -301,21 +307,13 @@ class HeadlessVisionProvider:
 
             logger.info('headless_vision_attempt_started %s', json.dumps(fields, sort_keys=True))
             try:
-                effective_executor = executor
-                if getattr(executor, 'pool', None) is not None:
-                    # Reuse the same pool, health/admission and executor. A view
-                    # limits each visual unit to one send per route, without
-                    # changing shared policy for concurrent pair requests.
-                    from dataclasses import replace
-                    from .gemini import GeminiExecutor
-                    class PoolView:
-                        policy = replace(executor.pool.policy, max_failover_keys=1)
-                        def __getattr__(self, name):
-                            return getattr(executor.pool, name)
-                    effective_executor = GeminiExecutor(PoolView())
-                result, response = await effective_executor.execute('grounded_research', call)
+                failover = ({'can_failover': lambda: not any(
+                    attempt['model'] == model and attempt['provider_send_state'] != 'not_sent'
+                    for attempt in model_attempts)} if getattr(executor, 'pool', None) is not None else {})
+                result, response = await executor.execute('grounded_research', call, **failover)
             except GeminiUnavailable as exc:
-                if any(attempt.get('category') in {
+                if any(attempt.get('provider_send_state') == 'possibly_sent'
+                       and attempt.get('category') in {
                         'timeout', 'network', 'sdk_transient', 'cancelled'} for attempt in model_attempts):
                     exc.receipt = {'provider': 'google', 'transport': TRANSPORT,
                                    'workload': 'identity_comparison', 'category': 'visual_outcome_unknown',
@@ -356,6 +354,7 @@ class HeadlessVisionProvider:
                 image_parts=[{'label': part['label'], 'mime_type': part['mime_type'],
                               'transport': 'inline_data'} for part in resolved_parts],
                 reference_mapping=visual_context_without_image_hashes(deepcopy(story['_visual_reference_mapping'])))
+            receipt['reference_acquisitions'] = [part['descriptor'] for part in resolved_parts if 'descriptor' in part]
             logger.info('headless_vision_attempt_finished %s', json.dumps({**fields, 'status': result['status'],
                 'duration_ms': receipt['duration_ms']}, sort_keys=True))
             return {'result': result, 'receipt': receipt}
