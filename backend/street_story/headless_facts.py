@@ -591,9 +591,10 @@ class HeadlessFacts:
                     "ON o.story_id=a.story_id AND o.assertion_id=a.assertion_id "
                     "WHERE a.story_id=? AND o.run_id=? AND a.eligibility='unreviewed' LIMIT 1",
                     (story['id'], run_id)).fetchone()
-            if not complete and manifest_exhausted(manifest) and not self._unreviewed_actionable(job, run_id):
+            if ((not complete or unreviewed) and manifest_exhausted(manifest)
+                    and not self._unreviewed_actionable(job, run_id)):
                 return self._finish(job, run_id, control_revision,
-                                    'source_manifest_exhausted' if not complete else 'source_batches_reviewed')
+                                    'source_manifest_exhausted' if not complete else 'fact_review_exhausted')
             if complete and unreviewed:
                 # Keep a durable retry while the backend verifier owns this
                 # scope. A closed client must never be required to resume it.

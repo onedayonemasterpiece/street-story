@@ -419,8 +419,10 @@ async def test_review_progress_never_shortens_unknown_or_cooldown_wait(tmp_path,
     if blocked in {'unknown', 'exhausted'}:
         session = SimpleNamespace(id='unknown-wait', resource_id=job['story_id'], actor=None,
                                   closed=False, model='fixture', state={})
-        packet = review_packets.read(harness.adapter, session, {'run_id': RUN, '_parallel_candidate_review': True})
-        svc.store.checkpoint_put(job['id'], 'headless_fact_review:blocked',
+        with svc.store.connection() as db:
+            ids = review_packets.pending_candidates(db, job['story_id'], RUN)
+        packet, unit, _ = HeadlessFactReview(harness)._prepare_packet(job, RUN, session, ids)
+        svc.store.checkpoint_put(job['id'], 'headless_fact_review:' + unit,
                                  {'phase': blocked, 'packet_ref': packet['packet_ref']})
     elif blocked == 'cooldown':
         svc.store.checkpoint_put(job['id'], 'headless_fact_review:blocked',

@@ -294,19 +294,32 @@ class HeadlessFactReview:
                      job['story_id'], unit)
 
     def exhausted_candidates(self, job):
+        """Closed refusals exhaust only their unchanged, current review contract."""
         exhausted = set()
         with self.service.store.connection() as db:
-            for row in db.execute("SELECT value_json FROM research_checkpoints WHERE job_id=? "
+            story = self.service._story_row(db, job['story_id'])
+            current = review_packets.bundle(db, job['story_id'])
+            fence = review_packets.candidate_review_fence(db, story)
+            eligible = review_packets.eligible_bundle(db, job['story_id'])
+            for row in db.execute("SELECT stage,value_json FROM research_checkpoints WHERE job_id=? "
                                   "AND stage LIKE 'headless_fact_review:%'", (job['id'],)):
-                saved = json.loads(row[0])
-                if saved.get('phase') != 'exhausted':
+                saved = json.loads(row['value_json'])
+                if saved.get('phase') not in {'exhausted', 'rejected'}:
                     continue
-                packet = db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=? AND story_id=?',
+                packet = db.execute('SELECT run_id,payload_json FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                                     (saved.get('packet_ref'), job['story_id'])).fetchone()
                 if packet:
-                    frozen = json.loads(packet[0]).get('bundle', {})
-                    current = review_packets.bundle(db, job['story_id'])
-                    exhausted.update(fid for fid, digest in frozen.items() if current.get(fid) == digest)
+                    frozen = json.loads(packet['payload_json']).get('bundle', {})
+                    if not frozen or any(current.get(fid) != digest for fid, digest in frozen.items()):
+                        continue
+                    # A rejection cannot support any claim. Its unit digest only
+                    # proves that repeating this exact closed question is futile;
+                    # a repaired claim, owner context, ledger or verifier contract
+                    # produces a different unit and remains eligible for review.
+                    recipe = [VERIFIER_CONTRACT_ID, packet['run_id'], frozen, fence, eligible]
+                    unit = hashlib.sha256(canonical(recipe).encode()).hexdigest()[:24]
+                    if row['stage'] == 'headless_fact_review:' + unit:
+                        exhausted.update(frozen)
         return exhausted
 
     async def run(self, job, run_id, control_revision):
