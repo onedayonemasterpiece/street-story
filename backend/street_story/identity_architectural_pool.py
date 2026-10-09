@@ -140,21 +140,34 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             if key in allowed and isinstance(value, (str,list,int,bool))}
         if len(json.dumps(independent,ensure_ascii=False)) > 4200:
             raise ValueError('SOURCE_only_observation_too_large')
-    checked=_verified_articles(receipt,max_articles)
+    # A G-only acceptance must never be held hostage by availability of
+    # architecture articles. G UNKNOWN/no reduction is likewise not a T veto:
+    # continue with the ordinary independent SOURCE+TEXT route.
     g_input=None
+    g_advisory=None
     if g_funnel is not None:
         from .identity_architectural_funnel import prepare_t_g_funnel
         actual_map=[*candidates,*(story.get('_identity_observed_candidates') or [])]
-        g_input=prepare_t_g_funnel(
-            g_funnel,actual_map,checked,
+        g_prepared=prepare_t_g_funnel(
+            g_funnel,actual_map,receipt.get('articles') or [],
             source_sha256=receipt.get('original_source_sha256'),
             g_source_sha256=g_source_sha256,
             independent_closed_T_leads=independent_closed_T_leads)
-        if g_input['stage'] != 'T_while_G_shortlist_unconfirmed':
-            # A sufficient independent G result is not a T barrier; a G
-            # UNKNOWN still permits normal independent SOURCE+T discovery.
-            return {'skip_T':True,'g_handoff':g_input,
+        if g_prepared['stage']=='already_accepted_G':
+            return {'skip_T':True,'g_handoff':g_prepared,
                 'input_contract':'source-multiple-architecture-G-independent-v1'}
+        if g_prepared['stage']=='T_while_G_shortlist_unconfirmed':
+            g_input=g_prepared
+        else:
+            g_advisory=g_prepared
+    if not (receipt.get('articles') or []):
+        # Useful partially answered G cases may move to existing images/REF
+        # without a pointless model call or a fabricated empty publisher body.
+        return {'skip_T':True,'g_handoff':g_input or g_advisory,
+            'reason':'no_acquired_architectural_text',
+            'next_step':'existing_images_or_expanded_publisher_search',
+            'input_contract':'source-multiple-architecture-no-text-v1'}
+    checked=_verified_articles(receipt,max_articles)
     observed={row.get('candidate_id'):row for row in
         [*candidates, *(story.get('_identity_observed_candidates') or [])]
         if isinstance(row,dict) and _physical_subject(row)}
