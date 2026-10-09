@@ -47,7 +47,7 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
         raise ValueError('invalid joint operation stage')
     from .providers import RetryableProviderError
     from .service import canonical
-    if not callable(getattr(service.store, 'tx', None)) or not callable(getattr(service, '_story_row', None)):
+    if not callable(getattr(getattr(service, 'store', None), 'tx', None)) or not callable(getattr(service, '_story_row', None)):
         return None
     scope = _scope(story)
     with service.store.tx() as db:
@@ -212,7 +212,7 @@ def retain_closed_invalid(service, story, payload, schema, *, code, route,
     """
     from .service import canonical
     from .identity_telemetry import record_identity_event
-    if not callable(getattr(service.store, 'tx', None)) or not callable(getattr(service, '_story_row', None)):
+    if not callable(getattr(getattr(service, 'store', None), 'tx', None)) or not callable(getattr(service, '_story_row', None)):
         return None  # Preserve legitimate minimal provider adapter compatibility.
     scope = _scope(story)
     generation = scope['generation']
