@@ -33,7 +33,8 @@ async def test_exact_received_entrance_lookup_and_truthful_body_admission(monkey
             calls.append(('address', city, address))
             return {'status': 'completed' if outcome == 'partial' else outcome,
                 'inventory_complete': outcome != 'partial',
-                'results': [{'canonical_url': 'https://www.prussia39.ru/sight/index.php?sid=7'}]}
+                'results': [{'canonical_url': 'https://www.prussia39.ru/sight/index.php?sid=7',
+                    'address_text': 'Город, Тестовая улица, д. 22А'}]}
         async def article(self, url):
             calls.append(('article', url))
             return {'status': 'completed', 'text': text, 'article_id': 'prussia39:sid:7',
@@ -42,8 +43,10 @@ async def test_exact_received_entrance_lookup_and_truthful_body_admission(monkey
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, lookup = await acquire_regional_text(SimpleNamespace(store=object()), story, [building], request)
     assert calls[0] == ('address', 'Город', 'Тестовая улица, 22А')
-    assert len(calls) == (2 if outcome == 'completed' else 1)
-    assert len(articles) == (1 if outcome == 'completed' else 0)
+    # Even a partial publisher catalogue may contain an explicitly exact
+    # address card; it is safe to read its body without declaring identity.
+    assert len(calls) == (2 if outcome in {'completed', 'partial'} else 1)
+    assert len(articles) == (1 if outcome in {'completed', 'partial'} else 0)
     if articles:
         assert articles[0]['text'] == text and articles[0]['lookup_candidate_ids'] == ['osm:way:7']
         assert articles[0]['text_sha256'] == hashlib.sha256(text.encode()).hexdigest()

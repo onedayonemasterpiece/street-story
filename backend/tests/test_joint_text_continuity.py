@@ -91,14 +91,13 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(initial))
         assert len(calls) == 2 and reads == ['selected text']
-        assert 'Conditional initial model decision' in contents[-1]
-        assert 'model_hypothesis_not_evidence' in contents[-1]
+        assert 'previous_model_hypotheses_not_evidence' in contents[-1]
         assert initial['accepted_geometry']['rejected_alternatives'][0]['reason'] in contents[-1]
         assert initial['source_scene_observations']['unknown'][0] in contents[-1]
-        assert 'Shared generic elements or the sole available article do not resolve alternatives.' in contents[-1]
+        assert 'absence of a neighbor article' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
-        return SimpleNamespace(text=json.dumps({**initial, 'accepted_architectural_text': decision}))
+        return SimpleNamespace(text=json.dumps(decision))
 
     async def forbidden(*args, **kwargs):
         pytest.fail('No third model, REF or replacement text search is authorized')

@@ -157,6 +157,11 @@ There is no local 65,536-byte input refusal. Native quota
 refusal permits the next registered Google route only with authoritative unsent
 evidence. UNKNOWN cannot rotate to another model or create another turn. A closed
 valid spatial proof ends the operation; Luna is not a mandatory additional judge.
+Native's strict structured-output schema omits unsupported `uniqueItems` and
+conditional composition keywords. The complete original schema is frozen
+separately and validates the received answer on the backend, including duplicate
+IDs and conditional evidence requirements. Addressed readback restores both
+schemas from the original receipt; caller changes cannot replace them.
 Ordinary text planning and Live-first fact extraction remain independent.
 The initial joint SDK call releases its key before reading selected article bodies
 or validating its semantic result. A useful second joint gets its own ordinary

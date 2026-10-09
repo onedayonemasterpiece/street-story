@@ -205,6 +205,7 @@ class NativeVisionProvider:
         frozen = binding.get('frozen_source_map')
         if frozen is None:
             contract = deepcopy(schema)
+            host_contract = deepcopy(schema)
             pointer_rule = 'Exact received ID or @N from MAP label N. Never construct an OSM ID from N.'
             pointer_rule_used = False
             def strict(node):
@@ -224,9 +225,35 @@ class NativeVisionProvider:
                     for value in node:
                         strict(value)
             strict(contract)
+            transport_constraints = []
+            def supported(node, path=()):
+                if isinstance(node, dict):
+                    # Native strict output supports a JSON Schema subset.
+                    # Preserve these constraints in the frozen host validator;
+                    # sending them in response_format fails before inference.
+                    for keyword in ('uniqueItems', 'allOf', 'not', 'dependentRequired',
+                                    'dependentSchemas', 'if', 'then', 'else'):
+                        if keyword in node:
+                            node.pop(keyword)
+                            transport_constraints.append('/'.join((*path, keyword)))
+                    for keyword, value in node.items():
+                        if keyword in {'properties', '$defs', 'definitions'} and isinstance(value, dict):
+                            for name, child in value.items():
+                                supported(child, (*path, keyword, name))
+                        elif keyword in {'items', 'anyOf', 'oneOf'}:
+                            supported(value, (*path, keyword))
+                elif isinstance(node, list):
+                    for index, child in enumerate(node):
+                        supported(child, (*path, str(index)))
+            supported(contract)
             if pointer_rule_used and pointer_rule not in prompt:
                 prompt += '\nPointer rule for every identifier: ' + pointer_rule
-            frozen = {'contract': contract, 'prompt': prompt, 'host_context': deepcopy(host_context),
+            if transport_constraints:
+                prompt += '\nReturn unique identifier arrays and obey the physical evidence contract; '
+                prompt += 'the backend also validates conditional evidence requirements on the complete answer.'
+            frozen = {'contract': contract, 'host_contract': host_contract,
+                'host_only_constraint_paths': transport_constraints,
+                'prompt': prompt, 'host_context': deepcopy(host_context),
                 'images': [{'label': label, 'mime_type': mime,
                             'data': base64.b64encode(data).decode('ascii'),
                             'sha256': hashlib.sha256(data).hexdigest()} for label, mime, data in images]}
@@ -280,7 +307,8 @@ class NativeVisionProvider:
                    'comparison_id': supplied.get('comparison_id'), 'usage': {'cost': 'unknown'}}
         if source_map:
             receipt.update(frozen_source_map=source_map, operation_kind='source_map',
-                input_utf8_bytes=source_map['input_utf8_bytes'])
+                input_utf8_bytes=source_map['input_utf8_bytes'],
+                host_only_constraint_paths=source_map.get('host_only_constraint_paths', []))
         if binding.get('quota_permission'):
             receipt['quota_permission'] = dict(binding['quota_permission'])
         submitted = bool(receipt['turn_id']) or receipt['phase'] in {'prompt_intent', 'submitted', 'unknown'}
@@ -485,7 +513,8 @@ class NativeVisionProvider:
                                 await asyncio.sleep(self.poll_seconds)
                                 continue
                             result = json.loads(text[-1])
-                            Draft202012Validator(contract).validate(result)
+                            Draft202012Validator(source_map.get('host_contract', contract)
+                                if source_map else contract).validate(result)
                             receipt.update(phase='completed', result=result, elapsed_ms=round((time.monotonic() - started) * 1000))
                             await self._save(binding, receipt)
                             logger.info('native_visual_completed %s', json.dumps({'story_id': story['id'], 'model': MODEL,

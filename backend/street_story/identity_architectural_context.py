@@ -6,17 +6,48 @@ import base64
 import hashlib
 import json
 import math
+import re
 
 import httpx
 
 from .identity_telemetry import record_identity_event
 
 
-def _regional_area(story):
-    lat, lon = story.get('latitude'), story.get('longitude')
-    return (not isinstance(lat, bool) and not isinstance(lon, bool)
-        and isinstance(lat, (int, float)) and isinstance(lon, (int, float))
-        and math.isfinite(lat+lon) and 54 <= lat <= 56 and 19 <= lon <= 23)
+def _regional_area(story, candidates=()):
+    """Publisher applicability from *observed* region data, not camera-only GPS.
+
+    An original may have no EXIF GPS while OSM has an observed footprint,
+    literal address or a mapped entrance with Kaliningrad locality. None of
+    these inputs proves that this building appears in SOURCE.
+    """
+    def regional_point(point):
+        if not isinstance(point, dict):
+            return False
+        lat, lon = point.get('latitude'), point.get('longitude')
+        try:
+            return (not isinstance(lat, bool) and not isinstance(lon, bool)
+                and math.isfinite(float(lat)) and math.isfinite(float(lon))
+                and 54 <= float(lat) <= 56 and 19 <= float(lon) <= 23)
+        except (ValueError, TypeError, OverflowError):
+            return False
+
+    if regional_point(story):
+        return True
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if regional_point(candidate.get('map_coordinates')):
+            return True
+        address = candidate.get('map_address') or {}
+        if not isinstance(address, dict):
+            continue
+        # The regional publisher is only tried without GPS when its own
+        # region is explicitly evidenced by OSM address metadata.
+        if any('калининград' in str(address.get(key) or '').casefold()
+                or 'kaliningrad' in str(address.get(key) or '').casefold()
+                for key in ('city', 'state', 'region')):
+            return True
+    return False
 
 
 def _physical_subject(candidate):
@@ -28,14 +59,20 @@ def _physical_subject(candidate):
 
 
 def _subject_addresses(context, candidate):
-    """This body's own address, or literal entries with verified membership."""
+    """All *literal* footprint addresses and verified closed-way entrances.
+
+    A directly addressed building may still have other numbered doors. The
+    old first-direct-return hid those doors, creating camera-street bias and
+    missing publisher search leads. We never infer a compound house number
+    from two distinct entrance numbers.
+    """
     cid = candidate['candidate_id']
-    direct = next((anchor for anchor in context['address_anchors']
-        if anchor['mapped_entry_id'] == cid), None)
-    if direct:
-        return [direct]
-    return [anchor for body in context['building_address_memberships']
-        if body['physical_candidate_id'] == cid for anchor in body['address_entries']]
+    anchors = [anchor for anchor in context['address_anchors']
+        if anchor['mapped_entry_id'] == cid]
+    for membership in context['building_address_memberships']:
+        if membership['physical_candidate_id'] == cid:
+            anchors.extend(membership['address_entries'])
+    return list({entry['mapped_entry_id']:entry for entry in anchors}.values())
 
 
 def _reverse_address(story):
@@ -46,12 +83,10 @@ def _reverse_address(story):
 
 def regional_preparation_query(story, candidates):
     """An unambiguous supplied physical scope, never the camera's street."""
-    if not _regional_area(story):
-        return None
     from .identity_source_selection import observed_address_context
     subjects = {item['candidate_id']: item for item in candidates
         if isinstance(item, dict) and _physical_subject(item)}
-    if not subjects:
+    if not subjects or not _regional_area(story, list(subjects.values())):
         return None
     context = observed_address_context(story, candidates)
     reverse = _reverse_address(story)
@@ -376,6 +411,52 @@ def lookup_schema(candidate_ids):
         'required': ['route', 'candidate_ids', 'reason'], 'additionalProperties': False}
 
 
+
+def literal_address_card_selection(rows, street, house_number):
+    """Retrieve publisher cards with a *complete* literal modern address group.
+
+    Street and house numbers must come from the actual received card metadata.
+    The publisher may spell one OSM compound entrance 22/24 as the explicit
+    pair "22, 24". This permits reading its article, NOT proving that a specific
+    wing has that address. A query for 22 alone never selects a 22,24 complex.
+    No title or partial street search response is allowed to impersonate an
+    address. The LLM remains responsible for physical/architectural meaning.
+    """
+    if not isinstance(rows, list) or not isinstance(street, str) or not isinstance(house_number, str):
+        return []
+    token = re.compile(r"[^\W_]+", re.UNICODE)
+    road_labels = {'ул', 'улица', 'пр', 'проспект', 'пер', 'переулок'}
+    street_words = [word for word in token.findall(street.casefold()) if word not in road_labels]
+    requested = house_number.casefold().strip()
+    house_pattern = r"\d+[^\W\d_]*(?:/\d+[^\W\d_]*)?"
+    if (not street_words or not requested or not
+            re.fullmatch(house_pattern + r"(?:\s*,\s*" + house_pattern + r")*", requested)):
+        return []
+    requested_group = re.split(r"\s*[/,]\s*", requested)
+    selected = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get('address_text')
+        if not isinstance(raw, str) or not raw.strip() or not row.get('canonical_url'):
+            continue
+        text = raw.casefold()
+        tokens = list(token.finditer(text))
+        for i in range(len(tokens) - len(street_words) + 1):
+            if [match.group() for match in tokens[i:i + len(street_words)]] != street_words:
+                continue
+            # Only the immediate postal-number group after this literal street,
+            # not a year or incidental number elsewhere in the description.
+            tail = text[tokens[i + len(street_words) - 1].end():]
+            tail = re.sub(
+                r"^\s*(?:улица|ул\.?|проспект|пр\.?|переулок|пер\.?)?\s*[,.;]?\s*"
+                r"(?:(?:д\.?|дом|№)\s*)?", "", tail)
+            match = re.match(house_pattern + r"(?:\s*,\s*" + house_pattern + r")*", tail)
+            if match and re.split(r"\s*[/,]\s*", match.group()) == requested_group:
+                selected.append(row)
+                break
+    return selected
+
 async def acquire_regional_text(service, story, candidates, request):
     """Read at most two cards from one narrow literal query; no target scoring.
 
@@ -407,9 +488,13 @@ async def acquire_regional_text(service, story, candidates, request):
         if entry_id not in anchors or any(entry_id != cid and entry_id not in memberships.get(cid, set()) for cid in ids):
             return [], {'status': 'not_sent', 'reason': 'address_entry_not_bound_to_nominated_footprint'}
         addresses = [anchors[entry_id]]
-    lat, lon = story.get('latitude'), story.get('longitude')
-    # This is the documented catalog's region, not a default location or answer.
-    if lat is None or lon is None or not (54 <= float(lat) <= 56 and 19 <= float(lon) <= 23):
+    # Publisher region is anchored to observed candidate/entrance metadata,
+    # never an invented location or the camera's reverse-geocoded street.
+    if not _regional_area(story, [
+            catalog[cid] for cid in ids if cid in catalog
+        ] + [
+            {'map_address': address} for address in addresses
+        ]):
         return [], {'status': 'not_applicable', 'reason': 'regional_catalog_outside_observed_area'}
     timeout = 25.0
     if hasattr(service, 'settings'):
@@ -441,17 +526,44 @@ async def acquire_regional_text(service, story, candidates, request):
         record_identity_event(service, story['id'], 'identity_regional_lookup_completed', {
             'route': request['route'], 'status': lookup.get('status'), 'result_count': len(results),
             'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False)})
-        if (lookup.get('status') != 'completed' or lookup.get('inventory_complete') is not True
-                or not 1 <= len(results) <= 2):
+        # A publisher search can return many cards or a partial page even when
+        # one exact modern address is clearly labelled. Read only that received
+        # literal metadata match; never take the first two or claim a full index.
+        # Even a singleton "complete" address response can contain a neighboring
+        # sight: catalogue completion is scoped to the publisher query, not proof
+        # that the listed address is the requested physical subject.
+        chosen = []
+        if request['route'] == 'address' and lookup.get('status') == 'completed':
+            labelled = literal_address_card_selection(results, street, number)
+            distinct = list(dict.fromkeys(row['canonical_url'] for row in labelled))
+            lookup['literal_address_selection'] = {
+                'policy': 'exact_received_catalogue_address_metadata_v1',
+                'matched_rows': len(labelled), 'selected_urls': len(distinct),
+                'identity_inferred': False, 'unmatched_rows': len(results) - len(labelled),
+                'inventory_complete': lookup.get('inventory_complete') is True}
+            if 1 <= len(distinct) <= 2:
+                chosen = labelled
+        elif (request['route'] == 'coordinate' and lookup.get('status') == 'completed'
+                and lookup.get('inventory_complete') is True and 1 <= len(results) <= 2):
+            # Coordinate search supplies proximity candidates, not a confirmed
+            # postal address. The visual/text model must establish identity.
+            chosen = results
+        if lookup.get('status') != 'completed' or not chosen:
             if lookup.get('status') == 'completed' and results:
-                lookup['limitation'] = ('Broad inventory arrived after the initial joint call. '
-                    'No automatic first-two selection or third paid selector/judge; metadata remains retained.')
+                lookup['limitation'] = ('Received catalogue remains fully available; no first-two shortcut. '
+                    'No closed unambiguous address card was available for an automatic body read.')
             return [], lookup
         if hasattr(service, 'settings'):
             from .research_budget import reserve_work
-            reserve_work(service, story['id'], 'pages', [item['canonical_url'] for item in results])
-        urls = list(dict.fromkeys(item['canonical_url'] for item in results))
+            reserve_work(service, story['id'], 'pages', [item['canonical_url'] for item in chosen])
+        urls = list(dict.fromkeys(item['canonical_url'] for item in chosen))
         pages = await asyncio.gather(*(adapter.article(url) for url in urls))
+    # Retain the publisher's *actual displayed modern addresses*. The article
+    # reader may return only historical body prose and a blank address field.
+    # Dropping this catalogue metadata previously concealed complex/single
+    # house ambiguity from the SOURCE/T model.
+    metadata_by_url = {url: [dict(row) for row in chosen
+        if row.get('canonical_url') == url] for url in urls}
     articles = []
     for page in pages:
         text = page.get('normalized_text') or page.get('text') or ''
@@ -467,5 +579,8 @@ async def acquire_regional_text(service, story, candidates, request):
             'raw_body_sha256_verified': True, 'input_kind': 'acquired_article_text',
             'title': page.get('title') or '', 'address': page.get('address_text') or '',
             'coordinates': page.get('coordinates'), 'fetched_at': page.get('fetched_at'),
-            'cache_hit': page.get('cache_hit', False), 'lookup_candidate_ids': ids})
+            'cache_hit': page.get('cache_hit', False), 'lookup_candidate_ids': ids,
+            'card_variants': metadata_by_url.get(page['canonical_url'], []),
+            'lookup_scope': lookup.get('query_scope'),
+            'physical_binding_claimed': False})
     return articles, lookup
