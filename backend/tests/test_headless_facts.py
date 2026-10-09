@@ -59,16 +59,17 @@ class Researcher:
         self.identity_contexts.append(context['confirmed_identity'])
         assert context['confirmed_identity']['candidate_id'] == self.expected_identity
         assert page['evidence_passages']
+        supporting = next((p for p in page['evidence_passages'] if CLAIM in p['text']), None)
         unit = page['_unit_id']
         if unit not in self.model_units:
             self.model_units[unit] = {
                 'result': {'facts': [{
                     'claim_key': 'museum-opening', 'existing_fact_id': '', 'text': CLAIM,
-                    'confidence': .95, 'passage_ids': [page['evidence_passages'][0]['passage_id']],
+                    'confidence': .95, 'passage_ids': [supporting['passage_id']] if supporting else [],
                     'source_refs': [], 'evidence_refs': [], 'selected': True,
                     'verdict': 'supported', 'atomic': True, 'support_complete': True,
                     'qualifiers_preserved': True, 'review_reason': 'Controlled supported finding in its own literal passage.',
-                }] if CLAIM in page['evidence_passages'][0]['text'] else [],
+                }] if supporting else [],
                     'source_matches_poi': self.source_matches, 'source_content_valid': self.content_valid,
                     'continuation_needed': bool(page.get('has_more_passages'))},
                 'receipt': {'backend': 'controlled-text', 'assistants': [{
@@ -109,17 +110,41 @@ async def fixture(tmp_path, *, text=CLAIM + ' This is an inspectable public arti
 
 
 @pytest.mark.asyncio
-async def test_empty_closed_core_advances_actual_unread_passages_without_waiting_or_repeating(tmp_path):
+@pytest.mark.parametrize('autonomous', [True, False])
+async def test_autonomous_core_read_does_not_borrow_interactive_reply_byte_ceiling(tmp_path, monkeypatch, autonomous):
+    text = CLAIM + ' ' + 'Architecture context sentence. ' * 180
+    svc, job, researcher, reader, _ = await fixture(tmp_path, text=text)
+    facts = HeadlessFacts(svc)
+    original = facts.adapter._read_frozen_research_chunk
+    reads = []
+    def read(session, *args):
+        session.state['headless_research'] = autonomous
+        page = original(session, *args)
+        reads.append((session.state.get('headless_research'), page['has_more_passages'], len(page['evidence_passages'])))
+        return page
+    monkeypatch.setattr(facts.adapter, '_read_frozen_research_chunk', read)
+    try:
+        try:
+            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        except RetryableProviderError:
+            pass  # Candidates still require the independent review operation.
+        assert reads and all(flag == autonomous and more != autonomous for flag, more, _ in reads), reads
+        assert all(page['has_more_passages'] != autonomous for page in researcher.pages)
+        assert sum(count for _, _, count in reads) > 1
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_autonomous_frozen_core_includes_useful_tail_in_first_extraction(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path,
         text=('Page navigation without historical findings. ' * 85) + CLAIM)
     facts = HeadlessFacts(svc)
     try:
-        with pytest.raises(RetryableProviderError) as first:
-            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
-        assert first.value.retry_at == pytest.approx(svc.store.now() + 1, abs=.1)
-        assert researcher.pages[0]['has_more_passages'] is True
-        assert researcher.model_units[researcher.pages[0]['_unit_id']]['result']['facts'] == []
-        assert svc.story(job['story_id'])['facts'] == []
+        await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert researcher.pages[0]['has_more_passages'] is False
+        assert researcher.model_units[researcher.pages[0]['_unit_id']]['result']['facts'][0]['text'] == CLAIM
+        assert svc.story(job['story_id'])['facts'][0]['eligibility'] == 'unreviewed'
         for _ in range(4):
             try:
                 outcome = await facts.run(job, 'headless-run', 'Find historical facts', 'history')
@@ -167,12 +192,12 @@ async def test_unknown_core_keeps_original_wait_and_does_not_use_ready_continuat
 
 @pytest.mark.asyncio
 async def test_frozen_fact_preparation_does_not_starve_live_receipts(tmp_path, monkeypatch):
-    svc, job, researcher, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 150)
+    svc, job, researcher, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 400)
     facts = HeadlessFacts(svc)
     try:
-        # Initial intake freezes the article using its normal reader/leases.
-        with pytest.raises(RetryableProviderError):
-            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        facts._bind_discovery(job, 'headless-run', 'Find historical facts', 'history',
+            [{'url': URL, 'title': 'Public history'}], {}, 0)
+        await facts._prepare_units(job, 'headless-run', 'configured-model', 0)
         original = facts.adapter._get_research_chunk
         prepared_at_receipt_count = []
         receipts = 0
@@ -208,8 +233,9 @@ async def test_one_slow_frozen_page_keeps_native_audio_receipts_running(tmp_path
     svc, job, _, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 80)
     facts = HeadlessFacts(svc)
     try:
-        with pytest.raises(RetryableProviderError):
-            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        facts._bind_discovery(job, 'headless-run', 'Find historical facts', 'history',
+            [{'url': URL, 'title': 'Public history'}], {}, 0)
+        await facts._prepare_units(job, 'headless-run', 'configured-model', 0)
         original = facts.adapter._core_passages
         receipts = 0
         running = True
@@ -320,18 +346,17 @@ async def test_no_audio_headless_page_requires_live_review_in_story_and_poi_ledg
 
 
 @pytest.mark.asyncio
-async def test_next_attempt_resumes_unread_passages_from_frozen_snapshot(tmp_path):
+async def test_next_attempt_reuses_completed_autonomous_core_without_source_or_model_resend(tmp_path):
     text = CLAIM + ' ' + 'Architecture context sentence. ' * 180
     svc, job, researcher, reader, fetches = await fixture(tmp_path, text=text)
     try:
-        with pytest.raises(RetryableProviderError):
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         first = researcher.pages[0]
         with svc.store.connection() as db:
             checkpoint = chunk_checkpoint(db, 'headless-run', first['chunk_id'])
-            assert checkpoint['next_batch_index'] == 1 and not checkpoint['terminal']
+            assert checkpoint['next_batch_index'] == 1 and checkpoint['terminal']
             assert checkpoint['read_passage_ids']
-            assert run_manifest(db, 'headless-run')['run']['state'] == 'partial'
+            assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
         for _ in range(10):
             try:
                 await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
@@ -342,7 +367,7 @@ async def test_next_attempt_resumes_unread_passages_from_frozen_snapshot(tmp_pat
             assert run_manifest(db, 'headless-run')['run']['state'] == 'verifying'
             assert db.execute('SELECT COUNT(*) FROM facts').fetchone()[0] == 1
         passage_sets = [{p['passage_id'] for p in page['evidence_passages']} for page in researcher.pages]
-        assert len(passage_sets) > 1 and passage_sets[0].isdisjoint(passage_sets[1])
+        assert len(passage_sets) == 1 and len(passage_sets[0]) > 2
         assert len(fetches) == 1 and researcher.searches == 1
     finally:
         await reader.search_http.aclose()

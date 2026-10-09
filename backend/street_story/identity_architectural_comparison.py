@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from itertools import permutations
 
 from .identity_architectural_context import _subject_addresses, literal_address_card_selection
 from .identity_candidate_policy import candidate_identity_eligible
@@ -32,6 +33,13 @@ def publisher_address_relation(articles, physical_candidates):
             variants = []
         received = [dict(row) for row in variants if isinstance(row, dict)
             and isinstance(row.get('address_text'), str) and row['address_text'].strip()]
+        # The actual full article has a modern postal address independent of
+        # catalogue pages, including coordinate-search cards with empty metadata.
+        modern = article.get('address')
+        if (isinstance(modern, str) and modern.strip()
+                and article.get('address_provenance') == 'publisher_article_metadata_table'):
+            received.append({'address_text':modern.strip(), 'canonical_url':article.get('url'),
+                'source':'verified_publisher_article_html'})
         addresses = list(dict.fromkeys(row['address_text'].strip() for row in received))
         row = {'article_id':article['article_id'],
             'publisher_modern_address_metadata':addresses,
@@ -47,11 +55,40 @@ def publisher_address_relation(articles, physical_candidates):
                         [dict(item, canonical_url=item.get('canonical_url') or article['url'])
                          for item in received], street, house):
                     matches.append(entry['entry_id'])
+            # A publisher's explicit modern compound number (e.g. "22, 24")
+            # can be covered by two distinct *verified* numbered entrances on
+            # one actual physical OSM body. Keep each original entrance; never
+            # synthesize a fake combined OSM address or mark the body accepted.
+            compound_entries = []
+            if not matches:
+                verified = [entry for entry in candidate['literal_address_entries']
+                    if entry.get('provenance') == 'osm_closed_way_node_membership'
+                    and isinstance((entry.get('address') or {}).get('street'), str)
+                    and isinstance((entry.get('address') or {}).get('house_number'), str)]
+                streets = {entry['address']['street'] for entry in verified}
+                for street in streets:
+                    same_street = [entry for entry in verified if entry['address']['street'] == street]
+                    by_number = {entry['address']['house_number']:entry['entry_id'] for entry in same_street}
+                    if 2 <= len(by_number) <= 4:
+                        for ordering in permutations(by_number):
+                            # Reuse the existing *full* publisher address group
+                            # reader: 22/24 only if the article literally says
+                            # 22,24 or 22/24, never if it says 22 alone.
+                            grouped = '/'.join(ordering)
+                            if literal_address_card_selection([
+                                    dict(item, canonical_url=item.get('canonical_url') or article['url'])
+                                    for item in received], street, grouped):
+                                compound_entries = [by_number[value] for value in ordering]
+                                break
+                    if compound_entries:
+                        break
             row['physical_links'].append({
                 'candidate_id':candidate['candidate_id'],
                 'exact_literal_entry_ids':list(dict.fromkeys(matches)),
-                'link_kind':'publisher_card_and_observed_footprint_or_entrance'
-                    if matches else 'no_exact_publisher_address_join_observed',
+                'publisher_full_group_covered_by_distinct_verified_entrances':compound_entries,
+                'link_kind':('publisher_card_and_observed_footprint_or_entrance'
+                    if matches else 'publisher_compound_group_matches_verified_entrances'
+                    if compound_entries else 'no_exact_publisher_address_join_observed'),
                 'physical_identity_inferred':False})
         row['policy'] = ('Exact postal metadata supports a possible physical association only. '
             'A card may describe an entire historical complex; no match is also inconclusive '
@@ -101,7 +138,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
             raise ValueError('malformed_article_subject_nominations')
         nominations.extend(ids)
         acquired.append({key: copy.deepcopy(article[key]) for key in (
-            'article_id', 'url', 'title', 'address', 'coordinates', 'scope',
+            'article_id', 'url', 'title', 'address', 'address_provenance', 'coordinates', 'scope',
             'binding_basis', 'source_sha256', 'text_sha256', 'text',
             'lookup_candidate_ids', 'card_variants') if key in article})
     if prior:
@@ -128,7 +165,9 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
             'literal_address_entries': [
                 {'entry_id': anchor.get('mapped_entry_id'),
                  'address': anchor.get('address'),
-                 'provenance': 'observed_footprint_or_verified_closed_way_membership'}
+                 'provenance': ('osm_physical_own_address'
+                    if anchor.get('mapped_entry_id') == cid
+                    else 'osm_closed_way_node_membership')}
                 for anchor in entries],
             'height_levels': tags.get('building:levels'),
             'geometry_available': bool(candidate.get('map_geometry')),
@@ -211,11 +250,30 @@ def combine_architectural_decision(original_plan, answer, schema):
     existing freeze_architectural_text_proof before accepting identity. This
     adapter performs schema validation only, never a semantic override.
     """
-    from jsonschema import Draft202012Validator
     if not isinstance(original_plan, dict) or not isinstance(answer, dict):
         raise ValueError('closed_original_plan_and_model_answer_required')
-    if not Draft202012Validator(schema).is_valid(answer):
-        raise ValueError('architectural_comparison_model_response_invalid')
+    normalized = normalize_architectural_decision(answer, schema)
     result = copy.deepcopy(original_plan)
-    result['accepted_architectural_text'] = copy.deepcopy(answer)
+    result['accepted_architectural_text'] = normalized
     return result
+
+
+def normalize_architectural_decision(answer, schema):
+    """Normalize only one harmless JSON-schema echo; never repair semantics.
+
+    A real visual provider returned a complete T verdict plus type=object
+    copied from the schema. This wrapper is not an architectural finding.
+    Preserve original response/SHA separately at the provider boundary.
+    All other additional or malformed fields are rejected.
+    """
+    from jsonschema import Draft202012Validator
+    if not isinstance(answer, dict):
+        raise ValueError('architectural_comparison_model_response_invalid')
+    fields = (schema or {}).get('properties') or {}
+    normalized = copy.deepcopy(answer)
+    if (set(normalized) - set(fields) == {'type'}
+            and normalized['type'] == 'object'):
+        normalized.pop('type')
+    if not Draft202012Validator(schema).is_valid(normalized):
+        raise ValueError('architectural_comparison_model_response_invalid')
+    return normalized

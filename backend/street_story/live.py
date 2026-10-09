@@ -3424,14 +3424,20 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         # of repeating every previously saved claim on each document page.
         result["checkpoint"] = {"next_batch_index": checkpoint["next_batch_index"], "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3], "terminal": checkpoint["terminal"]}
         for passage in passages[offset:]:
-            if session.state.get('live_first_research') and len(result['evidence_passages']) >= 2:
+            if (session.state.get('live_first_research') and not session.state.get('headless_research')
+                    and len(result['evidence_passages']) >= 2):
                 break
             trial = {**result, "evidence_passages": [*result["evidence_passages"], passage], "has_more_passages": True, "next_passage_cursor": passage["passage_id"] + 1}
             end = passage["core_offset"] + len(passage["text"])
             trial["context_after"] = core[end:end + 100] if end < len(core) else result["context_after"]
             trial["next_args"] = {"run_id": run_id, "chunk_id": candidate["chunk_id"], "passage_cursor": passage["passage_id"] + 1}
             trial["instruction"] = "The target may be in the unread tail. Read next_args before another search; do not assume missing facts from this first page. You may checkpoint this page with continuation_needed=true."
-            if response_units("get_research_chunk", self._model_result("get_research_chunk", trial)) > PAGE_UNITS:
+            # Autonomous extraction owns one frozen source core. Its provider
+            # measures/admit its complete context separately; the interactive
+            # tool-response envelope is not its model input limit. Keep normal
+            # interactive pagination, without forcing one inference per passage.
+            if (not session.state.get('headless_research')
+                    and response_units("get_research_chunk", self._model_result("get_research_chunk", trial)) > PAGE_UNITS):
                 break
             result = trial
         next_offset = offset + len(result["evidence_passages"])

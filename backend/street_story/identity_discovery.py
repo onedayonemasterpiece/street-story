@@ -142,7 +142,11 @@ def _conditional_text_prior(payload, nomination_ids):
     spatial = payload.get('spatial_hypotheses') if isinstance(payload.get('spatial_hypotheses'), list) else []
     nominated = payload.get('observed_candidate_ids') if isinstance(payload.get('observed_candidate_ids'), list) else []
     rejected = geometry.get('rejected_alternatives') if isinstance(geometry.get('rejected_alternatives'), list) else []
+    wave = payload.get('first_wave_hypotheses') if isinstance(payload.get('first_wave_hypotheses'), list) else []
+    action = geometry.get('next_action') if isinstance(geometry.get('next_action'), dict) else {}
+    targets = action.get('target_candidate_ids') if isinstance(action.get('target_candidate_ids'), list) else []
     declared = [*nominated, geometry.get('candidate_id'),
+        *(item.get('subject_id') for item in wave if isinstance(item, dict)), *targets,
         *(item.get('candidate_id') for item in rejected if isinstance(item, dict)),
         *(item.get('candidate_id') for item in spatial if isinstance(item, dict))]
     allowed = set(nomination_ids)
@@ -893,11 +897,21 @@ async def _suggest(service, story, transcript, candidates):
                 'previous_claim_is_not_confirmation': True}
         geometry_claim = payload.get('accepted_geometry') if isinstance(payload, dict) else None
         geometry_rejection = {}
-        if scene and initial_geometry is None and isinstance(geometry_claim, dict) and geometry_claim.get('decision') == 'accepted_geometry':
-            geometry_rejection = {'code': 'identity_geometry_proof_invalid', 'previous_claim_is_not_confirmation': True}
+        nomination_id = geometry_claim.get('candidate_id') if isinstance(geometry_claim, dict) else None
+        requested_targets = ((geometry_claim.get('next_action') or {}).get('target_candidate_ids') or []
+            if isinstance(geometry_claim, dict) else [])
+        if not nomination_id and isinstance(requested_targets, list) and len(requested_targets) == 1:
+            # An uncertain G answer may deliberately leave candidate_id empty
+            # while explicitly nominating a physical body for further work.
+            nomination_id = requested_targets[0]
+        if (scene and initial_geometry is None and isinstance(geometry_claim, dict)
+                and geometry_claim.get('decision') in {'accepted_geometry', 'uncertain'}):
+            geometry_rejection = {'code': ('identity_geometry_proof_invalid'
+                if geometry_claim['decision'] == 'accepted_geometry' else 'identity_geometry_uncertain'),
+                'previous_claim_is_not_confirmation': True}
             correspondence = geometry_claim.get('spatial_correspondence')
             correspondence = correspondence if isinstance(correspondence, dict) else {}
-            if correspondence.get('pattern_kind') == 'frontage_sequence':
+            if geometry_claim['decision'] == 'accepted_geometry' and correspondence.get('pattern_kind') == 'frontage_sequence':
                 pairs = correspondence.get('front_segments') or []
                 pairs = pairs if isinstance(pairs, list) else []
                 if any(pair['first'].get('candidate_id') == pair['second'].get('candidate_id')
@@ -913,7 +927,7 @@ async def _suggest(service, story, transcript, candidates):
             retain_physical_hypothesis(service, story, payload, joint_source_map_receipt(),
                 [*observed, *candidates], reason=geometry_rejection,
                 raw_json=response.text or '', provider_response_id=getattr(response, 'response_id', None))
-            if 'host_evidence_contract' in issues:
+            if 'host_evidence_contract' in issues and geometry_claim['decision'] == 'accepted_geometry':
                 issues['host_evidence_contract'].update(geometry_rejection)
         lookup = {}
         if isinstance(payload, dict) and initial_geometry is None:
@@ -943,6 +957,49 @@ async def _suggest(service, story, transcript, candidates):
                     service, story, candidates, wiki_payload, wiki_pages)
                 lookup = {'kind':'independent_selected_text_routes', 'regional':regional_receipt,
                     'wikipedia':wiki_lookup, 'status':wiki_lookup.get('status') if wiki_lookup else 'unavailable'}
+            if (len(text_articles) < 2 and geometry_rejection
+                    and not (set(issues) - {'host_evidence_contract'})
+                    and not selected_regional
+                    and (not regional or regional.get('route') in {None, 'none'})):
+                # The model skipped source reading because it believed its G
+                # proof was sufficient. That premise is now false. Reuse the
+                # existing literal-address reader for the *model's* physical
+                # nomination, before spending joint2 on independent T evidence.
+                # All own/verified entrance addresses remain in scope; the
+                # reader refuses ambiguous queries and neighboring cards.
+                from .identity_architectural_context import _physical_subject
+                nominated = next((item for item in [*observed, *candidates]
+                    if item.get('candidate_id') == nomination_id
+                    and _physical_subject(item)), None)
+                if nominated is not None:
+                    request = {'route': 'address', 'candidate_ids': [nominated['candidate_id']],
+                        'reason': 'Acquire literal address text for the closed model nomination after insufficient G proof.'}
+                    additional_articles, nomination_lookup = await acquire_regional_text(
+                        service, story, [*observed, *candidates], request)
+                    # A selected encyclopedia body may provide only general
+                    # style/history. Complement it with the nominated body's
+                    # literal-address description; the T model still decides
+                    # whether either source actually distinguishes SOURCE.
+                    existing_urls = {item['url'] for item in text_articles}
+                    additional_articles = [item for item in additional_articles if item['url'] not in existing_urls]
+                    pending_articles = []
+                    if len(text_articles) + len(additional_articles) <= 2:
+                        text_articles.extend(additional_articles)
+                    else:
+                        # The existing T operation owns one/two articles. Keep
+                        # all acquired alternatives; never pick its first card
+                        # or silently truncate a different source's evidence.
+                        pending_articles = additional_articles
+                    lookup = {'kind': 'insufficient_geometry_address_text',
+                        'initial_selected_text': lookup, 'regional': nomination_lookup,
+                        'query_scope': nomination_lookup.get('query_scope'),
+                        'status': ('partial' if pending_articles or text_articles and not additional_articles
+                            else nomination_lookup.get('status')),
+                        'pending_acquired_articles': pending_articles, 'identity_established': False}
+                    record_identity_event(service, story['id'], 'identity_unconfirmed_address_text_acquired', {
+                        'candidate_id': nominated['candidate_id'], 'article_count': len(text_articles),
+                        'status': nomination_lookup.get('status'), 'reason': nomination_lookup.get('reason'),
+                        'identity_accepted': False})
             if lookup:
                 story['_identity_regional_lookup_receipt'] = lookup
         detail_request = None
@@ -1059,15 +1116,17 @@ async def _suggest(service, story, transcript, candidates):
                     {'article_ids': [item['article_id'] for item in text_articles], 'attempt': 1})
             compact_t = None
             # A semantic G-proof failure does not require replaying a giant
-            # planner. Malformed pointers or a requested MAP expansion still
-            # use the existing combined correction contract.
-            if text_articles and not (set(issues) - {'host_evidence_contract'}) and not detail_request:
+            # planner. Malformed pointers still use the combined correction
+            # contract. A requested MAP expansion is supplied unchanged even
+            # when independent T can establish identity from acquired text.
+            if text_articles and not (set(issues) - {'host_evidence_contract'}):
                 from .identity_architectural_comparison import prepare_architectural_comparison
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
+                    response_json_schema=followup_contract,
                     system_instruction='Return only the SOURCE/architectural-text decision object. '
                         'Use the attached actual image and acquired article text, never a prior identity claim.\n'
                         + json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')))
@@ -1211,6 +1270,7 @@ async def _suggest(service, story, transcript, candidates):
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
             if compact_t:
                 from .identity_architectural_comparison import combine_architectural_decision
+                answer = None
                 try:
                     from .identity_source_selection import resolve_identity_response_ids
                     answer, resolution = resolve_identity_response_ids(json.loads(response.text or ''), resolution_packet)
@@ -1219,6 +1279,11 @@ async def _suggest(service, story, transcript, candidates):
                             'provider_id': 'google', 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
                     payload = combine_architectural_decision(payload, answer, compact_t['schema'])
                 except (ValueError, TypeError) as exc:
+                    from .identity_plan_diagnostics import retain_closed_invalid
+                    retain_closed_invalid(service, story, answer, compact_t['schema'],
+                        code='identity_architectural_comparison_invalid', route='google', raw_json=response.text,
+                        provider_response_id=getattr(response, 'response_id', None),
+                        joint_stage='followup', operation_binding=joint_followup_binding)
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                         code='identity_architectural_comparison_invalid')
                     raise PermanentProviderError('identity_architectural_comparison_invalid') from exc

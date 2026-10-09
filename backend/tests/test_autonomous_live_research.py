@@ -27,6 +27,10 @@ def client(svc, behavior, *, tool_args=None, followup_calls=(), late_events=()):
         async def start(self, **kwargs):
             calls.append(('start', kwargs))
             self.initialized = self.adapter.initialize(**kwargs)
+            if behavior == 'setup_closed':
+                from websockets.exceptions import ConnectionClosedError
+                from websockets.frames import Close
+                raise ConnectionClosedError(Close(1007, 'Invalid function schema'), None)
             self.adapter.on_event(self.session, {'type': 'ready'})
             if behavior == 'quota':
                 self.adapter.on_event(self.session, {'type': 'error', 'code': 'RESOURCE_DAILY_BUDGET'})
@@ -108,6 +112,35 @@ async def test_long_frozen_evidence_is_delivered_in_actual_setup_and_one_small_t
     assert len(turns) == 1 and len(turns[0]) < 4000
     assert result['receipt']['text_sends'] == 1 and result['receipt']['phase'] == 'completed'
     assert result['receipt']['source_prompt_chars'] == len(prompt)
+
+
+def test_private_json_schema_is_preserved_in_shared_live_wire(tmp_path):
+    from live_interaction.provider import setup_config
+    svc, _, _ = service(tmp_path)
+    provider, _ = client(svc, 'valid')
+    schema = {'type': 'object', 'properties': {
+        'equivalent_to': {'type': ['integer', 'null'], 'enum': [0, 1, None]}},
+        'additionalProperties': False}
+    context, configuration, trigger, measured = provider._prepared_input('facts', 'Frozen packet', schema)
+    setup = setup_config(provider.model_id, context, configuration=configuration, search=False)
+    function = setup['setup']['tools'][0]['functionDeclarations'][0]
+    assert function['parametersJsonSchema'] == schema
+    assert 'parameters' not in function
+    assert measured['input_utf8_bytes'] == len(json.dumps(setup).encode()) + len(json.dumps(trigger).encode())
+
+
+@pytest.mark.asyncio
+async def test_setup_close_retains_reason_and_definitive_unsent_state(tmp_path):
+    svc, _, story = service(tmp_path)
+    provider, calls = client(svc, 'setup_closed')
+    with pytest.raises(ResearchUnavailable):
+        await provider._run('facts', 'Frozen evidence', binding(svc, story), SCHEMA)
+    with svc.store.connection() as db:
+        saved = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE attempt_id='live-original'").fetchone()[0])
+    assert saved['provider_close_code'] == 1007
+    assert saved['provider_close_reason'] == 'Invalid function schema'
+    assert saved['provider_send_state'] == 'not_sent' and saved['text_sends'] == 0
+    assert [kind for kind, _ in calls] == ['start', 'stop']
 
 
 @pytest.mark.asyncio

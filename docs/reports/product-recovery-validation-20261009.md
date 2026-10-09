@@ -541,3 +541,91 @@ T uncertainty, and UNKNOWN without resend. A local replay of the original132
 receipt verified the concrete continuation with **zero new provider inferences**
 and no expected-answer input. These are integration checks; real cold132 followed
 by the same-SHA independent product set and deployment are still required.
+
+## Exact nominated-address continuation after the first integrated canary
+
+Cold132 on `86ddf089fb6ba2942c23db6f5c99bd584e4352bb` naturally failed at
+111.882 s with no accepted identity or facts. Primary Gemini 3.8 returned 503;
+Native Luna completed and preserved a concrete physical hypothesis. The existing
+joint2 on Gemini 3.5 Flash Lite succeeded (HTTP 200, 12.433 s, 39,209 input / 1,728
+output tokens), but replaced `frontage_sequence` with an unsupported `corner`.
+The proof validator rejected that geometry. The subsequent reference attempt hit
+the directed acceptance's intentional `directed_acceptance_external_reference_disabled`
+seam; the generic provider error did not represent exhausted quota.
+
+The initial model had skipped articles because it believed G was sufficient.
+After the host invalidates that premise, the integration now reads the exact
+model-nominated body's own/verified-entrance address through the existing regional
+reader before spending joint2. It does this only when no explicit text selection
+or map-detail action is pending and the rejection is semantic. Ambiguous addresses
+and neighboring publisher cards remain refused; address retrieval never accepts
+identity. Useful actual article bytes go to the supplied compact T component and
+the original proof authority, without a third model/planner.
+
+The original unconfirmed132 nomination independently retrieved a real publisher
+body with facade/risalit/window-axis/gable descriptions. Replaying its original
+SOURCE/MAP receipt reached compact T with those acquired bytes and **zero new
+inference sends**. This is evidence of input supply, not a real T decision.
+Focused ordinary-worker checks passed **16 tests in 12.96 s**, including accepted
+T to cached publisher parsing/facts/own-evidence review/canonical POI readback,
+neighbor-card refusal to the original G correction, UNKNOWN and the updated single
+T schema. Full local backend verification passed **2,545 tests, 2 skipped in
+425.59 s**; Ruff passed. These are implementation checks; the changed-SHA
+product canary and its fact/POI outcomes remain separate acceptance evidence.
+
+Cold132 on `0e2302587545f3e5df585ab77e235329a86f3513` naturally failed at
+73.153 s. This time the original Native result was uncertain with a blank final
+candidate ID and an explicit received physical target for `map_detail`. The
+requested detail reached joint2, but the invalid-accepted-proof-only acquisition
+guard supplied no text. The Lite result again failed geometry; directed REF
+acceptance stopped the subsequent reference attempt. Hosted backend on this SHA
+passed; this is not product PASS.
+
+Continuation now also preserves received first-wave/action physical nominations
+from uncertain G. Exact nominated-address acquisition can accompany the requested
+MAP expansion, and useful text selects the supplied compact independent T schema
+in that same joint2. The final candidate field is never filled administratively;
+only an accepted G/T proof can establish identity. All explicit selections,
+ambiguous addresses, original-input readback and UNKNOWN fences remain. The
+affected suite passed **85 checks in 30.54 s**, including uncertain/blank-final-ID
+MAP-detail nomination to T/facts/POI. The original real response replay reached
+actual publisher T input with zero new inference. A new frozen canary is required.
+
+Cold132 on `90c38443cadb22e4e4c952420cb66128c24d6838` reached real compact T
+on Gemini 3.5 Flash Lite (HTTP 200) with a model-selected Wikipedia body. Its
+positive answer cited only `generic_style` and `historical_fact`; the unchanged
+structural proof correctly rejected it. No accepted identity/facts resulted.
+Hosted Backend and Android passed on this SHA.
+
+The existing nominated-address reader can now complement a selected Wiki body
+before joint2, instead of running only when no text was acquired. Actual raw
+source bodies and provenance remain separate. If the existing one/two-article T
+operation cannot hold all acquired alternatives, all pending bodies survive in
+the lookup receipt rather than silently choosing/truncating cards. The affected
+suite passed **86 checks in 34.00 s**, including two-source T to ordinary
+facts/POI and zero new HTTP/semantic sends after known-unsent restart. Next actual
+T/fact verification starts with the retained completed G turn, explicitly marked
+as receipt continuation rather than a new cold G inference.
+# Latest T transport integration
+
+Actual addbc25 retained-G/T continuation accepted the correct object at 22.436 seconds and persisted seven independently reviewed canonical POI facts (first at 85.891 seconds). Its external SIGTERM/recovery and 480-second partial ending are not a full acceptance PASS. The subsequent blind cold132 accepted sufficient original Luna G at 52.323 seconds, so no T was required, and persisted four reviewed facts (first at 203.660 seconds). Full completion still exceeded 480 seconds: **FAIL**.
+
+That cold run revealed a concrete facts handoff defect: the autonomous extractor used interactive two-passage/5500-byte tool-reply pagination for a 4116-character frozen source core. Its valid `continuation_needed=false` reply could not close the unread core; later attempts repeated extraction/review. Autonomous preparation now supplies the complete existing source core to its qualified provider. Interactive pagination is unchanged, and the Live semantic client still measures/admit its actual context with real provider token capabilities. No proof, source coverage, acceptance deadline or fact threshold was weakened. Offline: 52 fact/G/T tests plus 32 context/budget/Stop tests passed. Closed source extraction/readback does not require another G/T inference.
+
+The ca37cbb retained-G continuation is **FAIL**, not a cold acceptance: actual original G readback (zero new G inferences) reached two acquired articles and actual T HTTP 200 in 7.326 seconds. The host rejected the response format with `identity_architectural_comparison_invalid`; the old exception branch did not retain that response body. Its semantic cause is unknown. No identity or eligible fact was accepted. Both hosted ca37cbb workflows passed.
+
+Selectively integrated T PR #249 through `000fe93ff78993585ca32fb9fb6fae05424638e3`: publisher article address provenance, compound publisher groups matched against distinct verified OSM entrances as retrieval evidence, and normalization of only the inert top-level `type=object` schema echo. Other additional/malformed fields remain invalid. Existing full host proof authority is unchanged; no new character/candidate refusal gate was imported.
+
+The existing compact T request now supplies its own small JSON schema to constrained decoding. The closed-invalid exception branch retains original raw response/hash, response ID, schema errors and operation binding. Tests cover malformed JSON and missing fields, rejection without identity/facts, and restart with no resend. This repairs the concrete format/diagnostic boundary, rather than providing a third semantic method. Actual verification will reuse the completed original G and public article bodies; its result remains explicitly NOT_COLD until the separate cold acceptance.
+
+## Scoped fact-equivalence contract repair
+
+Actual f18da12 retained-G fact continuation delivered all five frozen passages in one Live extraction, once. Its four candidates included one supported construction fact, one correctly withheld undated current-use claim and two pending candidates. It ended at 347.155 seconds with only one independently reviewed canonical fact: FAIL, explicitly NOT_COLD. No new G/T inference was sent. Both hosted workflows passed on f18da12.
+
+The retained closed final review contained `equivalent_to=-1`. The issued schema allowed arbitrary integers although host validation accepts only local canonical fact numbers. Fresh private schemas now enumerate the packet's actual fact numbers and nullable absence; the prompt explicitly disallows a fabricated -1 relation. The verifier contract changes so this repaired operation has its own identity while original UNKNOWN/readback units keep their saved prompt/schema. Host normalization handles null like omission/self-addressing; negative, foreign and chained pointers remain rejected. Source quotes, atomicity, qualifier checks and canonical proof authority are unchanged. The original invalid response is preserved, rather than repaired into a positive answer. The focused review/qualification/completion suite passed 121 tests; 54 additional ordinary packet, retained-answer and POI regression checks passed. This is a contract repair, not final product acceptance.
+
+The isolated actual changed-review check on 504aaae did not receive a closed semantic answer: both qualified OpenCode models hit their existing 120-second operation timeout and acknowledged abort. Original-session readback showed actual generated reasoning, not quota denial; the server health was healthy. This remains a component FAIL, not product acceptance. A separate existing Live-adapter reviewer qualification failed setup before text send. JSON Schema was being supplied as OpenAPI `parameters`; the adapter now uses the documented `parametersJsonSchema` field, preserving exact host validation/schema and shared transport. The prior setup failure's precise provider close reason was not retained, so this wire mismatch is a verified representation defect and a causal hypothesis pending real verification, not a proved runtime root cause. Reference: https://ai.google.dev/api/generate-content#FunctionDeclaration.
+
+The actual existing Live reviewer completed the corrected JSON-Schema setup and one text operation in 8.781 seconds on 6bc778c, confirming the wire repair. Its synthetic semantic qualification FAILED: it treated a museum-opening duplicate as a conflict and supported a completed-restoration candidate by replacing its claim with the source's planned-restoration wording. It is not admitted as a reviewer. The verifier prompt now explicitly evaluates original item.text, reserves semantic corrections for repair_needed/insufficient, and distinguishes equivalent wording from incompatibility. This creates a new v7 contract while all original closed/UNKNOWN operations remain immutable. No actual rejected claim has been accepted or rewritten. A changed-prompt qualification is separate from product acceptance.
+
+The changed v7 original-candidate qualification on the existing Live model passed all five controls in a real closed 8.222-second operation: schema, own quotation, nearby duplicate, nearby conflict and planned/completed negative. The existing qualification file now includes that immutable hashed evidence, with its prior version retained; no backend restart or deployment occurred. Installer validation now recognizes this exact existing Live route only with independent semantic proof, a closed response and an actual text send, preserving the qualified OpenCode routes. 116 affected qualification/review/Live regressions passed. No new transport or model catalog was introduced. Next validation reuses the actual retained source/claim ledger and performs only the changed reviewer operation before final cold photo acceptance.

@@ -54,6 +54,40 @@ def test_not_sent_probe_cannot_qualify_even_with_true_route_flags(tmp_path):
         module.validate_fact_semantic_pool(caches, evidence, text)
 
 
+@pytest.mark.parametrize('defect', [None, 'unsent', 'unknown', 'provider', 'contract', 'directory'])
+def test_existing_live_review_requires_independent_closed_semantic_proof(tmp_path, defect):
+    module = installer()
+    caches, evidence, text = proof(tmp_path, module)
+    route = caches['fact-semantic-verification-v1']['routes'][0]
+    path = Path(evidence[0]['path'])
+    report = json.loads(path.read_text())
+    report.update(provider_id='google-live', model_id='gemini-3.8-live',
+                  endpoint='live-interaction:street-story')
+    report['receipt'] = {'phase': 'completed', 'model_id': report['model_id'],
+        'provider_id': report['provider_id'], 'contract_version': 'live-bounded-facts-v1',
+        'provider_send_state': 'response_closed', 'text_sends': 1}
+    route.update(provider_id=report['provider_id'], model_id=report['model_id'],
+                 endpoint=report['endpoint'], directory=None)
+    if defect == 'unsent':
+        report['receipt']['text_sends'] = 0
+    elif defect == 'unknown':
+        report['receipt']['phase'] = 'unknown'
+    elif defect == 'provider':
+        report['receipt']['provider_id'] = 'other'
+    elif defect == 'contract':
+        report['receipt']['contract_version'] = 'other'
+    elif defect == 'directory':
+        route['directory'] = '/other/profile'
+    path.write_text(json.dumps(report))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    evidence[0]['sha256'] = route['qualification_sha256'] = digest
+    if defect is None:
+        module.validate_fact_semantic_pool(caches, evidence, text)
+    else:
+        with pytest.raises(module.DeployError):
+            module.validate_fact_semantic_pool(caches, evidence, text)
+
+
 def timed_proof(tmp_path, module, *, elapsed=91741):
     caches, evidence, text = proof(tmp_path, module)
     route = caches['fact-semantic-verification-v1']['routes'][0]

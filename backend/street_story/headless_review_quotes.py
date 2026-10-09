@@ -32,8 +32,14 @@ def with_quote_catalog(packet):
 def response_schema(packet, public_schema):
     """Constrain fresh private answers without changing the interactive tool."""
     schema = deepcopy(public_schema)
+    decisions = schema['properties']['decisions']['items']['properties']
+    if 'equivalent_to' in decisions and 'items' in packet:
+        decisions['equivalent_to'] = {
+            'type': ['integer', 'null'],
+            'enum': [*sorted({item['fact'] for item in packet['items']}), None],
+            'description': 'Optional canonical fact number from THIS packet. Omit or use null for no equivalence; never -1. A canonical may reference itself.'}
     if 'quote_catalog' in packet:
-        quotes = schema['properties']['decisions']['items']['properties']['basis_quotes']
+        quotes = decisions['basis_quotes']
         quotes['items'] = {'type': 'string', 'enum': list(packet['quote_catalog'])}
         quotes['description'] = ('Exact frozen quote_ref labels only. Choose this fact\'s selected '
                                  'evidence; empty only for unsupported decisions. Labels establish '

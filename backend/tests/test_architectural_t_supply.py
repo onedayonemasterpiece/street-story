@@ -365,3 +365,68 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
     assert 'no_exact_publisher_address_join_observed' in packet['prompt']
     assert 'physical-scope uncertainty' in packet['prompt']
     assert packet['utf8_bytes'] < 20_000
+
+
+def test_article_page_address_joins_without_catalogue_result_metadata():
+    # Coordinate search cards lack postal data; the actual acquired article
+    # includes the modern publisher address in a separate metadata table.
+    article = {'article_id':'prussia39:sid:51',
+        'url':'https://www.prussia39.ru/sight/index.php?sid=51',
+        'address':'Калининградская область, г. Калининград, ул. Житомирская, 22, 24',
+        'address_provenance':'publisher_article_metadata_table'}
+    bodies = [
+        {'candidate_id':'osm:way:101','literal_address_entries':[{
+            'entry_id':'osm:node:1',
+            'address':{'street':'Житомирская улица','house_number':'22/24'}}]},
+        {'candidate_id':'osm:way:102','literal_address_entries':[{
+            'entry_id':'osm:node:2',
+            'address':{'street':'Житомирская улица','house_number':'22'}}]},
+    ]
+    links=publisher_address_relation([article],bodies)[0]
+    assert links['physical_links'][0]['exact_literal_entry_ids']==['osm:node:1']
+    assert links['physical_links'][1]['exact_literal_entry_ids']==[]
+    assert all(not x['physical_identity_inferred'] for x in links['physical_links'])
+    assert links['publisher_modern_address_metadata']==[article['address']]
+
+
+def test_exact_compound_publisher_group_can_cover_two_verified_osm_entrances_without_identity():
+    article={'article_id':'prussia39:sid:51',
+        'url':'https://www.prussia39.ru/sight/index.php?sid=51',
+        'address':'Калининградская область, г. Калининград, ул. Житомирская, 22, 24',
+        'address_provenance':'publisher_article_metadata_table'}
+    def entrance(node, number):
+        return {'entry_id':f'osm:node:{node}',
+            'address':{'street':'Житомирская улица','house_number':number},
+            'provenance':'osm_closed_way_node_membership'}
+    bodies=[
+        {'candidate_id':'osm:way:1','literal_address_entries':[
+            entrance(101,'22'),entrance(102,'24')]},
+        {'candidate_id':'osm:way:2','literal_address_entries':[
+            entrance(103,'22')]},
+        {'candidate_id':'osm:way:3','literal_address_entries':[
+            entrance(104,'22'),entrance(105,'26')]},
+        {'candidate_id':'osm:way:4','literal_address_entries':[
+            dict(entrance(106,'22'),provenance='osm_physical_own_address'),
+            entrance(107,'24')]},
+    ]
+    result=publisher_address_relation([article],bodies)[0]
+    links=result['physical_links']
+    assert links[0]['publisher_full_group_covered_by_distinct_verified_entrances']==[
+        'osm:node:101','osm:node:102']
+    assert links[0]['link_kind']=='publisher_compound_group_matches_verified_entrances'
+    assert all(not link['physical_identity_inferred'] for link in links)
+    assert all(not link['publisher_full_group_covered_by_distinct_verified_entrances']
+        for link in links[1:])
+
+
+def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantics():
+    story, candidates, decision, receipt = _comparison_fixture()
+    packet = prepare_architectural_comparison(story, candidates, receipt)
+    raw = {'type':'object', **decision}
+    result = combine_architectural_decision({}, raw, packet['schema'])
+    assert result['accepted_architectural_text']==decision
+    assert raw['type']=='object'  # The original provider result remains immutable.
+    with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
+        combine_architectural_decision({}, {'type':'building', **decision}, packet['schema'])
+    with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
+        combine_architectural_decision({}, {'type':'object','made_up_identity':True, **decision}, packet['schema'])

@@ -276,6 +276,8 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
             'source_sha256':page['raw_content_sha256'], 'text_sha256':hashlib.sha256(text.encode()).hexdigest(),
             'text':text, 'raw_body_sha256_verified':True, 'input_kind':'acquired_article_text',
             'title':page.get('title') or variants[0].get('title') or '', 'scope':selection['scope'],
+            'address':page.get('address_text') or '',
+            'address_provenance':page.get('address_provenance') or '',
             'binding_basis':selection['binding_basis'], 'lookup_candidate_ids':[selection['candidate_id']],
             'card_variants':variants, 'fetched_at':page.get('fetched_at'), 'cache_hit':page.get('cache_hit',False)})
     receipt['status'] = 'completed' if len(articles) == len(choices) else 'partial' if articles else 'unavailable'

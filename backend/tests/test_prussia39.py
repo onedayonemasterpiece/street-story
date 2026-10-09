@@ -222,3 +222,33 @@ async def test_private_dns_and_unobserved_external_urls_never_dispatch(tmp_path)
         values = [await adapter.coordinate_search(54, 20), await adapter.article('https://private.example/sight/index.php?sid=7'),
                   await adapter.coordinate_search(float('nan'), 20)]
     assert not calls and all(v['status'] != 'completed' for v in values)
+
+
+@pytest.mark.asyncio
+async def test_article_preserves_literal_modern_address_from_real_metadata_dom(tmp_path):
+    # The actual publisher article has this table *outside* justified history.
+    # It is essential for distinguishing compound/single and neighbor addresses.
+    markup = html('<table><tr><td width=55 style="font-size:8pt;">Адрес:</td>'
+        '<td style="font-size:8pt;">Калининградская область, г. Калининград, '
+        'ул. Житомирская, 22, 24</td></tr></table>'
+        '<table><tr><td style="text-align:justify">Центральный эркер имеет '
+        'несколько ярусов и полукруглое завершение.</td></tr></table>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: response(markup))) as http:
+        page = await Prussia39Adapter(Cache(tmp_path / 'cache'),http,resolver=resolver).article(51)
+    assert page['status'] == 'completed'
+    assert page['address_text'] == 'Калининградская область, г. Калининград, ул. Житомирская, 22, 24'
+    assert page['address_provenance'] == 'publisher_article_metadata_table'
+    assert page['raw_body_sha256_verified'] is True
+    assert 'Житомирская' not in page['text']
+
+
+@pytest.mark.asyncio
+async def test_publisher_address_21_is_not_silently_inferred_as_22(tmp_path):
+    markup = html('<table><tr><td>Адрес:</td><td>Советск, ул. Капитана Гастелло, 21</td></tr>'
+                  '</table><td style="text-align:justify">Дом жилой с эркером.</td>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: response(markup))) as http:
+        page = await Prussia39Adapter(Cache(tmp_path / 'cache'),http,resolver=resolver).article(52)
+    assert page['address_text'].endswith('Гастелло, 21')
+    assert page['address_provenance'] == 'publisher_article_metadata_table'

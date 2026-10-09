@@ -72,6 +72,24 @@ def answer(packet):
         'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
 
 
+def test_private_equivalence_schema_matches_host_optional_pointer_scope():
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    original = deepcopy(public_schema())
+    schema = headless_review_quotes.response_schema(packet, original)
+    args = answer(packet)
+    validate = Draft202012Validator(schema).is_valid
+    assert validate(args)
+    args['decisions'][0]['equivalent_to'] = None
+    assert validate(args)
+    args['decisions'][0]['equivalent_to'] = 1
+    assert validate(args)
+    for invalid in (-1, 2, '1', True):
+        args['decisions'][0]['equivalent_to'] = invalid
+        assert not validate(args)
+    assert original == public_schema()
+
+
 def test_private_schema_rejects_candidate_prose_without_changing_public_contract():
     from jsonschema import Draft202012Validator
     packet = packet_fixture()
@@ -149,8 +167,9 @@ async def test_private_original_readback_and_recovery_use_exact_saved_schema(tmp
     assert calls == ['original-addressed-read']
 
 
+@pytest.mark.parametrize('pointer', ['absent', 'null', 'self'])
 @pytest.mark.asyncio
-async def test_label_review_commits_own_literals_without_rewriting_closed_answer(tmp_path):
+async def test_label_review_commits_own_literals_without_rewriting_closed_answer(tmp_path, pointer):
     svc, job, harness = await candidates(tmp_path, count=2)
     route = qualify_controlled_review(harness)
     answers = []
@@ -162,6 +181,9 @@ async def test_label_review_commits_own_literals_without_rewriting_closed_answer
                  'claims': [item['text']], 'basis_quotes': [item['quote_ref']]}
                 for item in packet['items']], 'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
+            if pointer != 'absent':
+                for decision in args['decisions']:
+                    decision['equivalent_to'] = None if pointer == 'null' else decision['fact']
             answers.append(deepcopy(args))
             self._put(job, unit, {'phase': 'result', 'args': args, 'frozen_packet': packet,
                                  'route_identity': self._route_identity(route)})

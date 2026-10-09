@@ -285,7 +285,7 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
         async def start(self, **kwargs):
             initialized = self.adapter.initialize(**kwargs)
             prompt = initialized['context']['frozen_research_operation']['prompt']
-            schema = initialized['configuration']['functions'][0]['parameters']
+            schema = initialized['configuration']['functions'][0]['parametersJsonSchema']
             self.packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
             size = provider.live_facts.input_size(prompt, schema)
             assert size['input_limit_bytes'] is None
