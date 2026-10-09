@@ -37,3 +37,30 @@ def test_lean_route_fails_closed_without_received_map():
     import pytest
     with pytest.raises(ValueError, match='source_map_scene_required'):
         compact_source_map_visual_prompt({})
+
+
+def test_singleton_structural_pair_normalizes_without_changing_evidence():
+    from street_story.identity_source_map_prompt import normalize_source_map_visual_result
+    source = {
+        'accepted_geometry': {
+            'decision': 'accepted_geometry', 'candidate_id': '@381',
+            'spatial_correspondence': {
+                'pattern_kind': 'corner',
+                'front_segments': {
+                    'first': {'candidate_id': '@381', 'kind': 'segment', 'ring_index': 0, 'segment_index': 1},
+                    'second': {'candidate_id': '@381', 'kind': 'segment', 'ring_index': 0, 'segment_index': 2}},
+                'pose': {'east_m': 0, 'north_m': 0, 'heading_degrees': 180}}},
+        'other': [{'name': 'unrelated fact, never reformatted'}]}
+    before = copy.deepcopy(source)
+    normalized, changes = normalize_source_map_visual_result(source)
+    assert source == before
+    assert len(changes) == 1
+    assert normalized['accepted_geometry']['candidate_id'] == '@381'
+    assert normalized['accepted_geometry']['spatial_correspondence']['front_segments'] == [
+        source['accepted_geometry']['spatial_correspondence']['front_segments']]
+    assert normalized['other'] == source['other']
+    assert normalize_source_map_visual_result(normalized) == (normalized, [])
+    ambiguous = copy.deepcopy(source)
+    ambiguous['accepted_geometry']['spatial_correspondence']['front_segments'] = {
+        'first': {'candidate_id': '@381'}, 'reason': 'incomplete'}
+    assert normalize_source_map_visual_result(ambiguous) == (ambiguous, [])
