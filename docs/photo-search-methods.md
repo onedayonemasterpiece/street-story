@@ -146,6 +146,15 @@ Live-first extraction does not qualify its model as a semantic reviewer. Every
 automatic review route must have matching verified schema, own-passage, qualifier
 negative, nearby-duplicate and nearby-conflict checks. Only the existing matching
 qualified routes can make facts eligible; extraction remains Live-first.
+Cold review scheduling can use a finite measured duration from its hash-verified
+qualification receipt, bound to the same provider/model/endpoint/directory and
+review operation. Current review receipts override that hint. This changes
+dispatch order, never qualification, permission to resend or semantic verdicts.
+The intended ordinary Live-only research path still needs equivalent review
+qualification; current extraction evidence cannot supply it. Qualified helper
+reviews are the observed quality fallback, with their actual use and costs reported.
+The supported compound claim seen in photo104 remains a semantic quality defect;
+it cannot be fixed by deterministic conjunction splitting or passage labels.
 Closed rejected or exhausted reviews stop automatic work only when the complete
 review recipe is unchanged: candidate revisions, owner context, eligible ledger
 and verifier contract. Changed claims or context remain reviewable. A source
@@ -226,6 +235,11 @@ the field required an allowed candidate. The host rejected it correctly; neither
 identity nor facts were accepted. Its already received camera street was correct,
 but the three-second catalogue cutoff delivered no cards. Other final cases were
 not run on this version.
+The prepared role-aware repair now identifies the exact received context ID that
+is outside a nomination field's catalogue, without broadening that field or
+remapping the ID. Saved photo102 data also confirms that its bound entrance
+number reaches the real literal Prussia address query unchanged; the failed
+model answer never requested that narrower route.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates

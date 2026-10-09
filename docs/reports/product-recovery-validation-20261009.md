@@ -62,7 +62,7 @@ Wiki article text is complementary. Text-only planning retains the full received
 packet: the saved Native base prompt shrank from 65,672 to 62,507 characters, but the
 strict schema yields 110,579 addressed characters. Live correctly refuses planning
 inputs above 24 KB. This remains an input-size limitation, not global quota evidence.
-The early three-second catalogue window can miss observed cold HTTP responses of
+The then-current three-second catalogue window could miss cold HTTP responses of
 5–15 seconds. A complete narrow lookup returning 1–2 cards can deliver their bodies
 for the second joint call; late broad/partial inventory cannot currently produce a
 text proof within that two-call budget. Photo102 has actual bound OSM address entries,
@@ -152,6 +152,26 @@ The prepared reader-budget correction preserves the existing 12-second publisher
 read envelope before model admission and passed **59 offline tests in 21.45 s**,
 including delayed cards beyond the obsolete cutoff and cancellation/draining.
 This is not a new live acceptance result.
+
+Role-aware nomination diagnostics passed 50 focused checks, followed by 48 merged
+identity/catalogue/admission checks in 31.85 s. They distinguish received map
+context from eligible nomination IDs in the existing useful repair; strict enums,
+unchanged SOURCE/MAP bytes and the two-call budget remain intact. Actual saved
+photo102 entrance memberships preserve literal house numbers through the real
+Prussia query; no transport patch or runtime audit hint is required.
+
+Cold review dispatch now uses measured qualification receipt durations when
+there are no current same-operation measurements: Mimo 91.741 s and Nemotron
+34.284 s in the verified source receipts. Current dispatch history overrides
+these hints. The installer exports only bound scalar metadata; runtime opens no
+receipt paths. Original qualification provenance and derived runtime-cache hashes
+are frozen separately. The scheduling change passed 68 focused checks; provenance
+and existing 429-history compatibility passed 34 checks. These overlap and are
+not summed. No new provider probes, model caps or timeout changes were used.
+Live review qualification and the compound-claim defect remain open; neither
+changed dispatch order nor literal labels establishes semantic correctness.
+The final merged reader, nomination-role, measured-review, qualification and
+acceptance checks passed **114 tests in 32.61 s** before the next bounded canary.
 
 Hosted backend CI on `24bbff5` passed. Android checks passed, but instrumentation
 failed its month-old original-photo selector (one failure of 27 tests). The
