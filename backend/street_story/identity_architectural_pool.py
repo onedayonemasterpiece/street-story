@@ -244,10 +244,17 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'matching_entry_ids':link['exact_literal_entry_ids'],
             'verified_compound_entrance_ids':link[
                 'publisher_full_group_covered_by_distinct_verified_entrances'],
+            'complex_postal_member_entry_ids':link.get(
+                'publisher_complex_postal_membership_entry_ids') or [],
+            'association_strength':('exact_full_postal_group'
+                if link['exact_literal_entry_ids'] or
+                    link['publisher_full_group_covered_by_distinct_verified_entrances']
+                else 'complex_postal_membership_only'),
             'relationship_not_physical_identity':True}
             for link in item['physical_links']
             if link['exact_literal_entry_ids'] or
-                link['publisher_full_group_covered_by_distinct_verified_entrances']],
+                link['publisher_full_group_covered_by_distinct_verified_entrances'] or
+                link.get('publisher_complex_postal_membership_entry_ids')],
         'physical_scope_is_not_inferred':True} for item in links]
     aids=[a['article_id'] for a in checked]
     per_article_spans,span_refs=_source_span_options(checked)
