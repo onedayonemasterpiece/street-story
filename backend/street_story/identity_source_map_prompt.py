@@ -55,3 +55,26 @@ def compact_source_map_visual_prompt(packet):
     spatial_packet['external_ref_in_this_visual_send'] = False
     return INSTRUCTION + 'Observed spatial context (lossless map label/literal references):\n' + json.dumps(
         spatial_packet, ensure_ascii=False, separators=(',', ':'))
+
+
+def normalize_source_map_visual_result(result):
+    """Repair an unambiguous JSON container shape, never infer source identity.
+
+    A vision model occasionally gives a sole first/second feature pair as an
+    object although the schema requires a list of pairs. This only wraps an
+    already supplied pair; it neither changes its physical IDs nor invents
+    geometry, map measurements or an acceptance verdict. The original source
+    remains in the provider's addressed session.
+    """
+    from copy import deepcopy
+    if not isinstance(result, dict):
+        return result, []
+    decision = result.get('accepted_geometry')
+    geometry = decision.get('spatial_correspondence') if isinstance(decision, dict) else None
+    fronts = geometry.get('front_segments') if isinstance(geometry, dict) else None
+    if (not isinstance(fronts, dict) or set(fronts) != {'first', 'second'}
+            or not all(isinstance(fronts[key], dict) for key in ('first', 'second'))):
+        return result, []
+    value = deepcopy(result)
+    value['accepted_geometry']['spatial_correspondence']['front_segments'] = [fronts]
+    return value, ['accepted_geometry.spatial_correspondence.front_segments:singleton_pair_to_array']
