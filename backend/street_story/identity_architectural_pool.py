@@ -101,6 +101,49 @@ def _excerpt(text, *, max_chars=3800):
     return [{'start':a,'end':b,'text':text[a:b]} for a,b in merged]
 
 
+
+def _source_span_options(checked, *, max_spans_per_article=14):
+    """Real verbatim spans, stable by article order and source character ranges.
+
+    LLM selects a reference, never writes a long quote. An invalid or
+    cross-article reference must fail without invented fallback citations.
+    """
+    refs = {}
+    results = []
+    for row in checked:
+        text = row['text']
+        chunks = []
+        for paragraph in re.finditer(r'[^\n]+', text):
+            for sentence in re.finditer(r'[^.!?;]+(?:[.!?;]+|$)', paragraph.group()):
+                a, b = paragraph.start() + sentence.start(), paragraph.start() + sentence.end()
+                while a < b and text[a].isspace():
+                    a += 1
+                while a < b and text[b-1].isspace():
+                    b -= 1
+                if b-a < 12:
+                    continue
+                for start in range(a, b, 420):
+                    end = min(start+420, b)
+                    if len(text[start:end].strip()) >= 12:
+                        chunks.append((start, end))
+        if not chunks:
+            chunks = [(0, min(len(text), 420))]
+        selected = chunks[:max_spans_per_article]
+        passages = []
+        for start,end in selected:
+            span_ref = f'p{len(refs):04d}'
+            literal = text[start:end]
+            refs[span_ref] = {
+                'article_id': row['article_id'],
+                'start': start, 'end': end, 'source_quote': literal,
+                'source_text_sha256': row['text_sha256']}
+            passages.append({'span_ref': span_ref, 'literal_text': literal})
+        results.append({'article_id': row['article_id'],
+            'passages': passages,
+            'all_passages_displayed': len(chunks) <= max_spans_per_article})
+    return results, refs
+
+
 def _verified_articles(receipt, max_articles):
     articles = receipt.get('articles')
     if (receipt.get('source_image_input') is not True
