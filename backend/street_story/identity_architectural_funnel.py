@@ -19,8 +19,6 @@ import json
 
 from jsonschema import Draft202012Validator
 
-from .identity_architectural_evidence import compact_model_evidence
-
 _CONTRACT = 'street-story-T-G-shortlist-and-REF-handoff-v1'
 _SHA = set('0123456789abcdef')
 
@@ -135,8 +133,7 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
         'G_reserve_remains_accessible':True,
         'received_article_ids':aid,
         'already_acquired_source_image_links':images,
-        'original_active_ids':active,
-        'original_reserve_ids':reserve}
+        'original_active_ids':active}
     # Model need not read 300 raw reserve details again: it sees a complete
     # active group; reserved IDs stay in host evidence for later expansion.
     # No threshold on camera distance, dimensions or architectural name.
