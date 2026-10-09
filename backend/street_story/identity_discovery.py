@@ -150,6 +150,22 @@ def _conditional_text_prior(payload, nomination_ids):
     return prior
 
 
+def _closed_invalid_followup_route(settings, gemini, issues, model, quota, executor):
+    """Use an already registered alternative for the one contract repair.
+
+    This never adds an operation or replaces an addressed request. A valid initial
+    plan needing selected TEXT keeps its ordinary route. Each returned executor
+    and quota belongs to the same registered model tuple.
+    """
+    preferred = getattr(settings, 'gemini_web_search_tertiary_model', None)
+    if issues and preferred and preferred != model:
+        for registered_model, _pool, registered_quota, registered_executor in (
+                getattr(gemini, 'web_search_routes', None) or []):
+            if registered_model == preferred:
+                return registered_model, registered_quota, registered_executor
+    return model, quota, executor
+
+
 def _nomination_binding_issues(payload, nomination_ids, manifest):
     """Explain exact nomination membership errors without changing model choices."""
     if not isinstance(payload, dict) or not isinstance(payload.get('observed_candidate_ids'), list):
@@ -854,6 +870,13 @@ async def suggest(service, story, transcript, candidates):
             if issues:
                 record_identity_event(service, story['id'], 'identity_geometry_binding_repair',
                     {'issue_types': list(issues), 'attempt': 1, 'article_count': len(text_articles)})
+            previous_model = model
+            model, quota, executor = _closed_invalid_followup_route(
+                getattr(service, 'settings', None), gemini, issues, model, quota, executor)
+            if model != previous_model:
+                record_identity_event(service, story['id'], 'identity_joint_repair_route_selected',
+                    {'reason': 'closed_initial_contract_invalid', 'initial_model': previous_model,
+                     'followup_model': model, 'operation_count_unchanged': True})
             joint_followup_used = True
             from .service import canonical
             joint_followup_binding = {
