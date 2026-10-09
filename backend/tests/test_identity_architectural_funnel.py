@@ -304,9 +304,32 @@ def test_unaccepted_T_reuses_actual_G_model_question_as_targeted_ref_hint():
     assert result['after_T_reserved_count']==3
     assert result['accepted_physical_id'] is None
     assert result['T_proof_accepted'] is False
-    assert result['downstream_REF']['image_goal_provenance']=='G_closed_model_question_reused'
+    assert result['downstream_REF']['image_goal_provenance']=='G_previously_closed_model_distinguishing_question'
     assert result['downstream_REF']['image_research_goals'][0][
         'needed_view_or_feature']=='Which building owns the central bay?'
     assert result['downstream_REF']['image_research_goals'][0][
         'target_candidate_ids']==['osm:way:7']
     assert result['identity_authorized_by_shortlist_count_alone'] is False
+
+
+
+def test_unaccepted_T_uses_its_own_model_authored_ref_question_if_G_had_none():
+    story,candidates,decision,receipt,g=_inputs()
+    g['t_distinguishing_question']=None
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    claim=_t_result(effect='confirmed')
+    claim['targeted_images']=[]
+    claim['next_distinguishing_question']='Are courtyard portals needed to distinguish both wings?'
+    result=close_t_g_funnel(prepared,claim,
+        source_sha256=receipt['original_source_sha256'])
+    assert result['status']=='conditional_T_shortlist'
+    assert result['T_proof_accepted'] is False
+    assert result['after_T_active_count']==1
+    assert result['downstream_REF']['image_goal_provenance']==(
+        'T_same_closed_response_distinguishing_question')
+    assert result['downstream_REF']['image_research_goals'][0][
+        'needed_view_or_feature']=='Are courtyard portals needed to distinguish both wings?'
+    assert result['reserve_physical_candidate_ids']==[
+        'osm:way:9','osm:way:10','osm:way:8']
