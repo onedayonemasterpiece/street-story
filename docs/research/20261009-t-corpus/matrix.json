@@ -171,6 +171,49 @@
         "sum_completed_model_seconds": 5.194,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 102,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 5.974,
+        "input_tokens": 7229,
+        "output_tokens": 1027,
+        "money": "unknown",
+        "raw_provider_response_sha256": "cd24126aa1b8e1d82d03ad8dd6a08091e9e1f7abd06220bdedf8498d72bc062d",
+        "source_sha256": "f56c6cfeaf4b88a018dd3567e66d6fd75918d42da30100cff718c069b10d7c7e",
+        "model_decision": "accepted_architectural_text",
+        "candidate_id": "osm:way:133035113",
+        "selected_article_ids": [
+          "prussia39:sid:3875"
+        ],
+        "quotes_literal_valid": true,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": true,
+        "frozen_proof_sha256": "07f4630155319a7a798f55d8c25891a117ae9499f39957673110a41a76c11b80",
+        "t_full_proof_valid": true,
+        "admitted_matches_retrospective_control": true,
+        "direct_proposal_matches_retrospective_control": true,
+        "source_photo_verified": true,
+        "publisher_physical_scope": {
+          "applicable": true,
+          "supported": true,
+          "reason": "verified_prussia_publisher_modern_address_to_exact_osm_subject",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "source_subject_competition_guard": {
+          "applicable": true,
+          "supported": true,
+          "reason": "no_closer_observed_footprint_competes_at_verified_camera_position",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "stage_result": "Accepted"
       }
     },
     {
@@ -353,6 +396,49 @@
         "sum_completed_model_seconds": 12.027,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 104,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 7.521,
+        "input_tokens": 9478,
+        "output_tokens": 840,
+        "money": "unknown",
+        "raw_provider_response_sha256": "bfc35cec01524203418765341a3e516097d90fe83cfa1b1c4f9cf2cd25e750bd",
+        "source_sha256": "112941081c0b0da81fe091e864c16c144c9d308ecdd31ed438a690c42b71e0cd",
+        "model_decision": "accepted_architectural_text",
+        "candidate_id": "osm:relation:3665416",
+        "selected_article_ids": [
+          "prussia39:sid:550"
+        ],
+        "quotes_literal_valid": true,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": true,
+        "frozen_proof_sha256": "d6503e05c25b6754a3f0e603654090d2cf7773dd9a28c3ef2d42b244007893d1",
+        "t_full_proof_valid": true,
+        "admitted_matches_retrospective_control": true,
+        "direct_proposal_matches_retrospective_control": true,
+        "source_photo_verified": true,
+        "publisher_physical_scope": {
+          "applicable": true,
+          "supported": true,
+          "reason": "verified_prussia_publisher_modern_address_to_exact_osm_subject",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "source_subject_competition_guard": {
+          "applicable": true,
+          "supported": true,
+          "reason": "no_closer_observed_footprint_competes_at_verified_camera_position",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "stage_result": "Accepted"
       }
     },
     {
@@ -524,6 +610,24 @@
         "sum_completed_model_seconds": 11.048,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 105,
+        "state": "provider_unavailable_or_unknown",
+        "original_provider_outcome": "provider_unavailable_or_unknown",
+        "provider_send_state": "unknown",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 2.575,
+        "input_tokens": null,
+        "output_tokens": null,
+        "money": "unknown",
+        "raw_provider_response_sha256": null,
+        "source_sha256": "cc0dbb5ef8adf7266eae4a6ade70837672266bc33192e59e32450c235ab9b23b",
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Provider outcome unknown"
       }
     },
     {
@@ -662,6 +766,49 @@
         "sum_completed_model_seconds": 11.92,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 106,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 6.328,
+        "input_tokens": 6824,
+        "output_tokens": 1067,
+        "money": "unknown",
+        "raw_provider_response_sha256": "8d4e5f3f74194466281bcdb29bce1c8cbddbffbeedc69b54697fc8a434407b96",
+        "source_sha256": "ec1717997abf9a78b5443c2315fe28311709ecbe9be0c594ccc0b7c8b2e9f04f",
+        "model_decision": "accepted_architectural_text",
+        "candidate_id": "osm:way:150596899",
+        "selected_article_ids": [
+          "prussia39:sid:2458"
+        ],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "frozen_proof_sha256": null,
+        "t_full_proof_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": true,
+        "source_photo_verified": true,
+        "publisher_physical_scope": {
+          "applicable": true,
+          "supported": false,
+          "reason": "article_modern_address_not_bound_to_nominated_physical_body",
+          "closer_physical_count": null,
+          "received_matching_physical_count": 0
+        },
+        "source_subject_competition_guard": {
+          "applicable": true,
+          "supported": true,
+          "reason": "no_closer_observed_footprint_competes_at_verified_camera_position",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "stage_result": "Proposed physical ID rejected by host admission"
       }
     },
     {
@@ -807,6 +954,31 @@
         "sum_completed_model_seconds": 15.888,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 107,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 5.954,
+        "input_tokens": 7787,
+        "output_tokens": 602,
+        "money": "unknown",
+        "raw_provider_response_sha256": "b76b740547f590e26da15f223aba3cb26322d359d22de2ec03b1f49e7f2a7f17",
+        "source_sha256": "6577dbb842ddfed4c9f86763a3713c780b82daaf21feefc17267742b5fc92361",
+        "model_decision": "uncertain",
+        "candidate_id": "",
+        "selected_article_ids": [],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Uncertain"
       }
     },
     {
@@ -1018,6 +1190,31 @@
         "sum_completed_model_seconds": 20.279,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 108,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 6.733,
+        "input_tokens": 9008,
+        "output_tokens": 693,
+        "money": "unknown",
+        "raw_provider_response_sha256": "92e0e54fc33f9e78413986bfcbced5748cb252f25fc0fd87ef64f8f82dc1c09c",
+        "source_sha256": "e7f8ae9521f6a4c5f949ff9fe47de62417c952de5550b4118970a9d9420ff092",
+        "model_decision": "uncertain",
+        "candidate_id": "",
+        "selected_article_ids": [],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Uncertain"
       }
     },
     {
@@ -1150,6 +1347,31 @@
         "sum_completed_model_seconds": 8.254,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 109,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 4.623,
+        "input_tokens": 6002,
+        "output_tokens": 509,
+        "money": "unknown",
+        "raw_provider_response_sha256": "8a1f3d1ae4bafb52ea6ec540f188d9cfe0028aab35c2d6dd7a44d08e600dbc4a",
+        "source_sha256": "94bbdcac778e3f2e59d4b216c228e629cb5ed7f93efa669cd27b3f8b7457315a",
+        "model_decision": "uncertain",
+        "candidate_id": "",
+        "selected_article_ids": [],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Uncertain"
       }
     },
     {
@@ -1335,6 +1557,50 @@
         "sum_completed_model_seconds": 10.807,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 110,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 10.823,
+        "input_tokens": 7989,
+        "output_tokens": 993,
+        "money": "unknown",
+        "raw_provider_response_sha256": "b360a6396abc9155c7c3f50215651dc0174e8b936072c5f0567c96280db26ffc",
+        "source_sha256": "ccf744200bb534b8790b98791029a92d3e06e431137702e853ef1f40248af9dd",
+        "model_decision": "accepted_architectural_text",
+        "candidate_id": "osm:way:1085593395",
+        "selected_article_ids": [
+          "prussia39:sid:2902",
+          "prussia39:sid:887"
+        ],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "frozen_proof_sha256": null,
+        "t_full_proof_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": false,
+        "source_photo_verified": true,
+        "publisher_physical_scope": {
+          "applicable": true,
+          "supported": false,
+          "reason": "publisher_complex_address_resolves_multiple_physical_bodies",
+          "closer_physical_count": null,
+          "received_matching_physical_count": 2
+        },
+        "source_subject_competition_guard": {
+          "applicable": true,
+          "supported": false,
+          "reason": "closer_observed_physical_footprints_need_independent_SOURCE_to_G_link",
+          "closer_physical_count": 1,
+          "received_matching_physical_count": null
+        },
+        "stage_result": "Proposed physical ID rejected by host admission"
       }
     },
     {
@@ -1383,6 +1649,13 @@
         "sum_completed_model_seconds": 0,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 111,
+        "state": "not_applicable_to_geo_v4",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not applicable to this geo-T stage"
       }
     },
     {
@@ -1521,6 +1794,26 @@
         "sum_completed_model_seconds": 15.737,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 112,
+        "state": "invalid_schema",
+        "original_provider_outcome": "invalid_schema",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 5.308,
+        "input_tokens": 4815,
+        "output_tokens": 628,
+        "money": "unknown",
+        "raw_provider_response_sha256": "655f507a61742084ec19a5b766016af54a76d5a26391c9c56cbc23ebf2a93a60",
+        "source_sha256": "f50046ef6697c63ac111502dbad26426ebe8b63d7ac4f17433035635968f3d69",
+        "model_decision": "uncertain",
+        "schema_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Invalid model contract"
       }
     },
     {
@@ -1692,6 +1985,24 @@
         "sum_completed_model_seconds": 9.648,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 118,
+        "state": "provider_unavailable_or_unknown",
+        "original_provider_outcome": "provider_unavailable_or_unknown",
+        "provider_send_state": "unknown",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 2.945,
+        "input_tokens": null,
+        "output_tokens": null,
+        "money": "unknown",
+        "raw_provider_response_sha256": null,
+        "source_sha256": "5ba6fa94128419094bc81a2b900efed2fb4c8984de19309120da30042be8744a",
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Provider outcome unknown"
       }
     },
     {
@@ -1860,6 +2171,24 @@
         "sum_completed_model_seconds": 12.301,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 119,
+        "state": "provider_unavailable_or_unknown",
+        "original_provider_outcome": "provider_unavailable_or_unknown",
+        "provider_send_state": "unknown",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 6.782,
+        "input_tokens": null,
+        "output_tokens": null,
+        "money": "unknown",
+        "raw_provider_response_sha256": null,
+        "source_sha256": "a5714908eeac3ddbe45df954635718adb1a8fa020d319b58d1214ac8f6ab6bce",
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Provider outcome unknown"
       }
     },
     {
@@ -2003,6 +2332,14 @@
         "sum_completed_model_seconds": 9.787,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 120,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "limitation": "No v4 receipt; attempted tool execution was denied before dispatch",
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -2314,6 +2651,14 @@
         "sum_completed_model_seconds": 8.484,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 121,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "limitation": "No v4 receipt; attempted tool execution was denied before dispatch",
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -2633,6 +2978,13 @@
         "sum_completed_model_seconds": 9.052,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 122,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -2752,6 +3104,13 @@
         "sum_completed_model_seconds": 10.977,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 123,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -3076,6 +3435,13 @@
         "sum_completed_model_seconds": 12.287,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 124,
+        "state": "not_applicable_to_geo_v4",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not applicable to this geo-T stage"
       }
     },
     {
@@ -3215,6 +3581,13 @@
         "sum_completed_model_seconds": 12.368,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 125,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -3357,6 +3730,13 @@
         "sum_completed_model_seconds": 12.019,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 126,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -3535,6 +3915,13 @@
         "sum_completed_model_seconds": 10.438,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 127,
+        "state": "not_applicable_to_geo_v4",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not applicable to this geo-T stage"
       }
     },
     {
@@ -3735,6 +4122,13 @@
         "sum_completed_model_seconds": 9.456,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 128,
+        "state": "not_applicable_to_geo_v4",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not applicable to this geo-T stage"
       }
     },
     {
@@ -3986,6 +4380,31 @@
         "sum_completed_model_seconds": 12.563,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 129,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 5.529,
+        "input_tokens": 12930,
+        "output_tokens": 307,
+        "money": "unknown",
+        "raw_provider_response_sha256": "3b3a9f7e2a9dcbb8bdaeb5b30267d075e727dca2d843d58a7ecaedeed15c220a",
+        "source_sha256": "575d7d026c8af31786f8fece04ac45e4788f2881fc0fd96d523cd2b2baddd2d1",
+        "model_decision": "uncertain",
+        "candidate_id": "",
+        "selected_article_ids": [],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": null,
+        "source_photo_verified": true,
+        "stage_result": "Uncertain"
       }
     },
     {
@@ -4164,6 +4583,49 @@
         "sum_completed_model_seconds": 18.442,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 130,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 6.312,
+        "input_tokens": 6874,
+        "output_tokens": 1040,
+        "money": "unknown",
+        "raw_provider_response_sha256": "df56a236405a65a77a197703f5961bed6731f9a73604430d89e1093cacc3975b",
+        "source_sha256": "63a06c54726012c68bfcc972de010c3d8922c367f7840abba712620ebb0d3313",
+        "model_decision": "accepted_architectural_text",
+        "candidate_id": "osm:way:193106140",
+        "selected_article_ids": [
+          "prussia39:sid:1384"
+        ],
+        "quotes_literal_valid": false,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": false,
+        "frozen_proof_sha256": null,
+        "t_full_proof_valid": false,
+        "admitted_matches_retrospective_control": null,
+        "direct_proposal_matches_retrospective_control": false,
+        "source_photo_verified": true,
+        "publisher_physical_scope": {
+          "applicable": true,
+          "supported": true,
+          "reason": "verified_prussia_publisher_modern_address_to_exact_osm_subject",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "source_subject_competition_guard": {
+          "applicable": false,
+          "supported": true,
+          "reason": "camera_geography_not_verified_no_distance_veto",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "stage_result": "Proposed physical ID rejected by host admission"
       }
     },
     {
@@ -4363,6 +4825,13 @@
         "sum_completed_model_seconds": 40.103,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 131,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not sent in this corrected blind run"
       }
     },
     {
@@ -4513,6 +4982,49 @@
         "sum_completed_model_seconds": 16.117,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 132,
+        "state": "completed",
+        "original_provider_outcome": "completed",
+        "provider_send_state": "response_closed",
+        "sdk_invocations": 1,
+        "model": "gemini-3.5-flash-lite",
+        "elapsed_seconds": 6.822,
+        "input_tokens": 5946,
+        "output_tokens": 841,
+        "money": "unknown",
+        "raw_provider_response_sha256": "5ce77824ce73d1b7ac7f37f4d749d0b47c60d547d51d69b170f2f79ce8ef1763",
+        "source_sha256": "4f7dc18d93b6cea0382c206fca8ff7a9707df9c600824e11361ed883cb338b7d",
+        "model_decision": "accepted_architectural_text",
+        "candidate_id": "osm:way:192217077",
+        "selected_article_ids": [
+          "prussia39:sid:1019"
+        ],
+        "quotes_literal_valid": true,
+        "source_article_verified": true,
+        "schema_valid": true,
+        "host_freeze_valid": true,
+        "frozen_proof_sha256": "8732430bb45a84769f876bbfd948be696ad3a0b9e4532a13b69d01b9cb092a5e",
+        "t_full_proof_valid": true,
+        "admitted_matches_retrospective_control": true,
+        "direct_proposal_matches_retrospective_control": true,
+        "source_photo_verified": true,
+        "publisher_physical_scope": {
+          "applicable": true,
+          "supported": true,
+          "reason": "verified_prussia_publisher_modern_address_to_exact_osm_subject",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "source_subject_competition_guard": {
+          "applicable": false,
+          "supported": true,
+          "reason": "camera_geography_not_verified_no_distance_veto",
+          "closer_physical_count": null,
+          "received_matching_physical_count": null
+        },
+        "stage_result": "Accepted"
       }
     },
     {
@@ -4665,7 +5177,43 @@
         "sum_completed_model_seconds": 11.8,
         "monetary_cost": "unknown",
         "note": "Repeated research passes are not a single production latency. Shared translations are accounted globally."
+      },
+      "T_blind_v4": {
+        "photo": 133,
+        "state": "not_sent",
+        "provider_send_state": "not_sent",
+        "sdk_invocations": 0,
+        "stage_result": "Not sent in this corrected blind run"
       }
     }
-  ]
+  ],
+  "analysis_versions": {
+    "original_26_photo_T_experiment": "Earlier complete 26-photo source, retrieval, and conditional-model evaluation. This report remains unchanged and identifiable by T_final_result.",
+    "corrected_blind_T_v4": "Follow-up blind SOURCE/text + host-gate admission, subset completed; abstentions/provider unknown/not sent are not counted as accepts.",
+    "corrected_blind_T_v4_stats": {
+      "photo_records": 26,
+      "v4_receipts": 14,
+      "closed_provider_responses": 11,
+      "schema_valid_closed": 10,
+      "uncertain_from_model": 5,
+      "accepted_after_existing_host_and_both_T_gates": 3,
+      "accepted_photos": [
+        102,
+        104,
+        132
+      ],
+      "accepted_wrong_physical_ids_against_post_eval": 0,
+      "provider_nonclosed_or_unknown": 3,
+      "model_schema_invalid": 1,
+      "median_closed_model_seconds": 6.312,
+      "range_closed_model_seconds": [
+        4.623,
+        10.823
+      ],
+      "sdk_attempts_reported": 14,
+      "dollar_cost": "unknown",
+      "no_retries_of_existing_response": true
+    },
+    "private_original_model_receipts": "/home/dev/artifacts/street-story/20261009T111952Z-architecture-t-full-corpus-20261009/t-blind-typed-physical-source-text-v4.json"
+  }
 }
