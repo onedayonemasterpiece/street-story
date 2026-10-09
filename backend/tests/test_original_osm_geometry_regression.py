@@ -153,8 +153,9 @@ def test_original_132_source_free_bidirectional_road_cues_expose_both_physical_f
     nearest=next((row for row in cues['rows'] if row[0]=='osm:way:67826885'),None)
     assert nearest is not None
     assert nearest[4]==pytest.approx(4.67,abs=.1)
-    assert len(nearest[-1])==2
-    directional=[row[1] for row in nearest[-1]]
+    assert len(nearest[6])==2
+    assert nearest[7]  # literal OSM highway type, not inferred street class
+    directional=[row[1] for row in nearest[6]]
     firsts={direction[0][1] for direction in directional if direction}
     # Neither the correct-facing road nor its opposite is chosen by the host;
     # both geometries are available to the SOURCE-using LLM.
