@@ -457,9 +457,10 @@ def test_closer_map_contour_is_only_an_observed_competitor_not_a_T_veto():
 
 
 def test_unknown_GPS_and_unmeasured_distances_do_not_block_architectural_T():
-    body=lambda cid,meters:{'candidate_id':cid,'identity_eligible':True,
-        'map_object':{'tags':{'building':'yes'}},
-        **({'boundary_distance_m':meters} if meters is not None else {})}
+    def body(cid,meters):
+        return {'candidate_id':cid,'identity_eligible':True,
+            'map_object':{'tags':{'building':'yes'}},
+            **({'boundary_distance_m':meters} if meters is not None else {})}
     decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
         'material_alternatives_resolved':True}
     for camera_verified in (True,False):
