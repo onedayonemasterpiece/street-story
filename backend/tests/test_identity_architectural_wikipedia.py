@@ -209,3 +209,27 @@ def test_wikipedia_model_query_planner_uses_acquired_title_verbatim_not_suffix_h
     mutated['text']+='Invented after the publisher fetch.'
     with pytest.raises(ValueError,match='verified_publisher_article'):
         prepare_wikipedia_title_queries(mutated)
+
+
+
+@pytest.mark.asyncio
+async def test_mediawiki_model_selected_page_redirects_to_a_different_pageid_fail_closed(tmp_path):
+    source_cards=json.dumps({'query':{'search':[{
+        'pageid':411,'title':'Историческая вилла'}]}},ensure_ascii=False).encode()
+    unrelated=actual_article(pageid=412,title='Совсем другое здание',
+        body='Текст про другой объект, недопустимый как доказательство.')
+    def handler(request):
+        if request.url.params.get('list')=='search':
+            return httpx.Response(200,content=source_cards,
+                headers={'content-type':'application/json'})
+        return httpx.Response(200,content=unrelated,
+            headers={'content-type':'application/json'})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        reader=ArchitecturalWikipediaReader(Cache(tmp_path),http,resolver=resolver)
+        listing=await reader.search_observed_title('Историческая вилла')
+        assert listing['status']=='completed'
+        result=await reader.article_by_model_selected_pageid(listing,411)
+    assert result['status']=='completed_empty'
+    assert result['requested_pageid']==411
+    assert result['actual_redirected_article_id']=='wiki:412'
+    assert result['identity_inferred'] is False
