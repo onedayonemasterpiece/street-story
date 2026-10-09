@@ -250,8 +250,14 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
                 link['publisher_full_group_covered_by_distinct_verified_entrances']],
         'physical_scope_is_not_inferred':True} for item in links]
     aids=[a['article_id'] for a in checked]
+    per_article_spans,span_refs=_source_span_options(checked)
     decision_schema=architectural_text_decision_schema(nominated,aids,
         material_alternative_limit=max(8,len(nominated)),structural=True)
+    corr=decision_schema['properties']['correspondences']['items']
+    corr['properties'].pop('source_quote')
+    corr['properties']['source_span_ref']={'type':'string','enum':list(span_refs)}
+    corr['required'].remove('source_quote')
+    corr['required'].append('source_span_ref')
     contrast={'type':'array','minItems':len(aids),'maxItems':len(aids),
         'items':{'type':'object','properties':{
             'article_id':{'type':'string','enum':aids},
@@ -263,7 +269,8 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'additionalProperties':False}}
     decision_schema['properties']['article_comparisons']=contrast
     decision_schema['required'].append('article_comparisons')
-    packet={'contract':'source-multiple-architecture-pool-v1',
+    passages_by_article={row['article_id']:row for row in per_article_spans}
+    packet={'contract':'source-multiple-architecture-pool-v2-literal-span-refs',
         'actual_SOURCE_attached_separately':True,
         'original_source_sha256':receipt.get('original_source_sha256'),
         'articles':[{
@@ -272,7 +279,8 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'publisher_modern_address':row.get('address') or '',
             'publisher_address_provenance':row.get('address_provenance'),
             'source_sha256':row['source_sha256'],
-            'actual_model_excerpt_text':row['text'],
+            'architecture_passages':passages_by_article[row['article_id']]['passages'],
+            'all_architecture_passages_displayed':passages_by_article[row['article_id']]['all_passages_displayed'],
             'model_excerpt_sha256':row['text_sha256'],
             'truncated_from_full_publisher_article':row['full_original_text_sha256']!=row['text_sha256']}
             for row in checked],
@@ -312,10 +320,13 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         'For accepted_architectural_text, article_bindings MUST contain '
         'only the one or two POSITIVE supporting article IDs, each mapped '
         'to the decision.candidate_id with physical_binding_resolved=true. '
-        'Each positive supporting correspondence must quote a literal '
-        'substring of its own actual_model_excerpt_text and state the '
-        'separately observed SOURCE feature. Every quote/article_id must '
-        'belong to a POSITIVE article_binding. '
+        'Each correspondence must choose source_span_ref from the '
+        'architecture_passages of its OWN article_id. The host resolves '
+        'the literal quote from its stored SHA-bound text: never copy or '
+        'paraphrase the article text in your JSON. Describe separately '
+        'what SOURCE pixels visibly show; a conflicting number or shape '
+        'of openings is a structural contradiction, not stable_match. '
+        'Every evidence article_id must belong to a positive binding. '
         'Use material_alternatives for different physical buildings; '
         'do not bury rejected article IDs in positive article_bindings. '
         'If an important alternative source or physical wing has not '
@@ -325,7 +336,8 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         +json.dumps(packet,ensure_ascii=False,separators=(',',':')))
     return {'prompt':instruction,'schema':decision_schema,
         'article_ids':aids,'candidate_ids':nominated,'checked_articles':checked,
-        'input_contract':'source-multiple-architecture-pool-v1',
+        'source_span_refs':span_refs,
+        'input_contract':'source-multiple-architecture-pool-v2-literal-span-refs',
         'text_utf8_bytes':len(instruction.encode()),
         'max_article_excerpts':max_articles}
 
