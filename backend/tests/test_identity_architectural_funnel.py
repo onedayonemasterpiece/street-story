@@ -434,7 +434,9 @@ def test_unaccepted_T_does_not_export_conditional_negative_as_global_blacklist()
     provisional=close_t_g_funnel(prepared,_t_result(effect='confirmed'),
         source_sha256=receipt['original_source_sha256'])
     native=to_existing_research_priority(provisional,receipt['articles'])
-    assert native['candidate_ids']==['osm:way:7']
+    assert native['candidate_ids']==['osm:way:7','osm:way:8']
+    assert provisional['conditional_REF_peer_candidate_ids']==[
+        'osm:way:7','osm:way:8']
     assert native['contradictions']==[]
     assert provisional['conditional_T_research_priority_not_identity'] is True
 
@@ -546,3 +548,36 @@ def test_compact_G_independently_accepted_never_requires_text():
         g_funnel=g,g_source_sha256=receipt['original_source_sha256'])
     assert packet['skip_T'] is True
     assert packet['g_funnel_prepared']['stage']=='already_accepted_G'
+
+
+
+def test_failed_T_one_body_proof_keeps_prior_independent_T_reserve_lead_in_REF():
+    story,candidates,decision,receipt,g=_inputs()
+    g['active']=g['active'][:1]
+    g['reserve'].insert(0,{'candidate_id':'osm:way:8'})
+    g['active_count']=1
+    g['reserve_count']=3
+    lead={'original_source_sha256':receipt['original_source_sha256'],
+        'provider_send_state':'response_closed','provider_outcome':'completed',
+        'original_model_response_sha256':'e'*64,
+        'original_model_response':{'candidate_id':'osm:way:9'},
+        'raw_response_byte_verified':False}
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'],
+        independent_closed_T_leads=[lead])
+    assert prepared['original_active_ids']==['osm:way:7','osm:way:9']
+    assert 'osm:way:9' not in prepared['original_reserve_ids']
+    model=_t_result(effect='confirmed',retained=['osm:way:7'],contradict=False)
+    closed=close_t_g_funnel(prepared,model,
+        source_sha256=receipt['original_source_sha256'],
+        t_accepted=False)
+    assert closed['status']=='conditional_T_shortlist'
+    assert closed['T_proof_accepted'] is False
+    assert closed['active_physical_candidate_ids']==['osm:way:7']
+    assert closed['downstream_REF']['target_candidate_ids']==[
+        'osm:way:7','osm:way:9']
+    native=to_existing_research_priority(closed,receipt['articles'])
+    assert native['candidate_ids']==['osm:way:7','osm:way:9']
+    assert native['contradictions']==[]
+    assert closed['identity_authorized_by_shortlist_count_alone'] is False
