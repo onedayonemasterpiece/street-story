@@ -100,12 +100,13 @@ async def test_suggest_receives_structured_anchors_several_roads_and_still_searc
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     result = await suggest(service, story, '', candidates)
     assert result == ('', [], 'brick building', '')
-    catalog = contexts[0]['location_search_context']['observed_physical_candidates']
-    supplied = next(dict(zip(catalog['columns'], row)) for row in catalog['rows'] if row[0] == 'osm:way:27')
-    assert supplied['address_city_street_house_number'] == ['', 'Second Road', '']
-    assert supplied['latitude_longitude'] == [54.71, 20.507]
+    from street_story.identity_source_selection import expand_planner_packet
+    context = expand_planner_packet(contexts[0])
+    catalog = context['map_scene']['physical_bodies']
+    supplied = next(dict(zip(catalog['columns'], row)) for row in catalog['rows'] if row[1] == 'osm:way:27')
+    assert supplied['literal_address_entries'] == [['osm:way:27', None, 'Second Road', None, 'osm.subject_address']]
     assert candidates[0]['map_coordinates']['provenance'] == 'osm.center'  # Full provenance remains durable.
-    assert [item['road_name'] for item in contexts[0]['location_search_context']['nearby_context']] == ['First Road', 'Second Road']
+    assert [item['road_name'] for item in context['location_search_context']['nearby_context']] == ['First Road', 'Second Road']
     assert story['_identity_article_queries'] == ['First Road brick building', 'Second Road brick building', 'brick building']
     assert contents_seen[0][0].inline_data.data == normalize_reference(jpeg())[1]
     assert 'address' not in story  # no model search hint becomes confirmed subject data

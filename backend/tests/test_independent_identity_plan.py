@@ -139,8 +139,10 @@ async def test_planner_can_promote_existing_building_outside_active_shortlist(tm
             return await call('fixture', 5)
     async def generate(key, timeout, contents, config, **kwargs):
         context = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
-        rows = context['location_search_context']['observed_physical_candidates']['rows']
-        assert physical['candidate_id'] in [row[0] for row in rows]
+        from street_story.identity_source_selection import expand_planner_packet
+        context = expand_planner_packet(context)
+        rows = context['map_scene']['physical_bodies']['rows']
+        assert physical['candidate_id'] in [row[1] for row in rows]
         contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
         pointer = contract['properties']['observed_candidate_ids']['items']
         assert pointer['type'] == 'string' and pointer['maxLength'] == 100

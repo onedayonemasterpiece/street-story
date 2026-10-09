@@ -38,8 +38,8 @@ def physical_decision_context(story, candidates, manifest):
             continue
         literal = []
         own = entry.get('map_address') or {}
-        if own.get('street') and own.get('house_number'):
-            literal.append([cid, own.get('city'), own['street'], own['house_number'], 'osm.subject_address'])
+        if own.get('street') or own.get('house_number'):
+            literal.append([cid, own.get('city'), own.get('street'), own.get('house_number'), 'osm.subject_address'])
         for anchor in memberships.get(cid, []):
             address = anchor['address']
             literal.append([anchor['mapped_entry_id'], address.get('city'), address.get('street'),

@@ -49,7 +49,7 @@ replay on **ten original photos** (102, 106, 111, 120, 121, 122, 125, 126, 130,
 overview/labels under explicit expansion. It did not run model interpretation or
 automatic object/fact acceptance. The retained actual photo102 replay preserves
 the old frozen proof hash and rejects its wrong generic decision under the current
-contract. Its prepared product system-plus-prompt is **54,649 UTF-8 bytes**;
+contract. Its prepared product system-plus-prompt is **54,874 UTF-8 bytes**;
 this is not a provider-token or monetary estimate. New model inferences: **zero**.
 
 Urgent disk recovery losslessly compressed **6,881 completed synthetic pytest
@@ -66,6 +66,18 @@ These are offline corrections and cleanup, not product acceptance. The specific
 configured Gemini3.8 RPD admission blocker still prevents the bounded fresh
 five-case gate. No additional paid probe, lightweight visual substitution,
 deployment or product PASS is reported.
+
+Full hosted CI on `5e89d33` exposed nine failures (2,466 passed, five skipped).
+Corrections preserve literal partial streets and received nearby road/locality
+hints in the small context, retain legacy schema selection for original planner
+readback, and adapt context/namespace fixtures to the compact role transport.
+The real Live review regression required splitting by the complete escaped
+shared setup, tool schema and trigger, rather than prompt bytes alone. Whole
+passages remain intact and existing bounded worker turns finish the smaller
+packets. The final correction set passed **122 tests, two retained-case skips, in
+45.88 s**. The same ten-photo construction replay still passes with no provider
+inference. Android checks and CI emulator passed on `5e89d33`; release was skipped.
+These CI diagnostics are retained separately from the final product gate.
 
 ## Latest diagnostic and bounded correction
 

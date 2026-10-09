@@ -284,7 +284,7 @@ async def _suggest(service, story, transcript, candidates):
                 raise PermanentProviderError('identity_joint_followup_closed_failure')
             elif addressed_followup['phase'] != 'not_sent':
                 raise RetryableProviderError('identity_joint_followup_outcome_unknown')
-    from .identity_source_selection import (regional_source_profile, model_identity_context,
+    from .identity_source_selection import (regional_source_profile, model_identity_context, model_search_context,
         first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
         wikipedia_metadata_context, grounded_wave_catalog, geometry_decision_schema, identity_transport_schema)
     schema = {'type': 'object', 'properties': {
@@ -402,7 +402,8 @@ async def _suggest(service, story, transcript, candidates):
                             for item in first_wave['options'].values()],
                         'scope_policy': 'Empty group_key is mapped occupant search context, never distinct physical coverage.',
                         'required_grounded_count': first_wave['required_grounded_count']},
-                    'location_search_context': ({'policy': 'Literal subject addresses are inline in physical_bodies; '
+                    'location_search_context': ({**model_search_context(story, candidates),
+                        'policy': 'Literal subject addresses are inline in physical_bodies; '
                         'reverse geocoding describes the camera/search context, not the photographed body.'}
                         if scene else model_identity_context(story, candidates)),
                     'camera_hints': story.get('_camera_hints', {}),
@@ -1156,7 +1157,7 @@ async def _suggest(service, story, transcript, candidates):
         role_schema = identity_text_discovery_schema(schema)
         text_packet = {**plain_packet, 'map_scene': None}
         if physical_context:
-            text_packet['location_search_context'] = {'physical_subjects': {
+            text_packet['location_search_context'] = {**text_packet['location_search_context'], 'physical_subjects': {
                 'columns': ['candidate_id', 'literal_address_entries', 'observed_name'],
                 'rows': [[row[1], row[8], row[9]] for row in physical_context['rows']],
                 'address_columns': physical_context['address_columns'],
@@ -1172,7 +1173,8 @@ async def _suggest(service, story, transcript, candidates):
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',
             {'cause': getattr(cause, 'code', type(cause).__name__)})
         return accept(result.get('result') or {}, original_schema_readback=result.get('original_schema_readback') is True,
-            original_schema=result.get('original_schema') or role_schema,
+            original_schema=result.get('original_schema') or (
+                None if result.get('original_schema_readback') is True else role_schema),
             check_received_pointers=not original_available,
             provider_response_id=(result.get('receipt') or {}).get('provider_response_id'))
     researcher = getattr(service.providers, 'research', None)

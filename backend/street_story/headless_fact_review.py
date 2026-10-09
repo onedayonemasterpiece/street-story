@@ -119,24 +119,28 @@ class HeadlessFactReview:
                  job['story_id'], unit)
 
     @staticmethod
-    def _route_accepts_prompt(route, prompt):
-        # Match the transport's actual unit: Live checks UTF-8 bytes, while
-        # qualified text clients check Python characters. Include serialized
-        # packet escaping and the verifier instructions in either measurement.
+    def _route_accepts_prompt(route, prompt, *, schema=None):
+        # Real Live admission includes the shared setup, escaped context/schema
+        # and trigger. Splitting uses the identical envelope before creating a
+        # provider operation; passage text itself is never shortened.
         if route.get('role') == 'facts_live':
+            measure = getattr(route.get('client'), 'input_size', None)
+            if callable(measure) and schema is not None:
+                size = measure(prompt, schema)
+                return size['input_utf8_bytes'] <= size['input_limit_bytes']
             return len(prompt.encode('utf-8')) <= 24000
         limit = getattr(getattr(route.get('client'), 'limits', None), 'max_input_chars', 24000)
         return len(prompt) <= limit
 
     @classmethod
-    def _packet_fits(cls, routes, prompt, *, single=False):
+    def _packet_fits(cls, routes, prompt, *, single=False, schema=None):
         if not routes:
             return len(prompt) <= 24000
         if single:
-            return any(cls._route_accepts_prompt(route, prompt) for route in routes)
+            return any(cls._route_accepts_prompt(route, prompt, schema=schema) for route in routes)
         live = [route for route in routes if route.get('role') == 'facts_live']
         preferred = live or routes
-        return all(cls._route_accepts_prompt(route, prompt) for route in preferred)
+        return all(cls._route_accepts_prompt(route, prompt, schema=schema) for route in preferred)
 
     async def _infer(self, packet, job, unit, saved, ordinal=0):
         if saved.get('phase') == 'result':
@@ -414,6 +418,10 @@ class HeadlessFactReview:
         prepared = list(original_reviews[:1])
         new_prepared = 0
         routes = self._qualified_routes() or self._qualified_routes(available=False)
+        def packet_fits(packet, *, single=False):
+            public_schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
+            schema = headless_review_quotes.response_schema(packet, public_schema)
+            return self._packet_fits(routes, VERIFIER_PROMPT + canonical(packet), single=single, schema=schema)
         start = 0
         while start < len(pending) and new_prepared < 1 and not original_reviews:
             session = SimpleNamespace(id='headless-review:' + job['id'], resource_id=job['story_id'],
@@ -426,13 +434,13 @@ class HeadlessFactReview:
             # truncate own passages to fit; reduce the number of whole facts.
             while candidate_ids:
                 packet, unit, saved = self._prepare_packet(job, run_id, session, candidate_ids)
-                if packet is None or self._packet_fits(routes, VERIFIER_PROMPT + canonical(packet)) or len(candidate_ids) == 1:
+                if packet is None or packet_fits(packet) or len(candidate_ids) == 1:
                     break
                 candidate_ids = candidate_ids[:max(1, len(candidate_ids)//2)]
             start += len(candidate_ids)
             if packet is None:
                 continue
-            if not self._packet_fits(routes, VERIFIER_PROMPT + canonical(packet), single=True):
+            if not packet_fits(packet, single=True):
                 self._put(job, unit, {'phase': 'exhausted', 'packet_ref': packet['packet_ref'],
                                      'error_code': 'review_input_limit'})
                 LOG.info('street_story_background_fact_review_input_waiting story_id=%s unit_id=%s chars=%s utf8_bytes=%s',

@@ -197,6 +197,8 @@ async def test_exact_frozen_map_id_joins_precede_validation_and_do_not_add_seman
         pytest.skip('Exact resolver prerequisite belongs to the independently integrated selector lane')
     from test_geometry_identity_plan import geometry_setup, geometry_decision, payload as geometry_payload
     service, current, active = geometry_setup(tmp_path)
+    from street_story.identity_scene import render_scene
+    frozen_map = render_scene(current, active)['manifest']['objects']
     current['_identity_owner_hint'] = {'text': 'x' * 49000}
     calls, raw_outputs = [], []
     async def generate(key, timeout, contents, config, **kwargs):
@@ -204,7 +206,10 @@ async def test_exact_frozen_map_id_joins_precede_validation_and_do_not_add_seman
         packet = json.loads(contents[-1].split('Данные ниже — только контекст:\n', 1)[1].split('\nThe previous response', 1)[0])
         assert packet['encoding'] == 'lossless-literals-and-map-labels-v1'
         plain = identity_source_selection.expand_planner_packet(packet)
-        table = plain['map_scene']['objects']
+        assert {row[1] for row in plain['map_scene']['objects']['rows']} == {'osm:way:2', 'osm:way:3'}
+        # A MAP-label road pointer resolves against the full frozen dictionary,
+        # not the compact textual physical-body rows.
+        table = frozen_map
         objects = [dict(zip(table['columns'], row)) for row in table['rows']]
         labels = {row['candidate_id']: row['label'] for row in objects}
         decision = copy.deepcopy(geometry_decision())

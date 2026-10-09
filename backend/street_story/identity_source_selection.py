@@ -312,6 +312,27 @@ def expand_planner_packet(packet):
         if key not in {'encoding', 'join_policy', 'literals', 'coordinate_grid_origin_microdegrees'}}))
 
 
+def _location_hints(story, research, nearby, addresses):
+    reverse = (((story or {}).get('_identity_search_context') or {}).get('reverse_address') or
+        ((research.get('osm') or {}).get('reverse') or {}).get('address') or {})
+    return {'observed_localities': [_short(value) for value in addresses['observed_localities']],
+        'reverse_address': {key: _short(reverse[key]) for key in
+            ('city', 'town', 'village', 'state', 'country', 'road', 'house_number') if reverse.get(key)},
+        'nearby_context': [{**({'candidate_id': item['candidate_id']} if item.get('candidate_id') else {}),
+            **({'road_name': _short(item['road_name'])} if item.get('road_name') else {}),
+            **({'observed_name': _short((item.get('tags') or {}).get('name'))} if (item.get('tags') or {}).get('name') else {}),
+            'distance_m': _number(item.get('distance_m'))} for item in nearby[:20]]}
+
+
+def model_search_context(story, candidates=()):
+    """Small received locality/road hints; no construction of a full body DTO."""
+    research = json.loads((story or {}).get('research_json') or '{}')
+    nearby = ((story or {}).get('_identity_search_context') or {}).get('nearby') or []
+    active = (research.get('visual_identity') or {}).get('candidates') or []
+    addresses = observed_address_context(story, [*nearby, *active, *candidates])
+    return _location_hints(story, research, nearby, addresses)
+
+
 def model_identity_context(story, candidates=(), *, include_observed=True, scene_available=False):
     """Bounded semantic packet without raw OSM or repeated address objects."""
     research = json.loads((story or {}).get('research_json') or '{}')
@@ -329,15 +350,7 @@ def model_identity_context(story, candidates=(), *, include_observed=True, scene
         needed = {item.get('candidate_id') for item in [*active, *candidates]}
         needed.update(item['physical_candidate_id'] for item in addresses['building_address_memberships'])
         by_id = {key: value for key, value in by_id.items() if key in needed}
-    reverse = (((story or {}).get('_identity_search_context') or {}).get('reverse_address') or
-        ((research.get('osm') or {}).get('reverse') or {}).get('address') or {})
-    packet = {'observed_localities': [_short(value) for value in addresses['observed_localities']],
-        'reverse_address': {key: _short(reverse[key]) for key in
-            ('city', 'town', 'village', 'state', 'country', 'road', 'house_number') if reverse.get(key)},
-        'nearby_context': [{**({'candidate_id': item['candidate_id']} if item.get('candidate_id') else {}),
-            **({'road_name': _short(item['road_name'])} if item.get('road_name') else {}),
-            **({'observed_name': _short((item.get('tags') or {}).get('name'))} if (item.get('tags') or {}).get('name') else {}),
-            'distance_m': _number(item.get('distance_m'))} for item in nearby[:20]],
+    packet = {**_location_hints(story, research, nearby, addresses),
         'address_anchors': {'columns': ['mapped_entry_id', 'city', 'street', 'house_number', 'distance_m', 'entry_kind', 'latitude_longitude'],
             'rows': [[item['mapped_entry_id'], *[_short(item['address'].get(key)) for key in
                 ('city', 'street', 'house_number')], _number(item['distance_m']), item['entry_kind'],

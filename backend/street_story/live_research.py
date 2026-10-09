@@ -81,15 +81,8 @@ class LiveSemanticClient:
                   + EXTRACTION_CHECKS + '\nFrozen source unit:\n' + canonical(supplied))
         return await self._run('facts', prompt, binding, schema)
 
-    async def _run(self, role, prompt, binding, schema):
-        from .live import create_live_host
-        if role != 'facts' or not isinstance(binding, dict) or not binding.get('attempt_id'):
-            raise ResearchUnavailable('live_research_binding_required')
-        if binding.get('phase') not in {None, 'created'}:
-            # A lost Live connection has no durable remote thread readback API.
-            # It cannot authorize repeating the accepted input on a new socket.
-            raise ResearchUnavailable('live_research_original_outcome_unknown',
-                                      receipt={'binding': binding, 'phase': 'unknown'})
+    def _prepared_input(self, role, prompt, schema):
+        """Same shared setup and trigger for packet admission and actual send."""
         context = {'frozen_research_operation': {'role': role, 'prompt': prompt}}
         configuration = {
             'system_instruction': 'Perform only the frozen semantic research operation. '
@@ -108,7 +101,22 @@ class LiveSemanticClient:
         input_bytes = len(json.dumps(setup).encode('utf-8')) + len(json.dumps(trigger).encode('utf-8'))
         input_size = {'input_utf8_bytes': input_bytes, 'input_limit_bytes': 24_000,
                       'input_size_scope': 'serialized_live_setup_plus_trigger_v1'}
-        if input_bytes > 24_000:
+        return context, configuration, trigger, input_size
+
+    def input_size(self, prompt, schema):
+        return self._prepared_input('facts', prompt, schema)[3]
+
+    async def _run(self, role, prompt, binding, schema):
+        from .live import create_live_host
+        if role != 'facts' or not isinstance(binding, dict) or not binding.get('attempt_id'):
+            raise ResearchUnavailable('live_research_binding_required')
+        if binding.get('phase') not in {None, 'created'}:
+            # A lost Live connection has no durable remote thread readback API.
+            # It cannot authorize repeating the accepted input on a new socket.
+            raise ResearchUnavailable('live_research_original_outcome_unknown',
+                                      receipt={'binding': binding, 'phase': 'unknown'})
+        context, configuration, trigger, input_size = self._prepared_input(role, prompt, schema)
+        if input_size['input_utf8_bytes'] > input_size['input_limit_bytes']:
             failed = {'binding': binding, 'phase': 'failed', 'provider_send_state': 'not_sent',
                       'error_code': 'live_research_unit_oversize', 'provider_id': self.provider_id,
                       'model_id': self.model_id, **input_size}

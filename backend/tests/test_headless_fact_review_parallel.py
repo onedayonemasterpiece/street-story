@@ -286,6 +286,8 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
             initialized = self.adapter.initialize(**kwargs)
             prompt = initialized['context']['frozen_research_operation']['prompt']
             assert len(prompt.encode('utf-8')) <= 24000
+            schema = initialized['configuration']['functions'][0]['parameters']
+            assert provider.live_facts.input_size(prompt, schema)['input_utf8_bytes'] <= 24000
             self.packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
             for item in self.packet['items']:
                 assert item['passage'] == item['text'] and item['passage'] in texts
@@ -325,7 +327,13 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
         assert 0 < len(review_packets.pending_candidates(db, job['story_id'], RUN)) < len(texts)
-    assert await engine.run(job, RUN, 0) > 0
+    # Full shared setup/schema escaping can yield smaller packets. Existing
+    # bounded worker turns continue until all whole candidates are reviewed.
+    for _ in range(len(texts)):
+        with svc.store.connection() as db:
+            if not review_packets.pending_candidates(db, job['story_id'], RUN):
+                break
+        assert await engine.run(job, RUN, 0) > 0
     assert len(sends) == len(starts) > 1 and sum(sends) == len(texts)
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)

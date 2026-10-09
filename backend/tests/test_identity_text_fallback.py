@@ -86,7 +86,7 @@ async def test_fallback_receives_full_anchors_and_membership_but_host_rejects_fo
     service.providers.research = SimpleNamespace(plan_identity_search=planner)
     snapshot = {**service._identity_snapshot(story['id'])[0], '_identity_observed_candidates': observed()}
     if foreign_id:
-        with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
+        with pytest.raises(PermanentProviderError, match='identity_search_plan_unreceived_pointer'):
             await identity_discovery.suggest(service, snapshot, '', [])
         assert '_identity_geometry_result' not in snapshot
     else:
@@ -94,4 +94,6 @@ async def test_fallback_receives_full_anchors_and_membership_but_host_rejects_fo
         assert snapshot['_identity_article_queries'] == ['Observed City Exact avenue 7A', 'Observed City Exact avenue 13']
         assert snapshot['_identity_search_plan_route'] == 'qualified_text_fallback'
     assert len(plans) == 1
-    assert not Draft202012Validator(plans[0][1]['properties']['observed_candidate_ids']).is_valid(['osm:way:unreceived'])
+    # Transport schema stays small; the actual fresh host guard above rejects
+    # the foreign ID using the full original frozen inventory.
+    assert Draft202012Validator(plans[0][1]['properties']['observed_candidate_ids']).is_valid(['osm:way:unreceived'])

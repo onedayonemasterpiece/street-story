@@ -23,6 +23,7 @@ def test_wikipedia_number_with_invented_osm_prefix_is_not_an_exact_transport_joi
     packet = compact_planner_packet({'map_scene': scene,
         'wikipedia_metadata': {'columns': ['page_id', 'mapped_osm_ids'], 'rows': [['17', []]]}})
     decision = geometry_decision()
+    decision.pop('spatial_correspondence')  # This assertion exercises the legacy namespace contract.
     decision['candidate_id'] = 'osm:way:22'
     decision['candidate_label'] = 1
     decision['decisive_relations'][0]['map_features'] = [{'candidate_id': 'osm:way:22', 'kind': 'contour'}]
