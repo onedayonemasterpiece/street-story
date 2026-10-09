@@ -106,11 +106,15 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
                 'source_match':'earlier_closed_model_primary_nomination',
                 'what_remains_uncertain':'legacy_single_candidate_not_a_new_shortlist'})
         for alt in model_output.get('contrasted_alternatives') or []:
-            label=alt.get('label')
-            if label in labels and not any(r['label']==label for r in active_rows):
-                active_rows.append({'label':label,
-                    'source_match':'earlier_closed_model_named_alternative',
-                    'what_remains_uncertain':alt.get('source_vs_map_difference') or ''})
+            # Preserve explicitly named grouped PHOTO/MAP alternatives too;
+            # no synthetic building is introduced from model prose.
+            groups=alt.get('labels') if isinstance(alt.get('labels'),list) else [alt.get('label')]
+            for label in groups:
+                if label in labels and not any(r['label']==label for r in active_rows):
+                    active_rows.append({'label':label,
+                        'source_match':'earlier_closed_model_named_alternative',
+                        'what_remains_uncertain':alt.get('source_vs_map_difference')
+                             or alt.get('why_not') or ''})
 
     contradictions={}
     for item in model_output.get('explicit_contradictions') or []:
