@@ -9,13 +9,15 @@ from __future__ import annotations
 import math
 
 
-def observed_connected_pairs(sides, *, max_pairs=8):
+def observed_connected_pairs(sides, *, max_pairs=8, closed_rings=None):
     """Return bounded [ring, first_index, second_index, turn_degrees].
 
     Input side rows are [ring_index, segment_index, length_m, start_xy, end_xy]
-    from immutable OSM vertices. Edges must be distinct and oriented with the
-    same exact observed endpoint. A rounded coordinate is used ONLY when it is
-    an actual side endpoint in the already supplied literal map; no intersection,
+    from immutable OSM vertices. Edges must be consecutive indices on the
+    SAME observed ring and share its already supplied endpoint. Rounding map
+    coordinates cannot create a join between non-neighbouring raw OSM edges.
+    Optional closed_rings maps confirmed closed ring indices to the final edge
+    index; only then may that edge connect back to index zero. No intersection,
     facade or missing vertex is manufactured.
     """
     by_start = {}
@@ -40,7 +42,10 @@ def observed_connected_pairs(sides, *, max_pairs=8):
     pairs = []
     for first in valid:
         for second in by_start.get((first[0], tuple(first[4])), []):
-            if first[1] == second[1]:
+            forward = second[1] == first[1] + 1
+            closed = (second[1] == 0 and isinstance(closed_rings, dict)
+                and closed_rings.get(first[0]) == first[1])
+            if not (forward or closed):
                 continue
             vx, vy = first[4][0]-first[3][0], first[4][1]-first[3][1]
             wx, wy = second[4][0]-second[3][0], second[4][1]-second[3][1]
@@ -53,16 +58,18 @@ def observed_connected_pairs(sides, *, max_pairs=8):
             max(0, len(pairs)-max_pairs))
 
 
-def preserve_one_connected_pair(all_sides, shown_sides, *, limit=4):
+def preserve_one_connected_pair(all_sides, shown_sides, *, limit=4, closed_rings=None):
     """Only repair a completely disconnected *display excerpt*, not its geometry.
 
     When four longest edges were all separate, show one REAL connected pair and
     retain up to two other longest edges. The complete OSM outline and pool never
     change; map_detail continues to expose every actual side.
     """
-    if len(shown_sides) > limit or len(shown_sides) < 2 or observed_connected_pairs(shown_sides)[0]:
+    if len(shown_sides) > limit or len(shown_sides) < 2 or observed_connected_pairs(
+            shown_sides, closed_rings=closed_rings)[0]:
         return shown_sides
-    pairs, _ = observed_connected_pairs(all_sides, max_pairs=max(1,len(all_sides)*2))
+    pairs, _ = observed_connected_pairs(all_sides, max_pairs=max(1,len(all_sides)*2),
+        closed_rings=closed_rings)
     if not pairs:
         return shown_sides
     ring, first_idx, second_idx, _turn = pairs[0]
