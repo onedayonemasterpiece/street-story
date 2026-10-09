@@ -541,3 +541,34 @@ T uncertainty, and UNKNOWN without resend. A local replay of the original132
 receipt verified the concrete continuation with **zero new provider inferences**
 and no expected-answer input. These are integration checks; real cold132 followed
 by the same-SHA independent product set and deployment are still required.
+
+## Exact nominated-address continuation after the first integrated canary
+
+Cold132 on `86ddf089fb6ba2942c23db6f5c99bd584e4352bb` naturally failed at
+111.882 s with no accepted identity or facts. Primary Gemini 3.8 returned 503;
+Native Luna completed and preserved a concrete physical hypothesis. The existing
+joint2 on Gemini 3.5 Flash Lite succeeded (HTTP 200, 12.433 s, 39,209 input / 1,728
+output tokens), but replaced `frontage_sequence` with an unsupported `corner`.
+The proof validator rejected that geometry. The subsequent reference attempt hit
+the directed acceptance's intentional `directed_acceptance_external_reference_disabled`
+seam; the generic provider error did not represent exhausted quota.
+
+The initial model had skipped articles because it believed G was sufficient.
+After the host invalidates that premise, the integration now reads the exact
+model-nominated body's own/verified-entrance address through the existing regional
+reader before spending joint2. It does this only when no explicit text selection
+or map-detail action is pending and the rejection is semantic. Ambiguous addresses
+and neighboring publisher cards remain refused; address retrieval never accepts
+identity. Useful actual article bytes go to the supplied compact T component and
+the original proof authority, without a third model/planner.
+
+The original unconfirmed132 nomination independently retrieved a real publisher
+body with facade/risalit/window-axis/gable descriptions. Replaying its original
+SOURCE/MAP receipt reached compact T with those acquired bytes and **zero new
+inference sends**. This is evidence of input supply, not a real T decision.
+Focused ordinary-worker checks passed **16 tests in 12.96 s**, including accepted
+T to cached publisher parsing/facts/own-evidence review/canonical POI readback,
+neighbor-card refusal to the original G correction, UNKNOWN and the updated single
+T schema. Full local backend verification passed **2,545 tests, 2 skipped in
+425.59 s**; Ruff passed. These are implementation checks; the changed-SHA
+product canary and its fact/POI outcomes remain separate acceptance evidence.

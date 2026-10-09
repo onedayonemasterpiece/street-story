@@ -220,5 +220,8 @@ async def test_selected_text_followup_replaces_one_schema_instead_of_appending_a
     assert 'accepted_architectural_text' not in configurations[0]
     assert 'accepted_architectural_text' in configurations[1]
     assert 'Follow-up contract:' not in configurations[1]
-    assert configurations[1].count('"first_wave_hypotheses":') == 1
-    assert 'ID namespaces are distinct' in configurations[1]
+    # Compact T owns one decision schema; the original search plan survives
+    # outside the model output rather than becoming a conflicting contract.
+    assert 'first_wave_hypotheses' not in configurations[1]
+    assert configurations[1].count('"material_alternatives":') == 1
+    assert 'Return only the SOURCE/architectural-text decision object' in configurations[1]

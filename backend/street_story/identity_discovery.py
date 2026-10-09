@@ -943,6 +943,34 @@ async def _suggest(service, story, transcript, candidates):
                     service, story, candidates, wiki_payload, wiki_pages)
                 lookup = {'kind':'independent_selected_text_routes', 'regional':regional_receipt,
                     'wikipedia':wiki_lookup, 'status':wiki_lookup.get('status') if wiki_lookup else 'unavailable'}
+            if (not text_articles and geometry_rejection
+                    and not (set(issues) - {'host_evidence_contract'})
+                    and not selected_regional and not wiki_payload.get('selected_wikipedia_page_ids')
+                    and (not regional or regional.get('route') in {None, 'none'})
+                    and (geometry_claim.get('next_action') or {}).get('kind') != 'map_detail'):
+                # The model skipped source reading because it believed its G
+                # proof was sufficient. That premise is now false. Reuse the
+                # existing literal-address reader for the *model's* physical
+                # nomination, before spending joint2 on independent T evidence.
+                # All own/verified entrance addresses remain in scope; the
+                # reader refuses ambiguous queries and neighboring cards.
+                from .identity_architectural_context import _physical_subject
+                nominated = next((item for item in [*observed, *candidates]
+                    if item.get('candidate_id') == geometry_claim.get('candidate_id')
+                    and _physical_subject(item)), None)
+                if nominated is not None:
+                    request = {'route': 'address', 'candidate_ids': [nominated['candidate_id']],
+                        'reason': 'Acquire literal address text for the closed model nomination after insufficient G proof.'}
+                    text_articles, nomination_lookup = await acquire_regional_text(
+                        service, story, [*observed, *candidates], request)
+                    lookup = {'kind': 'insufficient_geometry_address_text',
+                        'initial_selected_text': lookup, 'regional': nomination_lookup,
+                        'query_scope': nomination_lookup.get('query_scope'),
+                        'status': nomination_lookup.get('status'), 'identity_established': False}
+                    record_identity_event(service, story['id'], 'identity_unconfirmed_address_text_acquired', {
+                        'candidate_id': nominated['candidate_id'], 'article_count': len(text_articles),
+                        'status': nomination_lookup.get('status'), 'reason': nomination_lookup.get('reason'),
+                        'identity_accepted': False})
             if lookup:
                 story['_identity_regional_lookup_receipt'] = lookup
         detail_request = None
