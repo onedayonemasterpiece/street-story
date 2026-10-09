@@ -581,3 +581,34 @@ def test_failed_T_one_body_proof_keeps_prior_independent_T_reserve_lead_in_REF()
     assert native['candidate_ids']==['osm:way:7','osm:way:9']
     assert native['contradictions']==[]
     assert closed['identity_authorized_by_shortlist_count_alone'] is False
+
+
+
+def test_closed_T_structural_observation_becomes_precise_peer_REF_without_new_model():
+    story,candidates,decision,receipt,g=_inputs()
+    g['t_distinguishing_question']=None
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    model=_t_result(effect='confirmed',retained=['osm:way:7'],contradict=False)
+    model['next_distinguishing_question']=''
+    model['targeted_images']=[]
+    architecture='pentagonal corner bay under stepped gable and two different window axes'
+    result=close_t_g_funnel(prepared,model,
+        source_sha256=receipt['original_source_sha256'],
+        t_accepted=False,same_model_visible_architecture=architecture)
+    assert result['status']=='conditional_T_shortlist'
+    assert result['T_proof_accepted'] is False
+    assert result['accepted_physical_id'] is None
+    assert architecture in result['next_distinguishing_question']
+    assert result['downstream_REF']['image_research_goals'][0][
+        'needed_view_or_feature']==architecture
+    assert result['downstream_REF']['image_research_goals'][0][
+        'source']=='T_same_closed_response_structural_description'
+    assert result['downstream_REF']['target_candidate_ids']==[
+        'osm:way:7','osm:way:8']
+    native=to_existing_research_priority(result,receipt['articles'])
+    assert native['candidate_ids']==['osm:way:7','osm:way:8']
+    assert native['next_step']=='targeted_search'
+    assert architecture in native['next_question']
+    assert native['contradictions']==[]
