@@ -360,11 +360,13 @@ async def main():
         raise ValueError('Requested unknown original SOURCE photo')
     rows=[]
     for id in args.ids:
-        try:rows.append(await run_one(id,args.model,dry=args.dry_run,
-                                     schema_transport=args.schema_transport))
-        except Exception as exc:rows.append({'id':id,'status':'pre_send_or_local_error',
-             'error_type':type(exc).__name__,'code':str(exc)[:200],
-             'method_calls':0})
+        try:
+            rows.append(await run_one(
+                id,args.model,dry=args.dry_run,schema_transport=args.schema_transport))
+        except Exception as exc:
+            rows.append({'id':id,'status':'pre_send_or_local_error',
+                'error_type':type(exc).__name__,'code':str(exc)[:200],
+                'method_calls':0})
     print(json.dumps({'model':args.model,'cases':rows},ensure_ascii=False))
 if __name__=='__main__':
     asyncio.run(main())
