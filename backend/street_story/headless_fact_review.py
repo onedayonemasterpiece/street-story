@@ -43,7 +43,8 @@ LEGACY_VERIFIER_PROMPT = (
 )
 LEGACY_VERIFIER_CONTRACT_ID = 'closed-packet-json-v1:' + hashlib.sha256(LEGACY_VERIFIER_PROMPT.encode()).hexdigest()
 VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
-    + 'Omit absent optional fields; never use null for equivalent_to or equivalent_to_existing. '
+    + 'Omit absent equivalent_to_existing. For optional equivalent_to, omit or use JSON null '
+      'when no within-packet equivalence exists; never use -1 or invent a duplicate relation. '
       'The conflicts array describes only relations between two DIFFERENT fact numbers actually '
       'present in this packet; never use -1 or an existing-claim ID there. Relations to existing '
       'claims belong solely in equivalent_to_existing or conflicts_with_existing. A contradiction '
@@ -67,7 +68,7 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'construction and namesake claims, or a current use inferred from an undated currently. '
       'Return repair_needed or insufficient when the semantic checks fail even with a valid label. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v5-qualified-review:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v6-scoped-equivalence:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:

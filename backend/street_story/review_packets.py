@@ -459,8 +459,8 @@ def prepare(adapter, session, args):
                 raise ConflictError('live_review_decisions_invalid', 'Use a brief evidence-grounded reason.')
             if verdict == 'supported' and any(decision.get(k) is False for k in ('atomic', 'support_complete', 'qualifiers_preserved')):
                 raise ConflictError('live_review_decisions_invalid', 'supported conflicts with your explicit semantic checks. Repair the candidate or withhold it.')
-            if decision.get('equivalent_to') == decision['fact']:
-                decision.pop('equivalent_to')  # Identity addressing adds no relation or support.
+            if decision.get('equivalent_to') in (None, decision['fact']):
+                decision.pop('equivalent_to', None)  # Absence/self-addressing adds no relation or support.
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:
                 raise ConflictError('live_review_decision_replay_mismatch',
