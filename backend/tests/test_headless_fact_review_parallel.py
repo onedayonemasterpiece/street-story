@@ -277,7 +277,7 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
             args = {'packet_ref': self.packet['packet_ref'], 'decisions': [
                 {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
                  'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
-                 'claims': [item['text']], 'basis_quotes': [item['text']], 'reason': 'Own unchanged passage.'}
+                 'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own unchanged passage.'}
                 for item in self.packet['items']], 'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             await self.adapter.execute_tool(self.session, {'name': RESULT_TOOL, 'id': 'bounded', 'args': args})
@@ -827,7 +827,7 @@ async def test_existing_live_tool_contract_can_review_without_mandatory_helper_q
             args = {'packet_ref': packet['packet_ref'], 'decisions': [
                 {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
                  'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
-                 'claims': [item['text']], 'basis_quotes': [item['text']], 'reason': 'Own literal frozen passage.'}
+                 'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own literal frozen passage.'}
                 for item in packet['items']], 'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             receipt = {'binding': binding, 'phase': 'completed', 'model_id': self.model_id,

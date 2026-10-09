@@ -56,17 +56,18 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'when support cannot resolve them, without declaring historical claims false. Check the exact '
       'physical subject: building versus institution, individual part versus larger complex; an '
       'institution\'s founding date is not automatically the building\'s construction date. '
-      'For basis_quotes prefer the exact quote_ref label on a chosen own evidence slice in '
+      'For basis_quotes return ONLY the exact quote_ref labels on chosen own evidence slices in '
       'quote_catalog. Copy its label unchanged; the host resolves it to that literal passage. '
       'A label proves only passage addressing, never semantic support: inspect its passage and '
       'still check one atomic claim, every qualifier and exact physical subject. Never use another '
-      'fact\'s label or unselected evidence. Alternatively copy a short unchanged literal quotation. '
+      'fact\'s label or unselected evidence. Never return candidate prose, paraphrases or literal '
+      'passage text in this field; the private response schema enumerates only frozen labels. '
       'Example: source "Built in 1859; named after General A" cannot be quoted as "Built; named '
       'after A": that is a paraphrase. Do not accept a candidate combining independently selectable '
       'construction and namesake claims, or a current use inferred from an undated currently. '
       'Return repair_needed or insufficient when the semantic checks fail even with a valid label. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v3:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v4:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:
@@ -145,7 +146,9 @@ class HeadlessFactReview:
             return None
         story = {**snapshot[0], '_fact_pool_unit_id': unit,
                  '_fact_pool_input_sha256': hashlib.sha256(canonical([verifier_contract, packet]).encode()).hexdigest()}
-        schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
+        public_schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
+        schema = (saved.get('verifier_schema', public_schema) if observing
+                  else headless_review_quotes.response_schema(packet, public_schema))
         prompt = verifier_prompt + canonical(packet)
         closed_routes = set(saved.get('closed_routes') or [])
         all_routes = self._qualified_routes(available=False)
@@ -180,7 +183,7 @@ class HeadlessFactReview:
             client = route['client']
             frozen = {'packet_ref': packet['packet_ref'], 'route': role, 'frozen_packet': packet,
                       'route_identity': self._route_identity(route), 'verifier_prompt': verifier_prompt,
-                      'verifier_contract_id': verifier_contract}
+                      'verifier_contract_id': verifier_contract, 'verifier_schema': schema}
             self._put(job, unit, {**frozen, 'phase': 'started'})
             LOG.info('street_story_background_fact_review_started story_id=%s run_id=%s unit_id=%s model_id=%s original_readback=%s',
                      job['story_id'], packet['run_id'], unit, client.model_id, observing)
@@ -270,7 +273,7 @@ class HeadlessFactReview:
         decides whether this frozen result may be committed to current facts.
         """
         from jsonschema import Draft202012Validator
-        schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
+        public_schema = next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
         with self.service.store.connection() as db:
             saved_units = [(row['stage'].split(':', 1)[1], json.loads(row['value_json'])) for row in db.execute(
                 "SELECT stage,value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'",
@@ -286,6 +289,7 @@ class HeadlessFactReview:
             if not prior or prior.get('phase') != 'completed':
                 continue
             args = prior.get('result')
+            schema = saved.get('verifier_schema', public_schema)
             if not Draft202012Validator(schema).is_valid(args) or args.get('packet_ref') != saved.get('packet_ref'):
                 continue
             self._put(job, unit, {**saved, 'phase': 'result', 'args': args,
@@ -415,11 +419,11 @@ class HeadlessFactReview:
                         'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': resolved_args})
                     if value.get('eligible_count') is not None:
                         committed += 1
-                        self._put(job, unit, {'phase': 'committed', 'packet_ref': packet['packet_ref']})
+                        self._put(job, unit, {**outcome, 'phase': 'committed', 'packet_ref': packet['packet_ref']})
                         LOG.info('street_story_background_fact_review_committed story_id=%s run_id=%s unit_id=%s eligible=%s',
                                  job['story_id'], run_id, unit, value['eligible_count'])
                 except ConflictError as exc:
-                    self._put(job, unit, {'phase': 'stale' if exc.code.endswith('stale') else 'rejected',
+                    self._put(job, unit, {**outcome, 'phase': 'stale' if exc.code.endswith('stale') else 'rejected',
                                          'packet_ref': packet['packet_ref'], 'error_code': exc.code})
                     LOG.info('street_story_background_fact_review_deferred story_id=%s run_id=%s unit_id=%s reason=%s',
                              job['story_id'], run_id, unit, exc.code)

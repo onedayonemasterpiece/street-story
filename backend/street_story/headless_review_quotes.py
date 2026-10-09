@@ -29,6 +29,18 @@ def with_quote_catalog(packet):
     return packet
 
 
+def response_schema(packet, public_schema):
+    """Constrain fresh private answers without changing the interactive tool."""
+    schema = deepcopy(public_schema)
+    if 'quote_catalog' in packet:
+        quotes = schema['properties']['decisions']['items']['properties']['basis_quotes']
+        quotes['items'] = {'type': 'string', 'enum': list(packet['quote_catalog'])}
+        quotes['description'] = ('Exact frozen quote_ref labels only. Choose this fact\'s selected '
+                                 'evidence; empty only for unsupported decisions. Labels establish '
+                                 'literal addressing, not semantic support.')
+    return schema
+
+
 def resolve_quotes(packet, args):
     """Resolve only explicit labels for this fact's selected immutable evidence."""
     if 'quote_catalog' not in packet:
