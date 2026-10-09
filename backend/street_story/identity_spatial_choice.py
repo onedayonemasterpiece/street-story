@@ -183,7 +183,17 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         warnings.append('visual_scope_without_specific_osm_primitive')
     if decision=='accept' and requested:
         warnings.append('model_requests_more_detail_before_final_identity')
-    accepted = (decision=='accept' and not errors
+    # In the first overview, detailed walls may have been preexpanded for
+    # display rather than chosen by the image model. Two CLOSED original
+    # image runs (126/130) falsely accepted such valid OSM corners as the
+    # photographed building. This is a provenance distinction, NOT a
+    # requirement for yaw, two corners, an arbitrary score or a fixed top-K.
+    # Only a SOURCE-nominated focused view can establish autonomous G
+    # acceptance; overview accept remains a useful, reversible nomination.
+    unverified_overview=(packet.get('presentation_stage')=='source_map_overview')
+    if decision=='accept' and unverified_overview:
+        warnings.append('overview_only_model_nomination_requires_source_nominated_detail')
+    accepted = (decision=='accept' and not errors and not unverified_overview
         and any(isinstance(obs,str) and obs.strip() for obs in claims)
         and not requested)
 
