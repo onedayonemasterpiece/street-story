@@ -174,15 +174,93 @@ def load_case(cid):
     return base,row,packet
 
 
+
+def prepare_model_detail(cid, base, initial_input, initial_packet):
+    """Create exactly one model-chosen enlarged map, never an answer-key zoom."""
+    from jsonschema import Draft202012Validator
+    from street_story.identity_spatial_choice import visual_spatial_choice_schema
+    from street_story.identity_spatial_detail import model_nominated_detail
+    from street_story.camera_hints import read_camera_hints
+    from g26_prepare_inputs import SOURCE_INDEX, observed_osm
+
+    first=base/'model-G-v3'
+    marker=first/'provider-intent.json'
+    raw=first/'closed-model-response.json'
+    if not marker.is_file() or not raw.is_file():
+        return None,None
+    closed=json.loads(marker.read_text())
+    if closed.get('phase')!='response_closed' or (
+         hashlib.sha256(raw.read_bytes()).hexdigest()!=closed.get('response_sha256')):
+        return None,None
+    try:
+        model=json.loads(raw.read_text())
+    except ValueError:
+        return None,None
+    if not Draft202012Validator(visual_spatial_choice_schema()).is_valid(model):
+        return None,None
+    if model['decision'] not in ('candidate','needs_detail'):
+        return None,None
+    private=base/'input-detail.json'
+    options_file=base/'spatial-options-detail.json'
+    if private.exists() and options_file.exists():
+        original=json.loads(private.read_text())
+        narrowed=json.loads(options_file.read_text())
+        if original.get('prior_model_response_sha256')!=closed['response_sha256']:
+            raise RuntimeError('detail_prior_model_binding_changed')
+        return original,narrowed
+    index={x['message_id']:x for x in json.loads(SOURCE_INDEX.read_text())['items']}
+    source=index[cid]
+    coords=tuple(source['camera_point'])
+    osm,_origin=observed_osm(cid,coords)
+    hints=read_camera_hints(Path(source['source_path']).read_bytes())
+    story={'latitude':coords[0],'longitude':coords[1],
+       '_identity_map_snapshot':osm,'_identity_original_source_sha256':initial_input['original_photo_sha256'],
+       '_camera_position_verified':source['geographic_basis']=='original_exif',
+       '_location_provenance':({'kind':'owner_approx_camera'} if
+           source['geographic_basis']=='owner_approximate_hint' else {}),
+       '_camera_hints':hints}
+    began=time.monotonic()
+    view=model_nominated_detail(story,model,initial_packet)
+    if view is None:
+        return None,None
+    img=base/'map.detail.png'
+    if not img.exists():
+        img.write_bytes(view['map']['bytes'])
+        os.chmod(img,0o600)
+    manifest=view['map']['manifest']
+    if hashlib.sha256(img.read_bytes()).hexdigest()!=manifest['image_sha256']:
+        raise RuntimeError('model_detail_image_digest_wrong')
+    adapted={**initial_input,
+      'map_file':str(img),'map_sha256':manifest['image_sha256'],
+      'map_bytes':img.stat().st_size,
+      'prior_model_response_sha256':closed['response_sha256'],
+      'prior_model_id':closed['model'],
+      'model_proposed_labels':view['model_proposed_labels'],
+      'original_overview_sha256':initial_input['map_sha256'],
+      'elapsed_map_preparation_s':round(
+         initial_input['elapsed_map_preparation_s']+time.monotonic()-began,3),
+      'detail_generated_without_truth':True}
+    save(private,adapted)
+    save(options_file,view['spatial_options'])
+    save(base/'detail-manifest.json',manifest)
+    return adapted,view['spatial_options']
+
 def report():
     rows=[]
     for cid in ALL:
         base,inp,pkt=load_case(cid)
-        output=base/'model-G-v3'
+        original=base/'model-G-v3'
+        detail=base/'model-G-v3-detail'
+        output=detail if (detail/'provider-intent.json').is_file() else original
         result=output/'result.json'
         marker=output/'provider-intent.json'
         data=json.loads(result.read_text()) if result.exists() else {}
         sent=json.loads(marker.read_text()) if marker.exists() else {}
+        requests=[]
+        for stage in (original,detail):
+            file=stage/'provider-intent.json'
+            if file.is_file():
+                requests.append(json.loads(file.read_text()))
         rows.append({'photo':cid,
             'input_status':(inp or {}).get('status','missing_geopoint'),
             'camera_basis':(inp or {}).get('camera_point_basis'),
@@ -195,8 +273,8 @@ def report():
             'identity_accepted_by_new_G':data.get('accepted',False),
             'final_product_identity_verified':False,
             'method_time_s':data.get('total_method_s'),
-            'image_inference_calls':1 if sent.get('provider_send_state') in {
-                    'possibly_sent','response_closed'} else 0,
+            'image_inference_calls':sum(1 for m in requests
+                if m.get('provider_send_state') in {'possibly_sent','response_closed'}),
             'reason_codes':data.get('reason_codes') or []})
     path=ROOT/'g26-model-report.json'
     save(path,{'corpus':'26 buildings','policy':MODEL_PHASE,
@@ -204,8 +282,8 @@ def report():
     return rows
 
 
-def replay(cid,base,inp,pkt):
-    out=base/'model-G-v3'
+def replay(cid,base,inp,pkt,*,detail=False):
+    out=base/('model-G-v3-detail' if detail else 'model-G-v3')
     receipt=json.loads((out/'provider-intent.json').read_text())
     if receipt.get('phase')!='response_closed':
         return {'id':cid,'status':'provider_no_closed_response',
@@ -236,23 +314,27 @@ def replay(cid,base,inp,pkt):
     return result
 
 
-async def run_one(cid,*,send=False):
+async def run_one(cid,*,send=False,detail=False):
     base,inp,pkt=load_case(cid)
     if inp is None or inp.get('status')!='ready':
         return {'id':cid,'status':'missing_geopoint'}
     if pkt is None:
         return {'id':cid,'status':'no_spatial_options'}
-    out=base/'model-G-v3'
+    if detail:
+        inp,pkt=prepare_model_detail(cid,base,inp,pkt)
+        if inp is None:
+            return {'id':cid,'status':'no_model_nominated_detail'}
+    out=base/('model-G-v3-detail' if detail else 'model-G-v3')
     out.mkdir(exist_ok=True,mode=0o700)
     marker=out/'provider-intent.json'
     if marker.exists():
         data=json.loads(marker.read_text())
         if data.get('phase')=='response_closed':
-            return replay(cid,base,inp,pkt)
+            return replay(cid,base,inp,pkt,detail=detail)
         return {'id':cid,'status':'frozen_provider_intent_no_resend',
                 'phase':data.get('phase')}
     compact=model_input(pkt)
-    prompt=prompt_for(compact)
+    prompt=prompt_for(compact,is_detail=detail)
     schema=visual_spatial_choice_schema()
     context_json=json.dumps(compact,ensure_ascii=False,separators=(',',':'))
     source=Path(inp['source_model_image']).read_bytes()
@@ -298,6 +380,7 @@ async def run_one(cid,*,send=False):
         'prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest(),
         'schema_sha256':hashlib.sha256(json.dumps(schema,sort_keys=True).encode()).hexdigest(),
         'host_precomputation_ms':0,
+        'prior_model_response_sha256':inp.get('prior_model_response_sha256'),
         'input_token_estimate':'unmeasured'}
     save(out/'request.json',{'case':cid,'model':model,'prompt':prompt,
       'schema':schema,'source_file':inp['source_model_image'],
@@ -346,7 +429,7 @@ async def run_one(cid,*,send=False):
       usage_total_tokens=getattr(getattr(reply,'usage_metadata',None),'total_token_count',None),
       elapsed_ms=round((time.monotonic()-t0)*1000))
     record()
-    return replay(cid,base,inp,pkt)
+    return replay(cid,base,inp,pkt,detail=detail)
 
 
 async def main():
@@ -354,6 +437,7 @@ async def main():
     parser.add_argument('--ids',type=int,nargs='*',default=[])
     parser.add_argument('--send',action='store_true')
     parser.add_argument('--replay',action='store_true')
+    parser.add_argument('--detail',action='store_true')
     parser.add_argument('--report',action='store_true')
     args=parser.parse_args()
     if args.report:
@@ -372,9 +456,14 @@ async def main():
         try:
             if args.replay:
                 base,inp,pkt=load_case(id)
-                value=replay(id,base,inp,pkt)
+                if args.detail:
+                    inp,pkt=prepare_model_detail(id,base,inp,pkt)
+                if inp is None or pkt is None:
+                    value={'id':id,'status':'no_model_nominated_detail'}
+                else:
+                    value=replay(id,base,inp,pkt,detail=args.detail)
             else:
-                value=await run_one(id,send=args.send)
+                value=await run_one(id,send=args.send,detail=args.detail)
             rows.append(value)
             print(json.dumps({'photo':id,'result':{
                 k:v for k,v in value.items() if k not in ('proof','source_observations','alternatives')
