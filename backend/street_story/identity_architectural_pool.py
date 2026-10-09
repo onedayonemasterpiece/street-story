@@ -175,7 +175,8 @@ def _verified_articles(receipt, max_articles):
 
 
 def prepare_architectural_pool(story, candidates, source_text_receipt, *,
-        candidate_ids=None, max_articles=8, source_only_evidence=None):
+        candidate_ids=None, max_articles=8, source_only_evidence=None,
+        allow_unresolved_physical=False):
     """Prepare one contrastive *T model call* for 1..8 real verified articles.
 
     A prior SOURCE-only model nomination, actual OSM address join or G lead
@@ -216,8 +217,11 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
     nominated=(candidate_ids if candidate_ids is not None else
         list(dict.fromkeys([*(original_prior.get('candidate_ids') or []),
             *(cid for article in checked for cid in (article.get('lookup_candidate_ids') or []))])))
-    if not isinstance(nominated,list) or not nominated or len(set(nominated))!=len(nominated):
+    if (not isinstance(nominated,list) or len(set(nominated))!=len(nominated)
+            or not nominated and not allow_unresolved_physical):
         raise ValueError('explicit_observed_physical_nominations_required')
+    if not isinstance(allow_unresolved_physical,bool):
+        raise ValueError('unresolved_physical_policy_invalid')
     if any(not isinstance(cid,str) or cid not in observed for cid in nominated):
         raise ValueError('unobserved_physical_candidate_id')
     physical_context=observed_address_context(story,list(observed.values()))
@@ -293,6 +297,8 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             for row in checked],
         'observed_physical_bodies':physical,
         'publisher_postal_matches_not_identity':compact_links,
+        'unresolved_no_GPS_subject':not bool(nominated),
+        'allow_identity_without_observed_OSM':False,
         'SOURCE_observations_from_previous_model_not_truth':
             (original_prior.get('source_scene_observations') or {}),
         'independent_prior_SOURCE_only_visual_observations_not_ground_truth':independent,
@@ -324,6 +330,10 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         'only, not guessed restoration. No reference image is required if '
         'the article has an individual visible STRUCTURAL combination '
         'and the physical body is reliably linked. '
+        'If NO actual physical OSM candidate IDs are supplied, the only '
+        'honest identity decision is uncertain with candidate_id empty. '
+        'You may nominate distinctive published article hypotheses to '
+        'guide later OSM discovery, but do not invent a physical ID. '
         'For accepted_architectural_text, article_bindings MUST contain '
         'only the one or two POSITIVE supporting article IDs, each mapped '
         'to the decision.candidate_id with physical_binding_resolved=true. '
@@ -403,6 +413,10 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     item_schema['required'].append('source_quote')
     decision=normalize_architectural_decision(decision,base_schema)
     reviewed={'model_contrastive_article_assessments':assessments,
+        'unresolved_article_hypothesis_ids':[
+            row['article_id'] for row in assessments
+            if row['visual_fit']=='distinctive_match'],
+        'physical_OSM_link_still_required':not bool(pool['candidate_ids']),
         'model_selected_source_span_references':chosen_spans,
         'source_response_closed':True,'accepted':False,
         'evidence_model_response_sha256':hashlib.sha256(json.dumps(
@@ -410,6 +424,8 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
         'model_decision':decision}
     if decision['decision']!='accepted_architectural_text':
         return reviewed
+    if not pool['candidate_ids']:
+        return dict(reviewed,reason='no_observed_physical_ID_proof_cannot_be_accepted')
     supporting={row['article_id'] for row in decision['article_bindings']}
     match_ids={row['article_id'] for row in assessments if row['visual_fit']=='distinctive_match'}
     if not 1<=len(supporting)<=2 or not supporting<=match_ids:
