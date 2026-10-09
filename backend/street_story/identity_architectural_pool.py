@@ -132,7 +132,7 @@ def _verified_articles(receipt, max_articles):
 
 
 def prepare_architectural_pool(story, candidates, source_text_receipt, *,
-        candidate_ids=None, max_articles=8):
+        candidate_ids=None, max_articles=8, source_only_evidence=None):
     """Prepare one contrastive *T model call* for 1..8 real verified articles.
 
     A prior SOURCE-only model nomination, actual OSM address join or G lead
@@ -142,6 +142,29 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
     neighboring bodies until visual comparison has ruled them out.
     """
     receipt=source_text_receipt or {}
+    independent = None
+    if source_only_evidence is not None:
+        evidence = source_only_evidence
+        # The SOURCE-only receipt precedes the publisher text selection;
+        # exact original SHA and a closed raw response must be independently
+        # preserved. We never claim the SOURCE-only model is ground truth.
+        if (not isinstance(evidence, dict)
+                or evidence.get('original_source_sha256') != receipt.get('original_source_sha256')
+                or evidence.get('provider_send_state') != 'response_closed'
+                or evidence.get('provider_outcome') != 'completed'
+                or not isinstance(evidence.get('response_sha256'), str)
+                or not _HEX_SHA.fullmatch(evidence['response_sha256'])
+                or not isinstance(evidence.get('result'), dict)):
+            raise ValueError('unverified_independent_SOURCE_only_observations')
+        observation = evidence['result']
+        allowed = {'foreground_subject','distinct_facades_in_frame',
+            'architectural_observations','visible_roof_and_gable',
+            'windows_entrance_composition','adjacent_facade_ambiguity',
+            'not_observable','visible_facades','photographic_subject_description'}
+        independent = {key:copy.deepcopy(value) for key,value in observation.items()
+            if key in allowed and isinstance(value, (str,list,int,bool))}
+        if len(json.dumps(independent,ensure_ascii=False)) > 4200:
+            raise ValueError('SOURCE_only_observation_too_large')
     checked=_verified_articles(receipt,max_articles)
     observed={row.get('candidate_id'):row for row in
         [*candidates, *(story.get('_identity_observed_candidates') or [])]
@@ -214,6 +237,7 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         'publisher_postal_matches_not_identity':compact_links,
         'SOURCE_observations_from_previous_model_not_truth':
             (original_prior.get('source_scene_observations') or {}),
+        'independent_prior_SOURCE_only_visual_observations_not_ground_truth':independent,
         'coverage':'All currently verified article bodies and nominated physical candidates in this bounded call. '
             'Absence from publisher inventory never proves an article absent.'}
     instruction=(
@@ -224,6 +248,15 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         'article_comparisons for EVERY article_id exactly once, including '
         'specific SOURCE-visible matching details, nonvisible descriptions '
         'and any contradictory gable/window-axis/portal combinations. '
+        'If a separate SOURCE-only observation is included, it was collected '
+        'before any article text was shown; test it against actual SOURCE '
+        'pixels rather than reinterpreting it to fit the named article. '
+        'Most importantly compare COUNTS and SHAPES of high-information '
+        'structural features (gable openings, window groups, portal forms) '
+        'instead of accepting a generic match of architectural period or '
+        'brick color. Do not call an article four pointed upper openings '
+        'a match to one differently shaped upper opening unless the photo '
+        'actually shows and reconciles the complete pattern. '
         'Do not rank by article order, name, address, fame, generic red brick '
         'or architectural period. A publisher article for a whole complex '
         'does NOT identify its photographed wing. Modern literal addresses '
