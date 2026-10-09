@@ -115,6 +115,8 @@ def _comparison_fixture():
     candidates.append(neighbor)
     story['_identity_observed_candidates'] = candidates
     receipt['articles'][0]['lookup_candidate_ids'] = [main]
+    receipt['articles'][0]['address_provenance']='publisher_article_metadata_table'
+    receipt['articles'][0]['address']='Город, Тестовая улица, 6'
     receipt['conditional_initial_decision'] = {
         'policy': 'conditional-initial-joint-v1', 'input_kind': 'model_hypothesis_not_evidence',
         'candidate_ids': [main, neighbor['candidate_id']],
@@ -135,9 +137,11 @@ def _actual_link_claim(packet, decision):
     aid=decision['article_bindings'][0]['article_id']
     cid=decision['candidate_id']
     publisher_ref=next(ref for ref,row in inv['publisher_refs'].items()
-        if row['article_id']==aid)
+        if row['article_id']==aid
+        and row['provenance']=='observed_publisher_article_metadata')
     osm_ref=next(ref for ref,row in inv['osm_refs'].items()
-        if row['candidate_id']==cid)
+        if row['candidate_id']==cid
+        and row['kind']=='observed_OSM_postal_entry')
     return {'article_id':aid,'candidate_id':cid,'publisher_ref':publisher_ref,
         'osm_ref':osm_ref,'relationship':'same_individual_physical_body',
         'subject_scope':'specific_photographed_OSM_body',
@@ -171,7 +175,11 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     adopted = combine_architectural_decision(plan, answer, packet['schema'],
         literal_evidence_inventory=packet['literal_evidence_inventory'])
     assert adopted['accepted_geometry'] == plan['accepted_geometry']
-    assert adopted['accepted_architectural_text'] == decision
+    assert adopted['accepted_architectural_text']['candidate_id']==decision['candidate_id']
+    assert adopted['accepted_architectural_text']['physical_link_evidence']==(
+        answer['physical_link_evidence'])
+    assert all(adopted['accepted_architectural_text'][key]==value
+        for key,value in decision.items())
     assert 'accepted_architectural_text' not in plan
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
 
