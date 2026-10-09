@@ -1,3 +1,5 @@
+> **Retrospective experiment, NOT the current T acceptance policy.** The measurements below belong to the original 26-photo and blind-v4 methods. The old postal parser and distance-based refusal were retired; do not import their historical veto descriptions into production. Current SOURCE+G shortlist → LLM-first T → existing image REF and closed Photo106 native accepted-visual receipt: [current integration handoff](../../handoffs/t-g-product-integration-20261009.md). All historic metrics remain unchanged.
+
 # Street Story T — реальные 26 SOURCE (2026-10-09)
 
 **Ответственный:** T-agent, PR #249. **Общий интегратор:** PR #246. **Геометрия G:** PR #247. Это проверка архитектурно-текстового компонента, **не общий Street Story product PASS**.
