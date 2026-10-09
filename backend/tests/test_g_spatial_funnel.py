@@ -92,15 +92,21 @@ def test_model_unknown_or_no_reduction_does_not_discard_anything():
         assert out['reserve_count']==4 and out['active_count']==0
         assert len(out['reserve'])==4
         assert out['downstream_T']['expandable_on_new_evidence']
+        assert out['downstream_T']['candidate_scope']=='original_osm_pool'
+        assert len(out['downstream_T']['active_physical_candidates'])==4
+        assert out['downstream_T']['active_physical_candidates'][0]['literal_address']['addr:housenumber']=='3'
         assert out['accepted'] is False
 
 def test_unknown_label_and_conflicting_claims_fail_closed():
     invalid=response()
     invalid['active_hypotheses'][0]['label']=999999
     assert run(invalid)['status']=='invalid'
-    invalid=response()
-    invalid['explicit_contradictions'][0]['label']=301
-    assert run(invalid)['reason_codes']==['same_building_active_and_explicitly_contradicted']
+    conflicting=response()
+    conflicting['explicit_contradictions'][0]['label']=301
+    outcome=run(conflicting)
+    assert outcome['status']=='active_shortlist'
+    assert outcome['active'][0]['model_self_contradiction'] is not None
+    assert outcome['downstream_T']['model_self_contradiction_labels']==[301]
     invalid=response()
     invalid['active_hypotheses'].append(copy.deepcopy(invalid['active_hypotheses'][0]))
     assert run(invalid)['reason_codes']==['duplicate_active_physical_label']
@@ -132,4 +138,16 @@ def test_single_accepted_model_claim_with_no_host_evidence_is_not_acceptance():
     item['request_detail_labels']=[301]
     out=run(item)
     assert out['status']=='active_shortlist'
+    assert out['accepted'] is False
+
+def test_shortlist_reserve_remains_reopenable_by_t_without_hard_exclusion():
+    r=response()
+    out=run(r)
+    assert out['status']=='active_shortlist'
+    assert out['active_count']==2
+    assert set(out['downstream_T']['original_reserve_candidate_ids'])=={
+        'osm:relation:3','osm:way:4'}
+    assert out['downstream_T']['reserve_reference']=='G_funnel_receipt.reserve'
+    assert out['downstream_T']['reopen_original_reserve_on_conflict'] is True
+    assert out['downstream_T']['g_prioritized_candidates']==out['active']
     assert out['accepted'] is False
