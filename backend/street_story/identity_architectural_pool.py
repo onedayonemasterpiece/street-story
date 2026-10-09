@@ -411,7 +411,6 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     if decision['decision']!='accepted_architectural_text':
         return reviewed
     supporting={row['article_id'] for row in decision['article_bindings']}
-    seen={row['article_id'] for row in decision['correspondences']}
     match_ids={row['article_id'] for row in assessments if row['visual_fit']=='distinctive_match'}
     if not 1<=len(supporting)<=2 or not supporting<=match_ids:
         return dict(reviewed,reason='positive_binding_not_supported_by_model_contrast')
