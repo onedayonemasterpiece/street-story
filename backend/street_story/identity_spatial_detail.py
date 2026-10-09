@@ -1,6 +1,6 @@
 """One model-proposed zoom of ORIGINAL neutral OSM, never oracle-guided.
 
-A model that saw original SOURCE+MAP may request detail for exact received
+A model that saw original SOURCE+MAP may nominate or request detail for exact received
 physical labels. This function preserves all bodies on the overview and renders
 a highlighted/enlarged MAP subview of *only model proposed* bodies. Geometry
 options are independently recalculated from the same immutable observed OSM.
@@ -22,14 +22,15 @@ def model_nominated_detail(story, previous_response, previous_options, *,
             or not Draft202012Validator(visual_spatial_choice_schema()).is_valid(previous_response)
             or previous_response['decision'] not in {'candidate','needs_detail','accept'}
             or (previous_response['decision']=='accept' and
-                (not prior_host_unaccepted or not previous_response['request_detail_labels']))
+                not prior_host_unaccepted)
             or previous_options.get('version')!='street_story.g_spatial_options.v3'):
         return None
     label_to_id = previous_options.get('private_label_to_osm_id') or {}
     proposed=[]
     model_labels=[previous_response['candidate_label'],
-                  *previous_response['request_detail_labels'],
-                  *[item['label'] for item in previous_response['contrasted_alternatives']]]
+                  *(previous_response.get('request_detail_labels') or []),
+                  *[item['label'] for item in
+                    (previous_response.get('contrasted_alternatives') or [])]]
     for label in model_labels:
         if type(label) is not int:
             return None
