@@ -59,7 +59,7 @@ def preflight(cid):
         'serialised_model_bytes':len(json.dumps(displayed,ensure_ascii=False).encode()),
         'options_sha256':option_digest(packet),
         'method_calls':0,'precompute_ms':round((time.monotonic()-start)*1000,1)}
-    detail_path=case/'spatial-options-v3-bearing-v2.json'
+    detail_path=case/'spatial-options-v3-street-v3.json'
     if not detail_path.exists():
         detail_path.write_text(json.dumps(packet,ensure_ascii=False,indent=2))
         os.chmod(detail_path,0o600)
@@ -76,8 +76,8 @@ def main():
                 'error_type':type(exc).__name__,'error_code':str(exc)[:240],
                 'method_calls':0})
     if set(args.ids)==set(ALL):
-        path=ROOT/'g26-spatial-preflight-bearing-v2.json'
-        path.write_text(json.dumps({'contract':'G-options-v3-bearing-v2',
+        path=ROOT/'g26-spatial-preflight-street-v3.json'
+        path.write_text(json.dumps({'contract':'G-options-v3-street-v3',
             'oracle_not_loaded':True,'cases':rows},ensure_ascii=False,indent=2))
         os.chmod(path,0o600)
     print(json.dumps({'total':len(rows),'usable':sum(x['status']=='usable_spatial_options' for x in rows),
