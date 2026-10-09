@@ -118,7 +118,7 @@ async def test_cold35_cards20plus15_keep_same_sid_aliases_and_cache_without_bodi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "change", ["unselected", "foreign_sid", "foreign_building", "unresolved6_6A", "empty_scope", "duplicate", "tenant"]
+    "change", ["unselected", "foreign_sid", "foreign_building", "empty_scope", "duplicate", "tenant"]
 )
 async def test_unselected_or_unbound_cards_never_fetch_bodies(tmp_path, monkeypatch, change):
     def forbidden(request):
@@ -140,8 +140,6 @@ async def test_unselected_or_unbound_cards_never_fetch_bodies(tmp_path, monkeypa
         choices[0]["article_id"] = "prussia39:sid:999"
     elif change == "foreign_building":
         choices[0]["candidate_id"] = "osm:way:999"
-    elif change == "unresolved6_6A":
-        choices[0]["physical_binding_resolved"] = False
     elif change == "empty_scope":
         choices[0]["scope"] = ""
     elif change == "duplicate":
@@ -398,3 +396,48 @@ async def test_full_deadline_and_page_admission_precede_new_optional_http(tmp_pa
     monkeypatch.setattr(research_budget, "reserve_work", denied)
     receipt = await context.prepare_regional_catalogue(service, s, [obj])
     assert receipt["status"] == "not_sent" and receipt["error_code"] == "identity_page_envelope_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_unresolved_complex_can_fetch_full_verified_architecture_without_identity(tmp_path, monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return response(html(f'<td style="text-align:justify">{TEXT}</td>'))
+    offline(monkeypatch, handler)
+    obj = candidate()
+    s = story(obj)
+    cat = {'status':'completed', 'inventory_complete':False,
+        'results':[{'article_id':'prussia39:sid:34',
+            'canonical_url':prussia39.canonical_article(34)[1],
+            'address_text':'Город, Тестовая, 6'}]}
+    unresolved=selection()
+    unresolved['physical_binding_resolved']=False
+    articles, outcome=await context.acquire_selected_regional_text(
+        SimpleNamespace(store=Cache(tmp_path/'cache')),s,[obj],[unresolved],cat)
+    assert len(calls)==1 and len(articles)==1
+    assert outcome['status']=='completed'
+    assert articles[0]['initial_physical_binding_hypothesis'] is False
+    assert articles[0]['physical_identity_inferred'] is False
+    assert articles[0]['lookup_candidate_ids']==[obj['candidate_id']]
+
+@pytest.mark.asyncio
+async def test_publisher_body_can_be_read_before_any_OSM_identity_is_resolved(tmp_path, monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return response(html(f'<td style="text-align:justify">{TEXT}</td>'))
+    offline(monkeypatch, handler)
+    obj=candidate()
+    s=story(obj)
+    selection_unbound=selection()
+    selection_unbound.update(candidate_id='',physical_binding_resolved=False)
+    cat={'status':'completed','results':[{
+        'article_id':'prussia39:sid:34',
+        'canonical_url':prussia39.canonical_article(34)[1]}]}
+    articles,outcome=await context.acquire_selected_regional_text(
+        SimpleNamespace(store=Cache(tmp_path/'cache')),s,[obj],[selection_unbound],cat)
+    assert len(calls)==1
+    assert outcome['status']=='completed'
+    assert articles[0]['lookup_candidate_ids']==[]
+    assert articles[0]['physical_identity_inferred'] is False
