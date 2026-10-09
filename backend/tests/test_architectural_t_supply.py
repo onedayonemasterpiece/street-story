@@ -8,7 +8,7 @@ import pytest
 from street_story import prussia39
 from street_story.identity_architectural_comparison import (
     combine_architectural_decision, prepare_architectural_comparison, publisher_address_relation,
-    source_subject_competition_guard)
+    source_subject_competition_guard, verified_publisher_physical_scope)
 from street_story.identity_architectural_context import (
     _subject_addresses, acquire_regional_text, literal_address_card_selection, regional_preparation_query)
 from street_story.identity_source_selection import observed_address_context
@@ -487,3 +487,72 @@ def test_model_self_rejection_never_turns_distance_into_physical_proof():
         assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
         # Whether the model's architecture-based alternative rejection is valid
         # remains a question for LLM semantics + strict source quote proof.
+
+
+
+def _observed_publisher_link_case(article_url='https://www.prussia39.ru/sight/index.php?sid=123'):
+    article={'article_id':'prussia39:sid:123', 'url':article_url,
+        'raw_body_sha256_verified':True,'input_kind':'acquired_article_text',
+        'text':'A subject with individually described facade.', 'address':'',
+        'address_provenance':'unavailable'}
+    body={'candidate_id':'osm:way:1234','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes','ref:prussia39':'123'}},
+        'map_address':{'street':'Текущая улица','house_number':'8'}}
+    story={'_identity_observed_candidates':[body]}
+    decision={'decision':'accepted_architectural_text',
+        'candidate_id':'osm:way:1234',
+        'article_bindings':[{'article_id':article['article_id'],
+            'candidate_id':'osm:way:1234','scope':'Physical building',
+            'binding_basis':'Publisher link is explicitly recorded on the OSM body.',
+            'physical_binding_resolved':True}]}
+    return story,[body],{'articles':[article]},decision
+
+
+def test_observed_osm_direct_publisher_ref_is_independent_physical_link():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    outcome=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert outcome['supported'] is True
+    assert outcome['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_publisher_ref'
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    bodies[0]['map_object']['tags'].pop('ref:prussia39')
+    bodies[0]['map_object']['tags']['website:prussia39']='https://www.prussia39.ru/sight/index.php?sid=123'
+    outcome=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert outcome['supported'] is True
+    assert outcome['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_publisher_URL'
+
+
+def test_a_model_claimed_crosslink_cannot_replace_observed_osm_evidence():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    bodies[0]['map_object']['tags'].pop('ref:prussia39')
+    decision['article_bindings'][0]['binding_basis']='I am sure ref:prussia39 123 belongs to OSM way 1234.'
+    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert result['supported'] is False
+    assert result['reason']=='publisher_modern_address_not_observed'
+
+
+def test_explicit_publisher_link_on_two_bodies_leaves_corpus_unresolved():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    other={'candidate_id':'osm:way:1235','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes','ref:prussia39':'123'}}}
+    bodies.append(other)
+    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert result['supported'] is False
+    assert result['reason']=='publisher_explicit_ref_still_ambiguous_between_physical_corpora'
+    assert set(result['matching_candidate_ids'])=={'osm:way:1234','osm:way:1235'}
+
+
+def test_literal_historic_osm_address_is_valid_without_merging_6_and_6a():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    tags=bodies[0]['map_object']['tags']
+    tags.pop('ref:prussia39')
+    tags.update({'old_addr:street':'Историческая улица',
+        'old_addr:housenumber':'6А'})
+    receipt['articles'][0].update(address='Город, Историческая улица, 6А',
+        address_provenance='publisher_article_metadata_table')
+    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert result['supported'] is True
+    assert result['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_historical_postal_tags'
+    receipt['articles'][0]['address']='Город, Историческая улица, 6'
+    denied=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert denied['supported'] is False
+    assert denied['reason']=='article_modern_address_not_bound_to_nominated_physical_body'
