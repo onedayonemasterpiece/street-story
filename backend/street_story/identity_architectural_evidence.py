@@ -137,6 +137,22 @@ def literal_evidence_inventory(story, candidates, articles, *, candidate_ids=Non
         'host_address_parser_used':False}
 
 
+def model_literal_evidence_inventory(inventory):
+    """Present each received record once; keep the full host inventory intact."""
+    import copy
+    result = copy.deepcopy(inventory)
+    for subject in result['physical_subjects']:
+        subject['literal_observed_evidence_refs'] = [record['ref'] for record in
+            subject.pop('literal_observed_evidence')]
+    for article in result['articles']:
+        article['actual_acquired_publisher_record_refs'] = [record['ref'] for record in
+            article.pop('actual_acquired_publisher_records')]
+    result['record_reference_policy'] = ('Each evidence ref resolves to its complete unchanged record in '
+        'osm_refs or publisher_refs. No subject, address, article or alternative is removed. '
+        'These literal references are retrieval/provenance links, never physical identity evidence by themselves.')
+    return result
+
+
 def physical_link_schema(article_ids, candidate_ids, publisher_refs, osm_refs):
     """Compact model response, admitted only through observed pointer tables."""
     return {'type':'array','maxItems':2,'items':{

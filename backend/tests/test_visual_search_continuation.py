@@ -436,6 +436,19 @@ async def test_identity_waiter_wakes_same_live_session_and_respects_stop_binding
     assert svc.story(story['id']).get('identity_progress', {}).get('images_reviewed_count', 0) == 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stage', [None, 'unreceived_stage', 42, []])
+async def test_invalid_model_stage_reaches_ordinary_tool_error_boundary(tmp_path, stage):
+    from street_story.service import ConflictError
+    _svc, adapter, _story, session = prepared(tmp_path)
+    current = session()
+    current.capability = 'research'
+    call = {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Select facts'}}
+    assert adapter.resolve_capability(current, call) is None
+    with pytest.raises(ConflictError, match='live_stage_invalid'):
+        await adapter.execute_tool(current, call)
+
+
 def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):
     svc, adapter, story, session = prepared(tmp_path)
     s = session()

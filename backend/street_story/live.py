@@ -883,8 +883,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if 'research_action' in (call.get('args') or {}):
             return None
         stage = (call.get('args') or {}).get('stage')
-        if stage not in self.CAPABILITY_TOOLS:
-            raise ConflictError('live_stage_invalid', 'Неизвестный этап.')
+        if not isinstance(stage, str) or stage not in self.CAPABILITY_TOOLS:
+            # Let ordinary serialized tool execution report a structured error.
+            # A resolver exception would escape before the shared host's tool
+            # error boundary, leaving the model without correction/readback.
+            return None
         initialized = self.initialize(resource_id=session.resource_id, actor=session.actor, model=session.model, full_configuration=True)
         continuation = str((call.get('args') or {}).get('intent') or '')[:1200]
         if stage != 'identity' and not initialized['context'].get('physical_identity_accepted'):
@@ -927,12 +930,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         reviewing = ((state.get('research_run') or {}).get('state') == 'verifying'
                      or bool((state.get('research_run') or {}).get('pending_extractor_candidates'))
                      or bool((state.get('research_run') or {}).get('pending_review_fact_ids')))
+        eligible_available = any(fact.get('eligibility') == 'eligible' for fact in state['story'].get('facts', []))
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
         # duplicating it on every setup consumes the same lease as bootstrap.
         instruction = ('During research, discovery is not an answer. After search_web, call save_research_facts or get_research_chunk before speaking any factual finding. Only a successful save receipt authorizes reporting that finding.\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
                        + '\n' + SYSTEM_INSTRUCTION)
-        if reviewing:
+        if reviewing and not eligible_available:
             # A resumed verification phase must not frame the old inventory as facts
             # already established by the authoritative product-state snapshot.
             context['candidate_count'] = len(state['story'].get('facts', []))
@@ -992,7 +996,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
                 or ready_visual)
             capability = ('identity' if not context['physical_identity_accepted']
-                          else 'publication' if publication_ready else 'review' if reviewing else 'research')
+                          else 'publication' if publication_ready else 'review' if reviewing and not eligible_available else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
         return initialized
@@ -1447,7 +1451,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
         if name == 'continue_story' and 'research_action' not in args:
             stage = args.get('stage')
-            if stage != getattr(session, 'capability', None):
+            if not isinstance(stage, str) or stage not in self.CAPABILITY_TOOLS or stage != getattr(session, 'capability', None):
                 raise ConflictError('live_stage_invalid', 'Запрошенный этап ещё не активен.')
             return {'capability': stage, 'ready': True, 'already_active': True,
                 'next_tool': 'read_topic',

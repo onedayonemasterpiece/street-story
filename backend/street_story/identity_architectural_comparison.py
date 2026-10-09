@@ -554,6 +554,11 @@ def combine_architectural_decision(original_plan, answer, schema):
     normalized = normalize_architectural_decision(answer, schema)
     result = copy.deepcopy(original_plan)
     result['accepted_architectural_text'] = normalized
+    if normalized.get('decision') == 'accepted_architectural_text':
+        # A closed T decision needs no new search wave. The original rejected
+        # planner response remains in diagnostics; an absent search-only array
+        # must not invalidate this independent proof component.
+        result.setdefault('first_wave_hypotheses', [])
     return result
 
 

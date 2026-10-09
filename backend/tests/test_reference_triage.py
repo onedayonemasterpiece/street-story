@@ -163,7 +163,10 @@ async def test_explicit_small_output_cap_reduces_shared_reservation_and_keeps_pr
     config = types.GenerateContentConfig(max_output_tokens=requested)
     await GeminiClient._generate(client, 'offline-fixture', 20, ['fixture'], config,
                                  model='fixture', quota=Quota())
-    assert calls == [('reservation', 1000 + expected + len('fixture')), ('provider', expected)]
+    from ai_resource_control.client import estimate_input_tokens
+    envelope = {'contents': [{'text': 'fixture'}],
+        'config': config.model_dump(mode='json', exclude_none=True)}
+    assert calls == [('reservation', 1000 + expected + estimate_input_tokens(envelope)), ('provider', expected)]
     class Denied:
         async def run(self, key, timeout, size, invoke):
             raise RuntimeError('offline-admission-denied')

@@ -93,9 +93,9 @@ async def test_repair_withholds_shared_parent_before_replacement_review_and_resu
     with svc.store.tx() as db:
         db.execute("UPDATE research_runs SET state='partial' WHERE run_id=?", (run_id,))
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
-    assert initialized['capability'] == 'review'
+    assert initialized['capability'] == 'research'
     assert initialized['context']['research_run']['pending_review_fact_ids'] == [child]
-    assert 'get_review_packet' in {t['name'] for t in initialized['configuration']['functions']}
+    assert {'select_facts', 'set_concept', 'edit_text'} <= {t['name'] for t in initialized['configuration']['functions']}
     await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-replacement', 'args': {
         'packet_ref': replacement['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported',
             'claims': ['Уточнённый первый тезис.'], 'basis_quotes': [QUOTES[0]],

@@ -353,6 +353,9 @@ def read_case(service, case, item):
             'FROM live_diagnostics WHERE story_id=? ORDER BY id', (row['id'],))]
         scans = [dict(scan) for scan in db.execute('SELECT id,detector,status,coverage_complete,created_at '
             'FROM fact_conflict_scans WHERE story_id=? ORDER BY id', (row['id'],))]
+        # Read the same product projection without hydrating memory or changing
+        # the state being measured. Ordinary API mutation/restart is tested separately.
+        visible = service._story_repr(db, row)
     proved = []
     for fact in story_facts:
         snapshot = list(_review_snapshot(fact['display_text'], fact['sources_json']))
@@ -375,7 +378,6 @@ def read_case(service, case, item):
     # Availability is distinct from the original terminal/coverage metric.
     # Ordinary product projection exposes current verified claims immediately;
     # an independent pending review must not hide selection/editorial tools.
-    visible = service.story(row['id'])
     visible_eligible = [fact for fact in visible.get('facts') or [] if fact.get('eligibility') == 'eligible']
     useful_available = (identity.get('status') == 'match'
         and visible.get('state') in {'facts_ready', 'review', 'visual_ready', 'scheduling', 'scheduled', 'published'}

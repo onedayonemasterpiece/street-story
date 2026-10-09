@@ -210,7 +210,8 @@ async def test_foreign_geometry_pointer_and_genuine_selected_wiki_text_share_one
             # The independent text proof may succeed while the foreign
             # geometry pointer still correctly fails host validation.
             from test_architectural_text_identity import with_received_physical_links
-            final = {**payload(bad), **selected(), 'accepted_architectural_text': with_received_physical_links(decision, contents)}
+            final = with_received_physical_links(decision, contents)
+            assert 'accepted_geometry' not in config.system_instruction
             return SimpleNamespace(text=json.dumps(final))
         async def forbidden(*args, **kwargs):
             pytest.fail('No third judge, qualified replan, REF or image is needed')

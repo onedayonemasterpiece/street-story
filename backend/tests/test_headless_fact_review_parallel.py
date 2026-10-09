@@ -747,6 +747,11 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
         assert {f['fact_id'] for f in restored['facts'] if f['selected']} == set(selected)
         assert any(f['eligibility'] == 'unreviewed' for f in restored['facts'])
         assert StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None)._topic_state(job['story_id'])['story']['draft_text'] == draft
+        initialized = StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None).initialize(
+            resource_id=job['story_id'], actor=None, model='gemini-3.8-live')
+        assert initialized['capability'] == 'research'
+        assert {'select_facts', 'set_concept', 'edit_text'} <= {
+            tool['name'] for tool in initialized['configuration']['functions']}
     finally:
         release.set()
         await task

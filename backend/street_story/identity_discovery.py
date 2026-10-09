@@ -498,10 +498,11 @@ async def _suggest(service, story, transcript, candidates):
     if scene:
         packet.pop('first_wave_subjects')
     if early_text_articles:
+        from .identity_architectural_evidence import model_literal_evidence_inventory
         packet['acquired_architectural_text'] = {
             'articles': early_text_articles,
             'literal_source_passages': early_text_passages,
-            'publisher_and_OSM_literal_records_NOT_prejoined': early_physical_link_inventory,
+            'publisher_and_OSM_literal_records_NOT_prejoined': model_literal_evidence_inventory(early_physical_link_inventory),
             'retrieval_receipt': early_text_lookup,
             'physical_identity_inferred': False,
             'policy': 'Observe SOURCE independently first. Compare acquired descriptions to its actual '

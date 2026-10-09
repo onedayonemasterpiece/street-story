@@ -363,7 +363,7 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         linked = with_received_physical_links(decision, contents) if not accept_geometry else None
-        return SimpleNamespace(text=json.dumps(first if accept_geometry else ({**first, "accepted_architectural_text": linked} if malformed_first else linked)))
+        return SimpleNamespace(text=json.dumps(first if accept_geometry else linked))
 
     async def forbidden(*args, **kwargs):
         pytest.fail("No third model, text selector, REF or Wiki replacement")

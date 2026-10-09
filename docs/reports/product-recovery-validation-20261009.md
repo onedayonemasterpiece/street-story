@@ -34,6 +34,30 @@ pending-review/restart and shared-quota/Stop/changed-SOURCE negative controls.
 Full tests and current-version cold/product E2E evidence are pending at this
 checkpoint. No merge, deployment or universal recognition claim is made.
 
+The first `e7fe5de` cold 102 ended at 181.794 s without identity/facts.
+Google 3.8's initial operation remains UNKNOWN, the independent Google 3.5
+operation closed, and Native was denied before send. The compact 25,871-byte
+T input was actually dispatched but its response is UNKNOWN; it is not replayed.
+The same retained initial input exposed repeated literal evidence records.
+Replacing those duplicate copies with exact refs reduced its context packet
+from 154,722 to 123,139 UTF-8 bytes. Offline dereference proves every original
+record, subject, article and alternative is preserved; this is not a new inference.
+
+Full offline testing exposed fixtures still replying with the old combined
+G/T contract, an outdated reservation expectation and a measurement path
+that hydrated POI memory. Fixtures now honor the issued T contract; availability
+uses product projection without hydration. A positive independent T needs no
+missing search wave from the original rejected planner response.
+
+Current downstream E2E uses the genuine 0b792c2 automatic 104 identity and
+18 reviewed claims, with explicit compatible-upstream provenance. Its first
+Live run failed before selection: the model emitted an invalid null capability
+stage. The adapter now routes that call through ordinary serialized tool error
+handling rather than throwing outside the shared host's error boundary.
+Already eligible claims also keep owner research/editorial tools available
+while unrelated review is pending. The E2E runner now sends ordinary WSS pings;
+its original failures remain retained. Current acceptance and E2E are still pending.
+
 ## Frozen b022307 product result and selected-card continuation
 
 Blind cold132 on `b02230727af905e52f474830d00b6fe9c7e5d626` passed all
