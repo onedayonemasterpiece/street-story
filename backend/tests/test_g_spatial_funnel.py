@@ -5,7 +5,6 @@ can be adapted for retrospective shortlist replay, with that provenance
 recorded separately from genuinely new model choices.
 """
 import copy
-import hashlib
 
 from street_story.identity_spatial_funnel import project_g_funnel
 from street_story.identity_spatial_choice import visual_spatial_choice_schema
