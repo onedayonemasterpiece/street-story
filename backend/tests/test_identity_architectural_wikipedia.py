@@ -159,6 +159,15 @@ async def test_mediawiki_search_offers_actual_alternative_titles_without_suffix_
             'pageid':999,'title_fit':'same_subject','reason':'Invented ID'})
         with pytest.raises(ValueError,match='not_received'):
             await reader.article_by_model_selected_pageid(candidates,999)
+        import copy
+        forged=copy.deepcopy(candidates)
+        forged['results'][0]['title']='Invented title for unrelated subject'
+        with pytest.raises(ValueError,match='not_received'):
+            await reader.article_by_model_selected_pageid(forged,411)
+        changed=copy.deepcopy(candidates)
+        changed['raw_source_sha256']='0'*64
+        with pytest.raises(ValueError,match='sha_mismatch'):
+            await reader.article_by_model_selected_pageid(changed,411)
         selected=await reader.article_by_model_selected_pageid(candidates,411)
         again=await reader.search_observed_title('Архитектурная вилла (историческая) — город')
     assert candidates['status']=='completed'
