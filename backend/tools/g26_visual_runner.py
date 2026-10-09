@@ -206,7 +206,7 @@ def prepare_model_detail(cid, base, initial_input, initial_packet, *, model=MODE
         return None,None
     if not Draft202012Validator(visual_spatial_choice_schema()).is_valid(model):
         return None,None
-    if model['decision'] not in ('candidate','needs_detail'):
+    if model['decision'] not in ('candidate','needs_detail','accept'):
         return None,None
     private=base/'input-detail.json'
     options_file=base/'spatial-options-detail.json'
