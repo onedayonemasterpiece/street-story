@@ -4,6 +4,42 @@ from __future__ import annotations
 from .identity_proof import accepted_identity, physical_scope
 
 
+
+def _exif_angular_reference(story, manifest):
+    """Reference diagonal from the selected photo; never an inferred yaw/range.
+
+    A 35mm-equivalent EXIF diagonal is only a rough angular scale for comparing
+    observed map outlines with SOURCE. It is not the actual cropped image FOV
+    and never estimates distance, subject size or camera pointing direction.
+    """
+    import json
+    import math
+    camera = manifest.get('camera') or {}
+    if camera.get('position_status') not in {'original_exif', 'owner_approximate'}:
+        return None
+    research = json.loads(story.get('research_json') or '{}')
+    hints = (story.get('_camera_hints') or
+        (research.get('visual_identity') or {}).get('camera_hints') or {})
+    if not isinstance(hints, dict):
+        return None
+    degrees = hints.get('diagonal_fov_35mm_deg')
+    if (isinstance(degrees, bool) or not isinstance(degrees, (int, float))
+            or not math.isfinite(degrees) or not 0 < degrees < 180):
+        return None
+    return float(degrees)
+
+
+def _outline_angular_scale(bearing_interval, diagonal_degrees):
+    if diagonal_degrees is None or not isinstance(bearing_interval, (list, tuple)) or len(bearing_interval) != 3:
+        return None
+    import math
+    span = bearing_interval[2]
+    if (isinstance(span, bool) or not isinstance(span, (int, float))
+            or not math.isfinite(span) or not 0 <= span <= 360):
+        return None
+    return round(span / diagonal_degrees, 3)
+
+
 def physical_decision_context(story, candidates, manifest):
     """One literal row per received body; entrance addresses stay beside it.
 
@@ -30,6 +66,7 @@ def physical_decision_context(story, candidates, manifest):
     window = (detail or manifest.get('coverage') or {}).get('extent_east_north_m') or (
         manifest.get('coverage') or {}).get('view_extent_east_north_m')
     expanded_ids = set((detail or {}).get('target_candidate_ids') or [])
+    reference_diagonal = _exif_angular_reference(story, manifest)
     for entry in entries:
         cid = entry['candidate_id']
         row = rows.get(cid, {})
@@ -65,11 +102,20 @@ def physical_decision_context(story, candidates, manifest):
             row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
             tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
-            selected_sides, len(sides) - len(selected_sides)])
+            selected_sides, len(sides) - len(selected_sides),
+            _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal)])
     return {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
         'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
-        'observed_side_segments', 'omitted_side_count'],
+        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal'],
+        'source_angular_reference': {
+            'diagonal_fov_35mm_deg': reference_diagonal,
+            'camera_position_status': (manifest.get('camera') or {}).get('position_status'),
+            'policy': 'Each outline span / nominal 35mm-equivalent EXIF diagonal is an advisory ratio, '
+                'NOT the fraction of image pixels, a distance estimate, visibility proof or a ranking. '
+                'Only already observed OSM boundary vertices are used. Photo crop/calibration, '
+                'which facade is visible, GPS uncertainty and horizontal yaw remain unknown. '
+                'No body is removed when this measurement is unavailable.'},
         'segment_columns': ['ring_index', 'segment_index', 'length_m', 'start_east_north_m', 'end_east_north_m'],
         'primitive_excerpt_extent_east_north_m': window,
         'expansion': 'Request map_detail with exact received target_candidate_ids. All body rows remain reachable; '
