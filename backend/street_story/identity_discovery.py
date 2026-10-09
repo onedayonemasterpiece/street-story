@@ -1160,6 +1160,17 @@ async def _suggest(service, story, transcript, candidates):
                     scene['mime_type'], scene['bytes'])
                 alternate_payload = alternate_result.get('result')
                 alternate_receipt = alternate_result.get('receipt') or {}
+                if not isinstance(alternate_payload, dict):
+                    raise PermanentProviderError('identity_source_map_response_malformed')
+                from .identity_source_selection import resolve_identity_response_ids
+                alternate_payload, alternative_resolution = resolve_identity_response_ids(
+                    alternate_payload, resolution_packet)
+                if alternative_resolution:
+                    response_id_resolutions.append({
+                        **alternative_resolution, 'provider_id': 'opencode',
+                        'joint_stage': 'initial',
+                        'raw_json_sha256': hashlib.sha256(json.dumps(
+                            alternate_result['result'], sort_keys=True, ensure_ascii=False).encode()).hexdigest()})
                 story['_identity_search_plan_route'] = 'opencode_source_map'
                 record_identity_event(service, story['id'], 'identity_independent_image_route_completed', {
                     'provider_id': alternate_receipt.get('provider_id'),
@@ -1181,7 +1192,8 @@ async def _suggest(service, story, transcript, candidates):
                 # A submitted/unknown alternate must be observed on the same
                 # durable request. Never dispatch another model in its place.
                 pending = getattr(researcher, 'identity_source_map_pending', None)
-                if callable(pending) and pending(story):
+                if (isinstance(alternate_error, RetryableProviderError)
+                        and callable(pending) and pending(story)):
                     raise RetryableProviderError('identity_source_map_readback_required',
                         retry_at=getattr(alternate_error, 'retry_at', None)) from alternate_error
                 record_identity_event(service, story['id'], 'identity_independent_image_route_unavailable', {
