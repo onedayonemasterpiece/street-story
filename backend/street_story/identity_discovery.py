@@ -1159,10 +1159,16 @@ async def _suggest(service, story, transcript, candidates):
                 and (initial_outcome in {None, 'not_sent'} or definitively_closed_transport_failure)
                 and not original_available and not joint_followup_used):
             try:
+                from .identity_source_map_prompt import compact_source_map_visual_prompt
+                alternate_prompt = compact_source_map_visual_prompt(packet)
+                record_identity_event(service, story['id'], 'identity_source_map_alternate_input_prepared', {
+                    'role': 'source_map', 'alternate_prompt_utf8_bytes': len(alternate_prompt.encode()),
+                    'original_prompt_utf8_bytes': len(prompt.encode()) + len(config.system_instruction.encode()),
+                    'preserved_received_body_count': len(physical_context['rows']),
+                    'model': getattr(getattr(researcher, 'client', None), 'model_id', 'unknown')})
                 alternate_result = await alternate(story,
-                    config.system_instruction + '\n' + prompt,
-                    response_contract, source_mime, source_bytes,
-                    scene['mime_type'], scene['bytes'])
+                    alternate_prompt, response_contract,
+                    source_mime, source_bytes, scene['mime_type'], scene['bytes'])
                 alternate_payload = alternate_result.get('result')
                 alternate_receipt = alternate_result.get('receipt') or {}
                 if not isinstance(alternate_payload, dict):
