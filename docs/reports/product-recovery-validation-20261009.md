@@ -45,6 +45,28 @@ not the final product/emulator acceptance required after the five-building gate.
 The merged continuity/body/continuation/acceptance set passed **86 tests in 25.57 s**;
 Ruff and diff checks passed. All eleven critical requirements retain their digest.
 
+Frozen `bc1e660b5a0b5fa6e789e79770cf7210482df5fe` photo102 naturally failed
+at 19.460 s with no identity/facts. The actual street catalogue returned two cards,
+including SID3875 for the target address. The frozen model packet retained both
+address numbers and their exact building-node memberships. The initial answer
+invented `osm:way:432`; its reported MAP label432 actually names another building,
+not the independently labelled target. Strict validation rejected both responses.
+Two closed Google SDK responses reported 135,095 tokens; no Live/review was sent.
+No quota blocker was observed; monetary billing remains unknown.
+
+Prepared `8d9dfbd` makes explicit frozen MAP pointers consistent across physical
+fields and gives exact label/ID mismatch feedback, with no suffix guessing or
+automatic subject assignment. It also retains joint2's malformed response in a
+separate immutable bounded diagnostic. Its 103 isolated affected checks passed in
+36.64 s. Prepared `b45cdac` uses an already registered configured alternative for
+the existing second joint only after a closed initial contract failure, retaining
+its own quota/executor and frozen model ID. The actual configured tertiary model
+was available through API metadata (no inference). Fifty-three merged checks passed
+in 12.58 s, including two-call execution and UNKNOWN restart without resend. Ruff
+and diff checks passed. The existing NOT_SENT admission/retry/lease set also passed
+18 tests in 15.37 s. Neither transport replay nor model metadata proves correct
+recognition; the final same-version building set remains gated.
+
 ## Bounded live diagnostics
 
 All listed runs are cold photo104 diagnostics, not final-set acceptance. Other

@@ -102,6 +102,16 @@ The retry preserves the exact SOURCE/MAP/TEXT, prompt, schema and configuration;
 it re-enters the same route's admission without refund or a third joint operation.
 UNKNOWN and closed provider failures do not qualify. An interrupted wait retains
 the original plan for conservative restart reuse and does not automatically resend.
+After a closed initial contract failure, the existing second joint may use the
+already configured and registered tertiary model, with that tuple's own executor
+and quota. Its model ID is frozen with the prepared request. This substitutes a
+route for the same operation; it adds no judge and makes no stronger-model chain
+mandatory for valid initial geometry or selected-text work.
+All physical pointer fields use the same exact received ID or explicit `@N`
+namespace. Only the frozen MAP dictionary resolves `@N`; `osm:way:N` cannot be
+guessed from a display label. Exact label/ID mismatches reach the existing repair
+operation as feedback, without assigning a corrected subject. Closed invalid
+initial and follow-up answers are retained separately; UNKNOWN authorizes no repair.
 Reserve extraction/review capacity before spending the fallback budget on images.
 Thumbnail sheets only triage the conditional REF route; retain `unclear` images and
 exact tile/image/article binding. Final REF proof uses full images.
@@ -266,6 +276,13 @@ publisher body and promptly continue closed cores with actual unread passages.
 Saved replays verify those boundaries, not recognition correctness. The acceptance
 harness now sends ordinary fenced Stop after a report-only wrong-object failure,
 without supplying the expected object or a repair hint to runtime.
+
+Frozen `bc1e660` photo102 ended unsuccessfully at 19.46 seconds. Actual catalogue
+metadata contained two cards, including the correct-address article, and the
+model received complete building/entrance memberships. It nevertheless invented
+an OSM ID from a MAP label belonging to a different building; both responses were
+rejected. No identity or facts were accepted. The next prepared pointer/repair
+correction does not retrospectively fix that answer or establish recognition.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates
