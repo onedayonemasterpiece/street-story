@@ -161,12 +161,28 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         physical.append({'candidate_id':cid,'name':str(cand.get('name') or '')[:120],
             'literal_address_entries':[{
                 'entry_id':item['mapped_entry_id'],
-                'address':item['address'],
+                'address':{key:item['address'][key] for key in
+                    ('city','street','house_number') if item['address'].get(key)},
                 'provenance':('osm_physical_own_address' if item['mapped_entry_id']==cid
                     else 'osm_closed_way_node_membership')}
                 for item in _subject_addresses(physical_context,cand)],
             'observed_levels':((cand.get('map_object') or {}).get('tags') or {}).get('building:levels')})
     links=publisher_address_relation(checked,physical)
+    # Model needs the actual positive/ambiguous literal links, not N*M copies
+    # of `no_exact...observed` for every unrelated article/body pair.
+    # No negative match is interpreted as absence of the described building.
+    compact_links=[{'article_id':item['article_id'],
+        'actual_publisher_modern_addresses':item['publisher_modern_address_metadata'],
+        'observed_address_associations':[{
+            'candidate_id':link['candidate_id'],
+            'matching_entry_ids':link['exact_literal_entry_ids'],
+            'verified_compound_entrance_ids':link[
+                'publisher_full_group_covered_by_distinct_verified_entrances'],
+            'relationship_not_physical_identity':True}
+            for link in item['physical_links']
+            if link['exact_literal_entry_ids'] or
+                link['publisher_full_group_covered_by_distinct_verified_entrances']],
+        'physical_scope_is_not_inferred':True} for item in links]
     aids=[a['article_id'] for a in checked]
     decision_schema=architectural_text_decision_schema(nominated,aids,
         material_alternative_limit=max(8,len(nominated)),structural=True)
@@ -195,7 +211,7 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'truncated_from_full_publisher_article':row['full_original_text_sha256']!=row['text_sha256']}
             for row in checked],
         'observed_physical_bodies':physical,
-        'publisher_postal_matches_not_identity':links,
+        'publisher_postal_matches_not_identity':compact_links,
         'SOURCE_observations_from_previous_model_not_truth':
             (original_prior.get('source_scene_observations') or {}),
         'coverage':'All currently verified article bodies and nominated physical candidates in this bounded call. '
