@@ -167,10 +167,10 @@ def frozen_physical_observations(context):
             'observed_name':row.get('observed_name')})
     return entries
 
-def replay_closed(cid, model):
+def replay_closed(cid, model, *, schema_transport='json-mode'):
     """Revalidate ONE completed provider answer without another image-model send."""
     case=ROOT/'cases'/str(cid)
-    path=case/('inference-'+model.replace('/','-')+'-bearing-v2')
+    path=case/('inference-'+model.replace('/','-')+'-bearing-v2-'+schema_transport)
     if not path.exists():
         old=case/('inference-'+model.replace('/','-'))
         if old.exists():
@@ -259,7 +259,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
     encoded=config.model_dump(exclude_none=True,mode='json')
     if (schema_transport=='structured' and 'response_json_schema' not in encoded):
         raise ValueError('provider_did_not_serialize_G_schema')
-    path=case/('inference-'+model.replace('/','-')+'-bearing-v2')
+    path=case/('inference-'+model.replace('/','-')+'-bearing-v2-'+schema_transport)
     intent=path/'provider-intent.json'
     result_path=path/'result.json'
     if result_path.exists():
@@ -445,7 +445,7 @@ async def main():
     parser.add_argument('--dry-run',action='store_true')
     parser.add_argument('--replay-closed',action='store_true')
     parser.add_argument('--schema-transport',choices=['structured','json-mode'],
-                        default='structured')
+                        default='json-mode')
     args=parser.parse_args()
     if not set(args.ids).issubset(ALL):
         raise ValueError('Requested unknown original SOURCE photo')
@@ -453,7 +453,7 @@ async def main():
     for id in args.ids:
         try:
             if args.replay_closed:
-                rows.append(replay_closed(id,args.model))
+                rows.append(replay_closed(id,args.model,schema_transport=args.schema_transport))
             else:
                 rows.append(await run_one(
                     id,args.model,dry=args.dry_run,schema_transport=args.schema_transport))
