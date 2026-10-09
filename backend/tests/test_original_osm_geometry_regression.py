@@ -77,7 +77,7 @@ def test_original_106_neighbour_setback_and_real_gap_without_invented_passage():
     d={r[1]:dict(zip(context['columns'],r)) for r in context['rows']}
     assert d[names[0]]['boundary_distance_m']==pytest.approx(10.6,abs=.3)
     assert len(d[names[0]]['observed_connected_side_pairs'])>=1
-    assert context['received_body_count']==4
+    assert context['received_body_count']==5  # includes the real distant negative from a closed G run
 
 
 def test_original_132_actual_approach_axis_first_hit_is_directional_not_nearest():
