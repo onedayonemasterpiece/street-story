@@ -556,7 +556,7 @@ def identity_transport_schema(schema, *, map_label_references=False):
     return result
 
 
-def geometry_decision_schema(candidate_ids):
+def geometry_decision_schema(candidate_ids, *, structured=False):
     """Evidence from the existing joint call, rather than a second judge."""
     text = {'type': 'string', 'maxLength': 300}
     # The exact ID dictionary is already in the map packet. The common proof
@@ -575,7 +575,7 @@ def geometry_decision_schema(candidate_ids):
         'source_observation': text, 'map_features': {'type': 'array', 'maxItems': 6, 'items': feature},
         'correspondence': text},
         'required': ['source_observation', 'map_features', 'correspondence'], 'additionalProperties': False}
-    return {'type': 'object', 'properties': {
+    schema = {'type': 'object', 'properties': {
         'decision': {'type': 'string', 'enum': ['accepted_geometry', 'uncertain']},
         'candidate_id': candidate_id,
         'candidate_label': {'type': 'integer', 'minimum': 1},
@@ -600,6 +600,13 @@ def geometry_decision_schema(candidate_ids):
             'required': ['kind', 'reason', 'target_candidate_ids'], 'additionalProperties': False}},
         'required': ['decision', 'candidate_id', 'scope', 'decisive_relations', 'rejected_alternatives',
             'assumptions', 'bounded_coverage', 'camera_pose'], 'additionalProperties': False}
+    if structured:
+        from .identity_geometry_contract import correspondence_schema
+        schema['properties']['spatial_correspondence'] = correspondence_schema(feature)
+        # Uncertain answers may ask for a new view without inventing a pose.
+        schema['allOf'] = [{'if': {'properties': {'decision': {'const': 'accepted_geometry'}}},
+            'then': {'required': ['spatial_correspondence']}}]
+    return schema
 
 
 def first_wave_schema(catalog):

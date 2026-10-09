@@ -1,6 +1,6 @@
 # Photo search: concrete target methods
 
-Target dated 2026-10-08. The [complete unified brief](prompts/street-story-unified-photo-search-20261008.md)
+Target dated 2026-10-08, amended 2026-10-09 after the failed canaries. The [complete unified brief](prompts/street-story-unified-photo-search-20261008.md)
 is authoritative. This document makes the method boundaries and acquisition steps
 explicit; it is not a claim that the complete product has passed acceptance.
 
@@ -18,6 +18,15 @@ metadata and direct OSM Wiki links may arrive in parallel. Reverse geocoding is
 not a prerequisite for the map. The model receives the actual oriented SOURCE and
 readable neutral map, with exact IDs and compact geometry. No paid observation
 must precede a mandatory planner and judge chain.
+
+Present one row per physical body with neutral label, contour/side pointers,
+boundary distance, angular span, actual own/verified entrance addresses and
+unknowns. Full OSM geometry remains durable; distant telephoto targets remain
+reachable. Separate postal entrance numbers and literal join provenance must
+not require the model to manually join several tables or imply one postal address.
+Whole provider input includes the system instructions and schema. Text discovery
+gets its own small schema and cannot accept image evidence; Native and Live check
+their complete addressed inputs against their existing byte envelopes before sending.
 
 | Method | Evidence the model must actually receive | Sufficient result | Subsequent work |
 |---|---|---|---|
@@ -42,6 +51,10 @@ a required step after sufficient geometry. The target route is:
 1. Derive a literal city/street/address, named hypothesis or candidate area from
    actual owner/OSM/SOURCE evidence. Preserve the original spelling and physical
    entrance/footprint binding. No audit address or known `sid` enters runtime.
+   Prefer the nominated body's own address or its verified entrance membership.
+   Reverse-geocoded camera road is optional context and cannot nominate its
+   street card as the subject. Distinct entrance numbers require an exact entry;
+   mixed or partly unaddressed preparation scopes stay unresolved until nomination.
 2. Choose one appropriate discovery route: complete Windows-1251 GET form at
    `sight/database.php` (`text_np`, `text_adr`, `text_n` and all observed defaults)
    **or** POST `new_coords=lat,lon` at `sight/map_coord.php`. A coordinate lookup
@@ -91,6 +104,10 @@ one joint SOURCE + context decision and at most one meaningful replanning, rathe
 than add mandatory observation, catalogue-selection, geometry and text judges.
 Catalog metadata and selected-body acquisition must be arranged within that
 operation budget; simply adding a third mandatory judge is not the target.
+Ready SOURCE/MAP does not wait for a cold street catalogue. An owned optional
+read may complete during the joint operation; its source cache and scoped receipt
+remain available to the existing continuation. Late metadata does not mutate an
+already addressed request. Remaining owned work is drained on operation exit.
 
 Fill free worker slots as results complete under existing resource admission.
 The SOURCE/MAP joint uses the already configured tertiary model from the

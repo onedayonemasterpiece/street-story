@@ -32,6 +32,18 @@ def geometry_setup(tmp_path):
 def geometry_decision():
     return {'decision': 'accepted_geometry', 'candidate_id': 'osm:way:2',
         'candidate_label': 1,
+        'spatial_correspondence': {'pattern_kind': 'corner',
+            'source_pattern': 'Two adjacent sides of the main volume form a visible return; the next body lies farther right.',
+            'pitch_basis': 'Low upward view; vertical pitch is unknown and is separate from horizontal yaw.',
+            'coverage_basis': 'Both received bodies and the street approach were examined; the next body has a different return position.',
+            'candidate_ids': ['osm:way:2'],
+            'pose': {'east_m': 0, 'north_m': 0, 'heading_degrees': 55},
+            'front_segments': [{'first': {'candidate_id': 'osm:way:2', 'kind': 'segment', 'ring_index': 0, 'segment_index': 0},
+                'second': {'candidate_id': 'osm:way:2', 'kind': 'segment', 'ring_index': 0, 'segment_index': 1}}],
+            'street_axis': None,
+            'uncertainty_scenarios': [{'pose': {'east_m': -2, 'north_m': -2, 'heading_degrees': 60},
+                'assumption': 'Explicit two-metre position and five-degree yaw perturbation, not EXIF accuracy.',
+                'source_pattern_preserved': True}]},
         'scope': 'Main physical footprint; neighboring body remains scene context.',
         'decisive_relations': [{
             'source_observation': 'Main facade faces the approach and the next volume is behind its right return.',
@@ -271,7 +283,7 @@ async def test_text_fallback_cannot_claim_geometry_without_actual_joint_images(t
         return {'result': payload(geometry_decision())}
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=fallback)
-    with pytest.raises(PermanentProviderError, match='identity_geometry_proof_invalid'):
+    with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
         await identity_discovery.prepare_search_plan(service, story, '', active)
     assert '_identity_geometry_result' not in story
     assert not service._identity_snapshot(story['id'])[1].get('identity_article_discovery', {}).get('search_plan')

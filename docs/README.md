@@ -2,7 +2,10 @@
 
 The current photo → physical object → reviewed facts target is defined by the
 [unified brief](prompts/street-story-unified-photo-search-20261008.md), supplied by
-the owner at commit `68a34bab230d0ae2d537aac3be6d82ee5123ee4b`. It supersedes
+the owner at commit `68a34bab230d0ae2d537aac3be6d82ee5123ee4b`, amended by the
+owner's complete 9 October attachments after the failed canaries at `3a568a7`.
+The [next repair step](prompts/street-story-product-unblock-20261009.md) sets
+execution order; the unified brief sets method and acceptance requirements. It supersedes
 earlier search-method and acceptance instructions. The concise operational scheme
 is [Photo search methods](photo-search-methods.md); it does not change that brief.
 The eleven critical requirements in `.devcoveer/requirements.json` remain binding.

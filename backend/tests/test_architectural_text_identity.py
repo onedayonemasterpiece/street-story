@@ -35,7 +35,8 @@ def text_inputs(*, candidate_id='osm:way:7', photo='a'*64, generation=2, revisio
             'physical_binding_resolved': True}],
         'correspondences': [{'article_id': article['article_id'], 'source_quote': TEXT.split('. ')[0] + '.',
             'source_observation': 'The central bay has three window axes and a semicircular upper cornice.',
-            'status': 'stable_match', 'reason': 'The relations among these stable elements agree.'}],
+            'status': 'stable_match', 'feature_kind': 'composition',
+            'reason': 'The relations among these stable elements agree.'}],
         'material_alternatives': [], 'material_alternatives_resolved': True,
         'unresolved_contradictions': [], 'limitations': ['Entrance is cropped; paint is mutable.']}
     return story, observed['candidates'], decision, receipt

@@ -215,7 +215,7 @@ def _geometry_binding_issues(decision, manifest):
         return {}
     from jsonschema import Draft202012Validator
     from .identity_source_selection import geometry_decision_schema
-    if not Draft202012Validator(geometry_decision_schema([])).is_valid(decision):
+    if not Draft202012Validator(geometry_decision_schema([], structured='spatial_correspondence' in decision)).is_valid(decision):
         return {}  # Malformed JSON structure is handled by the original validator.
     table = manifest.get('objects') or {}
     rows = [dict(zip(table.get('columns') or [], row)) for row in table.get('rows') or []]
@@ -243,6 +243,25 @@ def _geometry_binding_issues(decision, manifest):
 
 
 async def suggest(service, story, transcript, candidates):
+    """Own optional preparation until this operation ends, without a cold barrier."""
+    try:
+        return await _suggest(service, story, transcript, candidates)
+    finally:
+        task = story.pop('_identity_regional_catalogue_task', None)
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            # Completed HTTP bytes are already in the ordinary source cache.
+            # Keep their scoped receipt in the existing durable plan, without
+            # changing the frozen inputs of an already addressed model call.
+            catalogue = story.get('_identity_regional_catalogue') or {}
+            plan = story.get('_identity_search_plan_payload')
+            if isinstance(plan, dict) and catalogue:
+                plan['regional_catalogue'] = catalogue
+
+
+async def _suggest(service, story, transcript, candidates):
     from google.genai import types
     from .identity_plan_diagnostics import joint_followup_marker, joint_operation_marker, provider_outcome
     addressed_followup = joint_followup_marker(service, story)
@@ -338,15 +357,12 @@ async def suggest(service, story, transcript, candidates):
     catalogue_task = asyncio.create_task(prepare_regional_catalogue(service, story, candidates,
         allow_network=allow_catalogue_network),
         name='street-story-regional-catalogue')
-    try:
-        source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
-        from .identity_scene import planner_scene
-        scene = await planner_scene(service, story, candidates)
-        regional_catalogue = await catalogue_task
-    finally:
-        if not catalogue_task.done():
-            catalogue_task.cancel()
-        await asyncio.gather(catalogue_task, return_exceptions=True)
+    story['_identity_regional_catalogue_task'] = catalogue_task
+    source_mime, source_bytes = await asyncio.to_thread(normalize_reference, source_bytes)
+    from .identity_scene import planner_scene
+    scene = await planner_scene(service, story, candidates)
+    regional_catalogue = (catalogue_task.result() if catalogue_task.done()
+        and not catalogue_task.cancelled() and catalogue_task.exception() is None else {})
     model_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     import io
     from PIL import Image
@@ -359,12 +375,24 @@ async def suggest(service, story, transcript, candidates):
         table = scene_manifest['objects']
         index = table['columns'].index('candidate_id')
         scene_ids = [row[index] for row in table['rows']]
-        schema['properties']['accepted_geometry'] = geometry_decision_schema(scene_ids)
+        schema['properties']['accepted_geometry'] = geometry_decision_schema(scene_ids, structured=True)
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
+    from .identity_model_context import physical_decision_context
+    physical_context = physical_decision_context(story, candidates, scene['manifest']) if scene else None
+    model_scene = scene_manifest
+    if scene:
+        # Actual full label/primitive provenance stays in the frozen receipt.
+        # The decision receives physical bodies once, with their address joins,
+        # rather than point/occupant tables and 334 independent search rows.
+        model_scene = {key: value for key, value in scene_manifest.items()
+            if key not in {'objects', 'physical_geometry', 'point_geometry', 'geometry_join'}}
+        model_scene['objects'] = {'columns': ['label', 'candidate_id'],
+            'rows': [[row[0], row[1]] for row in physical_context['rows']]}
+        model_scene['physical_bodies'] = physical_context
     packet = {'region_hint': region_hint(story),
                     'regional_catalogue': catalogue_model_context(regional_catalogue),
-                    'map_scene': scene_manifest,
+                    'map_scene': model_scene,
                     'wikipedia_metadata': wikipedia_metadata_context(wiki_pages),
                     'owner_hint': story.get('_identity_owner_hint') or {},
                     'regional_source_profile': regional_source_profile(story, candidates),
@@ -373,15 +401,22 @@ async def suggest(service, story, transcript, candidates):
                             for item in first_wave['options'].values()],
                         'scope_policy': 'Empty group_key is mapped occupant search context, never distinct physical coverage.',
                         'required_grounded_count': first_wave['required_grounded_count']},
-                    'location_search_context': model_identity_context(story, candidates, scene_available=bool(scene)),
+                    'location_search_context': ({'policy': 'Literal subject addresses are inline in physical_bodies; '
+                        'reverse geocoding describes the camera/search context, not the photographed body.'}
+                        if scene else model_identity_context(story, candidates)),
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
                     'author_context': transcript[:1500]}
+    if scene:
+        packet.pop('first_wave_subjects')
+    # The response may name any neutral label in the full MAP, including roads
+    # and distant bodies. Resolve against that exact frozen dictionary, even
+    # when its context row was unnecessary in the compact presentation.
     from .identity_source_selection import compact_planner_packet
     plain_packet = packet
-    packet_bytes = len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode())
-    if scene and packet_bytes > 48_000:
+    if scene:
         packet = compact_planner_packet(packet)
+    resolution_packet = {**packet, 'map_scene': scene_manifest} if scene else packet
     prompt = (
         'Три равноправных identity methods: geometry, architectural_text, visual_reference. '
         'Внешнее изображение не обязательно после достаточной геометрии/архитектурного текста. '
@@ -409,6 +444,17 @@ async def suggest(service, story, transcript, candidates):
         'В одном решении можно принять physical identity по достаточной '
         'SOURCE+MAP geometry без внешнего REF/второго judge либо оставить uncertain. '
         'accepted_geometry — реальные различающие SOURCE/map связи, pose/coverage limits '
+        'и spatial_correspondence: corner (две примыкающие стороны), frontage_sequence '
+        '(стороны разных тел с отступом/порядком) либо street_termination (ось улицы и её '
+        'первое пересечение с контуром). Назови actual segment references и численный '
+        'горизонтальный heading_degrees отдельно от pitch_basis; east_m/north_m — '
+        'сценарий смещения, не восстановленные координаты. uncertainty_scenarios должны '
+        'изменять положение/yaw и проверять сохранение SOURCE pattern; детализация crop '
+        'не является чувствительностью к исходным данным. Host вычисляет реальные '
+        'отношения этих примитивов. generic contour-corresponds недостаточен; coverage_basis '
+        'объясняет проверку показанного physical context, rejected_alternatives — реальные '
+        'существенные альтернативы, а не все здания patch. При недостатке — uncertain и '
+        'одно полезное действие без выдуманного сертификата. '
         'и отвергнутые существенные альтернативы. Один прямоугольник/расстояние/имя/score '
         'или отсутствие конкурента в top-k недостаточны. Рассмотри весь полученный пул. '
         'Правее в кадре определяется относительным азимутом/yaw, не востоком карты. '
@@ -453,7 +499,7 @@ async def suggest(service, story, transcript, candidates):
         # Shorten transport excerpts only; every page/ID/coordinate/title and
         # the full acquired metadata remain available in durable state.
         packet = {**plain_packet, 'wikipedia_metadata': wikipedia_metadata_context(wiki_pages, intro_limit=30)}
-        if scene and packet_bytes > 48_000:
+        if scene:
             packet = compact_planner_packet(packet)
         prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
             packet, ensure_ascii=False, separators=(',', ':'))
@@ -462,9 +508,10 @@ async def suggest(service, story, transcript, candidates):
     if scene:
         original_table = scene['manifest']['objects']
         original_columns = original_table['columns']
+        physical_ids = {row[1] for row in physical_context['rows']}
         for row in original_table['rows']:
             item = dict(zip(original_columns, row))
-            if item.get('name'):
+            if item.get('name') and item.get('candidate_id') in physical_ids:
                 literal_names.append([item['label'], item['candidate_id'], item['name'],
                     item.get('object_kind'), item.get('address')])
         response_contract['properties']['accepted_geometry']['required'].append('candidate_label')
@@ -498,6 +545,15 @@ async def suggest(service, story, transcript, candidates):
             'and explain their actual MAP correspondence and camera pose; naming the object alone is insufficient. '
             'If this spatial correspondence is not established, return uncertain and the best next action.'),
     )
+    record_identity_event(service, story['id'], 'identity_joint_input_prepared', {
+        'scope': 'product_system_instruction_plus_prompt_utf8_v1',
+        'text_utf8_bytes': len(prompt.encode()) + len(config.system_instruction.encode()),
+        'prompt_utf8_bytes': len(prompt.encode()),
+        'system_utf8_bytes': len(config.system_instruction.encode()),
+        'physical_body_rows': len(physical_context['rows']) if physical_context else 0,
+        'received_map_objects': len((scene_manifest or {}).get('objects', {}).get('rows') or []),
+        'image_count': 2 if scene else 1,
+        'source_image_bytes': len(source_bytes), 'map_image_bytes': len(scene['bytes']) if scene else 0})
     gemini = service.providers.gemini
     initial_schema = copy.deepcopy(schema)
     from .service import canonical
@@ -527,14 +583,20 @@ async def suggest(service, story, transcript, candidates):
                 return {'joint_stage': stage, 'operation_binding': marker['binding']}
         return {}
     def joint_source_map_receipt():
+        from .identity_geometry_contract import CONTRACT
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
             'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene_manifest,
             'source_preparation': source_preparation, 'map_identity_labels_required': True,
+            'geometry_contract': CONTRACT,
+            'physical_body_candidate_ids': [row[1] for row in physical_context['rows']],
+            'material_alternative_candidate_ids': ((source_text_receipt.get('conditional_initial_decision') or {})
+                .get('candidate_ids') or []),
             'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
             if scene else {})
     def accept(payload, *, original_schema_readback=False, original_schema=None,
-            raw_json=None, raw_json_available=None, provider_response_id=None, validate_only=False):
+            raw_json=None, raw_json_available=None, provider_response_id=None, validate_only=False,
+            check_received_pointers=False):
         from .identity_plan_diagnostics import retain_closed_invalid, validation_details
         validation_schema = original_schema if original_schema is not None else (legacy_schema if original_schema_readback else schema)
         errors, errors_truncated = validation_details(validation_schema, payload)
@@ -555,6 +617,12 @@ async def suggest(service, story, transcript, candidates):
             raise PermanentProviderError(code)
         if errors:
             reject('identity_search_plan_malformed')
+        if check_received_pointers:
+            from jsonschema import Draft202012Validator
+            # The small text-role transport uses bounded strings instead of
+            # repeating every ID enum. Exact host membership still applies.
+            if any(error.validator == 'enum' for error in Draft202012Validator(schema).iter_errors(payload)):
+                reject('identity_search_plan_unreceived_pointer')
         action = (payload.get('accepted_geometry') or {}).get('next_action') or {}
         if action and (not scene or any(cid not in scene_ids for cid in action.get('target_candidate_ids') or [])):
             reject('identity_geometry_action_unreceived_target')
@@ -744,7 +812,7 @@ async def suggest(service, story, transcript, candidates):
             from . import identity_source_selection
             resolver = getattr(identity_source_selection, 'resolve_identity_response_ids', None)
             if callable(resolver):
-                decoded, resolution = resolver(decoded, packet)
+                decoded, resolution = resolver(decoded, resolution_packet)
                 if resolution:
                     resolution = {**resolution, 'joint_stage': 'followup' if joint_followup_used else 'initial',
                         'provider_id': 'google', 'raw_json_sha256': hashlib.sha256(raw.encode()).hexdigest(),
@@ -843,17 +911,19 @@ async def suggest(service, story, transcript, candidates):
                 'If geometry is insufficient, return uncertain with one useful action. '
                 'Do not raise confidence to satisfy this check.')
             if text_articles:
-                from .identity_proof import architectural_text_decision_schema
+                from .identity_proof import architectural_text_decision_schema, TEXT_CONTRACT
                 conditional_prior = _conditional_text_prior(payload, observed_ids)
                 source_text_receipt = {'source_photo_sha256': story.get('photo_sha256'),
                     'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
                     'source_preparation': source_preparation,
-                    'source_image_input': True, 'articles': text_articles, 'lookup': lookup}
+                    'source_image_input': True, 'articles': text_articles, 'lookup': lookup,
+                    'text_contract': TEXT_CONTRACT}
                 if conditional_prior:
                     source_text_receipt['conditional_initial_decision'] = conditional_prior
                 schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
                     observed_ids, [item['article_id'] for item in text_articles],
-                    material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8)
+                    material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8,
+                    structural=True)
                 followup_contract = identity_transport_schema(schema, map_label_references=bool(scene))
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
                     system_instruction=config.system_instruction + '\nFollow-up contract: ' + json.dumps(
@@ -862,6 +932,8 @@ async def suggest(service, story, transcript, candidates):
                     + json.dumps(text_articles, ensure_ascii=False, separators=(',', ':'))
                     + '\nCompare actual SOURCE with distinguishing architectural combinations. '
                     'Classify stable_match/not_observable/structural_contradiction/historical_or_mutable_difference; '
+                    'feature_kind identifies the actual individual structure (axes/bay/composition/levels/roof/openings/outline), '
+                    'not a count of matching words. Color/finish, generic style and history alone cannot establish identity. '
                     'a cut-off entrance or repainted facade is not a structural contradiction. '
                     'accepted_architectural_text requires resolved physical binding/scope, material alternatives '
                     'and no unexplained decisive contradiction. Generic history, neighbor text or missing neighbor '
@@ -1024,16 +1096,27 @@ async def suggest(service, story, transcript, candidates):
         # identity. Give it the complete literal anchor/catalog tables without
         # repeating the image's measured scene packet. Geometry stays durable
         # for the joint worker; this route only selects searches/pages.
+        from .research_adapter import identity_text_discovery_schema
+        role_schema = identity_text_discovery_schema(schema)
         text_packet = {**plain_packet, 'map_scene': None}
-        if len(json.dumps(text_packet, ensure_ascii=False, separators=(',', ':'))) > 48_000:
-            text_packet = compact_planner_packet(text_packet)
+        if physical_context:
+            text_packet['location_search_context'] = {'physical_subjects': {
+                'columns': ['candidate_id', 'literal_address_entries', 'observed_name'],
+                'rows': [[row[1], row[8], row[9]] for row in physical_context['rows']],
+                'address_columns': physical_context['address_columns'],
+                'policy': 'Literal received subjects and verified entrance membership; no SOURCE pixels '
+                    'are provided to this role. Choose queries/pages, never accept physical identity.'}}
+        # Compress repeated literal streets/provenance before the adapter adds
+        # its role schema and checks the complete addressed input envelope.
+        text_packet = compact_planner_packet(text_packet)
         text_prompt = identity_text_fallback_prompt(text_packet)
-        result = await planner(story, text_prompt, schema)
+        result = await planner(story, text_prompt, role_schema)
         story['_identity_search_plan_route'] = 'qualified_text_fallback'
         record_identity_event(service, story['id'], 'identity_search_plan_fallback',
             {'cause': getattr(cause, 'code', type(cause).__name__)})
         return accept(result.get('result') or {}, original_schema_readback=result.get('original_schema_readback') is True,
-            original_schema=result.get('original_schema'),
+            original_schema=result.get('original_schema') or role_schema,
+            check_received_pointers=not original_available,
             provider_response_id=(result.get('receipt') or {}).get('provider_response_id'))
     researcher = getattr(service.providers, 'research', None)
     readback = getattr(researcher, 'has_identity_search_plan_readback', None)

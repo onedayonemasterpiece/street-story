@@ -4,6 +4,73 @@ from __future__ import annotations
 from .identity_proof import accepted_identity, physical_scope
 
 
+def physical_decision_context(story, candidates, manifest):
+    """One literal row per received body; entrance addresses stay beside it.
+
+    This is presentation of the received pool, never a nearest shortlist or a
+    new address join. The broad MAP and full frozen label dictionary stay owned
+    by the operation; geometry primitives remain reachable by their pointers.
+    """
+    from .identity_scene import scene_entries
+    from .identity_source_selection import observed_address_context
+    from .identity_map_context import osm_geometry_context
+    from .identity_spatial_features import _local, _point
+    import math
+    entries = scene_entries(story, candidates)
+    addresses = observed_address_context(story, entries)
+    memberships = {item['physical_candidate_id']: item['address_entries']
+        for item in addresses['building_address_memberships']}
+    table = manifest.get('objects') or {}
+    rows = {row.get('candidate_id'): row for row in (
+        dict(zip(table.get('columns') or [], values)) for values in table.get('rows') or [])}
+    result = []
+    origin = _point(manifest.get('anchor') or story)
+    for entry in entries:
+        cid = entry['candidate_id']
+        row = rows.get(cid, {})
+        tags = {**(entry.get('tags') or {}), **(entry.get('map_object') or {}).get('tags', {})}
+        if not (tags.get('building') not in {None, '', 'no'} or tags.get('building:part')):
+            continue
+        literal = []
+        own = entry.get('map_address') or {}
+        if own.get('street') and own.get('house_number'):
+            literal.append([cid, own.get('city'), own['street'], own['house_number'], 'osm.subject_address'])
+        for anchor in memberships.get(cid, []):
+            address = anchor['address']
+            literal.append([anchor['mapped_entry_id'], address.get('city'), address.get('street'),
+                address.get('house_number'), 'osm_closed_way_node_membership'])
+        sides = []
+        geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+        for ri, ring in enumerate(geometry.get('rings') or []):
+            points = [_point(point) for point in ring.get('points') or []]
+            if origin and all(point is not None for point in points):
+                for si, (a, b) in enumerate(zip(points, points[1:])):
+                    first, second = _local(a, origin), _local(b, origin)
+                    sides.append([ri, si, round(math.dist(first, second), 1),
+                        [round(value, 1) for value in first], [round(value, 1) for value in second]])
+        # A bounded primitive excerpt, never a building shortlist. Full rings
+        # remain in the frozen snapshot; the omitted count is explicit.
+        selected_sides = sorted(sides, key=lambda side: (-side[2], side[0], side[1]))[:4]
+        result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
+            row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
+            row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
+            tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
+            selected_sides, len(sides) - len(selected_sides)])
+    return {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
+        'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
+        'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
+        'observed_side_segments', 'omitted_side_count'],
+        'segment_columns': ['ring_index', 'segment_index', 'length_m', 'start_east_north_m', 'end_east_north_m'],
+        'rows': result, 'address_columns': ['entry_id', 'city', 'street', 'house_number', 'provenance'],
+        'received_body_count': len(result),
+        'policy': 'Every received physical body remains reachable, including far telephoto subjects. '
+            'Rows have neutral MAP labels, never relevance ranks. Entrance numbers remain distinct; '
+            'literal membership does not infer one postal address or one entrance. Null/empty geometry, '
+            'levels, city or addresses are unknown. A visible side is nominated by an actual segment; '
+            'no facade, camera yaw or obstruction is inferred from map north. Use map_detail with exact '
+            'labels for a needed contour/pose relation; the full pool is retained, no nearest-K exclusion.'}
+
+
 def compact_physical_identity(identity, *, photo_sha256=None, generation=None, control_revision=None):
     if not isinstance(identity, dict):
         return {}
