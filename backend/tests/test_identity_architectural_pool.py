@@ -88,7 +88,7 @@ def test_three_actual_articles_reach_one_contrastive_model_call_and_correct_thir
 def test_incomplete_contrast_and_wrong_article_quote_cannot_yield_identity():
     story,candidates,decision,receipt=_three_documents()
     packet=prepare_architectural_pool(story,candidates,receipt,candidate_ids=['osm:way:7'])
-    good=_closed_answer(decision,packet['article_ids'])
+    good=_closed_answer(decision,packet['article_ids'],packet)
     partial=copy.deepcopy(good)
     partial['article_comparisons'].pop()
     with pytest.raises(ValueError,match='model_architectural_pool_response_malformed'):
