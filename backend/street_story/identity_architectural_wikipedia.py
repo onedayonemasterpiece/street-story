@@ -125,8 +125,14 @@ class ArchitecturalWikipediaReader:
                     raw=None
             if raw is None:
                 receipt['status']='dispatch_intent'
+                async def same_publisher_resolver(host):
+                    # Reject external redirects before DNS/HTTP, not merely
+                    # after fetching content from an unrelated publisher.
+                    if host != domain:
+                        raise ValueError('wikipedia_cross_publisher_redirect')
+                    return await self.resolver(host)
                 final,mime,raw=await fetch_public(
-                    self.http,url,_MAX_RAW_BYTES,resolver=self.resolver)
+                    self.http,url,_MAX_RAW_BYTES,resolver=same_publisher_resolver)
                 if mime not in {'application/json','text/json'}:
                     raise ValueError('wikipedia_unexpected_mime')
                 if urlsplit(final).hostname!=domain:
