@@ -84,6 +84,9 @@ def physical_decision_context(story, candidates, manifest):
                 address.get('house_number'), 'osm_closed_way_node_membership'])
         sides = []
         geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+        closed_rings = {ri: len(ring['points'])-2 for ri, ring in
+            enumerate(geometry.get('rings') or []) if ring.get('closed') is True
+            and len(ring.get('points') or []) >= 4}
         for ri, ring in enumerate(geometry.get('rings') or []):
             points = [_point(point) for point in ring.get('points') or []]
             if origin and all(point is not None for point in points):
@@ -100,8 +103,10 @@ def physical_decision_context(story, candidates, manifest):
         selected_sides = (sides if cid in expanded_ids else
             sorted(sides, key=lambda side: (-side[2], side[0], side[1]))[:4] if in_window else [])
         if cid not in expanded_ids and selected_sides:
-            selected_sides = preserve_one_connected_pair(sides, selected_sides)
-        connected_pairs, omitted_connections = observed_connected_pairs(selected_sides)
+            selected_sides = preserve_one_connected_pair(sides, selected_sides,
+                closed_rings=closed_rings)
+        connected_pairs, omitted_connections = observed_connected_pairs(selected_sides,
+            closed_rings=closed_rings)
         result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
             row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
