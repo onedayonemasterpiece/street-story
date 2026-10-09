@@ -33,11 +33,14 @@ def visual_spatial_choice_schema():
         'contrasted_alternatives':{'type':'array','maxItems':5,'items':{
             'type':'object','properties':{
                 'label':{'type':'integer'},
+                'labels':{'type':'array','minItems':1,'maxItems':48,
+                    'items':{'type':'integer'}},
                 'source_vs_map_difference':string,
                 'reason':string,
+                'why_not':string,
                 'observed_option_ids':{'type':'array',
                     'items':{'type':'string','maxLength':32},'maxItems':3}},
-            'required':['label']}},
+            'anyOf':[{'required':['label']},{'required':['labels']}]}},
         # Model chooses scene-sized active physical hypotheses; this is not a
         # deterministic nearest-K ranking or an acceptance certificate.
         'active_hypotheses':{'type':'array','maxItems':48,'items':{
@@ -143,28 +146,29 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
                 opt.get('camera_side_advisory') or []):
             warnings.append('camera_anchor_uncertain_for_selected_corner')
     for alternative in alternatives:
-        other = alternative['label']
-        if other==label or other not in labels:
-            # Optional alternative prose may accidentally cite the already
-            # selected primary body (real 132 did this). It neither changes
-            # the nominated physical ID nor supplies competing evidence.
-            # Keep a warning; don't erase otherwise usable SOURCE findings.
-            warnings.append('optional_contrast_not_distinct_received_body')
-            continue
-        mapped=[]
-        for oid in alternative.get('observed_option_ids') or []:
-            opt = options.get(oid)
-            if opt is None or not (
-                    opt.get('body_label')==other
-                    or opt.get('kind')=='physical_pair'
-                       and other in (opt.get('body_labels') or [])):
-                warnings.append('optional_contrast_option_not_in_received_map')
-            else:
-                mapped.append(oid)
-        compared.append({'label':other,'candidate_id':labels[other],
-            'option_ids':mapped,
-            'model_visual_difference':alternative.get('source_vs_map_difference')
-              or alternative.get('reason') or ''})
+        # Genuine JSON-mode vision outputs may describe a group of alternatives
+        # with literal "labels" and "why_not". This expands only explicitly
+        # provided map references; never guesses a competitor from prose.
+        rivals=(alternative.get('labels') if isinstance(alternative.get('labels'),list)
+                else [alternative.get('label')])
+        for other in dict.fromkeys(rivals):
+            if other==label or other not in labels:
+                warnings.append('optional_contrast_not_distinct_received_body')
+                continue
+            mapped=[]
+            for oid in alternative.get('observed_option_ids') or []:
+                opt = options.get(oid)
+                if opt is None or not (
+                        opt.get('body_label')==other
+                        or opt.get('kind')=='physical_pair'
+                           and other in (opt.get('body_labels') or [])):
+                    warnings.append('optional_contrast_option_not_in_received_map')
+                else:
+                    mapped.append(oid)
+            compared.append({'label':other,'candidate_id':labels[other],
+                'option_ids':mapped,
+                'model_visual_difference':alternative.get('source_vs_map_difference')
+                  or alternative.get('reason') or alternative.get('why_not') or ''})
     requested = [label_value for label_value in detail_labels if label_value in labels]
     if len(requested)!=len(detail_labels):
         warnings.append('unreceived_detail_request_skipped')
