@@ -26,10 +26,13 @@ def one(cid, model):
     packet_file=case/'spatial-options-v3-llm-first.json'
     packet=_json(packet_file) if packet_file.exists() else {}
     initial=packet.get('physical_body_count') or meta.get('physical_buildings') or 0
-    model_dirs=([case/('inference-'+model+'-bearing-v2'),
+    model_dirs=([case/('inference-'+model+'-bearing-v2-json-mode'),
+                 case/('inference-'+model+'-bearing-v2-structured'),
+                 case/('inference-'+model+'-bearing-v2'),
                  case/('inference-'+model)] if model!='all'
         else sorted(case.glob('inference-*'),
-            key=lambda p:(0 if p.name.endswith('-bearing-v2') else 1,p.name)))
+            key=lambda p:(0 if p.name.endswith('-bearing-v2-json-mode') else
+                          1 if '-bearing-v2' in p.name else 2,p.name)))
     model_files=[folder/'result.json' for folder in model_dirs
         if (folder/'result.json').is_file()]
     active=[]
@@ -41,7 +44,10 @@ def one(cid, model):
     status=('missing_geopoint' if not meta.get('g_applicable') else 'not_yet_sent')
     if model_files:
         chosen=model_files[0]
-        used_model=chosen.parent.name.removeprefix('inference-').removesuffix('-bearing-v2')
+        used_model=(chosen.parent.name.removeprefix('inference-')
+            .removesuffix('-bearing-v2-json-mode')
+            .removesuffix('-bearing-v2-structured')
+            .removesuffix('-bearing-v2'))
         original=_json(chosen)
         replay=chosen.parent/'result-host-replay-v2.json'
         data=_json(replay) if replay.is_file() else original
@@ -68,7 +74,7 @@ def one(cid, model):
         'accepted_id':accepted_id,'model_calls':calls,'total_method_ms':latency,
         'reason':reason,'model':used_model,
         'run_revision':('bearing-v2' if model_files and
-            model_files[0].parent.name.endswith('-bearing-v2') else 'prior_or_unsent')}
+            '-bearing-v2' in model_files[0].parent.name else 'prior_or_unsent')}
 
 
 def main():
