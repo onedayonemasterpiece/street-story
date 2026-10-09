@@ -7,7 +7,8 @@ import pytest
 
 from street_story import prussia39
 from street_story.identity_architectural_comparison import (
-    combine_architectural_decision, prepare_architectural_comparison, publisher_address_relation)
+    combine_architectural_decision, prepare_architectural_comparison, publisher_address_relation,
+    source_subject_competition_guard)
 from street_story.identity_architectural_context import (
     _subject_addresses, acquire_regional_text, literal_address_card_selection, regional_preparation_query)
 from street_story.identity_source_selection import observed_address_context
@@ -282,6 +283,8 @@ async def test_observed_entrance_city_allows_architecture_lookup_without_camera_
             calls.append(('body', url))
             return {'status':'completed', 'article_id':'prussia39:sid:99',
                 'canonical_url':url, 'raw_body_sha256_verified':True, 'text':text,
+                'address_text':card['address_text'],
+                'address_provenance':'publisher_article_metadata_table',
                 'raw_content_sha256':hashlib.sha256(text.encode('cp1251')).hexdigest()}
 
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
@@ -291,6 +294,8 @@ async def test_observed_entrance_city_allows_architecture_lookup_without_camera_
                      ('body', card['canonical_url'])]
     assert articles[0]['card_variants'][0]['address_text'] == card['address_text']
     assert articles[0]['physical_binding_claimed'] is False
+    assert articles[0]['address_provenance'] == 'publisher_article_metadata_table'
+    assert articles[0]['address'] == card['address_text']
     assert receipt['query_scope']['target_identity_established'] is False
 
 
@@ -447,3 +452,54 @@ def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantic
         combine_architectural_decision({}, {'type':'building', **decision}, packet['schema'])
     with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
         combine_architectural_decision({}, {'type':'object','made_up_identity':True, **decision}, packet['schema'])
+
+
+def test_closer_map_contour_is_only_an_observed_competitor_not_a_T_veto():
+    def body(cid, meters):
+        return {'candidate_id':cid,'identity_eligible':True,
+            'map_object':{'tags':{'building':'yes'}},
+            'boundary_distance_m':meters}
+    target=body('osm:way:101',50.1)
+    nearer=body('osm:way:102',43.6)
+    monument={'candidate_id':'osm:node:1','identity_eligible':True,
+        'map_object':{'tags':{'historic':'memorial'}},'boundary_distance_m':1.0}
+    decision={'decision':'accepted_architectural_text','candidate_id':target['candidate_id']}
+    result=source_subject_competition_guard(
+        {'_camera_position_verified':True},[target,nearer,monument],decision)
+    assert result['supported'] is True and result['applicable'] is False
+    assert result['reason']=='proximity_is_not_SOURCE_subject_evidence'
+    assert result['potential_competitor_count']==1
+    assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
+    assert result['potential_competitors'][0]['proximity_not_visibility'] is True
+
+
+def test_unknown_GPS_and_unmeasured_distances_do_not_block_architectural_T():
+    body=lambda cid,meters:{'candidate_id':cid,'identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},
+        **({'boundary_distance_m':meters} if meters is not None else {})}
+    decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
+        'material_alternatives_resolved':True}
+    for camera_verified in (True,False):
+        for distances in ((22.0,18.5),(18.5,22.0),(None,18.5)):
+            a,b=body('osm:way:7',distances[0]),body('osm:way:8',distances[1])
+            result=source_subject_competition_guard(
+                {'_camera_position_verified':camera_verified},[a,b],decision)
+            assert result['supported'] is True
+            assert result['applicable'] is False
+            assert result['potential_competitor_count']==1
+
+
+def test_model_self_rejection_never_turns_distance_into_physical_proof():
+    target={'candidate_id':'osm:way:7','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':40.0}
+    nearer={'candidate_id':'osm:way:8','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':25.0}
+    for reason in ('Clearly differs in gable geometry',''):
+        decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
+            'material_alternatives':[{'candidate_id':'osm:way:8','reason':reason}]}
+        result=source_subject_competition_guard(
+            {'_camera_position_verified':True},[target,nearer],decision)
+        assert result['supported'] is True
+        assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
+        # Whether the model's architecture-based alternative rejection is valid
+        # remains a question for LLM semantics + strict source quote proof.

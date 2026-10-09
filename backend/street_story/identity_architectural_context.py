@@ -195,6 +195,10 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
         receipt.update(status='completed' if receipt.get('results') else 'not_sent',
             error_code=exc.reason, inventory_complete=False)
     receipt['preparation_started'] = started
+    if receipt.get('results'):
+        receipt['physical_address_links'] = catalogue_physical_address_links(
+            story, candidates, receipt['results'])
+        receipt['physical_prefetch_plan'] = bounded_physically_linked_article_ids(receipt)
     story['_identity_regional_catalogue'] = receipt
     record_identity_event(service, story['id'], 'identity_regional_preparation_completed', {
         'query_key':query_key, 'status':receipt['status'], 'received_rows':len(receipt.get('results') or []),
@@ -203,16 +207,103 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
     return receipt
 
 
+
+def catalogue_physical_address_links(story, candidates, received_cards):
+    """Expose exact *observed* physical address associations before T selection.
+
+    The initial SOURCE model otherwise chooses up to two article IDs by title
+    alone. This metadata-only step combines received publisher address rows
+    with the existing verified footprint/entrance membership; it never reads
+    new articles, scores visual similarity or assigns the photographed body.
+
+    It is deliberately lossless across multiple displayed address variants
+    of a single publisher article and across distinct physical buildings
+    sharing one address. A complex is not silently collapsed into one wing.
+    """
+    from .identity_source_selection import observed_address_context
+    from .identity_architectural_comparison import publisher_address_relation
+    if not isinstance(received_cards, list) or not received_cards:
+        return {}
+    observed = [*candidates, *(story.get('_identity_observed_candidates') or [])]
+    by_id = {item.get('candidate_id'):item for item in observed
+        if isinstance(item, dict) and _physical_subject(item)}
+    address_context = observed_address_context(story, observed)
+    physical = []
+    for cid, candidate in by_id.items():
+        entries = _subject_addresses(address_context, candidate)
+        physical.append({'candidate_id':cid,'literal_address_entries':[
+            {'entry_id':row['mapped_entry_id'], 'address':row['address'],
+             'provenance':('osm_physical_own_address'
+                if row['mapped_entry_id'] == cid else 'osm_closed_way_node_membership')}
+            for row in entries]})
+    groups = {}
+    for card in received_cards:
+        if (not isinstance(card, dict) or not isinstance(card.get('article_id'), str)
+                or not isinstance(card.get('canonical_url'), str)):
+            continue
+        key = card['article_id']
+        group = groups.setdefault(key, {'article_id':key, 'url':card['canonical_url'],
+            'card_variants':[]})
+        if group['url'] == card['canonical_url']:
+            group['card_variants'].append(card)
+    relations = publisher_address_relation(list(groups.values()), physical)
+    return {row['article_id']: {
+        'publisher_modern_address_metadata': row['publisher_modern_address_metadata'],
+        'matched_observed_physical_subjects': [
+            {'candidate_id':link['candidate_id'],
+             'mapped_entry_ids':link['exact_literal_entry_ids'],
+             'verified_compound_entrance_ids':link[
+                 'publisher_full_group_covered_by_distinct_verified_entrances'],
+             'join_policy':link['link_kind'],
+             'identity_inferred':False}
+            for link in row['physical_links']
+            if (link['exact_literal_entry_ids']
+                or link['publisher_full_group_covered_by_distinct_verified_entrances'])],
+        'provenance':'received_literal_publisher_card_and_observed_OSM_membership',
+        'identity_inferred':False
+        } for row in relations}
+
+
+def bounded_physically_linked_article_ids(catalogue, *, max_articles=2):
+    """Admission-independent *source* shortlist, not guessed identity.
+
+    If multiple publisher articles are linked to candidate bodies, do not
+    select arbitrary first two. Signal explicit ambiguity to the SOURCE
+    model, which can choose the relevant article from the full received
+    catalogue. Two-or-fewer links are safe to prefetch concurrently with
+    other SOURCE preparation, once the existing page budget admits them.
+    """
+    rows = (catalogue or {}).get('results') or []
+    links = (catalogue or {}).get('physical_address_links') or {}
+    ids = list(dict.fromkeys(row['article_id'] for row in rows
+        if isinstance(row, dict) and isinstance(row.get('article_id'), str)
+        and (links.get(row['article_id']) or {}).get('matched_observed_physical_subjects')))
+    if not isinstance(max_articles, int) or isinstance(max_articles, bool) or max_articles < 1:
+        raise ValueError('invalid_architectural_article_prefetch_limit')
+    return {'candidate_article_ids':ids,
+        'prefetch_article_ids':ids if len(ids) <= max_articles else [],
+        'ambiguous_excess_article_count':max(0, len(ids)-max_articles),
+        'physical_identity_inferred':False,
+        'selection_policy':'Only publisher article-address to observed physical footprint links; '
+            'excess candidates require model discrimination, no first-two shortcut.'}
+
+
 def catalogue_model_context(catalogue):
     if not catalogue:
         return {}
     # Metadata only. An annotation is not a fetched/verified article body.
     context = {key:catalogue.get(key) for key in ('status','query_scope','total_count','received_row_count',
         'unique_article_count','inventory_complete','pagination_urls','limitation','error_code')}
+    physical_links = catalogue.get('physical_address_links') or {}
     context['results'] = [{key:row[key] for key in ('article_id','canonical_url','coordinates') if key in row}
         | {key:str(row.get(key) or '')[:limit] for key,limit in
             (('title',120),('address_text',240),('annotation',160))}
-        | {'metadata_excerpt':True} for row in catalogue.get('results') or []]
+        | {'metadata_excerpt':True,
+            'publisher_address_to_OSM_hypotheses':(
+                physical_links.get(row.get('article_id')) or {}).get(
+                    'matched_observed_physical_subjects', [])}
+        for row in catalogue.get('results') or []]
+    context['physical_prefetch_plan'] = catalogue.get('physical_prefetch_plan') or {}
     context['coverage_policy'] = ('Inventory completeness applies only to this literal query scope, not the MAP scene. '
         'One named card does not identify SOURCE or outrank an unnamed physical body. '
         'Camera reverse road is optional context, never subject address binding.')
@@ -588,6 +679,7 @@ async def acquire_regional_text(service, story, candidates, request):
             'text_sha256': hashlib.sha256(text.encode()).hexdigest(), 'text': text,
             'raw_body_sha256_verified': True, 'input_kind': 'acquired_article_text',
             'title': page.get('title') or '', 'address': page.get('address_text') or '',
+            'address_provenance': page.get('address_provenance') or '',
             'coordinates': page.get('coordinates'), 'fetched_at': page.get('fetched_at'),
             'cache_hit': page.get('cache_hit', False), 'lookup_candidate_ids': ids,
             'card_variants': metadata_by_url.get(page['canonical_url'], []),
