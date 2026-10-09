@@ -237,6 +237,49 @@ def validate_model_physical_links(inventory, model_links, decision):
         if not osm or osm['candidate_id'] != cid:
             return {'applicable':True,'supported':False,
                 'reason':'osm_ref_does_not_belong_to_nominated_physical_body'}
+        # This is MECHANICAL provenance sufficiency, not semantic address
+        # equality. A genuine publisher URL plus an unrelated genuine OSM
+        # body ID/door address does not establish any actual relationship!
+        # The LLM must cite independently observed postal metadata (its
+        # contents may be historical/translated/complex) and one actual OSM
+        # postal/old-address record, OR a literal provider reference carried
+        # on that exact OSM physical subject. Never compare "6" to "6A"
+        # or numerically interpret address ranges in this host check.
+        source_kind=pub.get('provenance')
+        osm_kind=osm.get('kind')
+        osm_tag=osm.get('tag')
+        source_postal=source_kind in {
+            'observed_publisher_article_metadata','received_publisher_catalogue_card'}
+        osm_postal=(osm_kind=='observed_OSM_postal_entry'
+            or osm_kind=='observed_OSM_tag' and osm_tag in {
+                'old_addr:housenumber'})
+        explicit_link=False
+        if (source_kind=='acquired_publisher_article_url'
+                and osm_kind=='observed_OSM_tag'):
+            source_url=pub.get('literal_value')
+            value=osm.get('literal_value')
+            if osm_tag=='website:prussia39':
+                from .prussia39 import canonical_article
+                try:
+                    explicit_link=canonical_article(value)[1]==canonical_article(source_url)[1]
+                except (TypeError,ValueError):
+                    explicit_link=False
+            elif osm_tag=='ref:prussia39':
+                from .prussia39 import canonical_article
+                try:
+                    explicit_link=str(canonical_article(source_url)[0])==str(value).strip()
+                except (TypeError,ValueError):
+                    explicit_link=False
+        if not (source_postal and osm_postal or explicit_link):
+            return {'applicable':True,'supported':False,
+                'reason':'no_substantive_publisher_to_OSM_physical_link_evidence',
+                'article_id':aid,'candidate_id':cid,
+                'publisher_provenance':source_kind,
+                'osm_provenance':osm.get('provenance'),
+                'policy':'Model must cite actual source postal metadata and observed '
+                    'OSM postal/old-address record, or directly observed matching '
+                    'OSM provider reference. Language/address equivalence remains '
+                    'the model’s decision, not a parser.'}
         if (link.get('subject_scope') != 'specific_photographed_OSM_body'
                 or link.get('relationship') in (None,'ambiguous_or_insufficient')
                 or not str(link.get('architectural_scope_explanation') or '').strip()):
@@ -249,7 +292,8 @@ def validate_model_physical_links(inventory, model_links, decision):
             'model_relationship':link['relationship'],
             'model_scope':link['subject_scope'],
             'model_architectural_scope_explanation':link['architectural_scope_explanation'],
-            'literal_address_judgment_was_semantic_not_host_inferred':True})
+            'literal_address_judgment_was_semantic_not_host_inferred':True,
+            'substantive_source_to_physical_evidence_recorded':True})
     return {'applicable':True,'supported':True,
         'reason':'model_physical_scope_grounded_in_real_source_and_OSM_pointers',
         'verified_bindings':verified,
