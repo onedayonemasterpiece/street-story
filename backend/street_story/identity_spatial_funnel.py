@@ -118,7 +118,8 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
     # Empty scene-sized selection means no reduction, never zero candidates.
     # This is a model outcome, not a geometric nearest-distance default.
     no_reduction=decision in {'unknown','no_reduction'} or not active_rows
-    if no_reduction:active_rows=[]
+    if no_reduction:
+        active_rows=[]
     entries={e.get('candidate_id'):e for e in observed_entries or []
              if isinstance(e,dict) and isinstance(e.get('candidate_id'),str)}
     active_set={row['label'] for row in active_rows}
