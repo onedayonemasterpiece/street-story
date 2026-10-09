@@ -149,3 +149,29 @@ def test_last_to_first_wrap_requires_original_closed_ring():
     confirmed = observed_connected_pairs(sides, closed_rings={0: 3})[0]
     assert [0, 3, 0] in [p[:3] for p in confirmed]
     assert [0, 1, 2] in [p[:3] for p in confirmed]
+
+
+def test_correct_corner_can_reject_a_building_behind_viewer_without_false_failure(tmp_path):
+    # The physical object in SOURCE must be ahead, but a comparison candidate
+    # may be BEHIND and thus legitimately ruled out. It should not have to
+    # pretend to be another visible facade just to pass the pose contract.
+    from test_identity_scene import building
+    from test_spatial_correspondence_contract import receipt_for
+    _service, story, active = geometry_setup(tmp_path)
+    story['_identity_map_snapshot']['observed_pool'].append(building(4, -50))
+    candidate = geometry_decision()
+    candidate['spatial_correspondence']['candidate_ids'].append('osm:way:4')
+    candidate['rejected_alternatives'].append({
+        'candidate_id':'osm:way:4',
+        'reason':'The mapped alternative lies behind the source viewing direction.'})
+    receipt = receipt_for(story, active)
+    receipt['physical_body_candidate_ids'].append('osm:way:4')
+    from street_story.identity_spatial_features import measure_spatial_relations
+    measured = measure_spatial_relations(story,active,['osm:way:2','osm:way:4'],
+        pose=candidate['spatial_correspondence']['pose'])
+    assert measured and abs(measured['objects'][0]['relative_bearing_degrees']) < 90
+    assert abs(measured['objects'][1]['relative_bearing_degrees']) >= 90
+    assert freeze_geometry_proof(story, candidate, receipt, active)
+    wrong_yaw = copy.deepcopy(candidate)
+    wrong_yaw['spatial_correspondence']['pose']['heading_degrees'] = 235
+    assert freeze_geometry_proof(story, wrong_yaw, receipt, active) is None
