@@ -382,12 +382,13 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     # model contradiction is provisional when physical scope failed proof.
     is_reduced=(len(effective)<len(before) and final in {
         'active_shortlist','conditional_T_shortlist'})
-    pending=[{'candidate_id':cid,'review_state':'model_explicit_contradiction',
-        'reason':next(row['source_vs_article_reason'] for row in explicit
-            if row['candidate_id']==cid),
-        'conditions':next(row['contradiction_conditions'] for row in explicit
-            if row['candidate_id']==cid)}
-        for cid in contradicted]
+    pending=[{'candidate_id':row['candidate_id'],
+        'review_state':('model_explicit_contradiction'
+            if row['article_ids'] else 'uncited_model_difference_not_refutation'),
+        'reason':row['source_vs_article_reason'],
+        'conditions':row['contradiction_conditions'],
+        'source_article_ids':list(row['article_ids'])}
+        for row in explicit]
     pending += [{'candidate_id':cid,'review_state':'not_selected_not_refuted'}
         for cid in deferred]
     rejected_unverified=(copy.deepcopy(explicit)
@@ -466,3 +467,78 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
             'next_distinguishing_question':model_result['next_distinguishing_question'],
             'independently_available_G_or_REF_can_accept':True},
         'identity_authorized_by_shortlist_count_alone':False}
+
+
+
+def to_existing_research_priority(funnel_result, actual_articles):
+    """Project *the SAME closed T model response* into Codex's native priority.
+
+    This is a shape adapter, NOT another semantic decision or a second worker.
+    Preserve original shortlisting, article-scoped contradictions and the
+    model's exact distinguishing question. The existing #246 function
+    physical_research_priority handles reversible ordering and persistence.
+    Image goals remain available separately in downstream_REF.
+    """
+    if (not isinstance(funnel_result,dict)
+            or funnel_result.get('contract')!=_CONTRACT
+            or funnel_result.get('status') not in {
+                'active_shortlist','conditional_T_shortlist',
+                'no_useful_text','unconfirmed_model_claim','accepted_T_identity'}
+            or not _sha(funnel_result.get('source_sha256'))):
+        raise ValueError('unclosed_source_bound_T_priority_result')
+    if not isinstance(actual_articles,list):
+        raise ValueError('actual_T_articles_required_for_native_priority')
+    urls={}
+    for row in actual_articles:
+        if (not isinstance(row,dict)
+                or row.get('input_kind')!='acquired_article_text'
+                or row.get('raw_body_sha256_verified') is not True
+                or not isinstance(row.get('url'),str)
+                or not isinstance(row.get('article_id'),str)):
+            raise ValueError('native_T_priority_unverified_article_reference')
+        urls[row['article_id']]=row['url']
+    active=funnel_result['active_physical_candidate_ids']
+    ref=funnel_result.get('downstream_REF') or {}
+    image_goals=ref.get('image_research_goals') or []
+    acquired_images=ref.get('already_acquired_source_image_links') or []
+    next_question=funnel_result.get('next_distinguishing_question') or ''
+    if not next_question and image_goals:
+        next_question=image_goals[0].get('needed_view_or_feature') or ''
+    if len(next_question)>600:
+        next_question=next_question[:600]
+    model_support=funnel_result.get('source_support') or []
+    reason=next((item.get('remaining_uncertainty') or
+        item.get('matching_or_missing_article_details') for item in model_support
+        if isinstance(item,dict) and (
+            item.get('remaining_uncertainty') or
+            item.get('matching_or_missing_article_details'))),'')
+    if not reason:
+        reason=funnel_result.get('reserve_expansion_reason') or next_question
+    if not reason:
+        # Pure transport default; no inferred scene-level fact.
+        reason='Source-bound T result retained for reversible physical research.'
+    if funnel_result.get('request_reserve_expansion'):
+        next_step='expand_reserve'
+    elif image_goals or acquired_images:
+        next_step='existing_images' if acquired_images else 'targeted_search'
+    else:
+        next_step='text'
+    contradictions=[]
+    for row in funnel_result.get('t_explicit_contradictions') or []:
+        # No global blacklist. Only explicit, article-backed, *facade-scoped*
+        # model differences may reach existing native priority.
+        if row.get('review_state')!='model_explicit_contradiction':
+            continue
+        cited=[aid for aid in row.get('source_article_ids') or [] if aid in urls]
+        if not cited:
+            continue
+        contradictions.append({'candidate_id':row['candidate_id'],
+            'reason':row['reason'],'conditions':row['conditions'],
+            'scope':'facade','source_url':urls[cited[0]]})
+    return {'candidate_ids':list(active),
+        'reason':str(reason)[:600],
+        'next_question':next_question,
+        'next_step':next_step,
+        'contradictions':contradictions}
+
+
