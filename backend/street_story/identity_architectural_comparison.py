@@ -97,6 +97,75 @@ def publisher_address_relation(articles, physical_candidates):
     return relations
 
 
+
+def _observed_explicit_publisher_links(article, by_id):
+    """Only literal, observed OSM per-body publisher references.
+
+    This is an alternative to a literal present-day postal address. It is
+    not a model-provided binding_basis, map proximity, name similarity, or a
+    guessed historical address. Multiple bodies sharing this explicit ref
+    remain ambiguous until corpus/wing is independently resolved.
+    """
+    from .prussia39 import canonical_article
+    aid=article.get('article_id')
+    if not isinstance(aid,str) or not aid.startswith('prussia39:sid:'):
+        return []
+    try:
+        sid,url=canonical_article(article.get('url'))
+    except (ValueError,TypeError):
+        return []
+    if aid != f'prussia39:sid:{sid}':
+        return []
+    matches=[]
+    for cid,candidate in by_id.items():
+        tags=(candidate.get('map_object') or {}).get('tags') or {}
+        if (not cid.startswith('osm:') or not candidate_identity_eligible(candidate)
+                or article_candidate(candidate) or tags.get('entrance')
+                or not (tags.get('building') or tags.get('building:part'))):
+            continue
+        literal_ref=str(tags.get('ref:prussia39') or '').strip()
+        direct_page=str(tags.get('website:prussia39') or '').strip()
+        url_match=False
+        if direct_page:
+            try:
+                url_match=canonical_article(direct_page)[1]==url
+            except (ValueError,TypeError):
+                pass
+        if literal_ref==str(sid) or url_match:
+            matches.append({'candidate_id':cid,'provenance':(
+                'observed_OSM_explicit_publisher_ref' if literal_ref==str(sid)
+                else 'observed_OSM_explicit_publisher_URL')})
+    return matches
+
+
+def _observed_historical_address_links(article, by_id):
+    """Exact OSM historical postal tags; never turn one house into another.
+
+    Trust only observed per-building old_addr:street and old_addr:housenumber
+    together. No historic-modern conversion is inferred from a title, city
+    proximity, or a model's prose.
+    """
+    received=article.get('address')
+    if (article.get('address_provenance')!='publisher_article_metadata_table'
+            or not isinstance(received,str) or not received.strip()):
+        return []
+    matched=[]
+    for cid,candidate in by_id.items():
+        tags=(candidate.get('map_object') or {}).get('tags') or {}
+        if (not cid.startswith('osm:') or not candidate_identity_eligible(candidate)
+                or article_candidate(candidate) or tags.get('entrance')
+                or not (tags.get('building') or tags.get('building:part'))):
+            continue
+        street,house=tags.get('old_addr:street'),tags.get('old_addr:housenumber')
+        if (isinstance(street,str) and isinstance(house,str) and
+                literal_address_card_selection([{'address_text':received,
+                    'canonical_url':article['url']}],street,house)):
+            matched.append({'candidate_id':cid,
+                'provenance':'observed_OSM_explicit_historical_postal_tags',
+                'historic_street':street,'historic_house_number':house})
+    return matched
+
+
 def verified_publisher_physical_scope(story, candidates, source_text_receipt, decision):
     """Host-check a model's Prussia39 article-to-physical pointer.
 
@@ -176,6 +245,22 @@ def verified_publisher_physical_scope(story, candidates, source_text_receipt, de
                 or article.get('input_kind') != 'acquired_article_text'):
             return {'applicable': True, 'supported': False,
                     'reason': 'publisher_article_not_acquired_and_sha_verified', 'article_id':aid}
+        crosslinks=_observed_explicit_publisher_links(article,by_id)
+        historic=_observed_historical_address_links(article,by_id)
+        authoritative=crosslinks or historic
+        if authoritative:
+            candidates_matched=list(dict.fromkeys(x['candidate_id'] for x in authoritative))
+            if cid not in candidates_matched:
+                return {'applicable':True,'supported':False,
+                    'reason':'explicit_publisher_or_historical_link_points_to_another_physical_body',
+                    'article_id':aid,'matching_candidate_ids':candidates_matched}
+            if len(candidates_matched)!=1:
+                return {'applicable':True,'supported':False,
+                    'reason':'publisher_explicit_ref_still_ambiguous_between_physical_corpora',
+                    'article_id':aid,'matching_candidate_ids':candidates_matched}
+            verified.append({'article_id':aid,'candidate_id':cid,
+                'mechanical_binding':authoritative[0]['provenance']})
+            continue
         link = publisher_address_relation([article], physical)[0]
         if not link.get('publisher_modern_address_metadata'):
             return {'applicable': True, 'supported': False,
@@ -195,9 +280,10 @@ def verified_publisher_physical_scope(story, candidates, source_text_receipt, de
         verified.append({'article_id':aid, 'candidate_id':cid,
             'mechanical_binding':'exact_full_publisher_address_to_received_osm_body_or_entrances'})
     return {'applicable': True, 'supported': True,
-            'reason': 'verified_prussia_publisher_modern_address_to_exact_osm_subject',
+            'reason': 'verified_prussia_publisher_physical_source_link',
             'verified_bindings':verified,
-            'policy': 'Necessary physical link only; actual SOURCE architecture and alternatives are model semantic decisions.'}
+            'policy': 'Literal postal, direct publisher-to-OSM reference, or explicit historical OSM postal tags. '
+                'All are necessary physical links only, never proof that SOURCE depicts the named body.'}
 
 
 
