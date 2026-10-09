@@ -60,13 +60,18 @@ def nominal_exterior_sides(story, manifest, geometry, *, epsilon_m=2.0):
         return result
     for ri,_ring in enumerate((geometry or {}).get('rings') or []):
         distances=_ring_halfplanes(geometry,origin,ri)
-        if distances is None:continue
+        if distances is None:
+            continue
         for si,dist in enumerate(distances):
-            if dist is None:continue
+            if dist is None:
+                continue
             ref=[ri,si,dist]
-            if dist>epsilon_m:result['outward_segments'].append(ref)
-            elif dist< -epsilon_m:result['inward_segments'].append(ref)
-            else:result['near_boundary_segments'].append(ref)
+            if dist>epsilon_m:
+                result['outward_segments'].append(ref)
+            elif dist< -epsilon_m:
+                result['inward_segments'].append(ref)
+            else:
+                result['near_boundary_segments'].append(ref)
     return result
 
 
@@ -85,7 +90,8 @@ def observed_corner_halfplane(story, manifest, candidate_id, ring_index,
         return {'status':'invalid_original_wall_reference'}
     entry=next((e for e in scene_entries(story,list(candidates))
         if e.get('candidate_id')==candidate_id),None)
-    if entry is None:return {'status':'candidate_unobserved'}
+    if entry is None:
+        return {'status':'candidate_unobserved'}
     geometry=entry.get('map_geometry') or {}
     result=nominal_exterior_sides(story,manifest,geometry)
     basis=result['position_basis']
