@@ -56,7 +56,6 @@ def prepare_wikipedia_title_queries(acquired_article, *, max_queries=2):
     the model may suggest concise encyclopedic searches; each result still
     has to be obtained from Wikipedia and explicitly selected.
     """
-    from jsonschema import Draft202012Validator
     article=acquired_article
     if (not isinstance(article,dict)
             or article.get('raw_body_sha256_verified') is not True
