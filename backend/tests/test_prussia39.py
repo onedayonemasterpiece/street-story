@@ -297,3 +297,64 @@ async def test_no_gps_title_search_not_an_identity_and_empty_not_absent(tmp_path
     assert results['inventory_complete'] is True
     assert results['results']==[]
     assert results['inventory_scope']=='observed_publisher_title_search_page'
+
+
+@pytest.mark.asyncio
+async def test_source_derived_title_search_reads_one_observed_continuation_only(tmp_path):
+    first_page = html(
+        '<h1>Поиск по сайту</h1>'
+        '<table><tr><td style="text-align:justify"><b>Дом с эркером</b>'
+        '<p style="font-size:8pt;">Город, ул. Нейтральная, 8</p>'
+        '<a href="/sight/index.php?sid=61">Подробнее о достопримечательности</a>'
+        '</td></tr></table>'
+        '<a href="/search.php?text=%E2%E8%EB%EB%E0&amp;search_obj=2&amp;p=2">2</a>')
+    next_page = html(
+        '<h1>Поиск по сайту</h1>'
+        '<table><tr><td style="text-align:justify"><b>Дом с фронтоном</b>'
+        '<p style="font-size:8pt;">Город, ул. Другая, 6</p>'
+        '<a href="/sight/index.php?sid=62">Подробнее о достопримечательности</a>'
+        '</td></tr></table>')
+    calls = []
+    def handler(request):
+        calls.append(str(request.url))
+        return response(next_page if 'p=2' in str(request.url) else first_page)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        adapter = Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver)
+        first = await adapter.title_search('вилла')
+        assert first['inventory_complete'] is False
+        assert len(first['results']) == 1
+        assert len(first['pagination_urls']) == 1
+        injected = first['pagination_urls'][0].replace('p=2', 'p=42')
+        rejected = await adapter.title_search_page(injected, previous_receipt=first)
+        assert rejected['status'] == 'not_sent'
+        hijack = first['pagination_urls'][0].replace('%E2%E8%EB%EB%E0', '%E4%EE%EC')
+        previous = dict(first, pagination_urls=[hijack])
+        rejected = await adapter.title_search_page(hijack, previous_receipt=previous)
+        assert rejected['status'] == 'not_sent'
+        page = await adapter.title_search_page(first['pagination_urls'][0], previous_receipt=first)
+        again = await adapter.title_search_page(first['pagination_urls'][0], previous_receipt=first)
+    assert len(calls) == 2
+    assert page['status'] == 'completed' and again['cache_hit'] is True
+    assert page['results'][0]['article_id'] == 'prussia39:sid:62'
+    assert page['results'][0]['title'] == 'Дом с фронтоном'
+    assert page['results'][0]['address_text'] == 'Город, ул. Другая, 6'
+    assert page['inventory_complete'] is True
+
+
+@pytest.mark.asyncio
+async def test_untrusted_title_page_cannot_leave_publisher_or_change_method(tmp_path):
+    observed = 'https://www.prussia39.ru/search.php?text=%E2%E8%EB%EB%E0&search_obj=2&p=2'
+    prior = {'operation':'title','original_query':{'text':'вилла'},'pagination_urls':[observed]}
+    requested = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda r: requested.append(r))) as http:
+        adapter = Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver)
+        for altered in (
+                observed.replace('www.prussia39.ru','example.com'),
+                observed.replace('https:', 'http:'),
+                observed.replace('search_obj=2','search_obj=3'),
+                observed.replace('p=2','p=2000')):
+            bad = await adapter.title_search_page(altered,
+                previous_receipt={**prior,'pagination_urls':[altered]})
+            assert bad['status'] == 'not_sent'
+    assert not requested
