@@ -406,9 +406,38 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     supporting={row['article_id'] for row in decision['article_bindings']}
     seen={row['article_id'] for row in decision['correspondences']}
     match_ids={row['article_id'] for row in assessments if row['visual_fit']=='distinctive_match'}
-    if (not 1<=len(supporting)<=2 or not supporting<=match_ids
-            or not seen<=supporting or not seen):
+    if not 1<=len(supporting)<=2 or not supporting<=match_ids:
         return dict(reviewed,reason='positive_binding_not_supported_by_model_contrast')
+    # A model may supply *negative* architectural evidence against neighboring
+    # articles. This MUST NOT be rewritten as a positive binding, but dropping
+    # it from the frozen decision is not hiding evidence: the original response
+    # and all negative observations remain independently hashed in reviewed.
+    positive_correspondences=[]
+    negative_correspondences=[]
+    for line in decision['correspondences']:
+        if line['article_id'] in supporting:
+            positive_correspondences.append(line)
+        else:
+            negative_correspondences.append(line)
+            if line['status']=='stable_match':
+                return dict(reviewed,reason='unresolved_stable_match_in_unbound_article',
+                    negative_article_evidence=negative_correspondences)
+    if any(line['status']=='structural_contradiction' for line in positive_correspondences):
+        return dict(reviewed,reason='positive_article_has_unresolved_structural_contradiction',
+            negative_article_evidence=negative_correspondences)
+    # An individual combination is more than just color, century, building
+    # function, generic style or a simple storey count. A cropped facade may
+    # provide only two stable kinds; demand two distinct *architecture* kinds,
+    # at least one from a discriminating shape/openings/roof pattern.
+    strong={'bay','roof','window_axes','openings','outline','composition'}
+    stable_kinds={line.get('feature_kind') for line in positive_correspondences
+        if line['status']=='stable_match' and line.get('feature_kind') in strong | {'levels'}}
+    if not (len(stable_kinds)>=2 and stable_kinds & strong):
+        return dict(reviewed,reason='not_enough_independent_structural_architecture',
+            negative_article_evidence=negative_correspondences)
+    reviewed['negative_article_evidence']=negative_correspondences
+    reviewed['positive_article_evidence_span_count']=len(positive_correspondences)
+    decision['correspondences']=positive_correspondences
     articles=[row for row in pool['checked_articles'] if row['article_id'] in supporting]
     if any(not all(rel['source_quote'] in row['text']
             for rel in decision['correspondences'] if rel['article_id']==row['article_id'])
