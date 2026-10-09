@@ -239,12 +239,17 @@ def test_without_GPS_model_can_nominate_article_but_never_accept_physical_ID():
     assert packet['candidate_ids']==[]
     assert packet['schema']['properties']['candidate_id']['enum']==['']
     assert 'unresolved_no_GPS_subject' in packet['prompt']
-    answer=_closed_answer(decision,packet['article_ids'],packet)
+    answer=copy.deepcopy(decision)
     answer.update(decision='uncertain',candidate_id='',
-        material_alternatives=[],material_alternatives_resolved=False)
-    for entry in answer['article_bindings']:
-        entry['candidate_id']=''
-        entry['physical_binding_resolved']=False
+        article_bindings=[],correspondences=[],physical_link_evidence=[],
+        material_alternatives=[],material_alternatives_resolved=False,
+        article_comparisons=[{
+            'article_id':aid,
+            'visual_fit':('distinctive_match' if aid=='catalog:physical-building'
+                else 'generic_only'),
+            'architectural_difference':'SOURCE may depict this architectural style.',
+            'visible_SOURCE_specifics':'A central bay is visible.'}
+            for aid in packet['article_ids']])
     result=close_architectural_pool_response(story,[],packet,answer,
         source_text_receipt=receipt)
     assert result['accepted'] is False
