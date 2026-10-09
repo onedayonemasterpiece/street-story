@@ -942,7 +942,8 @@ async def _suggest(service, story, transcript, candidates):
                 and ('subject_article_bindings' not in payload or valid_field('subject_article_bindings'))) else {}
             if selected_regional:
                 text_articles, lookup = await acquire_selected_regional_text(service, story, candidates,
-                    selected_regional, regional_catalogue)
+                    selected_regional, regional_catalogue,
+                    unconfirmed_candidate_ids=([nomination_id] if geometry_rejection and nomination_id else []))
             elif isinstance(regional, dict) and regional.get('route') not in {None, 'none'}:
                 text_articles, lookup = await acquire_regional_text(service, story, candidates, regional)
             else:

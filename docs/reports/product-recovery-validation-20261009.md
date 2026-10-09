@@ -2,6 +2,37 @@
 
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
+
+## Frozen b022307 product result and selected-card continuation
+
+Blind cold132 on `b02230727af905e52f474830d00b6fe9c7e5d626` passed all
+identity180/first-fact300/whole480 gates: independent T accepted the physical
+building in 64.961 seconds, the first eligible canonical claim arrived in
+92.309 seconds, and the normal workers finished in 233.459 seconds with 11
+reviewed claims independently read back from POI. Construction date, facade
+material, risalit/window-axis/gable composition and dated heritage designation
+provide distinct substantive physical facts; institutional history is separate.
+The undated current superlative was withheld. No correct ID, address or reference
+was supplied to the models. Backend and Android hosted checks passed on this SHA.
+
+Same-SHA blind cold102 failed in 61.647 seconds with no accepted object/facts.
+Its original closed Luna response nominated a physical body and explicitly
+selected a received Prussia39 card, while leaving physical binding unresolved.
+The source reader required that binding to be resolved *before* reading the
+body. Consequently joint2 received no article and its generic repair failed the
+first-wave subject-ID schema. This was an acquisition handoff defect, not quota.
+The original SOURCE/MAP, Luna turn, malformed joint2 and unconfirmed hypothesis
+remain retained; none is administratively accepted or overwritten.
+
+The repair allows the received selected body to be read for the original
+unconfirmed physical nomination. It carries `physical_binding_claimed=false`
+to the supplied compact T comparison. All other acquisition fences and the
+common physical proof, exact quote, alternative and unresolved-scope checks
+remain in force. The existing joint2 must independently resolve identity;
+incomplete search coverage alone is never accepted. Actual continuation and
+final same-SHA acceptance remain pending. Evidence is retained under
+`/home/dev/artifacts/street-story/20261009T105848Z-gt-product-integration-20261009/`.
+
 The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.

@@ -229,8 +229,13 @@ def regional_selection_schema(candidate_ids, catalogue):
         'additionalProperties':False}}
 
 
-async def acquire_selected_regional_text(service, story, candidates, selections, catalogue):
-    """Read only model-selected received canonical cards, without ranking."""
+async def acquire_selected_regional_text(service, story, candidates, selections, catalogue, *,
+        unconfirmed_candidate_ids=()):
+    """Read received selected cards; a retained physical hypothesis may still be unbound.
+
+    Reading that hypothesis supplies independent T evidence, never identity or
+    resolved article scope. Other selections retain the original binding fence.
+    """
     from jsonschema import Draft202012Validator
     from .identity_candidate_policy import candidate_identity_eligible
     from .identity_subject_binding import article_candidate
@@ -252,7 +257,8 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
         if (aid in seen or not candidate or not str(candidate.get('candidate_id') or '').startswith('osm:')
                 or not candidate_identity_eligible(candidate) or article_candidate(candidate)
                 or (candidate.get('map_object') or {}).get('tags', {}).get('entrance')
-                or selection['physical_binding_resolved'] is not True
+                or (selection['physical_binding_resolved'] is not True
+                    and selection['candidate_id'] not in unconfirmed_candidate_ids)
                 or not selection['scope'].strip() or not selection['binding_basis'].strip()):
             return [], dict(receipt, reason='closed_physical_nomination_required')
         seen.add(aid)
@@ -268,7 +274,8 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
     articles = []
     for page, (_url, selection, variants) in zip(pages, choices):
         text = page.get('normalized_text') or page.get('text') or ''
-        receipt['selected_cards'].append({'article_id':selection['article_id'], 'status':page.get('status')})
+        receipt['selected_cards'].append({'article_id':selection['article_id'], 'status':page.get('status'),
+            'physical_binding_claimed':selection['physical_binding_resolved'], 'identity_accepted':False})
         if page.get('status') != 'completed' or not text.strip() or page.get('raw_body_sha256_verified') is not True:
             continue
         text = text[:12_000]
@@ -279,6 +286,7 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
             'address':page.get('address_text') or '',
             'address_provenance':page.get('address_provenance') or '',
             'binding_basis':selection['binding_basis'], 'lookup_candidate_ids':[selection['candidate_id']],
+            'physical_binding_claimed':selection['physical_binding_resolved'],
             'card_variants':variants, 'fetched_at':page.get('fetched_at'), 'cache_hit':page.get('cache_hit',False)})
     receipt['status'] = 'completed' if len(articles) == len(choices) else 'partial' if articles else 'unavailable'
     return articles, receipt
