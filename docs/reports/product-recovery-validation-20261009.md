@@ -513,3 +513,31 @@ into host `if` conditions, which could otherwise make them silently inapplicable
 Exact original schemas/images remain bound during readback. Final affected
 checks passed **59 tests in 14.37 s**, including deliberately invalid duplicate
 and conditional answers; no weaker proof or artificial input gate was introduced.
+
+## G/T integration and productive insufficient-proof continuation
+
+Frozen `4fe8e28` hosted backend CI passed **2508 tests, 5 skipped**. Actual
+Luna SOURCE/MAP inference on cold132 closed successfully with 35,537 input and
+1,998 output tokens. Its physical nomination agreed with independent report-only
+labels, but two sides of one body were wrongly submitted as `frontage_sequence`.
+The host correctly rejected this proof; natural outcome was failure at 56.317 s,
+with no accepted identity/facts. This is useful nomination, not product PASS.
+
+Integration selectively uses G supply `c125a2f` (EXIF/body angular reference,
+without ranking) and T supply `ed0a370` (actual publisher-address joins, verified
+entrance context and compact SOURCE/article comparison). Overlapping independent
+orchestrator/transport changes are not merged. No new arbitrary T input-size or
+candidate-count refusal is introduced. A closed insufficient Native nomination
+is preserved separately as an unconfirmed hypothesis, with exact original
+response, source/map hashes, physical/address memberships and rejection reason.
+The existing joint2 can repair the concrete geometry failure or independently
+evaluate already acquired architectural text. Sufficient G does not require T.
+
+The integration suite passed **127 checks in 49.29 s**; the separate broader
+guardrail suite passed **231 checks in 102.74 s** (overlapping suites, not an
+additive test count). Controlled ordinary-worker tests cover G repair, rejected G
+to accepted T to cached article/facts/own-evidence review/canonical POI readback,
+T uncertainty, and UNKNOWN without resend. A local replay of the original132
+receipt verified the concrete continuation with **zero new provider inferences**
+and no expected-answer input. These are integration checks; real cold132 followed
+by the same-SHA independent product set and deployment are still required.

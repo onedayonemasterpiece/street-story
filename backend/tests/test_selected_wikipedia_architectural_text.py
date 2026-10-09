@@ -167,7 +167,7 @@ async def test_explicit_regional_nomination_keeps_prussia_route_instead_of_wiki_
     monkeypatch.setattr(identity_architectural_context, 'acquire_selected_wikipedia_text', forbidden)
     async def generate(*args, **kwargs):
         calls.append('joint')
-        result = initial if len(calls) == 1 else {**initial, 'accepted_architectural_text': decision}
+        result = initial if len(calls) == 1 else decision
         return SimpleNamespace(text=json.dumps(result))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)

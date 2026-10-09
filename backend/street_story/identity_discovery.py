@@ -151,7 +151,7 @@ def _conditional_text_prior(payload, nomination_ids):
     return prior
 
 
-def _closed_invalid_followup_route(settings, gemini, issues, model, quota, executor):
+def _closed_invalid_followup_route(settings, gemini, issues, model, quota, executor, *, unavailable_models=()):
     """Use an already registered alternative for the one contract repair.
 
     This never adds an operation or replaces an addressed request. A valid initial
@@ -162,7 +162,7 @@ def _closed_invalid_followup_route(settings, gemini, issues, model, quota, execu
     if issues and preferred and preferred != model:
         for registered_model, _pool, registered_quota, registered_executor in (
                 getattr(gemini, 'web_search_routes', None) or []):
-            if registered_model == preferred:
+            if registered_model == preferred and registered_model not in unavailable_models:
                 return registered_model, registered_quota, registered_executor
     return model, quota, executor
 
@@ -592,7 +592,7 @@ async def _suggest(service, story, transcript, candidates):
         return {}
     def joint_source_map_receipt():
         from .identity_geometry_contract import CONTRACT
-        if native_source_map_receipt is not None:
+        if native_source_map_receipt is not None and not joint_followup_used:
             return native_source_map_receipt
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
@@ -813,10 +813,10 @@ async def _suggest(service, story, transcript, candidates):
         joint_operation_marker(service, story, stage='initial', binding=initial_binding,
             phase='response_closed', response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
         return response
-    async def process_initial_response(response, *, model=None, quota=None, executor):
+    async def process_initial_response(response, *, model=None, quota=None, executor, initial_route='google'):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
-        story['_identity_search_plan_route'] = 'google'
+        story['_identity_search_plan_route'] = initial_route
         decode_error = False
         def decode_joint(response):
             nonlocal decode_error
@@ -830,7 +830,7 @@ async def _suggest(service, story, transcript, candidates):
             except json.JSONDecodeError:
                 decode_error = True
                 retain_closed_invalid(service, story, None, schema, code='identity_search_plan_malformed',
-                    route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
+                    route=initial_route, raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
                     errors=[], errors_truncated=False, **diagnostic_stage(raw))
                 return None
             from . import identity_source_selection
@@ -839,7 +839,8 @@ async def _suggest(service, story, transcript, candidates):
                 decoded, resolution = resolver(decoded, resolution_packet)
                 if resolution:
                     resolution = {**resolution, 'joint_stage': 'followup' if joint_followup_used else 'initial',
-                        'provider_id': 'google', 'raw_json_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+                        'provider_id': 'codex_native' if initial_route == 'native_source_map' and not joint_followup_used else 'google',
+                        'raw_json_sha256': hashlib.sha256(raw.encode()).hexdigest(),
                         'raw_json_utf8_bytes': len(raw.encode())}
                     response_id_resolutions.append(resolution)
                     record_identity_event(service, story['id'], 'identity_response_ids_resolved', {
@@ -852,7 +853,7 @@ async def _suggest(service, story, transcript, candidates):
                 # Retain the first closed response before any optional followup
                 # or qualified fallback. This does not change its acceptance.
                 retain_closed_invalid(service, story, decoded, schema, code='identity_search_plan_malformed',
-                    route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
+                    route=initial_route, raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
                     errors=errors, errors_truncated=truncated, **diagnostic_stage(raw))
             return decoded
         payload = decode_joint(response)
@@ -890,6 +891,30 @@ async def _suggest(service, story, transcript, candidates):
             # bounded repair, rather than starting a separate oversized planner.
             issues['host_evidence_contract'] = {'code': initial_validation_error,
                 'previous_claim_is_not_confirmation': True}
+        geometry_claim = payload.get('accepted_geometry') if isinstance(payload, dict) else None
+        geometry_rejection = {}
+        if scene and initial_geometry is None and isinstance(geometry_claim, dict) and geometry_claim.get('decision') == 'accepted_geometry':
+            geometry_rejection = {'code': 'identity_geometry_proof_invalid', 'previous_claim_is_not_confirmation': True}
+            correspondence = geometry_claim.get('spatial_correspondence')
+            correspondence = correspondence if isinstance(correspondence, dict) else {}
+            if correspondence.get('pattern_kind') == 'frontage_sequence':
+                pairs = correspondence.get('front_segments') or []
+                pairs = pairs if isinstance(pairs, list) else []
+                if any(pair['first'].get('candidate_id') == pair['second'].get('candidate_id')
+                        for pair in pairs if isinstance(pair, dict)
+                        and isinstance(pair.get('first'), dict) and isinstance(pair.get('second'), dict)):
+                    geometry_rejection['reason'] = (
+                        'frontage_sequence requires ordered sides of different physical bodies. '
+                        'Two sides of one body do not establish this relation. Re-examine SOURCE and '
+                        'the actual segments; use corner only if two adjacent non-collinear sides '
+                        'are visible and the pose/alternatives are supported. Otherwise keep uncertain '
+                        'or independently compare acquired architecture text; never just rename the pattern.')
+            from .identity_plan_diagnostics import retain_physical_hypothesis
+            retain_physical_hypothesis(service, story, payload, joint_source_map_receipt(),
+                [*observed, *candidates], reason=geometry_rejection,
+                raw_json=response.text or '', provider_response_id=getattr(response, 'response_id', None))
+            if 'host_evidence_contract' in issues:
+                issues['host_evidence_contract'].update(geometry_rejection)
         lookup = {}
         if isinstance(payload, dict) and initial_geometry is None:
             from jsonschema import Draft202012Validator
@@ -947,6 +972,8 @@ async def _suggest(service, story, transcript, candidates):
                         if row[1] in action['target_candidate_ids']]},
                     'conditional_initial_decision': prior}
         if issues or text_articles or detail_request:
+            if executor is None or not callable(getattr(gemini, '_generate', None)):
+                raise PermanentProviderError('identity_joint_followup_route_unavailable')
             # Binding repair and newly acquired TEXT share this one optional
             # joint followup. A rejected geometry claim remains rejected even
             # when the independent architectural-text proof establishes identity.
@@ -988,6 +1015,8 @@ async def _suggest(service, story, transcript, candidates):
                     'text_contract': TEXT_CONTRACT}
                 if conditional_prior:
                     source_text_receipt['conditional_initial_decision'] = conditional_prior
+                if geometry_rejection:
+                    source_text_receipt['initial_geometry_rejection'] = geometry_rejection
                 schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
                     observed_ids, [item['article_id'] for item in text_articles],
                     material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8,
@@ -1028,6 +1057,23 @@ async def _suggest(service, story, transcript, candidates):
                         'unobserved features or claim the prior assertion establishes its rejection.')
                 record_identity_event(service, story['id'], 'identity_architectural_text_comparison_started',
                     {'article_ids': [item['article_id'] for item in text_articles], 'attempt': 1})
+            compact_t = None
+            # A semantic G-proof failure does not require replaying a giant
+            # planner. Malformed pointers or a requested MAP expansion still
+            # use the existing combined correction contract.
+            if text_articles and not (set(issues) - {'host_evidence_contract'}) and not detail_request:
+                from .identity_architectural_comparison import prepare_architectural_comparison
+                compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
+                followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
+                if issues:
+                    followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
+                followup_config = types.GenerateContentConfig(response_mime_type='application/json',
+                    system_instruction='Return only the SOURCE/architectural-text decision object. '
+                        'Use the attached actual image and acquired article text, never a prior identity claim.\n'
+                        + json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')))
+                record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_prepared', {
+                    'prompt_utf8_bytes': len(followup_prompt.encode()), 'article_count': len(compact_t['article_ids']),
+                    'candidate_count': len(compact_t['candidate_ids'])})
             if hasattr(service, 'settings'):
                 from .research_budget import reserve_work
                 from .service import digest
@@ -1038,7 +1084,9 @@ async def _suggest(service, story, transcript, candidates):
                     {'issue_types': list(issues), 'attempt': 1, 'article_count': len(text_articles)})
             previous_model = model
             model, quota, executor = _closed_invalid_followup_route(
-                getattr(service, 'settings', None), gemini, issues, model, quota, executor)
+                getattr(service, 'settings', None), gemini, issues, model, quota, executor,
+                unavailable_models={row['model_id'] for row in
+                    (joint_operation_marker(service, story, stage='initial') or {}).get('closed_route_failures') or []})
             if model != previous_model:
                 record_identity_event(service, story['id'], 'identity_joint_repair_route_selected',
                     {'reason': 'closed_initial_contract_invalid', 'initial_model': previous_model,
@@ -1050,17 +1098,19 @@ async def _suggest(service, story, transcript, candidates):
                 'map_image_bytes': len(scene['bytes']) if scene else 0, 'model': model,
                 'map_detail': bool(detail_request), 'article_count': len(text_articles)})
             joint_followup_used = True
+            story['_identity_search_plan_route'] = 'google'
             from .service import canonical
+            issued_followup_schema = compact_t['schema'] if compact_t else schema
             joint_followup_binding = {
                 'input_sha256': hashlib.sha256(canonical([model_source_sha256,
                     (scene or {}).get('manifest', {}).get('image_sha256'), followup_prompt]).encode()).hexdigest(),
-                'schema_sha256': hashlib.sha256(canonical(schema).encode()).hexdigest()}
+                'schema_sha256': hashlib.sha256(canonical(issued_followup_schema).encode()).hexdigest()}
             # Admission waits belong outside the provider executor/key lease.
             # The original closed response and acquired text are held unchanged;
             # only an authoritative unsent TPM admission may retry this joint2.
             followup_config.max_output_tokens = followup_config.max_output_tokens or 8192
             prepared_request = {'contract': 'identity-prepared-joint-followup-v1',
-                'binding': joint_followup_binding, 'prompt': followup_prompt, 'schema': copy.deepcopy(schema),
+                'binding': joint_followup_binding, 'prompt': followup_prompt, 'schema': copy.deepcopy(issued_followup_schema),
                 'config': followup_config.model_dump(mode='json', exclude_none=True), 'model': model,
                 'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
                 'map_image_sha256': (scene or {}).get('manifest', {}).get('image_sha256'),
@@ -1069,7 +1119,7 @@ async def _suggest(service, story, transcript, candidates):
             retry_claim = False
             def check_prepared_request():
                 current = {**prepared_request,
-                    'schema': copy.deepcopy(schema),
+                    'schema': copy.deepcopy(issued_followup_schema),
                     'config': followup_config.model_dump(mode='json', exclude_none=True),
                     'original_source_sha256': hashlib.sha256(service._source_photo_bytes(story['id'])).hexdigest(),
                     'model_source_sha256': hashlib.sha256(source_bytes).hexdigest(),
@@ -1159,7 +1209,29 @@ async def _suggest(service, story, transcript, candidates):
                     raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc
             joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
-            payload = decode_joint(response)
+            if compact_t:
+                from .identity_architectural_comparison import combine_architectural_decision
+                try:
+                    from .identity_source_selection import resolve_identity_response_ids
+                    answer, resolution = resolve_identity_response_ids(json.loads(response.text or ''), resolution_packet)
+                    if resolution:
+                        response_id_resolutions.append({**resolution, 'joint_stage': 'followup',
+                            'provider_id': 'google', 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
+                    payload = combine_architectural_decision(payload, answer, compact_t['schema'])
+                except (ValueError, TypeError) as exc:
+                    joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
+                        code='identity_architectural_comparison_invalid')
+                    raise PermanentProviderError('identity_architectural_comparison_invalid') from exc
+                if payload['accepted_architectural_text']['decision'] == 'uncertain' and initial_validation_error:
+                    from .identity_plan_diagnostics import retain_closed_invalid
+                    retain_closed_invalid(service, story, payload['accepted_architectural_text'], compact_t['schema'],
+                        code='identity_architectural_text_uncertain', route='google', raw_json=response.text,
+                        joint_stage='followup', operation_binding=joint_followup_binding)
+                    joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
+                        code='identity_architectural_text_uncertain')
+                    raise PermanentProviderError('identity_architectural_text_uncertain')
+            else:
+                payload = decode_joint(response)
         return accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
             raw_json_available=isinstance(response.text, str), provider_response_id=getattr(response, 'response_id', None))
     async def fallback(cause):
@@ -1251,13 +1323,17 @@ async def _suggest(service, story, transcript, candidates):
         joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='response_closed',
             response_sha256=hashlib.sha256(raw_json.encode()).hexdigest(), model_id=joint_model_id)
         story['_identity_search_plan_route'] = 'native_source_map'
-        from .identity_source_selection import resolve_identity_response_ids
-        decoded, resolution = resolve_identity_response_ids(result['result'], resolution_packet)
-        if resolution:
-            response_id_resolutions.append({**resolution, 'joint_stage': 'initial',
-                'provider_id': 'codex_native', 'raw_json_sha256': hashlib.sha256(raw_json.encode()).hexdigest()})
-        return accept(decoded, raw_json=raw_json, raw_json_available=True,
-            provider_response_id=result['receipt'].get('turn_id'))
+        from types import SimpleNamespace
+        # A closed Native result has the same single correction/T unit as a
+        # Google result. Its addressed SOURCE/MAP turn is never resubmitted.
+        marker = joint_operation_marker(service, story, stage='initial') or {}
+        failed = {row['model_id'] for row in marker.get('closed_route_failures') or []}
+        available = [route for route in _joint_initial_routes(getattr(service, 'settings', None), gemini,
+            scene_available=True) if route[0] not in failed]
+        model, quota, executor = ((available[0][0], available[0][2], available[0][3]) if available
+            else (None, None, getattr(gemini, 'executor', None)))
+        return await process_initial_response(SimpleNamespace(text=raw_json, response_id=result['receipt'].get('turn_id')),
+            model=model, quota=quota, executor=executor, initial_route='native_source_map')
     if native_original:
         result = await native_joint()
         if result is not None:

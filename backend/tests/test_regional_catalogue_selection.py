@@ -284,7 +284,7 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
             assert "schema_validation" in contents[-1] and "first_wave_hypotheses" in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
-        return SimpleNamespace(text=json.dumps(first if accept_geometry else {**first, "accepted_architectural_text": decision}))
+        return SimpleNamespace(text=json.dumps(first if accept_geometry else ({**first, "accepted_architectural_text": decision} if malformed_first else decision)))
 
     async def forbidden(*args, **kwargs):
         pytest.fail("No third model, text selector, REF or Wiki replacement")
@@ -332,7 +332,7 @@ async def test_unavailable_regional_text_keeps_independently_selected_wiki_in_sa
 
     async def generate(*args, **kwargs):
         calls.append("joint")
-        return SimpleNamespace(text=json.dumps(first if len(calls) == 1 else {**first, "accepted_architectural_text": decision}))
+        return SimpleNamespace(text=json.dumps(first if len(calls) == 1 else decision))
 
     async def forbidden(*args, **kwargs):
         pytest.fail("No additional lookup, replan, third judge or reference acquisition")

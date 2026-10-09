@@ -140,9 +140,7 @@ async def test_nominated_architectural_lookup_closes_identity_without_ref_or_ext
             return SimpleNamespace(text=json.dumps(initial))
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert articles[0]['text'] in contents[-1]
-        final = payload(uncertain)
-        final['accepted_architectural_text'] = text_decision
-        return SimpleNamespace(text=json.dumps(final))
+        return SimpleNamespace(text=json.dumps(text_decision))
     async def forbidden(*args, **kwargs):
         pytest.fail('Architectural text identity needs no external REF or third planner')
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)

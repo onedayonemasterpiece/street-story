@@ -165,6 +165,49 @@ def reusable_closed_initial_plan(marker, binding):
     return saved
 
 
+def retain_physical_hypothesis(service, story, payload, source_map_receipt, candidates, *, reason,
+        raw_json, provider_response_id=None):
+    """A closed nomination survives rejection without granting any identity authority."""
+    import copy
+    from .identity_discovery import _conditional_text_prior
+    from .identity_architectural_context import _subject_addresses, _physical_subject
+    from .identity_source_selection import observed_address_context
+    from .service import canonical
+    if not callable(getattr(getattr(service, 'store', None), 'tx', None)):
+        return None
+    catalog = {item['candidate_id']: item for item in candidates if _physical_subject(item)}
+    prior = _conditional_text_prior(payload, catalog)
+    if not prior or not prior['candidate_ids']:
+        return None
+    scope = _scope(story)
+    address_context = observed_address_context(story, candidates)
+    receipt = {'contract': 'identity-unconfirmed-physical-hypothesis-v1', 'scope': scope,
+        'state': 'unconfirmed_physical_hypothesis', 'identity_accepted': False,
+        'reason': copy.deepcopy(reason), 'initial_decision': prior,
+        'closed_payload': copy.deepcopy(payload), 'raw_json': raw_json,
+        'raw_json_sha256': hashlib.sha256(raw_json.encode()).hexdigest(),
+        'provider_response_id': provider_response_id,
+        'source_map_receipt': copy.deepcopy(source_map_receipt),
+        'physical_candidates': [copy.deepcopy(catalog[cid]) for cid in prior['candidate_ids']],
+        'address_memberships': {cid: _subject_addresses(address_context, catalog[cid])
+            for cid in prior['candidate_ids']}}
+    receipt['sha256'] = hashlib.sha256(canonical(receipt).encode()).hexdigest()
+    with service.store.tx() as db:
+        research = _checked_research(service, story, db, scope)
+        previous = research.get('identity_physical_hypothesis') or {}
+        if previous.get('scope') == scope:
+            return previous
+        research['identity_physical_hypothesis'] = receipt
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+    from .identity_telemetry import record_identity_event
+    record_identity_event(service, story['id'], 'identity_physical_hypothesis_retained', {
+        'generation': scope['generation'], 'control_revision': scope['control_revision'],
+        'candidate_ids': prior['candidate_ids'], 'reason_code': reason.get('code'),
+        'raw_json_sha256': receipt['raw_json_sha256'], 'hypothesis_sha256': receipt['sha256'],
+        'identity_accepted': False})
+    return receipt
+
+
 def provider_outcome(error):
     """Classify transport evidence, never infer dispatch from error prose."""
     from google.genai.errors import APIError

@@ -65,16 +65,16 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
 
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
-        assert 'Every physical pointer field uses the same namespace' in config.system_instruction
-        assert 'never write osm:way:N' in config.system_instruction
-        assert 'Exact received ID or @N' in config.system_instruction
         if len(calls) == 1:
+            assert 'Every physical pointer field uses the same namespace' in config.system_instruction
+            assert 'never write osm:way:N' in config.system_instruction
+            assert 'Exact received ID or @N' in config.system_instruction
             return SimpleNamespace(text=json.dumps(initial))
         assert len(calls) == 2 and len(acquired) == 1
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         assert receipt['articles'][0]['text'] in contents[-1]
-        return SimpleNamespace(text=json.dumps({**initial, 'accepted_architectural_text': text_decision}))
+        return SimpleNamespace(text=json.dumps(text_decision))
 
     async def forbidden(*args, **kwargs):
         pytest.fail('Explicit aliases need no third model, new selector or reference image')
