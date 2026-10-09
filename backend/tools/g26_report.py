@@ -87,9 +87,12 @@ def main():
                                       if expected else None),
           'not_new_cold_result':True
           } if baseline else None
-        if item['input_status']=='ready':counts['g_input_ready']+=1
-        else:counts['g_input_missing']+=1
-        if item['model_calls']>0:counts['new_model_attempted']+=1
+        if item['input_status']=='ready':
+            counts['g_input_ready']+=1
+        else:
+            counts['g_input_missing']+=1
+        if item['model_calls']>0:
+            counts['new_model_attempted']+=1
         if item['G_model_status']=='active_shortlist':
             counts['new_response_with_active_group']+=1
             if expected:
