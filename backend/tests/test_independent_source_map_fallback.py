@@ -102,3 +102,70 @@ async def test_unknown_other_provider_never_falls_through_to_google_or_text(tmp_
     with pytest.raises(RetryableProviderError, match='readback_required'):
         await identity_discovery.prepare_search_plan(service, story, '', active)
     assert calls == ['google_admission_not_sent', 'opencode_started', 'opencode_started']
+
+
+@pytest.mark.asyncio
+async def test_confirmed_google_http503_switches_to_other_visual_provider(tmp_path):
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='text_model',
+        gemini_web_search_tertiary_model='visual_model')
+    calls = []
+
+    class Definitive503(Exception):
+        def __init__(self):
+            self.response = SimpleNamespace(status_code=503)
+
+    class Executor:
+        async def execute(self, role, call):
+            return await call('sdk-fixture-key', 5)
+
+    async def server_error(*args, **kwargs):
+        calls.append('google_closed_http503')
+        raise Definitive503()
+
+    async def image_route(snapshot, prompt, schema, source_mime, source, map_mime, map_data):
+        calls.append('independent_source_map')
+        assert source_mime == 'image/jpeg' and source
+        assert map_mime == 'image/png' and map_data
+        return {'result': payload(geometry_decision()),
+                'receipt': {'provider_id': 'opencode', 'model_id': 'mimo-v2.6-flash-free',
+                            'image_attachment_readback_verified': True}}
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail('A closed HTTP503 must allow an independent image route, not text-only')
+    executor = Executor()
+    service.providers.gemini = SimpleNamespace(executor=executor, _generate=server_error,
+        web_search_routes=[('visual_model', object(), object(), executor)], research_routes=[])
+    service.providers.research = SimpleNamespace(plan_identity_source_map=image_route,
+        identity_source_map_pending=lambda snapshot: False, plan_identity_search=forbidden)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['google_closed_http503', 'independent_source_map']
+    assert story['_identity_search_plan_route'] == 'opencode_source_map'
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+
+
+@pytest.mark.asyncio
+async def test_unknown_google_send_blocks_independent_image_instead_of_double_spend(tmp_path):
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='text_model',
+        gemini_web_search_tertiary_model='visual_model')
+    calls = []
+
+    class Executor:
+        async def execute(self, role, call):
+            return await call('sdk-fixture-key', 5)
+
+    async def possibly_sent(*args, **kwargs):
+        calls.append('google_possibly_sent')
+        raise TimeoutError('No authoritative response arrived')
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail('UNKNOWN Google SDK send cannot start a new visual model')
+    executor = Executor()
+    service.providers.gemini = SimpleNamespace(executor=executor, _generate=possibly_sent,
+        web_search_routes=[('visual_model', object(), object(), executor)], research_routes=[])
+    service.providers.research = SimpleNamespace(plan_identity_source_map=forbidden,
+        identity_source_map_pending=lambda snapshot: False, plan_identity_search=forbidden)
+    with pytest.raises(RetryableProviderError, match='outcome_unknown'):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['google_possibly_sent']
