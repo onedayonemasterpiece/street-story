@@ -1,0 +1,1533 @@
+{
+  "audit_date": "2026-10-09",
+  "candidate_sha": "3a568a7bcd86073df4efe5af54b41715e3efe228",
+  "method": "Read existing source and saved receipts; SELECT frozen SQLite fields; no product inference or new OSM/Prussia fetch.",
+  "source_files": [
+    {
+      "file": "identity_lifecycle.py",
+      "git_sha": "37f267cbf6cdefccf8e1847cdbbb84840caeed95",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_lifecycle.py",
+      "bytes": 49466,
+      "sha256": "84e05a51356a50eed9189a4c244457fc0ac1cf15675048da0f44350c2fa8b0ef",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_proof.py",
+      "git_sha": "2f1864d67d77345087368ff5d195764726ad4ca6",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_proof.py",
+      "bytes": 20938,
+      "sha256": "cfcf06f3b2080002ca40f421c8a0baae3ae807f971e13b27de15b290ccf1b4ef",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_discovery.py",
+      "git_sha": "7d10a3b2fcbe0219a5773922056eef1a2212566f",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_discovery.py",
+      "bytes": 141806,
+      "sha256": "a4b8dd5a1a2477e7f8f9adc630dc3d4c44b57a29bd87049866903416fb28f28a",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_planning.py",
+      "error": {
+        "content": [
+          {
+            "type": "text",
+            "text": "GitHub API error 404: {\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/contents#get-repository-content\",\"status\":\"404\"}"
+          }
+        ],
+        "structuredContent": {
+          "error": "GitHub API error 404: {\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/contents#get-repository-content\",\"status\":\"404\"}",
+          "error_code": "NOT_FOUND",
+          "error_data": {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest/repos/contents#get-repository-content",
+            "status": "404"
+          }
+        },
+        "isError": true
+      }
+    },
+    {
+      "file": "headless_identity.py",
+      "git_sha": "4d6236f53f31271dee9b2f498536a60466ce4a31",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/headless_identity.py",
+      "bytes": 36428,
+      "sha256": "6d3317d216004a87f73b3e95b60b7042cb1d26d552dab46b9c93439a9c98ea0c",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "service.py",
+      "git_sha": "5fad9076479beb97083dcab2f0adbfb22ee515b7",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/service.py",
+      "bytes": 89725,
+      "sha256": "bdfe1bfec289097ad15bc33e3a15cbce7516a7fe901a380d4841c3583f6f830d",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "config.py",
+      "git_sha": "189b2e75ede0e279f132d70b17c5c0ab1aa96822",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/config.py",
+      "bytes": 9947,
+      "sha256": "c657e185a367c96a9e041469b57dface358f4e503327d19dcf6a2924b40cbd7b",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_model_context.py",
+      "git_sha": "06bd66ca194026227405437e9627c5ae6e83e339",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_model_context.py",
+      "bytes": 2450,
+      "sha256": "efd7db7e2855bbe1aac3c0aab2271ff2e8e0498e20abe0d0cde126a755189f3e",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_architectural_context.py",
+      "git_sha": "243f2fda8e508402eb720a7addcdb57341cea4af",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_architectural_context.py",
+      "bytes": 26662,
+      "sha256": "265d7caa8d72aa42bf73f20a6e34dc2314445192c7ba7fbd51756e089594e76a",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_map_context.py",
+      "git_sha": "a4760b98ee89d23bb01ce48333042f0f3e85b90b",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_map_context.py",
+      "bytes": 15378,
+      "sha256": "55bac0985b4fbbf6d981669ec480a06433499a7fc99690a3162fc45a5ff719ca",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_scene.py",
+      "git_sha": "c09488cb92fc72a75db0762796605f03d9d44668",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_scene.py",
+      "bytes": 24168,
+      "sha256": "ba75ab99d4a4f7553d73c67c95facd837881179ded126e42d1ba838e1e085fd1",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_source_selection.py",
+      "git_sha": "fd7f380b1c5fa48a62152b715270d1d9997b54d1",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_source_selection.py",
+      "bytes": 48502,
+      "sha256": "0a45687a3c939efe00c50e888754c4861321911cf4ed5b6fa6a79305b9c42b75",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_spatial_features.py",
+      "git_sha": "0738efd53da0d4ad82f50ca204bebc0a937626f4",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_spatial_features.py",
+      "bytes": 13610,
+      "sha256": "aaa7240e25d15e6371171a5a67c082c834c348023a7d9f405e5e8d8b792dccc0",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "identity_plan_diagnostics.py",
+      "git_sha": "e1a86743a9c2fb305950bf0929de26d8c0bb903f",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/identity_plan_diagnostics.py",
+      "bytes": 15089,
+      "sha256": "1d19c3cd6124e83b371cf76dedfd6f26e843c68e06c23e122b28e243c09ded8e",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "opencode_research.py",
+      "git_sha": "8cf0525f013dc6fca067322adcf0d1ed38eaf989",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/opencode_research.py",
+      "bytes": 52368,
+      "sha256": "57873304431eb5a681c8dfe672b5d30b87169988108815cc797a087ed95708cc",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "research_adapter.py",
+      "git_sha": "add680fb9a2bbad685587bedbd9d5d55360fd7e8",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/research_adapter.py",
+      "bytes": 107688,
+      "sha256": "157673b5dbbba753a5fd76a8adfc6d01b5302be3714af154ef4c242496c677ae",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "live_research.py",
+      "git_sha": "53b8bc676737d4422f996347b33744cae4bc311d",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/backend/street_story/live_research.py",
+      "bytes": 14767,
+      "sha256": "3fc82a6d377d431f6a224fb4cf6ce10457284993daf9611724a43dad12f70b1c",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "unified-at-68a34bab.md",
+      "git_sha": "67dea8bb4732bb4551a354a2cde2187a613fd77e",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/68a34bab/docs/prompts/street-story-unified-photo-search-20261008.md",
+      "bytes": 57041,
+      "sha256": "b30c3928e8a063566e8b7c7cf7768cd7bec92d28b3534912c9b5f9d6e6936424",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    },
+    {
+      "file": "validation-report.md",
+      "git_sha": "ea930e40925de91c9410f647a290f1842d8b9601",
+      "url": "https://github.com/onedayonemasterpiece/street-story/blob/3a568a7bcd86073df4efe5af54b41715e3efe228/docs/reports/product-recovery-validation-20261009.md",
+      "bytes": 22076,
+      "sha256": "d7b386b9e4d537590855ff06a50c076423909d38c6ec2cdb168d6fdd0e7b8f63",
+      "git_hash_verified": true,
+      "trailing_newline_transport_normalized": true
+    }
+  ],
+  "transcript": {
+    "bytes": 5437469,
+    "lines": 77702,
+    "sha256": "5d1e5f01509b27408841b723bf38cdb6d29b78b6e8515e5da026896c913d07d1",
+    "published": false
+  },
+  "runtime_observation": {
+    "observed_at": "2026-10-09T05:39:01Z",
+    "health_http_status": 200,
+    "source_sha": "db0c0d08024441536a2e59f5c3c433b12c7f4189",
+    "candidate_deployed": false
+  },
+  "photo102_frozen_299": {
+    "source_sha": "29935371ac190a7a2eb92d6d80b4391226760365",
+    "model_answer": {
+      "entity_name": "Здание городского ломбарда",
+      "wikipedia_queries": [
+        "Здание городского ломбарда Калининград"
+      ],
+      "visual_query": "historic art nouveau building facade Kaliningrad street view",
+      "commons_query": "Category:Old town Kaliningrad",
+      "article_queries": [
+        "улица Коперника 21 Калининград здание",
+        "Здание городского ломбарда Калининград Коперника"
+      ],
+      "observed_candidate_ids": [
+        "@374"
+      ],
+      "selected_wikipedia_page_ids": [],
+      "subject_article_bindings": [],
+      "regional_article_selections": [
+        {
+          "article_id": "prussia39:sid:2306",
+          "candidate_id": "@374",
+          "scope": "Здание городского ломбарда, ул. Коперника, 21",
+          "binding_basis": "Совпадение адреса и исторического описания объекта по реестру prussia39",
+          "physical_binding_resolved": true
+        }
+      ],
+      "first_wave_hypotheses": [
+        {
+          "kind": "address",
+          "subject_id": "@374",
+          "query": "Калининград улица Коперника 21",
+          "reason": "Точное совпадение адреса ул. Коперника, 21 с карточкой каталога prussia39"
+        }
+      ],
+      "spatial_hypotheses": [
+        {
+          "candidate_id": "@374",
+          "support_status": "spatially_supported",
+          "basis": [
+            "Соответствие контура здания по улице Коперника",
+            "Наличие официального адреса ул. Коперника, 21"
+          ],
+          "counterevidence": [],
+          "assumptions": [
+            "Ракурс съемки направлен на фасад здания по улице Коперника"
+          ],
+          "next_action": "none"
+        }
+      ],
+      "source_scene_observations": {
+        "observed": [
+          "Многоэтажный исторический фасад с эркером в центре",
+          "Округлые оконные проемы первого этажа с цветочными вазонами",
+          "Светло-желтая штукатурка стен с декоративными элементами"
+        ],
+        "inferred": [
+          "Жилое или административное здание дореволюционной постройки"
+        ],
+        "unknown": [
+          "Точный год текущей реконструкции"
+        ]
+      },
+      "clarification_question": "",
+      "accepted_geometry": {
+        "decision": "accepted_geometry",
+        "candidate_id": "@374",
+        "candidate_label": 374,
+        "scope": "Здание по адресу улица Коперника, 21",
+        "decisive_relations": [
+          {
+            "source_observation": "Фасад исторического здания с центральным эркером и окнами специфической формы",
+            "map_features": [
+              {
+                "candidate_id": "@374",
+                "kind": "contour"
+              }
+            ],
+            "correspondence": "Контур здания на карте точно соответствует архитектурному объекту на фотографии по адресу ул. Коперника, 21"
+          }
+        ],
+        "rejected_alternatives": [],
+        "assumptions": [
+          "Камера расположена на уровне улицы перед фасадом здания"
+        ],
+        "bounded_coverage": {
+          "scope": "Здание по ул. Коперника, 21 и прилегающий уличный фронт",
+          "limitations": [
+            "Ограниченный обзор боковых стен здания из-за ракурса снизу"
+          ],
+          "material_alternatives_resolved": true
+        },
+        "camera_pose": {
+          "position_basis": "Перед главным фасадом здания на улице Коперника",
+          "yaw_basis": "Направление снизу вверх на центральную часть фасада",
+          "sensitivity": "Высокая детализация архитектурных элементов нижних и средних этажей"
+        },
+        "next_action": {
+          "kind": "none",
+          "reason": "Объект полностью идентифицирован по пространственным и региональным данным",
+          "target_candidate_ids": [
+            "@374"
+          ]
+        }
+      }
+    },
+    "input_bindings": {
+      "address_anchors": [
+        {
+          "mapped_entry_id": "osm:node:1876020727",
+          "city": "",
+          "street": "Житомирская улица",
+          "house_number": "22",
+          "distance_m": 23.6,
+          "entry_kind": "entrance",
+          "latitude_longitude": [
+            54.710606,
+            20.506669
+          ]
+        },
+        {
+          "mapped_entry_id": "osm:node:1876020730",
+          "city": "",
+          "street": "Житомирская улица",
+          "house_number": "24",
+          "distance_m": 38.5,
+          "entry_kind": "entrance",
+          "latitude_longitude": [
+            54.710571,
+            20.50638
+          ]
+        },
+        {
+          "mapped_entry_id": "osm:way:133035102",
+          "city": "",
+          "street": "улица Коперника",
+          "house_number": "21",
+          "distance_m": 185.4,
+          "entry_kind": "building",
+          "latitude_longitude": [
+            54.71054,
+            20.503849
+          ]
+        }
+      ],
+      "building_address_memberships": [
+        {
+          "physical_candidate_id": "osm:way:133035113",
+          "address_entry_ids": [
+            "osm:node:1876020727",
+            "osm:node:1876020730"
+          ],
+          "proof": "osm_closed_way_node_membership"
+        }
+      ],
+      "observed_physical_candidates": [
+        {
+          "candidate_id": "osm:way:133035113",
+          "name": "",
+          "address_city_street_house_number": null,
+          "latitude_longitude": [
+            54.710619,
+            20.50641
+          ],
+          "object_tags": {
+            "building": "yes"
+          },
+          "identity_eligible": true
+        },
+        {
+          "candidate_id": "osm:node:1876020727",
+          "name": "",
+          "address_city_street_house_number": [
+            "",
+            "Житомирская улица",
+            "22"
+          ],
+          "latitude_longitude": [
+            54.710606,
+            20.506669
+          ],
+          "object_tags": {
+            "entrance": "staircase"
+          },
+          "identity_eligible": true
+        },
+        {
+          "candidate_id": "osm:node:1876020730",
+          "name": "",
+          "address_city_street_house_number": [
+            "",
+            "Житомирская улица",
+            "24"
+          ],
+          "latitude_longitude": [
+            54.710571,
+            20.50638
+          ],
+          "object_tags": {
+            "entrance": "staircase"
+          },
+          "identity_eligible": true
+        },
+        {
+          "candidate_id": "osm:way:133035102",
+          "name": "",
+          "address_city_street_house_number": [
+            "",
+            "улица Коперника",
+            "21"
+          ],
+          "latitude_longitude": [
+            54.71054,
+            20.503849
+          ],
+          "object_tags": {
+            "building": "residential"
+          },
+          "identity_eligible": true
+        }
+      ],
+      "map_objects": [
+        {
+          "label": 204,
+          "candidate_id": "osm:node:1876020727"
+        },
+        {
+          "label": 206,
+          "candidate_id": "osm:node:1876020730"
+        },
+        {
+          "label": 374,
+          "candidate_id": "osm:way:133035102"
+        },
+        {
+          "label": 381,
+          "candidate_id": "osm:way:133035113"
+        }
+      ],
+      "physical_geometry": [
+        {
+          "label": 374,
+          "address": [
+            "улица Коперника",
+            "21"
+          ],
+          "height_levels": null,
+          "height_status": "missing",
+          "attribute_provenance": null,
+          "boundary_distance_m": 185.4,
+          "representative_distance_m": 199.7,
+          "bearing_start_end_span_degrees": [
+            269.2,
+            274.7,
+            5.4
+          ],
+          "extent_east_north_m": [
+            29.6,
+            19.8
+          ],
+          "longest_observed_segments_m": [
+            28.0,
+            28.0,
+            17.1,
+            17.1
+          ],
+          "geometry_status": "observed",
+          "contour_roles": [
+            "outer"
+          ],
+          "contours_complete": true
+        },
+        {
+          "label": 381,
+          "address": null,
+          "height_levels": null,
+          "height_status": "missing",
+          "attribute_provenance": null,
+          "boundary_distance_m": 21.1,
+          "representative_distance_m": 38.6,
+          "bearing_start_end_span_degrees": [
+            282.9,
+            318.5,
+            35.6
+          ],
+          "extent_east_north_m": [
+            34.1,
+            13.3
+          ],
+          "longest_observed_segments_m": [
+            33.4,
+            18.2,
+            15.2,
+            10.9
+          ],
+          "geometry_status": "observed",
+          "contour_roles": [
+            "outer"
+          ],
+          "contours_complete": true
+        }
+      ],
+      "point_geometry": [
+        {
+          "label": 204,
+          "representative_distance_m": 23.6,
+          "address": [
+            "Житомирская улица",
+            "22"
+          ],
+          "geometry_status": "point_only"
+        },
+        {
+          "label": 206,
+          "representative_distance_m": 38.5,
+          "address": [
+            "Житомирская улица",
+            "24"
+          ],
+          "geometry_status": "point_only"
+        }
+      ],
+      "first_wave_subjects": [
+        {
+          "kind": "address",
+          "subject_id": "osm:node:1876020727",
+          "group_key": "osm:way:133035113"
+        },
+        {
+          "kind": "address",
+          "subject_id": "osm:node:1876020730",
+          "group_key": "osm:way:133035113"
+        },
+        {
+          "kind": "address",
+          "subject_id": "osm:way:133035102",
+          "group_key": "osm:way:133035102"
+        }
+      ],
+      "regional_catalogue": {
+        "status": "completed",
+        "query_scope": {
+          "city": "Калининград",
+          "street": "улица Коперника",
+          "provenance": "already_received_reverse_address",
+          "anchor_kind": "original_exif",
+          "target_identity_established": false
+        },
+        "total_count": 1,
+        "received_row_count": 1,
+        "unique_article_count": 1,
+        "inventory_complete": true,
+        "pagination_urls": [],
+        "limitation": null,
+        "error_code": null,
+        "results": [
+          {
+            "article_id": "prussia39:sid:2306",
+            "canonical_url": "https://www.prussia39.ru/sight/index.php?sid=2306",
+            "title": "Здание городского ломбарда",
+            "address_text": "Калининградская область, г. Калининград, ул. Коперника, 21",
+            "annotation": "Здание городского ломбарда\nКалининградская область, г. Калининград, ул. Коперника, 21\nЗдание городского ломбарда построено в Кёнигсберге во второй половине XIX ",
+            "metadata_excerpt": true
+          }
+        ]
+      },
+      "reverse_address": {
+        "city": "Калининград",
+        "state": "Калининградская область",
+        "country": "Россия",
+        "road": "улица Коперника"
+      },
+      "map_coverage": {
+        "source": "osm_api_map",
+        "local_patch_radius_m": 320,
+        "broader_landmarks_queried": false,
+        "broader_landmark_radius_m": null,
+        "completeness": "unknown",
+        "received_object_count": 716,
+        "view_extent_east_north_m": [
+          -416.6,
+          -443.1,
+          415.6,
+          389.1
+        ],
+        "policy": "Received local OSM coverage, not proof that no farther or unmapped alternatives exist."
+      },
+      "detail_view": {
+        "panel_pixels": [
+          1280,
+          0,
+          2560,
+          1350
+        ],
+        "scale_bar_m": 20,
+        "meters_per_pixel": 0.158,
+        "extent_east_north_m": [
+          -90.0,
+          -90.0,
+          90.0,
+          90.0
+        ]
+      },
+      "input_sources": {
+        "initial-packet-2993537.json": {
+          "sha256": "ff72e45179dabd25f413611b993bed05c90407c6beb6409d533b90acc898d15a",
+          "bytes": 270761
+        },
+        "initial-prompt-2993537.txt": {
+          "sha256": "d36ed7f769bc5df7215f9a9a89e5c6bdabed91d1ebc55faa7a5600afcc518681",
+          "bytes": 98329
+        },
+        "299candidates.json": {
+          "sha256": "6baaf5a96e589c5181cf8b249f493d1de8f24a4441720a89b06966d23fe886bc",
+          "bytes": 6317
+        },
+        "299manifest.json": {
+          "sha256": "a6be93557cf46a214688aab5c1aaa83b5a0eaef0e37296f067b8d991b0ed0944",
+          "bytes": 129703
+        },
+        "299raw.json": {
+          "sha256": "affabbe3b4366b1a2eeef46a7777822dd0041c008a714d9db7aa4c7d5f3e38f3",
+          "bytes": 4573
+        }
+      },
+      "prompt_chars": 91977,
+      "counts": {
+        "observed_localities": 4,
+        "reverse_address": 4,
+        "nearby_context": 20,
+        "address_anchors": 153,
+        "building_address_memberships": 35,
+        "observed_physical_candidates": 428,
+        "map_exact_ids": 716,
+        "first_wave_subject_rows": 334,
+        "observed_physical_rows": 428,
+        "eligible_nonentrance_derived_from_current_source_rule": 325
+      },
+      "encoded_packet_section_bytes": {
+        "encoding": 37,
+        "join_policy": 1017,
+        "coordinate_grid_origin_microdegrees": 19,
+        "literals": 6366,
+        "region_hint": 85,
+        "regional_catalogue": 944,
+        "map_scene": 39719,
+        "wikipedia_metadata": 2713,
+        "owner_hint": 2,
+        "regional_source_profile": 744,
+        "first_wave_subjects": 5812,
+        "location_search_context": 32525,
+        "camera_hints": 194,
+        "capture_lat": 18,
+        "capture_lon": 10,
+        "author_context": 2
+      },
+      "nomination_schema_limit": "Actual frozen strict schema contents were not exported in the provided files; sql-299closedkeys.txt reports schema object length45987. Both targets are present and eligible in decoded observed_physical_candidates; current head excludes entrance nodes from observed nomination IDs.",
+      "raw_response_evidence": {
+        "selected_label": 374,
+        "selected_id": "osm:way:133035102",
+        "correct_label": 381,
+        "correct_id": "osm:way:133035113",
+        "article": "prussia39:sid:2306",
+        "article_stage": "catalogue metadata_excerpt, not acquired body in this initial packet",
+        "rejected_alternatives": [],
+        "source_observation": "central bay and distinctive windows",
+        "map_reference": "one contour",
+        "yaw_basis_is_pitch_instead_of_azimuth": true,
+        "sensitivity_is_detail_quality_not_pose_variation": true
+      }
+    },
+    "actual_candidates": [
+      {
+        "boundary_distance_m": 21.1,
+        "camera_inside_footprint": false,
+        "candidate_id": "osm:way:133035113",
+        "center": {
+          "lat": 54.71061855,
+          "lon": 20.506409849999997
+        },
+        "distance_m": 21.1,
+        "distance_provenance": "camera_to_observed_osm_boundary",
+        "entity_link_evidence": [],
+        "footprint_bearing_interval": {
+          "angular_span_degrees": 35.6,
+          "end_degrees": 318.45544390475993,
+          "provenance": "camera_to_observed_osm_geometry",
+          "start_degrees": 282.8684526919498
+        },
+        "identity_role": "anonymous_physical_building",
+        "map_coordinates": {
+          "latitude": 54.71061855,
+          "longitude": 20.506409849999997,
+          "provenance": "osm.center",
+          "source_url": "https://www.openstreetmap.org/way/133035113"
+        },
+        "map_geometry": {
+          "lines": [
+            [
+              {
+                "lat": 54.7106566,
+                "lon": 20.5066751
+              },
+              {
+                "lat": 54.7106061,
+                "lon": 20.5066687
+              },
+              {
+                "lat": 54.7105586,
+                "lon": 20.5066627
+              },
+              {
+                "lat": 54.7105705,
+                "lon": 20.5063804
+              },
+              {
+                "lat": 54.7105805,
+                "lon": 20.5061446
+              },
+              {
+                "lat": 54.7106785,
+                "lon": 20.506157
+              },
+              {
+                "lat": 54.7106566,
+                "lon": 20.5066751
+              }
+            ]
+          ],
+          "provenance": "osm.observed_geometry",
+          "rings": [
+            {
+              "closed": true,
+              "member_candidate_ids": [],
+              "points": [
+                {
+                  "lat": 54.7106566,
+                  "lon": 20.5066751
+                },
+                {
+                  "lat": 54.7106061,
+                  "lon": 20.5066687
+                },
+                {
+                  "lat": 54.7105586,
+                  "lon": 20.5066627
+                },
+                {
+                  "lat": 54.7105705,
+                  "lon": 20.5063804
+                },
+                {
+                  "lat": 54.7105805,
+                  "lon": 20.5061446
+                },
+                {
+                  "lat": 54.7106785,
+                  "lon": 20.506157
+                },
+                {
+                  "lat": 54.7106566,
+                  "lon": 20.5066751
+                }
+              ],
+              "role": "outer"
+            }
+          ],
+          "scope": "mapped_entry_only",
+          "source_url": "https://www.openstreetmap.org/way/133035113"
+        },
+        "map_object": {
+          "building_entrances": {
+            "candidate_ids": [
+              "osm:node:1876020727",
+              "osm:node:1876020730"
+            ],
+            "proof": "osm_closed_way_node_membership",
+            "source_url": "https://www.openstreetmap.org/way/133035113"
+          },
+          "provenance": "osm.tags",
+          "scope": "mapped_entry_only",
+          "source_url": "https://www.openstreetmap.org/way/133035113",
+          "tags": {
+            "building": "yes"
+          }
+        },
+        "name": "Здание без названия в OSM",
+        "osm_id": "osm:way:133035113",
+        "reference_excerpt": "{\"building\":\"yes\"}",
+        "reference_image_urls": [],
+        "representative_distance_m": 38.6,
+        "salience_rank": 3,
+        "selection_bucket": "nearby",
+        "type": "osm",
+        "url": "https://www.openstreetmap.org/way/133035113"
+      },
+      {
+        "boundary_distance_m": 185.4,
+        "camera_inside_footprint": false,
+        "candidate_id": "osm:way:133035102",
+        "distance_m": 185.4,
+        "distance_provenance": "camera_to_observed_osm_boundary",
+        "entity_link_evidence": [],
+        "footprint_bearing_interval": {
+          "angular_span_degrees": 5.4,
+          "end_degrees": 274.6598169159519,
+          "provenance": "camera_to_observed_osm_geometry",
+          "start_degrees": 269.23833154813144
+        },
+        "map_address": {
+          "house_number": "21",
+          "provenance": "osm.tags",
+          "scope": "mapped_entry_only",
+          "source_url": "https://www.openstreetmap.org/way/133035102",
+          "street": "улица Коперника"
+        },
+        "map_coordinates": {
+          "latitude": 54.7105402,
+          "longitude": 20.503849,
+          "provenance": "osm.center",
+          "source_url": "https://www.openstreetmap.org/way/133035102"
+        },
+        "map_geometry": {
+          "lines": [
+            [
+              {
+                "lat": 54.7104511,
+                "lon": 20.5040526
+              },
+              {
+                "lat": 54.7104764,
+                "lon": 20.5036186
+              },
+              {
+                "lat": 54.7106293,
+                "lon": 20.5036453
+              },
+              {
+                "lat": 54.7106039,
+                "lon": 20.5040794
+              },
+              {
+                "lat": 54.7104511,
+                "lon": 20.5040526
+              }
+            ]
+          ],
+          "provenance": "osm.observed_geometry",
+          "rings": [
+            {
+              "closed": true,
+              "member_candidate_ids": [],
+              "points": [
+                {
+                  "lat": 54.7104511,
+                  "lon": 20.5040526
+                },
+                {
+                  "lat": 54.7104764,
+                  "lon": 20.5036186
+                },
+                {
+                  "lat": 54.7106293,
+                  "lon": 20.5036453
+                },
+                {
+                  "lat": 54.7106039,
+                  "lon": 20.5040794
+                },
+                {
+                  "lat": 54.7104511,
+                  "lon": 20.5040526
+                }
+              ],
+              "role": "outer"
+            }
+          ],
+          "scope": "mapped_entry_only",
+          "source_url": "https://www.openstreetmap.org/way/133035102"
+        },
+        "map_object": {
+          "building_entrances": {
+            "candidate_ids": [],
+            "proof": "osm_closed_way_node_membership",
+            "source_url": "https://www.openstreetmap.org/way/133035102"
+          },
+          "provenance": "osm.tags",
+          "scope": "mapped_entry_only",
+          "source_url": "https://www.openstreetmap.org/way/133035102",
+          "tags": {
+            "building": "residential"
+          }
+        },
+        "name": "улица Коперника 21",
+        "osm_id": "osm:way:133035102",
+        "reference_excerpt": "{\"addr:city\":\"Калининград\",\"addr:housenumber\":\"21\",\"addr:street\":\"улица Коперника\",\"building\":\"residential\"}",
+        "reference_image_urls": [],
+        "representative_distance_m": 199.7,
+        "salience_rank": 3,
+        "selection_bucket": "nearby",
+        "type": "osm",
+        "url": "https://www.openstreetmap.org/way/133035102"
+      }
+    ],
+    "geometry_receipt": {
+      "source_db": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/candidate-2993537/data/street-story.sqlite3",
+      "source_sha": "29935371ac190a7a2eb92d6d80b4391226760365",
+      "closed_raw_sha256": "3446eae3a41bbc2b95ac21ef4a902428b98e9ec0d84de92f28f2ea9a6fa0a2fa",
+      "actual_declared_nomination_ids": [
+        "osm:way:133035102"
+      ],
+      "selected_candidate_id": "osm:way:133035102",
+      "actual_declared_alternatives_required": [],
+      "actual_rejected_alternatives": [],
+      "proposed_pointer_coverage_guard_would_reject_saved_answer": false,
+      "current_geometry_freeze_accepts_exact_received_features": true,
+      "current_replay_hash_matches_frozen_proof": true,
+      "raw_current_originalscope_geometry_result_valid": true,
+      "received_geometry_relation_count": 1,
+      "actual_map_feature_references": [
+        {
+          "candidate_id": "osm:way:133035102",
+          "kind": "contour"
+        }
+      ],
+      "relation_correspondences": [
+        "Контур здания на карте точно соответствует архитектурному объекту на фотографии по адресу ул. Коперника, 21"
+      ],
+      "geometry_camera_pose": {
+        "position_basis": "Перед главным фасадом здания на улице Коперника",
+        "sensitivity": "Высокая детализация архитектурных элементов нижних и средних этажей",
+        "yaw_basis": "Направление снизу вверх на центральную часть фасада"
+      },
+      "accepted_identity_matches_report_only_target": false,
+      "selected_regional_article_id": "prussia39:sid:2306",
+      "regional_body_acquired_for_identity": false,
+      "joint_followup_marker_present": false,
+      "actual_sdk_models": [
+        "gemini-3.5-flash-lite"
+      ],
+      "actual_sdk_call_count": 1,
+      "no_provider_or_http_calls_by_auditor": true,
+      "production_edits": false
+    },
+    "prompt_chars": 91977,
+    "prompt_utf8_bytes": 98329,
+    "prompt_sha256": "d36ed7f769bc5df7215f9a9a89e5c6bdabed91d1ebc55faa7a5600afcc518681",
+    "original_map_sha256": "3101b5bc9ca93cebb9b7f2dc670c5c558cf9f385fdd0ba1ce269868012ff9d39",
+    "original_map_pixels_inspected": false,
+    "map_reconstruction": "102-frozen-osm-comparison.png"
+  },
+  "photo102_prussia_045": {
+    "source_sha": "045d8028556a784f2b656ae61d017a59b32df221",
+    "story_id": "story_53f9a2e993824c00fa48457f",
+    "source_db": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/candidate-045d802/data/street-story.sqlite3",
+    "observed_at_elapsed_s": 190.8445587158203,
+    "report_status": "RUNNING",
+    "accepted_physical_id": "osm:way:133035102",
+    "expected_physical_id_report_only": "osm:way:133035113",
+    "physical_acceptance_gate_pass": false,
+    "regional_query": {
+      "address": "улица Коперника",
+      "city": "Калининград",
+      "name": ""
+    },
+    "catalogue_received_count": 1,
+    "catalogue_inventory_complete": true,
+    "catalogue_raw_body_bytes": 39462,
+    "selected_article_id": "prussia39:sid:2306",
+    "article_raw_body_bytes": 42936,
+    "transmitted_text_chars": 1046,
+    "timings_from_upload_s": {
+      "catalogue_received": 8.87786340713501,
+      "initial_sdk_invoked": 12.375973224639893,
+      "initial_closed": 18.645484685897827,
+      "article_received": 20.742181539535522,
+      "followup_closed": 28.948180675506592,
+      "plan_saved": 29.180789709091187
+    },
+    "integrity": {
+      "article_rawsha_matches_cache_and_receipt": true,
+      "normalized_text_hash_matches_receipt": true,
+      "offline_parser_matches_transmitted_text": true,
+      "prepared_request_sha_valid": true,
+      "actual_original_source_hash_matches_proof": true,
+      "source_text_receipt_digest_matches_prepared": true
+    },
+    "actual_joint_sdk_calls": 2,
+    "followup_phase": "response_closed",
+    "admission_retry": null,
+    "initial_rejection_code": "identity_first_wave_coverage_incomplete",
+    "final_architectural_text_decision": {
+      "article_bindings": [
+        {
+          "article_id": "prussia39:sid:2306",
+          "binding_basis": "Matched by exact address and architectural features from regional historical catalog.",
+          "candidate_id": "osm:way:133035102",
+          "physical_binding_resolved": true,
+          "scope": "Здание городского ломбарда, ул. Коперника, 21"
+        }
+      ],
+      "candidate_id": "osm:way:133035102",
+      "correspondences": [
+        {
+          "article_id": "prussia39:sid:2306",
+          "reason": "Архитектурные элементы фасада полностью совпадают с описанием в источнике.",
+          "source_observation": "На изображении видны характерные лучковые завершения оконных проемов и карнизы фасада.",
+          "source_quote": "Архитектурные особенности объекта: лучковые перемычки оконных и дверных проемов, междуэтажные и венчающие карнизы.",
+          "status": "stable_match"
+        }
+      ],
+      "decision": "accepted_architectural_text",
+      "discriminating_combination": "Здание городского ломбарда по ул. Коперника, 21 с центральным ризалитом, лучковыми перемычками окон и карнизами.",
+      "limitations": [],
+      "material_alternatives": [],
+      "material_alternatives_resolved": true,
+      "scope": "Здание городского ломбарда, ул. Коперника, 21",
+      "unresolved_contradictions": []
+    },
+    "received_physical_context": [
+      {
+        "candidate_id": "osm:way:133035113",
+        "name": "",
+        "address_city_street_house_number": null,
+        "latitude_longitude": [
+          54.710619,
+          20.50641
+        ],
+        "object_tags": {
+          "building": "yes"
+        },
+        "identity_eligible": true
+      },
+      {
+        "candidate_id": "osm:way:133035102",
+        "name": "",
+        "address_city_street_house_number": [
+          "",
+          "улица Коперника",
+          "21"
+        ],
+        "latitude_longitude": [
+          54.71054,
+          20.503849
+        ],
+        "object_tags": {
+          "building": "residential"
+        },
+        "identity_eligible": true
+      }
+    ],
+    "no_provider_or_http_calls_by_auditor": true
+  },
+  "configured_visual_quota": {
+    "captured_at": "2026-10-09T02:49:22.448822+00:00",
+    "source_sha": "29935371ac190a7a2eb92d6d80b4391226760365",
+    "scope": "configured SOURCE/MAP model, not all Google resources",
+    "model": "gemini-3.8-flash",
+    "reason": "shared_quota_rpd",
+    "registered_key_denials": 6,
+    "provider_send_state": "not_sent",
+    "sdk_inferences": 0,
+    "retry_after_seconds": [
+      77019.87903809547,
+      77023.7432770729
+    ],
+    "observed_at_utc": "2026-10-09T02:36 UTC",
+    "expected_reset_basis": "Retry-After approximately next UTC daily reset; no fresh admission probe performed",
+    "further_paid_runs_stopped": true,
+    "evidence": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/candidate-2993537/workers.log",
+    "evidence_sha256": "1ded2a812872190ec5015f9229f806da49e08e0c109a39a26a8bccb87fc8b295",
+    "qualification": "API metadata is not inference admission or recognition evidence"
+  },
+  "recorded_product_results": {
+    "prepared_sha": "3a568a7bcd86073df4efe5af54b41715e3efe228",
+    "product_pass": false,
+    "caps_from_upload": {
+      "identity_seconds": 180,
+      "first_eligible_seconds": 300,
+      "total_seconds": 480
+    },
+    "latest_live_case_102": {
+      "source_sha": "29935371ac190a7a2eb92d6d80b4391226760365",
+      "message_id": 102,
+      "status": "NO_PASS_WRONG_PHYSICAL_OBJECT",
+      "physical_id": "osm:way:133035102",
+      "expected_physical_id": "osm:way:133035113",
+      "proof_kind": "geometry",
+      "identity_seconds": 21.05067539215088,
+      "first_useful_fact_seconds": null,
+      "eligible_proved_count": 0,
+      "stop_seconds": 21.899965047836304,
+      "post_stop_report_snapshot_seconds": 22.195518970489502,
+      "operator_labels_supplied": false,
+      "operator_stopped": true,
+      "quota_evidence": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/visual-role-quota-blocker-2993537.json",
+      "audit": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/canary-facts-audit-2993537/review.json",
+      "exact_geometry_replay": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/geometry-coverage-audit-2993537/evidence.json"
+    },
+    "prior_104_independently_audited_partial": {
+      "source_sha": "24bbff5c2a871255509fe2f60d7e558bfd1521b6",
+      "physical_id": "osm:relation:3665416",
+      "first_useful_fact_seconds": 238.96680188179016,
+      "total_elapsed_s": 242.44387912750244,
+      "clean_substantive_atomic_count": 3,
+      "reviewed_eligible_claim_count": 7,
+      "source_url": "https://ru.wikipedia.org/wiki/%D0%91%D0%B0%D1%88%D0%BD%D1%8F_%D0%92%D1%80%D0%B0%D0%BD%D0%B3%D0%B5%D0%BB%D1%8F",
+      "source_content_sha256": "cba1657d6c1350fabb749356bdea8b3697dd82c11766dbf5b76fdf145a9ee276",
+      "clean_claims": [
+        "Дата основания Башни Врангеля — 1843 год.",
+        "Диаметр Башни Врангеля составляет 34 метра.",
+        "Башня Врангеля вместе с башней Дона предназначалась для прикрытия Верхнего пруда (Верхнего озера) как потенциально слабого места в обороне города."
+      ],
+      "audit": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/canary-facts-audit-24bbff5/review.json",
+      "current_release_acceptance_credit": false
+    },
+    "observed_diagnostic_google_totals": {
+      "google_observed_sdk_invocations": 95,
+      "google_response_closed": 49,
+      "google_sdk_reported_total_tokens_lower_bound": 2077744,
+      "google_observed_http_error_responses": 21,
+      "google_unknown_outcome_sdk_calls": 25
+    },
+    "hosted_ci": {
+      "source_sha": "3a568a7bcd86073df4efe5af54b41715e3efe228",
+      "backend": {
+        "conclusion": "success",
+        "tests_passed": 2455,
+        "tests_skipped": 5,
+        "test_seconds": 188.1,
+        "ruff": "PASS",
+        "run_url": "https://github.com/onedayonemasterpiece/street-story/actions/runs/37876290826",
+        "retained_log": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/ci-backend-3a568a7.log"
+      },
+      "android_checks": "success",
+      "ci_emulator": "success",
+      "product_acceptance_credit": false,
+      "release": "skipped",
+      "android_run_url": "https://github.com/onedayonemasterpiece/street-story/actions/runs/37876290692",
+      "android_retained_log": "/home/dev/artifacts/street-story/20261008T172026Z-product-recovery-audit-implementation-20261008/ci-android-3a568a7.log"
+    }
+  },
+  "offline_geometry": {
+    "photo102_source": "research-next/ingest/preview-102.jpg",
+    "source_original_sha256": "f56c6cfeaf4b88a018dd3567e66d6fd75918d42da30100cff718c069b10d7c7e",
+    "camera": {
+      "lat": 54.710473399722225,
+      "lon": 20.5069561,
+      "orientation": 6,
+      "focal35_mm": 24,
+      "digital_zoom_ratio": 1,
+      "gps_heading": null,
+      "gps_accuracy": null
+    },
+    "wrong_candidate": {
+      "osm_ref": "way/133035102",
+      "address": {
+        "addr:city": "Калининград",
+        "addr:housenumber": "21",
+        "addr:street": "улица Коперника",
+        "building": "residential"
+      },
+      "polygon_lonlat": [
+        [
+          20.5040526,
+          54.7104511
+        ],
+        [
+          20.5036186,
+          54.7104764
+        ],
+        [
+          20.5036453,
+          54.7106293
+        ],
+        [
+          20.5040794,
+          54.7106039
+        ],
+        [
+          20.5040526,
+          54.7104511
+        ]
+      ],
+      "boundary_distance_m": 185.36,
+      "azimuth_interval_deg": {
+        "start_deg": 269.24,
+        "end_deg": 274.66,
+        "width_deg": 5.42,
+        "wraps_north": false
+      },
+      "source": "cached photo120 OSM snapshot; different query center but same complete way geometry"
+    },
+    "prussia_card": {
+      "sid": 3875,
+      "url": "https://www.prussia39.ru/sight/index.php?sid=3875",
+      "address": "Житомирская, 22, 24",
+      "point_lat": 54.710613,
+      "point_lon": 20.506637,
+      "camera_distance_m": 25.713,
+      "camera_bearing_deg": 307.136,
+      "point_to_wrong_boundary_m": 164.299,
+      "coordinate_scope": "publisher point, not EXIF and not independently validated footprint center",
+      "point_inside_frozen_target": true,
+      "point_to_target_boundary_m": 2.087
+    },
+    "target_geometry_status": "Full closed observed polygon reconstructed from frozen299candidates; two entrance address memberships decoded from actual initial-packet299.",
+    "actual_received_candidate_centers_045": [
+      {
+        "id": "osm:way:133035113",
+        "lat": 54.710619,
+        "lon": 20.50641,
+        "center_distance_m": 38.636,
+        "center_bearing_deg": 294.774,
+        "source": "actual received_physical_context in prussia-receipt-045d802; center point, not boundary"
+      },
+      {
+        "id": "osm:way:133035102",
+        "lat": 54.71054,
+        "lon": 20.503849,
+        "center_distance_m": 199.732,
+        "center_bearing_deg": 272.125,
+        "source": "actual received_physical_context in prussia-receipt-045d802; center point, not boundary"
+      }
+    ],
+    "frozen299_geometry": [
+      {
+        "id": "osm:way:133035113",
+        "polygon_lonlat": [
+          [
+            20.5066751,
+            54.7106566
+          ],
+          [
+            20.5066687,
+            54.7106061
+          ],
+          [
+            20.5066627,
+            54.7105586
+          ],
+          [
+            20.5063804,
+            54.7105705
+          ],
+          [
+            20.5061446,
+            54.7105805
+          ],
+          [
+            20.506157,
+            54.7106785
+          ],
+          [
+            20.5066751,
+            54.7106566
+          ]
+        ],
+        "boundary_distance_m": 21.095,
+        "bearing_interval": {
+          "start_deg": 282.87,
+          "end_deg": 318.46,
+          "width_deg": 35.59,
+          "wraps_north": false
+        },
+        "edges": [
+          {
+            "segment": 1,
+            "length_m": 5.3,
+            "distance_m": 21.09,
+            "nearest_bearing_deg": 296.69,
+            "axis_deg_mod180": 4.17,
+            "a": [
+              -18.462097499357174,
+              14.755618034118013
+            ],
+            "b": [
+              -18.84752750972023,
+              9.473851722928874
+            ]
+          },
+          {
+            "segment": 2,
+            "length_m": 18.18,
+            "distance_m": 21.09,
+            "nearest_bearing_deg": 296.69,
+            "axis_deg_mod180": 94.17,
+            "a": [
+              -18.84752750972023,
+              9.473851722928874
+            ],
+            "b": [
+              -36.98200950004059,
+              10.797073178159529
+            ]
+          },
+          {
+            "segment": 0,
+            "length_m": 5.63,
+            "distance_m": 23.63,
+            "nearest_bearing_deg": 308.63,
+            "axis_deg_mod180": 4.19,
+            "a": [
+              -18.05097215489384,
+              20.37096958595562
+            ],
+            "b": [
+              -18.462097499357174,
+              14.755618034118013
+            ]
+          },
+          {
+            "segment": 5,
+            "length_m": 33.37,
+            "distance_m": 27.22,
+            "nearest_bearing_deg": 318.46,
+            "axis_deg_mod180": 94.18,
+            "a": [
+              -51.33285355476445,
+              22.806141843084465
+            ],
+            "b": [
+              -18.05097215489384,
+              20.37096958595562
+            ]
+          },
+          {
+            "segment": 3,
+            "length_m": 15.19,
+            "distance_m": 38.53,
+            "nearest_bearing_deg": 286.28,
+            "axis_deg_mod180": 94.2,
+            "a": [
+              -36.98200950004059,
+              10.797073178159529
+            ],
+            "b": [
+              -52.129408909819055,
+              11.909023980057716
+            ]
+          },
+          {
+            "segment": 4,
+            "length_m": 10.93,
+            "distance_m": 53.47,
+            "nearest_bearing_deg": 282.87,
+            "axis_deg_mod180": 4.18,
+            "a": [
+              -52.129408909819055,
+              11.909023980057716
+            ],
+            "b": [
+              -51.33285355476445,
+              22.806141843084465
+            ]
+          }
+        ],
+        "frozen_boundary_distance_m": 21.1,
+        "frozen_angular_span_deg": 35.6,
+        "geometry_scope": "mapped_entry_only",
+        "entrance_membership": {
+          "candidate_ids": [
+            "osm:node:1876020727",
+            "osm:node:1876020730"
+          ],
+          "proof": "osm_closed_way_node_membership",
+          "source_url": "https://www.openstreetmap.org/way/133035113"
+        }
+      },
+      {
+        "id": "osm:way:133035102",
+        "polygon_lonlat": [
+          [
+            20.5040526,
+            54.7104511
+          ],
+          [
+            20.5036186,
+            54.7104764
+          ],
+          [
+            20.5036453,
+            54.7106293
+          ],
+          [
+            20.5040794,
+            54.7106039
+          ],
+          [
+            20.5040526,
+            54.7104511
+          ]
+        ],
+        "boundary_distance_m": 185.363,
+        "bearing_interval": {
+          "start_deg": 269.24,
+          "end_deg": 274.66,
+          "width_deg": 5.42,
+          "wraps_north": false
+        },
+        "edges": [
+          {
+            "segment": 2,
+            "length_m": 28.03,
+            "distance_m": 185.36,
+            "nearest_bearing_deg": 274.49,
+            "axis_deg_mod180": 95.78,
+            "a": [
+              -212.68027975165367,
+              17.33534389565954
+            ],
+            "b": [
+              -184.79441849755045,
+              14.510988857905835
+            ]
+          },
+          {
+            "segment": 3,
+            "length_m": 17.08,
+            "distance_m": 185.36,
+            "nearest_bearing_deg": 274.49,
+            "axis_deg_mod180": 5.79,
+            "a": [
+              -184.79441849755045,
+              14.510988857905835
+            ],
+            "b": [
+              -186.5160058772482,
+              -2.4796194020196656
+            ]
+          },
+          {
+            "segment": 0,
+            "length_m": 28.02,
+            "distance_m": 186.53,
+            "nearest_bearing_deg": 269.24,
+            "axis_deg_mod180": 95.76,
+            "a": [
+              -186.5160058772482,
+              -2.4796194020196656
+            ],
+            "b": [
+              -214.3954432979975,
+              0.33361612758074183
+            ]
+          },
+          {
+            "segment": 1,
+            "length_m": 17.09,
+            "distance_m": 213.39,
+            "nearest_bearing_deg": 274.66,
+            "axis_deg_mod180": 5.76,
+            "a": [
+              -214.3954432979975,
+              0.33361612758074183
+            ],
+            "b": [
+              -212.68027975165367,
+              17.33534389565954
+            ]
+          }
+        ],
+        "frozen_boundary_distance_m": 185.4,
+        "frozen_angular_span_deg": 5.4,
+        "geometry_scope": "mapped_entry_only",
+        "entrance_membership": {
+          "candidate_ids": [],
+          "proof": "osm_closed_way_node_membership",
+          "source_url": "https://www.openstreetmap.org/way/133035102"
+        }
+      }
+    ],
+    "frozen299_entrances": [
+      {
+        "id": "osm:node:1876020727",
+        "map_label": 204,
+        "street": "Житомирская улица",
+        "house_number": "22",
+        "lat": 54.710606,
+        "lon": 20.506669,
+        "position_precision": "microdegree-rounded transmitted address anchor",
+        "belongs_to": "osm:way:133035113",
+        "membership_proof": "osm_closed_way_node_membership"
+      },
+      {
+        "id": "osm:node:1876020730",
+        "map_label": 206,
+        "street": "Житомирская улица",
+        "house_number": "24",
+        "lat": 54.710571,
+        "lon": 20.50638,
+        "position_precision": "microdegree-rounded transmitted address anchor",
+        "belongs_to": "osm:way:133035113",
+        "membership_proof": "osm_closed_way_node_membership"
+      }
+    ],
+    "frozen299_provenance": {
+      "299candidates.json": "6baaf5a96e589c5181cf8b249f493d1de8f24a4441720a89b06966d23fe886bc",
+      "299manifest.json": "a6be93557cf46a214688aab5c1aaa83b5a0eaef0e37296f067b8d991b0ed0944",
+      "initial-packet-2993537.json": "ff72e45179dabd25f413611b993bed05c90407c6beb6409d533b90acc898d15a"
+    },
+    "map_reconstruction_scope": "This PNG is independently reconstructed from frozen OSM objects, not the original model PNG. Only two examined candidates; not exhaustive uniqueness proof."
+  },
+  "limits": [
+    "No new blind accuracy or latency benchmark.",
+    "Actual299 had catalogue2306 metadata, not article body. Actual045 read body2306, not3875.",
+    "Catalogue salience is an evidence-backed causal hypothesis, not an isolated A/B result.",
+    "Two plotted contours do not establish full spatial uniqueness.",
+    "Horizontal footprint azimuth span is not projected pixel width at unknown pitch/crop.",
+    "Reported provider total tokens are not prompt-only tokens or a monetary bill."
+  ],
+  "kimi_consultation": {
+    "task_id": "dvt_60e45380c4ba41c5842d5b5ed98f861c",
+    "selected_model": "nvidia/moonshotai/kimi-k3",
+    "access": "read",
+    "status": "completed",
+    "basis": "Second turn based on auditor-provided verified excerpts; Kimi did not independently read source files or artifact JSON.",
+    "first_turn_interrupted": true,
+    "photo_inference": false,
+    "artifact_metadata": {
+      "status": "ok",
+      "path": "/home/dev/.local/share/openai-codex-mcp/model-consultations/dvt_60e45380c4ba41c5842d5b5ed98f861c.md",
+      "sha256": "ac74f16f3d0fff90c2eaa2577d3287d6120fe0f6cb0c0ee7a976d721f01d533a",
+      "bytes": 5519,
+      "format": "markdown",
+      "reused": true
+    },
+    "evidence_digest": "5d032f70bc95772363208ffe01bfb9a985742da15ac380a58a3c070925427ba7",
+    "root_review": "Qualified advisory only; rejected confusion of article and physical pools, unsupported focal-distance cutoff, mandatory >=2 catalogue entries, and unisolated causal certainty.",
+    "document": "kimi-k3.md"
+  }
+}
