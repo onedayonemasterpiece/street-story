@@ -339,5 +339,15 @@ class ArchitecturalWikipediaReader:
         if (len(received)!=1 or len(true_cards)!=1
                 or received[0].get('title')!=true_cards[0]['title']):
             raise ValueError('model_selected_wikipedia_page_not_received')
-        return await self.article_by_observed_title(
+        article=await self.article_by_observed_title(
             true_cards[0]['title'],language=received_search['language'])
+        # MediaWiki redirects may resolve the selected title to a different
+        # page. Such a page is not the actually model-selected page ID and
+        # must not be laundered into the source proof.
+        if article.get('status')=='completed' and article.get('article_id')!=f'wiki:{selected_pageid}':
+            return {'status':'completed_empty',
+                'requested_pageid':selected_pageid,
+                'actual_redirected_article_id':article.get('article_id'),
+                'reason':'wikipedia_selected_pageid_redirected_to_another_subject',
+                'identity_inferred':False}
+        return article
