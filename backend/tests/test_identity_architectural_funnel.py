@@ -138,11 +138,14 @@ def test_model_not_frozen_proof_cannot_approve_an_individual_building():
     bad=close_t_g_funnel(prepared,proposed,
         source_sha256=receipt['original_source_sha256'],
         t_accepted=False,accepted_candidate_id='osm:way:7')
-    assert bad['status']=='unconfirmed_model_claim'
-    assert bad['after_T_active_count']==2
-    assert bad['request_reserve_expansion'] is True
+    assert bad['status']=='conditional_T_shortlist'
+    assert bad['after_T_active_count']==1
+    assert bad['after_T_reserved_count']==3
     assert bad['T_proof_accepted'] is False
-    assert bad['reserve_physical_candidate_ids']==['osm:way:9','osm:way:10']
+    assert bad['accepted_physical_id'] is None
+    assert bad['conditional_T_research_priority_not_identity'] is True
+    assert bad['reserve_physical_candidate_ids']==['osm:way:9','osm:way:10','osm:way:8']
+    assert bad['t_explicit_contradictions'][0]['review_state']=='model_contradiction_not_authorized'
     accepted=close_t_g_funnel(prepared,proposed,
         source_sha256=receipt['original_source_sha256'],
         t_accepted=True,accepted_candidate_id='osm:way:7')
@@ -283,3 +286,27 @@ def test_forged_or_unclosed_independent_model_lead_cannot_expand_G_active():
                 source_sha256=receipt['original_source_sha256'],
                 g_source_sha256=receipt['original_source_sha256'],
                 independent_closed_T_leads=[changed])
+
+
+
+def test_unaccepted_T_reuses_actual_G_model_question_as_targeted_ref_hint():
+    story,candidates,decision,receipt,g=_inputs()
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    claim=_t_result(effect='confirmed')
+    claim['targeted_images']=[]
+    claim['next_distinguishing_question']='None required.'
+    result=close_t_g_funnel(prepared,claim,
+        source_sha256=receipt['original_source_sha256'])
+    assert result['status']=='conditional_T_shortlist'
+    assert result['after_T_active_count']==1
+    assert result['after_T_reserved_count']==3
+    assert result['accepted_physical_id'] is None
+    assert result['T_proof_accepted'] is False
+    assert result['downstream_REF']['image_goal_provenance']=='G_closed_model_question_reused'
+    assert result['downstream_REF']['image_research_goals'][0][
+        'needed_view_or_feature']=='Which building owns the central bay?'
+    assert result['downstream_REF']['image_research_goals'][0][
+        'target_candidate_ids']==['osm:way:7']
+    assert result['identity_authorized_by_shortlist_count_alone'] is False
