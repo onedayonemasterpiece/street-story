@@ -21,6 +21,12 @@ def _article(aid, text):
 
 def _three_documents():
     story,candidates,decision,receipt=text_inputs()
+    # An observed real OSM address record, not a parser-generated
+    # correspondence. The model decides whether it describes the photo.
+    candidates[0]['map_address']={'street':'Observed literal street',
+        'house_number':'7'}
+    story['_identity_observed_candidates']=candidates
+    receipt['articles'][0]['address_provenance']='publisher_article_metadata_table'
     first=receipt['articles'][0]
     second=_article('catalog:neighbor-one',
         'The building is historically important but the article describes no visible facade.')
@@ -32,6 +38,24 @@ def _three_documents():
 
 def _closed_answer(decision,ids,packet):
     result=copy.deepcopy(decision)
+    evidence=packet['literal_evidence_inventory']
+    aid=result['article_bindings'][0]['article_id']
+    physical_id=result['candidate_id']
+    publisher_ref=next(item['ref'] for item in evidence['articles']
+        if item['article_id']==aid for item in
+        item['actual_acquired_publisher_records'])
+    osm_ref=next(item['ref'] for body in evidence['physical_subjects']
+        if body['candidate_id']==physical_id
+        for item in body['literal_observed_evidence'])
+    result['physical_link_evidence']=[{
+        'article_id':aid,'candidate_id':physical_id,
+        'publisher_ref':publisher_ref,'osm_ref':osm_ref,
+        'relationship':'same_individual_physical_body',
+        'subject_scope':'specific_photographed_OSM_body',
+        'architectural_scope_explanation':
+            'SOURCE shows the individual gable/window group from this observed body.',
+        'postal_interpretation':
+            'Model attributes two real literal records, not a parser.'}]
     for relation in result['correspondences']:
         candidates=[ref for ref,span in packet['source_span_refs'].items()
             if span['article_id']==relation['article_id']
@@ -76,6 +100,8 @@ def test_three_actual_articles_reach_one_contrastive_model_call_and_correct_thir
     assert packet['input_contract']=='source-multiple-architecture-pool-v2-literal-span-refs'
     assert packet['text_utf8_bytes']<16000
     assert 'source_span_ref' in str(packet['schema'])
+    assert 'physical_link_evidence' in packet['schema']['properties']
+    assert 'host_postal_address_interpretation' in packet['prompt']
     assert 'source_quote' not in str(packet['schema'])
     assert packet['schema']['properties']['article_comparisons']['minItems']==3
     output=_closed_answer(decision,packet['article_ids'],packet)
@@ -230,3 +256,65 @@ def test_without_GPS_model_can_nominate_article_but_never_accept_physical_ID():
         answer['candidate_id']='osm:way:1234567'
         close_architectural_pool_response(story,[],packet,answer,
             source_text_receipt=receipt)
+
+
+
+def test_model_physical_binding_cannot_point_to_another_source_or_osm_body():
+    story,candidates,decision,receipt=_three_documents()
+    other={'candidate_id':'osm:way:8','identity_eligible':True,
+        'map_address':{'street':'Observed literal street','house_number':'8'},
+        'map_object':{'tags':{'building':'yes'}}}
+    candidates.append(other)
+    story['_identity_observed_candidates']=candidates
+    packet=prepare_architectural_pool(story,candidates,receipt,
+        candidate_ids=['osm:way:7','osm:way:8'])
+    good=_closed_answer(decision,packet['article_ids'],packet)
+    foreign=copy.deepcopy(good)
+    refs=packet['literal_evidence_inventory']['osm_refs']
+    foreign['physical_link_evidence'][0]['osm_ref']=next(ref
+        for ref,row in refs.items() if row['candidate_id']=='osm:way:8')
+    result=close_architectural_pool_response(story,candidates,packet,foreign,
+        source_text_receipt=receipt)
+    assert result['accepted'] is False
+    assert result['reason']=='osm_ref_does_not_belong_to_nominated_physical_body'
+    foreign2=copy.deepcopy(good)
+    foreign2['physical_link_evidence'][0]['publisher_ref']=next(ref
+        for ref,row in packet['literal_evidence_inventory']['publisher_refs'].items()
+        if row['article_id']=='catalog:neighbor-one')
+    result=close_architectural_pool_response(story,candidates,packet,foreign2,
+        source_text_receipt=receipt)
+    assert result['accepted'] is False
+    assert result['reason']=='publisher_ref_does_not_point_to_bound_acquired_article'
+
+
+def test_model_complex_only_scope_never_promotes_a_physical_building():
+    story,candidates,decision,receipt=_three_documents()
+    packet=prepare_architectural_pool(story,candidates,receipt,
+        candidate_ids=['osm:way:7'])
+    claim=_closed_answer(decision,packet['article_ids'],packet)
+    claim['physical_link_evidence'][0].update(
+        relationship='documented_complex_component',
+        subject_scope='historical_complex_only',
+        architectural_scope_explanation='This text describes several wings, not a unique photographed corpus.')
+    result=close_architectural_pool_response(story,candidates,packet,claim,
+        source_text_receipt=receipt)
+    assert result['accepted'] is False
+    assert result['reason']=='llm_did_not_resolve_individual_physical_body'
+
+
+def test_no_host_address_parser_can_preselect_a_physical_candidate():
+    story,candidates,decision,receipt=_three_documents()
+    packet=prepare_architectural_pool(story,candidates,receipt,
+        candidate_ids=['osm:way:7'])
+    inventory=packet['literal_evidence_inventory']
+    assert inventory['host_address_parser_used'] is False
+    assert all('raw' not in key for key in inventory['osm_refs'])
+    # A publisher postal range is still shown as the raw evidence string,
+    # and no parser emits "exact" or "complex" joins ahead of the model.
+    receipt['articles'][0]['address']='Observed literal street 7–9'
+    again=prepare_architectural_pool(story,candidates,receipt,
+        candidate_ids=['osm:way:7'])
+    addresses=[row['literal_value'] for row in
+        again['literal_evidence_inventory']['publisher_refs'].values()]
+    assert 'Observed literal street 7–9' in addresses
+    assert 'publisher_postal_matches_not_identity' not in again['prompt']
