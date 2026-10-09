@@ -29,7 +29,7 @@ def test_spatial_packet_is_faithful_without_regional_or_wikipedia_corpus():
     assert supplied['camera_hints'] == packet['camera_hints']
     assert len(supplied['map_scene']['objects']['rows']) == 3
     assert 'wikipedia_metadata' not in supplied and 'regional_catalogue' not in supplied
-    assert 'external REF is attached' not in prompt
+    assert supplied['external_ref_in_this_visual_send'] is False
     assert len(prompt.encode()) < len(json.dumps(packet, ensure_ascii=False).encode()) / 3
 
 
