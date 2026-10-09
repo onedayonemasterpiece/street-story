@@ -128,6 +128,66 @@ def source_map_prompt(packet):
         +json.dumps(for_vision(packet),ensure_ascii=False,separators=(',',':')))
 
 
+def replay_closed(cid, model):
+    """Revalidate ONE completed provider answer without another image-model send."""
+    case=ROOT/'cases'/str(cid)
+    path=case/('inference-'+model.replace('/','-'))
+    raw_path=path/'closed-model-response.json'
+    receipt_path=path/'provider-intent.json'
+    options_path=path/'sent-options.json'
+    if not all(f.exists() for f in (raw_path,receipt_path,options_path)):
+        return {'id':cid,'status':'no_closed_model_answer_to_replay','model_calls':0}
+    old=json.loads(receipt_path.read_text())
+    raw=raw_path.read_text()
+    if (old.get('phase')!='response_closed' or old.get('response_sha256')!=
+            hashlib.sha256(raw.encode()).hexdigest()):
+        return {'id':cid,'status':'closed_response_not_verified','model_calls':0}
+    out_file=path/'result-host-replay-v2.json'
+    if out_file.exists():
+        result=json.loads(out_file.read_text())
+        return {**result,'status':'reused_host_revalidation',
+            'model_calls_this_operation':0}
+    packet=json.loads(options_path.read_text())
+    model_answer=json.loads(raw)
+    receipt=json.loads((case/'input-receipt.json').read_text())
+    from g26_prepare_inputs import SOURCE_INDEX, observed_osm
+    meta={x['message_id']:x for x in json.loads(SOURCE_INDEX.read_text())['items']}[cid]
+    original=Path(receipt['source_path']).read_bytes()
+    coordinate=tuple(meta['camera_point'])
+    osm,_origin=observed_osm(cid,coordinate)
+    story={'latitude':coordinate[0],'longitude':coordinate[1],
+           '_identity_map_snapshot':osm}
+    handoff=project_g_funnel(model_answer,packet,scene_entries(story,[]),
+        source_sha256=hashlib.sha256(original).hexdigest(),
+        model_source_sha256=receipt['source_model_sha256'],
+        actual_source_sha256=receipt['original_photo_sha256'],
+        actual_map_sha256=receipt['map_sha256'])
+    errors=list(Draft202012Validator(visual_spatial_choice_schema()).iter_errors(model_answer))
+    report={'id':cid,'model':model,'status':handoff['status'],
+       'accepted':handoff['accepted'],'accepted_id':handoff.get('accepted_id'),
+       'initial_body_count':packet['physical_body_count'],
+       'active_count':handoff.get('active_count',0),
+       'reserve_count':(handoff.get('reserve_count')
+           if handoff['status']!='invalid' else packet['physical_body_count']),
+       'active_physical_candidates':[
+          {'label':item['label'],'candidate_id':item['candidate_id'],
+           'source_match':item['source_match'],
+           'unresolved_difference':item['unresolved_difference']}
+          for item in handoff.get('active') or []],
+       't_question':handoff.get('t_distinguishing_question'),
+       'next_step':handoff.get('next_step'),
+       'reason_codes':handoff.get('reason_codes'),
+       'schema_errors':[list(e.absolute_path) for e in errors],
+       'original_provider_response_sha256':old['response_sha256'],
+       'original_provider_model_calls':1,
+       'model_calls_this_operation':0,
+       'new_inference_performed':False,
+       'oracle_absent_from_model':True}
+    _write_once(path/'funnel-handoff-host-replay-v2.json',handoff)
+    _write_once(out_file,report)
+    return report
+
+
 async def run_one(cid,model,*,dry,schema_transport='structured'):
     start=time.monotonic()
     case=ROOT/'cases'/str(cid)
@@ -353,6 +413,7 @@ async def main():
     parser.add_argument('--ids',type=int,nargs='+',required=True)
     parser.add_argument('--model',required=True)
     parser.add_argument('--dry-run',action='store_true')
+    parser.add_argument('--replay-closed',action='store_true')
     parser.add_argument('--schema-transport',choices=['structured','json-mode'],
                         default='structured')
     args=parser.parse_args()
@@ -361,8 +422,11 @@ async def main():
     rows=[]
     for id in args.ids:
         try:
-            rows.append(await run_one(
-                id,args.model,dry=args.dry_run,schema_transport=args.schema_transport))
+            if args.replay_closed:
+                rows.append(replay_closed(id,args.model))
+            else:
+                rows.append(await run_one(
+                    id,args.model,dry=args.dry_run,schema_transport=args.schema_transport))
         except Exception as exc:
             rows.append({'id':id,'status':'pre_send_or_local_error',
                 'error_type':type(exc).__name__,'code':str(exc)[:200],
