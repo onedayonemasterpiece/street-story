@@ -13,6 +13,8 @@ from street_story.identity_architectural_funnel import (
     project_independent_T_nomination, to_existing_research_priority)
 from street_story.identity_architectural_pool import (
     close_architectural_pool_response, prepare_architectural_pool)
+from street_story.identity_architectural_comparison import (
+    prepare_architectural_comparison,combine_architectural_decision)
 from test_identity_architectural_pool import _closed_answer, _three_documents
 
 
@@ -482,3 +484,65 @@ def test_no_actual_architectural_text_yields_reversible_G_partial_value_and_imag
     assert result['reason']=='no_acquired_architectural_text'
     assert result['g_handoff']['original_active_ids']==['osm:way:7','osm:way:8']
     assert result['next_step']=='existing_images_or_expanded_publisher_search'
+
+
+
+def test_same_existing_compact_T_provider_call_accepts_G_and_emits_native_priority():
+    story,candidates,decision,receipt,g=_inputs()
+    # Existing Codex #246 compact model normally receives 1-2 verified
+    # bodies, not the 8-article T research supplier.
+    receipt['articles']=[receipt['articles'][0],receipt['articles'][-1]]
+    prepared=prepare_architectural_comparison(story,candidates,receipt,
+        require_grounded_refs=True,
+        g_funnel=g,g_source_sha256=receipt['original_source_sha256'])
+    assert prepared['candidate_ids']==['osm:way:7','osm:way:8']
+    assert 't_funnel' in prepared['schema']['required']
+    assert prepared['g_funnel_prepared']['original_reserve_ids']==[
+        'osm:way:9','osm:way:10']
+    assert 'G_to_T_active_shortlist_not_ground_truth' in prepared['prompt']
+    answer=copy.deepcopy(decision)
+    answer.update(decision='uncertain',candidate_id='',
+        article_bindings=[],correspondences=[],material_alternatives=[],
+        material_alternatives_resolved=False,physical_link_evidence=[],
+        t_funnel=_t_result())
+    closed=combine_architectural_decision({},answer,prepared['schema'],
+        literal_evidence_inventory=prepared['literal_evidence_inventory'],
+        g_funnel_prepared=prepared['g_funnel_prepared'],
+        source_sha256=receipt['original_source_sha256'],
+        source_articles=receipt['articles'])
+    assert closed['accepted_architectural_text']['decision']=='uncertain'
+    assert 't_funnel' not in closed['accepted_architectural_text']
+    assert closed['research_priority']['candidate_ids']==['osm:way:7']
+    assert closed['research_priority']['next_question'].startswith(
+        'Which photographed body')
+    assert closed['T_shortlist_and_REF_plan']['T_proof_accepted'] is False
+    assert closed['T_shortlist_and_REF_plan']['reserve_physical_candidate_ids']==[
+        'osm:way:9','osm:way:10','osm:way:8']
+    assert closed['research_priority']['contradictions'][0]['scope']=='facade'
+
+
+def test_legacy_compact_G_no_reduction_continues_T_instead_of_blocking():
+    story,candidates,decision,receipt,g=_inputs()
+    receipt['articles']=[receipt['articles'][0],receipt['articles'][-1]]
+    g.update(status='no_useful_reduction',active=[],reserve=[
+        {'candidate_id':cid} for cid in (
+            'osm:way:7','osm:way:8','osm:way:9','osm:way:10')])
+    # The existing acquired article has no model-nominated body. Explicit
+    # previous model lead provides a normal T research scope, not G's veto.
+    receipt['articles'][1]['lookup_candidate_ids']=['osm:way:7']
+    packet=prepare_architectural_comparison(story,candidates,receipt,
+        g_funnel=g,g_source_sha256=receipt['original_source_sha256'])
+    assert packet.get('skip_T') is not True
+    assert packet['candidate_ids']==['osm:way:7']
+    assert packet['g_funnel_prepared'] is None
+    assert 't_funnel' not in packet['schema']['properties']
+
+
+def test_compact_G_independently_accepted_never_requires_text():
+    story,candidates,decision,receipt,g=_inputs()
+    g.update(status='accepted_identity_proposal',accepted=True,accepted_id='osm:way:7')
+    packet=prepare_architectural_comparison(story,candidates,{
+        'original_source_sha256':receipt['original_source_sha256'],'articles':[]},
+        g_funnel=g,g_source_sha256=receipt['original_source_sha256'])
+    assert packet['skip_T'] is True
+    assert packet['g_funnel_prepared']['stage']=='already_accepted_G'
