@@ -324,6 +324,32 @@ def parse_coordinates(soup):
             'window_bounds': None}
 
 
+def observed_article_image_links(soup, *, max_links=24):
+    """Literal publisher image links already present in acquired HTML.
+
+    Links are candidates for later visual comparison, not proof of a specific
+    building. No extra GET, inferred image role or hardcoded architecture.
+    """
+    allowed = {'jpg','jpeg','png','webp','avif'}
+    links = []
+    for tag in soup.find_all(['img','a']):
+        raw=tag.get('src') if tag.name=='img' else tag.get('href')
+        if not isinstance(raw,str) or not raw.strip():
+            continue
+        url=urljoin(BASE+'/',raw.strip())
+        parts=urlsplit(url)
+        if (parts.scheme!='https' or parts.hostname not in (
+                'www.prussia39.ru','prussia39.ru')
+                or parts.username or parts.password or parts.port not in (None,443)
+                or parts.path.lower().rsplit('.',1)[-1] not in allowed):
+            continue
+        if url not in links:
+            links.append(url)
+        if len(links)>=max_links:
+            break
+    return links
+
+
 def parse_article(soup):
     # The publisher puts the modern postal address in a metadata table,
     # separate from the historical prose. It can distinguish a neighboring
@@ -348,6 +374,7 @@ def parse_article(soup):
     body = max(blocks, key=len)
     return {'title': soup.title.get_text(' ', strip=True) if soup.title else '',
             'text': body, 'address_text': modern_address, 'coordinates': None,
+            'source_image_links': observed_article_image_links(soup),
             'address_provenance': 'publisher_article_metadata_table' if modern_address else 'unavailable',
             'extraction_method': 'publisher_justify_td_v1'}
 
