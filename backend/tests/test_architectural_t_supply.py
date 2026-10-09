@@ -148,7 +148,8 @@ def _actual_link_claim(packet, decision):
 
 def test_compact_source_article_packet_reuses_original_text_and_keeps_alternatives():
     story, candidates, decision, receipt = _comparison_fixture()
-    packet = prepare_architectural_comparison(story, candidates, receipt)
+    packet = prepare_architectural_comparison(story, candidates, receipt,
+        require_grounded_refs=True)
     assert packet['candidate_ids'] == [candidates[0]['candidate_id'], 'osm:way:88']
     assert packet['article_ids'] == [receipt['articles'][0]['article_id']]
     assert packet['utf8_bytes'] < 15_000
@@ -180,7 +181,8 @@ def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     decision['scope'] = 'Article describes a complex covering house 6 and neighboring 6A.'
     decision['article_bindings'][0]['physical_binding_resolved'] = False
     decision['material_alternatives_resolved'] = False
-    packet = prepare_architectural_comparison(story, candidates, receipt)
+    packet = prepare_architectural_comparison(story, candidates, receipt,
+        require_grounded_refs=True)
     decision['decision'] = 'uncertain'
     result = combine_architectural_decision({}, {**decision,
         'physical_link_evidence':[]}, packet['schema'],
@@ -371,7 +373,8 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
 
 def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantics():
     story, candidates, decision, receipt = _comparison_fixture()
-    packet = prepare_architectural_comparison(story, candidates, receipt)
+    packet = prepare_architectural_comparison(story, candidates, receipt,
+        require_grounded_refs=True)
     raw = {'type':'object', **decision,
         'physical_link_evidence':[_actual_link_claim(packet,decision)]}
     result = combine_architectural_decision({}, raw, packet['schema'],
