@@ -151,3 +151,31 @@ def test_shortlist_reserve_remains_reopenable_by_t_without_hard_exclusion():
     assert out['downstream_T']['reopen_original_reserve_on_conflict'] is True
     assert out['downstream_T']['g_prioritized_candidates']==out['active']
     assert out['accepted'] is False
+
+def test_overview_accept_cannot_upgrade_preexpanded_osm_corner_to_identity():
+    # The old 126/130 closed PHOTO runs had real OSM options and detailed
+    # model prose but selected the wrong physical houses in the overview.
+    p=packet()
+    p['presentation_stage']='source_map_overview'
+    answer=response('accept')
+    answer['active_hypotheses']=answer['active_hypotheses'][:1]
+    answer['request_detail_labels']=[]
+    out=project_g_funnel(answer,p,entries(),source_sha256=SOURCE,
+        model_source_sha256=MODEL,actual_source_sha256=SOURCE,actual_map_sha256=MAP)
+    assert out['status']=='active_shortlist'
+    assert out['accepted'] is False
+    assert out['active'][0]['candidate_id']=='osm:way:1'
+    assert out['downstream_T']['reopen_original_reserve_on_conflict']
+
+def test_source_nominated_focused_g_can_still_accept_without_t_or_ref():
+    p=packet()
+    p['presentation_stage']='focused_geometry'
+    answer=response('accept')
+    answer['active_hypotheses']=answer['active_hypotheses'][:1]
+    answer['request_detail_labels']=[]
+    out=project_g_funnel(answer,p,entries(),source_sha256=SOURCE,
+        model_source_sha256=MODEL,actual_source_sha256=SOURCE,actual_map_sha256=MAP)
+    assert out['status']=='accepted_identity_proposal'
+    assert out['accepted'] is True
+    assert out['accepted_id']=='osm:way:1'
+    assert out['accepted_proof']['canonical_poi_fact_binding_granted'] is False
