@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from street_story.article_media import article_candidates
+from street_story.errors import PermanentProviderError
 from street_story.identity_discovery import _claim_article_query, _retain_article_discovery, suggest
 from street_story.research_budget import ensure_budget, reserve_work, ResearchTerminated
 from test_visual_search_continuation import prepared
@@ -78,10 +79,15 @@ async def test_planner_cap_counts_distinct_frozen_inputs_before_new_inference(tm
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     snapshot = svc._identity_snapshot(story['id'])[0]
     await suggest(svc, snapshot, 'First observed context', [])
-    await suggest(svc, snapshot, 'New observed context', [])
+    with pytest.raises(PermanentProviderError, match='identity_joint_initial_already_closed'):
+        await suggest(svc, snapshot, 'New observed context', [])
+    # A distinct optional joint input shares the same durable two-unit cap;
+    # changing prose alone cannot reopen the closed initial operation.
+    reserve_work(svc, story['id'], 'planner_calls', ['fixture-meaningful-followup-input'])
+    assert reserve_work(svc, story['id'], 'planner_calls', ['fixture-meaningful-followup-input'])
     with pytest.raises(ResearchTerminated) as exhausted:
-        await suggest(svc, snapshot, 'Third distinct context', [])
-    assert exhausted.value.outcome == 'search_exhausted' and len(calls) == 2
+        reserve_work(svc, story['id'], 'planner_calls', ['fixture-third-distinct-input'])
+    assert exhausted.value.outcome == 'search_exhausted' and len(calls) == 1
 
 
 def test_wave_caps_reset_only_for_explicit_owner_wave(tmp_path):

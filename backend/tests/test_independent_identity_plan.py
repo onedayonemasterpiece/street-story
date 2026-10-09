@@ -52,7 +52,7 @@ async def test_google_unavailable_uses_qualified_existing_text_planner_once(tmp_
     plans, searches = [], []
     async def qualified(snapshot, prompt, schema):
         plans.append(prompt)
-        assert 'SOURCE image is unavailable' in prompt
+        assert 'SOURCE and MAP images are unavailable' in prompt
         assert 'regional_source_profile' in prompt
         return {'result': {'entity_name': '', 'wikipedia_queries': [], 'visual_query': '',
             'commons_query': '', 'article_queries': ['Observed city Observed road 4'], 'first_wave_hypotheses': []}}

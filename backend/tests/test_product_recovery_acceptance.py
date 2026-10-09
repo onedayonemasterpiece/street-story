@@ -25,6 +25,11 @@ def item():
         'report_label': 'Hidden building expectation', 'address': 'Not a provider seed'}
 
 
+def test_real_acceptance_storage_guard_rejects_unmanaged_external_paths():
+    with pytest.raises(ValueError, match='under /home/dev/artifacts'):
+        harness.managed(Path('/outside-artifact-root/source.jpg'))
+
+
 def test_requested_canaries_keep_simple_then_complex_order_and_reject_duplicate_spend():
     items = [{'message_id': identifier} for identifier in (102, 104, 111, 122, 132)]
     assert [entry['message_id'] for entry in harness.selected_items(items, '104,102,111,122,132')] == [
@@ -34,7 +39,10 @@ def test_requested_canaries_keep_simple_then_complex_order_and_reject_duplicate_
             harness.selected_items(items, requested)
 
 
-def test_manifest_digest_freezes_expectations_but_is_independent_of_json_format(tmp_path):
+def test_manifest_digest_freezes_expectations_but_is_independent_of_json_format(tmp_path, monkeypatch):
+    # Exercise parsing using pytest-owned fixtures on hosted CI; the real CLI
+    # storage guard has its own negative control below and stays unchanged.
+    monkeypatch.setattr(harness, 'managed', lambda path: path.resolve())
     source = tmp_path / 'source.jpg'
     source.write_bytes(b'original-source')
     entry = {**item(), 'path': 'source.jpg'}
@@ -97,7 +105,8 @@ async def test_directed_spatial_mode_blocks_reference_dispatch_only_for_selected
     assert await service._identify_photo({'photo_sha256': item()['sha256']}, '', []) == 'ordinary-reference-path'
 
 
-def test_availability_transfer_is_scoped_negative_history_with_original_expiry(tmp_path):
+def test_availability_transfer_is_scoped_negative_history_with_original_expiry(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness, 'managed', lambda path: path.resolve())
     source = tmp_path/'prior'
     (source/'data').mkdir(parents=True)
     frozen = {'environment_sha256': {'provider': 'same'}, 'qualification_sha256': 'same',
