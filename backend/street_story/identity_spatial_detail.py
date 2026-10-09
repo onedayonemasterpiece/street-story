@@ -54,6 +54,11 @@ def model_nominated_detail(story, previous_response, previous_options, *,
             or not any(v.get('name')=='nominated_detail'
                 for v in scene['manifest'].get('views') or [])):
         return None
+    from .identity_spatial_overlay import model_proposed_outline_overlay
+    illustrated=model_proposed_outline_overlay(scene,story,proposed)
+    if illustrated is None:
+        return None
+    scene=illustrated
     ctx=physical_decision_context(story,list(candidates),scene['manifest'])
     opts=spatial_option_catalog(story,list(candidates),scene['manifest'],ctx,
                                 focus_candidate_ids=proposed)
