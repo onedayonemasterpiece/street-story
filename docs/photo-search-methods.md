@@ -183,7 +183,16 @@ This failure does not prove global quota exhaustion.
 Closed initial plans now retain complete bounded JSON/schema/input binding and
 can continue after a definitively unsent optional follow-up. Reuse checks SOURCE,
 camera/context, configuration and the unchanged strict contract; UNKNOWN still
-prevents replacement. The new path passed 48 merged offline checks and awaits canary.
+prevents replacement. The new path passed 48 merged offline checks. The `4cdd3f6`
+cold canary confirmed that reuse and independent search proceed, but expired at
+181.07 seconds with no accepted identity or facts. Its complete 12-card Prussia39
+inventory, model-selected article and acquired body reached preparation; shared
+TPM admission prevented SOURCE + TEXT from being sent. The selected external
+illustration did not establish identity in the full pair comparison.
+The SOURCE, MAP and full 667-object pool match earlier successful geometry runs;
+the rejected alternative instead used an invented OSM prefix for a Wiki page ID.
+Current planning instructions explicitly separate article IDs from received map
+objects; exact host validation and outside-coverage uncertainty remain unchanged.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates
