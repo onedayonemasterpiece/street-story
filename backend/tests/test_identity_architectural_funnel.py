@@ -333,3 +333,22 @@ def test_unaccepted_T_uses_its_own_model_authored_ref_question_if_G_had_none():
         'needed_view_or_feature']=='Are courtyard portals needed to distinguish both wings?'
     assert result['reserve_physical_candidate_ids']==[
         'osm:way:9','osm:way:10','osm:way:8']
+
+
+
+def test_already_read_publisher_image_urls_flow_to_targeted_ref_without_refetch():
+    story,candidates,decision,receipt,g=_inputs()
+    actual_image='https://www.prussia39.ru/files/facade_123.jpg'
+    receipt['articles'][0]['source_image_links']=[actual_image]
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    assert prepared['existing_image_links']==[{
+        'article_id':'catalog:physical-building',
+        'source_sha256':receipt['articles'][0]['source_sha256'],
+        'image_url':actual_image,'image_fetched_and_compared':False}]
+    result=close_t_g_funnel(prepared,_t_result(),
+        source_sha256=receipt['original_source_sha256'])
+    assert result['downstream_REF']['already_acquired_source_image_links']==(
+        prepared['existing_image_links'])
+    assert result['T_proof_accepted'] is False
