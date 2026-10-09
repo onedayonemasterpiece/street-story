@@ -94,7 +94,8 @@ def source_subject_competition_guard(story, candidates, decision):
         'policy':'A closer OSM body is a semantic comparison candidate, '
             'not a T rejection or an assertion that it is visible in SOURCE.'}
 
-def prepare_architectural_comparison(story, candidates, source_text_receipt):
+def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
+        require_grounded_refs=False):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
 
     The context includes *all* prior explicitly nominated alternatives (with their
@@ -210,9 +211,14 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'source_image': 'Original SOURCE image is a separate model input; observed details must come from its pixels.'}
     schema = architectural_text_decision_schema(ids, article_ids,
         material_alternative_limit=max(8, len(ids)), structural=True)
-    schema['properties']['physical_link_evidence'] = physical_link_schema(
-        article_ids, ids, evidence['publisher_refs'], evidence['osm_refs'])
-    schema['required'].append('physical_link_evidence')
+    # Old Codex-#246 followup handlers already have addressed schema-fenced
+    # operations. Do not silently invalidate their immutable wire contract.
+    # The strict new ref transport is explicitly enabled by the integrator
+    # on a NEW operation and must use the frozen evidence inventory on close.
+    if require_grounded_refs:
+        schema['properties']['physical_link_evidence'] = physical_link_schema(
+            article_ids, ids, evidence['publisher_refs'], evidence['osm_refs'])
+        schema['required'].append('physical_link_evidence')
     instruction = (
         'Compare the actual SOURCE pixels against verbatim acquired article text. '
         'Return only the architectural text decision object matching the supplied JSON schema. '
@@ -262,6 +268,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         + json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
     return {'prompt': instruction, 'schema': schema, 'candidate_ids': ids,
         'article_ids': article_ids, 'literal_evidence_inventory':evidence,
+        'grounded_refs_required':require_grounded_refs,
         'utf8_bytes': len(instruction.encode()),
         'input_contract': packet['contract']}
 
@@ -279,16 +286,17 @@ def combine_architectural_decision(original_plan, answer, schema, *,
         raise ValueError('closed_original_plan_and_model_answer_required')
     normalized=normalize_architectural_decision(answer,schema)
     from .identity_architectural_evidence import validate_model_physical_links
-    claim=copy.deepcopy(normalized.pop('physical_link_evidence'))
-    if normalized['decision']=='accepted_architectural_text':
+    claim=copy.deepcopy(normalized.pop('physical_link_evidence',None))
+    if claim is not None and normalized['decision']=='accepted_architectural_text':
         supported=validate_model_physical_links(
             literal_evidence_inventory,claim,normalized)
         if not supported['supported']:
             raise ValueError('architectural_physical_evidence_not_grounded:'+supported['reason'])
-    elif claim:
-        # Uncertain may report an article hypothesis but must not smuggle
-        # closed positive physical bindings into the persisted identity plan.
-        raise ValueError('uncertain_architectural_physical_links_must_be_empty')
+    # An older already addressed model operation has no physical_link_evidence
+    # property. Keep it byte-compatible; the integrator must explicitly opt
+    # into require_grounded_refs on new SOURCE+TEXT operations. The existing
+    # freeze_architectural_text_proof still enforces real article, OSM ID,
+    # acquired text SHA, positive bindings and SOURCE citations.
     result=copy.deepcopy(original_plan)
     result['accepted_architectural_text']=normalized
     return result
