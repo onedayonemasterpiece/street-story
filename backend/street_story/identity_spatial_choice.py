@@ -122,15 +122,19 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         if response['decision']=='accept':
             reasons.append('acceptance_with_unresolved_map_detail')
     if response['decision']=='accept':
-        # Camera coordinate provenance is not a measured GPS error radius.
-        # A nominated wall facing away from an ORIGINAL EXIF point is strong
-        # evidence against a corner-only proof, but not physical impossibility
-        # under every unknown camera translation/crop. With an approximate
-        # owner point this remains an explicit warning, not an EXIF-grade veto.
-        if (nominal_inward_corner and packet.get('camera_basis')=='original_exif'
-                and not any(opt['kind'] in {'physical_pair','road_axis_direction',
-                        'single_frontage'} for _key,opt in valid)):
-            reasons.append('nominal_camera_rear_wall_uncertainty')
+        # A 2D right-angle can be present on the WRONG physical building;
+        # model observations of decorative banding, statues or window arches
+        # do not independently bind that image feature to an OSM polygon.
+        # If a model-selected corner has a wall nominally facing AWAY from
+        # the supplied camera point, retain it as a useful candidate but
+        # require an independent precomputed OSM road-axis first-hit (R) or
+        # physical two-body relation (P) before an autonomous G acceptance.
+        # This does NOT declare the wall impossible for all plausible camera
+        # positions, or impose a universal two-visible-corner rule.
+        if (nominal_inward_corner
+                and not any(opt['kind'] in {'physical_pair','road_axis_direction'}
+                    for _key,opt in valid)):
+            reasons.append('corner_camera_uncertain_without_independent_spatial_anchor')
         if len(response['source_observations'])<2:
             reasons.append('insufficient_distinct_source_observations')
         if not response['source_observations'] or any(not s.strip()
