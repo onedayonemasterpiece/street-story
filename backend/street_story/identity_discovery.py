@@ -1248,8 +1248,32 @@ async def _suggest(service, story, transcript, candidates):
         if resolution:
             response_id_resolutions.append({**resolution, 'joint_stage': 'initial',
                 'provider_id': 'codex_native', 'raw_json_sha256': hashlib.sha256(raw_json.encode()).hexdigest()})
-        return accept(decoded, raw_json=raw_json, raw_json_available=True,
-            provider_response_id=result['receipt'].get('turn_id'))
+        # A strict native JSON-output envelope requires a value for every
+        # declared property, even when the joint decision is *uncertain*.
+        # Zero is its explicit 'no selected map label' placeholder, not an
+        # observed physical label; drop it only for an uncertain decision.
+        # The original native response and usage remain frozen in its receipt.
+        native_decision = decoded.get('accepted_geometry') if isinstance(decoded, dict) else None
+        if (isinstance(native_decision, dict) and native_decision.get('decision') == 'uncertain'
+                and native_decision.get('candidate_label') == 0):
+            decoded = copy.deepcopy(decoded)
+            decoded['accepted_geometry'].pop('candidate_label')
+            record_identity_event(service, story['id'], 'identity_native_uncertain_label_omitted', {
+                'reason': 'provider_required_placeholder_not_observed_map_label',
+                'provider_raw_response_unchanged': True})
+        try:
+            return accept(decoded, raw_json=raw_json, raw_json_available=True,
+                provider_response_id=result['receipt'].get('turn_id'))
+        except PermanentProviderError as exc:
+            # A complete, answered native operation can still have invalid
+            # first-wave pointer roles. It is NOT an unknown provider send:
+            # preserve its exact closed invalid audit and use the existing
+            # independently admitted text-only research route, not another
+            # SOURCE+MAP inference or a silently accepted geometry.
+            record_identity_event(service, story['id'], 'identity_native_closed_invalid_text_recovery', {
+                'code': str(exc)[:100], 'visual_model_result_reused': False,
+                'new_visual_send_permitted': False})
+            return await fallback(exc)
     if native_original:
         result = await native_joint()
         if result is not None:
