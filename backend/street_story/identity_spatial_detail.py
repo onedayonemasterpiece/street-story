@@ -27,18 +27,22 @@ def model_nominated_detail(story, previous_response, previous_options, *,
         return None
     label_to_id = previous_options.get('private_label_to_osm_id') or {}
     proposed=[]
+    candidate=label_to_id.get(str(previous_response['candidate_label']))
+    if not isinstance(candidate,str):
+        return None
     model_labels=[previous_response['candidate_label'],
                   *(previous_response.get('request_detail_labels') or []),
                   *[item['label'] for item in
                     (previous_response.get('contrasted_alternatives') or [])]]
     for label in model_labels:
-        if type(label) is not int:
-            return None
-        if label==0:
+        if type(label) is not int or label==0:
             continue
         cid=label_to_id.get(str(label))
-        if not isinstance(cid,str):
-            return None
+        if not isinstance(cid,str) or cid==candidate and cid in proposed:
+            continue
+        # Invalid optional rivals are *not* grounds to discard a valid model-
+        # nominated building and all its usable SOURCE evidence. Do not
+        # synthesize a replacement physical body or force a rival comparison.
         if cid not in proposed:
             proposed.append(cid)
     if not proposed:
