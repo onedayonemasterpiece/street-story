@@ -388,7 +388,8 @@ def literal_address_card_selection(rows, street, house_number):
     """
     if not isinstance(rows, list) or not isinstance(street, str) or not isinstance(house_number, str):
         return []
-    words = lambda value: re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+    def words(value):
+        return re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
     # Street-type abbreviations are mechanical address formatting, not aliases.
     street_words = [word for word in words(street) if word not in {
         'ул', 'улица', 'пр', 'проспект', 'пер', 'переулок'}]
