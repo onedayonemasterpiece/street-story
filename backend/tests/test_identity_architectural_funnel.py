@@ -9,7 +9,8 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from street_story.identity_architectural_funnel import (
-    close_t_g_funnel, prepare_t_g_funnel, t_g_funnel_schema)
+    close_t_g_funnel, prepare_t_g_funnel, t_g_funnel_schema,
+    project_independent_T_nomination)
 from street_story.identity_architectural_pool import (
     close_architectural_pool_response, prepare_architectural_pool)
 from test_identity_architectural_pool import _closed_answer, _three_documents
@@ -354,3 +355,48 @@ def test_already_read_publisher_image_urls_flow_to_targeted_ref_without_refetch(
     assert result['downstream_REF']['already_acquired_source_image_links']==(
         prepared['existing_image_links'])
     assert result['T_proof_accepted'] is False
+
+
+
+def test_independent_SOURCE_T_model_nomination_prioritizes_without_G_or_POI_proof():
+    story,candidates,decision,receipt,g=_inputs()
+    original_ids=[x['candidate_id'] for x in candidates]
+    checked=[{**x,'source_image_links':['https://www.prussia39.ru/source/photo.jpg']}
+        for x in receipt['articles'] if x['article_id']=='catalog:physical-building']
+    model={**decision,'material_alternatives':[{
+        'candidate_id':'osm:way:8','reason':'Neighbor has alternative portal'}]}
+    packet={'candidate_ids':original_ids,'checked_articles':checked}
+    result=project_independent_T_nomination(packet,model,
+        source_sha256=receipt['original_source_sha256'])
+    assert result['status']=='conditional_T_shortlist'
+    assert result['T_proof_accepted'] is False
+    assert result['accepted_physical_id'] is None
+    assert result['after_T_active_count']==1
+    assert result['after_T_reserved_count']==3
+    assert result['reserve_physical_candidate_ids']==[
+        'osm:way:8','osm:way:9','osm:way:10']
+    assert result['active_physical_candidate_ids']==['osm:way:7']
+    assert result['downstream_REF']['target_candidate_ids']==[
+        'osm:way:7','osm:way:8']
+    assert result['downstream_REF']['image_research_goals'][0][
+        'needed_view_or_feature']==decision['discriminating_combination']
+    assert result['downstream_REF']['already_acquired_source_image_links'][0][
+        'image_url']=='https://www.prussia39.ru/source/photo.jpg'
+    assert result['identity_authorized_by_shortlist_count_alone'] is False
+
+
+def test_independent_T_unknown_or_only_one_body_never_creates_new_authority():
+    story,candidates,decision,receipt,g=_inputs()
+    ids=[x['candidate_id'] for x in candidates]
+    packet={'candidate_ids':ids,'checked_articles':receipt['articles']}
+    bad=copy.deepcopy(decision)
+    bad['decision']='uncertain'
+    assert project_independent_T_nomination(packet,bad,
+        source_sha256=receipt['original_source_sha256']) is None
+    bad=copy.deepcopy(decision)
+    bad['candidate_id']='osm:way:999'
+    assert project_independent_T_nomination(packet,bad,
+        source_sha256=receipt['original_source_sha256']) is None
+    packet['candidate_ids']=ids[:1]
+    assert project_independent_T_nomination(packet,decision,
+        source_sha256=receipt['original_source_sha256']) is None
