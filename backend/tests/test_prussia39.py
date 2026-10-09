@@ -411,3 +411,40 @@ async def test_already_read_architectural_article_retains_real_image_urls_withou
     assert receipt['source_sha256']==hashlib.sha256(source).hexdigest()
     # The image URLs are *source leads*, never proof they depict SOURCE.
     assert 'visual_reference_verified' not in receipt
+
+
+
+@pytest.mark.asyncio
+async def test_actual_publisher_html_gallery_captions_are_source_links_not_reference_proof(tmp_path):
+    page=html(
+        '<td style="text-align:justify">Жилое здание с щипцом, двумя эркерами '
+        'и арочным порталом, перестроенное после войны.</td>'
+        '<a href="../photo/show_photos.php?phid=103">'
+        '<img src="../phsight/observed_103_sm.jpg" '
+        'alt="Фасад у дворового проезда, историческая фотография" '
+        'title="Фасад дома у бывшего угла. Октябрь 2018"></a>'
+        '<img src="../img/site_banner.png" alt="Сайт музея">'
+        '<img src="https://example.org/untrusted.png" alt="untrusted">'
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _:response(page))) as http:
+        parsed=await Prussia39Adapter(Cache(tmp_path/'cache'),http,
+            resolver=resolver).article(
+                'https://www.prussia39.ru/sight/index.php?sid=103')
+    assert parsed['status']=='completed'
+    refs=parsed['source_image_links']
+    assert refs==[
+        'https://www.prussia39.ru/phsight/observed_103_sm.jpg',
+        'https://www.prussia39.ru/img/site_banner.png']
+    gallery=parsed['source_image_records'][0]
+    assert gallery['image_url']==refs[0]
+    assert gallery['publisher_img_alt']=='Фасад у дворового проезда, историческая фотография'
+    assert gallery['publisher_img_title']=='Фасад дома у бывшего угла. Октябрь 2018'
+    assert gallery['linked_publisher_page_url']==(
+        'https://www.prussia39.ru/photo/show_photos.php?phid=103')
+    assert gallery['reference_identity_inferred'] is False
+    assert gallery['visual_subject_confirmed'] is False
+    assert gallery['raw_image_fetched'] is False
+    assert parsed['source_image_records'][1]['linked_publisher_page_url'] is None
+    assert all('example.org' not in u for u in refs)
+    assert parsed['raw_body_sha256_verified'] is True
