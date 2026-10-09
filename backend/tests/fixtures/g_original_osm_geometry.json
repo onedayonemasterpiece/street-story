@@ -1,0 +1,200 @@
+{
+  "source": "PR245 original cached OSM; photo102 retained original OSM; report-only fixtures",
+  "cases": [
+    {
+      "case": 106,
+      "camera": {
+        "latitude": 54.7331882,
+        "longitude": 20.478384299722222,
+        "status": "original_exif"
+      },
+      "source_fov_nominal_deg": 84.1,
+      "osm_observed": [
+        {
+          "type": "way",
+          "id": 102519047,
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "83",
+            "addr:postcode": "236023",
+            "addr:street": "Комсомольская улица",
+            "building": "yes",
+            "building:levels": "2",
+            "check_date": "2026-09-19",
+            "leisure": "sauna",
+            "name": "Баня №1",
+            "payment:cash": "yes",
+            "payment:credit_cards": "yes",
+            "payment:debit_cards": "yes",
+            "roof:shape": "gabled",
+            "wheelchair": "no"
+          },
+          "geometry": [
+            {
+              "lat": 54.7330253,
+              "lon": 20.4780694
+            },
+            {
+              "lat": 54.7330155,
+              "lon": 20.4775434
+            },
+            {
+              "lat": 54.733144,
+              "lon": 20.4775362
+            },
+            {
+              "lat": 54.7331465,
+              "lon": 20.477672
+            },
+            {
+              "lat": 54.7333955,
+              "lon": 20.4776582
+            },
+            {
+              "lat": 54.7333995,
+              "lon": 20.4778736
+            },
+            {
+              "lat": 54.7331505,
+              "lon": 20.4778874
+            },
+            {
+              "lat": 54.7331537,
+              "lon": 20.4780623
+            },
+            {
+              "lat": 54.7330253,
+              "lon": 20.4780694
+            }
+          ],
+          "center": {
+            "lat": 54.733161756,
+            "lon": 20.4778191
+          }
+        },
+        {
+          "type": "way",
+          "id": 150596899,
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "88",
+            "addr:street": "Комсомольская улица",
+            "building": "apartments",
+            "building:levels": "3"
+          },
+          "geometry": [
+            {
+              "lat": 54.7334306,
+              "lon": 20.4785226
+            },
+            {
+              "lat": 54.7334326,
+              "lon": 20.4787169
+            },
+            {
+              "lat": 54.7332363,
+              "lon": 20.478723
+            },
+            {
+              "lat": 54.7332343,
+              "lon": 20.4785287
+            },
+            {
+              "lat": 54.7334306,
+              "lon": 20.4785226
+            }
+          ],
+          "center": {
+            "lat": 54.73335288,
+            "lon": 20.47860276
+          }
+        },
+        {
+          "type": "way",
+          "id": 150596900,
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "90",
+            "addr:street": "Комсомольская улица",
+            "building": "apartments",
+            "building:levels": "4"
+          },
+          "geometry": [
+            {
+              "lat": 54.7335753,
+              "lon": 20.4785181
+            },
+            {
+              "lat": 54.7335773,
+              "lon": 20.4787124
+            },
+            {
+              "lat": 54.7334326,
+              "lon": 20.4787169
+            },
+            {
+              "lat": 54.7334306,
+              "lon": 20.4785226
+            },
+            {
+              "lat": 54.7335753,
+              "lon": 20.4785181
+            }
+          ],
+          "center": {
+            "lat": 54.73351822,
+            "lon": 20.47859762
+          }
+        },
+        {
+          "type": "way",
+          "id": 150596903,
+          "tags": {
+            "building": "yes",
+            "building:levels": "4"
+          },
+          "geometry": [
+            {
+              "lat": 54.7328784,
+              "lon": 20.4787422
+            },
+            {
+              "lat": 54.7328817,
+              "lon": 20.4789197
+            },
+            {
+              "lat": 54.7332888,
+              "lon": 20.4788967
+            },
+            {
+              "lat": 54.7332855,
+              "lon": 20.4787262
+            },
+            {
+              "lat": 54.7332364,
+              "lon": 20.478729
+            },
+            {
+              "lat": 54.7331824,
+              "lon": 20.4787324
+            },
+            {
+              "lat": 54.7330871,
+              "lon": 20.4787381
+            },
+            {
+              "lat": 54.7329904,
+              "lon": 20.4787429
+            },
+            {
+              "lat": 54.7328784,
+              "lon": 20.4787422
+            }
+          ],
+          "center": {
+            "lat": 54.733078789,
+            "lon": 20.478774378
+          }
