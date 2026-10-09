@@ -326,8 +326,17 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     # Targeted REF can use the original G model's already-authored visual
     # question even when an overconfident T response said "no images needed"
     # but its physical binding later failed the real proof.
-    already_model_authored_question=(prepared.get('model_input') or {}).get(
+    previous_G_question=(prepared.get('model_input') or {}).get(
         'G_next_distinguishing_question')
+    T_same_response_question=model_result['next_distinguishing_question']
+    # Both text spans are verbatim MODEL-authored observations; the host
+    # neither guesses a required viewpoint nor performs visual semantics.
+    if isinstance(previous_G_question,str) and previous_G_question.strip():
+        already_model_authored_question=previous_G_question
+        question_provenance='G_previously_closed_model_distinguishing_question'
+    else:
+        already_model_authored_question=T_same_response_question
+        question_provenance='T_same_closed_response_distinguishing_question'
     model_image_goals=copy.deepcopy(model_result['targeted_images'])
     if (final in {'conditional_T_shortlist','unconfirmed_model_claim'}
             and not model_image_goals
@@ -340,10 +349,10 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
                 'Previously model-authored G question, not a host-computed '
                 'architectural conclusion; compare SOURCE and candidate REF images.'),
             'reuse_actual_article_ids':list(prepared['source_article_ids']),
-            'source':'G_previously_closed_model_distinguishing_question'}]
-    image_goal_source=('G_closed_model_question_reused'
+            'source':question_provenance}]
+    image_goal_source=(question_provenance
         if model_image_goals and not model_result['targeted_images']
-        else 'same_T_model_RESPONSE')
+        else 'same_T_model_response_images')
     return {'contract':_CONTRACT,'status':final,'model_effect':model_effect,
         'source_sha256':source_sha256,'G_model_answer_sha256':prepared['g_model_answer_sha256'],
         'T_model_result_sha256':hashlib.sha256(json.dumps(
