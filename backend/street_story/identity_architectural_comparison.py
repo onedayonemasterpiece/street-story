@@ -97,6 +97,179 @@ def publisher_address_relation(articles, physical_candidates):
     return relations
 
 
+def verified_publisher_physical_scope(story, candidates, source_text_receipt, decision):
+    """Host-check a model's Prussia39 article-to-physical pointer.
+
+    Exact full publisher modern postal metadata must join the actual observed
+    OSM building's own address or verified closed-way entrance(s). A title,
+    geographic point, building style, or model-provided binding_basis is NOT a
+    physical join. A publisher complex with two separately eligible OSM bodies
+    carrying its address remains ambiguous.
+
+    This is a mechanical *necessary* condition, not sufficient visual identity:
+    LLM SOURCE/text comparison and existing freeze_architectural_text_proof must
+    still independently pass. Other publishers (Wikipedia) retain their own
+    mapped-object contract and are not silently governed by Prussia39 rules.
+    """
+    if not isinstance(decision, dict) or decision.get('decision') != 'accepted_architectural_text':
+        return {'applicable': False, 'supported': False,
+                'reason': 'no_closed_positive_architectural_decision'}
+    cid = decision.get('candidate_id')
+    bindings = decision.get('article_bindings')
+    if not isinstance(cid, str) or not cid or not isinstance(bindings, list) or not bindings:
+        return {'applicable': True, 'supported': False,
+                'reason': 'no_closed_physical_article_bindings'}
+    articles = (source_text_receipt or {}).get('articles') or []
+    if not isinstance(articles, list):
+        return {'applicable': True, 'supported': False, 'reason': 'missing_acquired_articles'}
+    prussia = {a.get('article_id'): a for a in articles if isinstance(a, dict)
+        and str(a.get('article_id') or '').startswith('prussia39:sid:')}
+    selected = [b.get('article_id') for b in bindings if isinstance(b, dict)
+        and str(b.get('article_id') or '').startswith('prussia39:sid:')]
+    if not selected:
+        return {'applicable': False, 'supported': True,
+                'reason': 'non_prussia_article_uses_existing_source_binding_contract'}
+    if len(selected) != len(bindings):
+        # A Prussia article and an unrelated title-only citation must not be
+        # merged to conceal a missing physical scope. The current T caller
+        # sends at most two acquired bodies, with separate source namespaces.
+        return {'applicable': True, 'supported': False,
+                'reason': 'mixed_publisher_article_scope_needs_explicit_reconciliation'}
+    if len(selected) != len(set(selected)):
+        return {'applicable': True, 'supported': False,
+                'reason': 'duplicate_prussia_article_binding'}
+
+    observed = [item for item in [*candidates, *(story.get('_identity_observed_candidates') or [])]
+        if isinstance(item, dict) and isinstance(item.get('candidate_id'), str)]
+    by_id = {item['candidate_id']:item for item in observed}
+    target = by_id.get(cid)
+    if not target or not candidate_identity_eligible(target) or article_candidate(target):
+        return {'applicable': True, 'supported': False,
+                'reason': 'unobserved_or_ineligible_physical_target'}
+
+    addresses = observed_address_context(story, observed)
+    physical = []
+    # Check the target and OTHER observed buildings having the same publisher
+    # address. Do not restrict ambiguity to the nominated model shortlist.
+    for candidate in by_id.values():
+        tags = (candidate.get('map_object') or {}).get('tags') or {}
+        candidate_id = candidate['candidate_id']
+        if (not candidate_id.startswith('osm:') or not candidate_identity_eligible(candidate)
+                or article_candidate(candidate) or tags.get('entrance')
+                or not (tags.get('building') or tags.get('building:part'))):
+            continue
+        anchors = _subject_addresses(addresses, candidate)
+        physical.append({'candidate_id':candidate_id, 'literal_address_entries':[
+            {'entry_id':a['mapped_entry_id'], 'address':a.get('address') or {},
+             'provenance':('osm_physical_own_address'
+                if a['mapped_entry_id'] == candidate_id
+                else 'osm_closed_way_node_membership')}
+            for a in anchors]})
+    if not any(x['candidate_id'] == cid for x in physical):
+        return {'applicable': True, 'supported': False,
+                'reason': 'physical_target_not_observed_as_building'}
+
+    verified = []
+    for aid in selected:
+        article = prussia.get(aid)
+        if (not article or article.get('raw_body_sha256_verified') is not True
+                or article.get('input_kind') != 'acquired_article_text'):
+            return {'applicable': True, 'supported': False,
+                    'reason': 'publisher_article_not_acquired_and_sha_verified', 'article_id':aid}
+        link = publisher_address_relation([article], physical)[0]
+        if not link.get('publisher_modern_address_metadata'):
+            return {'applicable': True, 'supported': False,
+                    'reason': 'publisher_modern_address_not_observed', 'article_id':aid}
+        matched = [item for item in link['physical_links']
+            if item['exact_literal_entry_ids']
+                or item['publisher_full_group_covered_by_distinct_verified_entrances']]
+        candidates_matched = list(dict.fromkeys(item['candidate_id'] for item in matched))
+        if cid not in candidates_matched:
+            return {'applicable': True, 'supported': False,
+                    'reason': 'article_modern_address_not_bound_to_nominated_physical_body',
+                    'article_id':aid, 'received_matching_physical_count':len(candidates_matched)}
+        if len(candidates_matched) != 1:
+            return {'applicable': True, 'supported': False,
+                    'reason': 'publisher_complex_address_resolves_multiple_physical_bodies',
+                    'article_id':aid, 'received_matching_physical_count':len(candidates_matched)}
+        verified.append({'article_id':aid, 'candidate_id':cid,
+            'mechanical_binding':'exact_full_publisher_address_to_received_osm_body_or_entrances'})
+    return {'applicable': True, 'supported': True,
+            'reason': 'verified_prussia_publisher_modern_address_to_exact_osm_subject',
+            'verified_bindings':verified,
+            'policy': 'Necessary physical link only; actual SOURCE architecture and alternatives are model semantic decisions.'}
+
+
+
+def source_subject_competition_guard(story, candidates, decision):
+    """Do not promote article/OSM agreement over a closer observed building.
+
+    A verified EXIF camera position plus OSM contour distances can reveal that
+    a source-compatible article describes a building *behind* another physical
+    candidate. Architectural TEXT alone has not shown which footprint SOURCE
+    actually depicts. This is a conservative necessary admission condition;
+    it does not score architecture or reject a good article hypothesis.
+
+    Independent accepted spatial identity G can establish the photographed
+    farther body without using this T-only guard. Without verified camera
+    coordinates or measured footprints, this guard makes no proximity claim.
+    """
+    if (not isinstance(decision, dict) or
+            decision.get('decision') != 'accepted_architectural_text'):
+        return {'applicable': False, 'supported': False,
+                'reason': 'no_positive_text_identity_to_admit'}
+    cid = decision.get('candidate_id')
+    if not isinstance(cid, str) or not cid or not cid.startswith('osm:'):
+        return {'applicable': True, 'supported': False,
+                'reason': 'no_observed_physical_osm_subject'}
+    if story.get('_camera_position_verified') is not True:
+        return {'applicable': False, 'supported': True,
+                'reason': 'camera_geography_not_verified_no_distance_veto'}
+    observed = {item.get('candidate_id'): item
+        for item in [*candidates, *(story.get('_identity_observed_candidates') or [])]
+        if isinstance(item, dict) and isinstance(item.get('candidate_id'), str)}
+    chosen = observed.get(cid)
+    if not chosen or not candidate_identity_eligible(chosen):
+        return {'applicable': True, 'supported': False,
+                'reason': 'subject_not_observed_or_ineligible'}
+
+    def measured_distance(candidate):
+        # Only boundary distance from actual OSM geometry, not a centroid or
+        # arbitrary title distance; no photo target position is invented.
+        value = candidate.get('boundary_distance_m')
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        import math
+        return float(value) if math.isfinite(value) and value >= 0 else None
+
+    target_distance = measured_distance(chosen)
+    if target_distance is None:
+        return {'applicable': False, 'supported': True,
+                'reason': 'no_measured_contour_distance_no_distance_veto'}
+    closer = []
+    for other_id, other in observed.items():
+        if (other_id == cid or not other_id.startswith('osm:')
+                or not candidate_identity_eligible(other) or article_candidate(other)):
+            continue
+        tags = (other.get('map_object') or {}).get('tags') or {}
+        if tags.get('entrance') or not (tags.get('building') or tags.get('building:part')):
+            continue
+        distance = measured_distance(other)
+        if distance is not None and distance + 2.0 < target_distance:
+            closer.append((distance, other_id))
+    closer.sort()
+    if closer:
+        return {'applicable': True, 'supported': False,
+            'reason': 'closer_observed_physical_footprints_need_independent_SOURCE_to_G_link',
+            'claimed_body_distance_m': target_distance,
+            'closer_physical_count': len(closer),
+            'closer_candidate_ids': [item[1] for item in closer[:8]],
+            'policy': 'Architecture/text and postal agreement do not by themselves identify a farther building behind others.'}
+    return {'applicable': True, 'supported': True,
+        'reason': 'no_closer_observed_footprint_competes_at_verified_camera_position',
+        'claimed_body_distance_m': target_distance}
+
+
 def prepare_architectural_comparison(story, candidates, source_text_receipt):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
 
