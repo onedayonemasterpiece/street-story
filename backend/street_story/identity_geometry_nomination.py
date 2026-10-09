@@ -115,6 +115,12 @@ def check_visual_geometry_nomination(response, scene_manifest, physical_context,
                     {pair[1],pair[2]} == {requested[1],requested[2]}
                     for pair in corners):
                 reasons.append('corner_not_observed_in_supplied_map_excerpt')
+            else:
+                inward = {tuple(side) for side in
+                          subject.get('nominal_camera_inward_side_indices') or []}
+                if ((requested[0], requested[1]) in inward or
+                        (requested[0], requested[2]) in inward):
+                    reasons.append('model_claimed_corner_includes_nominally_rear_wall')
         elif kind == 'street_termination':
             road = relation['road_candidate_id']
             cues = (physical_context.get('bidirectional_road_axis_cues') or {}).get('rows') or []
