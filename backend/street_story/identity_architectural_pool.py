@@ -426,6 +426,14 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             positive_correspondences.append(line)
         else:
             negative_correspondences.append(line)
+    # Fail on contradictory FIELDS of the SAME model response: if it
+    # explicitly calls a different real article "distinctive_match", that
+    # article cannot silently disappear from all positive bindings. This
+    # checks internal provenance consistency, not facade semantics.
+    if any(row['visual_fit']=='distinctive_match'
+            and row['article_id'] not in supporting for row in assessments):
+        return dict(reviewed,reason='other_distinctive_article_not_resolved',
+            negative_article_evidence=negative_correspondences)
     if any(line['status']=='structural_contradiction'
             for line in positive_correspondences):
         return dict(reviewed,
