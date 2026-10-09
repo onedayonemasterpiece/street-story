@@ -144,7 +144,7 @@ def _pair_geometry_from_camera(story, entries, first_id, second_id):
     return result
 
 def spatial_option_catalog(story, candidates, manifest, physical, *,
-                           focus_candidate_ids=(), max_initial_bodies=18):
+                           focus_candidate_ids=(), max_initial_bodies=0):
     from .identity_scene import scene_entries
     from .identity_corner_context import observed_connected_pairs
     from .identity_spatial_features import measure_spatial_relations
@@ -158,8 +158,13 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
     focus = set(focus_candidate_ids)
     if any(cid not in body for cid in focus):
         raise ValueError('detail_ref_not_in_received_map')
-    # Sort only what is *presented* in option detail, not candidates eligible
-    # for recognition. Every physical label remains in the full index and map.
+    # The first visual pass sees a complete compact body index and the real
+    # SOURCE+MAP, NOT hundreds of wall/corner choices. Rich geometry is added
+    # only after the model itself nominates received body labels. No semantic
+    # ranking or expected-ID shortlist is needed to obtain a useful lead.
+    # The optional max_initial_bodies override is for an explicitly requested
+    # verbose diagnostic, not the ordinary product path.
+    # Every observed physical label remains eligible and shown in the index.
     def display_order(cid):
         row = body[cid]
         sector = row.get('bearing_start_end_span_degrees')
@@ -274,10 +279,15 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
             'complete_plan','detail_expanded'],
         'all_received_physical_bodies': index,
         'expanded_labels': sorted(labels[cid] for cid in detailed),
+        'presentation_stage': 'focused_geometry' if focus else 'source_map_overview',
         'options': options,
         'private_label_to_osm_id': {str(label):cid for cid,label in labels.items()},
         'policy': 'All original observed bodies remain available; expanded options are '
-          'only a display subset. Model selects real visible SOURCE pattern or UNKNOWN, '
+          'only a display subset, never a correctness prior. For initial SOURCE/MAP '
+          'vision prefer a model-nominated body and clear PHOTO observations; '
+          'expand detailed options only for body labels proposed by the model. '
+          'One visible facade is useful without claiming precise yaw or two corners. '
+          'Model selects real visible SOURCE pattern or UNKNOWN, '
           'never a fabricated yaw or a map geometry not in options. Plan is 2D, '
           'corner visibility depends on camera position and 3D occlusion, '
           'street ray direction is NOT measured camera heading.'}
