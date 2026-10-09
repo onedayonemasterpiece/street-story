@@ -150,6 +150,49 @@ def test_availability_transfer_is_scoped_negative_history_with_original_expiry(t
         harness.availability_history([source], frozen)
 
 
+def test_old_429_history_uses_original_qualification_while_derived_caches_are_frozen(tmp_path, monkeypatch):
+    from test_fact_semantic_qualification import installer, persist_timed_proof, timed_proof
+    module = installer()
+    caches, evidence, text, route, path, report = timed_proof(tmp_path, module)
+    persist_timed_proof(evidence, route, path, report)
+    qualification = {'caches': {**caches, 'research-text-verification-v1': text}, 'evidence': evidence}
+    original = json.loads(json.dumps(qualification))
+    raw_digest = harness.digest(qualification)
+    runtime = harness.runtime_qualification_caches(qualification, module)
+    assert qualification == original
+    assert harness.digest(qualification) == raw_digest
+    assert harness.digest(runtime) != harness.digest(qualification['caches'])
+    runtime_hint = runtime['fact-semantic-verification-v1']['routes'][0]['qualification_review_timing']
+    assert runtime_hint['elapsed_ms'] == 91741
+    frozen = {'qualification_sha256': raw_digest,
+        'runtime_qualification_caches_sha256': harness.digest(runtime),
+        'environment_sha256': {'provider': 'same-credential-config'},
+        'public_settings': {'gemini_model': 'same-model'}}
+    prior = {k: v for k, v in frozen.items() if k != 'runtime_qualification_caches_sha256'}
+    prior['source_sha'] = 'a' * 40  # Older source has no derived-runtime field.
+    monkeypatch.setattr(harness, 'managed', lambda path: path.resolve())
+    source = tmp_path / 'old-actual-quota-boundary'
+    (source / 'data').mkdir(parents=True)
+    (source / 'run.json').write_text(json.dumps(prior))
+    with sqlite3.connect(source / 'data/street-story.sqlite3') as db:
+        db.execute('CREATE TABLE gemini_key_health(key_id,model,operation,cooldown_until,consecutive_failures,last_failure)')
+        db.execute('INSERT INTO gemini_key_health VALUES(?,?,?,?,?,?)',
+            ('b' * 64, 'same-model', 'web_search', 2000, 2,
+             json.dumps({'category': 'rate_limited', 'code': 429})))
+    snapshots = harness.availability_history([source], frozen)
+    assert snapshots[0]['rows'][0]['cooldown_until'] == 2000
+    assert snapshots[0]['rows'][0]['operation'] == 'web_search'
+    assert json.loads(snapshots[0]['rows'][0]['last_failure']) == {'category': 'rate_limited', 'code': 429}
+    runtime_hint['elapsed_ms'] += 1
+    assert harness.digest(runtime) != frozen['runtime_qualification_caches_sha256']
+    assert harness.digest(qualification) == raw_digest
+    for changed in ({'qualification_sha256': 'other-proof'},
+                    {'environment_sha256': {'provider': 'other-credentials'}},
+                    {'public_settings': {'gemini_model': 'other-model'}}):
+        with pytest.raises(ValueError, match='different'):
+            harness.availability_history([source], {**frozen, **changed})
+
+
 def attempt(identifier, receipt):
     return {'attempt_id': identifier, 'logical_id': identifier, 'role': 'search',
         'receipt_json': json.dumps(receipt), 'created_at': 1, 'updated_at': 2}

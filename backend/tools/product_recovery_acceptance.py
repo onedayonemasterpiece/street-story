@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from dataclasses import fields
 import hashlib
 import json
@@ -109,6 +110,14 @@ def availability_history(paths, frozen):
         snapshots.append({'path': str(path), 'source_sha': prior['source_sha'],
                           'history_sha256': digest(rows), 'rows': rows})
     return snapshots
+
+
+def runtime_qualification_caches(qualification, installer):
+    """Derive runtime hints without changing immutable qualification provenance."""
+    caches = copy.deepcopy(qualification['caches'])
+    installer.validate_fact_semantic_pool(caches, qualification['evidence'],
+        caches.get('research-text-verification-v1') or {})
+    return caches
 
 
 def canonical_failure(failure):
@@ -486,11 +495,11 @@ async def run(args):
         path = Path(evidence['path'])
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
             raise ValueError('Provider qualification evidence changed')
-    installer.validate_fact_semantic_pool(qualification['caches'], qualification['evidence'],
-        qualification['caches'].get('research-text-verification-v1') or {})
+    runtime_caches = runtime_qualification_caches(qualification, installer)
     frozen = {'policy': 'product-recovery-acceptance-v1', 'source_sha': sha,
         'manifest_sha256': manifest_digest, 'environment_sha256': environment_digests,
         'qualification_sha256': digest(qualification), 'caps_from_upload': CAPS,
+        'runtime_qualification_caches_sha256': digest(runtime_caches),
         'effective_settings_sha256': effective_digest, 'public_settings': public_settings,
         'source_hashes': {str(path.relative_to(REPO)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted((BACKEND/'street_story').glob('*.py'))},
@@ -515,7 +524,7 @@ async def run(args):
     if fresh_run:
         apply_availability_history(service.store, frozen['availability_history'])
     service.providers.vibepublish = NoPublication()
-    for key, value in qualification['caches'].items():
+    for key, value in runtime_caches.items():
         service.store.cache_put(key, value, 3600)
     journal_path = output/'google-sdk-calls.jsonl'
     restore_sdk = instrument_google_sdk(GeminiClient, journal_path)
