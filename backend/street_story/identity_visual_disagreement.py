@@ -37,7 +37,7 @@ def visual_disagreement_schema():
 
 
 def check_visual_disagreement(answer, candidate_ids, physical_context, map_manifest,
-                              *, bound_source_map=True):
+                              *, bound_source_map=True, story=None, candidates=()):
     invalid={'status':'invalid','candidate_id':None,'authorizes_identity':False,
         'reason_codes':['unverified_independent_visual_disagreement']}
     if (not bound_source_map or not isinstance(answer,dict)
@@ -71,6 +71,7 @@ def check_visual_disagreement(answer, candidate_ids, physical_context, map_manif
         reasons.append('no_map_spatial_correspondence')
     if not answer['other_body_spatial_contradictions']:
         reasons.append('other_independent_nominee_not_distinguished')
+    corner_visibility=None
     if answer['visible_corner']:
         chosen=(answer['corner_ring_index'],answer['first_corner_segment_index'],
             answer['second_corner_segment_index'])
@@ -78,6 +79,18 @@ def check_visual_disagreement(answer, candidate_ids, physical_context, map_manif
                    {pair[1],pair[2]} == {chosen[1],chosen[2]}
                    for pair in row.get('observed_connected_side_pairs') or []):
             reasons.append('corner_pair_not_observed_in_received_osm')
+        elif story is not None:
+            from .identity_camera_visibility import observed_corner_halfplane
+            corner_visibility=observed_corner_halfplane(
+                story,map_manifest,cid,*chosen,candidates=candidates)
+            if corner_visibility['status']=='corner_not_nominally_visible':
+                reasons.append('claimed_corner_faces_away_from_nominal_camera')
+            elif corner_visibility['status'] in {
+                    'camera_position_unavailable',
+                    'nominal_camera_near_wall_plane_uncertain',
+                    'incomplete_original_outer_contour',
+                    'invalid_original_wall_reference'}:
+                reasons.append('corner_camera_relation_unresolved')
     ratio=row.get('outline_span_over_exif_diagonal')
     if (answer['source_horizontal_extent']=='broad' and
          (physical_context.get('source_angular_reference') or {}).get(
@@ -90,6 +103,7 @@ def check_visual_disagreement(answer, candidate_ids, physical_context, map_manif
         'rejected_competing_nomination_id':next(x for x in candidate_ids if x!=cid),
         'reason_codes':reasons,'observed_corner':answer['visible_corner'],
         'source_horizontal_extent':answer['source_horizontal_extent'],
+        'nominal_outer_corner_camera_relation':corner_visibility,
         'nominal_outline_span_over_35mm_exif_diagonal':ratio,
         'authorizes_identity':False,
         'scope':'Two independent image+MAP provider nominations compared by another '
