@@ -28,20 +28,17 @@ def preflight(cid):
         return {'id':cid,'status':'map_sha_mismatch','method_calls':0}
     manifest=json.loads((case/'manifest.json').read_text())
     physical=json.loads((case/'physical_context.json').read_text())
-    # Compact options require the original received OSM geometry and SOURCE
-    # camera. Use exactly the saved case receipt's camera and no target.
-    from g26_prepare_inputs import SOURCE_INDEX, observed_osm
+    # The frozen full physical table and neutral-map manifest already
+    # contain measured distances, plan bearings and street-axis cues.
+    # An OVERVIEW must not require raw per-case OSM XML merely to reread
+    # these observed numbers; the original XML is needed only on demand
+    # for a model-nominated detailed wall/footprint expansion.
+    # This avoids expensive and fragile fixture/worktree coupling.
+    from g26_prepare_inputs import SOURCE_INDEX
     index={v['message_id']:v for v in json.loads(SOURCE_INDEX.read_text())['items']}
     meta=index[cid]
     camera=tuple(meta['camera_point'])
-    osm,_source=observed_osm(cid,camera)
-    from street_story.camera_hints import read_camera_hints
-    story={'latitude':camera[0],'longitude':camera[1],
-         '_identity_map_snapshot':osm,
-         '_camera_hints':read_camera_hints(Path(meta['source_path']).read_bytes()),
-         '_camera_position_verified':meta['geographic_basis']=='original_exif',
-         '_location_provenance':{'kind':'owner_approx_camera'}
-            if meta['geographic_basis']=='owner_approximate_hint' else {}}
+    story={'latitude':camera[0],'longitude':camera[1]}
     packet=spatial_option_catalog(story,[],manifest,physical)
     displayed=for_vision(packet)
     assert packet['map_sha256']==source['map_sha256']
@@ -79,8 +76,8 @@ def main():
                 'error_type':type(exc).__name__,'error_code':str(exc)[:240],
                 'method_calls':0})
     if set(args.ids)==set(ALL):
-        path=ROOT/'g26-spatial-preflight-llm-first.json'
-        path.write_text(json.dumps({'contract':'G-options-v3-llm-first',
+        path=ROOT/'g26-spatial-preflight-bearing-v2.json'
+        path.write_text(json.dumps({'contract':'G-options-v3-bearing-v2',
             'oracle_not_loaded':True,'cases':rows},ensure_ascii=False,indent=2))
         os.chmod(path,0o600)
     print(json.dumps({'total':len(rows),'usable':sum(x['status']=='usable_spatial_options' for x in rows),
