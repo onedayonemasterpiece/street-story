@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -8,10 +9,30 @@ import pytest
 from pydantic import SecretStr
 
 from test_backend import config
-from test_gemini_reliability import KEYS, ProviderError
+from test_gemini_reliability import KEYS, ProviderError, Clock
 from street_story.gemini import GeminiUnavailable
 from street_story.providers import GeminiClient
-from street_story.quota import SharedQuotaGate
+from street_story.quota import SharedQuotaGate, denial_delay
+
+
+@pytest.mark.parametrize('instant,expected', [
+    ('2026-10-09T02:36:00+00:00', 15840),
+    ('2026-10-09T08:41:00+00:00', 80340),
+    ('2026-11-01T07:00:00+00:00', 90000),
+    ('2027-03-14T08:00:00+00:00', 82800),
+])
+def test_rpd_wait_uses_controller_pacific_day_including_dst(instant, expected):
+    now = datetime.fromisoformat(instant).timestamp()
+    assert denial_delay({'blocked_reason': 'rpd', 'retry_after_ms': None,
+                         'bucket_strategy': 'rolling_60s_pacific_day_v2'}, now) == expected
+
+
+def test_controller_retry_is_not_extended_to_a_guessed_daily_boundary():
+    now = datetime.fromisoformat('2026-10-09T02:36:00+00:00').timestamp()
+    assert denial_delay({'blocked_reason': 'rpd', 'retry_after_ms': 120000,
+                         'bucket_strategy': 'rolling_60s_pacific_day_v2'}, now) == 120
+    assert denial_delay({'blocked_reason': 'rpd', 'retry_after_ms': None}, now) == 60
+    assert denial_delay({'blocked_reason': 'rpm', 'retry_after_ms': True}, now) == 60
 
 
 class Controller:
@@ -97,6 +118,38 @@ async def test_shared_denial_rotates_before_any_provider_call(rig):
     payload = next(p for name,p in c.events if name == 'google_ai_finalize')
     assert payload['p_usage_total_tokens'] == 15
     assert all(key not in json.dumps(c.events) for key in KEYS)
+
+
+@pytest.mark.asyncio
+async def test_rpd_local_wait_expires_at_controller_reset_then_requires_new_admission(rig):
+    g, controller = rig
+    clock = Clock()
+    clock.value = datetime.fromisoformat('2026-10-09T02:36:00+00:00').timestamp()
+    g.pool.clock = clock
+    denied = True
+    async def handle(request):
+        if denied and request.url.path.endswith('/google_ai_reserve'):
+            return httpx.Response(200, json={'ok': False, 'blocked_reason': 'rpd',
+                'retry_after_ms': None, 'bucket_strategy': 'rolling_60s_pacific_day_v2'})
+        return await controller.handle(request)
+    g.quota.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    sent = []
+    async def provider(key, *args, **kwargs):
+        sent.append(key)
+        return response()
+    g._provider_request = provider
+    try:
+        with pytest.raises(GeminiUnavailable) as unavailable:
+            await g.executor.execute('grounded_research', lambda key, timeout: g._generate(key, timeout, ['fixture']))
+        assert not sent
+        assert unavailable.value.retry_at == clock.value + 15840
+        denied = False
+        clock.value += 15841
+        result = await g.executor.execute('grounded_research', lambda key, timeout: g._generate(key, timeout, ['fixture']))
+        assert result.text == 'transcript' and len(sent) == 1
+        assert any(name == 'google_ai_mark_sent' for name, _ in controller.events)
+    finally:
+        await g.quota.http.aclose()
 
 
 @pytest.mark.asyncio

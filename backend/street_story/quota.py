@@ -12,6 +12,8 @@ import math
 import os
 import time
 import uuid
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -25,6 +27,18 @@ class SharedQuotaDenied(Exception):
     def __init__(self, delay):
         super().__init__('shared_quota_denied')
         self.details = {'retryDelay': str(delay)+'s'}
+
+
+def denial_delay(result, now):
+    """Respect the controller's retry and declared bucket, never invent UTC RPD."""
+    delay = result.get('retry_after_ms')
+    if isinstance(delay, (int, float)) and not isinstance(delay, bool) and math.isfinite(delay) and delay >= 0:
+        return max(1, min(delay / 1000, 86400))
+    if result.get('blocked_reason') == 'rpd' and result.get('bucket_strategy') == 'rolling_60s_pacific_day_v2':
+        local = datetime.fromtimestamp(now, ZoneInfo('America/Los_Angeles'))
+        boundary = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return max(1, min(boundary.timestamp() - now, 90000))
+    return 60
 
 
 class SharedQuotaGate:
@@ -172,15 +186,13 @@ class SharedQuotaGate:
                 with self.store.tx() as db:
                     db.execute('DELETE FROM gemini_quota_journal WHERE request_uid=?', (uid,))
                 reason = result.get('blocked_reason')
-                delay = result.get('retry_after_ms')
                 if reason not in ('rpm','tpm','rpd','no_keys','model_not_found'):
                     raise self.unavailable()
-                delay = delay/1000 if isinstance(delay,(int,float)) and math.isfinite(delay) and delay>=0 else 60
-                if reason == 'rpd':
-                    delay = max(delay,(int(now//86400)+1)*86400-now)
-                delay = max(1,min(delay,86400))
+                delay = denial_delay(result, now)
                 self.pool.apply_advisory({hashlib.sha256(key.encode()).hexdigest(): (now+delay, 1.0)})
-                self.pool.event('shared_quota_denied', 'shared_model', reason=reason, retry_after=delay)
+                self.pool.event('shared_quota_denied', 'shared_model', reason=reason, retry_after=delay,
+                    controller_retry_after_ms=result.get('retry_after_ms'),
+                    bucket_strategy=result.get('bucket_strategy'), provider_send_state='not_sent')
                 raise SharedQuotaDenied(delay)
             if result.get('api_key_id') != identifier:
                 raise self.unavailable()

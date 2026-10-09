@@ -53,8 +53,13 @@ Every native Gemini attempt, for **both** workloads, follows:
 No local fallback, legacy RPC fallback, model fallback or missing-RPC exception.
 Controller outage, malformed receipt or ambiguous reservation => **no new provider
 call**, durable retry after 30 seconds. A known per-key reserve denial tries another
-healthy slot without sending a provider request on the denied key. RPC RPD denial
-uses the ledger's UTC bucket reset; Google itself may impose different limits.
+healthy slot without sending a provider request on the denied key. A controller
+retry duration is authoritative. For RPD with no duration, the explicitly declared
+`rolling_60s_pacific_day_v2` strategy uses the next midnight in
+`America/Los_Angeles`, including daylight saving changes. Never extend that wait
+to UTC midnight. An undeclared bucket does not justify inventing a daily reset;
+it uses the ordinary bounded retry and still requires controller admission.
+One model's refusal leaves independent models and useful non-inference work available.
 
 Each failover attempt gets its own UUID because the shared finalize contract is
 request-level idempotent. Unknown reserve/mark-sent outcomes are journaled; after

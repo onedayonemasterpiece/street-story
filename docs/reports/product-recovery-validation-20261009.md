@@ -1,9 +1,22 @@
 # Product recovery validation, 2026-10-09
 
-Status: final live acceptance blocked by configured visual-model RPD admission;
-no accepted product release. Further paid diagnostics stopped. The deployed backend
+Status: final live acceptance pending; no accepted product release. The previous
+visual-model RPD denial is historical evidence, not a permanent product blocker.
+The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.
+
+At 08:44 UTC / 10:44 Kaliningrad, read-only controller evidence showed 20 Gemini
+3.8 reservations per configured key in the October 8 Pacific bucket, no entries
+in the October 9 bucket, and no active provider cooldown. Street Story incorrectly
+extended RPD waiting to UTC midnight instead of the controller's declared Pacific
+day. The correction respects an explicit controller retry duration; when it is
+absent, only an explicitly declared Pacific bucket supplies its reset boundary.
+Unknown bucket strategies retain ordinary bounded retry, without inventing UTC
+exhaustion. Admission and unknown-send protections remain mandatory. The focused
+quota/send-boundary/reliability suite passed 69 checks, including DST and admission
+after the controller reset. One fresh cold102 through actual workers is the next
+verification; metadata alone is not inference or recognition success.
 
 The current method contract is [photo search methods](../photo-search-methods.md),
 following the latest unified owner prompt. Earlier audit prompts are historical
