@@ -33,6 +33,19 @@ incomplete search coverage alone is never accepted. Actual continuation and
 final same-SHA acceptance remain pending. Evidence is retained under
 `/home/dev/artifacts/street-story/20261009T105848Z-gt-product-integration-20261009/`.
 
+The acquisition repair passed 131 compatible checks. No-inference readback of
+the actual closed G prepared the acquired article and compact T contract with
+unchanged SOURCE/MAP hashes. One real T continuation then returned the nominated
+body with four exact matching structural quotations in 7.499 provider seconds,
+but included the chosen body in `material_alternatives`. The common validator
+correctly rejected this self-alternative; no claim or POI was committed. This
+exposes an issued-schema mismatch, not missing source text or a quota denial.
+The compact singleton response contract now mirrors the unchanged host rule:
+there are zero *other received* bodies, so `material_alternatives` is empty.
+This does not exclude unknown bodies or infer correctness. Raw closed answers
+remain unchanged and malformed self-alternatives are still rejected. The focused
+T/reader/proof suite passed 63 checks. Actual final verification remains pending.
+
 The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.

@@ -207,6 +207,14 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'source_image': 'Original SOURCE image is a separate model input; observed details must come from its pixels.'}
     schema = architectural_text_decision_schema(ids, article_ids,
         material_alternative_limit=max(8, len(ids)), structural=True)
+    # Mirror the common proof validator's pointer rule in the issued contract.
+    # A singleton hypothesis cannot be an alternative to itself. This says
+    # nothing about unreceived bodies or whether the hypothesis is correct.
+    schema['properties']['material_alternatives']['description'] = (
+        'Other received physical candidates only; never include the chosen candidate_id. '
+        'Use an empty array when no other received candidate is material.')
+    if len(ids) == 1:
+        schema['properties']['material_alternatives']['maxItems'] = 0
     instruction = (
         'Compare the actual SOURCE pixels against verbatim acquired article text. '
         'Return only the architectural text decision object matching the supplied JSON schema. '
@@ -228,6 +236,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'physical-scope uncertainty unless other documented evidence resolves it. '
         'Explain physical address/entrance binding independently of photographed features '
         'and confront each material physical alternative, including those earlier nominated. '
+        'material_alternatives contains only OTHER received candidate IDs, never the chosen '
+        'candidate_id itself; with only one nominated body, return an empty array. '
         'One matching article, absence of a neighbor article, generic style or historically '
         'famous name cannot prove physical identity. A unique stable configuration '
         'MAY establish identity without an external reference photo only if the described '
