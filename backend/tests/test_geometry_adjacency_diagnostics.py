@@ -58,8 +58,14 @@ def test_model_context_keeps_all_bodies_and_adjacency_has_observed_indices(tmp_p
         'ring_index', 'first_segment_index', 'second_segment_index', 'observed_turn_degrees']
     for row in rows:
         shown = row['observed_side_segments']
-        pair_ids = {(p[0],p[1],p[2]) for p in row['observed_connected_side_pairs']}
-        assert pair_ids.issubset({tuple(p[:3]) for p in observed_connected_pairs(shown)[0]})
+        existing = {(side[0], side[1]):side for side in shown}
+        pair_ids = row['observed_connected_side_pairs']
+        for ring, first, second, _turn in pair_ids:
+            assert (ring, first) in existing and (ring, second) in existing
+            assert existing[(ring,first)][4] == existing[(ring,second)][3]
+            assert (second == first+1 or
+                second == 0 and row['contours_complete'] is True
+                and first == max(i for ri,i in existing if ri == ring))
         assert row['omitted_side_count'] >= 0
     assert story == original
 
