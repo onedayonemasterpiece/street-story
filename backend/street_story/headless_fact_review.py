@@ -45,6 +45,11 @@ LEGACY_VERIFIER_CONTRACT_ID = 'closed-packet-json-v1:' + hashlib.sha256(LEGACY_V
 VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
     + 'Omit absent equivalent_to_existing. For optional equivalent_to, omit or use JSON null '
       'when no within-packet equivalence exists; never use -1 or invent a duplicate relation. '
+      'A supported verdict must assess the ORIGINAL item.text claim, not a corrected claim '
+      'you propose in claims. If support requires changing a date, completion state, subject '
+      'or any other meaning, return repair_needed or insufficient for the original. '
+      'Semantically equivalent existing claims are duplicates; different wording alone is '
+      'not a contradiction. Report conflict only when the two propositions are incompatible. '
       'The conflicts array describes only relations between two DIFFERENT fact numbers actually '
       'present in this packet; never use -1 or an existing-claim ID there. Relations to existing '
       'claims belong solely in equivalent_to_existing or conflicts_with_existing. A contradiction '
@@ -68,7 +73,7 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'construction and namesake claims, or a current use inferred from an undated currently. '
       'Return repair_needed or insufficient when the semantic checks fail even with a valid label. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v6-scoped-equivalence:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v7-original-claim:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:
