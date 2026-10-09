@@ -169,10 +169,11 @@ def observed_plan_shape(entry, *, max_vertices=2000):
     orientation = 1 if _signed_area(projected) > 0 else -1
     concave = sum(1 for turn in signs if turn * orientation < 0)
     tags = {**(entry.get('tags') or {}),
-            **(entry.get('map_object') or {}).get('tags', {})}
+            **((entry.get('map_object') or {}).get('tags') or {})}
     height = _height_tag(tags)
     levels = _levels_tag(tags)
-    safe_ratio = lambda a, b: round(a / b, 2) if a is not None and b >= .1 else None
+    def safe_ratio(a, b):
+        return round(a / b, 2) if a is not None and b >= .1 else None
     return [
         'observed_closed_outer',
         round(major, 2), round(minor, 2), safe_ratio(major, minor),
