@@ -132,8 +132,11 @@ class HeadlessFactReview:
             measure = getattr(route.get('client'), 'input_size', None)
             if callable(measure) and schema is not None:
                 size = measure(prompt, schema)
-                return size['input_utf8_bytes'] <= (size.get('packet_target_bytes')
-                    or size.get('input_limit_bytes') or 24000)
+                # This frozen operation sends text only. UTF-8 bytes are a
+                # conservative token upper bound, not a measured token count.
+                # Include setup, system and function schema measured by client.
+                return size['input_utf8_bytes'] <= (size.get('input_limit_bytes')
+                    or size.get('input_token_limit') or size.get('packet_target_bytes') or 24000)
             return len(prompt.encode('utf-8')) <= 24000
         limit = getattr(getattr(route.get('client'), 'limits', None), 'max_input_chars', 24000)
         return len(prompt) <= limit

@@ -14,11 +14,9 @@ import hashlib
 import json
 import re
 
-from .identity_architectural_comparison import (
-    normalize_architectural_decision, publisher_address_relation)
-from .identity_architectural_context import _subject_addresses, _physical_subject
+from .identity_architectural_comparison import normalize_architectural_decision
+from .identity_architectural_context import _physical_subject
 from .identity_proof import architectural_text_decision_schema, freeze_architectural_text_proof, TEXT_CONTRACT
-from .identity_source_selection import observed_address_context
 
 # These words only choose literal passage spans to transmit. Their presence
 # never proves a match or rules out an article, and no building name appears.
@@ -149,6 +147,40 @@ def joint_source_spans(articles):
     return _source_span_options(articles, max_spans_per_article=None)
 
 
+def normalize_joint_citation_fields(payload, receipt):
+    """Remove only a verified redundant literal quote beside its exact pointer.
+
+    The closed provider bytes remain untouched. Conflicting citations remain
+    invalid; observations, classifications, reasons and binding are unchanged.
+    """
+    converted = copy.deepcopy(payload)
+    decision = converted.get('accepted_architectural_text') if isinstance(converted, dict) else None
+    if not isinstance(decision, dict):
+        return converted, 0
+    articles = {row['article_id']: row for row in receipt.get('articles') or []}
+    refs = receipt.get('source_span_refs') or {}
+    count = 0
+    for relation in decision.get('correspondences') or []:
+        if not isinstance(relation, dict) or not {'source_quote', 'source_span_ref'} <= relation.keys():
+            continue
+        ref = relation['source_span_ref']
+        span = refs.get(ref) if isinstance(ref, str) else None
+        if not isinstance(span, dict) or span.get('article_id') != relation.get('article_id'):
+            continue
+        article = articles.get(span['article_id'])
+        start, end, quote = span.get('start'), span.get('end'), relation['source_quote']
+        if (not article or article.get('text_sha256') != span.get('source_text_sha256')
+                or hashlib.sha256(article['text'].encode()).hexdigest() != article['text_sha256']
+                or type(start) is not int or type(end) is not int
+                or not 0 <= start < end <= len(article['text'])
+                or article['text'][start:end] != span.get('source_quote')
+                or not isinstance(quote, str) or not quote.strip() or quote not in span['source_quote']):
+            continue
+        relation.pop('source_quote')
+        count += 1
+    return converted, count
+
+
 def resolve_joint_source_spans(decision, receipt):
     """Resolve model-selected pointers without correcting any semantic claim."""
     converted = copy.deepcopy(decision)
@@ -249,39 +281,14 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         raise ValueError('explicit_observed_physical_nominations_required')
     if any(not isinstance(cid,str) or cid not in observed for cid in nominated):
         raise ValueError('unobserved_physical_candidate_id')
-    physical_context=observed_address_context(story,list(observed.values()))
-    physical=[]
-    for cid in nominated:
-        cand=observed[cid]
-        physical.append({'candidate_id':cid,'name':str(cand.get('name') or '')[:120],
-            'literal_address_entries':[{
-                'entry_id':item['mapped_entry_id'],
-                'address':{key:item['address'][key] for key in
-                    ('city','street','house_number') if item['address'].get(key)},
-                'provenance':('osm_physical_own_address' if item['mapped_entry_id']==cid
-                    else 'osm_closed_way_node_membership')}
-                for item in _subject_addresses(physical_context,cand)],
-            'observed_levels':((cand.get('map_object') or {}).get('tags') or {}).get('building:levels')})
-    links=publisher_address_relation(checked,physical)
-    # Model needs the actual positive/ambiguous literal links, not N*M copies
-    # of `no_exact...observed` for every unrelated article/body pair.
-    # No negative match is interpreted as absence of the described building.
-    compact_links=[{'article_id':item['article_id'],
-        'actual_publisher_modern_addresses':item['publisher_modern_address_metadata'],
-        'observed_address_associations':[{
-            'candidate_id':link['candidate_id'],
-            'matching_entry_ids':link['exact_literal_entry_ids'],
-            'verified_compound_entrance_ids':link[
-                'publisher_full_group_covered_by_distinct_verified_entrances'],
-            'relationship_not_physical_identity':True}
-            for link in item['physical_links']
-            if link['exact_literal_entry_ids'] or
-                link['publisher_full_group_covered_by_distinct_verified_entrances']],
-        'physical_scope_is_not_inferred':True} for item in links]
+    from .identity_architectural_evidence import literal_evidence_inventory
+    inventory = literal_evidence_inventory(story, list(observed.values()), checked,
+        candidate_ids=nominated)
     aids=[a['article_id'] for a in checked]
     per_article_spans,span_refs=_source_span_options(checked)
     decision_schema=architectural_text_decision_schema(nominated,aids,
-        material_alternative_limit=max(8,len(nominated)),structural=True)
+        material_alternative_limit=max(8,len(nominated)),structural=True,
+        physical_link_inventory=inventory)
     corr=decision_schema['properties']['correspondences']['items']
     corr['properties'].pop('source_quote')
     corr['properties']['source_span_ref']={'type':'string','enum':list(span_refs)}
@@ -313,8 +320,9 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'model_excerpt_sha256':row['text_sha256'],
             'truncated_from_full_publisher_article':row['full_original_text_sha256']!=row['text_sha256']}
             for row in checked],
-        'observed_physical_bodies':physical,
-        'publisher_postal_matches_not_identity':compact_links,
+        'observed_physical_bodies':inventory['physical_subjects'],
+        'publisher_and_OSM_literal_records_NOT_prejoined':inventory,
+        'host_postal_address_interpretation':False,
         'SOURCE_observations_from_previous_model_not_truth':
             (original_prior.get('source_scene_observations') or {}),
         'independent_prior_SOURCE_only_visual_observations_not_ground_truth':independent,
@@ -340,8 +348,11 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         'Do not rank by article order, name, address, fame, generic red brick '
         'or architectural period. A publisher article for a whole complex '
         'does NOT identify its photographed wing. Modern literal addresses '
-        'and OSM memberships support candidate associations but are not '
-        'themselves SOURCE visual evidence. A structural detail no longer '
+        'and OSM memberships are literal records, not prejoined host judgments. '
+        'Interpret postal suffixes, ranges, historic aliases and individual physical scope yourself. '
+        'For every positive binding supply physical_link_evidence with exact publisher_ref and osm_ref '
+        'and explain the individual body relationship. The host checks provenance and membership only. '
+        'A structural detail no longer '
         'present can be explained by documented historical alterations '
         'only, not guessed restoration. No reference image is required if '
         'the article has an individual visible STRUCTURAL combination '
@@ -365,7 +376,7 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         +json.dumps(packet,ensure_ascii=False,separators=(',',':')))
     return {'prompt':instruction,'schema':decision_schema,
         'article_ids':aids,'candidate_ids':nominated,'checked_articles':checked,
-        'source_span_refs':span_refs,
+        'source_span_refs':span_refs, 'literal_evidence_inventory':inventory,
         'input_contract':'source-multiple-architecture-pool-v2-literal-span-refs',
         'text_utf8_bytes':len(instruction.encode()),
         'max_article_excerpts':max_articles}
@@ -447,17 +458,9 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
         {key:v for key,v in row.items() if key not in (
             'literal_excerpt_spans','full_original_text_sha256')}
         for row in articles], 'text_contract':TEXT_CONTRACT,
-        'source_image_input':True}
+        'source_image_input':True, 'physical_link_inventory':pool['literal_evidence_inventory']}
     proof=freeze_architectural_text_proof(story,decision,receipt,candidates)
     if not proof:
         return dict(reviewed,reason='existing_T_proof_invalid')
-    from .identity_architectural_comparison import (
-        verified_publisher_physical_scope, source_subject_competition_guard)
-    physical=verified_publisher_physical_scope(story,candidates,receipt,decision)
-    subject=source_subject_competition_guard(story,candidates,decision)
-    if ((physical.get('applicable') and not physical.get('supported'))
-            or (subject.get('applicable') and not subject.get('supported'))):
-        return dict(reviewed,reason='physical_SCOPE_or_SOURCE_subject_unresolved',
-            physical_gate=physical,subject_gate=subject)
     return {**reviewed,'accepted':True,'proof':proof,
-        'physical_gate':physical,'subject_gate':subject}
+        'physical_gate':proof['physical_link_validation']}

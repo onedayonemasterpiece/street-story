@@ -262,7 +262,8 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
 
 
 @pytest.mark.asyncio
-async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaining_candidates(tmp_path):
+@pytest.mark.parametrize('known_context', [False, True])
+async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining_candidates(tmp_path, known_context):
     from contextvars import ContextVar
     from street_story.headless_fact_review import VERIFIER_PROMPT
     from street_story.live_research import LiveSemanticClient, RESULT_TOOL
@@ -289,7 +290,8 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
             self.packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
             size = provider.live_facts.input_size(prompt, schema)
             assert size['input_limit_bytes'] is None
-            assert size['input_utf8_bytes'] <= size['packet_target_bytes'] or len(self.packet['items']) == 1
+            bound = size.get('input_token_limit') or size['packet_target_bytes']
+            assert size['input_utf8_bytes'] <= bound or len(self.packet['items']) == 1
             for item in self.packet['items']:
                 assert item['passage'] == item['text'] and item['passage'] in texts
                 assert item['passage_complete'] is True
@@ -311,6 +313,9 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
             pass
 
     provider.live_facts = LiveSemanticClient(provider, host_factory=Host)
+    # An unknown model still uses the conservative legacy byte guide.
+    if not known_context:
+        provider.live_facts.model_id = 'unknown-live-fixture'
     svc.providers.research = provider
     svc.store.cache_put('fact-semantic-verification-v1', {'routes': [{
         'provider_id': provider.live_facts.provider_id, 'model_id': provider.live_facts.model_id,
@@ -327,7 +332,8 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
     assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
-        assert 0 < len(review_packets.pending_candidates(db, job['story_id'], RUN)) < len(texts)
+        remaining = len(review_packets.pending_candidates(db, job['story_id'], RUN))
+        assert remaining == 0 if known_context else 0 < remaining < len(texts)
     # Full shared setup/schema escaping can yield smaller packets. Existing
     # bounded worker turns continue until all whole candidates are reviewed.
     for _ in range(len(texts)):
@@ -335,7 +341,8 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
             if not review_packets.pending_candidates(db, job['story_id'], RUN):
                 break
         assert await engine.run(job, RUN, 0) > 0
-    assert len(sends) == len(starts) > 1 and sum(sends) == len(texts)
+    assert len(sends) == len(starts) and sum(sends) == len(texts)
+    assert len(sends) == 1 if known_context else len(sends) > 1
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
         assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)

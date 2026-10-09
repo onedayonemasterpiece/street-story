@@ -206,9 +206,11 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
             error_code=exc.reason, inventory_complete=False)
     receipt['preparation_started'] = started
     if receipt.get('results'):
-        receipt['physical_address_links'] = catalogue_physical_address_links(
-            story, candidates, receipt['results'])
-        receipt['physical_prefetch_plan'] = bounded_physically_linked_article_ids(receipt, max_articles=8)
+        ids = list(dict.fromkeys(row['article_id'] for row in receipt['results']))
+        receipt['physical_prefetch_plan'] = {
+            'prefetch_article_ids': ids if len(ids) <= 8 else [],
+            'selection_policy': 'Read the whole small received inventory; larger inventories require model selection.',
+            'host_address_parser_used': False, 'physical_identity_inferred': False}
     story['_identity_regional_catalogue'] = receipt
     record_identity_event(service, story['id'], 'identity_regional_preparation_completed', {
         'query_key':query_key, 'status':receipt['status'], 'received_rows':len(receipt.get('results') or []),
@@ -307,14 +309,10 @@ def catalogue_model_context(catalogue):
     # Metadata only. An annotation is not a fetched/verified article body.
     context = {key:catalogue.get(key) for key in ('status','query_scope','total_count','received_row_count',
         'unique_article_count','inventory_complete','pagination_urls','limitation','error_code')}
-    physical_links = catalogue.get('physical_address_links') or {}
     context['results'] = [{key:row[key] for key in ('article_id','canonical_url','coordinates') if key in row}
         | {key:str(row.get(key) or '')[:limit] for key,limit in
             (('title',120),('address_text',240),('annotation',160))}
-        | {'metadata_excerpt':True,
-            'publisher_address_to_OSM_hypotheses':(
-                physical_links.get(row.get('article_id')) or {}).get(
-                    'matched_observed_physical_subjects', [])}
+        | {'metadata_excerpt':True, 'physical_binding_interpretation':'LLM from literal records'}
         for row in catalogue.get('results') or []]
     context['physical_prefetch_plan'] = catalogue.get('physical_prefetch_plan') or {}
     context['coverage_policy'] = ('Inventory completeness applies only to this literal query scope, not the MAP scene. '
@@ -711,32 +709,20 @@ async def acquire_regional_text(service, story, candidates, request):
         record_identity_event(service, story['id'], 'identity_regional_lookup_completed', {
             'route': request['route'], 'status': lookup.get('status'), 'result_count': len(results),
             'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False)})
-        # A publisher search can return many cards or a partial page even when
-        # one exact modern address is clearly labelled. Read only that received
-        # literal metadata match; never take the first two or claim a full index.
-        # Even a singleton "complete" address response can contain a neighboring
-        # sight: catalogue completion is scoped to the publisher query, not proof
-        # that the listed address is the requested physical subject.
+        # Read an entire small received inventory without interpreting postal
+        # suffixes, ranges or historical addresses. A larger inventory remains
+        # available for model selection, never silently reduced to its first rows.
         chosen = []
-        if request['route'] == 'address' and lookup.get('status') == 'completed':
-            labelled = literal_address_card_selection(results, street, number)
-            distinct = list(dict.fromkeys(row['canonical_url'] for row in labelled))
-            lookup['literal_address_selection'] = {
-                'policy': 'exact_received_catalogue_address_metadata_v1',
-                'matched_rows': len(labelled), 'selected_urls': len(distinct),
-                'identity_inferred': False, 'unmatched_rows': len(results) - len(labelled),
-                'inventory_complete': lookup.get('inventory_complete') is True}
-            if 1 <= len(distinct) <= 2:
-                chosen = labelled
-        elif (request['route'] == 'coordinate' and lookup.get('status') == 'completed'
-                and lookup.get('inventory_complete') is True and 1 <= len(results) <= 2):
-            # Coordinate search supplies proximity candidates, not a confirmed
-            # postal address. The visual/text model must establish identity.
+        if (lookup.get('status') == 'completed'
+                and 1 <= len({row['canonical_url'] for row in results}) <= 2):
             chosen = results
+            lookup['source_acquisition_selection'] = {
+                'policy':'whole_small_received_inventory', 'host_address_parser_used':False,
+                'selected_urls':len({row['canonical_url'] for row in chosen}), 'identity_inferred':False}
         if lookup.get('status') != 'completed' or not chosen:
             if lookup.get('status') == 'completed' and results:
                 lookup['limitation'] = ('Received catalogue remains fully available; no first-two shortcut. '
-                    'No closed unambiguous address card was available for an automatic body read.')
+                    'This inventory requires model source selection before body reading.')
             return [], lookup
         if hasattr(service, 'settings'):
             from .research_budget import reserve_work

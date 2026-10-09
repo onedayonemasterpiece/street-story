@@ -187,7 +187,7 @@ STRUCTURAL_FEATURES = {'levels', 'window_axes', 'bay', 'roof', 'openings', 'comp
 
 
 def architectural_text_decision_schema(candidate_ids, article_ids, *, material_alternative_limit=8, structural=False,
-        source_span_refs=None):
+        source_span_refs=None, physical_link_inventory=None):
     """The joint SOURCE/text model decides sufficiency and physical scope."""
     text = {'type': 'string', 'maxLength': 600}
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
@@ -214,6 +214,12 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         'required': ['decision', 'candidate_id', 'scope', 'discriminating_combination', 'article_bindings',
             'correspondences', 'material_alternatives', 'material_alternatives_resolved',
             'unresolved_contradictions', 'limitations'], 'additionalProperties': False}
+    if physical_link_inventory is not None:
+        from .identity_architectural_evidence import physical_link_schema
+        schema['properties']['physical_link_evidence'] = physical_link_schema(
+            article_ids, physical_link_inventory['candidate_ids'],
+            physical_link_inventory['publisher_refs'], physical_link_inventory['osm_refs'])
+        schema['required'].append('physical_link_evidence')
     if structural:
         correspondence = schema['properties']['correspondences']['items']
         correspondence['properties']['feature_kind'] = {'type': 'string', 'enum': sorted(
@@ -281,9 +287,31 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     prior = receipt.get('conditional_initial_decision')
     prior_ids = prior.get('candidate_ids') if isinstance(prior, dict) else None
     structural = receipt.get('text_contract') == TEXT_CONTRACT
+    inventory = receipt.get('physical_link_inventory')
+    link_proof = None
+    if inventory is not None:
+        from .identity_architectural_evidence import literal_evidence_inventory, validate_model_physical_links
+        links = decision.get('physical_link_evidence') if isinstance(decision, dict) else None
+        try:
+            expected = literal_evidence_inventory(story, list(catalog.values()), list(table.values()),
+                candidate_ids=inventory['candidate_ids'])
+            def without_ref(row):
+                return {key: value for key, value in row.items() if key != 'ref'}
+            for link in links or []:
+                for kind, field in [('publisher_refs', 'publisher_ref'), ('osm_refs', 'osm_ref')]:
+                    received = inventory[kind].get(link.get(field))
+                    if not received or not any(without_ref(received) == without_ref(row)
+                            for row in expected[kind].values()):
+                        return None
+            link_proof = validate_model_physical_links(inventory, links, decision)
+        except (ValueError, KeyError, TypeError):
+            return None
+        if link_proof.get('supported') is not True:
+            return None
     if not isinstance(decision, dict) or not Draft202012Validator(
             architectural_text_decision_schema(list(catalog), list(table),
                 material_alternative_limit=max(8, len(prior_ids)) if isinstance(prior_ids, list) else 8,
+                physical_link_inventory=inventory,
                 structural=structural or isinstance(decision, dict) and any('feature_kind' in item
                     for item in decision.get('correspondences') or [] if isinstance(item, dict)))).is_valid(decision):
         return None
@@ -340,6 +368,8 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
             for aid, article in table.items() if aid in bound]}
     # Freeze the same JSON object keys that ordinary durable storage reads.
     # Keep the historical digest algorithm unchanged for existing receipts.
+    if link_proof is not None:
+        proof['physical_link_validation'] = link_proof
     proof = json.loads(json.dumps(proof, ensure_ascii=False))
     proof['proof_sha256'] = _digest(proof)
     return proof

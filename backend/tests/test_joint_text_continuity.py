@@ -97,6 +97,16 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         assert 'absence of a neighbor article' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
+        packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']
+        decision['physical_link_evidence'] = [{
+            'article_id': receipt['articles'][0]['article_id'], 'candidate_id': decision['candidate_id'],
+            'publisher_ref': next(iter(inventory['publisher_refs'])),
+            'osm_ref': next(ref for ref, row in inventory['osm_refs'].items()
+                if row['candidate_id'] == decision['candidate_id']),
+            'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
+            'architectural_scope_explanation': 'The article describes this individual bay and return configuration.',
+            'postal_interpretation': 'The literal records and article distinguish the individual body.'}]
         return SimpleNamespace(text=json.dumps(decision))
 
     async def forbidden(*args, **kwargs):
@@ -109,9 +119,9 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         proof = story['_identity_geometry_result']['architectural_text_proof']
         assert proof['source_text_receipt']['conditional_initial_decision']['candidate_ids'] == ['osm:way:2', 'osm:way:3']
     else:
-        with pytest.raises(PermanentProviderError, match='identity_architectural_text_proof_invalid'):
+        with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
             await identity_discovery.prepare_search_plan(service, story, '', active)
         assert '_identity_geometry_result' not in story
-        with pytest.raises(PermanentProviderError, match='identity_architectural_text_proof_invalid'):
+        with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
             await identity_discovery.suggest(service, story, '', active)
     assert len(calls) == 2 and reads == ['selected text']

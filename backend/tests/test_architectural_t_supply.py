@@ -29,7 +29,7 @@ def catalogue_card(sid, address):
     ('6А', ['Барнаульская улица, 6']),
     ('22', ['Гастелло улица, 21', 'Гастелло улица, 24']),
 ])
-async def test_wrong_neighbor_catalogue_never_read_as_subject_text(monkeypatch, number, returned):
+async def test_received_neighbor_text_is_read_as_unconfirmed_evidence_without_postal_filter(monkeypatch, number, returned):
     story, building, request = inputs()
     story['_identity_observed_candidates'][1]['map_address']['house_number'] = number
     received = [catalogue_card(i + 20, address) for i, address in enumerate(returned)]
@@ -45,21 +45,25 @@ async def test_wrong_neighbor_catalogue_never_read_as_subject_text(monkeypatch, 
                 'total_count': len(received), 'results': received}
 
         async def article(self, url):
-            pytest.fail('A nearby address is not subject evidence and must not be read')
+            card = next(row for row in received if row['canonical_url'] == url)
+            text = 'A neighboring facade has a different bay arrangement.'
+            return {'status':'completed', 'article_id':card['article_id'], 'canonical_url':url,
+                'text':text, 'raw_body_sha256_verified':True,
+                'raw_content_sha256':hashlib.sha256(text.encode()).hexdigest()}
 
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, receipt = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [building], request)
-    assert articles == []
+    assert len(articles) == len(received)
+    assert all(article['physical_binding_claimed'] is False for article in articles)
     assert len(calls) == 1
     assert len(receipt['results']) == len(received)
-    assert receipt['literal_address_selection']['matched_rows'] == 0
-    assert receipt['literal_address_selection']['identity_inferred'] is False
-    assert 'limitation' in receipt
+    assert receipt['source_acquisition_selection']['host_address_parser_used'] is False
+    assert receipt['source_acquisition_selection']['identity_inferred'] is False
 
 
 @pytest.mark.asyncio
-async def test_partial_catalogue_finds_exact_card_without_first_two_shortcut(monkeypatch):
+async def test_larger_partial_catalogue_preserves_all_records_for_model_selection(monkeypatch):
     story, body, query = inputs()
     received = [
         catalogue_card(11, 'Тестовая улица, 122А'),
@@ -86,11 +90,10 @@ async def test_partial_catalogue_finds_exact_card_without_first_two_shortcut(mon
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, lookup = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [body], query)
-    assert calls == [received[2]['canonical_url']]
-    assert articles[0]['text'] == text
-    assert articles[0]['lookup_candidate_ids'] == [body['candidate_id']]
+    assert calls == [] and articles == []
+    assert lookup['results'] == received
     assert lookup['inventory_complete'] is False
-    assert lookup['literal_address_selection']['matched_rows'] == 1
+    assert 'requires model source selection' in lookup['limitation']
 
 
 def test_compound_address_and_suffixes_remain_distinct():
@@ -123,6 +126,16 @@ def _comparison_fixture():
         'accepted_geometry': {'decision': 'uncertain', 'candidate_id': main,
             'rejected_alternatives': [{'candidate_id': neighbor['candidate_id'],
                 'reason': 'May be the adjoining building.'}]}}
+    from street_story.identity_architectural_evidence import literal_evidence_inventory
+    inventory = literal_evidence_inventory(story, candidates, receipt['articles'], candidate_ids=[main, neighbor['candidate_id']])
+    receipt['physical_link_inventory'] = inventory
+    decision['physical_link_evidence'] = [{
+        'article_id': receipt['articles'][0]['article_id'], 'candidate_id': main,
+        'publisher_ref': next(iter(inventory['publisher_refs'])),
+        'osm_ref': next(ref for ref, row in inventory['osm_refs'].items() if row['candidate_id'] == main),
+        'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
+        'architectural_scope_explanation': 'The distinct bay and window-axis combination belongs to the individual body.',
+        'postal_interpretation': 'The received source and physical record denote the individually described building.'}]
     return story, candidates, decision, receipt
 
 
@@ -161,6 +174,42 @@ def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     result = combine_architectural_decision({}, decision, packet['schema'])
     assert result['accepted_architectural_text']['decision'] == 'uncertain'
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
+
+
+def test_compact_positive_contract_requires_each_prior_alternative_but_uncertain_does_not():
+    from jsonschema import Draft202012Validator
+    story, candidates, decision, receipt = _comparison_fixture()
+    packet = prepare_architectural_comparison(story, candidates, receipt)
+    validator = Draft202012Validator(packet['schema'])
+    decision['material_alternatives'] = []
+    assert list(validator.iter_errors(decision))
+    decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
+        'reason': 'The visible bay layout differs from this received neighboring body.'}]
+    assert not list(validator.iter_errors(decision))
+    decision.update(decision='uncertain', material_alternatives=[], material_alternatives_resolved=False)
+    assert not list(validator.iter_errors(decision))
+
+
+@pytest.mark.parametrize('damage', [None, 'foreign_article', 'foreign_body', 'fabricated_inventory'])
+def test_physical_binding_uses_model_scope_and_actual_record_provenance(damage):
+    story, candidates, decision, receipt = _comparison_fixture()
+    decision['material_alternatives'] = [{'candidate_id':'osm:way:88',
+        'reason':'The neighboring body lacks the SOURCE bay configuration.'}]
+    # Different literal spellings remain model evidence, never a postal veto.
+    receipt['articles'][0]['address'] = 'Историческая улица, 6—6А'
+    decision['physical_link_evidence'][0]['postal_interpretation'] = (
+        'The historic complex label requires the article architecture to distinguish this individual body.')
+    if damage == 'foreign_article':
+        decision['physical_link_evidence'][0]['publisher_ref'] = 'unreceived-source'
+    elif damage == 'foreign_body':
+        inventory = receipt['physical_link_inventory']
+        decision['physical_link_evidence'][0]['osm_ref'] = next(ref for ref, row in inventory['osm_refs'].items()
+            if row['candidate_id'] == 'osm:way:88')
+    elif damage == 'fabricated_inventory':
+        ref = decision['physical_link_evidence'][0]['osm_ref']
+        receipt['physical_link_inventory']['osm_refs'][ref]['literal_value'] = 'Invented source alias'
+    proof = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert (proof is not None) == (damage is None)
 
 
 def test_no_gps_requirement_for_architectural_semantics_when_article_already_exists():
@@ -224,7 +273,7 @@ async def test_real_publisher_enumerated_address_is_retrievable_not_a_physical_v
         SimpleNamespace(store=object()), story, [body], request)
     assert urls == [received[0]['canonical_url']]
     assert articles[0]['text'] == article_text
-    assert receipt['literal_address_selection']['identity_inferred'] is False
+    assert receipt['source_acquisition_selection']['identity_inferred'] is False
     assert articles[0]['lookup_candidate_ids'] == [body['candidate_id']]
 
 
@@ -366,8 +415,8 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
     receipt['articles'][0]['card_variants'] = [
         {'canonical_url':url, 'address_text':'Город, Тестовая улица, 6'}]
     packet = prepare_architectural_comparison(story, candidates, receipt)
-    assert 'literal_publisher_address_links_not_identity' in packet['prompt']
-    assert 'no_exact_publisher_address_join_observed' in packet['prompt']
+    assert 'publisher_and_OSM_literal_records_NOT_prejoined' in packet['prompt']
+    assert 'no_exact_publisher_address_join_observed' not in packet['prompt']
     assert 'physical-scope uncertainty' in packet['prompt']
     assert packet['utf8_bytes'] < 20_000
 
@@ -426,6 +475,8 @@ def test_exact_compound_publisher_group_can_cover_two_verified_osm_entrances_wit
 
 def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantics():
     story, candidates, decision, receipt = _comparison_fixture()
+    decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
+        'reason': 'SOURCE has a distinct bay layout from this received neighbor.'}]
     packet = prepare_architectural_comparison(story, candidates, receipt)
     raw = {'type':'object', **decision}
     result = combine_architectural_decision({}, raw, packet['schema'])

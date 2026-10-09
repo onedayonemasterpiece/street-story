@@ -32,6 +32,17 @@ def _three_documents():
 
 def _closed_answer(decision,ids,packet):
     result=copy.deepcopy(decision)
+    inventory = packet['literal_evidence_inventory']
+    result['physical_link_evidence'] = [{
+        'article_id': binding['article_id'], 'candidate_id': result['candidate_id'],
+        'publisher_ref': next(ref for ref, row in inventory['publisher_refs'].items()
+            if row['article_id'] == binding['article_id']),
+        'osm_ref': next(ref for ref, row in inventory['osm_refs'].items()
+            if row['candidate_id'] == result['candidate_id']),
+        'relationship':'same_individual_physical_body', 'subject_scope':'specific_photographed_OSM_body',
+        'architectural_scope_explanation':'The documented bay and cornice configuration singles out this body.',
+        'postal_interpretation':'These literal source and OSM records describe this individual subject.'}
+        for binding in result['article_bindings']]
     for relation in result['correspondences']:
         candidates=[ref for ref,span in packet['source_span_refs'].items()
             if span['article_id']==relation['article_id']
@@ -149,3 +160,34 @@ def test_literal_evidence_refs_are_exact_and_never_semantically_rewritten():
     assert all(ref['source_text_sha256']==article['text_sha256'] for ref in refs.values())
     assert len(result[0]['passages'])>=2
     assert any('Утрачен декор' in span['source_quote'] for span in refs.values())
+
+
+@pytest.mark.parametrize('damage', [None, 'quote', 'article', 'text', 'range'])
+def test_joint_redundant_citation_normalization_requires_exact_frozen_span(damage):
+    from street_story.identity_architectural_pool import normalize_joint_citation_fields
+    article = _article('catalog:one', 'The central facade has an angular bay and three window axes.')
+    _, refs = _source_span_options([article])
+    receipt = {'articles': [article], 'source_span_refs': refs}
+    relation = {'article_id': 'catalog:one', 'source_span_ref': next(iter(refs)),
+        'source_quote': 'angular bay', 'source_observation': 'A projecting angular bay is visible.',
+        'status': 'stable_match', 'reason': 'Its outline is distinct.', 'feature_kind': 'bay'}
+    if damage == 'quote':
+        relation['source_quote'] = 'flat wall'
+    elif damage == 'article':
+        relation['article_id'] = 'catalog:other'
+    elif damage == 'text':
+        article['text'] += ' Changed.'
+    elif damage == 'range':
+        refs[relation['source_span_ref']]['end'] -= 1
+    payload = {'accepted_architectural_text': {'decision': 'accepted_architectural_text',
+        'candidate_id': 'osm:way:7', 'correspondences': [relation]}}
+    original = copy.deepcopy(payload)
+    normalized, count = normalize_joint_citation_fields(payload, receipt)
+    assert payload == original
+    if damage:
+        assert count == 0 and normalized == payload
+    else:
+        assert count == 1
+        expected = copy.deepcopy(payload)
+        expected['accepted_architectural_text']['correspondences'][0].pop('source_quote')
+        assert normalized == expected
