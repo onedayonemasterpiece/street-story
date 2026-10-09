@@ -350,7 +350,36 @@ def observed_article_image_links(soup, *, max_links=24):
     return links
 
 
-def parse_article(soup):
+def observed_article_image_links(soup, article_url, *, max_links=24):
+    """Capture publisher-owned image links from already fetched article HTML.
+
+    This is link provenance, NOT proof of visual correspondence: every image
+    still needs an actual fetch and separate SOURCE/REF comparison. No
+    additional network request or architecture keyword/subject filter.
+    """
+    images=[]
+    for node in soup.find_all(['img','a']):
+        raw=node.get('src' if node.name=='img' else 'href')
+        if not isinstance(raw,str) or not raw.strip():
+            continue
+        url=urljoin(article_url,raw.strip())
+        parsed=urlsplit(url)
+        if (parsed.scheme!='https' or parsed.hostname not in (
+                'www.prussia39.ru','prussia39.ru')
+                or parsed.username or parsed.password or parsed.fragment
+                or parsed.port not in (None,443) or len(url)>4096):
+            continue
+        if (node.name=='a' and not parsed.path.lower().endswith((
+                '.jpg','.jpeg','.png','.webp','.avif','.gif'))):
+            continue
+        if url not in images:
+            images.append(url)
+        if len(images)>=max_links:
+            break
+    return images
+
+
+def parse_article(soup, *, article_url=BASE+'/sight/index.php'):
     # The publisher puts the modern postal address in a metadata table,
     # separate from the historical prose. It can distinguish a neighboring
     # building or a multi-building complex; it is NOT a physical identity.
@@ -374,6 +403,7 @@ def parse_article(soup):
     body = max(blocks, key=len)
     return {'title': soup.title.get_text(' ', strip=True) if soup.title else '',
             'text': body, 'address_text': modern_address, 'coordinates': None,
+            'source_image_links':observed_article_image_links(soup,article_url),
             'source_image_links': observed_article_image_links(soup),
             'address_provenance': 'publisher_article_metadata_table' if modern_address else 'unavailable',
             'extraction_method': 'publisher_justify_td_v1'}
@@ -533,7 +563,7 @@ class Prussia39Adapter:
                     raise ValueError('unexpected_content_type')
                 soup, encoding = _decode(raw)
                 receipt['encoding'] = encoding
-                parsed = (parse_article(soup) if kind == 'article' else parse_coordinates(soup)
+                parsed = (parse_article(soup,article_url=final) if kind == 'article' else parse_coordinates(soup)
                           if kind == 'coordinate' else parse_title_search(soup, final)
                           if kind == 'title' else parse_address(soup, final))
                 receipt.update(parsed, status='completed' if kind == 'article' or parsed['results'] else 'completed_empty')
