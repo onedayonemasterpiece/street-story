@@ -284,7 +284,10 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
         'presentation_stage': 'focused_geometry' if focus else 'source_map_overview',
         'options': options,
         'private_label_to_osm_id': {str(label):cid for cid,label in labels.items()},
-        'policy': 'All original observed bodies remain available; expanded options are '
+        'policy': 'The plan sector endpoints are angles clockwise from north at the ' 
+          'nominal camera point, NOT source camera yaw; interpret relative ' 
+          'streetfront order only when SOURCE supports it. ' 
+          'All original observed bodies remain available; expanded options are '
           'only a display subset, never a correctness prior. For initial SOURCE/MAP '
           'vision prefer a model-nominated body and clear PHOTO observations; '
           'expand detailed options only for body labels proposed by the model. '
