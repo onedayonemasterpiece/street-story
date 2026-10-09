@@ -53,7 +53,11 @@ def _publisher_group(address_text: str, street: str):
         if [m.group() for m in matches[i:i+len(road)]]!=road:
             continue
         tail=body[matches[i+len(road)-1].end():]
-        tail=re.sub(r'^\s*[,.;]?\s*(?:(?:д\.?|дом|№)\s*)?','',tail)
+        # Publisher can spell the street as "ул. Тестовая" or
+        # "Тестовая улица". The trailing label is part of the same
+        # observed street token, not another subject/address.
+        tail=re.sub(r'^\s*(?:(?:улица|ул\.?|проспект|пр\.?|переулок|пер\.?)\s*)?'
+            r'[,.;]?\s*(?:(?:д\.?|дом|№)\s*)?','',tail)
         match=re.match(r'('+_POSTAL_ELEMENT+r'(?:\s*[,;/]\s*'
             +_POSTAL_ELEMENT+r')*)',tail,re.I)
         if match:
