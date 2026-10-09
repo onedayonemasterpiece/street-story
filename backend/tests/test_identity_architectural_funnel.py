@@ -10,7 +10,8 @@ from jsonschema import Draft202012Validator
 
 from street_story.identity_architectural_funnel import (
     close_t_g_funnel, prepare_t_g_funnel, t_g_funnel_schema,
-    project_independent_T_nomination, to_existing_research_priority)
+    project_independent_T_nomination, to_existing_research_priority,
+    acquired_article_images_for_existing_REF)
 from street_story.identity_architectural_pool import (
     close_architectural_pool_response, prepare_architectural_pool)
 from street_story.identity_architectural_comparison import (
@@ -663,3 +664,74 @@ def test_unaccepted_T_high_confidence_cannot_collapse_active_peers_or_blacklist_
     assert priority['candidate_ids']==['osm:way:7','osm:way:8']
     assert priority['contradictions']==[]
     assert priority['next_step']=='targeted_search'
+
+
+@pytest.mark.asyncio
+async def test_acquired_publisher_gallery_flows_into_existing_live_REF_without_osm_identity():
+    from street_story.identity_references import reference_images
+    from street_story.live_visual_comparison import LiveVisualComparisonMixin
+    story,candidates,decision,receipt,g=_inputs()
+    url='https://www.prussia39.ru/photo/actual-original-view.jpg'
+    article=receipt['articles'][0]
+    article['source_image_links']=[url]
+    article['source_image_records']=[{'image_url':url,
+        'publisher_img_alt':'Publisher original facade',
+        'publisher_img_title':'Original elevation'}]
+    packet=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    closed=close_t_g_funnel(packet,_t_result(),
+        source_sha256=receipt['original_source_sha256'])
+    web=acquired_article_images_for_existing_REF(closed,receipt['articles'])
+    assert len(web)==1 and web[0]['candidate_id'].startswith('web:')
+    assert web[0]['identity_eligible'] is False
+    assert web[0]['discovery']=='web_article_media'
+    assert web[0]['reference_image_urls']==[url]
+    assert web[0]['article_media'][0]['alt']=='Publisher original facade'
+    assert web[0]['discovery_provenance']['physical_identity_claimed'] is False
+    entries=list(LiveVisualComparisonMixin._image_entries(web[0]))
+    assert len(entries)==1
+    assert entries[0]['reference_id'].startswith('ref_')
+    receipt_rows=[]
+    pair=await reference_images(None,entries,evidence=receipt_rows)
+    assert pair==[(web[0]['candidate_id'],'image/jpeg',url)]
+    assert receipt_rows[0]['article_url']==article['url']
+    assert receipt_rows[0]['reference_id']==entries[0]['reference_id']
+
+
+def test_unsafe_or_unobserved_gallery_urls_cannot_become_reference_cannot_make_identity():
+    story,candidates,decision,receipt,g=_inputs()
+    article=receipt['articles'][0]
+    url='https://www.prussia39.ru/photo/existing.jpg'
+    article['source_image_links']=[url]
+    packet=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    result=close_t_g_funnel(packet,_t_result(),
+        source_sha256=receipt['original_source_sha256'])
+    assert len(acquired_article_images_for_existing_REF(result,receipt['articles']))==1
+    changed=copy.deepcopy(result)
+    changed['downstream_REF']['already_acquired_source_image_links'][0]['image_url']=(
+        'https://other.example/imaginary.jpg')
+    assert acquired_article_images_for_existing_REF(changed,receipt['articles'])==[]
+    changed=copy.deepcopy(result)
+    changed['downstream_REF']['already_acquired_source_image_links'][0]['source_sha256']='e'*64
+    assert acquired_article_images_for_existing_REF(changed,receipt['articles'])==[]
+    changed=copy.deepcopy(result)
+    changed['T_proof_accepted']=True
+    assert acquired_article_images_for_existing_REF(changed,receipt['articles'])==[]
+
+
+def test_multiple_real_views_share_one_unbound_article_reference_candidate():
+    story,candidates,decision,receipt,g=_inputs()
+    urls=['https://www.prussia39.ru/photo/first.jpg',
+        'https://www.prussia39.ru/photo/another-angle.jpg']
+    receipt['articles'][0]['source_image_links']=[*urls,*urls]
+    packet=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    result=close_t_g_funnel(packet,_t_result(),
+        source_sha256=receipt['original_source_sha256'])
+    candidates=acquired_article_images_for_existing_REF(result,receipt['articles'])
+    assert len(candidates)==1 and candidates[0]['reference_image_urls']==urls
+    assert not candidates[0].get('physical_subject_candidate_id')
