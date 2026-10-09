@@ -25,6 +25,11 @@ def physical_decision_context(story, candidates, manifest):
         dict(zip(table.get('columns') or [], values)) for values in table.get('rows') or [])}
     result = []
     origin = _point(manifest.get('anchor') or story)
+    detail = next((view for view in manifest.get('views') or []
+        if view.get('name') in {'anchor_detail', 'nominated_detail'}), None)
+    window = (detail or manifest.get('coverage') or {}).get('extent_east_north_m') or (
+        manifest.get('coverage') or {}).get('view_extent_east_north_m')
+    expanded_ids = set((detail or {}).get('target_candidate_ids') or [])
     for entry in entries:
         cid = entry['candidate_id']
         row = rows.get(cid, {})
@@ -50,7 +55,12 @@ def physical_decision_context(story, candidates, manifest):
                         [round(value, 1) for value in first], [round(value, 1) for value in second]])
         # A bounded primitive excerpt, never a building shortlist. Full rings
         # remain in the frozen snapshot; the omitted count is explicit.
-        selected_sides = sorted(sides, key=lambda side: (-side[2], side[0], side[1]))[:4]
+        vertices = [point for side in sides for point in side[3:5]]
+        in_window = bool(vertices) and (not window or (max(p[0] for p in vertices) >= window[0]
+            and min(p[0] for p in vertices) <= window[2] and max(p[1] for p in vertices) >= window[1]
+            and min(p[1] for p in vertices) <= window[3]))
+        selected_sides = (sides if cid in expanded_ids else
+            sorted(sides, key=lambda side: (-side[2], side[0], side[1]))[:4] if in_window else [])
         result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
             row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
@@ -61,6 +71,10 @@ def physical_decision_context(story, candidates, manifest):
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
         'observed_side_segments', 'omitted_side_count'],
         'segment_columns': ['ring_index', 'segment_index', 'length_m', 'start_east_north_m', 'end_east_north_m'],
+        'primitive_excerpt_extent_east_north_m': window,
+        'expansion': 'Request map_detail with exact received target_candidate_ids. All body rows remain reachable; '
+            'only side excerpts use the displayed area, not identity eligibility or nearest-K. '
+            'Explicit requested bodies expose all observed sides, including short setbacks.',
         'rows': result, 'address_columns': ['entry_id', 'city', 'street', 'house_number', 'provenance'],
         'received_body_count': len(result),
         'policy': 'Every received physical body remains reachable, including far telephoto subjects. '

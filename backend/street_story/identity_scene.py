@@ -196,7 +196,7 @@ def _draw_view(objects, camera_context, anchor_label, *, center, span, caption='
         'label_placements': placements, 'suppressed_collision_labels': suppressed}
 
 
-def render_scene(story, candidates, *, include_detail=True):
+def render_scene(story, candidates, *, include_detail=True, detail_candidate_ids=()):
     camera = _position({'lat': story.get('latitude'), 'lon': story.get('longitude')})
     entries = scene_entries(story, candidates)
     if not camera or not entries:
@@ -274,16 +274,36 @@ def render_scene(story, candidates, *, include_detail=True):
             obj['metadata']['label_pixel'] = placement['pixel']
     # This is a view crop, never a candidate cutoff or a claimed GPS accuracy.
     # Every received object is drawn through the same transform and retained
-    # in the full overview/manifest. No nearest-K, nominated or expected ID.
+    # in the full overview/manifest. The initial crop has no nominated target;
+    # an explicit later model request changes only the second display panel.
     detail_span = 180.
-    if include_detail and span / detail_span >= 1.5:
-        detail, detail_view = _draw_view(objects, camera_context, anchor_label, center=(0., 0.), span=detail_span,
-            caption='ANCHOR DETAIL — display crop only; not an accuracy radius or candidate exclusion.')
+    detail_center, detail_name = (0., 0.), 'anchor_detail'
+    if detail_candidate_ids:
+        if (not isinstance(detail_candidate_ids, (list, tuple))
+                or any(not isinstance(cid, str) for cid in detail_candidate_ids)):
+            return None
+        targets = set(detail_candidate_ids)
+        if len(targets) > 3 or not targets.issubset({entry['candidate_id'] for entry in entries}):
+            return None
+        nominated = [point for obj in objects if obj['entry']['candidate_id'] in targets
+            for line in obj['lines'] for point in line]
+        if not nominated:
+            return None
+        left, right = min(p[0] for p in nominated), max(p[0] for p in nominated)
+        bottom, top = min(p[1] for p in nominated), max(p[1] for p in nominated)
+        detail_center = ((left+right)/2, (bottom+top)/2)
+        detail_span = max(detail_span, max(right-left, top-bottom)*1.25)
+        detail_name = 'nominated_detail'
+    if include_detail and (detail_candidate_ids or span / detail_span >= 1.5):
+        detail, detail_view = _draw_view(objects, camera_context, anchor_label, center=detail_center, span=detail_span,
+            caption='NOMINATED DETAIL — explicit requested bodies; full pool remains in overview.'
+                if detail_candidate_ids else 'ANCHOR DETAIL — display crop only; not an accuracy radius or candidate exclusion.')
         composite = Image.new('RGB', (width*2, width+70), '#fafaf7')
         composite.paste(canvas, (0, 0))
         composite.paste(detail, (width, 0))
         canvas = composite
-        views.append({'name': 'anchor_detail', 'panel_pixels': [width, 0, width*2, width+70], **detail_view})
+        views.append({'name': detail_name, 'panel_pixels': [width, 0, width*2, width+70],
+            **({'target_candidate_ids': list(detail_candidate_ids)} if detail_candidate_ids else {}), **detail_view})
     camera_pixel = overview['camera_pixel']
     scale_m = overview['scale_bar_m']
     pixels_per_m = 1 / overview['meters_per_pixel']
@@ -293,8 +313,8 @@ def render_scene(story, candidates, *, include_detail=True):
             ('selected_original_exif' if verified else 'unverified_coordinates'), 'label':anchor_label},
         'north_up':True, 'scale_bar_m':scale_m, 'meters_per_pixel':round(1/pixels_per_m,3),
         'image_size':list(canvas.size), 'camera_pixel':list(camera_pixel),
-        'views':views, 'detail_policy':'Optional fixed 180 m anchor-centered display crop alongside the full pool. '
-            'Same neutral labels and observed vectors; no nearest-K or target selection. '
+        'views':views, 'detail_policy':'Optional anchor-centered or explicitly nominated display crop alongside the full pool. '
+            'Same neutral labels and observed vectors; no nearest-K identity selection; not camera accuracy. '
             'Crop extent is not camera accuracy, identity scope or proof that objects outside it are excluded.',
         'projection':'local tangent plane; approximate measured distances',
         'distance_origin':origin, 'default_attribute_provenance':'osm.tags',
@@ -323,10 +343,10 @@ def render_scene(story, candidates, *, include_detail=True):
     return {'mime_type':'image/png','bytes':data,'manifest':manifest}
 
 
-async def planner_scene(service, story, candidates):
+async def planner_scene(service, story, candidates, *, detail_candidate_ids=()):
     """CPU-only joint map transport; failures never block ready sources."""
     try:
-        return await asyncio.to_thread(render_scene, story, candidates)
+        return await asyncio.to_thread(render_scene, story, candidates, detail_candidate_ids=detail_candidate_ids)
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
         import logging
         logging.getLogger('uvicorn.error').info('street_story_identity_scene story_id=%s outcome=unavailable', story.get('id'))
@@ -367,9 +387,11 @@ def lean_scene_manifest(manifest):
     return {**{key:manifest[key] for key in ('policy','camera','anchor','distance_origin','height_fields',
         'address_fields','default_attribute_provenance','north_up','scale_bar_m','meters_per_pixel',
         'image_size','projection','view_extent_basis','image_sha256','policy_instruction','feature_reference_policy','coverage') if key in manifest},
-        **({'detail_view':{key:view[key] for key in ('panel_pixels','scale_bar_m','meters_per_pixel','extent_east_north_m')},
-            'detail_policy':'Right panel enlarges the same anchor; display crop is not accuracy or candidate exclusion.'}
-            if (view := next((v for v in manifest.get('views') or [] if v['name']=='anchor_detail'), None)) else {}),
+        **({'detail_view':{key:view[key] for key in ('name','panel_pixels','scale_bar_m','meters_per_pixel','extent_east_north_m',
+                'target_candidate_ids') if key in view},
+            'detail_policy':'Right panel enlarges the anchor or explicitly nominated bodies; '
+                'display crop is not accuracy or candidate exclusion.'}
+            if (view := next((v for v in manifest.get('views') or [] if v['name'] in {'anchor_detail','nominated_detail'}), None)) else {}),
         'objects':{'columns':labels,'rows':[[row.get(key) for key in labels] for row in decoded]},
         'physical_geometry':{'columns':geometry,'rows':bodies},
         'point_geometry':{'columns':['label','representative_distance_m','address','geometry_status'],'rows':anchors},

@@ -15,8 +15,13 @@ from test_architectural_text_identity import text_inputs
 from test_geometry_identity_plan import Executor, geometry_setup, geometry_decision, payload
 
 
-def prepared_plan(tmp_path):
+def prepared_plan(tmp_path, *, literal_addresses=False):
     service, story, active = geometry_setup(tmp_path)
+    if literal_addresses:
+        for candidate in [*story['_identity_observed_candidates'], *active]:
+            if candidate['candidate_id'] in {'osm:way:2', 'osm:way:3'}:
+                candidate['map_address'] = {'city': 'Город', 'street': 'Тестовая улица',
+                    'house_number': '6' if candidate['candidate_id'] == 'osm:way:2' else '6А'}
     story['_identity_wikipedia_metadata'] = [{'pageid': 99, 'title': 'Received building article',
         'thumbnail_url': 'https://example.org/received-facade.jpg'}]
     active.append({'candidate_id': 'wiki:99', 'name': 'Received building article',
@@ -102,7 +107,7 @@ async def test_restart_before_search_plan_checkpoint_reuses_original_without_new
 @pytest.mark.asyncio
 async def test_restart_cached_full_regional_inventory_keeps_identical_joint_input_without_http(tmp_path, monkeypatch):
     from test_regional_catalogue_selection import inventory, offline, response
-    service, story, active, initial = prepared_plan(tmp_path)
+    service, story, active, initial = prepared_plan(tmp_path, literal_addresses=True)
     story['_identity_search_context'] = {'reverse_address': {'city': 'Город', 'road': 'Тестовая улица'}}
     http_calls = []
     def handler(request):

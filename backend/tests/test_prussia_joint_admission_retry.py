@@ -29,7 +29,7 @@ def denial(delay=47.462, *, state='not_sent'):
 
 
 def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=False):
-    service, story, active, initial = prepared_plan(tmp_path)
+    service, story, active, initial = prepared_plan(tmp_path, literal_addresses=True)
     service.settings = replace(service.settings, gemini_web_search_tertiary_model='fixture-model')
     story.update(latitude=54.7, longitude=20.5)
     story['_identity_search_context'] = {'reverse_address': {'city': 'Город', 'road': 'Тестовая улица'}}

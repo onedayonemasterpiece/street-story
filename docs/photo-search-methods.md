@@ -28,6 +28,18 @@ Whole provider input includes the system instructions and schema. Text discovery
 gets its own small schema and cannot accept image evidence; Native and Live check
 their complete addressed inputs against their existing byte envelopes before sending.
 
+The initial MAP keeps the full overview and every physical body row. Indexed side
+excerpts are limited to the displayed area and explicitly state omissions; this
+is a presentation limit, not a candidate shortlist. An uncertain joint decision
+may request `map_detail` for up to three exact received physical IDs. The existing
+single followup then receives the unchanged SOURCE and a MAP with the same full
+overview/neutral labels plus the nominated detail panel. All observed sides of
+those bodies become available, including short setbacks. The new MAP hash is
+bound to that followup; conditional initial alternatives remain hypotheses to
+resolve. If admission proves it was not sent, reuse restores the original MAP
+and schema. UNKNOWN never authorizes another send. Selected TEXT and detail share
+this same followup; its system instruction contains one current contract.
+
 | Method | Evidence the model must actually receive | Sufficient result | Subsequent work |
 |---|---|---|---|
 | `geometry` | SOURCE + neutral map + available measurements/provenance | A compatible pose and spatial pattern distinguish one physical object from material local alternatives | Accept immediately; start facts without waiting for text or REF |

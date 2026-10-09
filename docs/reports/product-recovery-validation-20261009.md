@@ -10,6 +10,63 @@ following the latest unified owner prompt. Earlier audit prompts are historical
 evidence. Runtime receives original photo bytes, available camera metadata and
 explicit owner camera context; report-only building labels/addresses are not seeds.
 
+## Disk recovery and offline corrections after the owner amendment
+
+The 9 October owner amendment and concrete next step are now preserved in the
+repository prompt index. Prussia39 remains an actual architecture-text discovery
+and selected-body reader; Wiki is complementary. Regional preparation uses
+supplied physical subjects' own or verified entrance addresses. Mixed/anonymous
+subjects do not inherit the camera's reverse-geocoded road. Distinct entrance
+numbers remain distinct, and coordinate lookup uses the nominated body's point.
+
+Current geometry requires actual indexed primitives, a horizontal pose, an
+individual SOURCE pattern, numeric relations and explicit uncertainty scenarios.
+Its certificate preserves conditional prior alternatives and the whole physical
+context. Current architecture-text acceptance requires an individual structural
+correspondence rather than matching color/style/history words. These host guards
+validate evidence structure and measured map relations; SOURCE interpretation
+remains the joint model's responsibility. Legacy addressed/UNKNOWN contracts are
+not rewritten as current proofs.
+
+The initial context includes all body rows but only displayed-area side excerpts.
+An explicit `map_detail` expands up to three received bodies, exposing every
+observed side, including short setbacks, in the existing single followup. Full
+overview and neutral labels remain unchanged. Its actual new MAP hash is frozen;
+authoritatively unsent followup reuse restores the original MAP. Selected TEXT
+shares this operation and replaces the system schema once. Ready SOURCE/MAP does
+not wait for a cold catalogue. Text-discovery adapters receive a small role schema
+and check addressed serialization against the existing limits. Native built-in
+provider/tool instructions are not fully externally attested; exposed agent
+prompt and product request/schema are checked, without claiming a complete
+provider billing-token count.
+
+The final affected **159 checks passed in 46.76 s**. They cover detail expansion,
+short sides, proof/hash binding, prior alternatives, current structural TEXT,
+legacy contracts, catalogue nonblocking behavior, not-sent/restart/UNKNOWN,
+regional lookup, selected Wiki text and input-envelope handling. Retained offline
+replay on **ten original photos** (102, 106, 111, 120, 121, 122, 125, 126, 130,
+132) verified input construction, complete body reachability and unchanged
+overview/labels under explicit expansion. It did not run model interpretation or
+automatic object/fact acceptance. The retained actual photo102 replay preserves
+the old frozen proof hash and rejects its wrong generic decision under the current
+contract. Its prepared product system-plus-prompt is **54,649 UTF-8 bytes**;
+this is not a provider-token or monetary estimate. New model inferences: **zero**.
+
+Urgent disk recovery losslessly compressed **6,881 completed synthetic pytest
+SQLite fixtures**, verifying each decompressed SHA-256, and reclaimed
+**4,683,230,700 bytes**. Ten redundant clean worktree directories were removed;
+all branches/commits and a verified complete Git bundle remain. Original photos,
+actual canary databases, runtime logs and retained reports were preserved. No
+retained artifact directory was deleted. Space increased from approximately
+73 MiB to 4.7 GiB at completion; subsequent readback showed 6 GiB free. Cleanup
+evidence and exact worktree restoration commands are retained centrally in
+`/home/dev/artifacts/street-story/20261009T070231Z-disk-recovery-20261009`.
+
+These are offline corrections and cleanup, not product acceptance. The specific
+configured Gemini3.8 RPD admission blocker still prevents the bounded fresh
+five-case gate. No additional paid probe, lightweight visual substitution,
+deployment or product PASS is reported.
+
 ## Latest diagnostic and bounded correction
 
 Frozen `29935371ac190a7a2eb92d6d80b4391226760365` cold photo102 is **NO PASS**.

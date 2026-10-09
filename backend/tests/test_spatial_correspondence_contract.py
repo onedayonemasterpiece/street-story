@@ -120,3 +120,105 @@ def test_physical_context_keeps_all_bodies_and_literal_entry_provenance_without_
     assert all(row[3] is None and row[4] == [None, None, None] for row in context['rows'])
     assert story == original
     assert hashlib.sha256(scene['bytes']).hexdigest() == scene['manifest']['image_sha256']
+
+
+def test_explicit_far_detail_exposes_short_setback_sides_without_dropping_near_bodies():
+    from test_identity_scene import building, point
+    far = building(21, 190)
+    far['geometry'] = [point(x, y) for x, y in (
+        (190, 10), (202, 10), (202, 28), (196, 28), (196, 26), (190, 26), (190, 10))]
+    story = {'latitude': 54.7, 'longitude': 20.5,
+        '_identity_map_snapshot': {'observed_pool': [building(1, 20), far, building(99, 500)]}}
+    original = copy.deepcopy(story)
+    initial = render_scene(story, [])
+    before = physical_decision_context(story, [], initial['manifest'])
+    expanded = render_scene(story, [], detail_candidate_ids=['osm:way:21'])
+    after = physical_decision_context(story, [], expanded['manifest'])
+    assert {row[1] for row in before['rows']} == {row[1] for row in after['rows']}
+    before_far = dict(zip(before['columns'], next(row for row in before['rows'] if row[1] == 'osm:way:21')))
+    after_far = dict(zip(after['columns'], next(row for row in after['rows'] if row[1] == 'osm:way:21')))
+    assert before_far['observed_side_segments'] == [] and before_far['omitted_side_count'] == 6
+    assert after_far['omitted_side_count'] == 0
+    assert len(after_far['observed_side_segments']) == 6
+    assert any(side[2] == 2 for side in after_far['observed_side_segments'])
+    assert initial['manifest']['objects'] == expanded['manifest']['objects']
+    assert initial['manifest']['views'][0] == expanded['manifest']['views'][0]
+    assert expanded['manifest']['views'][1]['target_candidate_ids'] == ['osm:way:21']
+    assert story == original
+    assert render_scene(story, [], detail_candidate_ids=['osm:way:unreceived']) is None
+
+
+@pytest.mark.asyncio
+async def test_map_detail_uses_existing_single_followup_and_freezes_the_new_map(tmp_path):
+    service, story, active = geometry_setup(tmp_path)
+    initial = geometry_decision()
+    initial.update(decision='uncertain', next_action={'kind': 'map_detail',
+        'reason': 'Inspect the short return and its relation to the other received body.',
+        'target_candidate_ids': ['osm:way:2']})
+    initial['bounded_coverage']['material_alternatives_resolved'] = False
+    calls = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            return SimpleNamespace(text=json.dumps(payload(initial)))
+        assert len(calls) == 2
+        assert contents[0].inline_data.data == calls[0][0].inline_data.data
+        assert contents[1].inline_data.data != calls[0][1].inline_data.data
+        assert 'Explicit requested MAP expansion' in contents[-1]
+        assert 'conditional_initial_decision' in contents[-1]
+        assert 'osm:way:3' in contents[-1]
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail('No third planner or paid text fallback after a valid detail proof')
+
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    proof = story['_identity_search_plan_payload']['geometry_proof']
+    assert len(calls) == 2
+    assert proof['source_map_receipt']['map_image_sha256'] == hashlib.sha256(calls[1][1].inline_data.data).hexdigest()
+    assert proof['source_map_receipt']['manifest']['detail_view']['name'] == 'nominated_detail'
+    assert set(proof['source_map_receipt']['material_alternative_candidate_ids']) == {'osm:way:2', 'osm:way:3'}
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+
+
+@pytest.mark.asyncio
+async def test_unsent_detail_followup_reuses_original_map_and_preserves_unsent_text_receipt(tmp_path, monkeypatch):
+    from test_closed_initial_plan_reuse import install, prepared_plan
+    service, story, active, initial = prepared_plan(tmp_path)
+    initial['accepted_geometry']['next_action'] = {'kind': 'map_detail',
+        'reason': 'Inspect the return before accepting this physical subject.',
+        'target_candidate_ids': ['osm:way:2']}
+    original_map = render_scene(story, active)
+    calls, acquisitions = install(service, initial, monkeypatch)
+    await identity_discovery.suggest(service, story, '', active)
+    plan = story['_identity_search_plan_payload']
+    assert calls == ['initial', 'followup'] and acquisitions == [['99']]
+    assert plan['source_map_receipt']['map_image_sha256'] == original_map['manifest']['image_sha256']
+    assert plan['source_map_receipt']['manifest'].get('detail_view', {}).get('name') != 'nominated_detail'
+    assert plan['source_text_receipt']['provider_send_state'] == 'not_sent'
+    assert not plan.get('geometry_proof') and not plan.get('architectural_text_proof')
+
+
+@pytest.mark.asyncio
+async def test_selected_text_followup_replaces_one_schema_instead_of_appending_a_conflicting_contract(tmp_path, monkeypatch):
+    from test_closed_initial_plan_reuse import install, prepared_plan
+    service, story, active, initial = prepared_plan(tmp_path)
+    install(service, initial, monkeypatch)
+    original_generate = service.providers.gemini._generate
+    configurations = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        configurations.append(config.system_instruction)
+        return await original_generate(key, timeout, contents, config, **kwargs)
+
+    service.providers.gemini._generate = generate
+    await identity_discovery.suggest(service, story, '', active)
+    assert len(configurations) == 2
+    assert 'accepted_architectural_text' not in configurations[0]
+    assert 'accepted_architectural_text' in configurations[1]
+    assert 'Follow-up contract:' not in configurations[1]
+    assert configurations[1].count('"first_wave_hypotheses":') == 1
+    assert 'ID namespaces are distinct' in configurations[1]
