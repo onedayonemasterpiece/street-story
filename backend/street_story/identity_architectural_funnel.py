@@ -325,7 +325,7 @@ def t_g_funnel_schema(prepared):
 
 
 def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
-        accepted_candidate_id=None):
+        accepted_candidate_id=None, same_model_visible_architecture=None):
     """Validate actual model choices, account for every previously active ID.
 
     An unchosen physical body is DEFERRED, not contradicted or blacklisted.
@@ -433,16 +433,32 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         already_model_authored_question=T_same_response_question
         question_provenance='T_same_closed_response_distinguishing_question'
     model_image_goals=copy.deepcopy(model_result['targeted_images'])
+    derived_question=''
+    model_architecture=(same_model_visible_architecture.strip()
+        if isinstance(same_model_visible_architecture,str) else '')
+    if (final in {'conditional_T_shortlist','unconfirmed_model_claim'}
+            and not model_image_goals and not already_model_authored_question
+            and model_architecture):
+        # This is only a mechanical question around SOURCE features already
+        # written by the SAME closed T model, never a guessed façade feature
+        # or a second model call.
+        derived_question=('Which physical body shows the SOURCE feature: '
+            +model_architecture[:335]+'?')
+        already_model_authored_question=derived_question
+        question_provenance='T_same_closed_response_structural_description'
     if (final in {'conditional_T_shortlist','unconfirmed_model_claim'}
             and not model_image_goals
             and isinstance(already_model_authored_question,str)
             and already_model_authored_question.strip()):
         model_image_goals=[{
-            'target_candidate_ids':list(effective),
-            'needed_view_or_feature':already_model_authored_question,
+            'target_candidate_ids':ref_targets,
+            'needed_view_or_feature':(
+                model_architecture[:440] if derived_question
+                else already_model_authored_question),
             'how_this_image_would_distinguish_bodies':(
-                'Previously model-authored G question, not a host-computed '
-                'architectural conclusion; compare SOURCE and candidate REF images.'),
+                'Compare the previously model-authored SOURCE-visible feature '
+                'against ACTUAL REF images of the independent model-nominated '
+                'physical peers; this is not an automatic geometry verdict.'),
             'reuse_actual_article_ids':list(prepared['source_article_ids']),
             'source':question_provenance}]
     image_goal_source=(question_provenance
@@ -467,7 +483,8 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'conditional_T_research_priority_not_identity':final=='conditional_T_shortlist',
         'accepted_physical_id':accepted_candidate_id if final=='accepted_T_identity' else None,
         'source_support':copy.deepcopy(model_result['supporting_observations']),
-        'next_distinguishing_question':model_result['next_distinguishing_question'],
+        'next_distinguishing_question':(
+            model_result['next_distinguishing_question'] or derived_question),
         'request_reserve_expansion':expand,
         'reserve_expansion_reason':explanation,
         'downstream_REF':{
@@ -476,7 +493,8 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
             'image_goal_provenance':image_goal_source,
             'already_acquired_source_image_links':copy.deepcopy(prepared['existing_image_links']),
             'target_candidate_ids':ref_targets,
-            'next_distinguishing_question':model_result['next_distinguishing_question'],
+            'next_distinguishing_question':(
+                model_result['next_distinguishing_question'] or derived_question),
             'independently_available_G_or_REF_can_accept':True},
         'identity_authorized_by_shortlist_count_alone':False}
 
