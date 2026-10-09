@@ -241,6 +241,11 @@ def compare_visual_shape_to_mapped_bodies(profile, crop_scope, selected, alterna
             'mapped_area_m2':other_area,
             'selected_area_over_alternative':(
                 round(area/other_area,2) if other_area>0 else None)})
+        if (profile=='tall_narrow'
+                and area > other_area * 3
+                and row['long_axis_m'] > item['long_axis_m'] * 1.6
+                and row['short_axis_m'] > item['short_axis_m'] * 1.6):
+            warnings.append('selected_plan_much_larger_than_available_narrow_alternative')
     return {'status':'measured_plan_advisory','source_profile':profile,
         'source_crop_scope':crop_scope,'selected_shape':row,
         'alternative_shape_comparisons':comparisons,
