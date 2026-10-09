@@ -127,6 +127,10 @@ and physical subject. Private quote labels address literal slices of the exact
 frozen packet and selected own evidence; they do not supply a support verdict.
 Paraphrased quotes remain invalid. Original responses and UNKNOWN operations stay
 immutable and are observed under their original contract after restart.
+Live-first extraction does not qualify its model as a semantic reviewer. Every
+automatic review route must have matching verified schema, own-passage, qualifier
+negative, nearby-duplicate and nearby-conflict checks. Only the existing matching
+qualified routes can make facts eligible; extraction remains Live-first.
 Closed rejected or exhausted reviews stop automatic work only when the complete
 review recipe is unchanged: candidate revisions, owner context, eligible ledger
 and verifier contract. Changed claims or context remain reviewable. A source
@@ -135,9 +139,9 @@ candidates; deferred source pages, UNKNOWN requests and joined continuations
 still block that conclusion. Exhaustion never establishes support for a fact.
 
 First replay saved evidence and negative controls, including the wrong dormitory,
-house 21 versus 22, water tower versus 121 and unresolved6/6A. Then use one frozen
-candidate/configuration/manifest with at most five live cases:102,104,111,130,132;
-122 is a reserve,121 a separate retained holdout. Cases 130/132 must establish geometry
+house 21 versus 22, water tower versus 121 and unresolved 6/6A. Then use one frozen
+candidate/configuration/manifest with at most five live cases: 102,104,111,130,132;
+122 is a reserve, 121 a separate retained holdout. Cases 130/132 must establish geometry
 before any external REF. Rich cases 102/104/132 require at least 3 substantive reviewed
 facts; ordinary 111/130 at least 1. Verify sources and canonical POI readback, the
 3/5/8 caps and at least one actual Live-first send. Run one emulator E2E only after
@@ -146,84 +150,31 @@ does not pass this gate.
 
 ## Implementation status and remaining gate
 
-The existing queues include accepted geometry/text proofs, common facts/POI
-handling, bounded deadlines and strict original receipts. `prussia39.py`
-implements both publisher forms, cp1251, card/body extraction, canonical cache
-and observed pagination. The regional inventory change prepares received card
-metadata alongside SOURCE/map preparation, exposes large and partial inventories
-to the initial joint call, and reads only its 1–2 explicit physical nominations.
-One actually observed continuation can complete 20+15 rows; distinct address rows
-sharing one article ID remain visible, while article bodies are deduplicated.
-The existing optional joint follow-up compares actual selected text; no third
-mandatory selector/judge is added. Complementary selected Wiki text remains
-available when the independently selected regional route is unavailable.
+The existing queues support geometry, actual architectural text and visual
+reference proofs through common facts/POI handling. Prussia39 uses its real
+publisher forms, cp1251, observed cards/pagination and model-nominated bodies;
+Wiki remains complementary. Full physical candidates, frozen operations,
+resource control and the upload-based deadlines remain in place.
 
-Optional early catalogue preparation is bounded to three seconds and uses only
-an already received camera street or one unambiguous observed locality/street.
-It does not wait for reverse geocoding or invent a target from a mixed pool.
-A slow or incomplete publisher response remains a recorded limitation. A broad
-inventory received only after the initial call does not trigger automatic
-first-two selection or an additional paid judge. This preserves the operation
-budget but does not demonstrate a cold text fast path for every facade.
-The affected regional/Wiki/geometry/text offline set passed 102 checks, followed
-by 38 affected checks after receipt/fence changes. These checks do not establish
-live product acceptance.
+Optional early regional preparation uses only an already received camera street
+or one unambiguous observed locality/street and is bounded to three seconds.
+Late or partial cards remain visible, but do not authorize automatic first-two
+selection or another mandatory judge. Independent text fallback preserves the
+received packet; its Native addressed prompt can still be large, and Live's
+24 KB planning limit remains a real limitation.
 
-The cold 104 canary on `c033e33` received all 12 regional cards before the joint
-call, but the closed model plan failed schema validation. It ended naturally at
-180.05 s with `identity_deadline_exceeded`, no accepted object and no eligible
-facts. The remaining live cases were not started. Exact schema diagnostics and
-contract correction must use the existing optional joint follow-up, retaining
-the first invalid response and strict evidence validation; a second invalid
-answer must not launch another planner chain. Late original-operation readback
-is separate from acceptance and cannot restart an expired attempt.
+The latest measured cold canary (`c528647`, photo104) correctly identified the
+physical tower by geometry in 17.23 s, but accepted zero facts. Its closed reviews
+copied candidate prose instead of literal source evidence and were rejected.
+The operator stopped it at 168.69 s. This establishes an identity result, not
+product acceptance. Private review schemas now enumerate only exact frozen quote labels. Saved
+answers verify that candidate prose is rejected at this transport boundary;
+new live fact acceptance remains unverified.
 
-The subsequent cold 104 diagnostic on `c09a123` was stopped through ordinary
-research Stop at 105.18 s after the initial joint operation retried unknown
-transport outcomes across keys. Its journal records three timeouts, one closed
-HTTP503 failure, and one closed answer reporting 64,912 total tokens. That answer
-used exact neutral map references (`@338`) from the supplied compact packet in
-identifier fields; the host rejected them before physical-proof validation.
-No object or fact was accepted. A deterministic transport join now resolves only
-exact identifier references from that frozen packet, preserves raw-response and
-context hashes, and leaves prose, choices and the strict physical-proof validator
-unchanged. Unknown/ambiguous references remain invalid. The initial operation
-now has the same durable UNKNOWN fence as the optional follow-up; one lost
-response cannot authorize another paid send through a different key or restart.
-These are observed transport defects, not evidence of global quota exhaustion.
-The joint call stably prefers the existing route matching the configured
-`gemini_web_search_model`, preserving its pool, quota and executor. A lost outcome
-still prevents trying another model. The affected integration set passed 90
-checks and the final route/fence set passed 12; neither is product acceptance.
-
-Cold104 on `45197c6` finished naturally in 23.69 s with `resource_blocked`: one
-Google HTTP503, then independent text routes refused the input before dispatch.
-The dedicated text-only planning policy now preserves the entire received
-packet while reducing that saved base prompt from 65,672 to 62,507 characters,
-below the existing Native 65,536-character cap. Its unchanged strict schema is
-still appended (110,579 addressed characters); this remains a substantial input,
-and the 24 KB Live planner limit still correctly refuses it. No candidate or
-address inventory was truncated. Twenty-five offline checks cover retained
-packet equality, foreign-ID rejection and frozen original readback after restart.
-The real Google client also marks admission/guard failures before SDK invocation
-as authoritative `not_sent`; errors after SDK invocation retain their actual
-closed/UNKNOWN state. The shared reservation journal is not refunded by this
-classification. Thirty-eight affected boundary/quota/fence checks passed.
-
-A saved-source-only Live contract diagnostic on `3c6e492` completed in 10.66 s;
-it does not establish product acceptance.
-
-Cold104 on `2142455` identified the independently labelled physical object
-`osm:relation:3665416` through geometry at 15.67 s, then ended naturally at the
-facts deadline after 480.94 s with zero eligible facts. All nine review quotes
-were paraphrases rather than literal own evidence; the evidence-ID joins were
-valid. A later extraction answer omitted advisory keys on eight of thirteen
-candidates and was rejected as malformed, followed by unsuccessful fallback
-operations. This run establishes neither useful facts nor product PASS. Saved
-packets are used to verify literal addressing and required evidence fields
-without reprocessing the expired run as acceptance.
-
-No final five-case PASS or deployment
-is claimed. Release evidence
-must report the final source/deployed SHA, per-building facts/sources, first useful
-fact and full times, actual sends/usage, known costs and remaining unknowns.
+There is no accepted release, final five-building PASS, deployment or Android
+acceptance yet. Per-version failures, tests, usage bounds and remaining gates
+are recorded in the [validation report](reports/product-recovery-validation-20261009.md).
+Release acceptance must supply the same SHA for code/backend/evidence, independently
+checked facts and canonical POI readback, first useful fact and full times,
+actual sends/usage and measured costs where available. Billing totals currently
+remain unknown.

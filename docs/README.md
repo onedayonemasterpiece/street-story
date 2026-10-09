@@ -28,3 +28,7 @@ transport, authorisation, persistence and review requirements. A target document
 offline fixture, source commit or isolated identity match does not prove deployment
 or product acceptance. A release report must identify its source/deployed SHA,
 manifest, provider configuration and actual case receipts.
+
+The [current recovery validation](reports/product-recovery-validation-20261009.md)
+separates prepared corrections from measured live outcomes and records remaining
+acceptance gates and observed usage.
