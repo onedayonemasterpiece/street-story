@@ -188,7 +188,11 @@ def _geometry_binding_issues(decision, manifest):
     if decision.get('candidate_id') not in received:
         issues['unreceived_primary_id'] = decision.get('candidate_id')
     if labels.get(decision.get('candidate_label')) != decision.get('candidate_id'):
-        issues['candidate_label_binding'] = 'Reported label does not name the reported candidate_id in MAP.'
+        issues['candidate_label_binding'] = {
+            'reported_label': decision.get('candidate_label'),
+            'reported_candidate_id': decision.get('candidate_id'),
+            'received_label_candidate_id': labels.get(decision.get('candidate_label')),
+            'reason': 'Reported label and ID disagree in frozen MAP; re-evaluate the subject, never infer an OSM ID from the label.'}
     for name, ids in (
         ('unreceived_alternative_ids', [item.get('candidate_id') for item in
             decision.get('rejected_alternatives') or [] if isinstance(item, dict)]),
@@ -416,7 +420,7 @@ async def suggest(service, story, transcript, candidates):
             packet = compact_planner_packet(packet)
         prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
             packet, ensure_ascii=False, separators=(',', ':'))
-    response_contract = identity_transport_schema(schema)
+    response_contract = identity_transport_schema(schema, map_label_references=bool(scene))
     literal_names = []
     if scene:
         original_table = scene['manifest']['objects']
@@ -438,8 +442,12 @@ async def suggest(service, story, transcript, candidates):
             + '\nID namespaces are distinct: Wikipedia page_id/wiki:* and prussia39:sid:* identify articles, '
             'never OSM nodes, ways or relations. Never prepend an OSM prefix to an article page number. '
             'Only actual mapped_osm_ids associate an article with supplied OSM objects; [] supplies no such association. '
-            'For geometry candidate_id, map_features and rejected_alternatives, copy exact IDs from map_scene.objects '
-            'or use exact @N MAP-label references in identifier fields. An article without a supplied mapped OSM object '
+            'Every physical pointer field uses the same namespace: copy a received exact ID or use the string @N '
+            'for MAP label N. This includes first_wave subject_id, spatial_hypotheses, regional selections/lookups, '
+            'article bindings, observed_candidate_ids, geometry features/alternatives and next_action targets. '
+            'A MAP label is not an OSM number: never write osm:way:N, osm:node:N or osm:relation:N from label N. '
+            'Only explicit @N is dereferenced; invented canonical IDs remain invalid. The resolved object must '
+            'still satisfy the field role and observed membership. An article without a supplied mapped OSM object '
             'cannot be a received MAP alternative. Consider every material received physical alternative; '
             'rejected_alternatives may be [] when none is rejected. Do not invent external IDs to fill this list. '
             'A potentially material alternative outside MAP coverage remains an explicit coverage limitation; '
@@ -472,6 +480,15 @@ async def suggest(service, story, transcript, candidates):
     initial_outcome = addressed_initial.get('phase') if addressed_initial else None
     initial_failure = None
     response_id_resolutions = []
+    def diagnostic_stage(raw_json):
+        if story.get('_identity_search_plan_route', 'google') != 'google' or not isinstance(raw_json, str):
+            return {}
+        raw_sha256 = hashlib.sha256(raw_json.encode()).hexdigest()
+        for stage in ('followup', 'initial'):
+            marker = joint_operation_marker(service, story, stage=stage) or {}
+            if marker.get('phase') == 'response_closed' and marker.get('response_sha256') == raw_sha256:
+                return {'joint_stage': stage, 'operation_binding': marker['binding']}
+        return {}
     def joint_source_map_receipt():
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
@@ -490,7 +507,7 @@ async def suggest(service, story, transcript, candidates):
                 route=story.get('_identity_search_plan_route', 'google'),
                 original_schema_readback=original_schema_readback, original_schema=original_schema is not None,
                 raw_json=raw_json, raw_json_available=raw_json_available, provider_response_id=provider_response_id,
-                errors=errors, errors_truncated=errors_truncated)
+                errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
             if joint_followup_used and joint_followup_binding and story.get('_identity_search_plan_route') == 'google':
                 joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed', code=code)
             record_identity_event(service, story['id'], 'identity_search_plan_rejected', {
@@ -685,7 +702,7 @@ async def suggest(service, story, transcript, candidates):
                 decode_error = True
                 retain_closed_invalid(service, story, None, schema, code='identity_search_plan_malformed',
                     route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
-                    errors=[], errors_truncated=False)
+                    errors=[], errors_truncated=False, **diagnostic_stage(raw))
                 return None
             from . import identity_source_selection
             resolver = getattr(identity_source_selection, 'resolve_identity_response_ids', None)
@@ -707,7 +724,7 @@ async def suggest(service, story, transcript, candidates):
                 # or qualified fallback. This does not change its acceptance.
                 retain_closed_invalid(service, story, decoded, schema, code='identity_search_plan_malformed',
                     route='google', raw_json=raw, raw_json_available=raw_available, provider_response_id=response_id,
-                    errors=errors, errors_truncated=truncated)
+                    errors=errors, errors_truncated=truncated, **diagnostic_stage(raw))
             return decoded
         payload = decode_joint(response)
         try:
@@ -784,8 +801,10 @@ async def suggest(service, story, transcript, candidates):
                 'exact IDs/labels; never invent an alternative ID. Received MAP context membership '
                 'does not authorize physical nomination: observed_candidate_ids must use the '
                 'nomination-eligible catalogue. Keep context IDs only in fields whose contract '
-                'allows them, such as actual map_features. If geometry is insufficient, '
-                'return uncertain with one useful action. Do not raise confidence to satisfy this check.')
+                'allows them, such as actual map_features. '
+                'Use the same exact @N MAP-label string in all pointer fields; never attach an OSM prefix to N. '
+                'If geometry is insufficient, return uncertain with one useful action. '
+                'Do not raise confidence to satisfy this check.')
             if text_articles:
                 from .identity_proof import architectural_text_decision_schema
                 conditional_prior = _conditional_text_prior(payload, observed_ids)
@@ -798,7 +817,7 @@ async def suggest(service, story, transcript, candidates):
                 schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
                     observed_ids, [item['article_id'] for item in text_articles],
                     material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8)
-                followup_contract = identity_transport_schema(schema)
+                followup_contract = identity_transport_schema(schema, map_label_references=bool(scene))
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
                     system_instruction=config.system_instruction + '\nFollow-up contract: ' + json.dumps(
                         followup_contract, ensure_ascii=False, separators=(',', ':')))

@@ -204,14 +204,16 @@ def _raw_json(payload, raw_json, raw_json_available):
 
 def retain_closed_invalid(service, story, payload, schema, *, code, route,
         original_schema_readback=False, original_schema=False, raw_json=None, raw_json_available=None,
-        provider_response_id=None, errors=None, errors_truncated=False):
-    """Commit the first invalid answer for this exact photo/generation/revision.
+        provider_response_id=None, errors=None, errors_truncated=False, joint_stage=None, operation_binding=None):
+    """Keep an immutable initial diagnostic and a separate closed joint2 slot.
 
     This evidence cannot authorize a resend, subject match, or source read.
     The frozen original schema is used by the caller for original readback.
     """
     from .service import canonical
     from .identity_telemetry import record_identity_event
+    if joint_stage not in {None, 'initial', 'followup'}:
+        raise ValueError('invalid joint diagnostic stage')
     if not callable(getattr(getattr(service, 'store', None), 'tx', None)) or not callable(getattr(service, '_story_row', None)):
         return None  # Preserve legitimate minimal provider adapter compatibility.
     scope = _scope(story)
@@ -229,17 +231,29 @@ def retain_closed_invalid(service, story, payload, schema, *, code, route,
         'provider_response_id': response_id[:160] if response_id else None,
         'provider_response_id_truncated': bool(response_id and len(response_id) > 160),
         'captured_at': service.store.now(), **_raw_json(payload, raw_json, raw_json_available)}
+    if joint_stage:
+        diagnostic.update(joint_stage=joint_stage, operation_binding=operation_binding)
+    key = 'identity_closed_invalid_followup_plan' if joint_stage == 'followup' else 'identity_closed_invalid_plan'
     with service.store.tx() as db:
         research = _checked_research(service, story, db, scope)
-        previous = research.get('identity_closed_invalid_plan') or {}
+        if joint_stage and operation_binding is not None:
+            from .service import ConflictError
+            marker = research.get('identity_joint_' + joint_stage) or {}
+            if (marker.get('scope') != scope or marker.get('binding') != operation_binding
+                    or marker.get('phase') != 'response_closed'
+                    or marker.get('response_sha256') is not None
+                        and marker['response_sha256'] != diagnostic['raw_json_sha256']):
+                raise ConflictError('visual_comparison_changed', 'Исходный закрытый запрос изменился.')
+        previous = research.get(key) or {}
         if previous.get('scope') == scope:
-            return previous  # Immutable first response, including across fallback/restart.
-        research['identity_closed_invalid_plan'] = diagnostic
+            return previous  # Immutable first response in this stage, including across restart.
+        research[key] = diagnostic
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
     # Only contract metadata and hashes reach logs/telemetry; raw rejected values,
     # arbitrary instance keys, validator messages, and response IDs do not.
     record_identity_event(service, story['id'], 'identity_search_plan_diagnostic_retained', {
         'generation': generation, 'control_revision': scope['control_revision'],
+        'joint_stage': joint_stage,
         'code': code, 'route': route, 'raw_json_sha256': diagnostic['raw_json_sha256'],
         'raw_json_utf8_bytes': diagnostic['raw_json_utf8_bytes'], 'raw_json_truncated': diagnostic['raw_json_truncated'],
         'validation_schema_sha256': diagnostic['validation_schema_sha256'],

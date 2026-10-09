@@ -172,10 +172,52 @@ async def test_invalid_joint2_fail_closed_without_third_google_or_fresh_fallback
     with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
         await identity_discovery.suggest(service, service._identity_snapshot(story['id'])[0], '', [])
     assert calls == ['google', 'google'] and saved(service, story)['provider_response_id'] == 'google-1'
+    followup = service._identity_snapshot(story['id'])[1]['identity_closed_invalid_followup_plan']
+    assert followup['provider_response_id'] == 'google-2' and followup['raw_json'] == raw
+    assert followup['joint_stage'] == 'followup'
+    assert followup['operation_binding'] == joint_followup_marker(service,
+        service._identity_snapshot(story['id'])[0])['binding']
     fresh_service = type(service)(service.settings, providers=service.providers)
     with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
         await identity_discovery.suggest(fresh_service, fresh_service._identity_snapshot(story['id'])[0], '', [])
     assert calls == ['google', 'google']
+
+
+@pytest.mark.asyncio
+async def test_distinct_closed_followup_json_survives_without_overwriting_original_or_resend(tmp_path):
+    service, _, story, _ = prepared(tmp_path)
+    raw = ['{}', '{"entity_name":"Second rejected response"}']
+    calls = []
+    async def generate(*args, **kwargs):
+        calls.append('joint')
+        return SimpleNamespace(text=raw[len(calls)-1], response_id=f'closed-{len(calls)}')
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
+        await identity_discovery.suggest(service, service._identity_snapshot(story['id'])[0], '', [])
+    research = service._identity_snapshot(story['id'])[1]
+    first, second = research['identity_closed_invalid_plan'], research['identity_closed_invalid_followup_plan']
+    assert first['raw_json'] == raw[0] and second['raw_json'] == raw[1]
+    assert first['raw_json_sha256'] != second['raw_json_sha256']
+    assert second['raw_json_sha256'] == hashlib.sha256(raw[1].encode()).hexdigest()
+    with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
+        await identity_discovery.suggest(service, service._identity_snapshot(story['id'])[0], '', [])
+    assert calls == ['joint', 'joint']
+    assert service._identity_snapshot(story['id'])[1]['identity_closed_invalid_plan'] == first
+    assert service._identity_snapshot(story['id'])[1]['identity_closed_invalid_followup_plan'] == second
+
+
+@pytest.mark.parametrize('change', ['binding', 'unknown'])
+def test_followup_diagnostic_requires_original_closed_operation_binding(tmp_path, change):
+    from street_story.identity_plan_diagnostics import joint_operation_marker
+    service, _, story, _ = prepared(tmp_path)
+    snapshot = service._identity_snapshot(story['id'])[0]
+    binding = {'input_sha256':'a'*64, 'schema_sha256':hashlib.sha256(canonical(SCHEMA).encode()).hexdigest()}
+    joint_operation_marker(service, snapshot, stage='followup', binding=binding,
+        phase='unknown' if change == 'unknown' else 'response_closed')
+    requested = {**binding, 'input_sha256':'b'*64} if change == 'binding' else binding
+    with pytest.raises(ConflictError, match='Исходный закрытый запрос изменился'):
+        retain(service, snapshot, {}, joint_stage='followup', operation_binding=requested)
+    assert 'identity_closed_invalid_followup_plan' not in service._identity_snapshot(story['id'])[1]
 
 
 @pytest.mark.asyncio

@@ -443,9 +443,10 @@ def resolve_identity_response_ids(payload, packet):
     """
     import hashlib
     from collections import Counter
-    if not isinstance(payload, dict) or packet.get('encoding') != 'lossless-literals-and-map-labels-v1':
+    if not isinstance(payload, dict) or not isinstance(packet, dict):
         return payload, None
-    plain = expand_planner_packet(packet)
+    encoded = packet.get('encoding') == 'lossless-literals-and-map-labels-v1'
+    plain = expand_planner_packet(packet) if encoded else packet
     table = (plain.get('map_scene') or {}).get('objects') or {}
     columns = table.get('columns') or []
     rows = [dict(zip(columns, row)) for row in table.get('rows') or []]
@@ -453,7 +454,7 @@ def resolve_identity_response_ids(payload, packet):
     labels = {str(row['label']): row['candidate_id'] for row in rows
         if type(row.get('label')) is int and isinstance(row.get('candidate_id'), str)
         and counts[row['label']] == 1}
-    literals = packet.get('literals') or []
+    literals = (packet.get('literals') or []) if encoded else []
     scalar_ids = {'candidate_id', 'subject_id', 'address_entry_id', 'physical_candidate_id', 'article_id'}
     list_ids = {'observed_candidate_ids', 'candidate_ids', 'target_candidate_ids',
         'selected_wikipedia_page_ids', 'alternative_candidate_ids'}
@@ -500,7 +501,7 @@ def resolve_identity_response_ids(payload, packet):
         'resolutions': resolved[:32], 'resolutions_truncated': len(resolved) > 32}
 
 
-def identity_transport_schema(schema):
+def identity_transport_schema(schema, *, map_label_references=False):
     """Send bounded ID strings; validate exact observed membership on the host.
 
     Repeating the full OSM dictionary in several schema enums can exceed the
@@ -535,6 +536,23 @@ def identity_transport_schema(schema):
             if isinstance(node.get('items'), dict):
                 bounded_ids(node['items'])
         bounded_ids(properties[name])
+    if map_label_references:
+        # One explicit transport namespace applies to every pointer field;
+        # it is never inferred from a numeric suffix on a canonical OSM ID.
+        scalar_ids = {'candidate_id', 'subject_id', 'address_entry_id', 'physical_candidate_id'}
+        list_ids = {'observed_candidate_ids', 'candidate_ids', 'target_candidate_ids', 'alternative_candidate_ids'}
+        def describe_pointers(node):
+            if not isinstance(node, dict):
+                return
+            for key, value in (node.get('properties') or {}).items():
+                pointer = value if key in scalar_ids else value.get('items') if key in list_ids else None
+                if isinstance(pointer, dict):
+                    pointer.pop('enum', None)
+                    pointer.update(type='string', maxLength=100)
+                    pointer['description'] = 'Exact received ID or @N from MAP label N. Never construct an OSM ID from N.'
+                describe_pointers(value)
+            describe_pointers(node.get('items'))
+        describe_pointers(result)
     return result
 
 
