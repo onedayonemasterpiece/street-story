@@ -65,7 +65,11 @@ def encode_features(options):
                 r['next_plan_hit_body_labels']]
         elif kind=='physical_pair':
             entry=[name,'P',r['body_labels'],
-                r['observed_boundary_gap_m']]
+                r['observed_boundary_gap_m'],
+                r.get('second_centroid_clockwise_from_first_deg'),
+                r.get('nominal_map_centroid_distance_m'),
+                r.get('first_nominal_front_segment_index'),
+                r.get('second_centroid_outward_offset_from_first_wall_m')]
         else:
             raise RuntimeError('unexpected_measured_OSM_option')
         rows.append(entry)
@@ -86,7 +90,7 @@ def model_input(packet):
           'F':'[ID,F,label,ring,segment,actual_wall_length_m,camera_side_advisory]',
           'C':'[ID,C,label,ring,segment_a,segment_b,actual_OSM_turn_deg,[camera_side_a,camera_side_b]]',
           'R':'[ID,R,road_label,ray_direction_0_or_1,OSM_heading_deg,first_2D_hit_body_label,hit_m,next_hits]',
-          'P':'[ID,P,[body_label_a,body_label_b],observed_2D_boundary_gap_m]'
+          'P':'[ID,P,[body_label_a,body_label_b],gap_m,second_clockwise_bearing_delta_deg,centroid_distance_m,first_exterior_wall_index,second_centroid_signed_outward_offset_m]';
         },
         'literal_original_OSM_feature_rows':encode_features(supplied['options']),
         'policy':'ALL received physical labels remain possible; numeric OSM plan '
