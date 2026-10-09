@@ -43,7 +43,8 @@ def _closed_answer(decision,ids,packet):
     physical_id=result['candidate_id']
     publisher_ref=next(item['ref'] for item in evidence['articles']
         if item['article_id']==aid for item in
-        item['actual_acquired_publisher_records'])
+        item['actual_acquired_publisher_records']
+        if item['provenance']=='observed_publisher_article_metadata')
     osm_ref=next(item['ref'] for body in evidence['physical_subjects']
         if body['candidate_id']==physical_id
         for item in body['literal_observed_evidence'])
