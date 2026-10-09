@@ -110,9 +110,21 @@ def measured_correspondence(story, candidates, decision, receipt):
             if (not hits or hits[0]['candidate_id'] != cid or
                     axis_misalignment > 30):
                 return None
-        # A horizontal viewing scenario must place nominated bodies in front.
-        if any(item['relative_bearing_degrees'] is None or abs(item['relative_bearing_degrees']) >= 90
-                for item in measured['objects']):
+        # Only bodies claimed to be visibly present in SOURCE must lie in
+        # front of the camera. A *rejected* alternative may legitimately be
+        # behind the viewer (notably the opposite end of a street). Requiring
+        # all compared candidates to be forward silently rejected real proofs.
+        # A frontage_sequence, by contrast, asserts a VISIBLE left-to-right
+        # sequence, so every member must have a forward bearing.
+        objects_by_id = {row['candidate_id']:row for row in measured['objects']}
+        selected = objects_by_id.get(cid) or {}
+        relative = selected.get('relative_bearing_degrees')
+        if relative is None or abs(relative) >= 90:
+            return None
+        if pattern == 'frontage_sequence' and any(
+                row['relative_bearing_degrees'] is None or
+                abs(row['relative_bearing_degrees']) >= 90
+                for row in measured['objects']):
             return None
         measurements.append(measured)
     if pattern == 'frontage_sequence' and any(
