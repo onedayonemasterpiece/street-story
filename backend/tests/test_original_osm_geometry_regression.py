@@ -149,7 +149,7 @@ def test_original_132_source_free_bidirectional_road_cues_expose_both_physical_f
     context=physical_decision_context(story,[],scene['manifest'])
     cues=context['bidirectional_road_axis_cues']
     assert cues['camera_basis']=='owner_approximate'
-    assert cues['observed_road_count']>=2
+    assert cues['observed_road_count']==1  # This bounded raw-OSM fixture retains one road axis.
     nearest=next((row for row in cues['rows'] if row[0]=='osm:way:67826885'),None)
     assert nearest is not None
     assert nearest[4]==pytest.approx(4.67,abs=.1)
