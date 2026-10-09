@@ -245,7 +245,8 @@ def compact_planner_packet(packet):
             'In candidate_label_columns, integer values mean exact map labels; literal_candidate_value wraps original nonstring values. '
             'In coordinate_offset_columns, numeric pairs are offsets from coordinate_grid_origin_microdegrees '
             'in millionths of a degree; add the origin and divide by 1000000 to recover rounded observed lat/lon. '
-            'Output actual exact IDs and literal strings required by the response schema, never these references. '
+            'Output actual exact IDs/literals; exact @N/$N references are also allowed in identifier fields '
+            'and are dereferenced against this received dictionary before host validation. Never invent references or ID prefixes. '
             'Missing/null values remain unknown; references do not bind SOURCE or rank hypotheses.',
         'coordinate_grid_origin_microdegrees': grid_origin,
         'literals': [literals[index] for index in sorted(used)], **renumber(encoded)}

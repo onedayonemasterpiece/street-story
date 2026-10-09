@@ -388,6 +388,15 @@ async def suggest(service, story, transcript, candidates):
             'не являются ответом об объекте. Return one JSON object satisfying this contract; '
             'exact IDs must belong to the supplied context:\n' + json.dumps(
                 response_contract, ensure_ascii=False, separators=(',', ':'))
+            + '\nID namespaces are distinct: Wikipedia page_id/wiki:* and prussia39:sid:* identify articles, '
+            'never OSM nodes, ways or relations. Never prepend an OSM prefix to an article page number. '
+            'Only actual mapped_osm_ids associate an article with supplied OSM objects; [] supplies no such association. '
+            'For geometry candidate_id, map_features and rejected_alternatives, copy exact IDs from map_scene.objects '
+            'or use exact @N MAP-label references in identifier fields. An article without a supplied mapped OSM object '
+            'cannot be a received MAP alternative. Consider every material received physical alternative; '
+            'rejected_alternatives may be [] when none is rejected. Do not invent external IDs to fill this list. '
+            'A potentially material alternative outside MAP coverage remains an explicit coverage limitation; '
+            'return uncertain if it leaves identity unresolved, rather than forcing uniqueness.'
             + '\nLiteral mapped-name index (all received names, not a ranked shortlist): '
             + json.dumps({'columns': ['map_label', 'candidate_id', 'observed_name', 'object_kind', 'address'],
                 'rows': literal_names}, ensure_ascii=False, separators=(',', ':'))
