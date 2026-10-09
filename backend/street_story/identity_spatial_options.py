@@ -184,7 +184,9 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
             _round(span, 1), _round(shape.get('long_axis_m'), 1),
             _round(shape.get('short_axis_m'), 1), _round(shape.get('footprint_elongation')),
             _round(shape.get('explicit_height_m'), 1), _round(shape.get('observed_building_levels'), 1),
-            bool(shape.get('status') == 'observed_closed_outer'), row['candidate_id'] in detailed])
+            bool(shape.get('status') == 'observed_closed_outer'), row['candidate_id'] in detailed,
+            _round(sector[0], 1) if isinstance(sector, (tuple,list)) and len(sector)==3 else None,
+            _round(sector[1], 1) if isinstance(sector, (tuple,list)) and len(sector)==3 else None])
 
     entries = {item.get('candidate_id'): item for item in scene_entries(story, candidates)}
     options = {}
@@ -276,7 +278,7 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
         'physical_body_count': len(body),'all_received_index_columns': [
             'body_label','nominal_boundary_m','plan_angular_span_deg','plan_long_m',
             'plan_short_m','elongation','mapped_height_m','mapped_levels',
-            'complete_plan','detail_expanded'],
+            'complete_plan','detail_expanded','sector_start_deg','sector_end_deg'],
         'all_received_physical_bodies': index,
         'expanded_labels': sorted(labels[cid] for cid in detailed),
         'presentation_stage': 'focused_geometry' if focus else 'source_map_overview',
