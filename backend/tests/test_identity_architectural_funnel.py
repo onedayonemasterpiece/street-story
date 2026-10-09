@@ -673,6 +673,7 @@ async def test_acquired_publisher_gallery_flows_into_existing_live_REF_without_o
     story,candidates,decision,receipt,g=_inputs()
     url='https://www.prussia39.ru/photo/actual-original-view.jpg'
     article=receipt['articles'][0]
+    article['url']='https://www.prussia39.ru/sight/index.php?sid=42'
     article['source_image_links']=[url]
     article['source_image_records']=[{'image_url':url,
         'publisher_img_alt':'Publisher original facade',
@@ -702,6 +703,7 @@ async def test_acquired_publisher_gallery_flows_into_existing_live_REF_without_o
 def test_unsafe_or_unobserved_gallery_urls_cannot_become_reference_cannot_make_identity():
     story,candidates,decision,receipt,g=_inputs()
     article=receipt['articles'][0]
+    article['url']='https://www.prussia39.ru/sight/index.php?sid=42'
     url='https://www.prussia39.ru/photo/existing.jpg'
     article['source_image_links']=[url]
     packet=prepare_t_g_funnel(g,candidates,receipt['articles'],
@@ -726,6 +728,7 @@ def test_multiple_real_views_share_one_unbound_article_reference_candidate():
     story,candidates,decision,receipt,g=_inputs()
     urls=['https://www.prussia39.ru/photo/first.jpg',
         'https://www.prussia39.ru/photo/another-angle.jpg']
+    receipt['articles'][0]['url']='https://www.prussia39.ru/sight/index.php?sid=42'
     receipt['articles'][0]['source_image_links']=[*urls,*urls]
     packet=prepare_t_g_funnel(g,candidates,receipt['articles'],
         source_sha256=receipt['original_source_sha256'],
