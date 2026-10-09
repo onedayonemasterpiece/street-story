@@ -26,6 +26,30 @@ from .errors import PermanentProviderError, RetryableProviderError
 from .native_quota import NativeQuotaPermission
 from .visual_attachments import direct_visual_parts, visual_context_without_image_hashes
 
+
+def native_source_map_provider_schema(schema):
+    """Project a strict host proof schema onto the native JSON-output subset.
+
+    The native provider rejects keywords such as uniqueItems, conditionals and
+    min/max bounds in text.format.schema. These are NOT relaxed at the product
+    layer: the original host schema and full geometry proof are still checked
+    after the provider response. A provider rejection never establishes identity.
+    """
+    supported = {'type', 'properties', 'items', 'enum', 'anyOf', 'description'}
+    def project(node):
+        if isinstance(node, list):
+            return [project(value) for value in node]
+        if not isinstance(node, dict):
+            return node
+        safe = {key: project(value) for key, value in node.items() if key in supported}
+        if isinstance(safe.get('properties'), dict):
+            safe['type'] = safe.get('type', 'object')
+            safe['required'] = list(safe['properties'])
+            safe['additionalProperties'] = False
+        return safe
+    return project(schema)
+
+
 MODEL = 'gpt-6-luna'
 TRANSPORT = 'native_codex_app_server'
 VERIFICATION_KEY = 'native-vision-verification-v1'
@@ -204,18 +228,7 @@ class NativeVisionProvider:
         """SOURCE/MAP uses the same quota, native turn and durable readback transport."""
         frozen = binding.get('frozen_source_map')
         if frozen is None:
-            contract = deepcopy(schema)
-            def strict(node):
-                if isinstance(node, dict):
-                    if 'properties' in node:
-                        node['required'] = list(node['properties'])
-                        node['additionalProperties'] = False
-                    for value in node.values():
-                        strict(value)
-                elif isinstance(node, list):
-                    for value in node:
-                        strict(value)
-            strict(contract)
+            contract = native_source_map_provider_schema(schema)
             frozen = {'contract': contract, 'prompt': prompt, 'host_context': deepcopy(host_context),
                 'images': [{'label': label, 'mime_type': mime,
                             'data': base64.b64encode(data).decode('ascii'),
