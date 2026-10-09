@@ -15,7 +15,7 @@ from street_story.identity_plan_diagnostics import joint_followup_marker
 from street_story.identity_proof import accepted_identity
 from street_story.providers import GeminiClient, PermanentProviderError, RetryableProviderError
 from street_story.research_runs import begin_research_run
-from test_architectural_text_identity import TEXT, text_inputs
+from test_architectural_text_identity import TEXT, text_inputs, with_received_physical_links
 from test_geometry_identity_plan import geometry_decision, geometry_setup, payload
 from test_headless_facts import CLAIM, Researcher, controlled_public_dns, review_candidates  # noqa: F401
 
@@ -170,7 +170,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         if outcome == 'wiki_address_text':
             assert 'wiki:13' in contents[-1] and article_id in contents[-1]
             assert 'It does not describe structural facade combinations' in contents[-1]
-        return SimpleNamespace(text=json.dumps(decision))
+        return SimpleNamespace(text=json.dumps(with_received_physical_links(decision, contents)))
 
     async def lookup(*args):
         return snapshot['_identity_map_snapshot']
@@ -205,9 +205,14 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
             fresh, _research = svc._identity_snapshot(sid)
             fresh.update(_identity_map_snapshot=snapshot['_identity_map_snapshot'],
                 _identity_observed_candidates=snapshot['_identity_observed_candidates'])
-            expected = RetryableProviderError if outcome == 'unknown' else PermanentProviderError
-            with pytest.raises(expected, match='identity_architectural_text_uncertain|identity_joint_followup_outcome_unknown|identity_architectural_comparison_invalid'):
-                await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+            if outcome == 'uncertain':
+                history, _ = await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+                assert history['search_plan']['payload']['physical_research_priority']['active_candidate_ids']
+                assert fresh['_identity_accepted_result']['_comparison_deferred'] is True
+            else:
+                expected = RetryableProviderError if outcome == 'unknown' else PermanentProviderError
+                with pytest.raises(expected, match='identity_joint_followup_outcome_unknown|identity_architectural_comparison_invalid'):
+                    await identity_discovery.prepare_search_plan(svc, fresh, '', active)
             assert len(calls) == 3
             return
         identity = current['visual_identity']

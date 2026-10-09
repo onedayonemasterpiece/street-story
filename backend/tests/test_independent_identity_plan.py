@@ -154,6 +154,7 @@ async def test_planner_can_promote_existing_building_outside_active_shortlist(tm
     snapshot = {**svc._identity_snapshot(story['id'])[0], '_identity_observed_candidates': [physical]}
     active = [{'candidate_id': 'osm:way:1', 'name': 'Original hypothesis'}]
     await identity_discovery.suggest(svc, snapshot, '', active)
-    assert active[1]['candidate_id'] == physical['candidate_id']
-    assert active[1]['shortlist_bucket'] == 'observed_promotion'
-    assert 'identity_status' not in active[1]  # promotion supplies no proof
+    promoted = next(item for item in active if item['candidate_id'] == physical['candidate_id'])
+    assert promoted['shortlist_bucket'] == 'observed_promotion'
+    assert 'identity_status' not in promoted  # promotion supplies no proof
+    assert any(item['candidate_id'] == 'osm:way:1' for item in active)  # reserve remains available

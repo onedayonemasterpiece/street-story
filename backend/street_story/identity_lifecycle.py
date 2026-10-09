@@ -354,7 +354,9 @@ class IdentityLifecycleMixin:
                     latest['visual_identity'] = {'status': 'uncertain', 'candidates': candidates,
                         'observed_candidates': observed_candidates, 'camera_hints': hints,
                         'camera_position_verified': position_verified,
-                        'generation': generation, 'photo_sha256': story['photo_sha256']}
+                        'generation': generation, 'photo_sha256': story['photo_sha256'],
+                        **({'research_priority': story['_identity_physical_research_priority']}
+                            if story.get('_identity_physical_research_priority') else {})}
                     latest.update(osm=osm, wikipedia=wikipedia, photo_camera_hints=binding)
                     latest['wikipedia_metadata_complete'] = story.get('_wikipedia_metadata_complete', True)
                     db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
@@ -457,6 +459,7 @@ class IdentityLifecycleMixin:
                     if story['_wikipedia_metadata_complete']:
                         source_waits = [exc for exc in source_waits if not str(exc).startswith('identity_wikipedia')]
             catalog = {item['candidate_id']: item for item in candidates}
+            priority = story.get('_identity_physical_research_priority') or {}
             selected = catalog.get(str(raw.get('candidate_id') or '')) if raw.get('status') != 'mismatch' else None
             reference_verified = selected is not None and visual_match(raw, candidates)
             geometry_verified = selected is not None and geometry_result_valid(raw, candidates, story)
@@ -481,6 +484,7 @@ class IdentityLifecycleMixin:
                 'confidence': None if (geometry_verified or text_verified) and not reference_verified else confidence(raw), 'observations': [str(x)[:300] for x in raw.get('observations', [])[:6]],
                 'alternative_candidate_ids': [x for x in raw.get('alternative_candidate_ids', [])[:6] if x in catalog],
                 'candidates': candidates, 'observed_candidates': observed_candidates, 'camera_hints': hints,
+                **({'research_priority': priority} if priority else {}),
                 'camera_position_verified': position_verified,
                 'visual_reference_verified': reference_verified, 'identity_verified': matched, 'resolved_at': self.store.now(),
                 'control_revision': control_revision,

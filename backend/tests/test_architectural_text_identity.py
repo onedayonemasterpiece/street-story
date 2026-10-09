@@ -15,6 +15,37 @@ URL = 'https://archive.example/physical-building'
 TEXT = 'The facade has a central bay with three vertical window axes and a semicircular cornice. The entrance is on the left.'
 
 
+def with_received_physical_links(decision, contents):
+    """Fixture model links the literal records in the actual issued T packet."""
+    inventory = None
+    for line in contents[-1].splitlines():
+        try:
+            packet = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(packet, dict):
+            continue
+        found = (packet if packet.get('contract') == 'llm-first-literal-evidence-v1' else
+            packet.get('publisher_and_OSM_literal_records_NOT_prejoined') or
+            (packet.get('acquired_architectural_text') or {}).get('publisher_and_OSM_literal_records_NOT_prejoined'))
+        if found:
+            inventory = found
+    assert inventory, 'The actual issued model packet must include literal evidence.'
+    answer = copy.deepcopy(decision)
+    answer['physical_link_evidence'] = [{
+        'article_id': binding['article_id'], 'candidate_id': binding['candidate_id'],
+        'publisher_ref': next(ref for ref, row in inventory['publisher_refs'].items()
+            if row['article_id'] == binding['article_id']),
+        'osm_ref': next(ref for ref, row in inventory['osm_refs'].items()
+            if row['candidate_id'] == binding['candidate_id']),
+        'relationship': 'same_individual_physical_body',
+        'subject_scope': 'specific_photographed_OSM_body',
+        'architectural_scope_explanation': 'Fixture SOURCE and article describe this bay and return.',
+        'postal_interpretation': 'Literal received records identify the fixture physical scope.'}
+        for binding in answer['article_bindings']]
+    return answer
+
+
 def text_inputs(*, candidate_id='osm:way:7', photo='a'*64, generation=2, revision=0, url=URL):
     observed = geometry_identity(candidate_id=candidate_id, photo=photo, generation=generation, revision=revision)
     source = observed['geometry_proof']['source_map_receipt']

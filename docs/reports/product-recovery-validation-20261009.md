@@ -802,3 +802,47 @@ The issued compact positive T schema now mirrors the existing host requirement t
 For text-only frozen Live reviews, packet guidance uses known actual model input capacity measured against serialized setup/system/function-schema/trigger bytes, as a conservative token upper bound; unknown models retain the existing byte guide. Gemini3.8Live official specification is131072 input tokens and65536 output tokens (https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live). This replaces the24k-byte preference responsible for one-claim review serialization. Whole candidates/passages, Live-first routing and exact UNKNOWN fencing are preserved. No quota or acceptance boundary is raised. Larger real semantic review behavior and current-candidate cold acceptance must still be measured before deployment.
 
 Affected source/decoding/receipt/queue suite:185 passed; additional provenance regressions separately recorded. Exact-candidate acceptance and owner delivery remain pending.
+
+## Reversible streaming funnel integration (PR246)
+
+Existing SOURCE/map and compact T replies optionally carry a physical research
+group, its reason, next useful question/step and scoped contradictions. The full
+observed physical pool remains reserve. A singleton priority is never identity
+proof. This uses existing model operations, search-plan history and visual queue;
+no separate planner, service, database or semantic address rule was introduced.
+Sufficient G/T/visual evidence still uses the common proof gate.
+
+Several uncertain G nominations can supply literal-address readers without a
+geometry PASS. Two HTTP readers overlap; the first useful body proceeds to the
+same T call while an already started sibling retains its actual body in existing
+history. Shared articles retain all physical lookup IDs and received versions.
+Useful uncertain T groups enter the existing visual worker. Ready article imagery
+precedes fresh internet search; active address queries and unsent references
+receive priority, and existing visual feedback can revise it. Pending operations
+keep original IDs and UNKNOWN fences. Independent cold cases continue after a
+failed sibling case.
+
+The baseline cc35125 subset reproduced 22 pre-existing test failures. The first
+full modified run was 2606 passed / 23 failed / 2 skipped. A new missing-photo
+fixture error and the changed priority expectation were repaired. Mock T replies
+now include literal publisher/OSM evidence from the actual issued packet; no
+production evidence validation was weakened. Restart checks exposed missing early
+TEXT and unstable literal-table numbering after canonical persistence. The
+original acquired packet is restored and numbered with stable key order, while
+SOURCE/MAP/configuration/schema remain hash-fenced. Early sent input and unsent
+optional followup keep distinct send states. Both formerly failing restart checks
+pass. Final whole-suite and exact-SHA cold results are pending at this checkpoint.
+
+Actual retained T102 and Luna G132 closed-response replays reproduce original
+common proof digests with zero new inference. T102 original wire whitespace and
+exact original pre-send prompt are unavailable; this is compatible-response
+regression, not a new prompt/model measurement. Historic timings and different
+SHAs are not combined into release PASS. Comparable complete traces for all three
+search strategies are unavailable; no scenario estimate is reported as measured
+product latency or saved requests.
+
+Retained evidence:
+`/home/dev/artifacts/street-story/20261009T183816Z-streaming-funnel-pr246-20261009/`.
+The 11 critical requirements and acceptance manifest/deadlines are unchanged.
+The live deployment remains db0c0d08024441536a2e59f5c3c433b12c7f4189; this checkpoint
+does not claim deployment or owner acceptance.

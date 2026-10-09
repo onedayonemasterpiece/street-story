@@ -93,7 +93,10 @@ def _map_query_context(story, candidates):
 
 def _plan_physical_ids(payload):
     """Replay the model's exact observed nominations; geometry supplies no rank."""
-    return list(dict.fromkeys([*(payload.get('observed_candidate_ids') or []),
+    return list(dict.fromkeys([*((payload.get('physical_research_priority') or {}).get('active_candidate_ids') or []),
+        *((payload.get('research_priority') or {}).get('candidate_ids') or []),
+        *(((payload.get('accepted_architectural_text') or {}).get('research_priority') or {}).get('candidate_ids') or []),
+        *(payload.get('observed_candidate_ids') or []),
         *(item.get('group_key') for item in payload.get('first_wave_hypotheses') or []
             if str(item.get('group_key') or '').startswith(('osm:way:', 'osm:relation:'))),
         *(item.get('candidate_id') for item in payload.get('spatial_hypotheses') or []
@@ -135,7 +138,7 @@ def _conditional_text_prior(payload, nomination_ids):
         return None
     prior = {key: copy.deepcopy(payload[key]) for key in (
         'source_scene_observations', 'observed_candidate_ids', 'spatial_hypotheses',
-        'accepted_geometry', 'first_wave_hypotheses') if key in payload}
+        'accepted_geometry', 'first_wave_hypotheses', 'research_priority') if key in payload}
     if not prior:
         return None
     geometry = payload.get('accepted_geometry') if isinstance(payload.get('accepted_geometry'), dict) else {}
@@ -145,7 +148,8 @@ def _conditional_text_prior(payload, nomination_ids):
     wave = payload.get('first_wave_hypotheses') if isinstance(payload.get('first_wave_hypotheses'), list) else []
     action = geometry.get('next_action') if isinstance(geometry.get('next_action'), dict) else {}
     targets = action.get('target_candidate_ids') if isinstance(action.get('target_candidate_ids'), list) else []
-    declared = [*nominated, geometry.get('candidate_id'),
+    declared = [*((payload.get('research_priority') or {}).get('candidate_ids') or []),
+        *nominated, geometry.get('candidate_id'),
         *(item.get('subject_id') for item in wave if isinstance(item, dict)), *targets,
         *(item.get('candidate_id') for item in rejected if isinstance(item, dict)),
         *(item.get('candidate_id') for item in spatial if isinstance(item, dict))]
@@ -310,6 +314,8 @@ async def _suggest(service, story, transcript, candidates):
             'items': {'type': 'string', 'enum': observed_ids}}
         from .identity_architectural_context import lookup_schema
         schema['properties']['regional_lookup'] = lookup_schema(observed_ids)
+        from .identity_candidate_policy import research_priority_schema
+        schema['properties']['research_priority'] = research_priority_schema(observed_ids)
     legacy_schema = copy.deepcopy(schema)
     if 'observed_candidate_ids' in legacy_schema['properties']:
         legacy_schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6, 'items': {'type': 'string'}}
@@ -371,6 +377,17 @@ async def _suggest(service, story, transcript, candidates):
     regional_catalogue = (catalogue_task.result() if catalogue_task.done()
         and not catalogue_task.cancelled() and catalogue_task.exception() is None else {})
     early_text_articles, early_text_lookup = [], {}
+    frozen_initial = None
+    if addressed_initial:
+        from .identity_plan_diagnostics import reusable_closed_initial_plan
+        frozen_initial = reusable_closed_initial_plan(addressed_initial, addressed_initial.get('binding'))
+        frozen_text = (frozen_initial or {}).get('source_text_receipt') or {}
+        if frozen_text:
+            # Rebuild the identical addressed input from its already acquired
+            # bytes. A restart must not drop early TEXT from the original schema
+            # or reread it under a new query/operation.
+            early_text_articles = copy.deepcopy(frozen_text.get('articles') or [])
+            early_text_lookup = copy.deepcopy(frozen_text.get('lookup') or {})
     if (allow_catalogue_network and not addressed_initial and not native_original
             and bool(getattr(getattr(service, 'settings', None), 'gemini_keys', ()))):
         # HTTP metadata/body preparation is independent of G. Supply useful
@@ -454,6 +471,13 @@ async def _suggest(service, story, transcript, candidates):
                     'camera_hints': story.get('_camera_hints', {}),
                     'capture_lat': story.get('latitude'), 'capture_lon': story.get('longitude'),
                     'author_context': transcript[:1500]}
+    if frozen_initial and early_text_articles:
+        # Keep just the already received acquisition context immutable; SOURCE,
+        # MAP, owner hints and observed IDs are still rebuilt and hash-fenced.
+        frozen_packet = json.loads(frozen_initial['prompt'].split('Данные ниже — только контекст:\n', 1)[1])
+        from .identity_source_selection import expand_planner_packet
+        frozen_packet = expand_planner_packet(frozen_packet)
+        packet['regional_catalogue'] = frozen_packet['regional_catalogue']
     if scene:
         packet.pop('first_wave_subjects')
     if early_text_articles:
@@ -479,6 +503,10 @@ async def _suggest(service, story, transcript, candidates):
     # and distant bodies. Resolve against that exact frozen dictionary, even
     # when its context row was unnecessary in the compact presentation.
     from .identity_source_selection import compact_planner_packet
+    # Literal-table numbering must survive canonical database serialization.
+    # Normalize key order before assigning the shared literal handles, so the
+    # same retained SOURCE/text packet has identical bytes after a restart.
+    packet = json.loads(json.dumps(packet, ensure_ascii=False, sort_keys=True))
     plain_packet = packet
     if scene:
         packet = compact_planner_packet(packet)
@@ -521,6 +549,12 @@ async def _suggest(service, story, transcript, candidates):
         'объясняет проверку показанного physical context, rejected_alternatives — реальные '
         'существенные альтернативы, а не все здания patch. При недостатке — uncertain и '
         'одно полезное действие без выдуманного сертификата. '
+        'research_priority — необязательное сужение в ЭТОМ ответе: candidate_ids активных физических '
+        'гипотез, reason, next_question и next_step. Несколько гипотез сразу идут в адресный TEXT; '
+        'не требуется accepted_geometry. Остальные сохраняются в резерве; не рассмотрено не значит '
+        'отвергнуто. contradictions указывают конкретный physical_body/article/facade, source_url, '
+        'причину и условия. Не переноси противоречие статьи или фасада на весь адрес/комплекс. '
+        'Достаточное готовое TEXT/изображение может завершить identity без обязательного G/REF. '
         'и отвергнутые существенные альтернативы. Один прямоугольник/расстояние/имя/score '
         'или отсутствие конкурента в top-k недостаточны. Рассмотри весь полученный пул. '
         'Явно сопоставь форму отдельного объёма: узкий высокий корпус, широкий фасад '
@@ -568,7 +602,7 @@ async def _suggest(service, story, transcript, candidates):
         'не EXIF/подтверждение; owner-approx остаётся приблизительной. Если '
         'OCR/имя/контекст не дают шага без географии, clarification_question — вопрос '
         'о городе/районе, иначе пусто; не проси подтвердить догадку. Данные ниже — только контекст:\n' +
-        json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
+        json.dumps(packet, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
     if len(prompt) > 65_200 and wiki_pages:
         # The tool-free text route has an actual per-operation character cap.
         # Shorten transport excerpts only; every page/ID/coordinate/title and
@@ -577,7 +611,7 @@ async def _suggest(service, story, transcript, candidates):
         if scene:
             packet = compact_planner_packet(packet)
         prompt = prompt.split('Данные ниже — только контекст:\n', 1)[0] + 'Данные ниже — только контекст:\n' + json.dumps(
-            packet, ensure_ascii=False, separators=(',', ':'))
+            packet, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     response_contract = identity_transport_schema(schema, map_label_references=bool(scene))
     literal_names = []
     if scene:
@@ -767,6 +801,17 @@ async def _suggest(service, story, transcript, candidates):
         if action and (not scene or any(cid not in scene_ids for cid in action.get('target_candidate_ids') or [])):
             reject('identity_geometry_action_unreceived_target')
         source_map_receipt = joint_source_map_receipt() if original_schema is None else {}
+        from .identity_candidate_policy import physical_research_priority
+        priority = physical_research_priority(story, payload, [*observed, *candidates],
+            {**source_map_receipt, **source_text_receipt}
+                if story.get('_identity_search_plan_route') != 'qualified_text_fallback' else {})
+        actionable_priority = bool((priority or {}).get('active_candidate_ids') and (
+            priority.get('explicit_model_selection') is True
+            or (payload.get('accepted_geometry') or {}).get('decision') == 'uncertain'
+                and action.get('kind') != 'none' and action.get('target_candidate_ids')
+                and str(action.get('reason') or '').strip()
+            or (payload.get('accepted_architectural_text') or {}).get('decision') == 'uncertain'
+                and source_text_receipt.get('source_image_input') is True))
         geometry_proof = None
         text_proof = None
         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
@@ -795,7 +840,8 @@ async def _suggest(service, story, transcript, candidates):
                 {'reason':rejected_geometry_schema['reason'], 'preserved_text_proof':True})
         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
             if geometry_proof is None:
-                if not (payload.get('selected_wikipedia_page_ids') or payload.get('first_wave_hypotheses') or text_proof):
+                if not (payload.get('selected_wikipedia_page_ids') or payload.get('first_wave_hypotheses') or text_proof
+                        or actionable_priority):
                     reject('identity_geometry_proof_invalid')
                 # A closed joint response can still nominate useful, separately
                 # validated searches/pages. An invalid proof does not establish
@@ -818,12 +864,22 @@ async def _suggest(service, story, transcript, candidates):
             effective_wave = grounded_wave_catalog(first_wave, payload,
                 ready_wikipedia=ready_wiki or geometry_proof is not None or text_proof is not None,
                 joint_geometry=source_map_receipt.get('joint_image_input') is True)
+            if actionable_priority:
+                # A received model-selected physical group is useful without
+                # a complete broad search plan. Membership is still validated;
+                # no identity proof or invented alternative is created here.
+                effective_wave = {**effective_wave, 'required_grounded_count': 0}
             rendered = [] if original_schema_readback else render_first_wave(effective_wave, payload['first_wave_hypotheses'])
         except RetryableProviderError as exc:
             # A closed invalid answer is not key health or provider quota. Stop
             # the executor key loop and use the existing qualified fallback.
             reject(str(exc))
-        queries = [item['query'] for item in rendered]
+        active_ids = set((priority or {}).get('active_candidate_ids') or [])
+        rendered.sort(key=lambda item: 0 if item.get('group_key') in active_ids
+            or item.get('subject_id') in active_ids else 1)
+        active_queries = list(dict.fromkeys(option['literal_query'] for option in first_wave['options'].values()
+            if option['group_key'] in active_ids and option.get('literal_query')))
+        queries = [*active_queries, *(item['query'] for item in rendered)]
         result = queries_from(payload)
         single_geometry_action = (source_map_receipt.get('joint_image_input') is True
             and (payload.get('accepted_geometry') or {}).get('decision') == 'uncertain'
@@ -842,6 +898,8 @@ async def _suggest(service, story, transcript, candidates):
             # receives article leads independently of reference acquisition.
             story['_identity_article_queries'] = []
         story['_identity_search_plan_payload'] = {**payload,
+            **({'physical_research_priority': priority} if priority else {}),
+            **({'active_planned_queries': active_queries} if active_queries else {}),
             **({'identity_response_id_resolutions': response_id_resolutions} if response_id_resolutions else {}),
             **({'regional_catalogue': regional_catalogue} if regional_catalogue else {}),
             'article_queries': story['_identity_article_queries'],
@@ -857,6 +915,14 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_candidate_policy import promote_observed_candidates
         candidates[:] = promote_observed_candidates(candidates, observed,
             _plan_physical_ids(story['_identity_search_plan_payload']))
+        if priority:
+            from .identity_candidate_policy import order_research_candidates
+            candidates[:] = order_research_candidates(candidates, priority)
+            record_identity_event(service, story['id'], 'identity_research_priority', {
+                'active_count': len(priority['active_candidate_ids']),
+                'reserve_count': len(priority['reserve_candidate_ids']),
+                'explicit_model_selection': priority['explicit_model_selection'],
+                'next_step': priority['next_step'], 'identity_established': False})
         if geometry_proof is not None or text_proof is not None:
             story['_identity_geometry_result'] = _geometry_plan_result(
                 story, story['_identity_search_plan_payload'], candidates)
@@ -878,8 +944,11 @@ async def _suggest(service, story, transcript, candidates):
         schema.clear()
         schema.update(copy.deepcopy(saved['schema']))
         if saved.get('source_text_receipt'):
+            followup_send_state = source_text_receipt.get('provider_send_state')
             source_text_receipt = copy.deepcopy(saved['source_text_receipt'])
             text_articles = source_text_receipt['articles']
+            if followup_send_state:
+                source_text_receipt['optional_followup_send_state'] = followup_send_state
         # Optional detail/TEXT must not be relabelled as the original MAP input
         # when admission authoritatively says the followup was never sent.
         scene, scene_manifest, physical_context, resolution_packet = initial_map_context
@@ -1131,15 +1200,14 @@ async def _suggest(service, story, transcript, candidates):
                 # nomination, before spending joint2 on independent T evidence.
                 # All own/verified entrance addresses remain in scope; the
                 # reader refuses ambiguous queries and neighboring cards.
-                from .identity_architectural_context import _physical_subject
-                nominated = next((item for item in [*observed, *candidates]
-                    if item.get('candidate_id') == nomination_id
-                    and _physical_subject(item)), None)
-                if nominated is not None:
-                    request = {'route': 'address', 'candidate_ids': [nominated['candidate_id']],
-                        'reason': 'Acquire literal address text for the closed model nomination after insufficient G proof.'}
-                    additional_articles, nomination_lookup = await acquire_regional_text(
-                        service, story, [*observed, *candidates], request)
+                from .identity_candidate_policy import physical_research_priority
+                from .identity_architectural_context import acquire_active_regional_text
+                priority = physical_research_priority(story, payload, [*observed, *candidates],
+                    joint_source_map_receipt())
+                nomination_ids = (priority or {}).get('active_candidate_ids') or ([nomination_id] if nomination_id else [])
+                if nomination_ids:
+                    additional_articles, nomination_lookup = await acquire_active_regional_text(
+                        service, story, [*observed, *candidates], nomination_ids)
                     # A selected encyclopedia body may provide only general
                     # style/history. Complement it with the nominated body's
                     # literal-address description; the T model still decides
@@ -1161,7 +1229,7 @@ async def _suggest(service, story, transcript, candidates):
                             else nomination_lookup.get('status')),
                         'pending_acquired_articles': pending_articles, 'identity_established': False}
                     record_identity_event(service, story['id'], 'identity_unconfirmed_address_text_acquired', {
-                        'candidate_id': nominated['candidate_id'], 'article_count': len(text_articles),
+                        'candidate_ids': nomination_ids, 'article_count': len(text_articles),
                         'status': nomination_lookup.get('status'), 'reason': nomination_lookup.get('reason'),
                         'identity_accepted': False})
             if lookup:
@@ -1443,6 +1511,7 @@ async def _suggest(service, story, transcript, candidates):
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
             if compact_t:
                 from .identity_architectural_comparison import combine_architectural_decision
+                from .identity_candidate_policy import physical_research_priority
                 answer = None
                 try:
                     from .identity_source_selection import resolve_identity_response_ids
@@ -1460,7 +1529,9 @@ async def _suggest(service, story, transcript, candidates):
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                         code='identity_architectural_comparison_invalid')
                     raise PermanentProviderError('identity_architectural_comparison_invalid') from exc
-                if payload['accepted_architectural_text']['decision'] == 'uncertain' and initial_validation_error:
+                if (payload['accepted_architectural_text']['decision'] == 'uncertain' and initial_validation_error
+                        and not (physical_research_priority(story, payload, [*observed, *candidates],
+                            joint_source_map_receipt()) or {}).get('active_candidate_ids')):
                     from .identity_plan_diagnostics import retain_closed_invalid
                     retain_closed_invalid(service, story, payload['accepted_architectural_text'], compact_t['schema'],
                         code='identity_architectural_text_uncertain', route='google', raw_json=response.text,
@@ -2269,7 +2340,7 @@ async def web_image_sources(service, entity_name, visual_query, *, story=None, f
 
 
 def _retain_article_discovery(service, story, sources, *, receipts=(), articles=(), planned_queries=(), query_results=None,
-                              discovered_sources=(), source_selections=None, search_plan=None):
+                              discovered_sources=(), source_selections=None, search_plan=None, acquired_text_articles=()):
     """Keep every URL and fetched media outside the bounded identity catalog."""
     from .article_media import public_url
     from .research_control import research_stopped
@@ -2296,6 +2367,10 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
         if search_plan is not None:
             history['search_plan'] = {**search_plan, 'photo_sha256': story['photo_sha256'],
                 'generation': generation, 'control_revision': revision(research)}
+        if acquired_text_articles:
+            from .identity_architectural_context import merge_acquired_text_versions
+            history['acquired_text_articles'] = merge_acquired_text_versions([
+                *(history.get('acquired_text_articles') or []), *acquired_text_articles])
         queries = history.setdefault('queries', {})
         for query, result in (query_results or {}).items():
             key = next((key for key in queries if ' '.join(key.split()).casefold() ==
@@ -2485,9 +2560,18 @@ async def prepare_search_plan(service, story, transcript, candidates):
     pages = story.get('_identity_wikipedia_metadata') or captured.get('wikipedia') or []
     observed = story.get('_identity_observed_candidates') or (captured.get('visual_identity') or {}).get('observed_candidates') or []
     candidates[:] = selected_candidates(candidates, observed, pages, payload)
+    from .identity_candidate_policy import order_research_candidates
+    priority = payload.get('physical_research_priority') or {}
+    candidates[:] = order_research_candidates(candidates, priority)
+    story['_identity_physical_research_priority'] = priority
     geometry_result = _geometry_plan_result(story, payload, candidates)
     if geometry_result is not None:
         story['_identity_geometry_result'] = geometry_result
+    elif priority.get('active_candidate_ids') and (payload.get('accepted_architectural_text') or {}).get('decision') == 'uncertain':
+        # The useful T shortlist enters the existing visual worker immediately;
+        # no unprepared second image decision is needed to establish uncertainty.
+        story['_identity_accepted_result'] = {'status': 'uncertain', 'candidate_id': '',
+            'observations': [priority['reason']], '_comparison_deferred': True}
     return history, (entity_name, wiki_queries, visual_query, commons_query)
 
 
@@ -2549,7 +2633,8 @@ async def recover(service, story, transcript, candidates, excluded):
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                 'observations': ['Выбраны готовые Wiki-иллюстрации; продолжаю визуальное сравнение.'],
                 '_comparison_deferred': True, '_references_sent': []}, candidates
-        plan = history.get('planned_queries') or [
+        plan = list(dict.fromkeys([*(payload.get('active_planned_queries') or []),
+            *(history.get('planned_queries') or [])])) or [
             (f'{entity_name} {region_hint(story)} современные фотографии фасада' if entity_name
              else f'{visual_query} {region_hint(story)} фото').strip()]
 
@@ -2613,6 +2698,19 @@ async def recover(service, story, transcript, candidates, excluded):
             return query, query_sources
 
         reference_action = payload.get('unconfirmed_reference_action') or {}
+        # All previously read articles are independent media leads. A failed T
+        # binding or facade comparison must not blacklist their whole address.
+        acquired = [*((payload.get('source_text_receipt') or {}).get('articles') or []),
+                    *(history.get('acquired_text_articles') or [])]
+        if acquired:
+            selected = list({a['url']: {'url': a['url'], 'title': a.get('title') or '',
+                'lookup_candidate_ids': a.get('lookup_candidate_ids') or [],
+                'selection_provenance': 'already_acquired_architectural_text'} for a in acquired}.values())
+            media = await ready_article_media(selected)
+            if media:
+                return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                    'observations': ['Сравниваю изображения уже прочитанных источников по оставшимся гипотезам.'],
+                    '_article_media_pending': True, '_references_sent': []}, media
         if reference_action.get('contract') == 'closed-hypothesis-reference-action-v1':
             # Use the already model-selected, acquired source before another
             # search. This is only reference acquisition; the existing visual
@@ -2627,9 +2725,8 @@ async def recover(service, story, transcript, candidates, excluded):
                 return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                     'observations': ['Архитектурный текст оставил неоднозначность; получены фотографии выбранной статьи.'],
                     '_article_media_pending': True, '_references_sent': []}, media
-            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
-                'observations': ['Архитектурная гипотеза не подтверждена; выбранный источник не дал пригодных фотографий.'],
-                '_references_sent': []}, candidates
+            # No photographs is a failed acquisition, not a semantic rejection
+            # or a barrier to independent saved queries.
 
         async def consume_query(query, query_sources):
             nonlocal sources
@@ -2659,7 +2756,9 @@ async def recover(service, story, transcript, candidates, excluded):
         # avoids sending every query to the complete provider pool. Keep the
         # existing observer alive for addressed sibling receipts on early media.
         concurrent = callable(retain) and len(route_names) > 1
-        wave = plan[:min(3, len(route_names))] if concurrent else []
+        active_queries = payload.get('active_planned_queries') or []
+        initial_width = min(3, len(route_names), len(active_queries) if active_queries else len(plan))
+        wave = plan[:initial_width] if concurrent else []
         tasks = {asyncio.create_task(search_query(query, route_names[index]))
                  for index, query in enumerate(wave)}
         remaining_plan = iter(plan[len(wave):] if concurrent else plan)

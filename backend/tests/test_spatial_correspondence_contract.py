@@ -223,5 +223,7 @@ async def test_selected_text_followup_replaces_one_schema_instead_of_appending_a
     # Compact T owns one decision schema; the original search plan survives
     # outside the model output rather than becoming a conflicting contract.
     assert 'first_wave_hypotheses' not in configurations[1]
-    assert configurations[1].count('"material_alternatives":') == 1
+    issued = json.loads(configurations[1].split('\n', 1)[1])
+    assert 'material_alternatives' in issued['properties']
+    assert 'first_wave_hypotheses' not in issued['properties']
     assert 'Return only the SOURCE/architectural-text decision object' in configurations[1]

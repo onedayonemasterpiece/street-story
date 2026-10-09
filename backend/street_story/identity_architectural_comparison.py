@@ -480,6 +480,12 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     instruction = (
         'Compare the actual SOURCE pixels against verbatim acquired article text. '
         'Return only the architectural text decision object matching the supplied JSON schema. '
+        'In this same response, optional research_priority can keep several physical candidate_ids '
+        'active and state the next distinguishing question and useful step. Preserve unexamined '
+        'bodies in reserve. Scope each explicit contradiction to physical_body, article or facade '
+        'with the actual source URL and conditions; another wing/epoch/view is not a whole-building veto. '
+        'If no text helps, say so and continue to existing article/Wiki images or an expanded reserve. '
+        'One remaining candidate is not sufficient evidence by itself. '
         'An article/title/address is evidence, not already the identity of its nominated physical footprint. '
         'FIRST observe SOURCE pixels independently from the articles, including which part '
         'of the facade is cropped, viewpoint/perspective and visible lower/upper storeys. '

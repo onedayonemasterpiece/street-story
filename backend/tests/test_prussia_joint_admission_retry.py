@@ -15,7 +15,7 @@ from street_story.identity_plan_diagnostics import joint_followup_marker
 from street_story.providers import PermanentProviderError, RetryableProviderError
 from street_story.quota import SharedQuotaDenied
 from street_story.service import ConflictError, canonical
-from test_architectural_text_identity import TEXT, text_inputs
+from test_architectural_text_identity import TEXT, text_inputs, with_received_physical_links
 from test_closed_initial_plan_reuse import current_snapshot, prepared_plan
 from test_geometry_identity_plan import geometry_decision
 from test_regional_catalogue_selection import html, inventory, offline, response, selection
@@ -72,7 +72,8 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
         if len(requests) == 2 or repeated:
             raise error  # Proven admission denial: no SDK send.
         sdk_sends.append('useful-text')
-        return SimpleNamespace(text=json.dumps({**initial, 'accepted_architectural_text': text_decision}),
+        return SimpleNamespace(text=json.dumps({**initial,
+            'accepted_architectural_text': with_received_physical_links(text_decision, contents)}),
             response_id='useful-text-closed')
 
     async def wait(delay):
@@ -120,7 +121,9 @@ async def test_unbounded_or_invalid_retry_delay_preserves_closed_initial_without
     await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(requests) == 2 and sends == ['initial'] and not waits
     assert '_identity_geometry_result' not in story
-    assert story['_identity_search_plan_payload']['source_text_receipt']['provider_send_state'] == 'not_sent'
+    receipt = story['_identity_search_plan_payload']['source_text_receipt']
+    assert receipt['source_image_input'] is True  # Early text was actually sent in initial.
+    assert receipt['optional_followup_send_state'] == 'not_sent'
 
 
 @pytest.mark.asyncio
@@ -226,5 +229,6 @@ async def test_scoped_or_frozen_request_change_during_wait_cannot_dispatch(tmp_p
 async def test_accepted_initial_geometry_never_acquires_body_or_waits_for_text_admission(tmp_path, monkeypatch):
     service, story, active, requests, bodies, sends, waits, _ = setup(tmp_path, monkeypatch, denial(), geometry=True)
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert len(requests) == 1 and sends == ['initial'] and not bodies and not waits
+    assert len(requests) == 1 and sends == ['initial'] and len(bodies) == 1 and not waits
+    assert TEXT in requests[0][0][-1]  # Ready early text needs no additional model call.
     assert story['_identity_geometry_result']['proof_kind'] == 'geometry'

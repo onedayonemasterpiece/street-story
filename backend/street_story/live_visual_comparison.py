@@ -357,7 +357,9 @@ class LiveVisualComparisonMixin:
     @staticmethod
     def _visual_reply(comparison_id, candidates, identity, remaining):
         from .identity_source_selection import compact_candidate_catalog
-        physical = [c for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
+        from .identity_candidate_policy import order_research_candidates
+        priority = identity.get('research_priority') or {}
+        physical = [c for c in order_research_candidates(identity.get('candidates', []), priority) if c.get('identity_eligible') is not False
                     and not str(c.get('candidate_id', '')).startswith('web:')][:32]
         compact = compact_candidate_catalog(physical)
         physical_packet = []
@@ -383,6 +385,9 @@ class LiveVisualComparisonMixin:
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
             'physical_candidates': physical_packet,
+            'research_priority': {key: priority[key] for key in ('active_candidate_ids',
+                'reason', 'next_question', 'next_step', 'contradictions') if key in priority},
+            'reserve_candidate_count': len(priority.get('reserve_candidate_ids') or []),
             'physical_geometry_policy': compact['geometry_policy'],
             'remaining_illustrations': remaining,
             'search_feedback_instruction': (
@@ -497,7 +502,8 @@ class LiveVisualComparisonMixin:
                 initial_selection = {**initial_selection, 'observed_sources': observed,
                                      'selected_urls': sorted(allowed_urls)}
             queue = []
-            for candidate in identity.get('candidates', []):
+            from .identity_candidate_policy import order_research_candidates
+            for candidate in order_research_candidates(identity.get('candidates', []), identity.get('research_priority')):
                 if (reference_eligible(candidate) and candidate.get('reference_image_urls')
                         and candidate.get('discovery') != 'web_article_media'
                         and (initial_selection is None or candidate.get('url') in allowed_urls)):
@@ -1106,7 +1112,10 @@ class LiveVisualComparisonMixin:
                     or ((row['state'] in PROTECTED or accepted_before or conflict_before) and pair is None)):
                 raise ConflictError('visual_comparison_changed', 'Фото или подтверждение объекта изменилось.')
             from .identity_subject_binding import bind_reference_subject
-            shortlist = (research.get('visual_identity') or {}).get('candidates', [])
+            received_identity = research.get('visual_identity') or {}
+            shortlist = list({c['candidate_id']: c for c in [
+                *(received_identity.get('observed_candidates') or []),
+                *(received_identity.get('candidates') or [])]}.values())
             bound = bind_reference_subject(raw, pending['candidates'], shortlist, pending['evidence'],
                 observed_candidates=(research.get('visual_identity') or {}).get('observed_candidates') or [])
             raw = bound['result']
@@ -1153,6 +1162,24 @@ class LiveVisualComparisonMixin:
                     saved_feedback = {**feedback, 'candidate_ids': valid_ids,
                         'reason': feedback['reason'][:500], 'next_query': feedback['next_query'].strip()[:240]}
                     verdict_summary['search_feedback'] = saved_feedback
+                    if valid_ids and not matched and not accepted_before and not conflict_before:
+                        from .identity_candidate_policy import order_research_candidates
+                        from .identity_architectural_context import _physical_subject
+                        body_ids = [c['candidate_id'] for c in shortlist if _physical_subject(c)]
+                        active_ids = [cid for cid in valid_ids if cid in body_ids]
+                        if active_ids:
+                            priority = {**(received_identity.get('research_priority') or {}),
+                                'photo_sha256': state['photo_sha256'], 'generation': state['generation'],
+                                'control_revision': state.get('control_revision', 0),
+                                'active_candidate_ids': active_ids,
+                                'reserve_candidate_ids': [cid for cid in body_ids if cid not in active_ids],
+                                'reason': saved_feedback['reason'], 'next_question': saved_feedback['reason'],
+                                'next_step': 'existing_images' if not saved_feedback['next_query'] else 'targeted_search',
+                                'last_comparison_id': pending['id'], 'identity_established': False}
+                            research['visual_identity'] = {**received_identity, 'research_priority': priority}
+                            # Reorder unsent work only. Pending pairs/receipts
+                            # retain their immutable operation IDs and outcomes.
+                            state['queue'] = order_research_candidates(state.get('queue') or [], priority)
                     # An unusable reference is not a rejection of its building.
                     # Retain the gallery, but immediately give unread pages a
                     # turn instead of consuming more interiors from this page.

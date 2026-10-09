@@ -567,8 +567,6 @@ async def run(args):
             for item in selected:
                 case = cases[item['message_id']]
                 if case.get('terminal'):
-                    if case['status'] != 'PASS_CANDIDATE':
-                        break
                     continue  # Canary completion is reused without any provider send.
                 require_frozen_checkout(sha)
                 data = Path(item['path']).read_bytes()
@@ -594,8 +592,8 @@ async def run(args):
                             'eligible_proved_count', 'product_outcome')}, ensure_ascii=False), flush=True)
                         break
                     await asyncio.sleep(.5)
-                if case['status'] != 'PASS_CANDIDATE':
-                    break  # Inspect the affected path before spending on other photos.
+                # Each selected SOURCE is independent. Preserve this exact
+                # failure/UNKNOWN and continue other requested cases.
     finally:
         restore_references()
         restore_sdk()

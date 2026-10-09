@@ -532,7 +532,7 @@ def identity_transport_schema(schema, *, map_label_references=False):
     if 'regional_lookup' in properties:
         properties['regional_lookup']['properties']['candidate_ids']['items'] = {
             'type': 'string', 'maxLength': 100}
-    for name in ('subject_article_bindings', 'regional_article_selections', 'accepted_architectural_text'):
+    for name in ('subject_article_bindings', 'regional_article_selections', 'accepted_architectural_text', 'research_priority'):
         if name not in properties:
             continue
         def bounded_ids(node):
@@ -541,6 +541,8 @@ def identity_transport_schema(schema, *, map_label_references=False):
             for key, value in (node.get('properties') or {}).items():
                 if key == 'candidate_id':
                     node['properties'][key] = {'type': 'string', 'maxLength': 100}
+                elif key == 'candidate_ids' and isinstance(value.get('items'), dict):
+                    value['items'] = {'type': 'string', 'maxLength': 100}
                 else:
                     bounded_ids(value)
             if isinstance(node.get('items'), dict):

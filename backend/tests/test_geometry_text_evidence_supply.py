@@ -98,7 +98,7 @@ def test_literal_catalogue_metadata_filter_is_exact_and_not_a_house_number_guess
 
 
 @pytest.mark.asyncio
-async def test_broad_partial_catalogue_reads_only_exact_received_address_card(monkeypatch):
+async def test_broad_partial_catalogue_remains_for_model_selection_without_postal_parser(monkeypatch):
     story, physical, request = inputs()
     body = 'На фасаде выделяются три эркера с разной формой завершения.'
     received = [
@@ -128,16 +128,11 @@ async def test_broad_partial_catalogue_reads_only_exact_received_address_card(mo
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, receipt = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [physical], request)
-    assert calls == [
-        ('catalogue', 'Город', 'Тестовая улица, 22А'),
-        ('body', received[2]['canonical_url'])]
+    assert calls == [('catalogue', 'Город', 'Тестовая улица, 22А')]
     assert len(receipt['results']) == 4 and receipt['inventory_complete'] is False
-    assert receipt['literal_address_selection']['policy'] == 'exact_received_catalogue_address_metadata_v1'
-    assert receipt['literal_address_selection']['identity_inferred'] is False
-    assert len(articles) == 1
-    assert articles[0]['article_id'] == 'prussia39:sid:23'
-    assert articles[0]['text'] == body and articles[0]['lookup_candidate_ids'] == ['osm:way:7']
-    assert articles[0]['text_sha256'] == hashlib.sha256(body.encode()).hexdigest()
+    assert 'literal_address_selection' not in receipt
+    assert articles == []
+    assert 'model source selection' in receipt['limitation']
 
 
 @pytest.mark.asyncio

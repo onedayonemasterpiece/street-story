@@ -640,6 +640,89 @@ def literal_address_card_selection(rows, street, house_number):
                 break
     return selected
 
+def merge_acquired_text_versions(articles):
+    """Retain received versions and every lookup that led to the same bytes."""
+    versions = {}
+    for article in articles:
+        key = (article['article_id'], article.get('source_sha256'), article.get('text_sha256'))
+        previous = versions.get(key) or {}
+        versions[key] = {**previous, **article, 'lookup_candidate_ids': list(dict.fromkeys([
+            *(previous.get('lookup_candidate_ids') or []), *(article.get('lookup_candidate_ids') or [])]))}
+        cards = [*(previous.get('card_variants') or []), *(article.get('card_variants') or [])]
+        if cards:
+            versions[key]['card_variants'] = list({json.dumps(card, sort_keys=True): card for card in cards}.values())
+    return list(versions.values())
+
+
+async def acquire_active_regional_text(service, story, candidates, candidate_ids):
+    """Read independent nominated addresses with two HTTP slots, by readiness.
+
+    The first useful text enters the existing T call. Already started readers
+    finish into the existing discovery history; unused nominations remain in
+    reserve. No geometry acceptance or new semantic operation is required.
+    """
+    from .identity_discovery import _retain_article_discovery
+    from .research_budget import ResearchTerminated
+    from .service import ConflictError
+    ids = iter(dict.fromkeys(candidate_ids))
+    lookups = {}
+    pending = set()
+
+    async def read(cid):
+        try:
+            articles, lookup = await acquire_regional_text(service, story, candidates, {
+                'route': 'address', 'candidate_ids': [cid],
+                'reason': 'Read the existing model-selected physical hypothesis; identity is unconfirmed.'})
+        except ResearchTerminated:
+            raise
+        except Exception as exc:
+            articles, lookup = [], {'status': 'transport_failed', 'error_type': type(exc).__name__}
+        lookups[cid] = lookup
+        if articles:
+            try:
+                _retain_article_discovery(service, story, [{
+                    'url': a['url'], 'title': a.get('title') or '',
+                    'lookup_candidate_ids': a.get('lookup_candidate_ids') or [],
+                    'selection_provenance': 'closed_model_active_physical_hypothesis'} for a in articles],
+                    acquired_text_articles=articles)
+            except ConflictError:
+                return [], lookup  # A stale HTTP result cannot enter a replacement SOURCE.
+        return articles, lookup
+
+    def launch():
+        cid = next(ids, None)
+        if cid is not None:
+            pending.add(asyncio.create_task(read(cid)))
+        return cid is not None
+
+    launch()
+    launch()
+    ready = []
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                articles, _lookup = task.result()
+                ready.extend(articles)
+            if ready:
+                break
+            for _ in done:
+                launch()
+    finally:
+        if pending:
+            observer = getattr(getattr(getattr(service, 'providers', None), 'research', None), 'retain_search_observer', None)
+            dispatched = asyncio.gather(*pending, return_exceptions=True)
+            if callable(observer):
+                observer(dispatched)
+            else:
+                # Small fixture/non-background providers drain their own HTTP.
+                await dispatched
+    return merge_acquired_text_versions(ready), {'kind': 'active_physical_address_text', 'status': 'completed' if ready else 'unavailable',
+        'candidate_ids': list(candidate_ids), 'lookups': dict(lookups),
+        'first_ready': bool(ready), 'pending_reader_count': len(pending),
+        'identity_established': False}
+
+
 async def acquire_regional_text(service, story, candidates, request):
     """Read at most two cards from one narrow literal query; no target scoring.
 

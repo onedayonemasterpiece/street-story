@@ -230,6 +230,8 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         correspondence['properties']['source_span_ref'] = {'type': 'string', 'enum': list(source_span_refs)}
         correspondence['required'].remove('source_quote')
         correspondence['oneOf'] = [{'required': ['source_quote']}, {'required': ['source_span_ref']}]
+    from .identity_candidate_policy import research_priority_schema
+    schema['properties']['research_priority'] = research_priority_schema(candidate_ids)
     return schema
 
 

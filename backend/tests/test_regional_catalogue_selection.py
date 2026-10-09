@@ -11,7 +11,7 @@ import pytest
 
 from street_story import identity_architectural_context as context, identity_discovery, prussia39
 from street_story.identity_proof import accepted_identity
-from test_architectural_text_identity import TEXT, text_inputs
+from test_architectural_text_identity import TEXT, text_inputs, with_received_physical_links
 from test_geometry_identity_plan import Executor, geometry_setup, geometry_decision, payload
 from test_prussia39 import Cache, html, response, resolver
 
@@ -218,13 +218,13 @@ async def test_unconfirmed_selected_card_reaches_existing_t_even_when_search_cov
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(first))
         assert len(calls) == 2 and len(reads) == 3
-        assert "identity_first_wave_coverage_incomplete" in contents[-1]
+        assert "initial_geometry_rejection_not_identity" in contents[-1]
         assert '"physical_binding_claimed":false' in contents[-1]
         assert TEXT in contents[-1]
         assert "first_wave_hypotheses" not in config.response_json_schema["properties"]
         assert "_identity_geometry_result" not in s
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
-        return SimpleNamespace(text=json.dumps(decision))
+        return SimpleNamespace(text=json.dumps(with_received_physical_links(decision, contents)))
     async def forbidden(*args, **kwargs):
         pytest.fail("No repeated G, extra planner or REF after independent T")
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
@@ -236,10 +236,9 @@ async def test_unconfirmed_selected_card_reaches_existing_t_even_when_search_cov
         history, _ = await identity_discovery.prepare_search_plan(service, s, "", active)
         assert "_identity_geometry_result" not in s
         partial = history['search_plan']['payload']
-        assert partial['search_coverage_incomplete'] is True
+        assert partial['physical_research_priority']['active_candidate_ids']
         assert partial['first_wave_hypotheses'] == []
-        assert history['planned_queries'] == []
-        assert partial['unconfirmed_reference_action']['identity_accepted'] is False
+        assert partial['physical_research_priority']['identity_established'] is False
         from street_story import article_media
         media_reads = []
         async def actual_selected_media(svc, snapshot, sources, excluded, *, receipts, first_ready):
@@ -361,7 +360,8 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
             assert "schema_validation" in contents[-1] and "first_wave_hypotheses" in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
-        return SimpleNamespace(text=json.dumps(first if accept_geometry else ({**first, "accepted_architectural_text": decision} if malformed_first else decision)))
+        linked = with_received_physical_links(decision, contents) if not accept_geometry else None
+        return SimpleNamespace(text=json.dumps(first if accept_geometry else ({**first, "accepted_architectural_text": linked} if malformed_first else linked)))
 
     async def forbidden(*args, **kwargs):
         pytest.fail("No third model, text selector, REF or Wiki replacement")
@@ -409,7 +409,7 @@ async def test_unavailable_regional_text_keeps_independently_selected_wiki_in_sa
 
     async def generate(*args, **kwargs):
         calls.append("joint")
-        return SimpleNamespace(text=json.dumps(first if len(calls) == 1 else decision))
+        return SimpleNamespace(text=json.dumps(first if len(calls) == 1 else with_received_physical_links(decision, args[2])))
 
     async def forbidden(*args, **kwargs):
         pytest.fail("No additional lookup, replan, third judge or reference acquisition")

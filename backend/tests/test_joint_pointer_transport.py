@@ -74,6 +74,16 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         assert receipt['articles'][0]['text'] in contents[-1]
+        packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']
+        text_decision['physical_link_evidence'] = [{
+            'article_id': receipt['articles'][0]['article_id'], 'candidate_id': '@1',
+            'publisher_ref': next(iter(inventory['publisher_refs'])),
+            'osm_ref': next(ref for ref, row in inventory['osm_refs'].items()
+                if row['candidate_id'] == 'osm:way:2'),
+            'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
+            'architectural_scope_explanation': 'Fixture article identifies this bay and return.',
+            'postal_interpretation': 'Literal received body records identify the fixture scope.'}]
         return SimpleNamespace(text=json.dumps(text_decision))
 
     async def forbidden(*args, **kwargs):

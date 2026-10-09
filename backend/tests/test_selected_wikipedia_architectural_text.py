@@ -167,7 +167,8 @@ async def test_explicit_regional_nomination_keeps_prussia_route_instead_of_wiki_
     monkeypatch.setattr(identity_architectural_context, 'acquire_selected_wikipedia_text', forbidden)
     async def generate(*args, **kwargs):
         calls.append('joint')
-        result = initial if len(calls) == 1 else decision
+        from test_architectural_text_identity import with_received_physical_links
+        result = initial if len(calls) == 1 else with_received_physical_links(decision, args[2])
         return SimpleNamespace(text=json.dumps(result))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
@@ -208,7 +209,8 @@ async def test_foreign_geometry_pointer_and_genuine_selected_wiki_text_share_one
             assert 'wiki:13' in config.system_instruction
             # The independent text proof may succeed while the foreign
             # geometry pointer still correctly fails host validation.
-            final = {**payload(bad), **selected(), 'accepted_architectural_text': decision}
+            from test_architectural_text_identity import with_received_physical_links
+            final = {**payload(bad), **selected(), 'accepted_architectural_text': with_received_physical_links(decision, contents)}
             return SimpleNamespace(text=json.dumps(final))
         async def forbidden(*args, **kwargs):
             pytest.fail('No third judge, qualified replan, REF or image is needed')
