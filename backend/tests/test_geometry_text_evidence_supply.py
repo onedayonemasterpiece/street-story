@@ -60,7 +60,8 @@ def test_physical_scene_includes_all_received_candidates_and_exif_outline_contex
     no_camera = render_scene(source, [])
     result = physical_decision_context(source, [], no_camera['manifest'])
     assert result['source_angular_reference']['diagonal_fov_35mm_deg'] is None
-    assert all(row[-1] is None for row in result['rows'])
+    ratio_idx = result['columns'].index('outline_span_over_exif_diagonal')
+    assert all(row[ratio_idx] is None for row in result['rows'])
 
 
 @pytest.mark.parametrize('span,diagonal', [
