@@ -89,8 +89,8 @@ async def test_wikipedia_source_title_does_not_trigger_repeated_search_variants(
         reader=ArchitecturalWikipediaReader(Cache(tmp_path),http,resolver=resolver)
         for language,title in [('zz','Архитектурное описание'),
                 ('ru',''),('ru',' \u0002 '),('ru','A'*181)]:
-            result=await reader.article_by_observed_title(title,language=language)
-            assert result['status']=='parse_failed'
+            with pytest.raises(ValueError):
+                await reader.article_by_observed_title(title,language=language)
         good=await reader.article_by_observed_title('Altbau Denkmal',language='de')
     assert good['status']=='completed'
     assert len(calls)==1
@@ -104,7 +104,7 @@ async def test_wikipedia_redirect_outside_owned_domain_not_trusted(tmp_path):
         result=await ArchitecturalWikipediaReader(
             Cache(tmp_path),http,resolver=resolver).article_by_observed_title('Башня')
     assert result['status']=='parse_failed'
-    assert result['raw_body_sha256_verified'] is not True if 'raw_body_sha256_verified' in result else True
+    assert result.get('raw_body_sha256_verified') is not True
 
 
 @pytest.mark.asyncio
