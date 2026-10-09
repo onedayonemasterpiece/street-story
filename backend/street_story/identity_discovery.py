@@ -465,6 +465,15 @@ async def _suggest(service, story, transcript, candidates):
         'одно полезное действие без выдуманного сертификата. '
         'и отвергнутые существенные альтернативы. Один прямоугольник/расстояние/имя/score '
         'или отсутствие конкурента в top-k недостаточны. Рассмотри весь полученный пул. '
+        'Явно сопоставь форму отдельного объёма: узкий высокий корпус, широкий фасад '
+        'или протяжённый соседний дом. Сначала отдели границы целевого объёма от '
+        'примыкающих фасадов; сравни его видимые пропорции и относительную высоту/ширину '
+        'с соседями и actual сторонами/протяжённостью контуров MAP. Используй это для '
+        'содержательного отсева альтернатив, только если их форма не объясняется '
+        'показанным ракурсом, yaw, crop, заслонением или торцевым видом длинного дома. '
+        'Узкий видимый фасад не означает короткий контур в глубину; не переноси '
+        'отношение пиксельной высоты/ширины напрямую на 2D-план и не придумывай '
+        'отсутствующие высоты. Совпадение формы само по себе не подтверждает identity. '
         'Правее в кадре определяется относительным азимутом/yaw, не востоком карты. '
         'Учти меняющие выбор crop/FOV/неполный контур/цель за bbox; не требуй '
         'исключить весь город/круг60м. Камерный сдвиг — сценарий, '
@@ -1295,6 +1304,35 @@ async def _suggest(service, story, transcript, candidates):
                         joint_stage='followup', operation_binding=joint_followup_binding)
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                         code='identity_architectural_text_uncertain')
+                    if (initial_validation_error == 'identity_first_wave_coverage_incomplete'
+                            and action.get('kind') == 'reference_image'
+                            and action.get('target_candidate_ids') == [nomination_id]
+                            and geometry_rejection and nomination_id and text_articles
+                            and all(nomination_id in article.get('lookup_candidate_ids', [])
+                                for article in text_articles)):
+                        # The closed model already requested this distinct REF
+                        # action. A partial search plan is not a proof, but must
+                        # not suppress acquired media after independent T was
+                        # genuinely inconclusive. Preserve the failed coverage;
+                        # do not manufacture first-wave choices or another T.
+                        story['_identity_article_queries'] = []
+                        story['_identity_search_plan_payload'] = {**payload,
+                            'source_map_receipt': joint_source_map_receipt(),
+                            'source_text_receipt': source_text_receipt,
+                            'search_coverage_incomplete': True,
+                            'unconfirmed_reference_action': {
+                                'contract': 'closed-hypothesis-reference-action-v1',
+                                'candidate_ids': [nomination_id], 'reason': action['reason'],
+                                'source_urls': list(dict.fromkeys(article['url'] for article in text_articles)),
+                                'identity_accepted': False}}
+                        from .identity_candidate_policy import promote_observed_candidates
+                        candidates[:] = promote_observed_candidates(candidates, observed,
+                            _plan_physical_ids(story['_identity_search_plan_payload']))
+                        record_identity_event(service, story['id'], 'identity_unconfirmed_reference_action_preserved', {
+                            'candidate_id': nomination_id, 'source_count': len(text_articles),
+                            'search_coverage_incomplete': True, 'identity_accepted': False,
+                            'new_joint_inference': False})
+                        return payload.get('entity_name') or '', [], '', ''
                     raise PermanentProviderError('identity_architectural_text_uncertain')
             else:
                 payload = decode_joint(response)
@@ -2406,6 +2444,25 @@ async def recover(service, story, transcript, candidates, excluded):
                             'sources': [], 'status': 'temporary_failure', 'search_unavailable': True, 'claim_id': claim_id,
                             'retry_at': getattr(exc, 'retry_at', None) or service.store.now()+15}})
             return query, query_sources
+
+        reference_action = payload.get('unconfirmed_reference_action') or {}
+        if reference_action.get('contract') == 'closed-hypothesis-reference-action-v1':
+            # Use the already model-selected, acquired source before another
+            # search. This is only reference acquisition; the existing visual
+            # queue and common proof authority decide any physical identity.
+            articles = (payload.get('source_text_receipt') or {}).get('articles') or []
+            selected = [{'url': article['url'], 'title': article.get('title') or '',
+                'lookup_candidate_ids': article.get('lookup_candidate_ids') or [],
+                'selection_provenance': 'closed_unconfirmed_model_nomination'}
+                for article in articles if article.get('url') in reference_action.get('source_urls', [])]
+            media = await ready_article_media(selected)
+            if media:
+                return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                    'observations': ['Архитектурный текст оставил неоднозначность; получены фотографии выбранной статьи.'],
+                    '_article_media_pending': True, '_references_sent': []}, media
+            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': ['Архитектурная гипотеза не подтверждена; выбранный источник не дал пригодных фотографий.'],
+                '_references_sent': []}, candidates
 
         async def consume_query(query, query_sources):
             nonlocal sources

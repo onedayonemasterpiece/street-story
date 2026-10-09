@@ -186,7 +186,6 @@ async def test_partial_inventory_can_read_a_selected_known_card_without_claiming
 @pytest.mark.parametrize("text_resolves_binding", [False, True])
 async def test_unconfirmed_selected_card_reaches_existing_t_even_when_search_coverage_is_incomplete(
         tmp_path, monkeypatch, text_resolves_binding):
-    from street_story.providers import PermanentProviderError
     service, s, active = geometry_setup(tmp_path)
     s.update(latitude=54.7, longitude=20.5)
     s["_identity_search_context"] = {"reverse_address": {"city": "Город", "road": "Тестовая улица"}}
@@ -234,9 +233,26 @@ async def test_unconfirmed_selected_card_reaches_existing_t_even_when_search_cov
         await identity_discovery.prepare_search_plan(service, s, "", active)
         assert s["_identity_geometry_result"]["proof_kind"] == "architectural_text"
     else:
-        with pytest.raises(PermanentProviderError, match="identity_architectural_text_uncertain"):
-            await identity_discovery.prepare_search_plan(service, s, "", active)
+        history, _ = await identity_discovery.prepare_search_plan(service, s, "", active)
         assert "_identity_geometry_result" not in s
+        partial = history['search_plan']['payload']
+        assert partial['search_coverage_incomplete'] is True
+        assert partial['first_wave_hypotheses'] == []
+        assert history['planned_queries'] == []
+        assert partial['unconfirmed_reference_action']['identity_accepted'] is False
+        from street_story import article_media
+        media_reads = []
+        async def actual_selected_media(svc, snapshot, sources, excluded, *, receipts, first_ready):
+            media_reads.append(sources)
+            assert first_ready and len(sources) == 1
+            assert sources[0]['url'] == partial['source_text_receipt']['articles'][0]['url']
+            return [{'candidate_id': 'web:fixture', 'url': sources[0]['url'],
+                'reference_image_urls': ['https://example.org/actual-facade.jpg']}]
+        monkeypatch.setattr(article_media, 'article_candidates', actual_selected_media)
+        result, pending = await identity_discovery.recover(service, s, '', active, set())
+        assert result['status'] == 'uncertain' and result['_article_media_pending']
+        assert pending[0]['candidate_id'] == 'web:fixture'
+        assert len(media_reads) == 1 and len(calls) == 2
     saved = service._identity_snapshot(s["id"])[1]["identity_physical_hypothesis"]
     assert saved["identity_accepted"] is False
     assert saved["closed_payload"]["regional_article_selections"][0]["physical_binding_resolved"] is False

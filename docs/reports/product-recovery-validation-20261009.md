@@ -46,6 +46,26 @@ This does not exclude unknown bodies or infer correctness. Raw closed answers
 remain unchanged and malformed self-alternatives are still rejected. The focused
 T/reader/proof suite passed 63 checks. Actual final verification remains pending.
 
+The corrected T response then remained genuinely uncertain about the window-axis
+count in the upward crop; its raw response is retained. It was not repeated for
+a positive answer. The existing original G action explicitly requested a facade
+reference from its selected source. The continuation now preserves that acquired
+source as an unconfirmed reference action despite incomplete first-wave coverage,
+and passes its actual media to the existing visual queue. It neither manufactures
+search choices nor accepts identity/facts. An unavailable reference ends with
+explained uncertainty rather than a provider error. The ordinary proof authority
+and Stop/generation fences remain unchanged. The focused continuation/native/G/T
+suite passed 76 checks.
+
+The owner's narrow-volume observation exposed a missing explicit comparison in
+the existing G/T instructions. Both now compare the target's visible proportions
+and narrow/elongated form against attached neighbors, separating volume boundaries
+and window axes. They must consider crop, yaw, occlusion and an end-on view of a
+long footprint; missing heights are never invented. Shape supports elimination,
+not standalone acceptance. No control address or ID is embedded. The geometry,
+T and spatial-contract checks passed 76 tests; this is implementation verification,
+not yet evidence of improved real-photo accuracy.
+
 The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.
