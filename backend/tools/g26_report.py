@@ -26,12 +26,14 @@ def one(cid, model):
     packet_file=case/'spatial-options-v3-llm-first.json'
     packet=_json(packet_file) if packet_file.exists() else {}
     initial=packet.get('physical_body_count') or meta.get('physical_buildings') or 0
-    model_dirs=([case/('inference-'+model+'-bearing-v2-json-mode'),
+    model_dirs=([case/('inference-'+model+'-street-v3-json-mode'),
+                 case/('inference-'+model+'-street-v3-structured'),
+                 case/('inference-'+model+'-bearing-v2-json-mode'),
                  case/('inference-'+model+'-bearing-v2-structured'),
                  case/('inference-'+model+'-bearing-v2'),
                  case/('inference-'+model)] if model!='all'
         else sorted(case.glob('inference-*'),
-            key=lambda p:(0 if p.name.endswith('-bearing-v2-json-mode') else
+            key=lambda p:(0 if '-street-v3' in p.name else
                           1 if '-bearing-v2' in p.name else 2,p.name)))
     model_files=[folder/'result.json' for folder in model_dirs
         if (folder/'result.json').is_file()]
@@ -40,11 +42,14 @@ def one(cid, model):
     latency=None
     calls=0
     accepted_id=None
+    t_scene_search_ids=[]
     used_model=None
     status=('missing_geopoint' if not meta.get('g_applicable') else 'not_yet_sent')
     if model_files:
         chosen=model_files[0]
         used_model=(chosen.parent.name.removeprefix('inference-')
+            .removesuffix('-street-v3-json-mode')
+            .removesuffix('-street-v3-structured')
             .removesuffix('-bearing-v2-json-mode')
             .removesuffix('-bearing-v2-structured')
             .removesuffix('-bearing-v2'))
@@ -55,6 +60,14 @@ def one(cid, model):
         active=[x.get('candidate_id') for x in data.get('active_physical_candidates') or []
                 if isinstance(x,dict)]
         accepted_id=data.get('accepted_id')
+        handoff=next((p for p in (chosen.parent/'funnel-handoff-host-replay-v2.json',
+                                   chosen.parent/'funnel-handoff.json')
+                      if p.is_file()),None)
+        if handoff:
+            t_data=_json(handoff).get('downstream_T') or {}
+            t_scene_search_ids=[r.get('candidate_id') for r in
+                t_data.get('scene_search_candidates') or []
+                if isinstance(r,dict) and isinstance(r.get('candidate_id'),str)]
         codes=data.get('reason_codes') or []
         reason=(data.get('safe_error_code') or
                 ';'.join(str(x) for x in codes) or
@@ -69,12 +82,17 @@ def one(cid, model):
         'input_status':meta['status'],'initial_physical_count':initial,
         'G_model_status':status,'active_count':len(active) if model_files and
             status in {'active_shortlist','accepted_identity_proposal'} else None,
-        'active_ids':active,'reserve_count':initial-len(active)
+        'active_ids':active,
+        'T_scene_search_ids':t_scene_search_ids,
+        'T_scene_search_count':len(t_scene_search_ids) if model_files else None,
+        'reserve_count':initial-len(active)
             if status in {'active_shortlist','accepted_identity_proposal'} else initial,
         'accepted_id':accepted_id,'model_calls':calls,'total_method_ms':latency,
         'reason':reason,'model':used_model,
-        'run_revision':('bearing-v2' if model_files and
-            '-bearing-v2' in model_files[0].parent.name else 'prior_or_unsent')}
+        'run_revision':('street-v3' if model_files and
+            '-street-v3' in model_files[0].parent.name else
+            'bearing-v2' if model_files and '-bearing-v2' in model_files[0].parent.name
+            else 'prior_or_unsent')}
 
 
 def main():
@@ -97,6 +115,8 @@ def main():
         item['expected_known_posthoc']=bool(expected)
         item['expected_in_active_posthoc']=(hit if item['G_model_status']=='active_shortlist'
            and expected else None)
+        item['expected_in_T_scene_posthoc']=(expected in item['T_scene_search_ids']
+            if expected and item['T_scene_search_count'] is not None else None)
         item['accepted_correct_posthoc']=(
            item['accepted_id']==expected if expected and item['accepted_id'] else None)
         baseline=legacy.get(item['id'])
