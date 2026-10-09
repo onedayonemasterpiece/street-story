@@ -43,9 +43,7 @@ def test_original_132_conditional_witness_checks_real_road_and_both_directions()
     capsule=physical_decision_context(story,[],scene['manifest'])
     bodies={row[1]:row[0] for row in capsule['rows']}
     manifest=scene['manifest']
-    obj={row[1]:row[0] for row in manifest['objects']['rows'] if len(row)>1}
     subject=bodies['osm:way:192217077']
-    road=obj['osm:way:67826885']
     relation={'kind':'street_termination',
         'source_observation':'SOURCE shows an approach ending in a cross street before the frontal building.',
         'map_body_labels':[subject],
