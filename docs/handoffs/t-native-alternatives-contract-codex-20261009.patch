@@ -1,0 +1,15 @@
+diff --git a/backend/street_story/live_visual_comparison.py b/backend/street_story/live_visual_comparison.py
+--- a/backend/street_story/live_visual_comparison.py
++++ b/backend/street_story/live_visual_comparison.py
+@@ -390,7 +390,11 @@
+             'reserve_candidate_count': len(priority.get('reserve_candidate_ids') or []),
+             'physical_geometry_policy': compact['geometry_policy'],
+             'remaining_illustrations': remaining,
+             'search_feedback_instruction': (
++                'alternative_candidate_ids — только те ДРУГИЕ физические объекты, которые после '
++                'этого сравнения SOURCE и REF всё ещё остаются правдоподобными. '
++                'Не перечисляй отвергнутых по видимым архитектурным отличиям соседей. '
++                'Если хотя бы один другой корпус остаётся возможным, выбирай uncertain, а не match. '
+                 'Сначала явно укажи source_subject_scope: building, occupant, other_physical_object или unclear '
+                 'по главному предмету всего SOURCE. Крупный фасад целого дома — building, даже если видна '
+                 'вывеска арендатора или удалось сопоставить только его вход. Для building выбери ID самого '
