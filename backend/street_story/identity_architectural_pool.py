@@ -76,6 +76,12 @@ def _excerpt(text, *, max_chars=3800):
         for a,b in segments:
             if capacity < 60:
                 break
+            # Preserve the part of a real architectural paragraph beyond
+            # the short subject introduction instead of dropping the entire
+            # paragraph when its first characters overlap that prefix.
+            for x,y in sorted(window):
+                if x <= a < y:
+                    a=y
             b=min(b,a+capacity)
             if b>a and all(b<=x or a>=y for x,y in window):
                 window.append((a,b))
@@ -251,7 +257,6 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             or set(item['article_id'] for item in assessments)!=set(pool['article_ids'])):
         raise ValueError('unassessed_real_publisher_article')
     decision={k:v for k,v in normalized.items() if k!='article_comparisons'}
-    from jsonschema import Draft202012Validator
     base_schema=copy.deepcopy(pool['schema'])
     base_schema['properties'].pop('article_comparisons')
     base_schema['required'].remove('article_comparisons')
