@@ -16,6 +16,72 @@ from jsonschema import Draft202012Validator
 POLICY='street_story.g_option_evidence.v3'
 
 
+def parse_spatial_choice_json(raw):
+    """Parse provider JSON, repairing ONLY unquoted object-key identifiers.
+
+    A real Gemini JSON-mode response sometimes misses quotes around one
+    property name while preserving the entire visual analysis. Rejecting all
+    SOURCE hypotheses for that transport mistake loses product value. This
+    lexical repair never selects an OSM label, edits a string VALUE, invents
+    evidence or changes photographic semantics. Original raw bytes remain in
+    the immutable provider receipt.
+    """
+    try:
+        return json.loads(raw), []
+    except (json.JSONDecodeError, TypeError):
+        if not isinstance(raw, str):
+            return {}, ['unparseable_visual_json']
+    pieces, stack, quoted, escaped, count = [], [], False, False, 0
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if quoted:
+            pieces.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                quoted = False
+            i += 1
+            continue
+        if ch == '"':
+            quoted = True
+        elif ch == '{':
+            stack.append(['object', True])
+        elif ch == '[':
+            stack.append(['array', False])
+        elif ch in '}]':
+            if stack:
+                stack.pop()
+        elif ch == ',' and stack and stack[-1][0] == 'object':
+            stack[-1][1] = True
+        elif ch == ':' and stack and stack[-1][0] == 'object':
+            stack[-1][1] = False
+        elif (stack and stack[-1] == ['object', True]
+              and (ch.isalpha() or ch == '_')):
+            end = i + 1
+            while end < len(raw) and (raw[end].isalnum() or raw[end] == '_'):
+                end += 1
+            tail = end
+            while tail < len(raw) and raw[tail].isspace():
+                tail += 1
+            if tail < len(raw) and raw[tail] == ':' and raw[i:end].isidentifier():
+                pieces.extend(('"', raw[i:end], '"'))
+                count += 1
+                i = end
+                continue
+        pieces.append(ch)
+        i += 1
+    if not count:
+        return {}, ['unparseable_visual_json']
+    try:
+        parsed = json.loads(''.join(pieces))
+        return parsed, [f'quoted_unquoted_object_keys:{count}']
+    except json.JSONDecodeError:
+        return {}, ['unparseable_visual_json']
+
+
 def visual_spatial_choice_schema():
     string={'type':'string','maxLength':650}
     return {'type':'object','properties':{
