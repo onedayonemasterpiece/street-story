@@ -358,3 +358,23 @@ async def test_untrusted_title_page_cannot_leave_publisher_or_change_method(tmp_
                 previous_receipt={**prior,'pagination_urls':[altered]})
             assert bad['status'] == 'not_sent'
     assert not requested
+
+
+
+def test_received_publisher_html_image_links_are_observed_only_and_domain_bound():
+    from bs4 import BeautifulSoup
+    from street_story.prussia39 import parse_article
+    html_body=(
+        '<html><head><title>Real source text</title></head><body>'
+        '<td style="text-align:justify">Общий вид жилого дома.'
+        '<a href="/photos/subject-1.jpg">Полная фотография</a>'
+        '<img src="/photos/subject-2.png"/>'
+        '<a href="https://example.org/other-building.jpg">Other</a>'
+        '<img src="javascript:alert(1)"/>'
+        '</td></body></html>')
+    parsed=parse_article(BeautifulSoup(html_body,'html.parser'))
+    assert parsed['source_image_links']==[
+        'https://www.prussia39.ru/photos/subject-1.jpg',
+        'https://www.prussia39.ru/photos/subject-2.png']
+    assert parsed['text']
+    assert all(u.startswith('https://www.prussia39.ru/') for u in parsed['source_image_links'])
