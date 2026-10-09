@@ -21,10 +21,12 @@ def visual_spatial_choice_schema():
     return {'type':'object','properties':{
         'decision':{'type':'string','enum':['accept','candidate','needs_detail','unknown']},
         'candidate_label':{'type':'integer'},
-        'source_pattern':{'type':'string','enum':[
-            'single_frontage','corner','frontage_sequence','setback',
-            'street_termination','partial_complex','unknown']},
-        'crop_scope':{'type':'string','enum':['whole','partial','unknown']},
+        # PHOTO vocabulary is model-owned: a new facade/bridge/roof pattern
+        # must not become UNKNOWN because its name was absent from a Python
+        # enum. Only stable action decisions and literal OSM references have
+        # deterministic validation.
+        'source_pattern':{'type':'string','maxLength':140},
+        'crop_scope':{'type':'string','maxLength':120},
         'source_observations':{'type':'array','items':string,'maxItems':5},
         'selected_option_ids':{'type':'array','items':{'type':'string','maxLength':32},
             'maxItems':5},
