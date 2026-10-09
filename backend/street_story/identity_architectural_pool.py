@@ -374,6 +374,9 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     base_schema['required'].remove('article_comparisons')
     base_schema['properties'].pop('physical_link_evidence')
     base_schema['required'].remove('physical_link_evidence')
+    if t_prepared is not None:
+        base_schema['properties'].pop('t_funnel')
+        base_schema['required'].remove('t_funnel')
     item_schema=base_schema['properties']['correspondences']['items']
     item_schema['properties'].pop('source_span_ref')
     item_schema['properties']['source_quote']={'type':'string','maxLength':600}
@@ -464,6 +467,8 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     proof=freeze_architectural_text_proof(story,decision,receipt,candidates)
     if not proof:
         return dict(reviewed,reason='existing_T_proof_invalid')
+    if t_prepared is not None and t_model['effect'] != 'confirmed':
+        return dict(reviewed,reason='T_model_conflicts_with_its_own_shortlist_decision')
     # The semantic link is already checked against both real source tables.
     # Do not apply the legacy postal parser/number-range code here. Proximity
     # may still be retained as informational observed competitor context.
