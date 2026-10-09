@@ -26,7 +26,6 @@ from jsonschema import Draft202012Validator
 
 from street_story.config import Settings
 from street_story.runtime import RuntimeStreetStoryService
-from street_story.identity_scene import scene_entries
 from street_story.identity_spatial_choice import visual_spatial_choice_schema
 from street_story.identity_spatial_funnel import project_g_funnel
 from street_story.identity_spatial_options import for_vision
