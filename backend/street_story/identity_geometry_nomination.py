@@ -29,13 +29,13 @@ def visual_geometry_nomination_schema():
         'source_observation': statement,
         'map_body_labels': {'type': 'array', 'items': {'type': 'integer'},
             'maxItems': 3},
-        'road_label': {'type': 'integer'},
+        'road_candidate_id': {'type': 'string'},
         'road_direction_index': {'type': 'integer'},
         'segment_ring_index': {'type': 'integer'},
         'first_segment_index': {'type': 'integer'},
         'second_segment_index': {'type': 'integer'}},
         'required': ['kind', 'source_observation', 'map_body_labels',
-            'road_label', 'road_direction_index', 'segment_ring_index',
+            'road_candidate_id', 'road_direction_index', 'segment_ring_index',
             'first_segment_index', 'second_segment_index']}
     return {'type': 'object', 'properties': {
         'decision': {'type': 'string', 'enum': ['nominated', 'uncertain']},
@@ -103,7 +103,7 @@ def check_visual_geometry_nomination(response, scene_manifest, physical_context,
             if not any(tuple(pair[:3]) == requested for pair in corners):
                 reasons.append('corner_not_observed_in_supplied_map_excerpt')
         elif kind == 'street_termination':
-            road = labels.get(relation['road_label'])
+            road = relation['road_candidate_id']
             cues = (physical_context.get('bidirectional_road_axis_cues') or {}).get('rows') or []
             selected = next((r for r in cues if r[0] == road), None)
             direction = relation['road_direction_index']
