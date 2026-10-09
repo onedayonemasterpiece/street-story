@@ -182,3 +182,67 @@ def observed_plan_shape(entry, *, max_vertices=2000):
         concave, round(bearing, 1), height, levels,
         safe_ratio(height, major), safe_ratio(height, minor),
     ]
+
+
+def compare_visual_shape_to_mapped_bodies(profile, crop_scope, selected, alternatives,
+                                          *, angular_ratio=None, camera_basis=None):
+    """Measured OSM morphology contrast; never automatically change candidate.
+
+    The LLM supplies PHOTO-only silhouette and crop scope. The host supplies
+    actual OSM 2D rectangles and explicit height. Returns bounded reasons for
+    an image-using reviewer to test; DOES NOT infer the correct physical object.
+    """
+    valid_profiles={'tall_narrow', 'broad_low', 'elongated_horizontal',
+        'blocky', 'multi_volume', 'unknown'}
+    valid_crops={'full_building', 'upper_or_partial', 'unknown'}
+    if (profile not in valid_profiles or crop_scope not in valid_crops
+            or not isinstance(selected, (list, tuple))
+            or len(selected) != len(SHAPE_COLUMNS)):
+        return {'status':'missing_or_invalid_morphology',
+            'authorizes_identity':False,'warnings':[]}
+    row=dict(zip(SHAPE_COLUMNS,selected))
+    measured=row['status']=='observed_closed_outer'
+    if not measured:
+        return {'status':'map_shape_unknown','source_profile':profile,
+            'source_crop_scope':crop_scope,'observed_2d':False,
+            'authorizes_identity':False,'warnings':['mapped_outer_contour_incomplete']}
+    warnings=[]
+    ratio=row['height_over_long_axis']
+    if profile=='tall_narrow':
+        # A short compared-to-very-broad reported footprint can look like a
+        # tower from one end-on view. This is a REVIEW cue, not a contradiction
+        # certified by 3D or calibrated SOURCE pixel shape.
+        if (crop_scope=='full_building' and ratio is not None and ratio < .65):
+            warnings.append('tall_source_vs_explicit_wide_plan_height_needs_viewpoint_review')
+        if ratio is None:
+            warnings.append('mapped_vertical_dimension_unknown')
+    if (camera_basis=='original_exif' and
+            crop_scope=='full_building' and isinstance(angular_ratio,(int,float))
+            and not isinstance(angular_ratio,bool) and angular_ratio>3):
+        warnings.append('entire_building_source_vs_nominal_fov_extent_conflict')
+    if profile=='elongated_horizontal' and row['footprint_elongation'] is not None:
+        if row['footprint_elongation']<1.2:
+            warnings.append('horizontal_source_vs_near_square_map_plan_needs_orientation_review')
+    comparisons=[]
+    for alt in (alternatives or [])[:5]:
+        if not isinstance(alt,dict):
+            continue
+        other=alt.get('plan_morphology')
+        if (not isinstance(other,(list,tuple)) or len(other)!=len(SHAPE_COLUMNS)
+                or other[0]!='observed_closed_outer'):
+            continue
+        item=dict(zip(SHAPE_COLUMNS,other))
+        area=row['footprint_area_m2']
+        other_area=item['footprint_area_m2']
+        comparisons.append({
+            'candidate_id':alt.get('candidate_id'),
+            'mapped_long_axis_m':item['long_axis_m'],
+            'mapped_short_axis_m':item['short_axis_m'],
+            'mapped_area_m2':other_area,
+            'selected_area_over_alternative':(
+                round(area/other_area,2) if other_area>0 else None)})
+    return {'status':'measured_plan_advisory','source_profile':profile,
+        'source_crop_scope':crop_scope,'selected_shape':row,
+        'alternative_shape_comparisons':comparisons,
+        'warnings':warnings,'authorizes_identity':False,
+        'scope':POLICY}
