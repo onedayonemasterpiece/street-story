@@ -155,6 +155,7 @@ def replay_closed(cid, model):
     original=Path(receipt['source_path']).read_bytes()
     coordinate=tuple(meta['camera_point'])
     osm,_origin=observed_osm(cid,coordinate)
+    from street_story.identity_scene import scene_entries
     story={'latitude':coordinate[0],'longitude':coordinate[1],
            '_identity_map_snapshot':osm}
     handoff=project_g_funnel(model_answer,packet,scene_entries(story,[]),
