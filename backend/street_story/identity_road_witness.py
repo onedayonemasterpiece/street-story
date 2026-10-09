@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 
 
 def freeze_model_street_termination(story, visual_response, source_map_receipt,
