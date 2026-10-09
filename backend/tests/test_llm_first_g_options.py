@@ -52,7 +52,8 @@ def test_real_maps_first_pass_compact_without_semantic_k_shortlist(case):
     assert packet['expanded_labels']==[]
     assert packet['physical_body_count']==physical['received_body_count']
     assert len(packet['all_received_physical_bodies'])==physical['received_body_count']
-    assert len(packet['private_label_to_osm_id'])==physical['received_body_count']
+    # Neutral MAP also labels roads and other non-building objects.
+    assert len(packet['private_label_to_osm_id'])>=physical['received_body_count']
     assert len(json.dumps(for_vision(packet),ensure_ascii=False).encode())<14000
     assert 'private_label_to_osm_id' not in for_vision(packet)
     assert packet['options'] or packet['physical_body_count']>0
