@@ -716,6 +716,25 @@ class ProductResearchAdapter:
                    receipt.get('phase') == 'completed' and receipt.get('result')
                    for receipt in self._identity_plan_receipts(story))
 
+    def identity_source_map_pending(self, story):
+        """A previous alternate image send must be read back before Google reroutes."""
+        with self.service.store.connection() as db:
+            rows = db.execute('SELECT receipt_json FROM research_provider_attempts '
+                              'WHERE story_id=? AND role=? ORDER BY created_at DESC LIMIT 8',
+                              (story['id'], 'vision_source_map'))
+            for row in rows:
+                receipt = json.loads(row[0] or '{}')
+                binding = receipt.get('binding') or {}
+                if (binding.get('generation') != story.get('_identity_generation', 0)
+                        or binding.get('control_revision', 0) !=
+                        story.get('_identity_research_control_revision', 0)):
+                    continue
+                if receipt.get('phase') in {'session_create_intent', 'prompt_intent', 'submitted',
+                                            'unknown', 'abort_intent', 'abort_outcome_unknown',
+                                            'response_completed', 'completed'}:
+                    return True
+        return False
+
     async def plan_identity_source_map(self, story, prompt, schema,
                                       source_mime, source_bytes, map_mime, map_bytes):
         """Independent qualified OpenCode SOURCE/MAP visual route, not REF.
