@@ -117,8 +117,10 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
         contradictions[label]={
             'source_vs_map_conflict':item['source_vs_map_conflict'],
             'conditions':item['conditions']}
-    if any(row['label'] in contradictions for row in active_rows):
-        return invalid('same_building_active_and_explicitly_contradicted')
+    # Models sometimes contradict their own shortlist. Keep the useful
+    # physical lead and expose the contradiction as uncertainty; discarding
+    # the entire answer would lose valid SOURCE candidates for no reason.
+    conflicting_labels={row['label'] for row in active_rows if row['label'] in contradictions}
 
     # Empty scene-sized selection means no reduction, never zero candidates.
     # This is a model outcome, not a geometric nearest-distance default.
@@ -133,7 +135,8 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
         return {'label':label,'candidate_id':cid,**_physical_metadata(entries.get(cid))}
     active=[{**mapped(row['label']),
              'source_match':row['source_match'],
-             'unresolved_difference':row['what_remains_uncertain']}
+             'unresolved_difference':row['what_remains_uncertain'],
+             'model_self_contradiction':contradictions.get(row['label'])}
             for row in active_rows]
     reserve=[{**mapped(label),
              'review_state':('explicit_model_contradiction'
@@ -186,15 +189,27 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
         'legacy_closed_response_replay':legacy,
         'other_bodies_retained_for_reconsideration':True,
         'canonical_POI_memory_updated':False}
-    # Large untouched reserve stays in the machine-readable receipt. T only
-    # receives active + observed literals + the distinguishing question.
+    # The active group is a REVERSIBLE model suggestion, never an exclusion
+    # certificate. T may reopen any member of the original observed OSM pool.
+    # A no-reduction outcome still supplies a usable T inventory immediately.
+    unreduced=status=='no_useful_reduction'
+    fallback=result['reserve'] if unreduced else []
     result['downstream_T']={
-        'scope':'source_osm_shortlist_unconfirmed' if not accepted else 'accepted_G_candidate_for_codex_review',
-        'active_physical_candidates':active if status!='no_useful_reduction' else [],
+        'scope':('original_osm_pool_unreduced' if unreduced else
+                 'source_osm_shortlist_unconfirmed' if not accepted else
+                 'accepted_G_candidate_for_codex_review'),
+        'active_physical_candidates':fallback if unreduced else active,
+        'g_prioritized_candidates':active if not unreduced else [],
+        'candidate_scope':'original_osm_pool' if unreduced else 'reversible_G_shortlist',
+        'original_physical_count':index_count,
+        'original_reserve_candidate_ids':[item['candidate_id'] for item in result['reserve']],
+        'reserve_reference':'G_funnel_receipt.reserve',
+        'reopen_original_reserve_on_conflict':True,
         'reserved_count':result['reserve_count'],
         'expandable_on_new_evidence':True,
         'next_distinguishing_question':result['t_distinguishing_question'],
         'model_scene_pattern':result['model_scene_pattern'],
         'next_step':next_step,
+        'model_self_contradiction_labels':sorted(conflicting_labels),
         'acceptance_not_implied_by_single_active_body':True}
     return result
