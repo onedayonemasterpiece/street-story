@@ -62,7 +62,7 @@ def preflight(cid):
         'serialised_model_bytes':len(json.dumps(displayed,ensure_ascii=False).encode()),
         'options_sha256':option_digest(packet),
         'method_calls':0,'precompute_ms':round((time.monotonic()-start)*1000,1)}
-    detail_path=case/'spatial-options-v3-llm-first.json'
+    detail_path=case/'spatial-options-v3-bearing-v2.json'
     if not detail_path.exists():
         detail_path.write_text(json.dumps(packet,ensure_ascii=False,indent=2))
         os.chmod(detail_path,0o600)
