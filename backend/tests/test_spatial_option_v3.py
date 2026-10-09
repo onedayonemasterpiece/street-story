@@ -1,7 +1,4 @@
 """G v3 checks precomputed options rather than asking the LLM for pose math."""
-import copy
-import hashlib
-
 from street_story.identity_scene import render_scene
 from street_story.identity_model_context import physical_decision_context
 from street_story.identity_spatial_options import spatial_option_catalog, for_vision, option_digest
@@ -57,7 +54,7 @@ def test_source_corner_with_actual_measured_options_needs_no_numeric_camera_pose
     alternative=byid['osm:way:133035111']
     actual=next(name for name,item in packet['options'].items()
         if item['kind']=='observed_corner' and item['body_label']==subject
-        and not 'nominal_interior' in item['camera_side_advisory'])
+        and 'nominal_interior' not in item['camera_side_advisory'])
     result=validate(packet,response(subject,[actual],alternative=alternative))
     assert result['accepted'] is True
     assert result['status']=='accepted_geometry_v3'
@@ -84,7 +81,6 @@ def test_rear_corner_or_unreceived_option_keeps_conditional_candidate():
     assert not bad['accepted']
     assert bad['reason_codes']==['model_option_id_not_in_frozen_osm','no_measured_osm_option_selected'] or (
         'model_option_id_not_in_frozen_osm' in bad['reason_codes'])
-    assert validate(packet,response(subject,[],decision='unknown'))['status']=='unknown' if False else True
 
 
 def test_single_visible_facade_can_suffice_with_actual_competitor_contrast():
