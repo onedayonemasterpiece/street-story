@@ -88,7 +88,9 @@ def physical_decision_context(story, candidates, manifest):
             row.get('boundary_distance_m') is not None else
             derived_camera.get('boundary_distance_m'))
         interval = row.get('bearing_start_end_span_degrees')
-        if interval is None:
+        if (not isinstance(interval, (tuple, list)) or len(interval) != 3 or
+                any(value is None for value in interval)):
+
             angles = (derived_camera.get('footprint_bearing_interval') or {})
             if all(angles.get(k) is not None for k in (
                     'start_degrees','end_degrees','angular_span_degrees')):
