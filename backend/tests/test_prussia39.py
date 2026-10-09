@@ -252,3 +252,48 @@ async def test_publisher_address_21_is_not_silently_inferred_as_22(tmp_path):
         page = await Prussia39Adapter(Cache(tmp_path / 'cache'),http,resolver=resolver).article(52)
     assert page['address_text'].endswith('Гастелло, 21')
     assert page['address_provenance'] == 'publisher_article_metadata_table'
+
+
+@pytest.mark.asyncio
+async def test_no_gps_title_search_preserves_real_publisher_cards_and_modern_addresses(tmp_path):
+    body = html('<title>Поиск по сайту Prussia39.ru</title>'
+        '<table><tr><td style="margin:3px;text-align:justify;">'
+        '<b>Казарменный корпус с порталами</b><br/>'
+        '<p style="margin:0;font-size:8pt;">Область, г. Город, ул. Тестовая, 18</p>'
+        'Арочные порталы и верхние стрельчатые окна.'
+        '<a href="../sight/index.php?sid=91">Подробнее о достопримечательности</a>'
+        '</td><td><a href="../sight/index.php?sid=91"><img src="/thumb.jpg"/></a>'
+        '</td></tr></table>')
+    seen = []
+    def transport(req):
+        seen.append(req)
+        return response(body)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as http:
+        adapter = Prussia39Adapter(Cache(tmp_path / 'cache'), http, resolver=resolver)
+        result = await adapter.title_search('  казармы  ')
+        again = await adapter.title_search('казармы')
+    assert len(seen) == 1 and again['cache_hit'] is True
+    assert result['status'] == 'completed'
+    assert result['inventory_scope'] == 'observed_publisher_title_search_page'
+    assert result['results'] == [{
+        'article_id':'prussia39:sid:91','sid':91,
+        'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=91',
+        'title':'Казарменный корпус с порталами',
+        'address_text':'Область, г. Город, ул. Тестовая, 18',
+        'annotation':'Арочные порталы и верхние стрельчатые окна.'}]
+    from urllib.parse import parse_qs
+    assert parse_qs(seen[0].url.query.decode(),encoding='cp1251') == {
+        'text':['казармы'], 'search_obj':['2']}
+
+
+@pytest.mark.asyncio
+async def test_no_gps_title_search_not_an_identity_and_empty_not_absent(tmp_path):
+    empty=html('<h1>Поиск по сайту Prussia39.ru</h1><p>Нет найденных карточек.</p>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda _: response(empty))) as http:
+        adapter=Prussia39Adapter(Cache(tmp_path / 'cache'),http,resolver=resolver)
+        results=await adapter.title_search('неизвестное строение')
+    assert results['status']=='completed_empty'
+    assert results['inventory_complete'] is True
+    assert results['results']==[]
+    assert results['inventory_scope']=='observed_publisher_title_search_page'
