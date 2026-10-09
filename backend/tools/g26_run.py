@@ -128,7 +128,7 @@ def source_map_prompt(packet):
         +json.dumps(for_vision(packet),ensure_ascii=False,separators=(',',':')))
 
 
-async def run_one(cid,model,*,dry):
+async def run_one(cid,model,*,dry,schema_transport='structured'):
     start=time.monotonic()
     case=ROOT/'cases'/str(cid)
     inp=case/'input-receipt.json'
@@ -142,15 +142,24 @@ async def run_one(cid,model,*,dry):
     prompt=source_map_prompt(packet)
     schema=visual_spatial_choice_schema()
     import google.genai.types as t
-    config=t.GenerateContentConfig(response_mime_type='application/json',
-        response_json_schema=schema,max_output_tokens=3700,
-        system_instruction='Visually analyze SOURCE and neutral MAP. Return your '
-           'actual physical spatial shortlist, distinguishing uncertainty and '
-           'T handoff. Do not infer camera pose or emit the schema definition. '
-           'No tools, browsing or text-only identity lookup.')
-    # Offline SDK struct check before any provider admission.
+    if schema_transport=='json-mode':
+        prompt+='\nAnswer JSON fields: decision (shortlist|accept|no_reduction|unknown), '
+        prompt+='candidate_label (0 when none), source_pattern, crop_scope, '
+        prompt+='source_observations array, active_hypotheses array of '
+        prompt+='{label:int,source_match:string,what_remains_uncertain:string}, '
+        prompt+='contrasted_alternatives array, explicit_contradictions array, '
+        prompt+='t_distinguishing_question, next_useful_step (T|existing_images|wider_map|none), '
+        prompt+='request_detail_labels array and uncertainties array. '
+        prompt+='Output a FILLED JSON object, not a schema, and do not invent OSM labels.'
+    config_args={'response_mime_type':'application/json','max_output_tokens':3700,
+        'system_instruction':'Visually analyze SOURCE and neutral MAP. Return '
+            'your source-supported physical shortlist, uncertainty and T question. '
+            'Do not fabricate camera pose or repeat a JSON schema definition.'}
+    if schema_transport=='structured':
+        config_args['response_json_schema']=schema
+    config=t.GenerateContentConfig(**config_args)
     encoded=config.model_dump(exclude_none=True,mode='json')
-    if 'response_json_schema' not in encoded:
+    if (schema_transport=='structured' and 'response_json_schema' not in encoded):
         raise ValueError('provider_did_not_serialize_G_schema')
     path=case/('inference-'+model.replace('/','-'))
     intent=path/'provider-intent.json'
@@ -191,6 +200,7 @@ async def run_one(cid,model,*,dry):
             'observed_physical_bodies':packet['physical_body_count'],
             'shown_detail_body_count':len(packet['expanded_labels']),
             'shown_option_count':len(packet['options']),
+            'schema_transport':schema_transport,
             'full_precomputed_options':packet['original_full_option_count'],
             'all_body_index_count':len(packet['all_received_physical_bodies']),
             'prompt_utf8_bytes':len(prompt.encode()),
@@ -230,6 +240,7 @@ async def run_one(cid,model,*,dry):
         'model_prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest(),
         'model_schema_sha256':hashlib.sha256(json.dumps(schema,sort_keys=True).encode()).hexdigest(),
         'model_prompt_utf8_bytes':len(prompt.encode()),
+        'schema_transport':schema_transport,
         'input_physical_body_count':packet['physical_body_count'],
         'presented_options_count':len(packet['options']),
         'expected_identity_values_loaded':False}
@@ -242,6 +253,7 @@ async def run_one(cid,model,*,dry):
     _write_once(path/'sent-options.json',packet)
     request_id=hashlib.sha256(json.dumps([cid,model,output_input],sort_keys=True).encode()).hexdigest()
     marker={'id':cid,'model':model,'phase':'intent',
+      'schema_transport':schema_transport,'before_send_callback_seen':False,
       'provider_send_state':'not_sent','request_sha256':request_id,
       'original_photo_sha256':original_sha,
       'model_photo_sha256':output_input['model_SOURCE_sha256'],
@@ -258,7 +270,8 @@ async def run_one(cid,model,*,dry):
         tmp.replace(intent)
     save_marker()
     def before_send():
-        marker.update(phase='send_intent',provider_send_state='possibly_sent')
+        marker.update(phase='send_intent',provider_send_state='possibly_sent',
+            before_send_callback_seen=True)
         save_marker()
     async def ask(key,timeout):
         marker.update(phase='provider_admission',timeout_s=timeout)
@@ -272,17 +285,25 @@ async def run_one(cid,model,*,dry):
         resp=await executor.execute_joint('grounded_research',ask)
     except Exception as exc:
         code,status=provider_outcome(exc)
+        known_reason=(str(exc) if type(exc).__name__ in {
+            'GeminiUnavailable','PermanentProviderError','RetryableProviderError'}
+            else 'unclassified_provider_failure')
         marker.update(phase='failed',provider_send_state=code,
             http_status=status,error_type=type(exc).__name__,
+            safe_error_code=known_reason[:130],
             elapsed_ms=round((time.monotonic()-start)*1000))
         save_marker()
         _write_once(result_path,{'id':cid,'status':'provider_failed',
             'technical_send_state':code,'http_status':status,
+            'safe_error_code':known_reason[:130],
+            'before_send_callback_seen':marker['before_send_callback_seen'],
             'model':model,'model_calls':int(code!='not_sent'),
             'whole_method_elapsed_ms':marker['elapsed_ms'],'accepted':False,
             'active_count':None,'reserve_count':packet['physical_body_count']})
         return {'id':cid,'status':'provider_failed','send_state':code,
             'http_status':status,'error_type':type(exc).__name__,
+            'safe_error_code':known_reason[:130],
+            'before_send_callback_seen':marker['before_send_callback_seen'],
             'method_calls':int(code!='not_sent'),'elapsed_ms':marker['elapsed_ms']}
     received=resp.text or ''
     (path/'closed-model-response.json').write_text(received)
@@ -332,12 +353,15 @@ async def main():
     parser.add_argument('--ids',type=int,nargs='+',required=True)
     parser.add_argument('--model',required=True)
     parser.add_argument('--dry-run',action='store_true')
+    parser.add_argument('--schema-transport',choices=['structured','json-mode'],
+                        default='structured')
     args=parser.parse_args()
     if not set(args.ids).issubset(ALL):
         raise ValueError('Requested unknown original SOURCE photo')
     rows=[]
     for id in args.ids:
-        try:rows.append(await run_one(id,args.model,dry=args.dry_run))
+        try:rows.append(await run_one(id,args.model,dry=args.dry_run,
+                                     schema_transport=args.schema_transport))
         except Exception as exc:rows.append({'id':id,'status':'pre_send_or_local_error',
              'error_type':type(exc).__name__,'code':str(exc)[:200],
              'method_calls':0})
