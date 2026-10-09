@@ -96,10 +96,20 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
             'proof':None,'reason_codes':['model_declared_unknown_with_candidate']}
 
     options = packet.get('options') or {}
-    errors, warnings, selected, compared = [], [], {}, []
+    errors, warnings, selected, compared, body_refs = [], [], {}, [], []
     for oid in option_ids:
         opt = options.get(oid)
         if not isinstance(opt,dict):
+            # A visually grounded model may cite a received building label
+            # where the OPTIONAL field asked for a wall-option ID. Preserve
+            # that semantic physical reference as a BODY LABEL, not as a
+            # made-up F/C/P primitive. No string/OSM feature heuristics.
+            actual_bodies={row[0] for row in
+                (packet.get('all_received_physical_bodies') or [])}
+            if isinstance(oid,str) and oid.isdecimal() and int(oid) in actual_bodies:
+                body_refs.append(int(oid))
+                warnings.append('model_cited_physical_body_label_not_geometry_option')
+                continue
             errors.append('unreceived_osm_option_reference')
             continue
         kind = opt.get('kind')
@@ -142,13 +152,14 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
     if decision=='accept' and not claims:
         errors.append('no_image_observation_provided')
     if decision=='accept' and not selected:
-        # On the initial overview, the correct measured options were not even
-        # shown to the model. Request one candidate-led expansion instead of
-        # rejecting its otherwise useful first-pass physical nomination.
-        warnings.append('candidate_needs_map_detail_for_measured_support')
+        # A source/map vision model may make a semantic physical-scope
+        # identification without inventing a numeric wall/road ID. Keep
+        # the evidence grade explicit; code NEVER upgrades '314' to an
+        # unrequested 'F314.0.8' or an imaginary camera pose.
+        warnings.append('visual_scope_without_specific_osm_primitive')
     if decision=='accept' and requested:
         warnings.append('model_requests_more_detail_before_final_identity')
-    accepted = (decision=='accept' and not errors and bool(selected)
+    accepted = (decision=='accept' and not errors
         and any(isinstance(obs,str) and obs.strip() for obs in claims)
         and not requested)
 
@@ -162,7 +173,7 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
     if decision=='needs_detail' or (decision=='accept' and not accepted and suggested):
         status='needs_detail'
     elif accepted:
-        status='accepted_geometry_v3'
+        status='accepted_geometry_v3' if selected else 'accepted_visual_scope_v3'
     else:
         status='candidate_unconfirmed'
     result={'status':status,'candidate_id':cid,'candidate_label':label,
@@ -170,6 +181,8 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         'reason_codes':list(dict.fromkeys(errors)),
         'geometric_warnings':list(dict.fromkeys(warnings)),
         'model_pattern':pattern,'selected_measured_options':list(selected),
+        'model_body_label_references':list(dict.fromkeys(body_refs)),
+        'evidence_grade':('measured_osm_reference' if selected else 'llm_source_map_scope'),
         'alternatives':compared,'requested_detail_labels':suggested,
         'initial_semantic_decision':decision,
         'source_observations':claims}
@@ -179,6 +192,9 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
             'map_image_sha256':actual_map_sha256,'model_pattern':pattern,
             'model_source_observations':claims,
             'model_crop_scope':response.get('crop_scope','unknown'),
+            'evidence_grade':('measured_osm_reference' if selected else 'llm_source_map_scope'),
+            'model_body_label_references':list(dict.fromkeys(body_refs)),
+            'canonical_poi_fact_binding_granted':False,
             'chosen_measured_options':selected,'compared_alternatives':compared,
             'source_map_options_digest':hashlib.sha256(json.dumps(
                packet,sort_keys=True,ensure_ascii=False,
