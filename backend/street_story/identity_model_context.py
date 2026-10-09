@@ -53,6 +53,7 @@ def physical_decision_context(story, candidates, manifest):
     from .identity_spatial_features import _local, _point
     from .identity_corner_context import observed_connected_pairs, preserve_one_connected_pair
     from .identity_road_context import observed_bidirectional_road_axes
+    from .identity_camera_visibility import nominal_exterior_sides
     import math
     entries = scene_entries(story, candidates)
     addresses = observed_address_context(story, entries)
@@ -108,18 +109,31 @@ def physical_decision_context(story, candidates, manifest):
                 closed_rings=closed_rings)
         connected_pairs, omitted_connections = observed_connected_pairs(selected_sides,
             closed_rings=closed_rings)
+        facing = nominal_exterior_sides(story, manifest, geometry)
+        outward_indices = [[side[0], side[1]] for side in facing['outward_segments']]
+        inward_indices = [[side[0], side[1]] for side in facing['inward_segments']]
         result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
             row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
             tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
             selected_sides, len(sides) - len(selected_sides),
             _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal),
-            connected_pairs, omitted_connections])
+            outward_indices, inward_indices, connected_pairs, omitted_connections])
     return {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
         'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
         'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal',
+        'nominal_camera_exterior_side_indices', 'nominal_camera_inward_side_indices',
         'observed_connected_side_pairs', 'omitted_connected_pair_count'],
+        'camera_side_halfplane_policy': {
+            'position_basis': (manifest.get('camera') or {}).get('position_status'),
+            'epsilon_m_is_not_measured_gps_accuracy': 2.0,
+            'policy': 'These indexes classify original OSM outer wall sides by exterior '
+                'or interior halfplane relative to the nominal camera coordinate. '
+                'Camera yaw, photo crop, heights, obstructions and GPS accuracy '
+                'are NOT inferred. Exterior is necessary, NOT sufficient for SOURCE '
+                'visibility; inward claims are conditional contradictions. '
+                'No physical body is ranked, removed, or accepted by this column.'},
         'source_angular_reference': {
             'diagonal_fov_35mm_deg': reference_diagonal,
             'camera_position_status': (manifest.get('camera') or {}).get('position_status'),
