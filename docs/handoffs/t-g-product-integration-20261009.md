@@ -79,3 +79,28 @@ The stages were recorded in **different** sessions; summing them is not a measur
 ## Tests and state
 
 T-focused isolated test suite: **83 passed** covering G/T conditional narrowing, SOURCE/OSM pointer integrity, original article acquisition, Wikipedia model title matching, Prussia39 image extraction, no-GPS and negative schema/ref controls. Two original raw model replies additionally replayed offline, one accepted and one correctly held as conditional. GitHub-hosted full CI and the concurrent #246 integration still need to be reconciled; #249 currently has moving-base conflicts. Do not merge wholesale over #246; cherry-pick **T-only** modules/methods and their tests.
+
+
+## Existing Live REF reuse from already acquired articles — product handoff
+
+After a CLOSED G+T result that did NOT independently accept physical identity, call the T-owned methods:
+
+    from .identity_architectural_funnel import (
+        to_existing_research_priority,
+        acquired_article_images_for_existing_REF)
+    priority = to_existing_research_priority(t_funnel_result, acquired_articles)
+    ref_candidates = acquired_article_images_for_existing_REF(
+        t_funnel_result, acquired_articles)
+
+**Codex-owned minimum hook:** merge these ref_candidates into the EXISTING visual_identity.candidates / already-present Live visual queue; pass priority to the existing research priority mechanism. Do not create a new worker, parser, truth/POI layer or independent match gate. The adapter yields native web: article candidates, each with real original reference_image_urls, article_media metadata, discovery=web_article_media, identity_eligible=False. LiveVisualComparisonMixin._image_entries and identity_references.reference_images already accept them. Only an actual new SOURCE+REF comparison whose model explicitly supplies reference_subject_candidate_id may reach bind_reference_subject, visual_match and canonical POI/facts. The adapter NEVER infers article -> physical building from title or address, and no G/T uncertainty is promoted to identity.
+
+**Real Photo106 SOURCE+G+T+gallery replay with no network or inference calls:** independently CLOSED G initially nominated osm:way:100659357; a different independently CLOSED SOURCE+TEXT response nominated osm:way:150596899. The SHA-verified pair recovers both bodies as active REF peers; 79 of the original 81 OSM bodies remain reversible reserve. Original Prussia39 raw HTML of SID2458 and SID2571 produces 19 distinct usable publisher media links, of which 10 have ALREADY BEEN DOWNLOADED in the saved gallery receipt. Two native web: article REF candidates with 19 original image links are now generated, and all 10 previously acquired image URLs are present. An earlier CLOSED independent SOURCE+gallery model found matching architecture for osm:way:150596899 but deliberately did NOT authorize identity (individual_body_visually_supported_but_not_authorized). Codex may use the normal Live reference comparison; do not relabel that old model response as a new native match.
+
+Private receipts:
+- /home/dev/artifacts/street-story/20261009T111952Z-architecture-t-full-corpus-20261009/t-G106-genuine-independent-closed-G-and-T-preflight.json
+- .../t-G106-independent-closed-G-and-T-shortlist-live-v1.json
+- .../t-T-photo106-actual-publisher-gallery-v1.json
+- .../t-T-photo106-actual-multiimage-REF-mapping-v1.json
+- .../prussia-cache.json
+
+T-branch tests (isolated DevCoveer): **145 passed** across funnel, actual article transport, evidence/REF pointers and negative controls. Actual native REF bridge replay passed with the original 19 links and 10 already downloaded assets; this validates compatibility and saves next search work, not deployed E2E. PR#249 has moving-base conflicts with #246; port the small T-owned native adapter and methods into Codex's latest checkout instead of overriding common discovery/proof files.
