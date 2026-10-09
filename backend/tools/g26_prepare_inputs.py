@@ -84,7 +84,7 @@ def prepare(id, inputs):
         if exif['status']!='gps_present' or [exif['latitude'],exif['longitude']]!=row['camera_point']:
             return {'id':id,'status':'original_exif_binding_mismatch'}
         point=tuple(row['camera_point'])
-    elif basis=='owner_approximate':
+    elif basis=='owner_approximate_hint':
         if exif['status']=='gps_present':
             return {'id':id,'status':'owner_hint_overrides_original_exif_not_allowed'}
         point=tuple(row['camera_point'])
@@ -110,7 +110,7 @@ def prepare(id, inputs):
         '_identity_map_snapshot':osm,
         '_identity_observed_candidates':[],
         '_camera_position_verified':basis=='original_exif',
-        '_location_provenance':{'kind':'owner_approx_camera'} if basis=='owner_approximate' else {},
+        '_location_provenance':{'kind':'owner_approx_camera'} if basis=='owner_approximate_hint' else {},
         '_camera_hints':hints}
     scene=render_scene(story,[])
     if scene is None:
@@ -169,7 +169,7 @@ def main():
         except Exception as exc:out.append({'id':id,'status':'preparation_error','error_type':type(exc).__name__,
                                            'error_code':str(exc)[:170]})
     if sorted(args.ids)==sorted(TARGET):
-        save(OUTPUT/'g26-preflight.json',{'contract':'source-osm-morphology-preflight-v1',
+        save(OUTPUT/'g26-preflight-v2.json',{'contract':'source-osm-morphology-preflight-v1',
             'cases':out,'expected_identity_values_loaded':False})
     print(json.dumps({'cases':[{
         'id':r['id'],'status':r['status'],
