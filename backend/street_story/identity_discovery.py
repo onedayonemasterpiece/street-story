@@ -279,7 +279,7 @@ async def _suggest(service, story, transcript, candidates):
     native_saved = native_reader(story) if callable(native_reader) else None
     native_original = bool(native_saved and (native_saved.get('turn_id') or
         native_saved.get('phase') not in {'created', 'failed', 'aborted'}))
-    if addressed_initial and addressed_initial['phase'] in {'send_intent', 'unknown'} and not original_available and not native_original:
+    if addressed_initial and addressed_initial['phase'] == 'send_intent' and not original_available and not native_original:
         raise RetryableProviderError('identity_joint_initial_outcome_unknown')
     if addressed_initial and addressed_initial['phase'] == 'response_closed' and not addressed_followup and not original_available and not native_original:
         raise PermanentProviderError('identity_joint_initial_already_closed')
@@ -695,7 +695,6 @@ async def _suggest(service, story, transcript, candidates):
     joint_followup_binding = None
     initial_binding = None
     initial_outcome = addressed_initial.get('phase') if addressed_initial else None
-    initial_failure = None
     joint_model_id = None
     native_source_map_receipt = None
     response_id_resolutions = []
@@ -974,7 +973,7 @@ async def _suggest(service, story, transcript, candidates):
         return reuse_initial_plan()
     async def send_initial(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
-        nonlocal initial_binding, initial_outcome, initial_failure
+        nonlocal initial_binding, initial_outcome
         nonlocal joint_model_id
         if joint_followup_used:
             # An executor key/model loop cannot repeat an already addressed
@@ -1001,7 +1000,7 @@ async def _suggest(service, story, transcript, candidates):
             if isinstance(exc, ResearchTerminated):
                 raise
             phase, status_code = provider_outcome(exc)
-            initial_outcome, initial_failure = phase, exc
+            initial_outcome = phase
             try:
                 joint_operation_marker(service, story, stage='initial', binding=initial_binding,
                     phase=phase, status_code=status_code,
@@ -1017,6 +1016,8 @@ async def _suggest(service, story, transcript, candidates):
                 'fresh_google_retry_allowed': phase == 'not_sent',
                 'different_model_allowed': joint_route_reassignable(
                     joint_operation_marker(service, story, stage='initial'))})
+            if isinstance(exc, asyncio.CancelledError) and asyncio.current_task().cancelling():
+                raise  # Owner Stop/worker cancellation cannot authorize failover.
             # Retain a closed diagnostic category, never provider payloads or keys.
             detail = str(exc).lower()
             reason = ('schema_depth' if 'schema' in detail and 'nest' in detail else
@@ -1593,8 +1594,9 @@ async def _suggest(service, story, transcript, candidates):
     async def fallback(cause):
         original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
         original_available = callable(original_readback) and original_readback(story)
-        if initial_outcome in {'send_intent', 'unknown'} and not original_available:
-            raise RetryableProviderError('identity_joint_initial_outcome_unknown') from initial_failure
+        # The text worker owns a separate admitted search operation and never
+        # claims to have seen SOURCE. A lost visual response fences its original
+        # route, not this independent acquisition of useful source material.
         if (joint_followup_used
                 and not original_available):
             # The single correction/TEXT followup already consumed joint2.
@@ -1640,12 +1642,16 @@ async def _suggest(service, story, transcript, candidates):
         nonlocal scene_manifest, resolution_packet, schema
         nonlocal text_articles, source_text_receipt
         planner = getattr(researcher, 'plan_source_map', None)
+        from .identity_plan_diagnostics import addressed_joint_models
+        marker = joint_operation_marker(service, story, stage='initial') or {}
+        native_addressed = 'gpt-6-luna' in addressed_joint_models(marker)
         if native_tried or not scene or not callable(planner) or (
-                not native_original and not getattr(researcher, 'source_map_available', False)):
+                not native_original and (native_addressed or not getattr(researcher, 'source_map_available', False))):
             return None
         native_tried = True
         joint_model_id = 'gpt-6-luna'
-        initial_binding = (addressed_initial or {}).get('binding') if native_original else initial_unit_binding
+        initial_binding = ((marker.get('route_operations') or {}).get('gpt-6-luna', addressed_initial or {}).get('binding')
+            if native_original else initial_unit_binding)
         if not native_original:
             joint_operation_marker(service, story, stage='initial', binding=initial_binding,
                 phase='send_intent', model_id=joint_model_id)
@@ -1664,14 +1670,17 @@ async def _suggest(service, story, transcript, candidates):
                      'closed_failure' if (saved or {}).get('phase') == 'failed' and (saved or {}).get('turn_id') else 'unknown')
             initial_outcome = phase
             joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase=phase,
-                code='identity_native_source_map_' + phase)
+                code='identity_native_source_map_' + phase, model_id=joint_model_id)
             if isinstance(exc, asyncio.CancelledError):
                 raise
             if phase == 'not_sent':
                 return None
             if phase == 'unknown':
-                raise RetryableProviderError('identity_joint_initial_outcome_unknown') from exc
-            return await fallback(exc)
+                record_identity_event(service, story['id'], 'identity_joint_route_unknown_preserved', {
+                    'model': joint_model_id, 'same_route_retry_allowed': False,
+                    'independent_routes_allowed': True})
+                return None
+            return None  # A failed original Native turn also leaves other routes independent.
         native_source_map_receipt = result['host_context']['source_map_receipt']
         scene_manifest = native_source_map_receipt['manifest']
         resolution_packet = {**resolution_packet, 'map_scene': scene_manifest}
@@ -1698,7 +1707,6 @@ async def _suggest(service, story, transcript, candidates):
         result = await native_joint()
         if result is not None:
             return result
-        raise RetryableProviderError('identity_joint_initial_outcome_unknown')
     readback = getattr(researcher, 'has_identity_search_plan_readback', None)
     if callable(readback) and readback(story):
         # An original addressed operation precedes both fresh Google work and
@@ -1710,11 +1718,9 @@ async def _suggest(service, story, transcript, candidates):
         reserve_work(service, story['id'], 'planner_calls',
             [digest([story['photo_sha256'], prompt, schema])])
     routes = _joint_initial_routes(getattr(service, 'settings', None), gemini, scene_available=bool(scene))
-    from .identity_plan_diagnostics import joint_route_reassignable
+    from .identity_plan_diagnostics import joint_route_reassignable, addressed_joint_models
     failed_marker = joint_operation_marker(service, story, stage='initial') or {}
-    failed_models = {row['model_id'] for row in failed_marker.get('closed_route_failures', [])}
-    if joint_route_reassignable(failed_marker):
-        failed_models.add(failed_marker['model_id'])
+    failed_models = addressed_joint_models(failed_marker)
     routes = [route for route in routes if route[0] not in failed_models]
     if joint_route_reassignable(failed_marker):
         result = await native_joint()
@@ -1740,7 +1746,7 @@ async def _suggest(service, story, transcript, candidates):
                 return result
         record_identity_event(service, story['id'], 'identity_joint_route_selected',
             {'role': 'source_map' if scene else 'text_planning', 'model': model,
-             'route_index': route_index, 'selection': 'preferred' if route_index == 0 else 'unsent_failover'})
+             'route_index': route_index, 'selection': 'preferred' if route_index == 0 else 'independent_failover'})
         async def routed_call(key, timeout, *, _model=model, _quota=quota):
             return await send_initial(key, timeout, model=_model, quota=_quota)
         try:
@@ -1757,6 +1763,8 @@ async def _suggest(service, story, transcript, candidates):
                 continue
             return await fallback(exc)
         except RetryableProviderError as exc:
+            if joint_route_reassignable(joint_operation_marker(service, story, stage='initial')):
+                continue
             return await fallback(exc)
         try:
             return await process_initial_response(response, model=model, quota=quota, executor=executor)

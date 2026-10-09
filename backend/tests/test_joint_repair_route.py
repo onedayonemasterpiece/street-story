@@ -1,5 +1,6 @@
 """A closed malformed joint uses one registered alternative, never another unit."""
 import json
+import copy
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -99,7 +100,7 @@ async def test_visual_quota_cause_remains_observable_when_no_independent_planner
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reserve', ['google', 'native', 'native_denied'])
-@pytest.mark.parametrize('primary_status', [None, 429, 503])
+@pytest.mark.parametrize('primary_status', [None, 429, 503, 'unknown'])
 async def test_unavailable_primary_uses_secondary_pixels_with_same_proof_contract(tmp_path, reserve, primary_status):
     service, story, active = geometry_setup(tmp_path)
     service.settings = replace(service.settings, gemini_web_search_model='initial',
@@ -108,7 +109,8 @@ async def test_unavailable_primary_uses_secondary_pixels_with_same_proof_contrac
     quota = object()
     class Denied:
         async def execute(self, operation, call):
-            calls.append('primary_unsent' if primary_status is None else 'primary_closed_error')
+            calls.append('primary_unsent' if primary_status is None else
+                'primary_unknown' if primary_status == 'unknown' else 'primary_closed_error')
             if primary_status is not None:
                 return await call('fixture', 60)
             raise GeminiUnavailable(service.store.now() + 300, 'rpd_not_sent')
@@ -118,6 +120,8 @@ async def test_unavailable_primary_uses_secondary_pixels_with_same_proof_contrac
             return await call('fixture', 60)
     async def generate(key, timeout, contents, config, **kwargs):
         if kwargs['model'] == 'alternative':
+            if primary_status == 'unknown':
+                raise TimeoutError('Original primary outcome unknown')
             from google.genai.errors import ClientError, ServerError
             error = ServerError if primary_status >= 500 else ClientError
             raise error(primary_status, {'error': {'code': primary_status, 'message': 'Fixture availability failure'}})
@@ -140,17 +144,78 @@ async def test_unavailable_primary_uses_secondary_pixels_with_same_proof_contrac
     service.providers.research = SimpleNamespace(source_map_available=reserve != 'google',
         plan_source_map=native, source_map_receipt=lambda snapshot: native_receipts[-1] if native_receipts else None)
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    first = 'primary_unsent' if primary_status is None else 'primary_closed_error'
+    first = ('primary_unsent' if primary_status is None else
+        'primary_unknown' if primary_status == 'unknown' else 'primary_closed_error')
     assert calls == ([first, 'native_secondary', 'google_secondary'] if reserve == 'native_denied'
         else [first, 'native_secondary' if reserve == 'native' else 'google_secondary'])
     assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
     assert story['_identity_search_plan_payload']['source_map_receipt']['model_id'] == (
         'gpt-6-luna' if reserve == 'native' else 'initial')
-    if primary_status is not None:
+    if primary_status == 'unknown':
+        from street_story.identity_plan_diagnostics import joint_operation_marker, addressed_joint_models
+        marker = joint_operation_marker(service, story, stage='initial')
+        original = marker['route_operations']['alternative']
+        assert original['phase'] == 'unknown' and original['code'] == 'identity_joint_initial_unknown'
+        assert original['scope'] == marker['scope'] and original['binding'] == marker['binding']
+        assert 'alternative' in addressed_joint_models(marker)
+    elif primary_status is not None:
         from street_story.identity_plan_diagnostics import joint_operation_marker
         marker = joint_operation_marker(service, story, stage='initial')
         assert marker['closed_route_failures'][0]['model_id'] == 'alternative'
         assert marker['closed_route_failures'][0]['status_code'] == primary_status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('native_phase', ['unknown', 'failed'])
+async def test_unavailable_native_readback_does_not_block_remaining_google_route(tmp_path, native_phase):
+    from street_story.identity_plan_diagnostics import joint_operation_marker
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='initial',
+        gemini_web_search_tertiary_model='alternative')
+    calls, receipts, unknowns = [], [], []
+    class Primary:
+        async def execute(self, role, call):
+            calls.append('primary')
+            return await call('fixture', 60)
+    class Reserve:
+        available = False
+        async def execute(self, role, call):
+            calls.append('reserve')
+            if not self.available:
+                raise GeminiUnavailable(service.store.now() + 60, 'fixture_unsent')
+            return await call('fixture', 60)
+    reserve = Reserve()
+    async def generate(key, timeout, contents, config, **kwargs):
+        if kwargs['model'] == 'alternative':
+            raise TimeoutError('Original Google UNKNOWN')
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+    async def native(current, prompt, schema, images, host_context):
+        marker = joint_operation_marker(service, current, stage='initial')
+        if not receipts:
+            calls.append('native_send')
+            receipts.append({'phase': native_phase, 'turn_id': 'original-native-turn'})
+        else:
+            calls.append('native_readback')
+            unknowns.append(copy.deepcopy(marker['route_operations']['gpt-6-luna']))
+        raise RetryableProviderError('native_original_pending')
+    service.providers.gemini = SimpleNamespace(executor=Primary(), _generate=generate,
+        web_search_routes=[('alternative', object(), object(), Primary()),
+            ('initial', object(), object(), reserve)])
+    service.providers.research = SimpleNamespace(source_map_available=True, plan_source_map=native,
+        source_map_receipt=lambda _: receipts[-1] if receipts else None)
+    with pytest.raises(GeminiUnavailable):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    before = joint_operation_marker(service, story, stage='initial')
+    reserve.available = True
+    fresh = type(service)(service.settings, providers=service.providers)
+    await identity_discovery.prepare_search_plan(fresh, story, '', active)
+    assert calls == ['primary', 'native_send', 'reserve', 'native_readback', 'reserve']
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    after = joint_operation_marker(fresh, story, stage='initial')
+    assert after['route_operations']['alternative'] == before['route_operations']['alternative']
+    assert unknowns[0]['binding'] == after['route_operations']['gpt-6-luna']['binding']
+    assert after['route_operations']['gpt-6-luna']['phase'] == (
+        'unknown' if native_phase == 'unknown' else 'closed_failure')
 
 
 @pytest.mark.asyncio

@@ -976,3 +976,50 @@ exact-SHA hosted checks. The live deployment remainsdb0c0d0; no owner acceptance
 or deployment is claimed. Retained evidence includes cold-054f05f,
 funnel-evidence-054f05f.json, review-104-sizing-replay.json, review.xml,
 review-identity.xml, native-repair.xml and media-final.xml.
+
+### Frozen 0b792c2 and independent provider failure isolation
+
+Exact `0b792c2b6343ebcab952beb9d660ceb7c06cf8a5` hosted backend checks
+passed2634 tests (5 skipped); Android checks/build and emulator passed. All five
+real mandatory cold cases ran with the unchanged manifest and upload limits.
+The candidate failed release acceptance:104 accepted the correct object and
+delivered18 eligible facts (identity84.554s, first112.753s), but reached the
+whole480-second deadline.130 accepted the wrong physical body
+`osm:way:193106140`, rather than the evaluation-only expected193106188;
+the harness stopped it at109.239s with zero facts. This is wrong accept, not
+semantic uncertainty.102/111/132 returned no accepted object or facts.
+
+The SDK/receipt audit distinguishes the technical failures.102 and111 each
+submitted only one Google Gemini3.8 Flash call. Its outcome became UNKNOWN
+after approximately54 seconds; neither Native SOURCE/MAP nor independent text
+search ran. Code incorrectly promoted the original request's no-resend fence
+to a prohibition on all independent routes.132 actually had Native unsent
+RESOURCE_TOKEN_BUDGET and Live unsent RESOURCE_NO_CAPACITY_OR_UNVERIFIED_LIMITS,
+with text-route timeouts/aborts. There is no evidence that every provider failed
+in102/111. A targeted recent registered production log search found no matching
+UNKNOWN event; these observations concern the retained real cold runs.
+
+The common repair keeps an original binding and outcome per initial model in
+the existing research JSON. Possibly sent or closed requests remain excluded
+from fresh sends, including after service restart. An UNKNOWN initial route or
+failed original Native turn permits a different independently admitted configured
+model and ordinary independent text acquisition. Native pending-turn readback
+preserves its original receipt; it cannot suppress an available Google reserve.
+Owner Stop/task cancellation still terminates work. Text acquisition receives
+no SOURCE/MAP pixels and cannot claim visual identity. Closed semantic responses,
+the existing single followup fence, provider qualification/admission, evidence
+validation and model authority over physical identity remain unchanged.
+
+The old universal no-provider-rotation-after-UNKNOWN policy above records earlier
+behavior; it is superseded by this scoped fence. Existing UNKNOWN operations are
+neither renamed nor resent. Tests cover actual executor deadline cancellation,
+healthy independent Google/Native routes, denied Native followed by healthy Google,
+pending/failed Native readback, multiple UNKNOWN routes across restart, immutable
+original bindings and explicit task cancellation. The affected112 tests and Ruff
+passed locally. New real provider verification
+and exact-SHA hosted checks remain pending until this repair is frozen. No release
+or owner acceptance is claimed; the separate104 deadline and130 wrong-accept
+failures still require product verification before deployment.
+
+Retained evidence: `/home/dev/artifacts/street-story/20261009T183816Z-streaming-funnel-pr246-20261009/cold-0b792c2`
+and `/home/dev/artifacts/street-story/20261009T204748Z-provider-failure-isolation-20261009`.

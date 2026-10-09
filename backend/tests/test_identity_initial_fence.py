@@ -10,7 +10,7 @@ import pytest
 from pydantic import SecretStr
 
 from street_story import identity_discovery
-from street_story.gemini import GeminiExecutor, GeminiKeyPool
+from street_story.gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
 from street_story.identity_plan_diagnostics import joint_operation_marker, provider_outcome, joint_route_reassignable
 from street_story.providers import RetryableProviderError, PermanentProviderError
 from test_observed_address_search_context import observed
@@ -38,10 +38,11 @@ def pool(service):
     ('closed_failure', 503, 'preferred', 'preferred', False),
     ('closed_failure', 400, 'preferred', 'reserve', False),
     ('closed_failure', None, 'preferred', 'reserve', False),
-    ('unknown', 503, 'preferred', 'reserve', False),
+    ('unknown', None, 'preferred', 'reserve', True),
+    ('unknown', 503, 'preferred', 'preferred', False),
     ('response_closed', 503, 'preferred', 'reserve', False),
 ])
-def test_only_received_availability_error_allows_different_model(phase, status, old_model, new_model, allowed):
+def test_lost_or_received_availability_error_allows_only_independent_model(phase, status, old_model, new_model, allowed):
     marker = {'phase': phase, 'status_code': status, 'model_id': old_model}
     assert joint_route_reassignable(marker, new_model) is allowed
     assert not joint_route_reassignable({**marker, 'response_sha256': 'semantic-response'}, new_model)
@@ -49,27 +50,28 @@ def test_only_received_availability_error_allows_different_model(phase, status, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['timeout', 'cancelled'])
-async def test_initial_lost_outcome_blocks_executor_keys_and_new_service_native(tmp_path, failure):
+async def test_initial_lost_outcome_fences_executor_keys_but_allows_independent_text_after_restart(tmp_path, failure):
     service, _, story, _ = prepared(tmp_path)
     calls = []
     async def generate(*args, **kwargs):
         calls.append('google')
         assert joint_operation_marker(service, snapshot(service, story), stage='initial')['phase'] == 'send_intent'
         raise TimeoutError if failure == 'timeout' else asyncio.CancelledError
-    async def forbidden(*args):
-        pytest.fail('A lost initial joint cannot authorize a fresh independent inference')
+    async def independent(snapshot, prompt, schema):
+        calls.append('text')
+        assert 'SOURCE and MAP images are unavailable' in prompt
+        return {'result': valid_plan()}
     service.providers.gemini = SimpleNamespace(executor=pool(service), _generate=generate, research_routes=[])
-    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
-    with pytest.raises(RetryableProviderError, match='identity_joint_initial_outcome_unknown'):
-        await identity_discovery.suggest(service, snapshot(service, story), '', [])
-    assert calls == ['google']
+    service.providers.research = SimpleNamespace(plan_identity_search=independent)
+    await identity_discovery.suggest(service, snapshot(service, story), '', [])
+    assert calls == ['google', 'text']
     marker = joint_operation_marker(service, snapshot(service, story), stage='initial')
     assert marker['phase'] == 'unknown' and marker['scope']['photo_sha256'] == story['photo_sha256']
     assert len(marker['binding']['input_sha256']) == len(marker['binding']['schema_sha256']) == 64
     fresh = type(service)(service.settings, providers=service.providers)
-    with pytest.raises(RetryableProviderError, match='identity_joint_initial_outcome_unknown'):
-        await identity_discovery.suggest(fresh, snapshot(fresh, story), '', [])
-    assert calls == ['google']
+    await identity_discovery.suggest(fresh, snapshot(fresh, story), '', [])
+    assert calls == ['google', 'text', 'text']
+    assert joint_operation_marker(fresh, snapshot(fresh, story), stage='initial') == marker
 
 
 @pytest.mark.asyncio
@@ -187,22 +189,97 @@ async def test_only_existing_configured_joint_route_is_stably_preferred(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_preferred_route_unknown_cannot_send_next_configured_model(tmp_path):
+async def test_unknown_routes_do_not_block_independent_text_or_replay_after_restart(tmp_path):
     service, _, story, _ = prepared(tmp_path)
     service.settings = replace(service.settings, gemini_web_search_model='configured-fast')
     calls = []
     async def generate(*args, **kwargs):
         calls.append(kwargs['model'])
         raise TimeoutError
-    async def forbidden(*args):
-        pytest.fail('Preferred initial UNKNOWN cannot authorize another model or Native')
+    async def independent(current, prompt, schema):
+        calls.append('text')
+        assert 'SOURCE and MAP images are unavailable' in prompt
+        return {'result': valid_plan()}
     service.providers.gemini = SimpleNamespace(executor=pool(service), _generate=generate,
         research_routes=[('configured-original', None, None, pool(service)),
             ('configured-fast', None, None, pool(service))])
+    service.providers.research = SimpleNamespace(plan_identity_search=independent)
+    current = snapshot(service, story)
+    await identity_discovery.suggest(service, current, '', [])
+    assert calls == ['configured-fast', 'configured-original', 'text']
+    assert '_identity_geometry_result' not in current
+    marker = joint_operation_marker(service, current, stage='initial')
+    assert set(marker['route_operations']) == {'configured-fast', 'configured-original'}
+    assert all(row['phase'] == 'unknown' for row in marker['route_operations'].values())
+    fresh = type(service)(service.settings, providers=service.providers)
+    await identity_discovery.suggest(fresh, snapshot(fresh, story), '', [])
+    assert calls == ['configured-fast', 'configured-original', 'text', 'text']
+    assert joint_operation_marker(fresh, snapshot(fresh, story), stage='initial') == marker
+
+
+@pytest.mark.asyncio
+async def test_executor_deadline_cancellation_allows_other_model_but_not_another_key(tmp_path):
+    service, _, story, _ = prepared(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='deadline-model')
+    calls = []
+    async def generate(*args, **kwargs):
+        calls.append(kwargs['model'])
+        if kwargs['model'] == 'deadline-model':
+            await asyncio.Event().wait()
+        return SimpleNamespace(text=json.dumps(valid_plan()))
+    deadline = GeminiExecutor(GeminiKeyPool(service.store,
+        (SecretStr('fixture-deadline-a'), SecretStr('fixture-deadline-b')), 'deadline-model',
+        policy=GeminiPolicy(call_timeout=.01, attempt_timeout=1)))
+    service.providers.gemini = SimpleNamespace(executor=deadline, _generate=generate,
+        research_routes=[('deadline-model', None, None, deadline),
+            ('healthy-model', None, None, pool(service))])
+    await identity_discovery.suggest(service, snapshot(service, story), '', [])
+    assert calls == ['deadline-model', 'healthy-model']
+    marker = joint_operation_marker(service, snapshot(service, story), stage='initial')
+    assert marker['phase'] == 'response_closed' and marker['model_id'] == 'healthy-model'
+    assert marker['route_operations']['deadline-model']['phase'] == 'unknown'
+
+
+@pytest.mark.asyncio
+async def test_task_cancellation_preserves_unknown_without_starting_independent_routes(tmp_path):
+    service, _, story, _ = prepared(tmp_path)
+    started = asyncio.Event()
+    async def generate(*args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    async def forbidden(*args):
+        pytest.fail('Owner Stop/task cancellation must not start independent routes')
+    service.providers.gemini = SimpleNamespace(executor=pool(service), _generate=generate,
+        research_routes=[])
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
-    with pytest.raises(RetryableProviderError, match='identity_joint_initial_outcome_unknown'):
-        await identity_discovery.suggest(service, snapshot(service, story), '', [])
-    assert calls == ['configured-fast']
+    task = asyncio.create_task(identity_discovery.suggest(service, snapshot(service, story), '', []))
+    await asyncio.wait_for(started.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert joint_operation_marker(service, snapshot(service, story), stage='initial')['phase'] == 'unknown'
+
+
+def test_unknown_route_binding_survives_independent_route_and_cannot_be_replayed(tmp_path):
+    service, _, story, _ = prepared(tmp_path)
+    current = snapshot(service, story)
+    first_binding, second_binding = {'input_sha256': 'original'}, {'input_sha256': 'independent'}
+    joint_operation_marker(service, current, stage='initial', binding=first_binding,
+        phase='send_intent', model_id='first')
+    original = joint_operation_marker(service, current, stage='initial', binding=first_binding,
+        phase='unknown', model_id='first', code='original_timeout')
+    joint_operation_marker(service, current, stage='initial', binding=second_binding,
+        phase='send_intent', model_id='second')
+    final = joint_operation_marker(service, current, stage='initial', binding=second_binding,
+        phase='not_sent', model_id='second')
+    assert final['route_operations']['first'] == original['route_operations']['first']
+    with pytest.raises(RetryableProviderError, match='outcome_unknown'):
+        joint_operation_marker(service, current, stage='initial', binding=first_binding,
+            phase='send_intent', model_id='first')
+    with pytest.raises(RetryableProviderError, match='binding_changed'):
+        joint_operation_marker(service, current, stage='initial', binding=second_binding,
+            phase='unknown', model_id='first')
+    assert joint_operation_marker(service, current, stage='initial') == final
 
 
 @pytest.mark.asyncio
