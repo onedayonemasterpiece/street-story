@@ -17,7 +17,7 @@ POLICY='street_story.g_option_evidence.v3'
 
 
 def visual_spatial_choice_schema():
-    string={'type':'string','maxLength':360}
+    string={'type':'string','maxLength':650}
     return {'type':'object','properties':{
         'decision':{'type':'string','enum':['accept','candidate','needs_detail','unknown','shortlist','no_reduction']},
         'candidate_label':{'type':'integer'},
@@ -25,8 +25,8 @@ def visual_spatial_choice_schema():
         # must not become UNKNOWN because its name was absent from a Python
         # enum. Only stable action decisions and literal OSM references have
         # deterministic validation.
-        'source_pattern':{'type':'string','maxLength':140},
-        'crop_scope':{'type':'string','maxLength':120},
+        'source_pattern':{'type':'string','maxLength':650},
+        'crop_scope':{'type':'string','maxLength':650},
         'source_observations':{'type':'array','items':string,'maxItems':5},
         'selected_option_ids':{'type':'array','items':{'type':'string','maxLength':32},
             'maxItems':5},
@@ -34,9 +34,10 @@ def visual_spatial_choice_schema():
             'type':'object','properties':{
                 'label':{'type':'integer'},
                 'source_vs_map_difference':string,
+                'reason':string,
                 'observed_option_ids':{'type':'array',
                     'items':{'type':'string','maxLength':32},'maxItems':3}},
-            'required':['label','source_vs_map_difference','observed_option_ids']}},
+            'required':['label']}},
         # Model chooses scene-sized active physical hypotheses; this is not a
         # deterministic nearest-K ranking or an acceptance certificate.
         'active_hypotheses':{'type':'array','maxItems':48,'items':{
@@ -162,7 +163,8 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
                 mapped.append(oid)
         compared.append({'label':other,'candidate_id':labels[other],
             'option_ids':mapped,
-            'model_visual_difference':alternative['source_vs_map_difference']})
+            'model_visual_difference':alternative.get('source_vs_map_difference')
+              or alternative.get('reason') or ''})
     requested = [label_value for label_value in detail_labels if label_value in labels]
     if len(requested)!=len(detail_labels):
         warnings.append('unreceived_detail_request_skipped')
