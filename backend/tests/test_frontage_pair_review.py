@@ -72,11 +72,16 @@ def test_uncertain_or_unproven_semantics_cannot_assign_a_physical_identity():
     good=decision(main,neighbor)
     for operation in ['generic','no_volume','contradiction','unreceived','duplicate']:
         raw=copy.deepcopy(good)
-        if operation=='generic':raw['visual_relation']='two_aligned_facades'
-        elif operation=='no_volume':raw['source_companion_observations']=[]
-        elif operation=='contradiction':raw['contradictions']=['Cannot assign physical body']
-        elif operation=='unreceived':raw['main_photo_building_label']=999999
-        elif operation=='duplicate':raw['receding_or_companion_label']=main
+        if operation=='generic':
+            raw['visual_relation']='two_aligned_facades'
+        elif operation=='no_volume':
+            raw['source_companion_observations']=[]
+        elif operation=='contradiction':
+            raw['contradictions']=['Cannot assign physical body']
+        elif operation=='unreceived':
+            raw['main_photo_building_label']=999999
+        elif operation=='duplicate':
+            raw['receding_or_companion_label']=main
         result=inspect_frontage_pair_review(raw,pair,packet,scene['manifest'])
         assert result['authorizes_identity'] is False
         assert result['candidate_id'] is None
