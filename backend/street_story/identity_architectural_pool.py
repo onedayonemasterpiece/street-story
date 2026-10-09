@@ -128,7 +128,38 @@ def _source_span_options(checked, *, max_spans_per_article=14):
                         chunks.append((start, end))
         if not chunks:
             chunks = [(0, min(len(text), 420))]
-        selected = chunks[:max_spans_per_article]
+        if len(chunks)<=max_spans_per_article:
+            selected=chunks
+        else:
+            # Structural and temporal diversity, NOT SOURCE/identity scoring.
+            # First-N historically hid later alterations, arches and gables
+            # behind biographical text. We sample independent feature types
+            # and documented changes while preserving the literal source.
+            important=[
+                _CHANGE_MARKERS,
+                re.compile(r'эркер|bay.window|балкон',re.I),
+                re.compile(r'фронтон|щипц|gable|ступенчат',re.I),
+                re.compile(r'портал|арка|арочн|про[её]м|arch|portal',re.I),
+                re.compile(r'окон|окн[аоуы]|window|переплет',re.I),
+                re.compile(r'ризалит|выступ|утоплен|галере|projection',re.I),
+                re.compile(r'крыш|кровл|скат|шатер|roof|spire',re.I),
+                re.compile(r'этаж|ярус|levels|storey|floor',re.I),
+                re.compile(r'лепнин|декор|орнамент|барельеф|рельеф',re.I)]
+            chosen=set(range(min(2,len(chunks))))
+            for pattern in important:
+                matching=[i for i,(a,b) in enumerate(chunks)
+                    if pattern.search(text[a:b])]
+                if matching and len(chosen)<max_spans_per_article:
+                    chosen.add(matching[0])
+                # Last mention of a documented change can matter more
+                # than the introductory pre-war construction date.
+                if pattern is _CHANGE_MARKERS and matching and len(chosen)<max_spans_per_article:
+                    chosen.add(matching[-1])
+            for i in range(len(chunks)):
+                if len(chosen)>=max_spans_per_article:
+                    break
+                chosen.add(i)
+            selected=[chunks[i] for i in sorted(chosen)]
         passages = []
         for start,end in selected:
             span_ref = f'p{len(refs):04d}'
