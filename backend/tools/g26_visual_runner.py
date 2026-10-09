@@ -24,7 +24,6 @@ from dataclasses import replace
 from pathlib import Path
 
 from google.genai import types
-from jsonschema import Draft202012Validator
 from devcoveer_story_diag import load_installer
 
 from street_story.identity_spatial_options import for_vision, option_digest
@@ -210,8 +209,10 @@ def replay(cid,base,inp,pkt):
     original=(out/'closed-model-response.json').read_text()
     if hashlib.sha256(original.encode()).hexdigest()!=receipt['response_sha256']:
         raise RuntimeError('actual_model_response_mutated')
-    try:data=json.loads(original)
-    except ValueError:data={}
+    try:
+        data=json.loads(original)
+    except ValueError:
+        data={}
     parsed=check_spatial_choice(data,pkt,source_sha256=inp['original_photo_sha256'],
       actual_source_sha256=receipt['original_photo_sha256'],
       model_source_sha256=inp['source_model_sha256'],
@@ -319,7 +320,8 @@ async def run_one(cid,*,send=False):
              prompt],
             config,operation='grounded_research',model=model,quota=quota,
             before_provider_send=before_send)
-    try: reply=await executor.execute_joint('grounded_research',call)
+    try:
+        reply=await executor.execute_joint('grounded_research',call)
     except Exception as err:
         state,http_status=provider_outcome(err)
         receipt.update(phase='failed',
