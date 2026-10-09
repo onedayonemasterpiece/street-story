@@ -370,6 +370,27 @@ async def _suggest(service, story, transcript, candidates):
     scene = await planner_scene(service, story, candidates)
     regional_catalogue = (catalogue_task.result() if catalogue_task.done()
         and not catalogue_task.cancelled() and catalogue_task.exception() is None else {})
+    early_text_articles, early_text_lookup = [], {}
+    if (allow_catalogue_network and not addressed_initial and not native_original
+            and bool(getattr(getattr(service, 'settings', None), 'gemini_keys', ()))):
+        # HTTP metadata/body preparation is independent of G. Supply useful
+        # already linked descriptions to the first joint decision, so T need
+        # not await a failed spatial inference. Excess alternatives remain in
+        # the catalogue for model selection; never take arbitrary first rows.
+        regional_catalogue = await catalogue_task
+        prefetched_ids = (regional_catalogue.get('physical_prefetch_plan') or {}).get('prefetch_article_ids') or []
+        catalogue_article_ids = {row['article_id'] for row in regional_catalogue.get('results') or []}
+        if (not prefetched_ids and 0 < len(catalogue_article_ids) <= 8
+                and (regional_catalogue.get('query_scope') or {}).get('route') == 'coordinate'
+                and regional_catalogue.get('inventory_complete') is True):
+            # Coordinate cards lack postal metadata until their bodies are
+            # read. A small complete inventory can be supplied whole without
+            # pre-proving its physical binding or silently taking first rows.
+            prefetched_ids = list(dict.fromkeys(row['article_id'] for row in regional_catalogue['results']))
+        if prefetched_ids and len(catalogue_article_ids) <= 8:
+            from .identity_architectural_context import acquire_architectural_pool_text
+            early_text_articles, early_text_lookup = await acquire_architectural_pool_text(
+                service, story, regional_catalogue, prefetched_ids)
     model_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     import io
     from PIL import Image
@@ -383,6 +404,10 @@ async def _suggest(service, story, transcript, candidates):
         index = table['columns'].index('candidate_id')
         scene_ids = [row[index] for row in table['rows']]
         schema['properties']['accepted_geometry'] = geometry_decision_schema(scene_ids, structured=True)
+    if early_text_articles:
+        from .identity_proof import architectural_text_decision_schema, TEXT_CONTRACT
+        schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
+            observed_ids, [article['article_id'] for article in early_text_articles], structural=True)
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     from .identity_model_context import physical_decision_context
@@ -417,6 +442,16 @@ async def _suggest(service, story, transcript, candidates):
                     'author_context': transcript[:1500]}
     if scene:
         packet.pop('first_wave_subjects')
+    if early_text_articles:
+        packet['acquired_architectural_text'] = {
+            'articles': early_text_articles,
+            'retrieval_receipt': early_text_lookup,
+            'physical_identity_inferred': False,
+            'policy': 'Observe SOURCE independently first. Compare acquired descriptions to its actual '
+                'facade/volumes, including neighboring bodies and crop. Article/address links are retrieval '
+                'hypotheses. Accept sufficient G OR sufficient architectural T in this same decision; '
+                'agreement of both is unnecessary. A positive T binds only its supporting articles and '
+                'quotes their literal structural descriptions; reject material physical alternatives.'}
     # The response may name any neutral label in the full MAP, including roads
     # and distant bodies. Resolve against that exact frozen dictionary, even
     # when its context row was unnecessary in the compact presentation.
@@ -581,8 +616,13 @@ async def _suggest(service, story, transcript, candidates):
         'configuration_sha256': hashlib.sha256(canonical([config.model_dump(mode='json', exclude_none=True),
             getattr(getattr(service, 'settings', None), 'gemini_web_search_model', None),
             [route[0] for route in getattr(gemini, 'research_routes', None) or []]]).encode()).hexdigest()}
-    text_articles = []
-    source_text_receipt = {}
+    text_articles = copy.deepcopy(early_text_articles)
+    source_text_receipt = ({'source_photo_sha256': story['photo_sha256'],
+        'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
+        'source_image_input': True, 'text_contract': TEXT_CONTRACT,
+        'source_preparation': source_preparation, 'articles': early_text_articles, 'lookup': early_text_lookup}
+        if early_text_articles else {})
+    early_source_text_receipt = copy.deepcopy(source_text_receipt)
     geometry_prior_ids = []
     initial_map_context = (scene, scene_manifest, physical_context, resolution_packet)
     joint_followup_used = bool(addressed_followup)
@@ -618,6 +658,20 @@ async def _suggest(service, story, transcript, candidates):
                 *((source_text_receipt.get('conditional_initial_decision') or {}).get('candidate_ids') or [])])),
             'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
             if scene else {})
+    def closed_text_proof(payload):
+        from .identity_proof import freeze_architectural_text_proof
+        decision = (payload or {}).get('accepted_architectural_text') or {}
+        if (decision.get('decision') != 'accepted_architectural_text'
+                or story.get('_identity_search_plan_route') == 'qualified_text_fallback'):
+            return None
+        bindings = decision.get('article_bindings')
+        if (not isinstance(bindings, list) or not source_text_receipt.get('articles')
+                or any(not isinstance(item, dict) or not isinstance(item.get('article_id'), str) for item in bindings)):
+            return None
+        supporting = {item['article_id'] for item in bindings}
+        receipt = {**source_text_receipt, 'articles': [article for article in
+            source_text_receipt.get('articles') or [] if article['article_id'] in supporting]}
+        return freeze_architectural_text_proof(story, decision, receipt, [*observed, *candidates])
     def accept(payload, *, original_schema_readback=False, original_schema=None,
             raw_json=None, raw_json_available=None, provider_response_id=None, validate_only=False,
             check_received_pointers=False):
@@ -625,10 +679,10 @@ async def _suggest(service, story, transcript, candidates):
         validation_schema = original_schema if original_schema is not None else (legacy_schema if original_schema_readback else schema)
         errors, errors_truncated = validation_details(validation_schema, payload)
         rejected_text = None
+        rejected_geometry_schema = None
         if errors and isinstance(payload, dict) and 'accepted_architectural_text' in payload:
             # G and T are independent evidence components. Validate the whole
             # remaining plan strictly; a broken T cannot repair or excuse G.
-            import copy
             independent_schema = copy.deepcopy(validation_schema)
             independent_schema.get('properties', {}).pop('accepted_architectural_text', None)
             independent_schema['required'] = [key for key in independent_schema.get('required', [])
@@ -642,6 +696,22 @@ async def _suggest(service, story, transcript, candidates):
                     errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
                 rejected_text = {'reason': 'identity_architectural_text_schema_invalid',
                                  'decision': payload['accepted_architectural_text']}
+                payload = independent_payload
+                errors = []
+        if errors and isinstance(payload, dict) and 'accepted_geometry' in payload:
+            independent_schema = copy.deepcopy(validation_schema)
+            independent_schema.get('properties', {}).pop('accepted_geometry', None)
+            independent_schema['required'] = [key for key in independent_schema.get('required', [])
+                                               if key != 'accepted_geometry']
+            independent_payload = {key: value for key, value in payload.items() if key != 'accepted_geometry'}
+            independent_errors, _ = validation_details(independent_schema, independent_payload)
+            if not independent_errors and closed_text_proof(independent_payload) is not None:
+                retain_closed_invalid(service, story, payload, validation_schema,
+                    code='identity_geometry_schema_invalid', raw_json=raw_json,
+                    raw_json_available=raw_json_available, provider_response_id=provider_response_id,
+                    errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
+                rejected_geometry_schema = {'reason':'identity_geometry_schema_invalid',
+                                            'decision':payload['accepted_geometry']}
                 payload = independent_payload
                 errors = []
         def reject(code):
@@ -680,10 +750,7 @@ async def _suggest(service, story, transcript, candidates):
         if rejected_text and geometry_proof is None:
             reject('identity_search_plan_malformed')
         if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
-            from .identity_proof import freeze_architectural_text_proof
-            if story.get('_identity_search_plan_route') != 'qualified_text_fallback':
-                text_proof = freeze_architectural_text_proof(story, payload['accepted_architectural_text'],
-                    source_text_receipt, [*observed, *candidates])
+            text_proof = closed_text_proof(payload)
             if text_proof is None:
                 if geometry_proof is None:
                     reject('identity_architectural_text_proof_invalid')
@@ -696,6 +763,10 @@ async def _suggest(service, story, transcript, candidates):
             payload = {**payload, 'rejected_architectural_text': rejected_text}
             record_identity_event(service, story['id'], 'identity_architectural_text_not_accepted',
                 {'reason': rejected_text['reason'], 'preserved_geometry_proof': True})
+        if rejected_geometry_schema:
+            payload = {**payload, 'rejected_geometry': rejected_geometry_schema}
+            record_identity_event(service, story['id'], 'identity_geometry_not_accepted',
+                {'reason':rejected_geometry_schema['reason'], 'preserved_text_proof':True})
         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
             if geometry_proof is None:
                 if not (payload.get('selected_wikipedia_page_ids') or payload.get('first_wave_hypotheses') or text_proof):
@@ -770,6 +841,7 @@ async def _suggest(service, story, transcript, candidates):
         return result
     def reuse_initial_plan():
         nonlocal scene, scene_manifest, physical_context, resolution_packet, geometry_prior_ids
+        nonlocal source_text_receipt, text_articles
         from .identity_plan_diagnostics import reusable_closed_initial_plan
         marker = joint_operation_marker(service, story, stage='initial')
         saved = reusable_closed_initial_plan(marker, initial_unit_binding)
@@ -779,6 +851,9 @@ async def _suggest(service, story, transcript, candidates):
         # Revalidate every semantic/proof guard; this is not a new model result.
         schema.clear()
         schema.update(copy.deepcopy(saved['schema']))
+        if saved.get('source_text_receipt'):
+            source_text_receipt = copy.deepcopy(saved['source_text_receipt'])
+            text_articles = source_text_receipt['articles']
         # Optional detail/TEXT must not be relabelled as the original MAP input
         # when admission authoritatively says the followup was never sent.
         scene, scene_manifest, physical_context, resolution_packet = initial_map_context
@@ -807,7 +882,7 @@ async def _suggest(service, story, transcript, candidates):
         if initial_outcome and initial_outcome != 'not_sent' and not joint_route_reassignable(
                 joint_operation_marker(service, story, stage='initial'), model):
             raise PermanentProviderError('identity_joint_initial_already_addressed')
-        text_articles, source_text_receipt = [], {}
+        text_articles, source_text_receipt = copy.deepcopy(early_text_articles), copy.deepcopy(early_source_text_receipt)
         from google.genai.errors import APIError
         from .service import ConflictError
         initial_binding = initial_unit_binding
@@ -915,7 +990,8 @@ async def _suggest(service, story, transcript, candidates):
         else:
             from .identity_plan_diagnostics import retain_closed_initial_plan
             retain_closed_initial_plan(service, story, initial_binding, payload, initial_schema,
-                response.text, prompt, getattr(response, 'response_id', None), response_id_resolutions)
+                response.text, prompt, getattr(response, 'response_id', None), response_id_resolutions,
+                source_text_receipt=source_text_receipt)
         issues = (_geometry_binding_issues(payload.get('accepted_geometry'), scene_manifest)
             if scene and isinstance(payload, dict) else {})
         nomination_issues = _nomination_binding_issues(payload, observed_ids, scene_manifest)
@@ -930,10 +1006,13 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_proof import freeze_geometry_proof
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
             joint_source_map_receipt(), [*observed, *candidates]) if isinstance(payload, dict) else None)
+        initial_text = closed_text_proof(payload) if isinstance(payload, dict) and initial_validation_error is None else None
         if initial_geometry is not None and initial_validation_error is None:
             # Independent G already passed strict admission. An inapplicable T
             # component retained above does not justify another paid repair.
             issues.pop('schema_validation', None)
+        if initial_text is not None:
+            issues = {}  # Sufficient independent T does not require a G repair.
         if scene and initial_validation_error in {
                 'identity_geometry_proof_invalid', 'identity_first_wave_coverage_incomplete'}:
             # Schema-valid JSON can still omit required physical evidence or
@@ -976,7 +1055,10 @@ async def _suggest(service, story, transcript, candidates):
             if 'host_evidence_contract' in issues and geometry_claim['decision'] == 'accepted_geometry':
                 issues['host_evidence_contract'].update(geometry_rejection)
         lookup = {}
-        if isinstance(payload, dict) and initial_geometry is None:
+        new_text_acquired = False
+        early_text_evaluated = (bool(source_text_receipt) and isinstance(payload, dict)
+            and isinstance(payload.get('accepted_architectural_text'), dict))
+        if isinstance(payload, dict) and initial_geometry is None and initial_text is None and not early_text_evaluated:
             from jsonschema import Draft202012Validator
             from .identity_architectural_context import (acquire_regional_text, acquire_selected_wikipedia_text,
                 acquire_selected_regional_text)
@@ -1049,12 +1131,13 @@ async def _suggest(service, story, transcript, candidates):
                         'identity_accepted': False})
             if lookup:
                 story['_identity_regional_lookup_receipt'] = lookup
+            new_text_acquired = bool(text_articles)
         detail_request = None
         geometry = payload.get('accepted_geometry') if isinstance(payload, dict) else None
         action = geometry.get('next_action') if isinstance(geometry, dict) else None
         action = action if isinstance(action, dict) else {}
         targets = action.get('target_candidate_ids')
-        if (initial_geometry is None and scene and action.get('kind') == 'map_detail'
+        if (initial_geometry is None and initial_text is None and scene and action.get('kind') == 'map_detail'
                 and isinstance(action.get('reason'), str) and action['reason'].strip()
                 and isinstance(targets, list) and 1 <= len(targets) <= 3
                 and all(isinstance(cid, str) for cid in targets)
@@ -1075,7 +1158,7 @@ async def _suggest(service, story, transcript, candidates):
                     'physical_bodies': {**physical_context, 'rows': [row for row in physical_context['rows']
                         if row[1] in action['target_candidate_ids']]},
                     'conditional_initial_decision': prior}
-        if issues or text_articles or detail_request:
+        if issues or new_text_acquired or detail_request:
             if executor is None or not callable(getattr(gemini, '_generate', None)):
                 raise PermanentProviderError('identity_joint_followup_route_unavailable')
             # Binding repair and newly acquired TEXT share this one optional
@@ -1423,6 +1506,7 @@ async def _suggest(service, story, transcript, candidates):
     async def native_joint():
         nonlocal native_tried, native_source_map_receipt, joint_model_id, initial_binding, initial_outcome
         nonlocal scene_manifest, resolution_packet, schema
+        nonlocal text_articles, source_text_receipt
         planner = getattr(researcher, 'plan_source_map', None)
         if native_tried or not scene or not callable(planner) or (
                 not native_original and not getattr(researcher, 'source_map_available', False)):
@@ -1440,7 +1524,8 @@ async def _suggest(service, story, transcript, candidates):
         try:
             result = await planner(story, native_prompt, response_contract,
                 [('SOURCE', source_mime, source_bytes), ('MAP', scene['mime_type'], scene['bytes'])],
-                {'source_map_receipt': joint_source_map_receipt(), 'schema': schema})
+                {'source_map_receipt': joint_source_map_receipt(), 'schema': schema,
+                 **({'source_text_receipt': source_text_receipt} if early_text_articles else {})})
         except (Exception, asyncio.CancelledError) as exc:
             saved = native_reader(story) if callable(native_reader) else None
             phase = ('not_sent' if (saved or {}).get('provider_send_state') == 'not_sent' else
@@ -1459,6 +1544,8 @@ async def _suggest(service, story, transcript, candidates):
         scene_manifest = native_source_map_receipt['manifest']
         resolution_packet = {**resolution_packet, 'map_scene': scene_manifest}
         schema = result['host_context']['schema']
+        source_text_receipt = result['host_context'].get('source_text_receipt') or source_text_receipt
+        text_articles = source_text_receipt.get('articles') or text_articles
         raw_json = json.dumps(result['result'], ensure_ascii=False)
         initial_outcome = 'response_closed'
         joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='response_closed',

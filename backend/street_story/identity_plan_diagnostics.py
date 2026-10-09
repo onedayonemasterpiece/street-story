@@ -127,7 +127,7 @@ def joint_followup_marker(service, story, **kwargs):
 
 
 def retain_closed_initial_plan(service, story, binding, payload, schema, raw_json, prompt,
-        provider_response_id=None, resolutions=None):
+        provider_response_id=None, resolutions=None, source_text_receipt=None):
     """Retain a host-validated original answer before an optional TEXT send.
 
     Full JSON is required for reuse; oversized responses are never reconstructed
@@ -144,6 +144,8 @@ def retain_closed_initial_plan(service, story, binding, payload, schema, raw_jso
         'payload': payload, 'schema': schema, 'raw_json': raw_json, 'prompt': prompt,
         'provider_response_id': provider_response_id[:160] if isinstance(provider_response_id, str) else None,
         'identity_response_id_resolutions': resolutions or []}
+    if source_text_receipt:
+        saved['source_text_receipt'] = source_text_receipt
     saved['sha256'] = hashlib.sha256(canonical(saved).encode()).hexdigest()
     return joint_operation_marker(service, story, stage='initial', binding=binding,
         phase='response_closed', closed_plan=saved)

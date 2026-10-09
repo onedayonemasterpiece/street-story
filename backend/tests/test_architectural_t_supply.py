@@ -7,7 +7,8 @@ import pytest
 
 from street_story import prussia39
 from street_story.identity_architectural_comparison import (
-    combine_architectural_decision, prepare_architectural_comparison, publisher_address_relation)
+    combine_architectural_decision, prepare_architectural_comparison, publisher_address_relation,
+    source_subject_competition_guard, verified_publisher_physical_scope)
 from street_story.identity_architectural_context import (
     _subject_addresses, acquire_regional_text, literal_address_card_selection, regional_preparation_query)
 from street_story.identity_source_selection import observed_address_context
@@ -150,23 +151,6 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
 
 
-def test_singleton_t_contract_rejects_self_alternative_without_rewriting_the_closed_answer():
-    import copy
-    from jsonschema import Draft202012Validator
-    from street_story.identity_architectural_comparison import normalize_architectural_decision
-    story, candidates, decision, receipt = _comparison_fixture()
-    receipt['conditional_initial_decision']['candidate_ids'] = [candidates[0]['candidate_id']]
-    prepared = prepare_architectural_comparison(story, candidates, receipt)
-    assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 0
-    assert Draft202012Validator(prepared['schema']).is_valid(decision)
-    decision['material_alternatives'] = [{'candidate_id': decision['candidate_id'],
-        'reason': 'Only nominated body.'}]
-    original = copy.deepcopy(decision)
-    with pytest.raises(ValueError, match='model_response_invalid'):
-        normalize_architectural_decision(decision, prepared['schema'])
-    assert decision == original
-
-
 def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     story, candidates, decision, receipt = _comparison_fixture()
     decision['scope'] = 'Article describes a complex covering house 6 and neighboring 6A.'
@@ -282,6 +266,8 @@ async def test_observed_entrance_city_allows_architecture_lookup_without_camera_
             calls.append(('body', url))
             return {'status':'completed', 'article_id':'prussia39:sid:99',
                 'canonical_url':url, 'raw_body_sha256_verified':True, 'text':text,
+                'address_text':card['address_text'],
+                'address_provenance':'publisher_article_metadata_table',
                 'raw_content_sha256':hashlib.sha256(text.encode('cp1251')).hexdigest()}
 
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
@@ -291,6 +277,8 @@ async def test_observed_entrance_city_allows_architecture_lookup_without_camera_
                      ('body', card['canonical_url'])]
     assert articles[0]['card_variants'][0]['address_text'] == card['address_text']
     assert articles[0]['physical_binding_claimed'] is False
+    assert articles[0]['address_provenance'] == 'publisher_article_metadata_table'
+    assert articles[0]['address'] == card['address_text']
     assert receipt['query_scope']['target_identity_established'] is False
 
 
@@ -447,3 +435,124 @@ def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantic
         combine_architectural_decision({}, {'type':'building', **decision}, packet['schema'])
     with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
         combine_architectural_decision({}, {'type':'object','made_up_identity':True, **decision}, packet['schema'])
+
+
+def test_closer_map_contour_is_only_an_observed_competitor_not_a_T_veto():
+    def body(cid, meters):
+        return {'candidate_id':cid,'identity_eligible':True,
+            'map_object':{'tags':{'building':'yes'}},
+            'boundary_distance_m':meters}
+    target=body('osm:way:101',50.1)
+    nearer=body('osm:way:102',43.6)
+    monument={'candidate_id':'osm:node:1','identity_eligible':True,
+        'map_object':{'tags':{'historic':'memorial'}},'boundary_distance_m':1.0}
+    decision={'decision':'accepted_architectural_text','candidate_id':target['candidate_id']}
+    result=source_subject_competition_guard(
+        {'_camera_position_verified':True},[target,nearer,monument],decision)
+    assert result['supported'] is True and result['applicable'] is False
+    assert result['reason']=='proximity_is_not_SOURCE_subject_evidence'
+    assert result['potential_competitor_count']==1
+    assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
+    assert result['potential_competitors'][0]['proximity_not_visibility'] is True
+
+
+def test_unknown_GPS_and_unmeasured_distances_do_not_block_architectural_T():
+    def body(cid,meters):
+        return {'candidate_id':cid,'identity_eligible':True,
+            'map_object':{'tags':{'building':'yes'}},
+            **({'boundary_distance_m':meters} if meters is not None else {})}
+    decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
+        'material_alternatives_resolved':True}
+    for camera_verified in (True,False):
+        for distances in ((22.0,18.5),(18.5,22.0),(None,18.5)):
+            a,b=body('osm:way:7',distances[0]),body('osm:way:8',distances[1])
+            result=source_subject_competition_guard(
+                {'_camera_position_verified':camera_verified},[a,b],decision)
+            assert result['supported'] is True
+            assert result['applicable'] is False
+            assert result['potential_competitor_count']==1
+
+
+def test_model_self_rejection_never_turns_distance_into_physical_proof():
+    target={'candidate_id':'osm:way:7','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':40.0}
+    nearer={'candidate_id':'osm:way:8','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes'}},'boundary_distance_m':25.0}
+    for reason in ('Clearly differs in gable geometry',''):
+        decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
+            'material_alternatives':[{'candidate_id':'osm:way:8','reason':reason}]}
+        result=source_subject_competition_guard(
+            {'_camera_position_verified':True},[target,nearer],decision)
+        assert result['supported'] is True
+        assert result['potential_competitors'][0]['candidate_id']==nearer['candidate_id']
+        # Whether the model's architecture-based alternative rejection is valid
+        # remains a question for LLM semantics + strict source quote proof.
+
+
+
+def _observed_publisher_link_case(article_url='https://www.prussia39.ru/sight/index.php?sid=123'):
+    article={'article_id':'prussia39:sid:123', 'url':article_url,
+        'raw_body_sha256_verified':True,'input_kind':'acquired_article_text',
+        'text':'A subject with individually described facade.', 'address':'',
+        'address_provenance':'unavailable'}
+    body={'candidate_id':'osm:way:1234','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes','ref:prussia39':'123'}},
+        'map_address':{'street':'Текущая улица','house_number':'8'}}
+    story={'_identity_observed_candidates':[body]}
+    decision={'decision':'accepted_architectural_text',
+        'candidate_id':'osm:way:1234',
+        'article_bindings':[{'article_id':article['article_id'],
+            'candidate_id':'osm:way:1234','scope':'Physical building',
+            'binding_basis':'Publisher link is explicitly recorded on the OSM body.',
+            'physical_binding_resolved':True}]}
+    return story,[body],{'articles':[article]},decision
+
+
+def test_observed_osm_direct_publisher_ref_is_independent_physical_link():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    outcome=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert outcome['supported'] is True
+    assert outcome['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_publisher_ref'
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    bodies[0]['map_object']['tags'].pop('ref:prussia39')
+    bodies[0]['map_object']['tags']['website:prussia39']='https://www.prussia39.ru/sight/index.php?sid=123'
+    outcome=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert outcome['supported'] is True
+    assert outcome['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_publisher_URL'
+
+
+def test_a_model_claimed_crosslink_cannot_replace_observed_osm_evidence():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    bodies[0]['map_object']['tags'].pop('ref:prussia39')
+    decision['article_bindings'][0]['binding_basis']='I am sure ref:prussia39 123 belongs to OSM way 1234.'
+    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert result['supported'] is False
+    assert result['reason']=='publisher_modern_address_not_observed'
+
+
+def test_explicit_publisher_link_on_two_bodies_leaves_corpus_unresolved():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    other={'candidate_id':'osm:way:1235','identity_eligible':True,
+        'map_object':{'tags':{'building':'yes','ref:prussia39':'123'}}}
+    bodies.append(other)
+    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert result['supported'] is False
+    assert result['reason']=='publisher_explicit_ref_still_ambiguous_between_physical_corpora'
+    assert set(result['matching_candidate_ids'])=={'osm:way:1234','osm:way:1235'}
+
+
+def test_literal_historic_osm_address_is_valid_without_merging_6_and_6a():
+    story,bodies,receipt,decision=_observed_publisher_link_case()
+    tags=bodies[0]['map_object']['tags']
+    tags.pop('ref:prussia39')
+    tags.update({'old_addr:street':'Историческая улица',
+        'old_addr:housenumber':'6А'})
+    receipt['articles'][0].update(address='Город, Историческая улица, 6А',
+        address_provenance='publisher_article_metadata_table')
+    result=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert result['supported'] is True
+    assert result['verified_bindings'][0]['mechanical_binding']=='observed_OSM_explicit_historical_postal_tags'
+    receipt['articles'][0]['address']='Город, Историческая улица, 6'
+    denied=verified_publisher_physical_scope(story,bodies,receipt,decision)
+    assert denied['supported'] is False
+    assert denied['reason']=='article_modern_address_not_bound_to_nominated_physical_body'

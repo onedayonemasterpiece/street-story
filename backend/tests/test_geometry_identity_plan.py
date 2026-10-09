@@ -73,6 +73,54 @@ class Executor:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('invalid_geometry', [False, True])
+async def test_acquired_three_article_text_can_accept_in_first_joint_without_waiting_for_failed_G(tmp_path, monkeypatch, invalid_geometry):
+    from dataclasses import replace
+    from street_story import identity_architectural_context
+    from test_identity_architectural_pool import _three_documents
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_api_key='offline-controlled-key')
+    _, _, decision, receipt = _three_documents()
+    decision['candidate_id'] = 'osm:way:2'
+    decision['article_bindings'][0]['candidate_id'] = 'osm:way:2'
+    decision['material_alternatives'] = [{'candidate_id':'osm:way:3',
+        'reason':'Neighbor has different bay/window-axis arrangement in SOURCE.'}]
+    articles = receipt['articles']
+    aids = [a['article_id'] for a in articles]
+
+    async def catalogue(*args, **kwargs):
+        return {'results': [{'article_id':a['article_id'], 'canonical_url':a['url']} for a in articles],
+                'physical_prefetch_plan': {'prefetch_article_ids':aids}, 'status':'completed'}
+
+    async def acquire(svc, snapshot, inventory, selected_ids):
+        assert selected_ids == aids
+        return articles, {'status':'completed','chosen_article_ids':aids,'identity_inferred':False}
+
+    monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', catalogue)
+    monkeypatch.setattr(identity_architectural_context, 'acquire_architectural_pool_text', acquire)
+    calls = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        assert len(calls) == 1
+        assert all(a['text'] in contents[-1] for a in articles)
+        g = geometry_decision()
+        g['decision'] = 'uncertain'
+        if invalid_geometry:
+            g['candidate_id'] = 'osm:way:unreceived'
+        return SimpleNamespace(text=json.dumps({**payload(g),'accepted_architectural_text':decision}))
+
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=lambda *args: pytest.fail('No extra planner'))
+    history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+    accepted = story['_identity_geometry_result']
+    assert accepted['proof_kind'] == 'architectural_text' and accepted['candidate_id'] == 'osm:way:2'
+    assert len(history['search_plan']['payload']['source_text_receipt']['articles']) == 3
+    assert len(accepted['architectural_text_proof']['source_text_receipt']['articles']) == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('text_component', [None, {'decision': 'accepted_architectural_text',
     'candidate_id': 'osm:way:3', 'article_bindings': []}])
 async def test_sufficient_geometry_survives_inapplicable_text_without_paid_repair(tmp_path, text_component):

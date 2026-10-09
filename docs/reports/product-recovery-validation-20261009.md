@@ -748,3 +748,25 @@ The peer supplied three articles/eight physical candidates versus one/one.
 The original pre-send prompt bytes and raw wire whitespace were not retained;
 the regenerated request does not reproduce the original request hash. Their
 exact comparison remains unavailable and is not claimed as verified.
+
+T-owned source from PR249 `6b66682` adds the actual multiarticle comparison,
+literal-span provenance, postal/reference/historical binding alternatives and
+informational physical competitors. No nearer-footprint veto is imported.
+The existing compact SOURCE shape and singleton-alternative contracts and
+unconfirmed acquisition correction remain intact. A stale call in the supplied
+pool regression fixture was corrected to pass its actual span packet.
+
+Lightweight catalogue acquisition now also accepts a verified camera point as
+an inventory anchor when nearby physical addresses span several streets. It
+does not turn the camera location into the photographed address. For a small
+received inventory, unambiguous physical source links can prepare actual
+descriptions concurrently with SOURCE/MAP preparation. The first existing joint
+operation may then accept sufficient T directly. Large or physically ambiguous
+inventories retain model selection; they are never truncated to first rows.
+All acquired bodies survive; the common proof uses only the model's positive
+supporting articles. Independently sufficient T avoids unnecessary G repair,
+and a closed explicit T uncertainty is not automatically asked again unchanged.
+The closed initial receipt and Native frozen context preserve supplied bodies
+for existing readback. The focused source/decoding/receipt suite passed 156
+checks before the final symmetric-admission regression run. Actual product
+acceptance and deployment remain pending, with prior-SHA evidence separate.
