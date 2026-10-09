@@ -245,7 +245,9 @@ class ProductResearchAdapter:
                         if control else bool(research.get('identity_research_cancelled')))
                        if visual else research_stopped(research, purpose,
                             photo_sha256=story['photo_sha256'], identity_generation=generation))
-            if ((not visual and binding.get('photo_sha256') != story['photo_sha256']) or binding.get('generation') != generation
+            if ((not visual and binding.get('photo_sha256') != story['photo_sha256'])
+                    or binding.get('source_map_photo_sha256', story['photo_sha256']) != story['photo_sha256']
+                    or binding.get('generation') != generation
                     or stopped
                     or binding.get('control_revision', 0) != int(control.get('revision') or 0)):
                 raise ConflictError('research_scope_superseded', 'Исследование остановлено или относится к предыдущему объекту.')
@@ -326,7 +328,7 @@ class ProductResearchAdapter:
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
                 ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission',
-                 'image_transport', 'image_preparation', 'frozen_prompt', 'frozen_schema') if k in old}}
+                 'image_transport', 'image_preparation', 'frozen_prompt', 'frozen_schema', 'frozen_source_map') if k in old}}
             if rows and old.get('phase') == 'created':
                 resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                                job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
@@ -1475,6 +1477,52 @@ class ProductResearchAdapter:
     def vision_available(self):
         return (self.primary_vision.available or self.opencode_vision_available
                 or self.native_vision is not None and self.native_vision.available)
+
+    def source_map_receipt(self, story):
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
+                "AND role='vision_native_spatial' ORDER BY created_at DESC,rowid DESC", (story['id'],)).fetchall()
+        for row in rows:
+            receipt = json.loads(row['receipt_json'] or '{}')
+            if ((receipt.get('binding') or {}).get('generation') == story.get('_identity_generation', 0)
+                    and (receipt.get('binding') or {}).get('source_map_photo_sha256') == story['photo_sha256']
+                    and (receipt.get('binding') or {}).get('control_revision', 0)
+                        == story.get('_identity_research_control_revision', 0)):
+                return receipt
+        return None
+
+    @property
+    def source_map_available(self):
+        return self.native_vision is not None and self.native_vision.available
+
+    async def plan_source_map(self, story, prompt, schema, images, host_context):
+        """Optional Luna operation on the existing vision admission and receipt journal."""
+        original = self.source_map_receipt(story)
+        readback = original and (original.get('turn_id') or original.get('phase') not in {'created', 'failed', 'aborted'})
+        if readback:
+            binding = {**original['binding'], **{key: original[key] for key in
+                ('phase', 'thread_id', 'turn_id', 'profile_verified', 'quota_permission',
+                 'image_transport', 'image_preparation', 'frozen_source_map') if key in original}}
+            binding.update(job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
+            self.guard_binding(binding)
+            if original.get('phase') == 'failed':
+                raise PermanentProviderError('native_source_map_closed_failure')
+            if original.get('phase') == 'completed':
+                return {'result': original['result'], 'receipt': original,
+                        'host_context': original['frozen_source_map']['host_context']}
+        else:
+            if not self.source_map_available:
+                raise RetryableProviderError('native_source_map_unavailable')
+            unit = canonical(['source-map-spatial-v1', prompt, schema,
+                [hashlib.sha256(data).hexdigest() for _label, _mime, data in images]])
+            binding, saved = self.attempt(story, 'vision_native_spatial', unit)
+            if saved:
+                return {'result': saved['result'], 'receipt': saved,
+                        'host_context': saved['frozen_source_map']['host_context']}
+            binding = {**binding, 'source_map_photo_sha256': story['photo_sha256'], 'photo_sha256': story['photo_sha256']}
+        if self.native_vision is None:
+            raise RetryableProviderError('native_turn_outcome_unknown')
+        return await self.native_vision.compare_source_map(story, schema, prompt, images, binding, host_context)
 
     @property
     def vision_model(self):

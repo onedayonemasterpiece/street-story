@@ -11,6 +11,40 @@ from test_research_control import fixture
 
 
 @pytest.mark.asyncio
+async def test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path):
+    from street_story.errors import RetryableProviderError
+    service, sid, photo = fixture(tmp_path)
+    adapter = object.__new__(ProductResearchAdapter)
+    adapter.service = service
+    class Native:
+        available = True
+        sends = 0
+        async def compare_source_map(self, story, schema, prompt, images, binding, host_context):
+            if not binding.get('turn_id'):
+                self.sends += 1
+                receipt = {'binding': binding, 'phase': 'unknown', 'turn_id': 'original', 'thread_id': 'thread',
+                    'frozen_source_map': {'host_context': host_context}, 'profile_verified': True}
+                await adapter.checkpoint(binding, receipt)
+                raise RetryableProviderError('native_turn_outcome_unknown')
+            assert binding['turn_id'] == 'original'
+            frozen = binding['frozen_source_map']['host_context']
+            receipt = {'binding': binding, 'phase': 'completed', 'turn_id': 'original',
+                       'frozen_source_map': binding['frozen_source_map'], 'result': {'decision': 'uncertain'}}
+            await adapter.checkpoint(binding, receipt)
+            return {'result': receipt['result'], 'receipt': receipt, 'host_context': frozen}
+    adapter.native_vision = Native()
+    story = {'id': sid, 'photo_sha256': photo, '_identity_generation': 0}
+    host = {'source_map_receipt': {'manifest': 'original-map'}}
+    with pytest.raises(RetryableProviderError, match='native_turn_outcome_unknown'):
+        await adapter.plan_source_map(story, 'original', {}, [('SOURCE', 'image/jpeg', b'pixels')], host)
+    adapter.native_vision.available = False
+    result = await adapter.plan_source_map(story, 'different', {}, [], {})
+    assert result['host_context'] == host and adapter.native_vision.sends == 1
+    assert adapter.source_map_receipt({**story, 'photo_sha256': 'new-source'}) is None
+    assert adapter.source_map_receipt({**story, '_identity_research_control_revision': 1}) is None
+
+
+@pytest.mark.asyncio
 async def test_reference_download_failure_does_not_block_independent_fact_model(tmp_path):
     import hashlib
     from types import SimpleNamespace

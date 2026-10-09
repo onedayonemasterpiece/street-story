@@ -34,14 +34,14 @@ def test_joint_visual_role_prefers_configured_registered_model_without_changing_
     settings = SimpleNamespace(gemini_web_search_model='initial', gemini_web_search_tertiary_model='alternative')
     gemini = SimpleNamespace(web_search_routes=[first, alternative], research_routes=[first])
     routes = identity_discovery._joint_initial_routes(settings, gemini, scene_available=scene_available)
-    assert len(routes) == (1 if scene_available else 2) and routes[0][0] == preferred
+    assert len(routes) == 2 and routes[0][0] == preferred
     assert routes[0] is (alternative if scene_available else first)
     assert identity_discovery._joint_initial_routes(settings, SimpleNamespace(), scene_available=True) == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('registered', [False, True])
-async def test_unavailable_visual_role_preserves_independent_text_search_without_lightweight_spatial_send(tmp_path, registered):
+async def test_all_unsent_visual_routes_preserve_independent_text_search(tmp_path, registered):
     service, story, active = geometry_setup(tmp_path)
     service.settings = replace(service.settings, gemini_web_search_model='initial',
         gemini_web_search_tertiary_model='alternative')
@@ -53,10 +53,6 @@ async def test_unavailable_visual_role_preserves_independent_text_search_without
             calls.append('visual_admission')
             raise GeminiUnavailable(retry_at, 'fixture_rpd_not_sent')
 
-    class Forbidden:
-        async def execute(self, *args, **kwargs):
-            pytest.fail('SOURCE/MAP must not silently fall back to a lightweight text model')
-
     async def generate(*args, **kwargs):
         pytest.fail('No SDK invocation after unavailable visual-role admission')
 
@@ -67,13 +63,14 @@ async def test_unavailable_visual_role_preserves_independent_text_search_without
         return {'result': {key: value for key, value in payload(geometry_decision()).items()
             if key != 'accepted_geometry'}}
 
-    service.providers.gemini = SimpleNamespace(executor=Forbidden(), _generate=generate,
-        web_search_routes=[('initial', object(), object(), Forbidden()),
+    service.providers.gemini = SimpleNamespace(executor=Unavailable(), _generate=generate,
+        web_search_routes=[('initial', object(), object(), Unavailable()),
             *([('alternative', object(), object(), Unavailable())] if registered else [])],
         research_routes=[])
     service.providers.research = SimpleNamespace(plan_identity_search=independent)
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert calls == (['visual_admission', 'independent_text'] if registered else ['independent_text'])
+    assert calls == (['visual_admission', 'visual_admission', 'independent_text'] if registered
+                     else ['visual_admission', 'independent_text'])
     assert story['_identity_search_plan_route'] == 'qualified_text_fallback'
     assert '_identity_geometry_result' not in story
 
@@ -98,6 +95,49 @@ async def test_visual_quota_cause_remains_observable_when_no_independent_planner
         await identity_discovery.prepare_search_plan(service, story, '', active)
     assert failure.value.retry_at == retry_at
     assert '_identity_geometry_result' not in story
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reserve', ['google', 'native', 'native_denied'])
+async def test_unsent_primary_uses_secondary_pixels_with_same_proof_contract(tmp_path, reserve):
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='initial',
+        gemini_web_search_tertiary_model='alternative')
+    calls, native_receipts = [], []
+    quota = object()
+    class Denied:
+        async def execute(self, operation, call):
+            calls.append('primary_unsent')
+            raise GeminiUnavailable(service.store.now() + 300, 'rpd_not_sent')
+    class Allowed:
+        async def execute(self, operation, call):
+            calls.append('google_secondary')
+            return await call('fixture', 60)
+    async def generate(key, timeout, contents, config, **kwargs):
+        assert kwargs['model'] == 'initial' and kwargs['quota'] is quota
+        assert len(contents) == 3 and all(part.inline_data.data for part in contents[:2])
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+    async def native(snapshot, prompt, schema, images, host_context):
+        calls.append('native_secondary')
+        assert [label for label, _mime, _data in images] == ['SOURCE', 'MAP']
+        assert all(data for _label, _mime, data in images)
+        assert host_context['source_map_receipt']['model_id'] == 'gpt-6-luna'
+        result = payload(geometry_decision())
+        native_receipts.append({'phase': 'completed', 'turn_id': 'original-turn'})
+        if reserve == 'native_denied':
+            native_receipts[-1] = {'phase': 'failed', 'provider_send_state': 'not_sent'}
+            raise RetryableProviderError('native_quota_below_reserve')
+        return {'result': result, 'receipt': native_receipts[-1], 'host_context': host_context}
+    service.providers.gemini = SimpleNamespace(executor=Denied(), _generate=generate,
+        web_search_routes=[('alternative', object(), object(), Denied()), ('initial', object(), quota, Allowed())])
+    service.providers.research = SimpleNamespace(source_map_available=reserve != 'google',
+        plan_source_map=native, source_map_receipt=lambda snapshot: native_receipts[-1] if native_receipts else None)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == (['primary_unsent', 'native_secondary', 'google_secondary'] if reserve == 'native_denied'
+        else ['primary_unsent', 'native_secondary' if reserve == 'native' else 'google_secondary'])
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    assert story['_identity_search_plan_payload']['source_map_receipt']['model_id'] == (
+        'gpt-6-luna' if reserve == 'native' else 'initial')
 
 
 @pytest.mark.asyncio

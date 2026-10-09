@@ -41,7 +41,7 @@ def _checked_research(service, story, db, scope):
 
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
         response_sha256=None, status_code=None, closed_plan=None, prepared_request=None,
-        admission_retry=None, retry_not_sent=False):
+        admission_retry=None, retry_not_sent=False, model_id=None):
     """One scoped SOURCE+MAP operation; only authoritative not_sent permits reassignment."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
@@ -77,6 +77,8 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             raise RetryableProviderError(f'identity_joint_{stage}_binding_changed')
         marker = {**previous, 'scope': scope, 'binding': binding, 'phase': phase,
             'updated_at': service.store.now()}
+        if model_id is not None:
+            marker['model_id'] = model_id
         if prepared_request is not None:
             marker['prepared_request'] = prepared_request
         if admission_retry is not None:

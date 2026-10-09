@@ -3,6 +3,7 @@ import base64
 import copy
 import io
 import json
+import hashlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -130,6 +131,59 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
     assert receipts[-1]['provider_send_state'] == 'not_sent'
     assert finalized[-1][1] == 'aborted'
     assert finalized[-1][0]['actual_total_tokens'] == 0
+
+
+@pytest.mark.asyncio
+async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path):
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    map_file = io.BytesIO()
+    Image.new('RGB', (67, 13), 'blue').save(map_file, format='PNG')
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/png', map_file.getvalue())]
+    host = {'source_map_receipt': {'manifest': {'image_sha256': 'frozen-map'},
+        'model_source_sha256': hashlib.sha256(source).hexdigest(),
+        'map_image_sha256': hashlib.sha256(map_file.getvalue()).hexdigest()}, 'schema': VERDICT_SCHEMA}
+    client.turn_status = 'inProgress'
+    provider.timeout = .03
+    with pytest.raises(RetryableProviderError, match='native_turn_outcome_unknown'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'SOURCE and MAP geometry', images,
+                                          {'attempt_id': 'spatial'}, host)
+    first = next(params for method, params in client.calls if method == 'turn/start')
+    assert [part['text'] for part in first['input'] if part['type'] == 'text'][1:] == ['SOURCE', 'MAP']
+    pixels = [base64.b64decode(part['url'].split(',', 1)[1]) for part in first['input'] if part['type'] == 'image']
+    assert pixels == [source, map_file.getvalue()]
+    receipt = receipts[-1]
+    assert receipt['phase'] == 'unknown'
+    binding = {**receipt['binding'], **{key: receipt[key] for key in (
+        'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+    client.used = 99
+    client.turn_status = 'completed'
+    provider.timeout = 1
+    readback = await provider.compare_source_map(story, {}, 'different incoming request', [], binding, {})
+    assert readback['host_context'] == host
+    assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert len(sends) == 1
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_source_map_quota_denial_is_unsent_and_oversize_does_not_open_a_thread(tmp_path):
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    client.used = 99
+    with pytest.raises(RetryableProviderError, match='below_reserve'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'bounded geometry', images,
+                                         {'attempt_id': 'spatial'}, host)
+    assert not sends and receipts[-1]['provider_send_state'] == 'not_sent'
+    before = len(client.calls)
+    from street_story.errors import PermanentProviderError
+    with pytest.raises(PermanentProviderError, match='source_map_input_oversize'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'x' * 65536, images,
+                                         {'attempt_id': 'oversize'}, host)
+    assert len(client.calls) == before
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    await provider.close()
 
 
 @pytest.mark.asyncio

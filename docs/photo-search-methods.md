@@ -122,20 +122,31 @@ remain available to the existing continuation. Late metadata does not mutate an
 already addressed request. Remaining owned work is drained on operation exit.
 
 Fill free worker slots as results complete under existing resource admission.
-The SOURCE/MAP joint uses the already configured tertiary model from the
-registered model tuples. Repeated closed lightweight answers selected wrong
-physical objects despite intact SOURCE, map and address joins; this is the measured
-reason for that role's routing. Ordinary text planning keeps its configured web
-route, and fact extraction remains Live-first. No preliminary judge is added.
-If that visual-role model is unavailable or absent from the registered tuples,
-retain its exact unavailable cause/retry time and use the existing independent
-text planner if available. Do not silently send SOURCE/MAP to a lightweight
-text model and treat that substituted answer as a spatial decision. This role
-selection does not restrict independent search, ordinary text model failover or
-full SOURCE/REF comparison routes. UNKNOWN still observes its original request.
+The SOURCE/MAP joint prefers the configured tertiary Gemini model. Following the
+owner's October 9 clarification, it is no longer a mandatory single-model
+dependency: a definitive unsent refusal permits another registered model tuple,
+including Lite. Each model uses its own existing controller limits and receives
+the same SOURCE, MAP and proof contract; a 500-RPD allowance does not change the
+acceptance threshold. Wrong lightweight outputs remain regression evidence,
+not a blanket capability ban. Model selection is logged and frozen in the receipt.
+
+`gpt-6-luna` is an explicit secondary SOURCE/MAP route after the preferred Google
+route is unsent. It reuses the installed Native vision transport, tool-free profile,
+shared workload admission and account quota permission. It receives the exact
+prepared SOURCE and MAP bytes, with MAP labelled as a map rather than a reference
+facade. Its addressed prompt, schema, images and original host proof context are
+retained for turn readback; quota loss does not prevent reading that original turn.
+Fresh input exceeding the existing 65,536-byte role budget is unsent. Native quota
+refusal permits the next registered Google route only with authoritative unsent
+evidence. UNKNOWN cannot rotate to another model or create another turn. A closed
+valid spatial proof ends the operation; Luna is not a mandatory additional judge.
+Ordinary text planning and Live-first fact extraction remain independent.
 The initial joint SDK call releases its key before reading selected article bodies
 or validating its semantic result. A useful second joint gets its own ordinary
-executor timeout. If the shared controller definitively refused it before send,
+executor timeout. Google SOURCE/MAP uses the existing configured attempt budget
+(normally 60 seconds), rather than cancelling at the shorter key-failover timeout
+(normally 20 seconds). Overall identity and upload deadlines remain unchanged.
+If the shared controller definitively refused it before send,
 one finite Retry-After of at most 60 seconds may be observed outside the key lease,
 only when both waiting and an ordinary call still fit the identity deadline.
 The retry preserves the exact SOURCE/MAP/TEXT, prompt, schema and configuration;

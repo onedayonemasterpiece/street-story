@@ -330,6 +330,20 @@ async def test_real_timeout_budget_cancels_and_rotates_without_orphan_calls(tmp_
 
 
 @pytest.mark.asyncio
+async def test_joint_uses_existing_attempt_budget_without_short_call_cancellation(tmp_path):
+    p, executor, _ = pool(tmp_path, keys=KEYS[:1],
+                          policy=GeminiPolicy(call_timeout=.005, attempt_timeout=.5))
+    calls = []
+    async def call(key, timeout):
+        calls.append(timeout)
+        await asyncio.sleep(.02)
+        return 'closed joint response'
+    assert await executor.execute_joint('grounded_research', call) == 'closed joint response'
+    assert len(calls) == 1 and .005 < calls[0] <= .5
+    assert p.snapshot()['in_flight'] == 0
+
+
+@pytest.mark.asyncio
 async def test_internal_attempt_count_bound(tmp_path):
     p, executor, _ = pool(tmp_path, policy=GeminiPolicy(max_failover_keys=2))
     calls = []

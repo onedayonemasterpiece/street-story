@@ -170,10 +170,10 @@ def _closed_invalid_followup_route(settings, gemini, issues, model, quota, execu
 def _joint_initial_routes(settings, gemini, *, scene_available):
     """Reuse registered models for the actual joint visual reasoning role.
 
-    SOURCE/MAP has measured interpretation failures on the lightweight route.
-    Its configured tertiary owns this role without adding a preliminary judge.
-    An unavailable visual route must not silently substitute the lightweight
-    text planner for a spatial verdict. Independent text fallback stays available.
+    The tertiary is preferred, not a mandatory single-model dependency. Every
+    registered Gemini tuple may receive the same SOURCE/MAP contract after a
+    definitive unsent refusal. Model switching never weakens proof or repeats an
+    unknown operation. Independent text fallback stays available.
     """
     routes, seen = [], set()
     for route in [*(getattr(gemini, 'web_search_routes', None) or []),
@@ -183,8 +183,6 @@ def _joint_initial_routes(settings, gemini, *, scene_available):
             seen.add(route[0])
     preferred = getattr(settings, 'gemini_web_search_tertiary_model' if scene_available
         else 'gemini_web_search_model', None)
-    if scene_available and preferred:
-        return [route for route in routes if route[0] == preferred]
     return sorted(routes, key=lambda route: route[0] != preferred) if preferred else routes
 
 
@@ -269,9 +267,13 @@ async def _suggest(service, story, transcript, candidates):
     addressed_initial = joint_operation_marker(service, story, stage='initial')
     original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
     original_available = callable(original_readback) and original_readback(story)
-    if addressed_initial and addressed_initial['phase'] in {'send_intent', 'unknown'} and not original_available:
+    native_reader = getattr(getattr(service.providers, 'research', None), 'source_map_receipt', None)
+    native_saved = native_reader(story) if callable(native_reader) else None
+    native_original = bool(native_saved and (native_saved.get('turn_id') or
+        native_saved.get('phase') not in {'created', 'failed', 'aborted'}))
+    if addressed_initial and addressed_initial['phase'] in {'send_intent', 'unknown'} and not original_available and not native_original:
         raise RetryableProviderError('identity_joint_initial_outcome_unknown')
-    if addressed_initial and addressed_initial['phase'] == 'response_closed' and not addressed_followup and not original_available:
+    if addressed_initial and addressed_initial['phase'] == 'response_closed' and not addressed_followup and not original_available and not native_original:
         raise PermanentProviderError('identity_joint_initial_already_closed')
     if addressed_followup:
         original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
@@ -576,6 +578,8 @@ async def _suggest(service, story, transcript, candidates):
     initial_binding = None
     initial_outcome = addressed_initial.get('phase') if addressed_initial else None
     initial_failure = None
+    joint_model_id = None
+    native_source_map_receipt = None
     response_id_resolutions = []
     def diagnostic_stage(raw_json):
         if story.get('_identity_search_plan_route', 'google') != 'google' or not isinstance(raw_json, str):
@@ -588,11 +592,14 @@ async def _suggest(service, story, transcript, candidates):
         return {}
     def joint_source_map_receipt():
         from .identity_geometry_contract import CONTRACT
+        if native_source_map_receipt is not None:
+            return native_source_map_receipt
         return ({'source_photo_sha256': story.get('photo_sha256'),
             'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
             'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene_manifest,
             'source_preparation': source_preparation, 'map_identity_labels_required': True,
             'geometry_contract': CONTRACT,
+            'model_id': joint_model_id,
             'physical_body_candidate_ids': [row[1] for row in physical_context['rows']],
             'material_alternative_candidate_ids': list(dict.fromkeys([*geometry_prior_ids,
                 *((source_text_receipt.get('conditional_initial_decision') or {}).get('candidate_ids') or [])])),
@@ -745,6 +752,7 @@ async def _suggest(service, story, transcript, candidates):
     async def send_initial(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal initial_binding, initial_outcome, initial_failure
+        nonlocal joint_model_id
         if joint_followup_used:
             # An executor key/model loop cannot repeat an already addressed
             # joint2 after a lost/error response. Preserve the original outcome.
@@ -755,7 +763,8 @@ async def _suggest(service, story, transcript, candidates):
         from google.genai.errors import APIError
         from .service import ConflictError
         initial_binding = initial_unit_binding
-        joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='send_intent')
+        joint_model_id = model
+        joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='send_intent', model_id=model)
         initial_outcome = 'send_intent'
         try:
             response = await gemini._generate(key, timeout, [
@@ -779,6 +788,7 @@ async def _suggest(service, story, transcript, candidates):
             record_identity_event(service, story['id'], 'identity_joint_initial_unavailable', {
                 'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
                 'phase': phase, 'status_code': status_code, 'error_type': type(exc).__name__,
+                'model': model, 'timeout_seconds': timeout,
                 'fresh_google_retry_allowed': phase == 'not_sent'})
             # Retain a closed diagnostic category, never provider payloads or keys.
             detail = str(exc).lower()
@@ -1058,11 +1068,12 @@ async def _suggest(service, story, transcript, candidates):
                     raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
                 joint_followup_marker(service, story)  # Current photo/generation/control, even before key acquisition.
             async def send_followup(key, timeout):
-                nonlocal joint_followup_failure
+                nonlocal joint_followup_failure, joint_model_id
                 # No executor failover may dispatch another possibly sent joint2.
                 if joint_followup_failure is not None:
                     raise PermanentProviderError('identity_joint_followup_already_attempted')
                 try:
+                    joint_model_id = model
                     check_prepared_request()
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
                         prepared_request=prepared_request, retry_not_sent=retry_claim)
@@ -1085,7 +1096,8 @@ async def _suggest(service, story, transcript, candidates):
             for admission_attempt in range(2):
                 check_prepared_request()
                 try:
-                    response = await executor.execute('grounded_research', send_followup)
+                    execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
+                    response = await execute('grounded_research', send_followup)
                     break
                 except (GeminiUnavailable, PermanentProviderError) as attempt_error:
                     from .research_budget import require_remaining
@@ -1178,6 +1190,63 @@ async def _suggest(service, story, transcript, candidates):
             check_received_pointers=not original_available,
             provider_response_id=(result.get('receipt') or {}).get('provider_response_id'))
     researcher = getattr(service.providers, 'research', None)
+    native_tried = False
+    async def native_joint():
+        nonlocal native_tried, native_source_map_receipt, joint_model_id, initial_binding, initial_outcome
+        nonlocal scene_manifest, resolution_packet, schema
+        planner = getattr(researcher, 'plan_source_map', None)
+        if native_tried or not scene or not callable(planner) or (
+                not native_original and not getattr(researcher, 'source_map_available', False)):
+            return None
+        native_tried = True
+        joint_model_id = 'gpt-6-luna'
+        initial_binding = (addressed_initial or {}).get('binding') if native_original else initial_unit_binding
+        if not native_original:
+            joint_operation_marker(service, story, stage='initial', binding=initial_binding,
+                phase='send_intent', model_id=joint_model_id)
+        native_prompt = (config.system_instruction.replace(json.dumps(response_contract, ensure_ascii=False, separators=(',', ':')), '', 1)
+                         + '\n' + prompt)
+        record_identity_event(service, story['id'], 'identity_joint_route_selected',
+            {'role': 'source_map', 'model': joint_model_id, 'selection': 'native_readback' if native_original else 'unsent_reserve'})
+        try:
+            result = await planner(story, native_prompt, response_contract,
+                [('SOURCE', source_mime, source_bytes), ('MAP', scene['mime_type'], scene['bytes'])],
+                {'source_map_receipt': joint_source_map_receipt(), 'schema': schema})
+        except (Exception, asyncio.CancelledError) as exc:
+            saved = native_reader(story) if callable(native_reader) else None
+            phase = ('not_sent' if (saved or {}).get('provider_send_state') == 'not_sent' else
+                     'closed_failure' if (saved or {}).get('phase') == 'failed' and (saved or {}).get('turn_id') else 'unknown')
+            initial_outcome = phase
+            joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase=phase,
+                code='identity_native_source_map_' + phase)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            if phase == 'not_sent':
+                return None
+            if phase == 'unknown':
+                raise RetryableProviderError('identity_joint_initial_outcome_unknown') from exc
+            return await fallback(exc)
+        native_source_map_receipt = result['host_context']['source_map_receipt']
+        scene_manifest = native_source_map_receipt['manifest']
+        resolution_packet = {**resolution_packet, 'map_scene': scene_manifest}
+        schema = result['host_context']['schema']
+        raw_json = json.dumps(result['result'], ensure_ascii=False)
+        initial_outcome = 'response_closed'
+        joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='response_closed',
+            response_sha256=hashlib.sha256(raw_json.encode()).hexdigest(), model_id=joint_model_id)
+        story['_identity_search_plan_route'] = 'native_source_map'
+        from .identity_source_selection import resolve_identity_response_ids
+        decoded, resolution = resolve_identity_response_ids(result['result'], resolution_packet)
+        if resolution:
+            response_id_resolutions.append({**resolution, 'joint_stage': 'initial',
+                'provider_id': 'codex_native', 'raw_json_sha256': hashlib.sha256(raw_json.encode()).hexdigest()})
+        return accept(decoded, raw_json=raw_json, raw_json_available=True,
+            provider_response_id=result['receipt'].get('turn_id'))
+    if native_original:
+        result = await native_joint()
+        if result is not None:
+            return result
+        raise RetryableProviderError('identity_joint_initial_outcome_unknown')
     readback = getattr(researcher, 'has_identity_search_plan_readback', None)
     if callable(readback) and readback(story):
         # An original addressed operation precedes both fresh Google work and
@@ -1196,16 +1265,25 @@ async def _suggest(service, story, transcript, candidates):
                 getattr(gemini, 'web_search_routes', None) or getattr(gemini, 'research_routes', None)):
             return await fallback(GeminiUnavailable(None, 'identity_visual_model_not_registered'))
         try:
-            response = await gemini.executor.execute('grounded_research', send_initial)
+            execute = getattr(gemini.executor, 'execute_joint', gemini.executor.execute) if scene else gemini.executor.execute
+            response = await execute('grounded_research', send_initial)
             return await process_initial_response(response, executor=gemini.executor)
         except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
     retry_at = []
-    for model, _pool, quota, executor in routes:
+    for route_index, (model, _pool, quota, executor) in enumerate(routes):
+        if route_index and not native_tried:
+            result = await native_joint()
+            if result is not None:
+                return result
+        record_identity_event(service, story['id'], 'identity_joint_route_selected',
+            {'role': 'source_map' if scene else 'text_planning', 'model': model,
+             'route_index': route_index, 'selection': 'preferred' if route_index == 0 else 'unsent_failover'})
         async def routed_call(key, timeout, *, _model=model, _quota=quota):
             return await send_initial(key, timeout, model=_model, quota=_quota)
         try:
-            response = await executor.execute('grounded_research', routed_call)
+            execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
+            response = await execute('grounded_research', routed_call)
         except GeminiUnavailable as exc:
             if exc.retry_at is not None:
                 retry_at.append(exc.retry_at)
@@ -1221,6 +1299,9 @@ async def _suggest(service, story, transcript, candidates):
         except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
     unavailable_at = min(retry_at) if retry_at else None
+    result = await native_joint()
+    if result is not None:
+        return result
     record_identity_event(service, story['id'], 'identity_joint_route_unavailable',
         {'role': 'source_map' if scene else 'text_planning', 'models': [route[0] for route in routes],
          'retry_at': unavailable_at, 'provider_send_state': initial_outcome or 'not_sent',

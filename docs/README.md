@@ -1,5 +1,12 @@
 # Documentation authority
 
+The owner's later 9 October messages clarify model availability: one Gemini
+model's RPD refusal is not a product blocker; registered alternatives, including
+Lite, may receive the unchanged proof contract, and `gpt-6-luna` is an optional
+secondary spatial route under its account limit. The current implementation
+policy is described in [photo search methods](photo-search-methods.md). This
+clarification supersedes the earlier single-tertiary / no-Lite routing restriction.
+
 The current photo → physical object → reviewed facts target is defined by the
 [unified brief](prompts/street-story-unified-photo-search-20261008.md), supplied by
 the owner at commit `68a34bab230d0ae2d537aac3be6d82ee5123ee4b`, amended by the

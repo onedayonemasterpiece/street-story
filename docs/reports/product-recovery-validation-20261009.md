@@ -15,8 +15,44 @@ absent, only an explicitly declared Pacific bucket supplies its reset boundary.
 Unknown bucket strategies retain ordinary bounded retry, without inventing UTC
 exhaustion. Admission and unknown-send protections remain mandatory. The focused
 quota/send-boundary/reliability suite passed 69 checks, including DST and admission
-after the controller reset. One fresh cold102 through actual workers is the next
-verification; metadata alone is not inference or recognition success.
+after the controller reset. Fresh cold102 on `86d5edc` subsequently made one
+Gemini3.8 SDK call; its unknown outcome and terminal failure are recorded below.
+Metadata alone is not inference or recognition success.
+
+## Current secondary spatial route and actual cold102 failure
+
+Cold102 on `86d5edc6c96b7ceb54d197976e585f73999fb523` was admitted at
+08:47:58 UTC. The single Gemini3.8 call was cancelled 17.916 seconds into the
+SDK (20.216 seconds for the attempt), by the generic 20-second call timeout.
+Its send outcome and usage are UNKNOWN. The existing worker ended naturally
+at 180.688 seconds with no confirmed physical object and no eligible facts.
+This is a timeout failure after admission, rather than a current RPD blocker.
+That addressed operation must not be resent or replaced with another model.
+
+The correction gives SOURCE/MAP the existing 60-second total attempt budget;
+ordinary calls keep their shorter timeout. Registered Google routes can rotate
+after a definitive unsent refusal. The configured preferred Google route stays
+first; the owner's explicitly authorized `gpt-6-luna` is an additional reserve
+before the next registered Google route. The same geometry proof contract is
+used on every route. Closed responses and UNKNOWN sends do not trigger model
+rotation.
+
+Luna reuses Native vision admission, account permission, inline image delivery,
+durable receipts and original turn readback. SOURCE and MAP hashes are checked
+before send; MAP pixels remain unchanged. Original readback restores the frozen
+schema and MAP namespace, including after the available quota drops. The exposed
+owned text/schema envelope for the saved photo102 construction is 59,543 UTF-8
+bytes, within the existing 65,536-byte role limit. This is a serialization check,
+not an inference or an accuracy result.
+
+Affected checks passed **177 tests in 143.36 seconds**, followed by **54 tests in
+10.42 seconds** after the final image/scope guards. They include exact SOURCE/MAP
+transport, quota refusal, original-turn readback without a fresh call, strict
+photo/generation/control binding and the joint timeout budget. No actual Luna
+spatial recognition has been demonstrated by these tests. The next live canary
+uses independent cold104 on the new frozen commit, preserving cold102's UNKNOWN
+receipt rather than creating a duplicate. The complete same-version product
+gate and deployment remain pending.
 
 The current method contract is [photo search methods](../photo-search-methods.md),
 following the latest unified owner prompt. Earlier audit prompts are historical
@@ -75,10 +111,10 @@ retained artifact directory was deleted. Space increased from approximately
 evidence and exact worktree restoration commands are retained centrally in
 `/home/dev/artifacts/street-story/20261009T070231Z-disk-recovery-20261009`.
 
-These are offline corrections and cleanup, not product acceptance. The specific
-configured Gemini3.8 RPD admission blocker still prevents the bounded fresh
-five-case gate. No additional paid probe, lightweight visual substitution,
-deployment or product PASS is reported.
+These earlier offline corrections and cleanup did not establish product
+acceptance. The Gemini3.8 admission denial described in that snapshot is
+historical; the current controller reset and subsequent admitted call are
+recorded above. No deployment or product PASS is reported.
 
 Full hosted CI on `5e89d33` exposed nine failures (2,466 passed, five skipped).
 Corrections preserve literal partial streets and received nearby road/locality

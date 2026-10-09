@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib.util
+import hashlib
 import json
 import logging
 import re
@@ -199,17 +200,76 @@ class NativeVisionProvider:
         except TimeoutError as exc:
             raise RetryableProviderError('native_turn_outcome_unknown', retry_at=self.service.store.now() + 60) from exc
 
-    async def _compare_visual(self, snapshot, story, schema, context, binding):
+    async def compare_source_map(self, story, schema, prompt, images, binding, host_context):
+        """SOURCE/MAP uses the same quota, native turn and durable readback transport."""
+        frozen = binding.get('frozen_source_map')
+        if frozen is None:
+            contract = deepcopy(schema)
+            def strict(node):
+                if isinstance(node, dict):
+                    if 'properties' in node:
+                        node['required'] = list(node['properties'])
+                        node['additionalProperties'] = False
+                    for value in node.values():
+                        strict(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        strict(value)
+            strict(contract)
+            frozen = {'contract': contract, 'prompt': prompt, 'host_context': deepcopy(host_context),
+                'images': [{'label': label, 'mime_type': mime,
+                            'data': base64.b64encode(data).decode('ascii'),
+                            'sha256': hashlib.sha256(data).hexdigest()} for label, mime, data in images]}
+            proof = host_context.get('source_map_receipt') or {}
+            if ([part['label'] for part in frozen['images']] != ['SOURCE', 'MAP']
+                    or frozen['images'][0]['sha256'] != proof.get('model_source_sha256')
+                    or frozen['images'][1]['sha256'] != proof.get('map_image_sha256')):
+                await self._save(binding, {'binding': dict(binding), 'phase': 'failed',
+                    'provider_send_state': 'not_sent', 'retry_safe': True,
+                    'error_code': 'native_source_map_image_binding_invalid'})
+                raise PermanentProviderError('native_source_map_image_binding_invalid')
+            input_bytes = len(json.dumps({'prompt': prompt, 'schema': contract,
+                'instructions': 'One visual comparison only. No tools, file reads, writes, shell, web or agents.',
+                'image_labels': [part['label'] for part in frozen['images']]}, ensure_ascii=False).encode())
+            if input_bytes > 65536:
+                receipt = {'binding': dict(binding), 'phase': 'failed', 'provider_send_state': 'not_sent',
+                    'retry_safe': True, 'error_code': 'native_source_map_input_oversize', 'input_utf8_bytes': input_bytes}
+                await self._save(binding, receipt)
+                raise PermanentProviderError('native_source_map_input_oversize')
+            frozen['input_utf8_bytes'] = input_bytes
+        binding = {**binding, 'frozen_source_map': frozen}
+        try:
+            async with asyncio.timeout(self.timeout):
+                result = await self._compare_visual(None, story, schema, {}, binding, source_map=frozen)
+        except TimeoutError as exc:
+            raise RetryableProviderError('native_turn_outcome_unknown', retry_at=self.service.store.now() + 60) from exc
+        result['host_context'] = frozen['host_context']
+        return result
+
+    async def _compare_visual(self, snapshot, story, schema, context, binding, *, source_map=None):
         supplied = json.loads(context) if isinstance(context, str) else context
-        image_parts = direct_visual_parts(story, supplied)
-        supplied = visual_context_without_image_hashes(supplied)
-        contract, prompt = visual_request(schema, supplied)
+        if source_map:
+            image_parts = []
+            for part in source_map['images']:
+                data = base64.b64decode(part['data'], validate=True)
+                if hashlib.sha256(data).hexdigest() != part['sha256']:
+                    raise PermanentProviderError('native_source_map_frozen_image_changed')
+                image_parts.append({'label': part['label'], 'mime_type': part['mime_type'], 'bytes': data,
+                    'url': f'data:{part["mime_type"]};base64,{part["data"]}'})
+            contract, prompt = source_map['contract'], source_map['prompt']
+        else:
+            image_parts = direct_visual_parts(story, supplied)
+            supplied = visual_context_without_image_hashes(supplied)
+            contract, prompt = visual_request(schema, supplied)
         receipt = {'binding': dict(binding), 'phase': binding.get('phase', 'created'),
                    'thread_id': binding.get('thread_id'), 'turn_id': binding.get('turn_id'),
                    'profile_verified': binding.get('profile_verified', False),
                    'provider': 'codex_native', 'model': MODEL, 'transport': TRANSPORT,
                    'generation': story.get('_identity_generation', 0), 'image_attachments': len(image_parts),
                    'comparison_id': supplied.get('comparison_id'), 'usage': {'cost': 'unknown'}}
+        if source_map:
+            receipt.update(frozen_source_map=source_map, operation_kind='source_map',
+                input_utf8_bytes=source_map['input_utf8_bytes'])
         if binding.get('quota_permission'):
             receipt['quota_permission'] = dict(binding['quota_permission'])
         submitted = bool(receipt['turn_id']) or receipt['phase'] in {'prompt_intent', 'submitted', 'unknown'}
@@ -217,7 +277,8 @@ class NativeVisionProvider:
         # readback. New operations inline public bytes before any provider send.
         inline = not submitted or binding.get('image_transport') == 'inline_data_uri_v1'
         from .reference_image_codec import MODEL_PREPARATION, normalize_reference
-        prepare = not submitted or binding.get('image_preparation') == MODEL_PREPARATION
+        # MAP pixel coordinates and proof hashes refer to these exact prepared bytes.
+        prepare = not source_map and (not submitted or binding.get('image_preparation') == MODEL_PREPARATION)
         if prepare:
             receipt['image_preparation'] = MODEL_PREPARATION
             receipt['binding']['image_preparation'] = MODEL_PREPARATION
@@ -417,7 +478,7 @@ class NativeVisionProvider:
                             receipt.update(phase='completed', result=result, elapsed_ms=round((time.monotonic() - started) * 1000))
                             await self._save(binding, receipt)
                             logger.info('native_visual_completed %s', json.dumps({'story_id': story['id'], 'model': MODEL,
-                                'thread_id': receipt['thread_id'], 'turn_id': receipt['turn_id'], 'status': result['status'],
+                                'thread_id': receipt['thread_id'], 'turn_id': receipt['turn_id'], 'status': result.get('status', 'source_map_closed'),
                                 'quota_expires_at': receipt.get('quota_permission', {}).get('expires_at')}))
                             return {'result': result, 'receipt': receipt}
                         await asyncio.sleep(self.poll_seconds)
