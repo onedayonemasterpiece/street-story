@@ -572,3 +572,21 @@ neighbor-card refusal to the original G correction, UNKNOWN and the updated sing
 T schema. Full local backend verification passed **2,545 tests, 2 skipped in
 425.59 s**; Ruff passed. These are implementation checks; the changed-SHA
 product canary and its fact/POI outcomes remain separate acceptance evidence.
+
+Cold132 on `0e2302587545f3e5df585ab77e235329a86f3513` naturally failed at
+73.153 s. This time the original Native result was uncertain with a blank final
+candidate ID and an explicit received physical target for `map_detail`. The
+requested detail reached joint2, but the invalid-accepted-proof-only acquisition
+guard supplied no text. The Lite result again failed geometry; directed REF
+acceptance stopped the subsequent reference attempt. Hosted backend on this SHA
+passed; this is not product PASS.
+
+Continuation now also preserves received first-wave/action physical nominations
+from uncertain G. Exact nominated-address acquisition can accompany the requested
+MAP expansion, and useful text selects the supplied compact independent T schema
+in that same joint2. The final candidate field is never filled administratively;
+only an accepted G/T proof can establish identity. All explicit selections,
+ambiguous addresses, original-input readback and UNKNOWN fences remain. The
+affected suite passed **85 checks in 30.54 s**, including uncertain/blank-final-ID
+MAP-detail nomination to T/facts/POI. The original real response replay reached
+actual publisher T input with zero new inference. A new frozen canary is required.

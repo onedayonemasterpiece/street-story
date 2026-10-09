@@ -35,11 +35,11 @@ async def test_sufficient_original_native_readback_needs_no_google_executor_or_t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'address_missing', 'uncertain', 'unknown'])
+@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown'])
 async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_one_joint2(tmp_path, monkeypatch, outcome):
     svc, snapshot, active = geometry_setup(tmp_path)
     sid = snapshot['id']
-    address_route = outcome in {'address_text', 'address_missing'}
+    address_route = outcome in {'address_text', 'map_detail_text', 'address_missing'}
     url = ('https://www.prussia39.ru/sight/index.php?sid=7000' if address_route
         else 'https://archive.example/gate-history')
     article_id = 'prussia39:sid:7000' if address_route else 'wiki:13'
@@ -53,7 +53,12 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     bad = geometry_decision()
     bad['spatial_correspondence']['pattern_kind'] = 'frontage_sequence'
     initial = payload(bad)
-    if outcome not in {'geometry', 'address_text', 'address_missing'}:
+    if outcome == 'map_detail_text':
+        bad.update(decision='uncertain', candidate_id='', next_action={'kind': 'map_detail',
+            'reason': 'Inspect the actual nominated body before claiming identity.', 'target_candidate_ids': ['osm:way:2']})
+        initial['first_wave_hypotheses'] = [{'kind': 'observed_named', 'subject_id': 'osm:way:2',
+            'query': '', 'reason': 'A physical hypothesis to inspect, not confirmation.'}]
+    if outcome not in {'geometry', 'address_text', 'map_detail_text', 'address_missing'}:
         initial.update(selected_wikipedia_page_ids=['13'], subject_article_bindings=[{
             'article_id': 'wiki:13', 'candidate_id': 'osm:way:2', 'scope': 'Main physical footprint',
             'binding_basis': 'Received page explicitly describes this footprint, excluding its neighbor.',
@@ -74,6 +79,8 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         for element in snapshot['_identity_map_snapshot']['observed_pool']:
             if element.get('type') == 'way' and element.get('id') == 2:
                 element['tags'].update({'addr:city': 'Калининград', 'addr:street': 'Тестовая улица', 'addr:housenumber': '7'})
+                if outcome == 'map_detail_text':
+                    element['tags']['name'] = 'Observed physical building'
         for candidate in snapshot['_identity_observed_candidates']:
             if candidate['candidate_id'] == 'osm:way:2':
                 candidate['map_address'] = {'city': 'Калининград', 'street': 'Тестовая улица', 'house_number': '7'}
@@ -85,7 +92,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
                     'article_id': article_id, 'canonical_url': url,
                     'address_text': 'Калининград, ул. Тестовая, ' + ('8' if outcome == 'address_missing' else '7')}]}
             async def article(self, acquired_url):
-                assert acquired_url == url and outcome == 'address_text'
+                assert acquired_url == url and outcome in {'address_text', 'map_detail_text'}
                 address_reads.append(acquired_url)
                 return {'status': 'completed', 'article_id': article_id, 'canonical_url': url,
                     'text': TEXT + ' ' + CLAIM, 'raw_content_sha256': hashlib.sha256(raw_body).hexdigest(),
@@ -123,13 +130,17 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     async def generate(key, timeout, contents, config, **kwargs):
         assert calls == ['google_not_sent', 'native_original']
         assert contents[0].inline_data.data == addressed_images[0][2]
-        assert contents[1].inline_data.data == addressed_images[1][2]
+        if outcome != 'map_detail_text':
+            assert contents[1].inline_data.data == addressed_images[1][2]
         with svc.store.connection() as db:
             retained = json.loads(svc._story_row(db, sid)['research_json'])['identity_physical_hypothesis']
         assert retained['state'] == 'unconfirmed_physical_hypothesis' and not retained['identity_accepted']
         assert retained['initial_decision']['candidate_ids'] == ['osm:way:2', 'osm:way:3']
         assert retained['source_map_receipt']['model_id'] == 'gpt-6-luna'
-        assert 'different physical bodies' in retained['reason']['reason']
+        if outcome == 'map_detail_text':
+            assert retained['reason']['code'] == 'identity_geometry_uncertain'
+        else:
+            assert 'different physical bodies' in retained['reason']['reason']
         assert json.loads(retained['raw_json']) == initial
         calls.append('joint2')
         if outcome == 'unknown':
@@ -150,7 +161,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     async def lookup(*args):
         return snapshot['_identity_map_snapshot']
     async def wikipedia(*args):
-        return [] if outcome in {'geometry', 'address_text', 'address_missing'} else [{'pageid': 13, 'title': 'Observed physical building', 'url': url}]
+        return [] if outcome in {'geometry', 'address_text', 'map_detail_text', 'address_missing'} else [{'pageid': 13, 'title': 'Observed physical building', 'url': url}]
     async def forbidden(*args, **kwargs):
         pytest.fail('No REF, third judge or replacement planner is allowed')
     svc.providers.osm.lookup = lookup

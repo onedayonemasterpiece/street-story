@@ -142,7 +142,11 @@ def _conditional_text_prior(payload, nomination_ids):
     spatial = payload.get('spatial_hypotheses') if isinstance(payload.get('spatial_hypotheses'), list) else []
     nominated = payload.get('observed_candidate_ids') if isinstance(payload.get('observed_candidate_ids'), list) else []
     rejected = geometry.get('rejected_alternatives') if isinstance(geometry.get('rejected_alternatives'), list) else []
+    wave = payload.get('first_wave_hypotheses') if isinstance(payload.get('first_wave_hypotheses'), list) else []
+    action = geometry.get('next_action') if isinstance(geometry.get('next_action'), dict) else {}
+    targets = action.get('target_candidate_ids') if isinstance(action.get('target_candidate_ids'), list) else []
     declared = [*nominated, geometry.get('candidate_id'),
+        *(item.get('subject_id') for item in wave if isinstance(item, dict)), *targets,
         *(item.get('candidate_id') for item in rejected if isinstance(item, dict)),
         *(item.get('candidate_id') for item in spatial if isinstance(item, dict))]
     allowed = set(nomination_ids)
@@ -893,11 +897,21 @@ async def _suggest(service, story, transcript, candidates):
                 'previous_claim_is_not_confirmation': True}
         geometry_claim = payload.get('accepted_geometry') if isinstance(payload, dict) else None
         geometry_rejection = {}
-        if scene and initial_geometry is None and isinstance(geometry_claim, dict) and geometry_claim.get('decision') == 'accepted_geometry':
-            geometry_rejection = {'code': 'identity_geometry_proof_invalid', 'previous_claim_is_not_confirmation': True}
+        nomination_id = geometry_claim.get('candidate_id') if isinstance(geometry_claim, dict) else None
+        requested_targets = ((geometry_claim.get('next_action') or {}).get('target_candidate_ids') or []
+            if isinstance(geometry_claim, dict) else [])
+        if not nomination_id and isinstance(requested_targets, list) and len(requested_targets) == 1:
+            # An uncertain G answer may deliberately leave candidate_id empty
+            # while explicitly nominating a physical body for further work.
+            nomination_id = requested_targets[0]
+        if (scene and initial_geometry is None and isinstance(geometry_claim, dict)
+                and geometry_claim.get('decision') in {'accepted_geometry', 'uncertain'}):
+            geometry_rejection = {'code': ('identity_geometry_proof_invalid'
+                if geometry_claim['decision'] == 'accepted_geometry' else 'identity_geometry_uncertain'),
+                'previous_claim_is_not_confirmation': True}
             correspondence = geometry_claim.get('spatial_correspondence')
             correspondence = correspondence if isinstance(correspondence, dict) else {}
-            if correspondence.get('pattern_kind') == 'frontage_sequence':
+            if geometry_claim['decision'] == 'accepted_geometry' and correspondence.get('pattern_kind') == 'frontage_sequence':
                 pairs = correspondence.get('front_segments') or []
                 pairs = pairs if isinstance(pairs, list) else []
                 if any(pair['first'].get('candidate_id') == pair['second'].get('candidate_id')
@@ -913,7 +927,7 @@ async def _suggest(service, story, transcript, candidates):
             retain_physical_hypothesis(service, story, payload, joint_source_map_receipt(),
                 [*observed, *candidates], reason=geometry_rejection,
                 raw_json=response.text or '', provider_response_id=getattr(response, 'response_id', None))
-            if 'host_evidence_contract' in issues:
+            if 'host_evidence_contract' in issues and geometry_claim['decision'] == 'accepted_geometry':
                 issues['host_evidence_contract'].update(geometry_rejection)
         lookup = {}
         if isinstance(payload, dict) and initial_geometry is None:
@@ -946,8 +960,7 @@ async def _suggest(service, story, transcript, candidates):
             if (not text_articles and geometry_rejection
                     and not (set(issues) - {'host_evidence_contract'})
                     and not selected_regional and not wiki_payload.get('selected_wikipedia_page_ids')
-                    and (not regional or regional.get('route') in {None, 'none'})
-                    and (geometry_claim.get('next_action') or {}).get('kind') != 'map_detail'):
+                    and (not regional or regional.get('route') in {None, 'none'})):
                 # The model skipped source reading because it believed its G
                 # proof was sufficient. That premise is now false. Reuse the
                 # existing literal-address reader for the *model's* physical
@@ -956,7 +969,7 @@ async def _suggest(service, story, transcript, candidates):
                 # reader refuses ambiguous queries and neighboring cards.
                 from .identity_architectural_context import _physical_subject
                 nominated = next((item for item in [*observed, *candidates]
-                    if item.get('candidate_id') == geometry_claim.get('candidate_id')
+                    if item.get('candidate_id') == nomination_id
                     and _physical_subject(item)), None)
                 if nominated is not None:
                     request = {'route': 'address', 'candidate_ids': [nominated['candidate_id']],
@@ -1087,9 +1100,10 @@ async def _suggest(service, story, transcript, candidates):
                     {'article_ids': [item['article_id'] for item in text_articles], 'attempt': 1})
             compact_t = None
             # A semantic G-proof failure does not require replaying a giant
-            # planner. Malformed pointers or a requested MAP expansion still
-            # use the existing combined correction contract.
-            if text_articles and not (set(issues) - {'host_evidence_contract'}) and not detail_request:
+            # planner. Malformed pointers still use the combined correction
+            # contract. A requested MAP expansion is supplied unchanged even
+            # when independent T can establish identity from acquired text.
+            if text_articles and not (set(issues) - {'host_evidence_contract'}):
                 from .identity_architectural_comparison import prepare_architectural_comparison
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
