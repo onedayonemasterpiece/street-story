@@ -19,6 +19,7 @@ from test_original_osm_geometry_regression import story_for
 def proposal(candidate_label, relationship, *, alternatives=()):
     return {'decision': 'nominated', 'candidate_label': candidate_label,
         'source_observations': ['Observed physical facade facing across a road'],
+        'source_horizontal_extent': 'medium',
         'spatial_relations': [relationship],
         'alternative_labels': list(alternatives), 'uncertainties': [
             'Camera heading is not present in EXIF; no calibrated source crop']}
@@ -98,8 +99,31 @@ def test_nomination_does_not_treat_schema_echo_or_unbound_image_as_evidence():
     assert result['status']=='invalid'
     assert result['authorizes_identity'] is False
     valid={'decision':'uncertain','candidate_label':0,'source_observations':[],
+        'source_horizontal_extent':'unknown',
         'spatial_relations':[],'alternative_labels':[],'uncertainties':[
             'No sufficient unique relationship']}
     assert check_visual_geometry_nomination(valid,scene['manifest'],capsule)['status']=='uncertain'
     assert check_visual_geometry_nomination(valid,scene['manifest'],capsule,
         source_map_bound=False)['reason_codes']==['unbound_source_map']
+
+
+def test_wrong_generic_nomination_flags_missing_discrimination_and_angular_conflict():
+    # Posthoc model-like nomination on original 106. This candidate is not
+    # the answer, even though it is a valid received physical OSM building.
+    story=story_for(106)
+    scene=render_scene(story,[])
+    context=physical_decision_context(story,[],scene['manifest'])
+    byid={row[1]:row[0] for row in context['rows']}
+    wrong=byid['osm:way:100659323'] if 'osm:way:100659323' in byid else None
+    if wrong is not None:
+        relation={'kind':'other','source_observation':'Building along a road with a hedge',
+            'map_body_labels':[wrong],'road_candidate_id':'',
+            'road_direction_index':0,'segment_ring_index':0,
+            'first_segment_index':0,'second_segment_index':0}
+        sample=proposal(wrong,relation)
+        sample['source_horizontal_extent']='broad'
+        result=check_visual_geometry_nomination(sample,scene['manifest'],context)
+        assert result['status']=='conditional_physical_nomination'
+        assert 'no_discriminating_spatial_relation' in result['reason_codes']
+        assert 'nominal_angular_scale_conflict_recheck_crop_or_pose' in result['reason_codes']
+        assert result['authorizes_identity'] is False
