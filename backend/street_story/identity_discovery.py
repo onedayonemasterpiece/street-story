@@ -1150,9 +1150,14 @@ async def _suggest(service, story, transcript, candidates):
         # eligible; a possibly-sent/UNKNOWN request remains fenced.
         researcher = getattr(service.providers, 'research', None)
         alternate = getattr(researcher, 'plan_identity_source_map', None)
+        from .identity_plan_diagnostics import provider_outcome
+        google_failure_status = (provider_outcome(initial_failure)[1]
+            if initial_failure is not None else None)
+        definitively_closed_transport_failure = (initial_outcome == 'closed_failure'
+            and google_failure_status in {429, 500, 502, 503, 504})
         if (scene is not None and callable(alternate)
-                and initial_outcome in {None, 'not_sent'} and not original_available
-                and not joint_followup_used):
+                and (initial_outcome in {None, 'not_sent'} or definitively_closed_transport_failure)
+                and not original_available and not joint_followup_used):
             try:
                 alternate_result = await alternate(story,
                     config.system_instruction + '\n' + prompt,
@@ -1178,6 +1183,7 @@ async def _suggest(service, story, transcript, candidates):
                     'image_attachment_readback_verified':
                         alternate_receipt.get('image_attachment_readback_verified') is True,
                     'google_phase': initial_outcome or 'not_sent',
+                    'google_http_status': google_failure_status,
                     'independent_provider_send_count': 1})
                 # The common host proof validator receives the ORIGINAL OSM
                 # pool and image hashes. A model phrase or ungrounded name is
