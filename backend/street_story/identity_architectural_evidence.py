@@ -173,8 +173,8 @@ def compact_model_evidence(inventory):
         'publisher_article_rows':[{
             'article_id':aid,'refs':rows} for aid,rows in publisher],
         'observed_OSM_physical_bodies':physical,
-        'osm_rows':['candidate_id',['
-            'ref_id','OSM_node_or_tag_key','literal_value']],
+        'osm_rows':['candidate_id',
+            ['ref_id','OSM_node_or_tag_key','literal_value']],
         'supplier_ranking':'none',
         'original_ref_counts':{'publisher':count_publisher,'osm':count_osm},
         'inference_scope':'LLM decides historical/modern/complex meaning; '
