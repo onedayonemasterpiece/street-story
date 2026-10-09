@@ -98,8 +98,9 @@ def physical_research_priority(story, payload, observed, receipt):
             return None
         active = guidance['candidate_ids']
         contradictions = guidance['contradictions']
-        if any(c['candidate_id'] in active and c['scope'] == 'physical_body' for c in contradictions):
-            return None
+        # An exploratory subject may itself be the model's unresolved question.
+        # Keep both its requested investigation and scoped contrary evidence;
+        # this projection never accepts identity or clears contradictions.
         source_urls = {a.get('url') for a in receipt.get('articles') or []}
         if any(c['scope'] != 'physical_body' and c['source_url'] not in source_urls for c in contradictions):
             return None

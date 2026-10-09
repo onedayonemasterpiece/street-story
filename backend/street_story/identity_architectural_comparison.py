@@ -423,8 +423,14 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
 
     # Preserve the publisher's own contemporary address spellings and the
     # exact closed-way membership without inventing a physical scope.
-    from .identity_architectural_evidence import literal_evidence_inventory
+    from .identity_architectural_evidence import literal_evidence_inventory, _physical
     inventory = literal_evidence_inventory(story, observed, articles, candidate_ids=ids)
+    physical_catalog = {cid: candidate for cid, candidate in catalog.items() if _physical(candidate)}
+    label_table = (receipt.get('manifest') or {}).get('objects') or {}
+    label_columns = label_table.get('columns') or []
+    labels = ({row[label_columns.index('candidate_id')]: row[label_columns.index('label')]
+        for row in label_table.get('rows') or []}
+        if 'candidate_id' in label_columns and 'label' in label_columns else {})
 
     initial = {}
     if prior:
@@ -453,6 +459,15 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'articles': acquired,
         'publisher_query_scope_not_identity': query,
         'physical_candidates': physical,
+        'physical_reserve': {
+            'columns': ['candidate_id', 'map_label', 'observed_name', 'literal_address'],
+            'rows': [[cid, labels.get(cid),
+                ((candidate.get('map_object') or {}).get('tags') or {}).get('name'),
+                candidate.get('map_address') or None]
+                for cid, candidate in physical_catalog.items() if cid not in ids],
+            'policy': 'Other received physical bodies remain unexamined, not rejected. '
+                'research_priority may select them or expand_reserve for the next existing TEXT/REF action. '
+                'No article for a body means unknown, never a negative visual match.'},
         'publisher_and_OSM_literal_records_NOT_prejoined': inventory,
         'previous_model_hypotheses_not_evidence': initial,
         'initial_geometry_rejection_not_identity': copy.deepcopy(receipt.get('initial_geometry_rejection') or {}),
@@ -461,6 +476,10 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     schema = architectural_text_decision_schema(ids, article_ids,
         material_alternative_limit=max(8, len(ids)), structural=True,
         physical_link_inventory=inventory)
+    # A compact comparison can confirm only its issued article/body bindings,
+    # but its next investigation may nominate any received physical reserve.
+    from .identity_candidate_policy import research_priority_schema
+    schema['properties']['research_priority'] = research_priority_schema(list(physical_catalog))
     # Mirror the common proof validator's pointer rule in the issued contract.
     # A singleton hypothesis cannot be an alternative to itself. This says
     # nothing about unreceived bodies or whether the hypothesis is correct.

@@ -58,6 +58,32 @@ Already eligible claims also keep owner research/editorial tools available
 while unrelated review is pending. The E2E runner now sends ordinary WSS pings;
 its original failures remain retained. Current acceptance and E2E are still pending.
 
+Current downstream `78423ff` E2E on the compatible real104 passed selection of
+five reviewed source-backed claims, concept dialogue, editable text, consecutive
+30.077-second voice refinement, draft refinement, real visual generation and
+restart/readback. All301 audio frames were acknowledged (max observed0.555s).
+The transcript, stored evening-walk concept, selected source spans, final text,
+actual SOURCE and generated2,775,584-byte preview were inspected. Stop was
+acknowledged; selection and draft survived reopening. The draft was718characters
+against the runner's700-character request; that minor instruction mismatch is
+retained. The generated poster interprets perspective; it is not an unchanged
+documentary photograph. Evidence is prepared PCM over the installed in-process
+WSS relay, not public TLS, Android or a physical microphone. No post was sent.
+New-story POI reuse remains pending.
+
+Current cold130 on `78423ff` received a closed Native SOURCE/MAP decision and
+a closed Google3.5 architectural comparison. T returned explicit physical-scope
+uncertainty, not an accepted neighbor. The run still failed at131.993s because
+its exploratory body also carried contrary evidence, causing the host to discard
+the model's entire research priority and enforce broad first-wave coverage.
+The correction preserves both the requested active investigation and scoped
+contrary evidence without accepting identity. T now sees compact rows of every
+unexamined received physical reserve and may nominate them for existing TEXT/REF
+work; positive proof still requires its issued article/body evidence.82 targeted
+offline checks passed, including a model selecting a reserve outside its initial
+comparison and source/foreign-material negative controls. This is not yet a
+correct automatic130 identity or a mandatory gate PASS.
+
 ## Frozen b022307 product result and selected-card continuation
 
 Blind cold132 on `b02230727af905e52f474830d00b6fe9c7e5d626` passed all

@@ -90,6 +90,19 @@ def test_failed_facade_material_does_not_reject_body_or_other_wing():
     assert len(order_research_candidates(bodies, state)) == len(bodies)
 
 
+def test_active_body_question_preserves_contrary_evidence_without_accepting_identity():
+    story, bodies, receipt = inputs()
+    selected = guidance(['osm:way:2'])
+    selected['contradictions'] = [{'candidate_id': 'osm:way:2', 'scope': 'physical_body',
+        'source_url': 'https://www.openstreetmap.org/way/2', 'reason': 'Boundary remains unverified.',
+        'conditions': 'Need a differentiating facade view.'}]
+    state = physical_research_priority(story, {'research_priority': selected}, bodies, receipt)
+    assert state['active_candidate_ids'] == ['osm:way:2']
+    assert state['contradictions'] == selected['contradictions']
+    assert state['reserve_candidate_ids'] == ['osm:way:3', 'osm:way:4']
+    assert state['identity_established'] is False
+
+
 def test_shared_article_keeps_both_physical_lookups_and_changed_source_versions():
     article = {'article_id': 'publisher:1', 'source_sha256': 'a' * 64,
         'text_sha256': 'b' * 64, 'lookup_candidate_ids': ['osm:way:2']}
@@ -139,12 +152,15 @@ async def test_first_text_proceeds_while_other_dispatched_reader_finishes(monkey
 
 
 @pytest.mark.asyncio
-async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_without_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize('next_body', ['osm:way:3', 'osm:way:4'])
+async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_without_identity(tmp_path, monkeypatch, next_body):
     import json
     from street_story import identity_discovery
     from test_geometry_identity_plan import geometry_setup, geometry_decision, payload, Executor
     from test_architectural_text_identity import text_inputs
     service, story, active = geometry_setup(tmp_path)
+    story['_identity_observed_candidates'].append({'candidate_id': 'osm:way:4',
+        'map_object': {'tags': {'building': 'yes'}}})
     g = geometry_decision()
     g.update(decision='uncertain', next_action={'kind': 'address_text',
         'reason': 'Two physical facades need architectural comparison.',
@@ -152,7 +168,7 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
     initial = {**payload(g), 'research_priority': guidance(['osm:way:2', 'osm:way:3'])}
     _s, _c, answer, receipt = text_inputs(candidate_id='osm:way:2')
     answer.update(decision='uncertain', physical_link_evidence=[],
-        research_priority=guidance(['osm:way:3']))
+        research_priority=guidance([next_body]))
     calls, reads = [], []
 
     async def acquire(svc, snapshot, candidates, request):
@@ -173,6 +189,8 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         assert issued['properties']['candidate_id']['enum'] == ['osm:way:2', 'osm:way:3', '']
         assert set(reads) == {'osm:way:2', 'osm:way:3'}
         assert receipt['articles'][0]['text'] in contents[-1]
+        packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        assert any(row[0] == 'osm:way:4' for row in packet['physical_reserve']['rows'])
         return SimpleNamespace(text=json.dumps(answer))
 
     monkeypatch.setattr(context, 'acquire_regional_text', acquire)
@@ -180,7 +198,7 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
     service.providers.research = None
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     priority = history['search_plan']['payload']['physical_research_priority']
-    assert priority['active_candidate_ids'] == ['osm:way:3']
+    assert priority['active_candidate_ids'] == [next_body]
     assert 'osm:way:2' in priority['reserve_candidate_ids']
     assert len(calls) == 2 and not story.get('_identity_geometry_result')
     assert history['acquired_text_articles'][0]['text'] == receipt['articles'][0]['text']
