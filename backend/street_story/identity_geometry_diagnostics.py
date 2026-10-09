@@ -39,7 +39,8 @@ def _received_physical_label(story, decision, receipt, candidates):
 
 def _bound_source_and_map(story, receipt):
     import re
-    sha = lambda v: isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v) is not None
+    def sha(v):
+        return isinstance(v, str) and re.fullmatch('[0-9a-f]{64}', v) is not None
     if (receipt.get('joint_image_input') is not True or
             not sha(story.get('photo_sha256')) or
             receipt.get('source_photo_sha256') != story['photo_sha256'] or
