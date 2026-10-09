@@ -228,10 +228,14 @@ def test_unbound_neighbor_stable_match_blocks_premature_accepted():
         'source_observation':'Another plausible facade is visible.',
         'feature_kind':'composition','status':'stable_match',
         'reason':'This alternate article has an unresolved visible similarity.'})
+    # The model itself additionally declares this other article to be
+    # DISTINCTIVE, but offers no supporting source binding for it.
+    next(a for a in reply['article_comparisons'] if
+        a['article_id']=='catalog:neighbor-one')['visual_fit']='distinctive_match'
     result=close_architectural_pool_response(story,candidates,packet,reply,
         source_text_receipt=receipt)
     assert result['accepted'] is False
-    assert result['reason']=='unresolved_stable_match_in_unbound_article'
+    assert result['reason']=='other_distinctive_article_not_resolved'
 
 
 
