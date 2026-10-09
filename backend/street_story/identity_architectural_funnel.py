@@ -42,7 +42,8 @@ def _physical_ids(rows):
 
 
 def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
-        source_sha256, g_source_sha256):
+        source_sha256, g_source_sha256,
+        independent_closed_T_leads=()):
     """Prepare a compact G-backed T context without promoting G as truth.
 
     The original G output is immutable and already SOURCE+OSM hash-verified by
@@ -72,6 +73,35 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
             or (status == 'no_useful_reduction' and active)
             or not isinstance(g_result.get('initial_body_count'), int)):
         raise ValueError('G_shortlist_does_not_cover_actual_received_map')
+    # Recover independent, previously CLOSED model-nominated physical IDs
+    # that G moved into reserve. This is a union of two independently
+    # preserved *model hypotheses*, not a host scoring/ranking rule. Neither
+    # one becomes accepted without its own SOURCE+text/geometry proof.
+    reopened=[]
+    hints=[]
+    if not isinstance(independent_closed_T_leads,(tuple,list)):
+        raise ValueError('independent_T_model_leads_must_be_recorded_list')
+    for lead in independent_closed_T_leads:
+        if not isinstance(lead,dict) or lead.get('provider_send_state')!='response_closed':
+            raise ValueError('prior_T_nomination_not_closed')
+        if (lead.get('provider_outcome')!='completed'
+                or lead.get('original_source_sha256')!=source_sha256
+                or not _sha(lead.get('original_model_response_sha256'))
+                or not isinstance(lead.get('original_model_response'),dict)):
+            raise ValueError('independent_T_model_lead_provenance_invalid')
+        cid=lead.get('original_model_response',{}).get('candidate_id')
+        if (not isinstance(cid,str)
+                or not cid.startswith(('osm:way:','osm:relation:'))
+                or cid not in [*active,*reserve]
+                or cid not in catalog):
+            raise ValueError('prior_T_physical_lead_not_in_original_observed_map')
+        if cid in active or cid in reopened:
+            continue
+        reopened.append(cid)
+        hints.append({'candidate_id':cid,
+            'prior_T_response_sha256':lead['original_model_response_sha256'],
+            'source':'separate_CLOSED_model_nomination_not_physical_proof',
+            'raw_response_available':bool(lead.get('raw_response_byte_verified'))})
     # G has already accepted a physical candidate with its own proof; T and
     # external REF are never mandatory barriers for that independent result.
     if status == 'accepted_identity_proposal' and g_result.get('accepted') is True:
@@ -85,6 +115,8 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
             'active_candidate_ids':[], 'reserve_candidate_ids':reserve,
             'source_sha256':source_sha256,'g_model_answer_sha256':g_result['model_answer_sha256'],
             'expandable':True}
+    active=[*active,*reopened]
+    reserve=[cid for cid in reserve if cid not in reopened]
     if not isinstance(source_articles,list):
         raise ValueError('actual_acquired_source_articles_required')
     aid = []
@@ -109,15 +141,21 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
                     'image_url':value,
                     'image_fetched_and_compared':False})
     model_active = []
-    for item in g_result['active']:
-        row = catalog[item['candidate_id']]
-        model_active.append({'candidate_id':item['candidate_id'],
-            'G_source_match_hypothesis_not_fact':item.get('source_match') or '',
-            'G_unresolved_difference':item.get('unresolved_difference') or '',
+    for cid in active:
+        row = catalog[cid]
+        g_item=next((item for item in g_result['active']
+            if item['candidate_id']==cid),None)
+        model_active.append({'candidate_id':cid,
+            'G_source_match_hypothesis_not_fact':(
+                g_item.get('source_match') or '' if g_item else ''),
+            'G_unresolved_difference':(
+                g_item.get('unresolved_difference') or '' if g_item else ''),
+            'independent_T_only_nomination_not_a_fact':next(
+                (item for item in hints if item['candidate_id']==cid),None),
             'observed_osm_source_link_hints_not_image_proof':copy.deepcopy(
-                item.get('observed_source_links') or {}),
+                (g_item or {}).get('observed_source_links') or {}),
             'literal_observed_address':copy.deepcopy(
-                item.get('literal_address') or {}),
+                (g_item or {}).get('literal_address') or {}),
             'actual_observed_map_identity':row['candidate_id']})
     context = {'contract':_CONTRACT,'stage':'T_while_G_shortlist_unconfirmed',
         'original_source_sha256':source_sha256,
@@ -128,8 +166,11 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
         'G_next_distinguishing_question':g_result.get('t_distinguishing_question'),
         'G_model_uncertainties':g_result.get('model_uncertainties') or [],
         'G_initial_received_physical_body_count':g_result['initial_body_count'],
-        'G_active_count':len(active),
-        'G_reserve_count':len(reserve),
+        'G_active_count':len(g_result['active']),
+        'G_reserve_count':len(g_result['reserve']),
+        'independent_T_model_leads_reopened_not_verified':hints,
+        'combined_active_count':len(active),
+        'combined_reserve_count':len(reserve),
         'G_reserve_remains_accessible':True,
         'received_article_ids':aid,
         'already_acquired_source_image_links':images,
@@ -140,6 +181,8 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
     return {'contract':_CONTRACT,'stage':'T_while_G_shortlist_unconfirmed',
         'source_sha256':source_sha256,'g_model_answer_sha256':g_result['model_answer_sha256'],
         'original_active_ids':active,'original_reserve_ids':reserve,
+        'G_original_active_ids':_physical_ids(g_result['active']),
+        'independent_T_leads_reopened':hints,
         'original_active_count':len(active),'original_map_count':g_result['initial_body_count'],
         'source_article_ids':aid,'existing_image_links':images,
         'model_input':context,
