@@ -397,6 +397,15 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
         'evidence_model_response_sha256':hashlib.sha256(json.dumps(
             model_answer,sort_keys=True,ensure_ascii=False).encode()).hexdigest(),
         'model_decision':decision}
+    if t_prepared is None and decision.get('decision')=='accepted_architectural_text':
+        # This is the very same already CLOSED multimodal model response,
+        # not an additional REF/model gate. A plausible article-supported
+        # physical nominee stays useful even when a later host provenance
+        # check fails; all other OSM bodies remain reversible reserve.
+        from .identity_architectural_funnel import project_independent_T_nomination
+        reviewed['T_shortlist_and_REF_plan']=project_independent_T_nomination(
+            pool,decision,source_sha256=(source_text_receipt or {}).get(
+                'original_source_sha256'))
     if decision['decision']!='accepted_architectural_text':
         return reviewed
     if not pool['candidate_ids']:
@@ -471,5 +480,8 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             source_sha256=(source_text_receipt or {}).get('original_source_sha256'),
             t_accepted=True,accepted_candidate_id=proof['candidate_id'])
     return {**reviewed,'accepted':True,'proof':proof,
+        # A successfully accepted T identity does not need a speculative
+        # fallback research shortlist. For G-backed accepted T, retain the
+        # genuine final G/T projection; without G this is None.
         'T_shortlist_and_REF_plan':t_status,
         'physical_gate':grounded,'subject_gate':subject}
