@@ -25,7 +25,7 @@ def observed_bidirectional_road_axes(story, candidates, manifest, *, max_roads=3
         'A farther target remains eligible even if absent from the first hits. '
         'This never identifies/ranks/filters physical building candidates.')
     empty = {'camera_basis':basis, 'columns':['road_candidate_id','road_name','line_index',
-        'segment_index','camera_axis_distance_m','axis_length_m','directions'],
+        'segment_index','camera_axis_distance_m','axis_length_m','directions','highway_type'],
         'direction_columns':['heading_deg','first_hit_physical_bodies'],
         'hit_columns':['label','candidate_id','plan_ray_distance_m'],
         'rows':[], 'policy':policy, 'observed_road_count':0, 'omitted_road_count':0}
@@ -59,15 +59,25 @@ def observed_bidirectional_road_axes(story, candidates, manifest, *, max_roads=3
                     continue
                 distance=_distance((0.,0.),start,end)
                 bearing=_bearing((end[0]-start[0],end[1]-start[1]))
-                record=(distance,cid,line_index,segment_index,length,bearing,tags.get('name'))
+                record=(distance,cid,line_index,segment_index,length,bearing,tags.get('name'),tags.get('highway'))
                 if nearest is None or record[:4]<nearest[:4]:
                     nearest=record
         if nearest is not None:
             observed_roads.append(nearest)
     observed_roads.sort(key=lambda r:r[:4])
     road_count=len(observed_roads)
+    chosen=observed_roads[:max_roads]
+    # Sidewalk/service paths near the camera may obscure the existence of the
+    # actual named approach street. Include one nearby named OSM road when all
+    # closest cues are unnamed; this changes road-axis presentation only and
+    # cannot nominate/limit any building in the full original map.
+    if chosen and not any(row[6] for row in chosen):
+        named=next((row for row in observed_roads
+            if row[6] and row[0]<=100),None)
+        if named is not None and named not in chosen:
+            chosen=sorted([*chosen[:max_roads-1],named],key=lambda row:row[:4])
     rows=[]
-    for distance,cid,li,si,length,angle,name in observed_roads[:max_roads]:
+    for distance,cid,li,si,length,angle,name,highway in chosen:
         axis={'candidate_id':cid,'kind':'road_axis','line_index':li,'segment_index':si}
         directions=[]
         for heading in (angle,(angle+180.)%360):
@@ -79,6 +89,6 @@ def observed_bidirectional_road_axes(story, candidates, manifest, *, max_roads=3
                 [labels.get(hit['candidate_id']),hit['candidate_id'],hit['ray_distance_m']]
                 for hit in hits[:max_hits]]])
         rows.append([cid,str(name or '')[:80],li,si,round(distance,2),
-                     round(length,2),directions])
+                     round(length,2),directions,str(highway or '')[:40]])
     return {**empty,'rows':rows,'observed_road_count':road_count,
         'omitted_road_count':max(0,road_count-len(rows))}
