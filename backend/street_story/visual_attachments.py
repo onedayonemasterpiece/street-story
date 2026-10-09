@@ -50,6 +50,41 @@ def direct_visual_parts(story, supplied):
     return output
 
 
+
+
+def direct_source_map_parts(snapshot):
+    """Two original, explicitly hashed SOURCE/MAP images; MAP is not a REF.
+
+    This uses the existing OpenCode image transport without falsifying an
+    external visual-reference proof. Only RAM data URIs, no URL fetches.
+    """
+    import hashlib
+    if not isinstance(snapshot, dict) or snapshot.get('kind') != 'source_map':
+        raise PermanentProviderError('identity_source_map_attachments_invalid')
+    parts = snapshot.get('parts')
+    if not isinstance(parts, list) or len(parts) != 2:
+        raise PermanentProviderError('identity_source_map_attachments_invalid')
+    result = []
+    for part, label in zip(parts, ('SOURCE', 'MAP')):
+        if not isinstance(part, dict) or part.get('label') != label:
+            raise PermanentProviderError('identity_source_map_attachments_invalid')
+        mime = part.get('mime_type')
+        encoded = part.get('data')
+        expected = part.get('sha256')
+        if (mime not in {'image/jpeg', 'image/png', 'image/webp'}
+                or not isinstance(encoded, str) or not encoded
+                or not isinstance(expected, str) or len(expected) != 64):
+            raise PermanentProviderError('identity_source_map_attachments_invalid')
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise PermanentProviderError('identity_source_map_attachments_invalid') from None
+        if (not raw or len(raw) > 4 * 1024 * 1024 or
+                hashlib.sha256(raw).hexdigest() != expected):
+            raise PermanentProviderError('identity_source_map_attachments_invalid')
+        result.append({'label': label, 'mime_type': mime, 'url': f'data:{mime};base64,{encoded}', 'bytes': raw})
+    return result
+
 def visual_operation_unit(story, supplied):
     """Stable operation identity; image bytes never participate."""
     return [story['id'], story.get('_identity_generation', 0), supplied.get('comparison_id'),

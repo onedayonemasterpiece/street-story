@@ -382,6 +382,15 @@ class OpenCodeResearch:
         """Tool-free planning uses its existing 64K bound on addressed input."""
         return await self._run('facts', prompt, binding, schema, max_input_chars=65536)
 
+    async def plan_identity_source_map(self, prompt, binding, schema, snapshot):
+        """Qualified visual model, full SOURCE + neutral MAP, no external REF.
+
+        Reuses the existing tool-free image role, signed admission, durable
+        message readback and the same bounded response-schema verification.
+        """
+        return await self._run('vision', prompt, binding, schema,
+                               snapshot=snapshot, max_input_chars=150000)
+
     async def _run(self, role, prompt, binding, schema, *, snapshot=None, max_input_chars=None):
         if not self.admission:
             raise ResearchUnavailable('research_admission_required')
@@ -393,12 +402,16 @@ class OpenCodeResearch:
         if not isinstance(binding, dict) or not binding:
             raise ResearchUnavailable('research_binding_required')
         direct_parts = []
+        supplied = {'references': []}
         if snapshot is not None:
-            from .visual_attachments import direct_visual_parts
+            from .visual_attachments import direct_visual_parts, direct_source_map_parts
             try:
-                supplied = json.loads(prompt.split('Context:\n', 1)[1])
-                direct_parts = direct_visual_parts({'_visual_image_parts': snapshot,
-                    '_visual_reference_mapping': supplied.get('references')}, supplied)
+                if isinstance(snapshot, dict) and snapshot.get('kind') == 'source_map':
+                    direct_parts = direct_source_map_parts(snapshot)
+                else:
+                    supplied = json.loads(prompt.split('Context:\n', 1)[1])
+                    direct_parts = direct_visual_parts({'_visual_image_parts': snapshot,
+                        '_visual_reference_mapping': supplied.get('references')}, supplied)
             except (ValueError, KeyError, IndexError, TypeError):
                 raise ResearchUnavailable('research_image_invalid') from None
         observing = bool(binding.get('session_id') and binding.get('message_id') and binding.get('phase') in {
@@ -625,6 +638,11 @@ class OpenCodeResearch:
                                     receipt['summary_json_valid'] = False
                                     receipt['assistant_text_sha256'] = hashlib.sha256(content.encode()).hexdigest()
                                     result = {'summary': ''}
+                            if isinstance(snapshot, dict) and snapshot.get('kind') == 'source_map':
+                                from .identity_source_map_prompt import normalize_source_map_visual_result
+                                result, normalization = normalize_source_map_visual_result(result)
+                                if normalization:
+                                    receipt['format_normalizations'] = normalization
                             from jsonschema import Draft202012Validator
                             if not Draft202012Validator(schema).is_valid(result):
                                 if role != 'search':

@@ -1144,7 +1144,76 @@ async def _suggest(service, story, transcript, candidates):
             # The single correction/TEXT followup already consumed joint2.
             # Its known invalid answer cannot authorize a third semantic send.
             raise joint_followup_failure or cause
-        planner = getattr(getattr(service.providers, 'research', None), 'plan_identity_search', None)
+        # Google shared-RPD exhaustion is NOT an exhausted SOURCE/MAP route.
+        # A separate qualified pixel transport may process the same original
+        # SOURCE and neutral MAP. Only a provably not-sent Google request is
+        # eligible; a possibly-sent/UNKNOWN request remains fenced.
+        researcher = getattr(service.providers, 'research', None)
+        alternate = getattr(researcher, 'plan_identity_source_map', None)
+        from .identity_plan_diagnostics import provider_outcome
+        google_failure_status = (provider_outcome(initial_failure)[1]
+            if initial_failure is not None else None)
+        definitively_closed_transport_failure = (initial_outcome == 'closed_failure'
+            and google_failure_status in {429, 500, 502, 503, 504})
+        if (scene is not None and callable(alternate)
+                and (initial_outcome in {None, 'not_sent'} or definitively_closed_transport_failure)
+                and not original_available and not joint_followup_used):
+            try:
+                from .identity_source_map_prompt import compact_source_map_visual_prompt
+                alternate_prompt = compact_source_map_visual_prompt(packet)
+                record_identity_event(service, story['id'], 'identity_source_map_alternate_input_prepared', {
+                    'role': 'source_map', 'alternate_prompt_utf8_bytes': len(alternate_prompt.encode()),
+                    'original_prompt_utf8_bytes': len(prompt.encode()) + len(config.system_instruction.encode()),
+                    'preserved_received_body_count': len(physical_context['rows']),
+                    'model': getattr(getattr(researcher, 'client', None), 'model_id', 'unknown')})
+                alternate_result = await alternate(story,
+                    alternate_prompt, response_contract,
+                    source_mime, source_bytes, scene['mime_type'], scene['bytes'])
+                alternate_payload = alternate_result.get('result')
+                alternate_receipt = alternate_result.get('receipt') or {}
+                if not isinstance(alternate_payload, dict):
+                    raise PermanentProviderError('identity_source_map_response_malformed')
+                from .identity_source_selection import resolve_identity_response_ids
+                alternate_payload, alternative_resolution = resolve_identity_response_ids(
+                    alternate_payload, resolution_packet)
+                if alternative_resolution:
+                    response_id_resolutions.append({
+                        **alternative_resolution, 'provider_id': 'opencode',
+                        'joint_stage': 'initial',
+                        'raw_json_sha256': hashlib.sha256(json.dumps(
+                            alternate_result['result'], sort_keys=True, ensure_ascii=False).encode()).hexdigest()})
+                story['_identity_search_plan_route'] = 'opencode_source_map'
+                record_identity_event(service, story['id'], 'identity_independent_image_route_completed', {
+                    'provider_id': alternate_receipt.get('provider_id'),
+                    'model_id': alternate_receipt.get('model_id'),
+                    'image_attachment_readback_verified':
+                        alternate_receipt.get('image_attachment_readback_verified') is True,
+                    'google_phase': initial_outcome or 'not_sent',
+                    'google_http_status': google_failure_status,
+                    'independent_provider_send_count': 1})
+                # The common host proof validator receives the ORIGINAL OSM
+                # pool and image hashes. A model phrase or ungrounded name is
+                # never sufficient for acceptance, with or without Google.
+                return accept(alternate_payload,
+                    raw_json=json.dumps(alternate_payload, ensure_ascii=False) if
+                        isinstance(alternate_payload, dict) else '',
+                    raw_json_available=isinstance(alternate_payload, dict),
+                    provider_response_id=alternate_receipt.get('assistant_message_id'),
+                    check_received_pointers=True)
+            except (RetryableProviderError, PermanentProviderError) as alternate_error:
+                # A submitted/unknown alternate must be observed on the same
+                # durable request. Never dispatch another model in its place.
+                pending = getattr(researcher, 'identity_source_map_pending', None)
+                if (isinstance(alternate_error, RetryableProviderError)
+                        and callable(pending) and pending(story)):
+                    raise RetryableProviderError('identity_source_map_readback_required',
+                        retry_at=getattr(alternate_error, 'retry_at', None)) from alternate_error
+                record_identity_event(service, story['id'], 'identity_independent_image_route_unavailable', {
+                    'error_type': type(alternate_error).__name__,
+                    'code': str(alternate_error)[:100], 'google_phase': initial_outcome or 'not_sent'})
+                # The independently qualified TEXT route can still provide
+                # searches, but may not fabricate SOURCE/MAP proof.
+        planner = getattr(researcher, 'plan_identity_search', None)
         if not callable(planner):
             raise cause
         # The qualified text worker plans from observed anchors, OCR/previous
@@ -1178,6 +1247,11 @@ async def _suggest(service, story, transcript, candidates):
             check_received_pointers=not original_available,
             provider_response_id=(result.get('receipt') or {}).get('provider_response_id'))
     researcher = getattr(service.providers, 'research', None)
+    pending_image = getattr(researcher, 'identity_source_map_pending', None)
+    if scene and callable(pending_image) and pending_image(story):
+        # Source/map result from the other provider is already addressed.
+        # Reconcile it first, even if Google's quota has since recovered.
+        return await fallback(RetryableProviderError('identity_source_map_readback_required'))
     readback = getattr(researcher, 'has_identity_search_plan_readback', None)
     if callable(readback) and readback(story):
         # An original addressed operation precedes both fresh Google work and
