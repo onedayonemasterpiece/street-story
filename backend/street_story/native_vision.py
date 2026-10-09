@@ -35,16 +35,25 @@ def native_source_map_provider_schema(schema):
     layer: the original host schema and full geometry proof are still checked
     after the provider response. A provider rejection never establishes identity.
     """
-    supported = {'type', 'properties', 'items', 'enum', 'anyOf', 'description'}
+    supported = {'type', 'items', 'enum', 'anyOf', 'description'}
     def project(node):
         if isinstance(node, list):
             return [project(value) for value in node]
         if not isinstance(node, dict):
             return node
+        # The dictionary immediately beneath "properties" is a mapping from
+        # arbitrary field names to schema nodes, NOT itself a schema node.
+        # Filtering it by supported keyword names would erase every field.
         safe = {key: project(value) for key, value in node.items() if key in supported}
-        if isinstance(safe.get('properties'), dict):
+        if isinstance(node.get('properties'), dict):
+            safe['properties'] = {name: project(child)
+                for name, child in node['properties'].items()}
             safe['type'] = safe.get('type', 'object')
             safe['required'] = list(safe['properties'])
+            safe['additionalProperties'] = False
+        elif safe.get('type') == 'object':
+            safe['properties'] = {}
+            safe['required'] = []
             safe['additionalProperties'] = False
         return safe
     return project(schema)
