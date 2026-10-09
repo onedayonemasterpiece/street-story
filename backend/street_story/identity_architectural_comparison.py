@@ -12,6 +12,7 @@ import json
 from itertools import permutations
 
 from .identity_architectural_context import _subject_addresses, literal_address_card_selection
+from .identity_architectural_postal import complex_postal_member
 from .identity_candidate_policy import candidate_identity_eligible
 from .identity_proof import architectural_text_decision_schema
 from .identity_source_selection import observed_address_context
@@ -82,13 +83,23 @@ def publisher_address_relation(articles, physical_candidates):
                                 break
                     if compound_entries:
                         break
+            partial_members=[]
+            for entry in candidate['literal_address_entries']:
+                address=entry.get('address') or {}
+                street,house=address.get('street'),address.get('house_number')
+                if isinstance(street,str) and isinstance(house,str) and any(
+                        complex_postal_member(item['address_text'],street,house)
+                        for item in received):
+                    partial_members.append(entry['entry_id'])
             row['physical_links'].append({
                 'candidate_id':candidate['candidate_id'],
                 'exact_literal_entry_ids':list(dict.fromkeys(matches)),
                 'publisher_full_group_covered_by_distinct_verified_entrances':compound_entries,
+                'publisher_complex_postal_membership_entry_ids':list(dict.fromkeys(partial_members)),
                 'link_kind':('publisher_card_and_observed_footprint_or_entrance'
                     if matches else 'publisher_compound_group_matches_verified_entrances'
-                    if compound_entries else 'no_exact_publisher_address_join_observed'),
+                    if compound_entries else 'publisher_complex_contains_observed_address'
+                    if partial_members else 'no_exact_publisher_address_join_observed'),
                 'physical_identity_inferred':False})
         row['policy'] = ('Exact postal metadata supports a possible physical association only. '
             'A card may describe an entire historical complex; no match is also inconclusive '
