@@ -364,7 +364,8 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
     url = receipt['articles'][0]['url']
     receipt['articles'][0]['card_variants'] = [
         {'canonical_url':url, 'address_text':'Город, Тестовая улица, 6'}]
-    packet = prepare_architectural_comparison(story, candidates, receipt)
+    packet = prepare_architectural_comparison(story, candidates, receipt,
+        require_grounded_refs=True)
     assert 'publisher_and_OSM_literal_evidence_unjoined' in packet['prompt']
     assert 'postal_relationship_decision_by' in packet['prompt']
     assert 'physical_link_evidence' in packet['schema']['properties']
