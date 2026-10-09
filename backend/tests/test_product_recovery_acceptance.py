@@ -279,6 +279,38 @@ def test_between_identity_and_facts_is_not_terminal(tmp_path):
     assert harness.read_case(svc, case, item())['terminal'] is False
 
 
+def test_operator_stop_after_identity_ends_harness_without_acceptance_or_deadline_rewrite(tmp_path):
+    from street_story.research_control import stop_research
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    stop_research(svc, case['story_id'], purpose='facts')
+    result = harness.read_case(svc, case, item())
+    assert result['terminal'] and result['operator_stopped']
+    assert result['total_elapsed_s'] == 290
+    assert result['eligible_proved_count'] == 1
+    assert result['status'] == 'OPERATOR_STOPPED'
+    assert result['gates']['natural_product_terminal'] is False
+    now[0] = 600
+    harness.apply_hard_cap(svc, case['story_id'])
+    assert harness.read_case(svc, case, item())['product_outcome'] is None
+    assert harness.read_case(svc, case, item())['total_elapsed_s'] == 290
+
+
+@pytest.mark.parametrize('field,value', [('photo_sha256', 'other-photo'), ('identity_generation', 77)])
+def test_stale_operator_stop_does_not_terminate_current_harness(tmp_path, field, value):
+    from street_story.research_control import stop_research
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    stop_research(svc, case['story_id'], purpose='facts')
+    with svc.store.tx() as db:
+        research = json.loads(svc._story_row(db, case['story_id'])['research_json'])
+        research['research_controls']['facts'][field] = value
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), case['story_id']))
+    result = harness.read_case(svc, case, item())
+    assert not result['terminal'] and not result['operator_stopped']
+    assert result['status'] == 'RUNNING'
+
+
 def test_harness_forced_completion_cannot_pass_as_product_terminal(tmp_path):
     svc, now, case = readback_fixture(tmp_path)
     now[0] = 400

@@ -245,6 +245,8 @@ def block_directed_reference_inference(service, items):
 
 
 def acceptance_status(case):
+    if case.get('operator_stopped'):
+        return 'OPERATOR_STOPPED'
     outcome = (case.get('product_outcome') or {}).get('outcome')
     if outcome == 'resource_blocked':
         return 'BLOCKED'
@@ -320,6 +322,7 @@ def read_case(service, case, item):
     from street_story.identity_proof import verified_physical_identity
     from street_story.poi_memory import memory_keys, _review_snapshot
     from street_story.live_identity_context import identity_research_context
+    from street_story.research_control import research_stopped
     with service.store.connection() as db:
         row = service._story_row(db, case['story_id'])
         research = json.loads(row['research_json'] or '{}')
@@ -361,13 +364,20 @@ def read_case(service, case, item):
     if first_at is not None:
         case['first_eligible_elapsed_s'] = min(case.get('first_eligible_elapsed_s', float('inf')), max(0, first_at - started))
     outcome = research.get('automatic_research_outcome')
+    purpose = 'facts' if identity.get('status') == 'match' else 'identity'
+    stopped = not outcome and research_stopped(research, purpose,
+        photo_sha256=row['photo_sha256'], identity_generation=int(research.get('identity_generation') or 0))
     terminal = bool(outcome) or (bool(jobs) and not any(job['state'] in ACTIVE
         for job in jobs if job['kind'] in {'identity', 'identity_visual', 'research', 'refinement'}))
     # A match between stages is not terminal: the normal scheduler still needs
     # an opportunity to open its fact job. facts_ready/terminal outcome is final.
-    if identity.get('status') == 'match' and not outcome and row['state'] not in {'facts_ready', 'needs_review'}:
+    if identity.get('status') == 'match' and not outcome and not stopped and row['state'] not in {'facts_ready', 'needs_review'}:
         terminal = False
+    if stopped:
+        terminal = True
     finish = float(outcome.get('finished_at') or now) if outcome else now
+    if stopped:
+        finish = float(((research.get('research_controls') or {}).get(purpose) or {}).get('stopped_at') or now)
     total = max(0, finish - started) if terminal else max(0, now - started)
     candidate = next((candidate for candidate in identity.get('candidates') or []
         if candidate.get('candidate_id') == identity.get('candidate_id')), {})
@@ -381,14 +391,14 @@ def read_case(service, case, item):
         'identity_proof': verified_physical_identity(identity, photo_sha256=row['photo_sha256'],
             generation=int(research.get('identity_generation') or 0)),
         'canonical_poi_readback': len(proved) >= item['min_useful_facts'],
-        'natural_product_terminal': (outcome or {}).get('reason') != 'acceptance_upload_deadline_exceeded'}
+        'natural_product_terminal': not stopped and (outcome or {}).get('reason') != 'acceptance_upload_deadline_exceeded'}
     if item.get('acceptance_mode') == 'geometry_without_reference':
         gates['geometry_without_reference'] = (identity.get('proof_kind') == 'geometry'
             and identity.get('visual_reference_verified') is False
             and not identity.get('reference_evidence'))
     live_receipts = [json.loads(attempt['receipt_json'] or '{}') for attempt in attempts]
     live_receipts = [receipt for receipt in live_receipts if receipt.get('provider_id') == 'google-live']
-    case.update(status='RUNNING', uploaded_at=started, elapsed_from_upload_s=max(0, now-started),
+    case.update(status='RUNNING', operator_stopped=bool(stopped), uploaded_at=started, elapsed_from_upload_s=max(0, now-started),
         conditional_identity_context=identity_research_context(service, row, research),
         total_elapsed_s=total, terminal=terminal, state=row['state'], error_code=row['error_code'],
         identity=identity, candidate_map_object=candidate.get('map_object'), physical_id=identity.get('candidate_id'),
@@ -418,6 +428,7 @@ def read_case(service, case, item):
 
 def apply_hard_cap(service, story_id):
     from street_story.research_budget import finish_attempt
+    from street_story.research_control import research_stopped
     with service.store.tx() as db:
         row = service._story_row(db, story_id)
         research = json.loads(row['research_json'] or '{}')
@@ -425,6 +436,9 @@ def apply_hard_cap(service, story_id):
             return
         elapsed = service.store.now() - row['created_at']
         matched = (research.get('visual_identity') or {}).get('status') == 'match'
+        if research_stopped(research, 'facts' if matched else 'identity',
+                photo_sha256=row['photo_sha256'], identity_generation=int(research.get('identity_generation') or 0)):
+            return  # Operator Stop is reported separately, never rewritten as natural completion.
         # Allow the application deadline watcher one scheduling tick; if the
         # harness must intervene, natural_product_terminal explicitly fails.
         if elapsed >= CAPS['total_seconds']+1 or not matched and elapsed >= CAPS['identity_seconds']+1:
