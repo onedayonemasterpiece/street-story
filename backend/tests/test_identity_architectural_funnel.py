@@ -235,3 +235,51 @@ def test_single_MODEL_shortlist_body_does_not_promote_identity_via_T():
     assert final['accepted'] is False
     assert final['T_shortlist_and_REF_plan']['after_T_active_count']==1
     assert final['T_shortlist_and_REF_plan']['identity_authorized_by_shortlist_count_alone'] is False
+
+
+
+def test_independent_closed_model_nomination_reopens_G_reserve_without_new_inference():
+    story,candidates,decision,receipt,g=_inputs()
+    prior={'original_source_sha256':receipt['original_source_sha256'],
+        'provider_send_state':'response_closed','provider_outcome':'completed',
+        'original_model_response_sha256':'d'*64,
+        'original_model_response':{'decision':'uncertain',
+            'candidate_id':'osm:way:9'},
+        'raw_response_byte_verified':False}
+    packet=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'],
+        independent_closed_T_leads=[prior])
+    assert packet['G_original_active_ids']==['osm:way:7','osm:way:8']
+    assert packet['original_active_ids']==['osm:way:7','osm:way:8','osm:way:9']
+    assert packet['original_reserve_ids']==['osm:way:10']
+    assert packet['model_input']['G_active_count']==2
+    assert packet['model_input']['combined_active_count']==3
+    assert packet['model_input']['independent_T_model_leads_reopened_not_verified'][0][
+        'source']=='separate_CLOSED_model_nomination_not_physical_proof'
+    assert packet['original_map_count']==4
+    prepared=prepare_architectural_pool(story,candidates,receipt,
+        g_funnel=g,g_source_sha256=receipt['original_source_sha256'],
+        independent_closed_T_leads=[prior])
+    assert prepared['candidate_ids']==['osm:way:7','osm:way:8','osm:way:9']
+    assert 'osm:way:9' in prepared['prompt']
+    assert prepared['t_g_funnel_context']['original_reserve_ids']==['osm:way:10']
+
+
+def test_forged_or_unclosed_independent_model_lead_cannot_expand_G_active():
+    story,candidates,decision,receipt,g=_inputs()
+    genuine={'original_source_sha256':receipt['original_source_sha256'],
+        'provider_send_state':'response_closed','provider_outcome':'completed',
+        'original_model_response_sha256':'d'*64,
+        'original_model_response':{'candidate_id':'osm:way:9'}}
+    for mutate,expected in [
+        ({'provider_send_state':'unknown'},'not_closed'),
+        ({'original_source_sha256':'f'*64},'provenance_invalid'),
+        ({'original_model_response_sha256':'invalid'},'provenance_invalid'),
+        ({'original_model_response':{'candidate_id':'osm:way:999'}},'not_in_original_observed_map')]:
+        changed={**genuine,**mutate}
+        with pytest.raises(ValueError,match=expected):
+            prepare_t_g_funnel(g,candidates,receipt['articles'],
+                source_sha256=receipt['original_source_sha256'],
+                g_source_sha256=receipt['original_source_sha256'],
+                independent_closed_T_leads=[changed])
