@@ -33,6 +33,9 @@ def _physical_metadata(entry):
         'heritage:website','ref:whc') if isinstance(tags.get(key),str)}
     entrance_ids=item.get('building_entrance_node_ids') or []
     return {'literal_address':address,'observed_source_links':sources,
+        'literal_address_entries':(item.get('literal_address_entries') or [])
+             if isinstance(item.get('literal_address_entries') or [],list) else [],
+        'observed_osm_name':item.get('observed_name'),
         'observed_entrance_node_ids':entrance_ids[:20] if isinstance(entrance_ids,list) else [],
         'osm_type':item.get('type') or
             (item.get('map_object') or {}).get('type')}
