@@ -127,6 +127,12 @@ and physical subject. Private quote labels address literal slices of the exact
 frozen packet and selected own evidence; they do not supply a support verdict.
 Paraphrased quotes remain invalid. Original responses and UNKNOWN operations stay
 immutable and are observed under their original contract after restart.
+Closed rejected or exhausted reviews stop automatic work only when the complete
+review recipe is unchanged: candidate revisions, owner context, eligible ledger
+and verifier contract. Changed claims or context remain reviewable. A source
+manifest with no remaining actions can finish honestly even with unresolved
+candidates; deferred source pages, UNKNOWN requests and joined continuations
+still block that conclusion. Exhaustion never establishes support for a fact.
 
 First replay saved evidence and negative controls, including the wrong dormitory,
 house 21 versus 22, water tower versus 121 and unresolved6/6A. Then use one frozen
