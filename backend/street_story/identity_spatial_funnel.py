@@ -60,14 +60,19 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
             not Draft202012Validator(visual_spatial_choice_schema()).is_valid(model_output)):
         return invalid('invalid_model_response')
     packet=options_packet or {}
-    labels={}
-    for label,cid in (packet.get('private_label_to_osm_id') or {}).items():
-        if not (str(label).isdecimal() and isinstance(cid,str) and
-                cid.startswith(('osm:way:','osm:relation:'))):
-            return invalid('invalid_original_osm_label_mapping')
-        labels[int(label)]=cid
+    # The neutral scene also labels roads and many non-building OSM ways.
+    # ONLY the separately observed PHYSICAL body index may become G/T
+    # candidate inventory. A road-way label is not a physical building.
     index_labels={row[0] for row in packet.get('all_received_physical_bodies') or []
                   if isinstance(row,(tuple,list)) and row and type(row[0]) is int}
+    labels={}
+    for label,cid in (packet.get('private_label_to_osm_id') or {}).items():
+        if not str(label).isdecimal() or int(label) not in index_labels:
+            continue
+        if (not isinstance(cid,str) or
+                not cid.startswith(('osm:way:','osm:relation:'))):
+            return invalid('invalid_original_physical_osm_label')
+        labels[int(label)]=cid
     if not labels or set(labels)!=index_labels:
         return invalid('physical_osm_inventory_incomplete')
     if (packet.get('version')!='street_story.g_spatial_options.v3' or
