@@ -580,6 +580,7 @@ async def acquire_regional_text(service, story, candidates, request):
             'text_sha256': hashlib.sha256(text.encode()).hexdigest(), 'text': text,
             'raw_body_sha256_verified': True, 'input_kind': 'acquired_article_text',
             'title': page.get('title') or '', 'address': page.get('address_text') or '',
+            'address_provenance': page.get('address_provenance') or '',
             'coordinates': page.get('coordinates'), 'fetched_at': page.get('fetched_at'),
             'cache_hit': page.get('cache_hit', False), 'lookup_candidate_ids': ids,
             'card_variants': metadata_by_url.get(page['canonical_url'], []),
