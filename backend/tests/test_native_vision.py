@@ -188,6 +188,64 @@ async def test_source_map_quota_denial_is_unsent_and_large_input_reaches_native(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('violation', [None, 'uniqueItems', 'allOf'])
+async def test_source_map_native_subset_preserves_frozen_host_constraints(tmp_path, violation):
+    from jsonschema import ValidationError
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema['properties']['observations']['uniqueItems'] = True
+    schema['allOf'] = [{'if': {'properties': {'status': {'const': 'mismatch'}}},
+        'then': {'properties': {'confidence': {'maximum': 1 if violation != 'allOf' else .5}}}}]
+    original_schema = copy.deepcopy(schema)
+    original_request = client.request
+    async def request(method, params, timeout=30):
+        if method == 'turn/start':
+            def check(node):
+                if isinstance(node, dict):
+                    assert not {'uniqueItems', 'allOf', 'if', 'then'} & node.keys()
+                    for value in node.values():
+                        check(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        check(value)
+            check(params['outputSchema'])
+        response = await original_request(method, params, timeout)
+        if method == 'thread/read' and violation == 'uniqueItems':
+            message = response['thread']['turns'][0]['items'][-1]
+            payload = json.loads(message['text'])
+            payload['observations'] *= 2
+            message['text'] = json.dumps(payload)
+        return response
+    client.request = request
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    try:
+        if violation:
+            with pytest.raises(RetryableProviderError, match='native_visual_waiting') as caught:
+                await provider.compare_source_map(story, schema, 'Geometry operation', images,
+                                                  {'attempt_id': 'native-subset'}, host)
+            assert isinstance(caught.value.__cause__, ValidationError)
+            assert receipts[-1]['phase'] == 'failed'
+        else:
+            result = await provider.compare_source_map(story, schema, 'Geometry operation', images,
+                                                      {'attempt_id': 'native-subset'}, host)
+            assert result['receipt']['phase'] == 'completed'
+            receipt = result['receipt']
+            binding = {**receipt['binding'], **{key: receipt[key] for key in (
+                'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+            await provider.compare_source_map(story, {}, 'Changed input', [], binding, {})
+            assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+        frozen = receipts[-1]['frozen_source_map']
+        assert frozen['host_contract']['properties']['observations']['uniqueItems'] is True
+        assert frozen['host_contract']['allOf'] == original_schema['allOf']
+        assert frozen['host_only_constraint_paths']
+        assert schema == original_schema and len(sends) == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
 async def test_resource_denial_preserves_dispatch_phase_and_authority_retry(tmp_path, caplog):
     # The public consumer CI does not install the private resource SDK. Exercise
     # its documented exception contract without making the suite depend on it.

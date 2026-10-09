@@ -495,3 +495,21 @@ passed **202 tests in 55.74 s**; catalog, repair, first-wave, pointer, UNKNOWN
 and Prussia-admission checks passed **80 tests in 25.11 s**. Ruff also passed.
 Actual new release acceptance remains pending;
 these mock transport tests do not establish full product PASS or a deployment.
+
+On frozen `2b0c9f1`, full hosted backend CI passed **2505 tests, 5 skipped** with
+Ruff passing. Cold photo132 naturally failed at **180.021 s**, no identity or
+facts. Its primary Google request closed HTTP503; Luna reached the real Native
+turn with **77,438 bytes** of owned textual input but closed HTTP400 because
+`uniqueItems` is unsupported in Native strict structured output. Thus the local
+byte refusal is removed, but successful Luna spatial inference is still unproved.
+Live's complete 48,705-byte setup reached the host and failed before text send
+with `ConnectionClosedError`; no confirmed Live context overflow is established.
+
+Prepared Native transport now removes unsupported uniqueness and conditional
+composition keywords from only the provider schema. The original host schema
+is separately frozen unchanged and validates duplicates and conditional evidence
+on return. This also prevents injecting transport `additionalProperties=false`
+into host `if` conditions, which could otherwise make them silently inapplicable.
+Exact original schemas/images remain bound during readback. Final affected
+checks passed **59 tests in 14.37 s**, including deliberately invalid duplicate
+and conditional answers; no weaker proof or artificial input gate was introduced.
