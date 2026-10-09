@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 
 def model_nominated_detail(story, previous_response, previous_options, *,
-                           candidates=(), max_bodies=4):
+                           candidates=(), max_bodies=4, prior_host_unaccepted=False):
     from .identity_spatial_choice import visual_spatial_choice_schema
     from .identity_scene import render_scene
     from .identity_model_context import physical_decision_context
@@ -20,7 +20,9 @@ def model_nominated_detail(story, previous_response, previous_options, *,
 
     if (not isinstance(previous_response,dict)
             or not Draft202012Validator(visual_spatial_choice_schema()).is_valid(previous_response)
-            or previous_response['decision'] not in {'candidate','needs_detail'}
+            or previous_response['decision'] not in {'candidate','needs_detail','accept'}
+            or (previous_response['decision']=='accept' and
+                (not prior_host_unaccepted or not previous_response['request_detail_labels']))
             or previous_options.get('version')!='street_story.g_spatial_options.v3'):
         return None
     label_to_id = previous_options.get('private_label_to_osm_id') or {}
