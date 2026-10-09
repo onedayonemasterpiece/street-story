@@ -366,11 +366,37 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             or set(item['article_id'] for item in assessments)!=set(pool['article_ids'])):
         raise ValueError('unassessed_real_publisher_article')
     decision={k:v for k,v in normalized.items() if k!='article_comparisons'}
+    # Resolve the span IDs chosen by the MODEL; the model never supplies
+    # a mutable quote string. A wrong article ID/ref cannot be corrected.
+    chosen_spans=[]
+    resolved=[]
+    for item in decision.get('correspondences') or []:
+        span=(pool.get('source_span_refs') or {}).get(item.get('source_span_ref'))
+        if not span or span['article_id']!=item.get('article_id'):
+            raise ValueError('source_span_ref_wrong_article')
+        original=next((a for a in pool['checked_articles']
+            if a['article_id']==span['article_id']),None)
+        if (original is None or original['text_sha256']!=span['source_text_sha256']
+                or original['text'][span['start']:span['end']]!=span['source_quote']):
+            raise ValueError('source_span_ref_text_changed')
+        chosen_spans.append({'article_id':span['article_id'],
+            'source_span_ref':item['source_span_ref'],
+            'source_text_sha256':span['source_text_sha256']})
+        converted={k:v for k,v in item.items() if k!='source_span_ref'}
+        converted['source_quote']=span['source_quote']
+        resolved.append(converted)
+    decision['correspondences']=resolved
     base_schema=copy.deepcopy(pool['schema'])
     base_schema['properties'].pop('article_comparisons')
     base_schema['required'].remove('article_comparisons')
+    item_schema=base_schema['properties']['correspondences']['items']
+    item_schema['properties'].pop('source_span_ref')
+    item_schema['properties']['source_quote']={'type':'string','maxLength':600}
+    item_schema['required'].remove('source_span_ref')
+    item_schema['required'].append('source_quote')
     decision=normalize_architectural_decision(decision,base_schema)
     reviewed={'model_contrastive_article_assessments':assessments,
+        'model_selected_source_span_references':chosen_spans,
         'source_response_closed':True,'accepted':False,
         'evidence_model_response_sha256':hashlib.sha256(json.dumps(
             model_answer,sort_keys=True,ensure_ascii=False).encode()).hexdigest(),
