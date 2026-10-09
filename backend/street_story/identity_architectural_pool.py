@@ -158,7 +158,7 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
     # historical alias. Give the SOURCE+TEXT model literal, SHA-bound records
     # and observed OSM footprint/entrance members, with reference handles.
     from .identity_architectural_evidence import (
-        literal_evidence_inventory, physical_link_schema)
+        literal_evidence_inventory, physical_link_schema, compact_model_evidence)
     inventory=literal_evidence_inventory(story,list(observed.values()),checked,
         candidate_ids=nominated)
     aids=[a['article_id'] for a in checked]
@@ -199,9 +199,7 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'model_excerpt_sha256':row['text_sha256'],
             'truncated_from_full_publisher_article':row['full_original_text_sha256']!=row['text_sha256']}
             for row in checked],
-        'publisher_and_OSM_literal_records_NOT_prejoined':{
-            'publisher_articles':inventory['articles'],
-            'observed_OSM_bodies':inventory['physical_subjects']},
+        'publisher_and_OSM_literal_records_NOT_prejoined':compact_model_evidence(inventory),
         'host_postal_address_interpretation':False,
         'unresolved_no_GPS_subject':not bool(nominated),
         'allow_identity_without_observed_OSM':False,
