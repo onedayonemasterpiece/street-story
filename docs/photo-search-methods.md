@@ -162,14 +162,28 @@ Late or partial cards remain visible, but do not authorize automatic first-two
 selection or another mandatory judge. Independent text fallback preserves the
 received packet; its Native addressed prompt can still be large, and Live's
 24 KB planning limit remains a real limitation.
+Early catalogue preparation can miss observed cold lookups taking 5–15 seconds.
+A complete literal address lookup with 1–2 results can supply their actual bodies
+for the second joint call. A late broad or partial catalogue cannot currently
+produce that text proof within the same two-call budget. Preserve its inventory
+and continue useful independent work; do not invent first-two selection or a third
+mandatory judge. This is a material limitation of the prepared text path.
 
-The latest measured cold canary (`c528647`, photo104) correctly identified the
+The `c528647` cold canary (photo104) correctly identified the
 physical tower by geometry in 17.23 s, but accepted zero facts. Its closed reviews
 copied candidate prose instead of literal source evidence and were rejected.
 The operator stopped it at 168.69 s. This establishes an identity result, not
 product acceptance. Private review schemas now enumerate only exact frozen quote labels. Saved
 answers verify that candidate prose is rejected at this transport boundary;
 new live fact acceptance remains unverified.
+The next frozen canary (`80fb6cd`) stopped at 29.58 seconds before identity: its
+optional joint follow-up was known not sent after a temporary shared TPM denial.
+The caller prevented the closed initial plan from continuing independently.
+This failure does not prove global quota exhaustion.
+Closed initial plans now retain complete bounded JSON/schema/input binding and
+can continue after a definitively unsent optional follow-up. Reuse checks SOURCE,
+camera/context, configuration and the unchanged strict contract; UNKNOWN still
+prevents replacement. The new path passed 48 merged offline checks and awaits canary.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates

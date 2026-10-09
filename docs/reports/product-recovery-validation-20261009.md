@@ -21,11 +21,23 @@ selected buildings were not started after a failed canary.
 | `45197c6` | None | 23.69 s | 0 | Closed Google 503, then independent text preflight limits |
 | `2142455` | Correct OSM relation, geometry 15.67 s | 480.94 s | 0 | Natural facts deadline; nine nonliteral review quotes, later extraction schema failure |
 | `c528647` | Correct OSM relation, geometry 17.23 s | Stop 168.69 s | 0 | Seven candidate-as-quote copies rejected; all observed provider receipts closed before harness termination |
+| `80fb6cd` | None | 29.58 s | 0 | Optional joint follow-up denied before send by shared TPM; caller blocked reuse of the closed initial plan |
 
 The correct photo104 physical object is `osm:relation:3665416`, independently
 labelled for reporting. Neither its identity nor raw extracted statements count
 as useful accepted facts. First useful reviewed fact time is unavailable in these
 runs. Operator Stop is separate from natural completion and cannot earn PASS.
+The `80fb6cd` refusal had an observed retry delay of 50.776 seconds. Independent
+helper planning was never dispatched, so this is not evidence of global provider
+unavailability. Further paid cases were stopped while fixing that caller transition.
+The initial response hash survives, but its complete successful JSON was not
+persisted; it cannot be reconstructed honestly for recovery of this expired run.
+The follow-up correction persists a complete bounded, host-validated original
+answer before an optional TEXT operation. Only known `not_sent` can reuse its
+valid nominations without another planner. SOURCE, camera/context, configuration,
+schema and receipt changes block reuse; malformed or UNKNOWN decisions do not
+authorize identity. Twelve new regressions and 66 affected isolated checks passed;
+the merged initial-plan/diagnostics/fence set passed 48 tests in 39.81 seconds.
 
 ## Corrections and offline evidence
 
@@ -41,6 +53,12 @@ Wiki article text is complementary. Text-only planning retains the full received
 packet: the saved Native base prompt shrank from 65,672 to 62,507 characters, but the
 strict schema yields 110,579 addressed characters. Live correctly refuses planning
 inputs above 24 KB. This remains an input-size limitation, not global quota evidence.
+The early three-second catalogue window can miss observed cold HTTP responses of
+5–15 seconds. A complete narrow lookup returning 1–2 cards can deliver their bodies
+for the second joint call; late broad/partial inventory cannot currently produce a
+text proof within that two-call budget. Photo102 has actual bound OSM address entries,
+but no retained blind number-query response proves that its lookup will be narrow.
+This limitation is separate from completed geometry or reference proofs.
 
 Headless candidate IDs are already host-assigned from frozen batch/index. Omitted
 advisory model keys no longer discard otherwise complete claims. The unchanged
@@ -85,8 +103,8 @@ All 11 critical requirements remain unchanged (requirements digest
 
 ## Usage and remaining acceptance
 
-Observed diagnostic totals as of 00:19 UTC: 78 Google SDK invocations, 34 closed
-model answers reporting 1,238,013 total tokens; 20 typed HTTP failures and 24 unknown
+Observed diagnostic totals as of 00:42 UTC: 79 Google SDK invocations, 35 closed
+model answers reporting 1,302,877 total tokens; 20 typed HTTP failures and 24 unknown
 outcomes. Twelve closed Live operations report 59,742 total tokens. Three actual
 GigaChat sends in `2142455` have unreported token usage; addressed Native outcomes
 also contain unknown usage. Provider attempts are not inference counts. These
