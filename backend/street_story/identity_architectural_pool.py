@@ -15,12 +15,10 @@ import json
 import re
 
 from .identity_architectural_comparison import normalize_architectural_decision
-from .identity_architectural_context import _subject_addresses, _physical_subject
+from .identity_architectural_context import _physical_subject
 from .identity_proof import architectural_text_decision_schema, freeze_architectural_text_proof, TEXT_CONTRACT
-from .identity_source_selection import observed_address_context
 
-# These words only choose literal passage spans to transmit. Their presence
-# never proves a match or rules out an article, and no building name appears.
+# SHA syntax protects source pointer integrity; there is no facade keyword lexicon.
 _HEX_SHA = re.compile(r'[0-9a-f]{64}')
 
 
