@@ -52,6 +52,7 @@ def physical_decision_context(story, candidates, manifest):
     from .identity_map_context import osm_geometry_context
     from .identity_spatial_features import _local, _point
     from .identity_corner_context import observed_connected_pairs, preserve_one_connected_pair
+    from .identity_road_context import observed_bidirectional_road_axes
     import math
     entries = scene_entries(story, candidates)
     addresses = observed_address_context(story, entries)
@@ -127,6 +128,8 @@ def physical_decision_context(story, candidates, manifest):
                 'Only already observed OSM boundary vertices are used. Photo crop/calibration, '
                 'which facade is visible, GPS uncertainty and horizontal yaw remain unknown. '
                 'No body is removed when this measurement is unavailable.'},
+        'bidirectional_road_axis_cues': observed_bidirectional_road_axes(
+            story, candidates, manifest),
         'segment_columns': ['ring_index', 'segment_index', 'length_m', 'start_east_north_m', 'end_east_north_m'],
         'connected_pair_columns': ['ring_index', 'first_segment_index', 'second_segment_index',
             'observed_turn_degrees'],
