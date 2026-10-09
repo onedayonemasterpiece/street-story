@@ -283,10 +283,9 @@ def bounded_physically_linked_article_ids(catalogue, *, max_articles=2):
     rows = (catalogue or {}).get('results') or []
     links = (catalogue or {}).get('physical_address_links') or {}
     ids = list(dict.fromkeys(row['article_id'] for row in rows
-        if isinstance(row, dict) and isinstance(row.get('article_id'), str)
-        and (links.get(row['article_id']) or {}).get('matched_observed_physical_subjects')
-        or isinstance(row,dict) and isinstance(row.get('article_id'),str)
-        and (links.get(row['article_id']) or {}).get('complex_postal_membership_hypotheses')))
+        if isinstance(row,dict) and isinstance(row.get('article_id'),str)
+        and any((links.get(row['article_id']) or {}).get(key) for key in (
+            'matched_observed_physical_subjects','complex_postal_membership_hypotheses'))))
     if not isinstance(max_articles, int) or isinstance(max_articles, bool) or max_articles < 1:
         raise ValueError('invalid_architectural_article_prefetch_limit')
     return {'candidate_article_ids':ids,
