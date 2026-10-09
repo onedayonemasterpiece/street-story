@@ -5,6 +5,7 @@ credential hopping or new POI/job system is involved.
 """
 from __future__ import annotations
 import asyncio
+import base64
 import copy
 import hashlib
 import json
@@ -714,6 +715,50 @@ class ProductResearchAdapter:
         return any(self._fact_pool_unknown(receipt) or
                    receipt.get('phase') == 'completed' and receipt.get('result')
                    for receipt in self._identity_plan_receipts(story))
+
+    async def plan_identity_source_map(self, story, prompt, schema,
+                                      source_mime, source_bytes, map_mime, map_bytes):
+        """Independent qualified OpenCode SOURCE/MAP visual route, not REF.
+
+        The same durable attempt/admission and exact image readback as SOURCE/REF
+        are used. A semantic verdict alone cannot establish identity: the
+        caller passes it to the existing physical geometry proof validator.
+        """
+        if not self.opencode_vision_available:
+            raise RetryableProviderError('identity_source_map_visual_route_unqualified',
+                                         retry_at=self.service.store.now()+300)
+        parts = []
+        for label, mime, raw in (('SOURCE', source_mime, source_bytes), ('MAP', map_mime, map_bytes)):
+            if (mime not in {'image/jpeg', 'image/png', 'image/webp'}
+                    or not isinstance(raw, bytes) or not raw or len(raw) > 4 * 1024 * 1024):
+                raise PermanentProviderError('identity_source_map_bytes_invalid')
+            parts.append({'label': label, 'mime_type': mime,
+                          'sha256': hashlib.sha256(raw).hexdigest(),
+                          'data': base64.b64encode(raw).decode('ascii')})
+        from .visual_attachments import direct_source_map_parts
+        snapshot = {'kind': 'source_map', 'parts': parts}
+        direct_source_map_parts(snapshot)
+        unit = canonical(['source-map-visual-v1', story['photo_sha256'],
+            story.get('_identity_generation', 0), story.get('_identity_research_control_revision', 0),
+            [(part['label'], part['sha256']) for part in parts],
+            hashlib.sha256(prompt.encode()).hexdigest(), hashlib.sha256(canonical(schema).encode()).hexdigest()])
+        # Once a model closed an invalid/sent unit, keep its evidence instead
+        # of spending another turn on the identical input. Unknown sends may
+        # only be read back through the original attempt inside self.run.
+        logical = hashlib.sha256(canonical([story['id'], story.get('_identity_generation', 0),
+            'vision_source_map', unit]).encode()).hexdigest()
+        with self.service.store.connection() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE logical_id=? '
+                             'ORDER BY created_at DESC,rowid DESC LIMIT 1', (logical,)).fetchone()
+        prior = json.loads(row['receipt_json'] or '{}') if row else {}
+        if (prior.get('phase') in {'failed', 'aborted', 'response_completed'}
+                and prior.get('provider_send_state') != 'not_sent'):
+            raise PermanentProviderError('identity_source_map_prior_closed_failure')
+        # We use the verified vision role with a read-only tool-free agent,
+        # never the search role and never a second scheduler/POI contour.
+        return await self.run(story, 'vision_source_map', unit,
+            lambda binding: self.client.plan_identity_source_map(prompt, binding, schema, snapshot),
+            client=self.client)
 
     async def plan_identity_search(self, story, prompt, schema):
         """One qualified tool-free planning operation on the existing text pool."""
