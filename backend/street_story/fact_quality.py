@@ -12,12 +12,32 @@ from typing import Any
 
 _SPACE = re.compile(r"\s+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|[\r\n]+|\s*;\s*")
-_YEAR = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})\b")
+_CLAUSE_SPLIT = re.compile(
+    r",\s*(?=(?:а\s+вместо|однако|поэтому)\b)",
+    re.IGNORECASE,
+)
+_INLINE_HEADING = re.compile(
+    r".*?\b(?:интересн\w*\s+факт\w*|история\s+создания)\b[:\s]*",
+    re.IGNORECASE,
+)
+_RELATIVE_ASIDE = re.compile(
+    r",\s*(?:именем|в\s+честь)\s+котор\w*[^,]{0,120},\s*",
+    re.IGNORECASE,
+)
+_TEMPORAL_MARKER = re.compile(
+    r"\b(?:"
+    r"В\s+(?:начале|конце|середине)\s+(?:[IVXLCDM]+|\d{3,4})\s*(?:века|столетия)?|"
+    r"(?:В|К|С|До|После)\s+\d{3,4}\s+(?:году|года)|"
+    r"(?:Летом|Зимой|Осенью|Весной)\s+\d{3,4}\s+года"
+    r")\b",
+    re.IGNORECASE,
+)
+_YEAR = re.compile(r"(?<!\d)(?:1[0-9]{3}|20[0-9]{2}|[5-9][0-9]{2})(?!\d)(?![-‑–—](?:лет|лети|летн|й|я|у)\w*)")
 _BAD = re.compile(
     r"(?:интересн\w*\s+факт|истори\w*\s+создани|смотрите\s+также|"
     r"\b(?:copyright|license|лицензи\w*|фотограф\w*|автор\s+фото|"
     r"фото\s*[:—-]|изображени\w*|читать\s+далее|подробнее|вечером|"
-    r"как\s+добраться|где\s+наход\w*|новая\s+жизн\w*|цены\s+в|экскурси\w*)\b)",
+    r"как\s+добраться|где\s+наход\w*|новая\s+жизн\w*|украша\w*\s+собой|цены\s+в|экскурси\w*)\b)",
     re.IGNORECASE,
 )
 _PERSONAL = re.compile(
@@ -31,11 +51,12 @@ _HEADING = re.compile(
 )
 _ROLE = re.compile(
     r"^(?:архитектор|основатель|заказчик|владелец|автор\s+проекта|"
-    r"первоначальное\s+назначение|современное\s+назначение)\b",
+    r"первоначальное\s+назначение|современное\s+назначение|проект\s+архитектора)\b",
     re.IGNORECASE,
 )
+_CONSTRUCTION_ACTION = r"(?:постро(?:ен\w*|ил\w*|ить|ят\w*)|строительств\w*|залож\w*|возвед\w*|сооруж\w*)"
 _SIGNAL = re.compile(
-    r"(?:постро\w*|строительств\w*|залож\w*|заверш\w*|возвед\w*|сооруж\w*|основан\w*|откры\w*|"
+    rf"(?:{_CONSTRUCTION_ACTION}|заверш\w*|основан\w*|откры\w*|"
     r"реконстру\w*|реставр\w*|восстанов\w*|снес\w*|демонтир\w*|"
     r"разруш\w*|передан\w*|вош[её]л\w*|стал\w*\s+частью|"
     r"использовал\w*|размещал\w*|посетил\w*|посещал\w*|"
@@ -47,15 +68,17 @@ _SIGNAL = re.compile(
     re.IGNORECASE,
 )
 _KINDS = (
-    ("construction", re.compile(r"(?:постро\w*|строительств\w*|залож\w*|возвед\w*|сооруж\w*)", re.IGNORECASE)),
-    ("architect", re.compile(r"(?:архитектор|автор\s+проекта|спроектир\w*)", re.IGNORECASE)),
+    ("construction", re.compile(_CONSTRUCTION_ACTION, re.IGNORECASE)),
+    ("architect", re.compile(r"(?:архитектор|автор\s+проекта|проект\s+архитектора|спроектир\w*)", re.IGNORECASE)),
     ("foundation", re.compile(r"(?:основател\w*|основан\w*)", re.IGNORECASE)),
     ("reconstruction", re.compile(r"(?:реконстру\w*|реставр\w*|восстанов\w*)", re.IGNORECASE)),
-    ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*)", re.IGNORECASE)),
+    ("demolition", re.compile(r"(?:снес\w*|демонтир\w*|разруш\w*|разобрал\w*)", re.IGNORECASE)),
     ("ownership", re.compile(r"(?:передан\w*|вош[её]л\w*|стал\w*\s+частью|принадлеж\w*|одно\s+из\s+зданий|филиал\w*)", re.IGNORECASE)),
     ("visit", re.compile(r"(?:посетил\w*|посещал\w*|прибыл\w*|присутствовал\w*)", re.IGNORECASE)),
     ("name", re.compile(r"(?:имел\w*\s+назван\w*|называл\w*)", re.IGNORECASE)),
-    ("use", re.compile(r"(?:использовал\w*|размеща\w*|назначени\w*|служил\w*|перестал\w*|работает\s+экспозици\w*)", re.IGNORECASE)),
+    ("use", re.compile(r"(?:использовал\w*|размеща\w*|назначени\w*|служил\w*|перестал\w*|потерял\w*\s+оборонительн\w*|работает\s+экспозици\w*)", re.IGNORECASE)),
+    ("status", re.compile(r"(?:символ\w*|является\s+памятник\w*|получил\w*\s+статус)", re.IGNORECASE)),
+    ("existence", re.compile(r"(?:существовал\w*)", re.IGNORECASE)),
     ("opening", re.compile(r"(?:откры\w*)", re.IGNORECASE)),
     ("location", re.compile(r"(?:наход\w*|располож\w*)", re.IGNORECASE)),
     ("structure", re.compile(r"(?:имеет\b|имеют\b|состоит\b|состоят\b)", re.IGNORECASE)),
@@ -69,6 +92,8 @@ _STOP = {
 
 def compact_fact_text(raw: str, limit: int = 180) -> str:
     text = _SPACE.sub(" ", str(raw or "")).strip(" \t\r\n-•")
+    text = re.sub(r"\s*\[\d{1,3}\]\s*", " ", text).strip()
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     if len(text) <= limit:
         return text
     stops = [pos + 1 for mark in (".", ";") if (pos := text.rfind(mark, 0, limit)) >= 60]
@@ -92,7 +117,14 @@ def _candidate_score(text: str, index: int) -> tuple[int, int, int]:
 
 
 def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[str | None, tuple[int, int, int] | None]:
-    text = compact_fact_text(sentence)
+    text = _SPACE.sub(" ", str(sentence or "")).strip(" \t\r\n-•")
+    inline_heading = _INLINE_HEADING.search(text)
+    if inline_heading:
+        text = text[inline_heading.end():].strip(" :—-")
+    heading = _HEADING.search(text)
+    if heading:
+        text = text[heading.end():].strip(" :—-")
+    text = _RELATIVE_ASIDE.sub(" ", text)
     if prior_year and re.match(r"^с\s+того\s+же\s+года\b", text, re.IGNORECASE):
         text = re.sub(
             r"^с\s+того\s+же\s+года\b",
@@ -101,23 +133,30 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
             count=1,
             flags=re.IGNORECASE,
         )
-    if _HEADING.search(text):
-        signal = _ROLE.search(text) or _SIGNAL.search(text)
-        if signal is None:
-            return None, None
-        text = compact_fact_text(text[signal.start():])
     bad = _BAD.search(text)
     if bad:
         signal = _SIGNAL.search(text, bad.end()) or _ROLE.search(text, bad.end())
         if signal is None:
             return None, None
-        text = compact_fact_text(text[signal.start():])
+        prefix = text[bad.end():signal.start()]
+        temporal_matches = list(_TEMPORAL_MARKER.finditer(prefix))
+        temporal = temporal_matches[-1] if temporal_matches else None
+        start = bad.end() + temporal.start() if temporal else signal.start()
+        text = text[start:]
     signal = _ROLE.search(text) or _SIGNAL.search(text)
-    if signal is not None and signal.start() > 60:
-        # Typical legacy image captions lead a useful sentence. Once the first
-        # factual predicate is far into the string, keep the claim rather than
-        # the caption-like prefix.
-        text = compact_fact_text(text[signal.start():])
+    if signal is not None:
+        temporal_matches = list(_TEMPORAL_MARKER.finditer(text[:signal.start()]))
+        if temporal_matches:
+            text = text[temporal_matches[-1].start():]
+        elif signal.start() > 60:
+            text = text[signal.start():]
+    text = compact_fact_text(text)
+    if re.search(r"(?:снес\w*|разобрал\w*|демонтир\w*|разруш\w*)", text, re.IGNORECASE):
+        comma = text.find(",")
+        if comma >= 12:
+            text = text[:comma].rstrip()
+    if text.endswith(("...", "…")):
+        return None, None
     if len(text) < 12 or len(text) > 181:
         return None, None
     if _BAD.search(text) or _PERSONAL.search(text):
@@ -126,6 +165,9 @@ def _normalize_candidate(sentence: str, prior_year: str | None = None) -> tuple[
         return None, None
     if not (_ROLE.search(text) or _SIGNAL.search(text)):
         return None, None
+    text = re.sub(r"^(?:а|однако)\s+", "", text, flags=re.IGNORECASE)
+    if text and text[0].isalpha():
+        text = text[0].upper() + text[1:]
     return text, _candidate_score(text, 0)
 
 
@@ -137,9 +179,27 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
     prior_year: str | None = None
     for sentence in _SENTENCE_SPLIT.split(original):
         years = _YEAR.findall(sentence)
-        text, _score = _normalize_candidate(sentence, prior_year)
-        if text and text not in result:
-            result.append(text)
+        clauses = _CLAUSE_SPLIT.split(sentence)
+        first_signal = _SIGNAL.search(clauses[0]) or _ROLE.search(clauses[0])
+        subject = clauses[0][:first_signal.start()].strip(" ,:;—-") if first_signal else ""
+        if not subject or len(subject) > 80 or _YEAR.search(subject):
+            subject = ""
+        for clause_index, clause in enumerate(clauses):
+            if clause_index > 0 and re.match(r"^а\s+вместо\s+них\b", clause, re.IGNORECASE):
+                clause = re.sub(r"^а\s+вместо\s+них\s+", "", clause, flags=re.IGNORECASE)
+                if subject and re.search(r"\bновые\.?$", clause, re.IGNORECASE):
+                    clause = re.sub(
+                        r"\bновые(\.)?$",
+                        lambda match: f"новые {subject}{match.group(1) or ''}",
+                        clause,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+            text, _score = _normalize_candidate(clause, prior_year)
+            if text and text not in result:
+                result.append(text)
+            if len(result) >= limit:
+                break
         # A sentence can contain a second independent architect claim.
         architect = re.search(
             r"\bпо\s+проекту\s+архитектора\s+([^,.;]{3,100})",
@@ -147,7 +207,7 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
             re.IGNORECASE,
         )
         if architect:
-            derived = compact_fact_text("По проекту архитектора " + architect.group(1).strip() + ".")
+            derived = compact_fact_text("Проект архитектора " + architect.group(1).strip() + ".")
             if derived not in result:
                 result.append(derived)
         if years:
@@ -158,21 +218,13 @@ def atomic_fact_texts(raw: str, limit: int = 4) -> list[str]:
 
 
 def atomic_fact_text(raw: str) -> str | None:
-    original = _SPACE.sub(" ", str(raw or "")).strip(" \t\r\n-•")
-    if len(original) < 12:
+    facts = atomic_fact_texts(raw, limit=4)
+    if not facts:
         return None
-    candidates: list[tuple[tuple[int, int, int], str]] = []
-    prior_year: str | None = None
-    for index, sentence in enumerate(_SENTENCE_SPLIT.split(original)):
-        years = _YEAR.findall(sentence)
-        text, _unused = _normalize_candidate(sentence, prior_year)
-        if text:
-            candidates.append((_candidate_score(text, index), text))
-        if years:
-            prior_year = years[-1]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+    return max(
+        enumerate(facts),
+        key=lambda item: _candidate_score(item[1], item[0]),
+    )[1]
 
 def fact_kind(text: str) -> str:
     for name, pattern in _KINDS:
