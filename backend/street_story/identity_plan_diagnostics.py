@@ -40,7 +40,8 @@ def _checked_research(service, story, db, scope):
 
 
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
-        response_sha256=None, status_code=None, closed_plan=None):
+        response_sha256=None, status_code=None, closed_plan=None, prepared_request=None,
+        admission_retry=None, retry_not_sent=False):
     """One scoped SOURCE+MAP operation; only authoritative not_sent permits reassignment."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
@@ -57,12 +58,35 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             previous = {}
         if phase is None:
             return previous or None
-        if phase == 'send_intent' and previous and not (stage == 'initial' and previous['phase'] == 'not_sent'):
+        if prepared_request is not None:
+            content = {key: value for key, value in prepared_request.items() if key != 'sha256'}
+            if (stage != 'followup' or prepared_request.get('binding') != binding
+                    or prepared_request.get('contract') != 'identity-prepared-joint-followup-v1'
+                    or hashlib.sha256(canonical(content).encode()).hexdigest() != prepared_request.get('sha256')
+                    or previous.get('prepared_request') not in (None, prepared_request)):
+                raise RetryableProviderError('identity_joint_followup_binding_changed')
+        retry = previous.get('admission_retry') or {}
+        retry_permitted = (stage == 'followup' and retry_not_sent and previous.get('phase') == 'not_sent'
+            and retry.get('retry_count') == 0 and isinstance(retry.get('retry_at'), (int, float))
+            and retry['retry_at'] <= service.store.now()
+            and prepared_request is not None and retry.get('prepared_request_sha256') == prepared_request['sha256'])
+        if phase == 'send_intent' and previous and not (
+                stage == 'initial' and previous['phase'] == 'not_sent' or retry_permitted):
             raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
         if previous and previous.get('binding') != binding:
             raise RetryableProviderError(f'identity_joint_{stage}_binding_changed')
         marker = {**previous, 'scope': scope, 'binding': binding, 'phase': phase,
             'updated_at': service.store.now()}
+        if prepared_request is not None:
+            marker['prepared_request'] = prepared_request
+        if admission_retry is not None:
+            if (stage != 'followup' or phase != 'not_sent' or retry
+                    or admission_retry.get('retry_count') != 0
+                    or admission_retry.get('prepared_request_sha256') != (marker.get('prepared_request') or {}).get('sha256')):
+                raise RetryableProviderError('identity_joint_followup_retry_changed')
+            marker['admission_retry'] = admission_retry
+        if retry_permitted:
+            marker['admission_retry'] = {**retry, 'retry_count': 1}
         if phase != previous.get('phase') and phase in {'send_intent', 'response_closed'}:
             for field in ('code', 'status_code', 'response_sha256'):
                 marker.pop(field, None)

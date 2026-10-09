@@ -564,7 +564,7 @@ async def suggest(service, story, transcript, candidates):
         return result
     if addressed_followup and addressed_followup['phase'] == 'not_sent' and not original_available:
         return reuse_initial_plan()
-    async def call(key, timeout, *, model=None, quota=None):
+    async def send_initial(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal initial_binding, initial_outcome, initial_failure
         if joint_followup_used:
@@ -575,7 +575,7 @@ async def suggest(service, story, transcript, candidates):
             raise PermanentProviderError('identity_joint_initial_already_addressed')
         text_articles, source_text_receipt = [], {}
         from google.genai.errors import APIError
-        from .service import canonical, ConflictError
+        from .service import ConflictError
         initial_binding = initial_unit_binding
         joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='send_intent')
         initial_outcome = 'send_intent'
@@ -620,6 +620,9 @@ async def suggest(service, story, transcript, candidates):
         initial_outcome = 'response_closed'
         joint_operation_marker(service, story, stage='initial', binding=initial_binding,
             phase='response_closed', response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
+        return response
+    async def process_initial_response(response, *, model=None, quota=None, executor):
+        nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         story['_identity_search_plan_route'] = 'google'
         decode_error = False
         def decode_joint(response):
@@ -770,32 +773,102 @@ async def suggest(service, story, transcript, candidates):
                 'input_sha256': hashlib.sha256(canonical([model_source_sha256,
                     (scene or {}).get('manifest', {}).get('image_sha256'), followup_prompt]).encode()).hexdigest(),
                 'schema_sha256': hashlib.sha256(canonical(schema).encode()).hexdigest()}
-            joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent')
-            try:
-                response = await gemini._generate(key, timeout, [
-                    types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
-                    *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
-                    followup_prompt], followup_config, operation='grounded_research', model=model, quota=quota)
-            except Exception as exc:
-                from .research_budget import ResearchTerminated
-                if isinstance(exc, ResearchTerminated):
-                    raise
-                phase, status_code = provider_outcome(exc)
-                joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
-                    status_code=status_code, code=f'identity_joint_followup_{phase}')
-                joint_followup_failure = exc
-                record_identity_event(service, story['id'], 'identity_joint_followup_unavailable',
-                    {'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
-                     'error_type': type(exc).__name__, 'phase': phase, 'provider_send_state': phase,
-                     'status_code': status_code, 'fresh_retry_allowed': False})
-                if phase == 'not_sent' and (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
-                    # Actual acquired text remains source work, not a proof:
-                    # SOURCE+TEXT was prepared but never sent to a model.
-                    source_text_receipt.update(source_image_input=False, provider_send_state='not_sent')
-                    return reuse_initial_plan()
-                # Stop the executor key loop while preserving the actual
-                # original outcome for the caller/readback path below.
-                raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc
+            # Admission waits belong outside the provider executor/key lease.
+            # The original closed response and acquired text are held unchanged;
+            # only an authoritative unsent TPM admission may retry this joint2.
+            followup_config.max_output_tokens = followup_config.max_output_tokens or 8192
+            prepared_request = {'contract': 'identity-prepared-joint-followup-v1',
+                'binding': joint_followup_binding, 'prompt': followup_prompt, 'schema': copy.deepcopy(schema),
+                'config': followup_config.model_dump(mode='json', exclude_none=True), 'model': model,
+                'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
+                'map_image_sha256': (scene or {}).get('manifest', {}).get('image_sha256'),
+                'source_text_sha256': hashlib.sha256(canonical(source_text_receipt).encode()).hexdigest()}
+            prepared_request['sha256'] = hashlib.sha256(canonical(prepared_request).encode()).hexdigest()
+            retry_claim = False
+            def check_prepared_request():
+                current = {**prepared_request,
+                    'schema': copy.deepcopy(schema),
+                    'config': followup_config.model_dump(mode='json', exclude_none=True),
+                    'original_source_sha256': hashlib.sha256(service._source_photo_bytes(story['id'])).hexdigest(),
+                    'model_source_sha256': hashlib.sha256(source_bytes).hexdigest(),
+                    'map_image_sha256': hashlib.sha256(scene['bytes']).hexdigest() if scene else None,
+                    'source_text_sha256': hashlib.sha256(canonical(source_text_receipt).encode()).hexdigest()}
+                current.pop('sha256')
+                if hashlib.sha256(canonical(current).encode()).hexdigest() != prepared_request['sha256']:
+                    raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
+                joint_followup_marker(service, story)  # Current photo/generation/control, even before key acquisition.
+            async def send_followup(key, timeout):
+                nonlocal joint_followup_failure
+                # No executor failover may dispatch another possibly sent joint2.
+                if joint_followup_failure is not None:
+                    raise PermanentProviderError('identity_joint_followup_already_attempted')
+                try:
+                    check_prepared_request()
+                    joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
+                        prepared_request=prepared_request, retry_not_sent=retry_claim)
+                    return await gemini._generate(key, timeout, [
+                        types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
+                        *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
+                        followup_prompt], followup_config, operation='grounded_research', model=model, quota=quota)
+                except (Exception, asyncio.CancelledError) as exc:
+                    from .research_budget import ResearchTerminated
+                    if isinstance(exc, ResearchTerminated):
+                        raise
+                    phase, status_code = provider_outcome(exc)
+                    joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
+                        status_code=status_code, code=f'identity_joint_followup_{phase}')
+                    joint_followup_failure = exc
+                    if isinstance(exc, asyncio.CancelledError):
+                        raise
+                    # Release the current key and stop its failover loop first.
+                    raise PermanentProviderError('identity_joint_followup_attempt_ended') from exc
+            for admission_attempt in range(2):
+                check_prepared_request()
+                try:
+                    response = await executor.execute('grounded_research', send_followup)
+                    break
+                except (GeminiUnavailable, PermanentProviderError) as attempt_error:
+                    from .research_budget import require_remaining
+                    from .quota import SharedQuotaDenied
+                    from .gemini import _retry_after
+                    exc = joint_followup_failure or attempt_error
+                    phase, status_code = provider_outcome(exc)
+                    if joint_followup_failure is None:
+                        # No key was acquired, so this call has no SDK dispatch.
+                        phase = 'not_sent'
+                        joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
+                            prepared_request=prepared_request, code='identity_joint_followup_not_sent')
+                    delay = _retry_after(exc, service.store.now()) if isinstance(exc, SharedQuotaDenied) else None
+                    operation_timeout = float(getattr(getattr(getattr(executor, 'pool', None), 'policy', None),
+                        'call_timeout', getattr(getattr(service, 'settings', None), 'gemini_call_timeout_seconds', 20)))
+                    remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 0
+                    can_retry = (admission_attempt == 0 and phase == 'not_sent' and isinstance(exc, SharedQuotaDenied)
+                        and delay is not None and 0 < delay <= 60 and delay + operation_timeout < remaining)
+                    retry_at = service.store.now() + delay if can_retry else None
+                    record_identity_event(service, story['id'], 'identity_joint_followup_unavailable',
+                        {'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
+                         'error_type': type(exc).__name__, 'phase': phase, 'provider_send_state': phase,
+                         'status_code': status_code, 'fresh_retry_allowed': can_retry,
+                         'retry_at': retry_at, 'wait_seconds': delay if can_retry else None,
+                         'same_unit': True, 'admission_attempt': admission_attempt + 1})
+                    if can_retry:
+                        joint_followup_marker(service, story, binding=joint_followup_binding, phase='not_sent',
+                            admission_retry={'retry_at': retry_at, 'wait_seconds': delay, 'retry_count': 0,
+                                'prepared_request_sha256': prepared_request['sha256']})
+                        await asyncio.sleep(delay)
+                        if require_remaining(service, story['id'], 'identity') <= operation_timeout:
+                            source_text_receipt.update(source_image_input=False, provider_send_state='not_sent')
+                            return reuse_initial_plan()
+                        # This exact frozen request, not a new semantic unit,
+                        # may enter the same route's ordinary admission once.
+                        retry_claim = True
+                        joint_followup_failure = None
+                        continue
+                    joint_followup_failure = exc
+                    if phase == 'not_sent' and (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
+                        source_text_receipt.update(source_image_input=False, provider_send_state='not_sent')
+                        return reuse_initial_plan()
+                    raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc
             joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
             payload = decode_joint(response)
@@ -847,7 +920,8 @@ async def suggest(service, story, transcript, candidates):
         return await fallback(RetryableProviderError('identity_google_planner_unavailable'))
     if not routes:
         try:
-            return await gemini.executor.execute('grounded_research', call)
+            response = await gemini.executor.execute('grounded_research', send_initial)
+            return await process_initial_response(response, executor=gemini.executor)
         except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
     retry_at = []
@@ -858,9 +932,9 @@ async def suggest(service, story, transcript, candidates):
         routes = sorted(routes, key=lambda route: route[0] != preferred_model)
     for model, _pool, quota, executor in routes:
         async def routed_call(key, timeout, *, _model=model, _quota=quota):
-            return await call(key, timeout, model=_model, quota=_quota)
+            return await send_initial(key, timeout, model=_model, quota=_quota)
         try:
-            return await executor.execute('grounded_research', routed_call)
+            response = await executor.execute('grounded_research', routed_call)
         except GeminiUnavailable as exc:
             if exc.retry_at is not None:
                 retry_at.append(exc.retry_at)
@@ -870,6 +944,10 @@ async def suggest(service, story, transcript, candidates):
                 continue
             return await fallback(exc)
         except RetryableProviderError as exc:
+            return await fallback(exc)
+        try:
+            return await process_initial_response(response, model=model, quota=quota, executor=executor)
+        except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
     return await fallback(GeminiUnavailable(min(retry_at) if retry_at else None,
         'all_identity_discovery_models_unavailable'))
