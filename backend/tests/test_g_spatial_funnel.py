@@ -167,6 +167,40 @@ def test_overview_accept_cannot_upgrade_preexpanded_osm_corner_to_identity():
     assert out['active'][0]['candidate_id']=='osm:way:1'
     assert out['downstream_T']['reopen_original_reserve_on_conflict']
 
+def test_approx_camera_across_street_keeps_factual_neighbors_without_guessing_side():
+    # No photo-specific ID, street name or house-number rule enters G.
+    # A distinct OSM building on the same observed street is a reversible
+    # investigation candidate, NOT another model claim or accepted identity.
+    observed=entries()
+    observed[-1]['tags']={'addr:street':'Примерная','addr:housenumber':'4'}
+    model=response()
+    item=project_g_funnel(model,packet(),observed,source_sha256=SOURCE,
+        model_source_sha256=MODEL,actual_source_sha256=SOURCE,actual_map_sha256=MAP)
+    assert item['status']=='active_shortlist'
+    assert item['active_count']==2
+    assert item['contextual_street_candidate_count']==1
+    assert item['contextual_street_candidate_ids']==['osm:way:4']
+    downstream=item['downstream_T']
+    assert downstream['g_prioritized_candidates']==item['active']
+    assert [x['candidate_id'] for x in downstream['scene_search_candidates']]==[
+        'osm:way:1','osm:way:2','osm:way:4']
+    assert downstream['contextual_not_a_model_match_or_identity'] is True
+    assert not item['accepted']
+
+
+def test_grouped_model_contrasts_preserve_photo_shortlist():
+    model=response()
+    model['contrasted_alternatives']=[{
+        'labels':[303,304],
+        'why_not':'Real OSM bodies outside the SOURCE-visible frontal group'}]
+    out=run(model)
+    assert out['status']=='active_shortlist'
+    assert out['accepted'] is False
+    assert out['active_count']==2
+    assert set(out['downstream_T']['original_reserve_candidate_ids'])=={
+        'osm:relation:3','osm:way:4'}
+
+
 def test_source_nominated_focused_g_can_still_accept_without_t_or_ref():
     p=packet()
     p['presentation_stage']='focused_geometry'
