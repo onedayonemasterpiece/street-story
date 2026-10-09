@@ -56,7 +56,7 @@ async def test_google_rpd_falls_back_to_existing_visual_model_without_ref_or_tex
     async def independent(snapshot, prompt, schema, source_mime, source, map_mime, map_data):
         calls.append('opencode_source_map')
         assert source_mime == 'image/jpeg' and source
-        assert map_mime == 'image/png' and map_data.startswith(b'\\x89PNG')
+        assert map_mime == 'image/png' and map_data[:4] == bytes((137, 80, 78, 71))
         assert 'physical' in prompt.lower()
         assert schema['type'] == 'object'
         return {'result': payload(geometry_decision()),
