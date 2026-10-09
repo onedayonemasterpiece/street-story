@@ -304,14 +304,40 @@ class ArchitecturalWikipediaReader:
         return result
 
     async def article_by_model_selected_pageid(self, received_search, selected_pageid):
-        """Read only a page from the real frozen title-candidate search list."""
-        if (not isinstance(received_search,dict) or
-                received_search.get('status')!='completed'
-                or type(selected_pageid) is not int):
+        """Accept a model page ID only when original publisher bytes contain it.
+
+        The model cannot forge a search result by manufacturing a card/ID in
+        its own JSON response. Reopen the SHA-verified *cached raw MediaWiki
+        search* and compare the page ID/title before the next HTTP lookup.
+        """
+        if (not isinstance(received_search,dict)
+                or received_search.get('status')!='completed'
+                or type(selected_pageid) is not int
+                or not isinstance(received_search.get('requested_url'),str)):
             raise ValueError('model_selected_wikipedia_page_not_received')
-        cards=[row for row in received_search.get('results') or []
+        url=received_search['requested_url']
+        digest=hashlib.sha256(url.encode()).hexdigest()
+        if digest!=received_search.get('query_sha256'):
+            raise ValueError('wikipedia_received_query_changed')
+        cached=self.store.cache_get('wikipedia-architectural-title-candidates-v1:'+digest)
+        if not isinstance(cached,dict) or cached.get('final_url')!=url:
+            raise ValueError('wikipedia_original_title_search_not_cached')
+        try:
+            raw=base64.b64decode(cached['body'],validate=True)
+        except (ValueError,TypeError,KeyError) as exc:
+            raise ValueError('wikipedia_original_title_search_invalid_cache') from exc
+        if (hashlib.sha256(raw).hexdigest()!=cached.get('sha256')
+                or cached['sha256']!=received_search.get('raw_source_sha256')):
+            raise ValueError('wikipedia_original_title_search_sha_mismatch')
+        payload=json.loads(raw)
+        original=((payload.get('query') or {}).get('search') or [])[:6]
+        true_cards=[item for item in original if isinstance(item,dict)
+            and item.get('pageid')==selected_pageid
+            and isinstance(item.get('title'),str)]
+        received=[row for row in received_search.get('results') or []
             if isinstance(row,dict) and row.get('pageid')==selected_pageid]
-        if len(cards)!=1:
+        if (len(received)!=1 or len(true_cards)!=1
+                or received[0].get('title')!=true_cards[0]['title']):
             raise ValueError('model_selected_wikipedia_page_not_received')
         return await self.article_by_observed_title(
-            cards[0]['title'],language=received_search['language'])
+            true_cards[0]['title'],language=received_search['language'])
