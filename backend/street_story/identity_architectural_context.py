@@ -19,33 +19,59 @@ def _regional_area(story):
         and math.isfinite(lat+lon) and 54 <= lat <= 56 and 19 <= lon <= 23)
 
 
+def _physical_subject(candidate):
+    from .identity_candidate_policy import candidate_identity_eligible
+    tags = (candidate.get('map_object') or {}).get('tags') or {}
+    return (str(candidate.get('candidate_id') or '').startswith('osm:')
+        and candidate_identity_eligible(candidate) and not tags.get('entrance')
+        and any(tags.get(key) for key in ('building', 'building:part')))
+
+
+def _subject_addresses(context, candidate):
+    """This body's own address, or literal entries with verified membership."""
+    cid = candidate['candidate_id']
+    direct = next((anchor for anchor in context['address_anchors']
+        if anchor['mapped_entry_id'] == cid), None)
+    if direct:
+        return [direct]
+    return [anchor for body in context['building_address_memberships']
+        if body['physical_candidate_id'] == cid for anchor in body['address_entries']]
+
+
+def _reverse_address(story):
+    research = json.loads(story.get('research_json') or '{}')
+    return ((story.get('_identity_search_context') or {}).get('reverse_address') or
+        ((research.get('osm') or {}).get('reverse') or {}).get('address') or {})
+
+
 def regional_preparation_query(story, candidates):
-    """One literal retrieval anchor, never a target or first mixed-pool street."""
+    """An unambiguous supplied physical scope, never the camera's street."""
     if not _regional_area(story):
         return None
     from .identity_source_selection import observed_address_context
-    reverse = (story.get('_identity_search_context') or {}).get('reverse_address') or {}
-    city = next((str(reverse[key]).strip() for key in ('city', 'town', 'village') if reverse.get(key)), '')
-    streets = {str(reverse[key]).strip() for key in ('road', 'pedestrian', 'residential', 'street') if reverse.get(key)}
-    if city and len(streets) == 1:
-        from .identity_scene import scene_camera_context
-        return {'city':city, 'street':next(iter(streets)),
-            'provenance':'already_received_reverse_address',
-            'anchor_kind':scene_camera_context(story)['position_status'],
-            'target_identity_established':False}
-    if streets:
+    subjects = {item['candidate_id']: item for item in candidates
+        if isinstance(item, dict) and _physical_subject(item)}
+    if not subjects:
         return None
     context = observed_address_context(story, candidates)
-    addresses = [item['address'] for item in context['address_anchors']]
-    addresses += [item.get('map_address') or {} for item in
-        [*(story.get('_identity_observed_candidates') or []), *candidates] if isinstance(item, dict)]
-    queries = {(str(address.get('city') or city).strip(), str(address.get('street') or '').strip())
-        for address in addresses if address.get('street')}
+    reverse = _reverse_address(story)
+    city = next((str(reverse[key]).strip() for key in ('city', 'town', 'village') if reverse.get(key)), '')
+    subject_entries = [_subject_addresses(context, candidate) for candidate in subjects.values()]
+    if any(not entries for entries in subject_entries):
+        return None
+    entries = [anchor for body_entries in subject_entries for anchor in body_entries]
+    queries = {(str(anchor['address'].get('city') or city).strip(),
+        str(anchor['address'].get('street') or '').strip()) for anchor in entries}
     if len(queries) != 1:
         return None
     locality, street = next(iter(queries))
-    return ({'city':locality, 'street':street, 'provenance':'unambiguous_observed_street',
-        'anchor_kind':'retrieval_context', 'target_identity_established':False} if locality and street else None)
+    return ({'city':locality, 'street':street, 'provenance':'physical_subject_addresses',
+        'anchor_kind':'subject_retrieval_context', 'target_identity_established':False,
+        'candidate_ids':list(subjects), 'address_entry_ids':list(dict.fromkeys(
+            anchor['mapped_entry_id'] for anchor in entries)),
+        'membership_policy':'Own literal footprint address or verified closed-way entrance membership only.',
+        **({'camera_reverse_road_hint':str(reverse['road'])} if reverse.get('road') else {})}
+        if locality and street else None)
 
 
 async def prepare_regional_catalogue(service, story, candidates, *, allow_network=True):
@@ -69,7 +95,9 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
     revision = int(story.get('_identity_research_control_revision',
         ((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
     scope = {'photo_sha256':story.get('photo_sha256'), 'generation':generation,
-        'control_revision':revision, 'query_key':query_key}
+        'control_revision':revision, 'query_key':query_key,
+        'subject_scope_sha256':hashlib.sha256(json.dumps(query, ensure_ascii=False,
+            sort_keys=True, separators=(',', ':')).encode()).hexdigest()}
     saved = story.get('_identity_regional_catalogue') or ((research.get('identity_article_discovery') or {})
         .get('search_plan') or {}).get('payload', {}).get('regional_catalogue') or {}
     if saved.get('scope') == scope:
@@ -150,6 +178,9 @@ def catalogue_model_context(catalogue):
         | {key:str(row.get(key) or '')[:limit] for key,limit in
             (('title',120),('address_text',240),('annotation',160))}
         | {'metadata_excerpt':True} for row in catalogue.get('results') or []]
+    context['coverage_policy'] = ('Inventory completeness applies only to this literal query scope, not the MAP scene. '
+        'One named card does not identify SOURCE or outrank an unnamed physical body. '
+        'Camera reverse road is optional context, never subject address binding.')
     return context
 
 
@@ -362,10 +393,13 @@ async def acquire_regional_text(service, story, candidates, request):
     if request['route'] == 'none' or not ids or not request['reason'].strip():
         return [], {}
     context = observed_address_context(story, candidates)
-    reverse = (story.get('_identity_search_context') or {}).get('reverse_address') or {}
+    reverse = _reverse_address(story)
     locality = next((reverse[key] for key in ('city', 'town', 'village') if reverse.get(key)), '')
     anchors = {item['mapped_entry_id']: item['address'] for item in context['address_anchors']}
-    addresses = [anchors.get(cid) or catalog[cid].get('map_address') or {} for cid in ids]
+    bound_entries = [entry for cid in ids for entry in _subject_addresses(context, catalog[cid])]
+    addresses = [address for cid in ids for address in (
+        [entry['address'] for entry in _subject_addresses(context, catalog[cid])]
+        or [catalog[cid].get('map_address') or {}])]
     entry_id = request.get('address_entry_id')
     if entry_id:
         memberships = {item['physical_candidate_id']: {entry['mapped_entry_id'] for entry in item['address_entries']}
@@ -397,6 +431,12 @@ async def acquire_regional_text(service, story, candidates, request):
             if len(points) != 1 or not all(key in points[0] for key in ('latitude', 'longitude')):
                 return [], {'status': 'not_sent', 'reason': 'one_lookup_requires_one_observed_point'}
             lookup = await adapter.coordinate_search(points[0]['latitude'], points[0]['longitude'])
+        lookup['query_scope'] = {'route':request['route'], 'candidate_ids':ids,
+            'address_entry_ids':[entry_id] if entry_id else list(dict.fromkeys(
+                entry['mapped_entry_id'] for entry in bound_entries)),
+            'provenance':'received_physical_subject', 'target_identity_established':False,
+            **({'city':city, 'street':street, 'house_number':number} if request['route'] == 'address'
+                else {'coordinates':points[0], 'position_kind':'subject_point_not_camera'})}
         results = lookup.get('results') or []
         record_identity_event(service, story['id'], 'identity_regional_lookup_completed', {
             'route': request['route'], 'status': lookup.get('status'), 'result_count': len(results),

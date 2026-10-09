@@ -72,14 +72,16 @@ def offline(monkeypatch, handler):
 
 def test_preparation_anchor_is_literal_and_mixed_pool_never_chooses_first():
     first, other = candidate(), candidate("osm:way:3", "Другая улица", "6А")
-    assert context.regional_preparation_query(story(first, other), [first]) is None
+    assert context.regional_preparation_query(story(first, other), [first, other]) is None
     camera = story(first, other)
     camera["_identity_search_context"] = {"reverse_address": {"city": "Город", "road": "Камерная улица"}}
     q = context.regional_preparation_query(camera, [first])
-    assert q["street"] == "Камерная улица" and q["provenance"] == "already_received_reverse_address"
-    assert q["anchor_kind"] == "search_context" and q["target_identity_established"] is False
+    assert q["street"] == "Тестовая улица" and q["provenance"] == "physical_subject_addresses"
+    assert q["camera_reverse_road_hint"] == "Камерная улица"
+    assert q["candidate_ids"] == [first["candidate_id"]]
+    assert q["anchor_kind"] == "subject_retrieval_context" and q["target_identity_established"] is False
     camera["_identity_search_context"]["reverse_address"]["pedestrian"] = "Иная улица"
-    assert context.regional_preparation_query(camera, [first]) is None
+    assert context.regional_preparation_query(camera, [first, other]) is None
     camera.pop("_identity_search_context")
     camera["_identity_observed_candidates"] = [first, candidate("osm:way:3", number="6А")]
     assert context.regional_preparation_query(camera, [first])["street"] == "Тестовая улица"
@@ -240,6 +242,10 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
     service, s, active = geometry_setup(tmp_path)
     s.update(latitude=54.7, longitude=20.5)
     s["_identity_search_context"] = {"reverse_address": {"city": "Город", "road": "Тестовая улица"}}
+    # Preparation is grounded in supplied physical metadata, not the street
+    # under the camera. Both received bodies share this fixture street.
+    for item in s["_identity_observed_candidates"]:
+        item["map_address"] = {"city":"Город", "street":"Тестовая улица", "house_number":"6"}
     calls, reads = [], []
 
     def handler(request):
@@ -361,8 +367,15 @@ async def test_cached_catalogue_survives_cooldown_and_closed_http_admission(tmp_
     second = await context.prepare_regional_catalogue(service, s2, [obj], allow_network=False)
     assert len(calls) == 1 and first["status"] == second["status"] == "completed"
     assert second["cache_hit"]
+    # Same publisher street cache, different supplied physical scope. The old
+    # scoped receipt must not falsely bind the inventory to the previous body.
+    another = candidate("osm:way:3", number="6А")
+    rebound = await context.prepare_regional_catalogue(service, s, [another], allow_network=False)
+    assert len(calls) == 1 and rebound["cache_hit"]
+    assert rebound["query_scope"]["candidate_ids"] == ["osm:way:3"]
+    assert rebound["scope"] != first["scope"]
     s3 = story(candidate(street="Новая улица"))
-    denied = await context.prepare_regional_catalogue(service, s3, [], allow_network=False)
+    denied = await context.prepare_regional_catalogue(service, s3, s3["_identity_observed_candidates"], allow_network=False)
     assert denied["status"] == "not_sent" and len(calls) == 1
 
 
