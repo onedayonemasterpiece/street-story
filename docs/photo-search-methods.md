@@ -93,6 +93,11 @@ Catalog metadata and selected-body acquisition must be arranged within that
 operation budget; simply adding a third mandatory judge is not the target.
 
 Fill free worker slots as results complete under existing resource admission.
+The SOURCE/MAP joint prefers the already configured tertiary model from the
+registered model tuples. Repeated closed lightweight answers selected wrong
+physical objects despite intact SOURCE, map and address joins; this is the measured
+reason for that role's routing. Ordinary text planning keeps its configured web
+route, and fact extraction remains Live-first. No preliminary judge is added.
 The initial joint SDK call releases its key before reading selected article bodies
 or validating its semantic result. A useful second joint gets its own ordinary
 executor timeout. If the shared controller definitively refused it before send,
@@ -283,6 +288,10 @@ model received complete building/entrance memberships. It nevertheless invented
 an OSM ID from a MAP label belonging to a different building; both responses were
 rejected. No identity or facts were accepted. The next prepared pointer/repair
 correction does not retrospectively fix that answer or establish recognition.
+On `d8557ba`, photo102 then supplied a contract-valid wrong geometry identity.
+The acceptance harness stopped it at 14.07 seconds, before eligible facts. This
+confirmed that pointer coherence alone did not resolve the semantic interpretation
+failure. The prepared SOURCE/MAP routing change still needs live acceptance.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates

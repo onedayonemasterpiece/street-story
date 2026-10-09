@@ -67,6 +67,17 @@ and diff checks passed. The existing NOT_SENT admission/retry/lease set also pas
 18 tests in 15.37 s. Neither transport replay nor model metadata proves correct
 recognition; the final same-version building set remains gated.
 
+Frozen `d8557ba8b58b141d9d969a59294cacce674a2ee4` photo102 accepted wrong
+`osm:way:134757757` by geometry. Ordinary fenced acceptance Stop ended at 14.073 s
+with zero eligible facts. One closed Gemini3.5FlashLite SDK response reported
+67,491 tokens. The pointer contract was satisfied, but physical interpretation
+was wrong. The next SOURCE/MAP operation therefore prefers the already registered,
+configured Gemini3.8Flash route; other roles retain their routing and the same
+operation/deadline budget. No model name, key, quota or helper chain is added.
+The affected role/geometry/pointer/admission set passed **46 tests in 24.12 s**,
+with Ruff/diff checks passing. Actual inference and correct recognition on the
+new route remain unverified until its bounded canary.
+
 ## Bounded live diagnostics
 
 All listed runs are cold photo104 diagnostics, not final-set acceptance. Other
