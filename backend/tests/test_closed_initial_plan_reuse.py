@@ -134,10 +134,11 @@ async def test_restart_cached_full_regional_inventory_keeps_identical_joint_inpu
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['source', 'camera', 'context', 'configuration', 'raw_response', 'schema'])
-async def test_original_plan_reuse_requires_identical_source_context_configuration_and_receipt(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize('phase', ['not_sent', 'unknown'])
+async def test_original_plan_reuse_requires_identical_source_context_configuration_and_receipt(tmp_path, monkeypatch, change, phase):
     service, story, active, initial = prepared_plan(tmp_path)
     original_candidates = copy.deepcopy(active)
-    calls, _ = install(service, initial, monkeypatch)
+    calls, _ = install(service, initial, monkeypatch, phase=phase)
     await identity_discovery.suggest(service, story, '', active)
     fresh = type(service)(service.settings, providers=service.providers)
     snapshot = current_snapshot(fresh, story)
@@ -168,16 +169,21 @@ async def test_original_plan_reuse_requires_identical_source_context_configurati
 
 
 @pytest.mark.asyncio
-async def test_unknown_followup_still_fences_valid_initial_across_restart(tmp_path, monkeypatch):
+async def test_unknown_followup_preserves_independent_initial_ref_plan_across_restart(tmp_path, monkeypatch):
     service, story, active, initial = prepared_plan(tmp_path)
     calls, _ = install(service, initial, monkeypatch, phase='unknown')
-    with pytest.raises(RetryableProviderError, match='offline_followup_unknown'):
-        await identity_discovery.suggest(service, story, '', active)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
     assert service._identity_snapshot(story['id'])[1]['identity_joint_initial']['closed_plan']
     fresh = type(service)(service.settings, providers=service.providers)
-    with pytest.raises(RetryableProviderError, match='identity_joint_followup_outcome_unknown'):
-        await identity_discovery.suggest(fresh, current_snapshot(fresh, story), '', active)
+    await identity_discovery.prepare_search_plan(fresh, current_snapshot(fresh, story), '', active)
     assert calls == ['initial', 'followup']
+    research = fresh._identity_snapshot(story['id'])[1]
+    assert research['identity_joint_followup']['phase'] == 'unknown'
+    plan = research['identity_article_discovery']['search_plan']['payload']
+    assert plan['selected_wikipedia_page_ids'] == ['99']
+    assert plan['subject_article_bindings'] == initial['subject_article_bindings']
+    assert not plan.get('geometry_proof') and not plan.get('architectural_text_proof')
+    assert any(item['candidate_id'] == 'wiki:99' and item['reference_image_urls'] for item in active)
 
 
 @pytest.mark.asyncio

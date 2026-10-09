@@ -154,7 +154,7 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     transmitted = json.loads(packet['prompt'].rsplit('\n', 1)[-1])
     hypotheses = transmitted['previous_model_hypotheses_not_evidence']['geometry_hypotheses_not_evidence']
     assert hypotheses['status'] == 'unconfirmed' and 'decision' not in hypotheses
-    assert 'No assertion that other MAP bodies do not exist' in packet['prompt']
+    assert 'Coverage may be incomplete' in transmitted['coverage_limit']
     assert 'accepted_architectural_text' in packet['schema']['properties']['decision']['enum']
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
@@ -421,7 +421,7 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
     packet = prepare_architectural_comparison(story, candidates, receipt)
     assert 'publisher_and_OSM_literal_records_NOT_prejoined' in packet['prompt']
     assert 'no_exact_publisher_address_join_observed' not in packet['prompt']
-    assert 'physical-scope uncertainty' in packet['prompt']
+    assert 'individual-body scope' in packet['prompt']
     assert packet['utf8_bytes'] < 20_000
 
 
@@ -611,3 +611,18 @@ def test_literal_historic_osm_address_is_valid_without_merging_6_and_6a():
     denied=verified_publisher_physical_scope(story,bodies,receipt,decision)
     assert denied['supported'] is False
     assert denied['reason']=='article_modern_address_not_bound_to_nominated_physical_body'
+
+
+def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
+    from jsonschema import Draft202012Validator
+    story, candidates, decision, receipt = _comparison_fixture()
+    candidates.append({'candidate_id': 'osm:way:89', 'identity_eligible': True,
+        'map_object': {'tags': {'building': 'yes'}}})
+    packet = prepare_architectural_comparison(story, candidates, receipt)
+    decision['material_alternatives'] = [
+        {'candidate_id': 'osm:way:88', 'reason': 'Earlier nominated neighboring wing differs.'},
+        {'candidate_id': 'osm:way:89', 'reason': 'Another received body is material despite no acquired article.'}]
+    validator = Draft202012Validator(packet['schema'])
+    assert not list(validator.iter_errors(decision))
+    decision['material_alternatives'][1]['candidate_id'] = 'osm:way:999'
+    assert list(validator.iter_errors(decision))

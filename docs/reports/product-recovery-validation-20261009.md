@@ -84,6 +84,41 @@ offline checks passed, including a model selecting a reserve outside its initial
 comparison and source/foreign-material negative controls. This is not yet a
 correct automatic130 identity or a mandatory gate PASS.
 
+Current frozen `83d73c8` cold132/111/105/106/107/108 all failed identity acceptance.
+Native SOURCE/MAP actually closed on111/105/106; three other Native requests were
+not sent.111's active group did not contain its evaluation target (the full
+reserve retained it).106 nominated different buildings; its original closed plan
+was malformed, then optional repair was NOT_SENT. The host nevertheless reported
+followup UNKNOWN and stopped identity. Counts are actual closed visual decisions,
+not six successful recognitions; no universal accuracy claim is supported.
+
+The reserve comparator130 closed on Google3.5 but falsely accepted193106140;
+this is a release blocker. The body-scope preview on3.1 also falsely accepted it;
+the actual3.8 preview was sent and ended UNKNOWN. Original markers remain fenced.
+The product contract now permits material alternatives from all received physical
+reserve, not just the initially nominated bodies, and uses shorter independent
+SOURCE/body instructions. This semantic change still requires new real evidence.
+Uncertain G can return null spatial correspondence rather than inventing pose;
+accepted G still requires the existing measured evidence contract.
+
+Second ordinary104 upload on actual POI memory failed180.646s: the closed initial
+plan nominated the correct tower, but optional T UNKNOWN blocked independent REF.
+Original draft/selection remained intact; the harness recorded full-scope Stop.
+An identical verified closed initial unconfirmed plan can now supply existing
+acquisition/REF after unavailable optional T, including restart. Its original
+unknown marker is unchanged; no T resend, replacement proof or new judge is added.
+Changed SOURCE/context/configuration/schema/raw receipt still forbids this reuse.
+Malformed initial plans still need a valid independent acquisition plan; they do
+not receive invented authority. Current offline v11 passed222 checks and exposed
+one fixture parsing the old prompt delimiter; the fixture now parses the actual
+issued packet. Previous full local run passed2658 with4 bad regex assertions and
+2 skips; assertions now check the conflict code. Exact-SHA full checks pending.
+
+Android exact83 checks/build/emulator passed. Existing PR test artifact:
+https://github.com/onedayonemasterpiece/street-story/actions/runs/37999909329/artifacts/11648990525
+It is a debug test build, not a canonical signed owner upgrade or a deployed
+candidate backend. Production remains unchanged and acceptance has not passed.
+
 ## Frozen b022307 product result and selected-card continuation
 
 Blind cold132 on `b02230727af905e52f474830d00b6fe9c7e5d626` passed all

@@ -614,10 +614,12 @@ def geometry_decision_schema(candidate_ids, *, structured=False):
             'assumptions', 'bounded_coverage', 'camera_pose'], 'additionalProperties': False}
     if structured:
         from .identity_geometry_contract import correspondence_schema
-        schema['properties']['spatial_correspondence'] = correspondence_schema(feature)
+        correspondence = correspondence_schema(feature)
+        schema['properties']['spatial_correspondence'] = {'anyOf': [correspondence, {'type': 'null'}]}
         # Uncertain answers may ask for a new view without inventing a pose.
         schema['allOf'] = [{'if': {'properties': {'decision': {'const': 'accepted_geometry'}}},
-            'then': {'required': ['spatial_correspondence']}}]
+            'then': {'required': ['spatial_correspondence'],
+                     'properties': {'spatial_correspondence': {'type': 'object'}}}}]
     return schema
 
 

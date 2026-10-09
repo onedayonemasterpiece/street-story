@@ -445,8 +445,9 @@ async def test_invalid_model_stage_reaches_ordinary_tool_error_boundary(tmp_path
     current.capability = 'research'
     call = {'name': 'continue_story', 'args': {'stage': stage, 'intent': 'Select facts'}}
     assert adapter.resolve_capability(current, call) is None
-    with pytest.raises(ConflictError, match='live_stage_invalid'):
+    with pytest.raises(ConflictError) as failure:
         await adapter.execute_tool(current, call)
+    assert failure.value.code == 'live_stage_invalid'
 
 
 def test_capability_bundles_preserve_continuation_and_bound_setup(tmp_path):

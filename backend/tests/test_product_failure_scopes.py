@@ -18,6 +18,8 @@ SCENARIOS = [
      'test_independent_news_materializes_before_remaining_wiki_gallery_but_ready_initial_ref_is_immediate', {'units': 2}),
     ('google_unknown_independent_routes_restart', 'test_identity_initial_fence',
      'test_unknown_routes_do_not_block_independent_text_or_replay_after_restart', {}),
+    ('text_unknown_independent_ref_plan_restart', 'test_closed_initial_plan_reuse',
+     'test_unknown_followup_preserves_independent_initial_ref_plan_across_restart', {}),
     ('review_pending_selection_draft_restart', 'test_headless_fact_review_parallel',
      'test_original_readback_allows_selection_draft_and_restart_before_last_review', {}),
     ('saved_review_original_readback', 'test_headless_fact_review_parallel',

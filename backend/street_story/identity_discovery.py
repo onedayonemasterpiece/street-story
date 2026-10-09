@@ -300,9 +300,11 @@ async def _suggest(service, story, transcript, candidates):
                 raise PermanentProviderError(addressed_followup.get('code') or 'identity_joint_followup_already_closed')
             if addressed_followup['phase'] == 'not_sent' and not (addressed_initial or {}).get('closed_plan'):
                 raise PermanentProviderError('identity_joint_followup_not_sent')
-            elif addressed_followup['phase'] == 'closed_failure':
+            elif addressed_followup['phase'] == 'closed_failure' and not (addressed_initial or {}).get('closed_plan'):
                 raise PermanentProviderError('identity_joint_followup_closed_failure')
-            elif addressed_followup['phase'] != 'not_sent':
+            elif addressed_followup['phase'] != 'not_sent' and not (
+                    addressed_followup['phase'] in {'unknown', 'closed_failure'}
+                    and (addressed_initial or {}).get('closed_plan')):
                 raise RetryableProviderError('identity_joint_followup_outcome_unknown')
     from .identity_source_selection import (regional_source_profile, model_identity_context, model_search_context,
         first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
@@ -555,18 +557,11 @@ async def _suggest(service, story, transcript, candidates):
         'прочий контекст можно использовать в разрешённых map_features, не вместо subject. '
         'В одном решении можно принять physical identity по достаточной '
         'SOURCE+MAP geometry без внешнего REF/второго judge либо оставить uncertain. '
-        'accepted_geometry — реальные различающие SOURCE/map связи, pose/coverage limits '
-        'и spatial_correspondence: corner (две примыкающие стороны), frontage_sequence '
-        '(стороны разных тел с отступом/порядком) либо street_termination (ось улицы и её '
-        'первое пересечение с контуром). Назови actual segment references и численный '
-        'горизонтальный heading_degrees отдельно от pitch_basis; east_m/north_m — '
-        'сценарий смещения, не восстановленные координаты. uncertainty_scenarios должны '
-        'изменять положение/yaw и проверять сохранение SOURCE pattern; детализация crop '
-        'не является чувствительностью к исходным данным. Host вычисляет реальные '
-        'отношения этих примитивов. generic contour-corresponds недостаточен; coverage_basis '
-        'объясняет проверку показанного physical context, rejected_alternatives — реальные '
-        'существенные альтернативы, а не все здания patch. При недостатке — uncertain и '
-        'одно полезное действие без выдуманного сертификата. '
+        'Принятая geometry требует реальных различающих SOURCE/MAP связей и проверяемого '
+        'spatial_correspondence по полученным примитивам. Pose — сценарий, не точное восстановление '
+        'камеры; host вычисляет указанные отношения. Если связи, поза или существенные альтернативы '
+        'не установлены, верни uncertain, spatial_correspondence=null и полезную активную группу '
+        'для TEXT/REF. Не выдумывай heading, смещения и индексы ради заполнения сертификата. '
         'research_priority — необязательное сужение в ЭТОМ ответе: candidate_ids активных физических '
         'гипотез, reason, next_question и next_step. Несколько гипотез сразу идут в адресный TEXT; '
         'не требуется accepted_geometry. Остальные сохраняются в резерве; не рассмотрено не значит '
@@ -966,8 +961,9 @@ async def _suggest(service, story, transcript, candidates):
             text_articles = source_text_receipt['articles']
             if followup_send_state:
                 source_text_receipt['optional_followup_send_state'] = followup_send_state
-        # Optional detail/TEXT must not be relabelled as the original MAP input
-        # when admission authoritatively says the followup was never sent.
+        # Reuse only the closed initial plan for independent acquisition/REF.
+        # Optional TEXT's unknown outcome remains fenced in its original marker;
+        # it supplies neither a new decision nor authority to resend that unit.
         scene, scene_manifest, physical_context, resolution_packet = initial_map_context
         geometry_prior_ids = []
         story['_identity_search_plan_route'] = 'google'
@@ -976,11 +972,13 @@ async def _suggest(service, story, transcript, candidates):
             raw_json_available=True, provider_response_id=saved['provider_response_id'])
         record_identity_event(service, story['id'], 'identity_closed_initial_plan_reused', {
             'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
-            'reason': 'optional_followup_not_sent', 'raw_json_sha256': marker['response_sha256'],
+            'reason': 'optional_followup_' + str((joint_followup_marker(service, story) or {}).get('phase')),
+            'raw_json_sha256': marker['response_sha256'],
             'input_sha256': initial_unit_binding['input_sha256'],
             'schema_sha256': initial_unit_binding['schema_sha256'], 'fresh_planner_sent': False})
         return result
-    if addressed_followup and addressed_followup['phase'] == 'not_sent' and not original_available:
+    if (addressed_followup and addressed_followup['phase'] in {'not_sent', 'unknown', 'closed_failure'}
+            and not original_available and (addressed_initial or {}).get('closed_plan')):
         return reuse_initial_plan()
     async def send_initial(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
@@ -1532,9 +1530,12 @@ async def _suggest(service, story, transcript, candidates):
                         joint_followup_failure = None
                         continue
                     joint_followup_failure = exc
-                    if phase == 'not_sent' and (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
-                        source_text_receipt.update(source_image_input=False, provider_send_state='not_sent')
+                    if (phase in {'not_sent', 'unknown', 'closed_failure'}
+                            and (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan')):
+                        source_text_receipt.update(source_image_input=False, provider_send_state=phase)
                         return reuse_initial_plan()
+                    if phase in {'not_sent', 'closed_failure'}:
+                        raise exc
                     raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc
             joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
