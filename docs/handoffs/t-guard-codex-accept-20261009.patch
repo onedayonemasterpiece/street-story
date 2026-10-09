@@ -1,0 +1,53 @@
+diff --git a/backend/street_story/identity_discovery.py b/backend/street_story/identity_discovery.py
+--- a/backend/street_story/identity_discovery.py
++++ b/backend/street_story/identity_discovery.py
+@@ -642,15 +642,40 @@
+         if action and (not scene or any(cid not in scene_ids for cid in action.get('target_candidate_ids') or [])):
+             reject('identity_geometry_action_unreceived_target')
+         source_map_receipt = joint_source_map_receipt() if original_schema is None else {}
+-        geometry_proof = None
+-        text_proof = None
+-        if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
+-            from .identity_proof import freeze_architectural_text_proof
+-            if story.get('_identity_search_plan_route') != 'qualified_text_fallback':
+-                text_proof = freeze_architectural_text_proof(story, payload['accepted_architectural_text'],
+-                    source_text_receipt, [*observed, *candidates])
+-            if text_proof is None:
+-                reject('identity_architectural_text_proof_invalid')
++        geometry_proof = None
++        text_proof = None
++        if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
++            from .identity_proof import freeze_architectural_text_proof
++            if story.get('_identity_search_plan_route') != 'qualified_text_fallback':
++                text_proof = freeze_architectural_text_proof(story, payload['accepted_architectural_text'],
++                    source_text_receipt, [*observed, *candidates])
++            if text_proof is not None:
++                from .identity_architectural_comparison import (
++                    verified_publisher_physical_scope, source_subject_competition_guard)
++                actual_subjects = [*observed, *candidates]
++                publisher_scope = verified_publisher_physical_scope(story, actual_subjects,
++                    source_text_receipt, payload['accepted_architectural_text'])
++                source_subject = source_subject_competition_guard(story, actual_subjects,
++                    payload['accepted_architectural_text'])
++                if ((publisher_scope.get('applicable') and not publisher_scope.get('supported'))
++                        or (source_subject.get('applicable') and not source_subject.get('supported'))):
++                    record_identity_event(service, story['id'], 'identity_text_physical_scope_rejected', {
++                        'publisher_reason': publisher_scope['reason'], 'source_reason': source_subject['reason'],
++                        'text_candidate_id': payload['accepted_architectural_text'].get('candidate_id'),
++                        'preserves_geometry': True})
++                    text_proof = None
++            if text_proof is None:
++                # An independently valid G-proof remains eligible even when
++                # this article is insufficient or describes a neighboring body.
++                if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
++                    rejected_text = payload['accepted_architectural_text']
++                    payload = {key: val for key, val in payload.items()
++                        if key != 'accepted_architectural_text'}
++                    payload['rejected_architectural_text'] = {
++                        'reason': 'identity_architectural_text_proof_or_scope_invalid',
++                        'decision': rejected_text}
++                else:
++                    reject('identity_architectural_text_proof_invalid')
+         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
+             from .identity_proof import freeze_geometry_proof
+             geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
