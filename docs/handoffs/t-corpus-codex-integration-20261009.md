@@ -1,3 +1,5 @@
+> **Historical snapshot — superseded for current integration.** This document records an earlier experiment and contains an obsolete proximity-based veto and an obsolete claim that exact postal-string matching is required. **Do not implement those guards.** The current LLM-first, G-shortlist → T → existing Live REF method and actual original 106 native host acceptance are described in [t-g-product-integration-20261009.md](t-g-product-integration-20261009.md). The original experiment is retained only for retrospective evidence, not runtime instructions. Main Codex #246 owns shared orchestration/deploy; PR #249 owns independent T code.
+
 # Street Story T — integration contract after 26 real photographs
 
 **Date:** 2026-10-09. **T owner:** ChatGPT PR #249. **Main integration owner:** Codex PR #246. **G:** PR #247.
