@@ -19,7 +19,7 @@ POLICY='street_story.g_option_evidence.v3'
 def visual_spatial_choice_schema():
     string={'type':'string','maxLength':360}
     return {'type':'object','properties':{
-        'decision':{'type':'string','enum':['accept','candidate','needs_detail','unknown']},
+        'decision':{'type':'string','enum':['accept','candidate','needs_detail','unknown','shortlist','no_reduction']},
         'candidate_label':{'type':'integer'},
         # PHOTO vocabulary is model-owned: a new facade/bridge/roof pattern
         # must not become UNKNOWN because its name was absent from a Python
@@ -37,6 +37,24 @@ def visual_spatial_choice_schema():
                 'observed_option_ids':{'type':'array',
                     'items':{'type':'string','maxLength':32},'maxItems':3}},
             'required':['label','source_vs_map_difference','observed_option_ids']}},
+        # Model chooses scene-sized active physical hypotheses; this is not a
+        # deterministic nearest-K ranking or an acceptance certificate.
+        'active_hypotheses':{'type':'array','maxItems':48,'items':{
+            'type':'object','properties':{
+                'label':{'type':'integer'},
+                'source_match':string,
+                'what_remains_uncertain':string},
+            'required':['label','source_match','what_remains_uncertain']}},
+        'explicit_contradictions':{'type':'array','maxItems':48,'items':{
+            'type':'object','properties':{
+                'label':{'type':'integer'},
+                'source_vs_map_conflict':string,
+                'conditions':string},
+            'required':['label','source_vs_map_conflict','conditions']}},
+        't_distinguishing_question':string,
+        'next_useful_step':{'type':'string','enum':['T','existing_images',
+            'wider_map','none']},
+        'no_reduction_reason':string,
         'request_detail_labels':{'type':'array','items':{'type':'integer'},'maxItems':4},
         'uncertainties':{'type':'array','items':string,'maxItems':5}},
         'required':['decision','candidate_label','source_observations']}
