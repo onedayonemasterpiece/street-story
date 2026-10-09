@@ -46,6 +46,21 @@ def _query(title, language):
     return title,domain,url
 
 
+
+def wikipedia_title_choice_schema(received_search):
+    """The LLM chooses only a publisher-returned MediaWiki page ID or null."""
+    if not isinstance(received_search,dict) or received_search.get('status') not in (
+            'completed','completed_empty'):
+        raise ValueError('no_closed_wikipedia_title_search')
+    ids=[item['pageid'] for item in received_search.get('results') or []
+        if isinstance(item,dict) and type(item.get('pageid')) is int]
+    return {'type':'object','properties':{
+        'pageid':{'anyOf':[{'type':'integer','enum':ids},{'type':'null'}]},
+        'reason':{'type':'string','maxLength':400},
+        'title_fit':{'type':'string','enum':['same_subject','ambiguous','none']}},
+        'required':['pageid','reason','title_fit'],'additionalProperties':False}
+
+
 def _decode_article(raw, *, original_title, requested_url, final_url, domain):
     if urlsplit(final_url).hostname!=domain:
         raise ValueError('wikipedia_unexpected_final_domain')
@@ -159,3 +174,85 @@ class ArchitecturalWikipediaReader:
         finally:
             receipt['elapsed_seconds']=round(time.monotonic()-start,3)
         return receipt
+
+
+    async def search_observed_title(self, title, *, language='ru'):
+        """Return publisher search candidates, not a guessed first article."""
+        original,domain,_=_query(title,language)
+        url=f'https://{domain}/w/api.php?'+urlencode({
+            'action':'query','format':'json','formatversion':'2',
+            'list':'search','srsearch':original,'srnamespace':'0',
+            'srlimit':'6'})
+        digest=hashlib.sha256(url.encode()).hexdigest()
+        key='wikipedia-architectural-title-candidates-v1:'+digest
+        start=time.monotonic()
+        result={'status':'not_sent','requested_title':original,
+            'language':language,'requested_url':url,'query_sha256':digest,
+            'cache_hit':False,'results':[],'identity_inferred':False}
+        try:
+            cached=self.store.cache_get(key)
+            raw=None
+            if isinstance(cached,dict) and isinstance(cached.get('body'),str):
+                try:
+                    raw=base64.b64decode(cached['body'],validate=True)
+                except (ValueError,TypeError):
+                    raw=None
+                if (raw is not None and cached.get('sha256')==hashlib.sha256(raw).hexdigest()
+                        and cached.get('final_url')==url):
+                    result['cache_hit']=True
+                else:
+                    raw=None
+            if raw is None:
+                async def same_publisher_resolver(host):
+                    if host!=domain:
+                        raise ValueError('wikipedia_cross_publisher_redirect')
+                    return await self.resolver(host)
+                result['status']='dispatch_intent'
+                final,mime,raw=await fetch_public(
+                    self.http,url,_MAX_RAW_BYTES,resolver=same_publisher_resolver)
+                if mime not in {'application/json','text/json'} or urlsplit(final).hostname!=domain:
+                    raise ValueError('wikipedia_search_origin_or_mime_mismatch')
+                self.store.cache_put(key,{'body':base64.b64encode(raw).decode(),
+                    'sha256':hashlib.sha256(raw).hexdigest(),'final_url':final,
+                    'fetched_at':self.store.now()},_TTL_SECONDS)
+            payload=json.loads(raw)
+            entries=(payload.get('query') or {}).get('search') if isinstance(payload,dict) else None
+            if not isinstance(entries,list):
+                raise ValueError('wikipedia_search_rows_missing')
+            cards=[]
+            for item in entries[:6]:
+                if not isinstance(item,dict):
+                    continue
+                pid=item.get('pageid')
+                page_title=item.get('title')
+                if (type(pid) is int and pid>0 and isinstance(page_title,str)
+                        and page_title.strip() and pid not in [x['pageid'] for x in cards]):
+                    cards.append({'pageid':pid,'title':page_title,
+                        'canonical_url':f'https://{domain}/wiki/'+quote(
+                            page_title.replace(' ','_'),safe='')})
+            result.update(status='completed' if cards else 'completed_empty',
+                results=cards,raw_source_sha256=hashlib.sha256(raw).hexdigest(),
+                response_bytes=len(raw))
+        except httpx.HTTPStatusError as exc:
+            result.update(status='transport_failed',
+                error_code=f'http_{exc.response.status_code}')
+        except (httpx.RequestError,TimeoutError) as exc:
+            result.update(status='transport_failed',error_code=type(exc).__name__)
+        except (ValueError,TypeError,KeyError,UnicodeError,json.JSONDecodeError) as exc:
+            result.update(status='parse_failed',error_code=str(exc)[:160])
+        finally:
+            result['elapsed_seconds']=round(time.monotonic()-start,3)
+        return result
+
+    async def article_by_model_selected_pageid(self, received_search, selected_pageid):
+        """Read only a page from the real frozen title-candidate search list."""
+        if (not isinstance(received_search,dict) or
+                received_search.get('status')!='completed'
+                or type(selected_pageid) is not int):
+            raise ValueError('model_selected_wikipedia_page_not_received')
+        cards=[row for row in received_search.get('results') or []
+            if isinstance(row,dict) and row.get('pageid')==selected_pageid]
+        if len(cards)!=1:
+            raise ValueError('model_selected_wikipedia_page_not_received')
+        return await self.article_by_observed_title(
+            cards[0]['title'],language=received_search['language'])
