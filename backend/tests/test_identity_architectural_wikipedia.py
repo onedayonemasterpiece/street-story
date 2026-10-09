@@ -6,7 +6,8 @@ import httpx
 import pytest
 
 from street_story.identity_architectural_wikipedia import (ArchitecturalWikipediaReader,
-    wikipedia_title_choice_schema)
+    wikipedia_title_choice_schema,prepare_wikipedia_title_queries,
+    validate_model_wikipedia_title_queries)
 
 
 class Cache:
@@ -169,3 +170,33 @@ async def test_mediawiki_search_offers_actual_alternative_titles_without_suffix_
     assert 'Две оконные оси' in selected['text']
     assert again['cache_hit'] is True
     assert len(requests)==2  # one search + one selected full article, no variant loops
+
+
+
+def test_wikipedia_model_query_planner_uses_acquired_title_verbatim_not_suffix_heuristic():
+    article={'article_id':'prussia39:sid:77','input_kind':'acquired_article_text',
+        'raw_body_sha256_verified':True,
+        'title':'Новый корпус городской виллы (старый) — город Тестовый',
+        'text':'Асимметричный фронтон над двумя оконными осями и каменный карниз.',
+        'source_sha256':'a'*64}
+    article['text_sha256']=hashlib.sha256(article['text'].encode()).hexdigest()
+    plan=prepare_wikipedia_title_queries(article)
+    assert article['title'] in plan['prompt']
+    assert article['text'] in plan['prompt']
+    assert plan['input_contract']=='wiki-T-title-search-llm-v1'
+    assert plan['schema']['properties']['queries']['maxItems']==2
+    actual={'queries':['Новый корпус городской виллы','Городская вилла'],
+        'query_reason':'Two possible publisher-title interpretations, each only a search lead.'}
+    assert validate_model_wikipedia_title_queries(plan,actual)==actual['queries']
+    import copy
+    bad=copy.deepcopy(actual)
+    bad['queries']=['А','Б','В']
+    with pytest.raises(ValueError,match='invalid_model_wikipedia_title_queries'):
+        validate_model_wikipedia_title_queries(plan,bad)
+    bad['queries']=['Одинаковое','Одинаковое']
+    with pytest.raises(ValueError,match='invalid_model_wikipedia_title_queries'):
+        validate_model_wikipedia_title_queries(plan,bad)
+    mutated=copy.deepcopy(article)
+    mutated['text']+='Invented after the publisher fetch.'
+    with pytest.raises(ValueError,match='verified_publisher_article'):
+        prepare_wikipedia_title_queries(mutated)
