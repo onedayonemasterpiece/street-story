@@ -174,7 +174,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
     # Publish actual source/OSM observations WITHOUT joining by postal text.
     # The LLM compares suffixes, ranges, historic aliases and complex scope.
     from .identity_architectural_evidence import (
-        literal_evidence_inventory, physical_link_schema)
+        literal_evidence_inventory, physical_link_schema, compact_model_evidence)
     evidence = literal_evidence_inventory(story, list(catalog.values()),
         articles, candidate_ids=ids)
 
@@ -201,9 +201,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         'articles': acquired,
         'publisher_query_scope_not_identity': query,
         'physical_candidates': physical,
-        'publisher_and_OSM_literal_evidence_unjoined':{
-            'publisher_records':evidence['articles'],
-            'physical_subjects':evidence['physical_subjects']},
+        'publisher_and_OSM_literal_evidence_unjoined':compact_model_evidence(evidence),
         'postal_relationship_decision_by':'SOURCE_TEXT_LLM_not_address_parser',
         'previous_model_hypotheses_not_evidence': initial,
         'initial_geometry_rejection_not_identity': copy.deepcopy(receipt.get('initial_geometry_rejection') or {}),
