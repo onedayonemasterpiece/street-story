@@ -33,11 +33,15 @@ def test_frozen_photo102_geometry_contrast_is_an_advisory_scale_not_identificati
 
 
 def test_physical_scene_includes_all_received_candidates_and_exif_outline_context():
+    from street_story.identity_map_context import geometry_camera_context
     first, second, remote = building(2, 20), building(3, 50), building(4, 200)
+    # The normal OSM provider supplies measured boundary bearing intervals.
+    measured = [{**item, **geometry_camera_context(item, 54.7, 20.5)}
+        for item in (first, second, remote)]
     source = {'latitude': 54.7, 'longitude': 20.5, '_camera_position_verified': True,
         '_camera_hints': {'diagonal_fov_35mm_deg': 84.1, 'focal_length_35mm': 24,
             'digital_zoom_ratio': 3, 'direction_status': 'missing'},
-        '_identity_map_snapshot': {'observed_pool': [first, second, remote]}}
+        '_identity_map_snapshot': {'observed_pool': measured}}
     saved = copy.deepcopy(source)
     rendered = render_scene(source, [])
     capsule = physical_decision_context(source, [], rendered['manifest'])
