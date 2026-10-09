@@ -87,7 +87,7 @@ def setup(tmp_path, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_shared_identity_planner_forwards_operation_cap_without_expanding_fact_cap(tmp_path):
+async def test_shared_large_identity_and_fact_inputs_reach_transport(tmp_path):
     h, backend, adapter = setup(tmp_path)
     h.result = {'summary': 'Actual sources'}
     schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}},
@@ -98,10 +98,11 @@ async def test_shared_identity_planner_forwards_operation_cap_without_expanding_
     assert result['receipt']['phase'] == 'completed'
     assert adapter.limits is limits and limits.max_input_chars == 24000
     assert len(h.sends) == 1
-    before = len(backend.calls)
-    with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
-        await adapter._run('facts', 'x'*30000, {'request_id': 'normal-facts'}, schema)
-    assert len(backend.calls) == before and len(h.sends) == 1
+    facts = await adapter._run('facts', 'x'*30000, {'request_id': 'normal-facts'}, schema)
+    assert facts['receipt']['phase'] == 'completed'
+    assert facts['receipt']['input_utf8_bytes'] > 24000
+    assert facts['receipt']['input_limit_bytes'] is None
+    assert len(h.sends) == 2
 
 
 @pytest.mark.asyncio

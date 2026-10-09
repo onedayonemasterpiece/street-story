@@ -243,8 +243,6 @@ class GigaChatResearchClient:
         if not isinstance(full_inventory, list):
             raise ValueError('gigachat:inventory_invalid')
         public_capsule = {key: value for key, value in capsule.items() if key != '_known_fact_inventory'}
-        if len(_json(public_capsule).encode('utf-8')) > 65536:
-            raise ValueError('gigachat:capsule_too_large')
         raw_sources = capsule.get('sources')
         if (not isinstance(raw_sources, list) or not 1 <= len(raw_sources) <= 4 or any(
             not isinstance(source, dict) or not isinstance(source.get('source_version_id'), str)

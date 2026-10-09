@@ -46,6 +46,23 @@ class EmptyFindings(Provider):
 
 
 @pytest.mark.asyncio
+async def test_large_giga_context_reaches_provider_with_complete_evidence(tmp_path):
+    provider, admission = EmptyFindings(), Admission()
+    adapter, story = setup(tmp_path, provider, admission)
+    context = {'coverage_goal': 'Check the source', 'architectural_context': 'ж'*70000}
+    try:
+        result = await adapter._extract_giga_page(PAGE, story, context, allow_fallback=False)
+        saved = receipts(adapter)[-1]
+        assert result['result']['facts'] == []
+        assert saved['phase'] == 'completed' and saved['provider_send_state'] == 'response_closed'
+        assert provider.chats == len(saved['inference_sends']) == 2
+        assert any(context['architectural_context'] in request.content.decode('utf-8')
+                   for request in provider.requests)
+    finally:
+        await adapter.giga.aclose()
+
+
+@pytest.mark.asyncio
 async def test_envelope_expires_during_admission_before_giga_chat_dispatch(tmp_path):
     from street_story.research_budget import ResearchTerminated, ensure_budget
     from contextlib import asynccontextmanager
@@ -75,7 +92,6 @@ async def test_envelope_expires_during_admission_before_giga_chat_dispatch(tmp_p
 @pytest.mark.asyncio
 @pytest.mark.parametrize('invalid_context,code', [
     ({'coverage_goal': ''}, 'gigachat:bounded_request_required'),
-    ({'coverage_goal': 'Read', 'extra': 'x' * 70000}, 'gigachat:capsule_too_large'),
 ])
 async def test_local_validation_failure_creates_safe_new_attempt_after_input_fixed(tmp_path, invalid_context, code):
     provider, admission = EmptyFindings(), Admission()

@@ -856,14 +856,15 @@ async def _suggest(service, story, transcript, candidates):
                     errors=errors, errors_truncated=truncated, **diagnostic_stage(raw))
             return decoded
         payload = decode_joint(response)
+        initial_validation_error = None
         try:
             accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
                 raw_json_available=isinstance(response.text, str),
                 provider_response_id=getattr(response, 'response_id', None), validate_only=True)
-        except PermanentProviderError:
+        except (PermanentProviderError, RetryableProviderError) as exc:
             # Malformed/invalid original decisions still use only the existing
             # bounded repair. They can never authorize original-plan reuse.
-            pass
+            initial_validation_error = str(exc)
         else:
             from .identity_plan_diagnostics import retain_closed_initial_plan
             retain_closed_initial_plan(service, story, initial_binding, payload, initial_schema,
@@ -882,6 +883,13 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_proof import freeze_geometry_proof
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
             joint_source_map_receipt(), [*observed, *candidates]) if isinstance(payload, dict) else None)
+        if scene and initial_validation_error in {
+                'identity_geometry_proof_invalid', 'identity_first_wave_coverage_incomplete'}:
+            # Schema-valid JSON can still omit required physical evidence or
+            # search coverage. Give that concrete failure to the existing one
+            # bounded repair, rather than starting a separate oversized planner.
+            issues['host_evidence_contract'] = {'code': initial_validation_error,
+                'previous_claim_is_not_confirmation': True}
         lookup = {}
         if isinstance(payload, dict) and initial_geometry is None:
             from jsonschema import Draft202012Validator

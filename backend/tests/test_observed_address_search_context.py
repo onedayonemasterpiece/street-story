@@ -129,10 +129,11 @@ def test_selector_keeps_active_and_exact_membership_geometry_with_all_address_an
     assert len(packet['building_address_memberships']) == 1
 
 
-def test_oversized_model_catalog_fails_explicitly_without_dropping_ids():
-    from street_story.providers import RetryableProviderError
+def test_large_model_catalog_preserves_all_ids_without_local_refusal():
     candidates = [{'candidate_id': f'osm:way:{index}', 'name': 'Long observed name ' * 10}
         for index in range(1000)]
-    with pytest.raises(RetryableProviderError, match='identity_semantic_packet_too_large'):
-        model_identity_context({'_identity_observed_candidates': candidates})
+    packet = model_identity_context({'_identity_observed_candidates': candidates})
+    assert len(json.dumps(packet).encode()) > 65536
+    assert [row[0] for row in packet['observed_physical_candidates']['rows']] == [
+        candidate['candidate_id'] for candidate in candidates]
     assert len(candidates) == 1000

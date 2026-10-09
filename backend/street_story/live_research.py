@@ -25,6 +25,9 @@ TRIGGER = 'Perform the frozen_research_operation supplied in setup context. Subm
 MALFORMED_ARGS_BYTES = 32768
 MALFORMED_PREFIX_BYTES = 8192
 VALIDATION_ERRORS = 16
+# Documented model capability, not a locally invented byte admission ceiling.
+# https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live (2026-10-09)
+LIVE_TOKEN_LIMITS = {'gemini-3.8-live': {'input_token_limit': 131_072, 'output_token_limit': 65_536}}
 
 
 def _malformed_args(args):
@@ -99,7 +102,11 @@ class LiveSemanticClient:
         # Use the shared provider's actual wire JSON encoding, including system,
         # setup context and the complete function schema, before opening a socket.
         input_bytes = len(json.dumps(setup).encode('utf-8')) + len(json.dumps(trigger).encode('utf-8'))
-        input_size = {'input_utf8_bytes': input_bytes, 'input_limit_bytes': 24_000,
+        input_size = {'input_utf8_bytes': input_bytes, 'input_limit_bytes': None,
+                      'packet_target_bytes': 24_000,
+                      **LIVE_TOKEN_LIMITS.get(self.model_id, {}),
+                      'input_tokens': None, 'token_count_status': 'not_measured',
+                      'context_window_compression': bool(setup['setup'].get('contextWindowCompression')),
                       'input_size_scope': 'serialized_live_setup_plus_trigger_v1'}
         return context, configuration, trigger, input_size
 
@@ -116,12 +123,6 @@ class LiveSemanticClient:
             raise ResearchUnavailable('live_research_original_outcome_unknown',
                                       receipt={'binding': binding, 'phase': 'unknown'})
         context, configuration, trigger, input_size = self._prepared_input(role, prompt, schema)
-        if input_size['input_utf8_bytes'] > input_size['input_limit_bytes']:
-            failed = {'binding': binding, 'phase': 'failed', 'provider_send_state': 'not_sent',
-                      'error_code': 'live_research_unit_oversize', 'provider_id': self.provider_id,
-                      'model_id': self.model_id, **input_size}
-            await self.adapter.checkpoint(binding, failed)
-            raise ResearchUnavailable('live_research_unit_oversize', receipt=failed)
         purpose = binding.get('purpose', 'facts')
         def guard():
             self.adapter.guard_binding(binding)

@@ -456,3 +456,42 @@ within 300 s and natural terminal within 480 s, at least one actual Live-first s
 and geometry before REF for 130/132. Only then run one Android emulator E2E and
 consider deployment of that same version. No mixed-SHA, identity-only, unreviewed
 facts, forced terminal or manually supplied runtime answers may establish PASS.
+
+## October 9: remove invented input refusals, retain actual Live constraints
+
+On frozen `c2dcc5a`, cold photo111 received one closed Google HTTP200 answer,
+but the nominated modern building lacked valid physical proof; the host rejected
+it and the case naturally failed at 180.016 s with no identity or facts. Cold
+photo130 received a known HTTP503, selected the secondary Luna route, then hit
+the **local** 65,536-byte refusal on a 69,191-byte input before Native inference.
+Google Flash Lite subsequently returned HTTP200 with incomplete hypothesis
+coverage. The case naturally failed at 180.026 s with no identity or facts.
+This proves route selection, not successful Luna spatial inference.
+
+The owner rejected artificial limits and separately asked to preserve genuine
+Live context constraints. Prepared code removes the local 24/64 KB refusals in
+Native, OpenCode/shared Native, Live and GigaChat, the semantic catalog ceiling,
+and the fact-review size filter that excluded qualified routes or exhausted an
+indivisible packet. Complete input size remains observable. An old known-unsent
+planner refusal can get a new recorded attempt without changing its prior receipt;
+UNKNOWN still requires original observation and never authorizes a duplicate.
+Small complete fact packets remain a scheduling preference, with no passage clipping.
+
+The configured Live model is `gemini-3.8-live`. Google documents **131,072 input
+tokens** and **65,536 output tokens**, verified October 9 against its
+[model page](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live).
+Those values are recorded separately from wire bytes; token counts not measured
+remain unknown. The shared Live transport already enables sliding-window context
+compression. Every bounded headless operation starts its own scoped session.
+The former 24,000-byte gate was not a check against the documented token window.
+
+Schema-valid joint responses that fail host geometry evidence or first-wave
+coverage now feed their concrete failure into the existing one useful repair.
+The failed claim is explicitly not confirmation. This change neither lowers the
+proof threshold nor adds a third semantic judge.
+
+The final transport, complete-packet, Native, GigaChat and geometry-plan checks
+passed **202 tests in 55.74 s**; catalog, repair, first-wave, pointer, UNKNOWN
+and Prussia-admission checks passed **80 tests in 25.11 s**. Ruff also passed.
+Actual new release acceptance remains pending;
+these mock transport tests do not establish full product PASS or a deployment.

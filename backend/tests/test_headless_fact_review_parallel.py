@@ -248,7 +248,7 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
     class BoundedReview(ControlledReview):
         MAX_PACKET_FACTS = 12
         async def _infer(self, packet, *args, **kwargs):
-            assert len(VERIFIER_PROMPT + canonical(packet)) <= budget
+            assert len(VERIFIER_PROMPT + canonical(packet)) <= budget or len(packet['items']) == 1
             for item in packet['items']:
                 assert item['passage'] == item['text'] and item['passage_complete'] is True
             calls.append(packet['total_facts'])
@@ -285,10 +285,11 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
         async def start(self, **kwargs):
             initialized = self.adapter.initialize(**kwargs)
             prompt = initialized['context']['frozen_research_operation']['prompt']
-            assert len(prompt.encode('utf-8')) <= 24000
             schema = initialized['configuration']['functions'][0]['parameters']
-            assert provider.live_facts.input_size(prompt, schema)['input_utf8_bytes'] <= 24000
             self.packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
+            size = provider.live_facts.input_size(prompt, schema)
+            assert size['input_limit_bytes'] is None
+            assert size['input_utf8_bytes'] <= size['packet_target_bytes'] or len(self.packet['items']) == 1
             for item in self.packet['items']:
                 assert item['passage'] == item['text'] and item['passage'] in texts
                 assert item['passage_complete'] is True
@@ -361,7 +362,7 @@ def test_route_capacity_measures_serialized_prompt_with_escaping_and_transport_u
 
 
 @pytest.mark.asyncio
-async def test_fresh_oversized_live_packet_uses_fitting_qualified_text_route_without_live_attempt(tmp_path):
+async def test_fresh_large_live_packet_keeps_live_route_and_complete_evidence(tmp_path):
     from street_story.headless_fact_review import VERIFIER_PROMPT
     from street_story.service import canonical
     svc, job, harness = await candidates(tmp_path, count=1)
@@ -381,8 +382,8 @@ async def test_fresh_oversized_live_packet_uses_fitting_qualified_text_route_wit
         def __init__(self, model_id):
             self.model_id = model_id
         async def _run(self, role, supplied, binding, schema):
-            assert self.model_id == 'qualified-text'
-            assert supplied == prompt and len(supplied) <= self.limits.max_input_chars
+            assert self.model_id == 'live'
+            assert supplied == prompt and len(supplied.encode('utf-8')) > 24000
             calls.append(self.model_id)
             return {'result': {'packet_ref': packet['packet_ref'], 'decisions': [],
                 'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}}
@@ -394,9 +395,9 @@ async def test_fresh_oversized_live_packet_uses_fitting_qualified_text_route_wit
         return await operation({'attempt_id': 'fresh-whole-unit'})
     svc.providers.research = SimpleNamespace(run=run)
     args = await engine._infer(packet, job, 'fresh-whole-unit', {})
-    assert args['packet_ref'] == packet['packet_ref'] and calls == ['qualified-text']
+    assert args['packet_ref'] == packet['packet_ref'] and calls == ['live']
     saved = svc.store.checkpoint_get(job['id'], 'headless_fact_review:fresh-whole-unit')
-    assert saved['phase'] == 'result' and saved['model_id'] == 'qualified-text'
+    assert saved['phase'] == 'result' and saved['model_id'] == 'live'
 
 
 @pytest.mark.asyncio

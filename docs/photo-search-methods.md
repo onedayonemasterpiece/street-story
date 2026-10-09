@@ -25,8 +25,21 @@ unknowns. Full OSM geometry remains durable; distant telephoto targets remain
 reachable. Separate postal entrance numbers and literal join provenance must
 not require the model to manually join several tables or imply one postal address.
 Whole provider input includes the system instructions and schema. Text discovery
-gets its own small schema and cannot accept image evidence; Native and Live check
-their complete addressed inputs against their existing byte envelopes before sending.
+gets its own small schema and cannot accept image evidence. Complete addressed
+input size is observed, not an arbitrary model admission gate. The owner's
+October 9 clarification removes local 24/64 KB input refusals from Native,
+OpenCode, Live and GigaChat. Actual provider limits/admission remain authoritative.
+Fact packets may target a small working size, while an indivisible larger packet
+keeps all evidence and remains eligible for the same qualified model route.
+Live specifically retains small working packets and the shared transport's
+context-window compression. The configured `gemini-3.8-live` has a documented
+131,072-token input limit and 65,536-token output limit, verified on October 9
+against [Google's model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live).
+These are model capabilities, not byte ceilings. Receipts record them separately
+from actual wire bytes; unmeasured token counts remain unknown. A provider context
+rejection remains a recorded route failure and cannot discard complete evidence
+or block independent qualified routes. Each headless semantic operation starts a
+fresh scoped session rather than accumulating another operation's dialogue.
 
 The initial MAP keeps the full overview and every physical body row. Indexed side
 excerpts are limited to the displayed area and explicitly state omissions; this
@@ -140,7 +153,7 @@ shared workload admission and account quota permission. It receives the exact
 prepared SOURCE and MAP bytes, with MAP labelled as a map rather than a reference
 facade. Its addressed prompt, schema, images and original host proof context are
 retained for turn readback; quota loss does not prevent reading that original turn.
-Fresh input exceeding the existing 65,536-byte role budget is unsent. Native quota
+There is no local 65,536-byte input refusal. Native quota
 refusal permits the next registered Google route only with authoritative unsent
 evidence. UNKNOWN cannot rotate to another model or create another turn. A closed
 valid spatial proof ends the operation; Luna is not a mandatory additional judge.
@@ -264,8 +277,9 @@ existing 12-second envelope, further bounded by the upload-based identity deadli
 while overlapping SOURCE/MAP preparation and before acquiring a model key.
 Late or partial cards remain visible, but do not authorize automatic first-two
 selection or another mandatory judge. Independent text fallback preserves the
-received packet; its Native addressed prompt can still be large, and Live's
-24 KB planning limit remains a real limitation.
+received packet. Its Native addressed prompt can be large; neither Native's former
+64 KB nor Live's former 24 KB check may refuse that prompt locally. Size stays
+observable and real provider errors are handled by the existing operation contract.
 The former three-second preparation cutoff repeatedly lost cold cards. Aligning
 it with the reader envelope preserves responses slower than three seconds; a
 response exceeding the ordinary reader limit can still be unavailable.

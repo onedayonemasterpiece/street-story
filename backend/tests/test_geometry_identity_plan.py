@@ -254,7 +254,41 @@ async def test_equal_pose_or_incomplete_coverage_remains_uncertain_without_fake_
 
 
 @pytest.mark.asyncio
-async def test_closed_invalid_geometry_uses_one_qualified_fallback_not_google_key_loop(tmp_path):
+@pytest.mark.parametrize('failure', ['geometry', 'coverage'])
+async def test_schema_valid_unproved_geometry_gets_one_evidence_repair_before_identity_acceptance(tmp_path, failure):
+    from test_structured_identity_first_wave import choice
+    service, story, active = geometry_setup(tmp_path)
+    decision = geometry_decision()
+    decision['bounded_coverage']['material_alternatives_resolved'] = False
+    initial = payload(decision)
+    code = 'identity_geometry_proof_invalid'
+    if failure == 'coverage':
+        for candidate in story['_identity_observed_candidates']:
+            if candidate['candidate_id'] in {'osm:way:2', 'osm:way:3'}:
+                candidate['map_address'] = {'street': 'Fixture street', 'house_number': candidate['candidate_id'][-1]}
+        decision.update(decision='uncertain', candidate_id='', decisive_relations=[], rejected_alternatives=[])
+        initial['first_wave_hypotheses'] = [choice('address', 'osm:way:2')]
+        code = 'identity_first_wave_coverage_incomplete'
+    calls = []
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            return SimpleNamespace(text=json.dumps(initial))
+        assert len(calls) == 2
+        assert code in contents[-1]
+        assert 'previous_claim_is_not_confirmation' in contents[-1]
+        assert contents[0].inline_data.data == calls[0][0].inline_data.data
+        assert contents[1].inline_data.data == calls[0][1].inline_data.data
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = None
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(calls) == 2
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+
+
+@pytest.mark.asyncio
+async def test_closed_invalid_geometry_uses_one_bounded_repair_without_third_inference(tmp_path):
     service, story, active = geometry_setup(tmp_path)
     decision = geometry_decision()
     decision['bounded_coverage']['material_alternatives_resolved'] = False
@@ -263,13 +297,12 @@ async def test_closed_invalid_geometry_uses_one_qualified_fallback_not_google_ke
         calls.append('google')
         return SimpleNamespace(text=json.dumps(payload(decision)))
     async def fallback(story, prompt, schema):
-        calls.append('fallback')
-        assert 'SOURCE and MAP images are unavailable' in prompt
-        return {'result': {key: value for key, value in payload(decision).items() if key != 'accepted_geometry'}}
+        pytest.fail('Two invalid spatial responses cannot authorize a third semantic attempt')
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=fallback)
-    await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert calls == ['google', 'fallback'] and '_identity_geometry_result' not in story
+    with pytest.raises(PermanentProviderError, match='identity_geometry_proof_invalid'):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['google', 'google'] and '_identity_geometry_result' not in story
 
 
 @pytest.mark.asyncio

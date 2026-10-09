@@ -166,7 +166,7 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
 
 
 @pytest.mark.asyncio
-async def test_source_map_quota_denial_is_unsent_and_oversize_does_not_open_a_thread(tmp_path):
+async def test_source_map_quota_denial_is_unsent_and_large_input_reaches_native(tmp_path):
     provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
     images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
     host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
@@ -176,13 +176,14 @@ async def test_source_map_quota_denial_is_unsent_and_oversize_does_not_open_a_th
         await provider.compare_source_map(story, VERDICT_SCHEMA, 'bounded geometry', images,
                                          {'attempt_id': 'spatial'}, host)
     assert not sends and receipts[-1]['provider_send_state'] == 'not_sent'
-    before = len(client.calls)
-    from street_story.errors import PermanentProviderError
-    with pytest.raises(PermanentProviderError, match='source_map_input_oversize'):
-        await provider.compare_source_map(story, VERDICT_SCHEMA, 'x' * 65536, images,
-                                         {'attempt_id': 'oversize'}, host)
-    assert len(client.calls) == before
-    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    client.used = 0
+    large_prompt = 'x' * 70000
+    result = await provider.compare_source_map(story, VERDICT_SCHEMA, large_prompt, images,
+                                              {'attempt_id': 'large-input'}, host)
+    assert result['receipt']['input_utf8_bytes'] > 65536
+    assert result['receipt']['phase'] == 'completed' and len(sends) == 1
+    turn = next(params for method, params in client.calls if method == 'turn/start')
+    assert turn['input'][0]['text'] == large_prompt
     await provider.close()
 
 

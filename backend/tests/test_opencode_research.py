@@ -434,34 +434,26 @@ async def test_unknown_search_observes_exact_original_prompt_after_policy_capsul
 
 
 @pytest.mark.asyncio
-async def test_identity_planner_has_operation_local_64k_cap_and_real_input_accounting():
+async def test_identity_planner_large_inputs_reach_transport_with_real_input_accounting():
     h = Harness()
     client = h.adapter()
     original_limits = client.limits
     schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}
     try:
-        result = await client.plan_identity_search('Observed SOURCE/map context ' + 'x'*30000,
-            {'request_id': 'large-plan'}, schema)
+        requests = [
+            ('large-plan', 'x'*65537, schema),
+            ('schema-envelope', 'x'*30000, {'type': 'object', 'description': 'y'*40000}),
+            ('utf8-envelope', 'ж'*33000, schema),
+        ]
+        for request_id, prompt, output_schema in requests:
+            result = await client.plan_identity_search(prompt, {'request_id': request_id}, output_schema)
+            assert result['receipt']['phase'] == 'completed'
+            assert result['receipt']['input_utf8_bytes'] > 65536
+            assert result['receipt']['input_limit_bytes'] is None
+        result = await client._run('facts', 'x'*30000, {'request_id': 'large-facts'}, schema)
         assert result['receipt']['phase'] == 'completed'
-        assert client.limits is original_limits and client.limits.max_input_chars == 24000
-        actual_prompt = next(payload for method, path, payload in h.requests if path.endswith('prompt_async'))['parts'][0]['text']
-        assert h.admissions[0][1]['input_chars'] == len(actual_prompt) > 30000
-        assert result['receipt']['input_utf8_bytes'] == h.admissions[0][1]['input_bytes'] < 65536
-        assert len(h.sends) == 1
-        before = len(h.requests)
-        with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
-            await client.plan_identity_search('x'*65537, {'request_id': 'too-big-plan'}, schema)
-        # Base alone fits; schema and non-ASCII encoding are part of the bound.
-        large_schema = {'type': 'object', 'description': 'y'*40000}
-        with pytest.raises(ResearchUnavailable, match='research_input_too_large') as oversized:
-            await client.plan_identity_search('x'*30000, {'request_id': 'schema-overflow'}, large_schema)
-        assert oversized.value.receipt['input_utf8_bytes'] > 65536
-        assert oversized.value.receipt['provider_send_state'] == 'not_sent'
-        with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
-            await client.plan_identity_search('ж'*33000, {'request_id': 'utf8-overflow'}, schema)
-        with pytest.raises(ResearchUnavailable, match='research_input_too_large'):
-            await client._run('facts', 'x'*30000, {'request_id': 'normal-facts'}, schema)
-        assert len(h.requests) == before and len(h.sends) == 1
+        assert client.limits is original_limits and len(h.sends) == 4
+        assert all(event[1]['input_bytes'] > 24000 for event in h.admissions)
     finally:
         await h.client.aclose()
 

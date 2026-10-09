@@ -798,16 +798,16 @@ class ProductResearchAdapter:
         else:
             routes = [route for route in routes if route['available']]
         waits = []
-        input_refusals, other_failure = [], False
         for route in routes:
             receipt = prior.get((route['provider_id'], route['model_id'])) or {}
             if receipt.get('phase') in {'failed', 'aborted'} and not self._fact_pool_unknown(receipt):
-                if (receipt.get('provider_send_state') == 'not_sent' and receipt.get('error_code') in {
-                        'research_input_too_large', 'live_research_unit_oversize'}):
-                    input_refusals.append(receipt['error_code'])
-                else:
-                    other_failure = True
-                continue
+                removed_local_cap = receipt.get('provider_send_state') == 'not_sent' and receipt.get('error_code') in {
+                    'research_input_too_large', 'live_research_unit_oversize'}
+                if not removed_local_cap:
+                    continue
+                # That legacy refusal happened before inference. The removed
+                # local cap must not stay sticky; ordinary admission and a new
+                # recorded attempt are safe, while UNKNOWN still reads above.
             owned = {**story, '_fact_pool_unit_id': unit,
                      '_fact_pool_input_sha256': hashlib.sha256(unit.encode()).hexdigest()}
             route_unit = canonical([unit, route['provider_id'], route['model_id'], route['endpoint']])
@@ -822,14 +822,8 @@ class ProductResearchAdapter:
                     current = next((value for row in rows if (value := json.loads(row[0])).get('binding', {}).get('fact_unit_id') == unit), {})
                 if unknown or self._fact_pool_unknown(current):
                     raise
-                if str(exc) in {'research_input_too_large', 'live_research_unit_oversize'}:
-                    input_refusals.append(str(exc))
-                else:
-                    other_failure = True
-                    if exc.retry_at is not None:
-                        waits.append(exc.retry_at)
-        if input_refusals and not other_failure:
-            raise PermanentProviderError('identity_search_plan_input_oversize')
+                if exc.retry_at is not None:
+                    waits.append(exc.retry_at)
         raise RetryableProviderError('identity_search_plan_unavailable',
                                      retry_at=min(waits) if waits else self.service.store.now()+30)
 

@@ -471,15 +471,11 @@ class OpenCodeResearch:
             encoded = json.dumps({'system': system_prompt, 'request': request},
                                  ensure_ascii=getattr(self, 'input_json_ensure_ascii', False),
                                  separators=(',', ':')).encode('utf-8')
-            receipt.update(input_utf8_bytes=len(encoded), input_limit_bytes=input_limit,
+            receipt.update(input_utf8_bytes=len(encoded), input_limit_bytes=None,
+                           packet_target_bytes=input_limit,
                            input_size_scope='addressed_text_request_plus_attested_agent_prompt_v1')
-            if not observing and len(encoded) > input_limit:
-                receipt.update(phase='failed', provider_send_state='not_sent', retry_safe=True,
-                               error_code='research_input_too_large')
-                await self._checkpoint(binding, receipt)
-                raise ResearchUnavailable('research_input_too_large', dict(receipt))
 
-        # Catch schema oversize before even the read-only isolation requests.
+        # Account for the complete owned input before isolation requests.
         await check_input()
         client = self.client
         started = time.monotonic()

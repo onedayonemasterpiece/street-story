@@ -120,14 +120,14 @@ class HeadlessFactReview:
 
     @staticmethod
     def _route_accepts_prompt(route, prompt, *, schema=None):
-        # Real Live admission includes the shared setup, escaped context/schema
-        # and trigger. Splitting uses the identical envelope before creating a
-        # provider operation; passage text itself is never shortened.
+        # A preferred packet size guides batching, never provider eligibility.
+        # Measure setup/schema/trigger, keeping each source passage whole.
         if route.get('role') == 'facts_live':
             measure = getattr(route.get('client'), 'input_size', None)
             if callable(measure) and schema is not None:
                 size = measure(prompt, schema)
-                return size['input_utf8_bytes'] <= size['input_limit_bytes']
+                return size['input_utf8_bytes'] <= (size.get('packet_target_bytes')
+                    or size.get('input_limit_bytes') or 24000)
             return len(prompt.encode('utf-8')) <= 24000
         limit = getattr(getattr(route.get('client'), 'limits', None), 'max_input_chars', 24000)
         return len(prompt) <= limit
@@ -186,11 +186,8 @@ class HeadlessFactReview:
         prompt = verifier_prompt + canonical(packet)
         closed_routes = set(saved.get('closed_routes') or [])
         all_routes = self._qualified_routes(available=False)
-        if not observing:
-            # Preflight is only for fresh sends. Original addressed requests
-            # retain their exact frozen input and original reader after restart.
-            routes = [route for route in routes if self._route_accepts_prompt(route, prompt)]
-            all_routes = [route for route in all_routes if self._route_accepts_prompt(route, prompt)]
+        # Preferred packet size never removes qualified routes. Original
+        # requests retain their frozen input and original reader after restart.
         temporary = any(not route.get('available', True) for route in all_routes)
         for route in routes:
             role = 'facts_review_' + route['model_id']
@@ -441,12 +438,9 @@ class HeadlessFactReview:
             if packet is None:
                 continue
             if not packet_fits(packet, single=True):
-                self._put(job, unit, {'phase': 'exhausted', 'packet_ref': packet['packet_ref'],
-                                     'error_code': 'review_input_limit'})
-                LOG.info('street_story_background_fact_review_input_waiting story_id=%s unit_id=%s chars=%s utf8_bytes=%s',
+                LOG.info('street_story_background_fact_review_large_packet story_id=%s unit_id=%s chars=%s utf8_bytes=%s',
                          job['story_id'], unit, len(VERIFIER_PROMPT + canonical(packet)),
                          len((VERIFIER_PROMPT + canonical(packet)).encode('utf-8')))
-                continue
             prepared.append((session, packet, unit, saved))
             new_prepared += 1
         async def review(item, ordinal):

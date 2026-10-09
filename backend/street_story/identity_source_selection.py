@@ -379,11 +379,8 @@ def model_identity_context(story, candidates=(), *, include_observed=True, scene
             if row[tags_index]:
                 row[tags_index] = {key: value for key, value in row[tags_index].items()
                     if key not in {'scope', 'provenance'}} or None
-    # Non-scene selectors have their own small packet envelope. Joint packets
-    # compact this full leaf losslessly before the actual provider admission.
-    if not scene_available and len(json.dumps(packet, ensure_ascii=False, separators=(',', ':')).encode()) > 65536:
-        from .providers import RetryableProviderError
-        raise RetryableProviderError('identity_semantic_packet_too_large')
+    # Preserve the complete semantic catalog. Transport accounts for its size;
+    # an invented byte ceiling must not close discovery before admission.
     return packet
 
 
