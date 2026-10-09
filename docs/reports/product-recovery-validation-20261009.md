@@ -22,6 +22,7 @@ selected buildings were not started after a failed canary.
 | `2142455` | Correct OSM relation, geometry 15.67 s | 480.94 s | 0 | Natural facts deadline; nine nonliteral review quotes, later extraction schema failure |
 | `c528647` | Correct OSM relation, geometry 17.23 s | Stop 168.69 s | 0 | Seven candidate-as-quote copies rejected; all observed provider receipts closed before harness termination |
 | `80fb6cd` | None | 29.58 s | 0 | Optional joint follow-up denied before send by shared TPM; caller blocked reuse of the closed initial plan |
+| `4cdd3f6` | None; conditional context only | 181.07 s | 0 | Natural identity deadline; initial plan reused after not-sent follow-up, Native comparison uncertain against illustration REF |
 
 The correct photo104 physical object is `osm:relation:3665416`, independently
 labelled for reporting. Neither its identity nor raw extracted statements count
@@ -38,6 +39,14 @@ valid nominations without another planner. SOURCE, camera/context, configuration
 schema and receipt changes block reuse; malformed or UNKNOWN decisions do not
 authorize identity. Twelve new regressions and 66 affected isolated checks passed;
 the merged initial-plan/diagnostics/fence set passed 48 tests in 39.81 seconds.
+
+The `4cdd3f6` run verified that transition: after a known not-sent TPM denial,
+the valid initial plan was reused without a fresh Google planner. Its exact
+Google image pair was blocked before SDK invocation; Native then returned
+uncertain against a stylized illustration reference. A later reference triage
+did invoke the SDK and was cancelled with an unknown outcome. The original
+receipt remains fenced. No physical identity, canonical POI facts or three
+substantive claims were accepted; conditional context cannot earn PASS.
 
 ## Corrections and offline evidence
 
@@ -103,12 +112,19 @@ All 11 critical requirements remain unchanged (requirements digest
 
 ## Usage and remaining acceptance
 
-Observed diagnostic totals as of 00:42 UTC: 79 Google SDK invocations, 35 closed
-model answers reporting 1,302,877 total tokens; 20 typed HTTP failures and 24 unknown
+Observed diagnostic totals as of 01:09 UTC: 85 Google SDK invocations, 39 closed
+model answers reporting 1,406,266 total tokens; 21 typed HTTP failures and 25 unknown
 outcomes. Twelve closed Live operations report 59,742 total tokens. Three actual
 GigaChat sends in `2142455` have unreported token usage; addressed Native outcomes
 also contain unknown usage. Provider attempts are not inference counts. These
 are lower bounds across historical diagnostics, not final-release costs.
+Google counts are deduplicated by actual SDK call ID across 18 retained logs;
+the HTTP failures comprise thirteen 429, six 400 and two 503 responses. The
+`4cdd3f6` run adds six SDK calls and 103,389 reported Google tokens. Its closed
+Native pair reports 10,282 tokens and remains an uncertain identity result. A
+reported partial Mimo search counter of 10,647 tokens is retained separately:
+its closing and counter provenance are unverified, so it is excluded from
+whole-inference usage totals.
 Monetary total is **unknown** because no complete provider billing ledger is
 available; one Native free-route cost field of 0 does not establish total spending 0.
 
