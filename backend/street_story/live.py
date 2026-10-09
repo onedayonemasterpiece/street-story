@@ -614,6 +614,9 @@ FUNCTIONS = [
     _tool_schema(
         "select_facts",
         "Change selected evidence-backed facts only when the author explicitly asks to choose or change facts. "
+        "For a request to compose now, read get_facts with eligibility=eligible and choose reviewed facts. "
+        "Evidence attachment alone is not review. draft_blockers identifies selected facts still awaiting review; "
+        "do not announce a saved draft until edit_text succeeds. "
         "A concept, draft or visual request does not authorize changing the saved selection. "
         "When the author asks to preserve the selection, do not call this tool.",
         {
@@ -4942,6 +4945,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 (canonical(research), self.service.store.now(), story_id),
             )
             result = {
+                "draft_blockers": selected_eligibility_issues(db, story_id),
                 "selected_fact_ids": [
                     row["fact_id"]
                     for row in db.execute(

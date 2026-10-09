@@ -67,6 +67,17 @@ def test_qualified_web_route_is_available_without_duplicate_executor():
     assert provider._verified_routes() == routes
 
 
+def test_visual_reasoning_preference_preserves_qualification_and_registered_tuple():
+    provider, _verdict, _context, _calls, _first, _second = setup()
+    routes = provider.client.research_routes
+    provider.service.settings = SimpleNamespace(gemini_web_search_tertiary_model='gemini-fallback')
+    assert provider._verified_routes() == [routes[1], routes[0]]
+    provider.service.store.cache_get = lambda _key: {'models': [{
+        'model': 'gemini-primary', 'transport': 'gemini_generate_content',
+        'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}}]}
+    assert provider._verified_routes() == [routes[0]]
+
+
 @pytest.mark.asyncio
 async def test_native_image_transport_schema_admission_full_shortlist_and_receipt():
     usage = SimpleNamespace(prompt_token_count=800, candidates_token_count=140,

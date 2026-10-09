@@ -3,6 +3,35 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+Current `62fb7ad` cold batch produced an actual architectural-text identity for
+120 at111.640s and its first eligible claim at163.438s; eight canonical eligible
+claims and natural terminal at401.3s meet the time/minimum gates. Its object has
+no owner-labelled expected ID, so that accuracy gate remains explicitly unset.
+119/129 failed;124/125/126 received CLOSED visual responses and requested geographic
+clarification. Their zero generic provider-attempt count excludes Google SDK
+sends and must not be interpreted as no visual inference.
+
+The same120 story then selected three facts and saved its concept through the
+ordinary API/shared Live host. Drafting failed before the heritage claim's exact
+review completed. After that review, a known-failure continuation on the same SHA
+saved the615-character draft, accepted30.077s prepared PCM (301/301 acknowledgements,
+max0.372s), refined the evening concept/text, generated and inspected a1,809,996-byte
+preview, acknowledged Stop and preserved selection/source/text on reopening.
+The original failed attempt remains retained: this is recovery E2E, not an original
+cold-first-attempt PASS, public WSS, Android or physical-microphone evidence.
+
+Full offline `62fb7ad` had2663 passes,10 failures and2 skips. Follow-up fixes keep
+the positive T binding enum separate from the complete reserve-alternative enum,
+bound the answer without demanding enumeration of203 reserve bodies, and check
+the frozen prepared request before provider admission/reuse.184 affected tests
+passed, including intact UNKNOWN markers/no resend, changed-source/control/schema
+negative controls and ordinary Live editorial tools. The configured registered
+reasoning route is preferred for actual SOURCE/T comparison and qualified REF;
+qualification and shared quota gates remain mandatory. New model-quality evidence
+is pending. REF130 previously closed two uncertain replies and one incorrect
+flash-lite match on a tiny red-brick doorway; actual pixels were inspected and no
+identity was committed by that comparator. Known false130 still blocks release.
+
 ## Overnight request and product availability repair
 
 The actual closed 102 G answer and acquired articles were replayed without

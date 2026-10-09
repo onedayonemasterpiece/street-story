@@ -101,7 +101,7 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         assert 'unreceived-invalid-id' not in contents[-1]
         assert initial['accepted_geometry']['rejected_alternatives'][0]['reason'] in contents[-1]
         assert initial['source_scene_observations']['unknown'][0] in contents[-1]
-        assert 'absence of a neighbor article' in contents[-1]
+        assert 'Lack of an article is unknown, not rejection' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         packet = json.loads(contents[-1].rsplit('\n', 1)[-1])

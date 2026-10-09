@@ -28,6 +28,19 @@ def test_route_change_requires_closed_contract_issues_and_registered_tuple(issue
         else (expected, old_quota, old_executor))
 
 
+@pytest.mark.parametrize('unavailable', [False, True])
+def test_source_text_comparison_prefers_registered_reasoning_without_reopening_initial(unavailable):
+    initial = ('initial', object(), object(), object())
+    reasoning = ('reasoning', object(), object(), object())
+    selected = identity_discovery._closed_invalid_followup_route(
+        SimpleNamespace(gemini_web_search_tertiary_model='reasoning'),
+        SimpleNamespace(web_search_routes=[initial, reasoning]), {},
+        initial[0], initial[2], initial[3], architectural_comparison=True,
+        unavailable_models={'reasoning'} if unavailable else set())
+    route = initial if unavailable else reasoning
+    assert selected == (route[0], route[2], route[3])
+
+
 @pytest.mark.parametrize('scene_available,preferred', [(True, 'alternative'), (False, 'initial')])
 def test_joint_visual_role_prefers_configured_registered_model_without_changing_its_tuple(scene_available, preferred):
     first = ('initial', object(), object(), object())

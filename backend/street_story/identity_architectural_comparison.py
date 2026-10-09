@@ -481,8 +481,11 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     from .identity_candidate_policy import research_priority_schema
     schema['properties']['research_priority'] = research_priority_schema(list(physical_catalog))
     alternatives = schema['properties']['material_alternatives']
-    alternatives['items']['properties']['candidate_id']['enum'] = list(physical_catalog)
-    alternatives['maxItems'] = max(8, len(physical_catalog))
+    # The base contract reuses its candidate-ID schema in positive bindings.
+    # Give alternatives their own pointer schema: widening this shared dict
+    # would also permit confirming a body absent from the issued text scope.
+    alternatives['items']['properties']['candidate_id'] = {
+        'type': 'string', 'enum': list(physical_catalog)}
     # Mirror the common proof validator's pointer rule in the issued contract.
     # A singleton hypothesis cannot be an alternative to itself. This says
     # nothing about unreceived bodies or whether the hypothesis is correct.
@@ -518,7 +521,9 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'and osm_ref records; explain their physical scope separately from the SOURCE match. '
         'A complex or neighboring corpus can share an address or description. '
         'Confront material physical alternatives from both physical_candidates and physical_reserve, '
-        'using MAP and SOURCE. Lack of an article is unknown, not rejection. A singleton nomination '
+        'using MAP and SOURCE. Lack of an article is unknown, not rejection. Report only material '
+        'alternatives within the supplied response bound; the complete reserve is not a checklist. '
+        'If unresolved bodies cannot be addressed in this answer, use uncertain and research_priority. A singleton nomination '
         'is not evidence of uniqueness; another side of the street or an unexamined footprint may remain. '
         'For acceptance address every previously nominated OTHER candidate, explaining why it differs '
         'or is nonmaterial; name additional material alternatives when relevant. Never list the chosen '

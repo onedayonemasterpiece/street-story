@@ -72,7 +72,11 @@ class HeadlessVisionProvider:
         for route in configured:
             if route[0] in verified and route not in routes:
                 routes.append(route)
-        return routes
+        # Architecture requires visual reasoning. Reuse the configured reasoning
+        # tuple when its pixel controls passed; other admitted routes remain
+        # independent fallbacks. Qualification is never granted by this ordering.
+        preferred = getattr(getattr(self.service, 'settings', None), 'gemini_web_search_tertiary_model', None)
+        return sorted(routes, key=lambda route: route[0] != preferred) if preferred else routes
 
     @property
     def available(self):

@@ -1627,6 +1627,12 @@ async def test_publication_is_blocked_when_owner_selected_fact_is_unreviewed(tmp
         )[0]
         set_owner_selection(db, story_id, [fact_id], svc.store.now())
 
+    selection = await adapter.execute_tool(session, {
+        'name': 'select_facts', 'id': 'select-awaiting-review', 'args': {'fact_ids': [fact_id]}})
+    assert selection['selected_fact_ids'] == [fact_id]
+    assert selection['draft_blockers'][0]['fact_id'] == fact_id
+    assert selection['draft_blockers'][0]['eligibility'] == 'unreviewed'
+
     scheduled_for = (
         datetime.now(timezone.utc) + timedelta(days=1)
     ).astimezone(timezone(timedelta(hours=2))).isoformat(timespec="seconds")

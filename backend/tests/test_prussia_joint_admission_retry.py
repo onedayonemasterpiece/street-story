@@ -173,14 +173,14 @@ async def test_delayed_wake_rechecks_operation_headroom_before_reacquiring_key(t
 @pytest.mark.parametrize('state', [None, 'response_closed'])
 async def test_unknown_or_closed_provider_failure_never_uses_unsent_retry(tmp_path, monkeypatch, state):
     service, story, active, requests, _, sends, waits, _ = setup(tmp_path, monkeypatch, denial(state=state))
-    with pytest.raises(SharedQuotaDenied):
-        await identity_discovery.suggest(service, story, '', active)
+    await identity_discovery.suggest(service, story, '', active)
     assert len(requests) == 2 and sends == ['initial'] and not waits
     marker = joint_followup_marker(service, story)
     assert marker['phase'] == ('unknown' if state is None else 'closed_failure')
-    with pytest.raises((RetryableProviderError, PermanentProviderError)):
-        await identity_discovery.suggest(service, current_snapshot(service, story), '', active)
+    await identity_discovery.suggest(service, current_snapshot(service, story), '', active)
     assert len(requests) == 2
+    assert '_identity_geometry_result' not in story
+    assert joint_followup_marker(service, story)['phase'] == marker['phase']
 
 
 @pytest.mark.asyncio
@@ -239,8 +239,7 @@ async def test_closed_schema_failure_is_observable_and_never_resubmitted(tmp_pat
     error = ClientError(400, {'error': {'code': 400, 'status': 'INVALID_ARGUMENT',
         'message': 'Invalid response schema; private payload must not be logged'}})
     service, story, active, requests, bodies, sends, waits, _ = setup(tmp_path, monkeypatch, error)
-    with pytest.raises(ClientError):
-        await identity_discovery.prepare_search_plan(service, story, '', active)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
     marker = joint_followup_marker(service, story)
     assert marker['phase'] == 'closed_failure' and marker['status_code'] == 400
     with service.store.connection() as db:
@@ -250,7 +249,6 @@ async def test_closed_schema_failure_is_observable_and_never_resubmitted(tmp_pat
     event = json.loads(raw)
     assert event['schema_rejection_reported'] is True and event['fresh_retry_allowed'] is False
     assert 'private payload' not in raw
-    with pytest.raises(PermanentProviderError):
-        await identity_discovery.prepare_search_plan(service, story, '', active)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(requests) == 2 and len(bodies) == 1 and sends == ['initial'] and not waits
     assert '_identity_geometry_result' not in story

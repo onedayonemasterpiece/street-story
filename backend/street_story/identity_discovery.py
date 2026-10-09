@@ -169,15 +169,16 @@ def _conditional_text_prior(payload, nomination_ids):
     return prior
 
 
-def _closed_invalid_followup_route(settings, gemini, issues, model, quota, executor, *, unavailable_models=()):
-    """Use an already registered alternative for the one contract repair.
+def _closed_invalid_followup_route(settings, gemini, issues, model, quota, executor, *, unavailable_models=(),
+        architectural_comparison=False):
+    """Use the registered reasoning route for contract repair or SOURCE/T.
 
     This never adds an operation or replaces an addressed request. A valid initial
-    plan needing selected TEXT keeps its ordinary route. Each returned executor
+    plan without visual comparison keeps its ordinary route. Each returned executor
     and quota belongs to the same registered model tuple.
     """
     preferred = getattr(settings, 'gemini_web_search_tertiary_model', None)
-    if issues and preferred and preferred != model:
+    if (issues or architectural_comparison) and preferred and preferred != model:
         for registered_model, _pool, registered_quota, registered_executor in (
                 getattr(gemini, 'web_search_routes', None) or []):
             if registered_model == preferred and registered_model not in unavailable_models:
@@ -1408,11 +1409,12 @@ async def _suggest(service, story, transcript, candidates):
             previous_model = model
             model, quota, executor = _closed_invalid_followup_route(
                 getattr(service, 'settings', None), gemini, issues, model, quota, executor,
+                architectural_comparison=bool(compact_t),
                 unavailable_models={row['model_id'] for row in
                     (joint_operation_marker(service, story, stage='initial') or {}).get('closed_route_failures') or []})
             if model != previous_model:
                 record_identity_event(service, story['id'], 'identity_joint_repair_route_selected',
-                    {'reason': 'closed_initial_contract_invalid', 'initial_model': previous_model,
+                    {'reason': 'source_architectural_comparison' if compact_t else 'closed_initial_contract_invalid', 'initial_model': previous_model,
                      'followup_model': model, 'operation_count_unchanged': True})
             record_identity_event(service, story['id'], 'identity_joint_followup_input_prepared', {
                 'scope': 'product_system_instruction_plus_prompt_utf8_v1',
@@ -1451,7 +1453,12 @@ async def _suggest(service, story, transcript, candidates):
                 current.pop('sha256')
                 if hashlib.sha256(canonical(current).encode()).hexdigest() != prepared_request['sha256']:
                     raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
-                joint_followup_marker(service, story)  # Current photo/generation/control, even before key acquisition.
+                marker = joint_followup_marker(service, story)  # Current photo/generation/control, even before key acquisition.
+                if marker and marker.get('prepared_request') not in (None, prepared_request):
+                    # Storage/request integrity is checked before entering the
+                    # provider executor. It is neither quota nor an UNKNOWN
+                    # SDK send and must not be swallowed by optional-plan reuse.
+                    raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
             async def send_followup(key, timeout):
                 nonlocal joint_followup_failure, joint_model_id
                 # No executor failover may dispatch another possibly sent joint2.

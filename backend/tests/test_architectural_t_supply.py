@@ -1,6 +1,7 @@
 """T-only regression: retrieve physical evidence, not a neighboring name."""
 import copy
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -236,6 +237,20 @@ def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_in
     assert len(prepared['candidate_ids']) == 12
     assert article['text'] in prepared['prompt']
     assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 12
+
+
+def test_reserve_pointers_do_not_expand_positive_bindings_or_force_reserve_enumeration():
+    story, candidates, _decision, receipt = _comparison_fixture()
+    candidates.extend({'candidate_id': f'osm:way:{i}', 'map_object': {'tags': {'building': 'yes'}}}
+        for i in range(100, 300))
+    prepared = prepare_architectural_comparison(story, candidates, receipt)
+    properties = prepared['schema']['properties']
+    assert properties['candidate_id']['enum'] == [*prepared['candidate_ids'], '']
+    assert properties['article_bindings']['items']['properties']['candidate_id']['enum'] == properties['candidate_id']['enum']
+    alternatives = properties['material_alternatives']
+    assert 'osm:way:299' in alternatives['items']['properties']['candidate_id']['enum']
+    assert alternatives['maxItems'] == 8
+    assert len(json.loads(prepared['prompt'].rsplit('\n', 1)[-1])['physical_reserve']['rows']) == 200
 
 
 def test_t_never_makes_up_missing_source_or_discards_material_candidates():
