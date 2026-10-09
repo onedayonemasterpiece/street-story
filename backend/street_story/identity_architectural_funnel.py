@@ -41,6 +41,89 @@ def _physical_ids(rows):
     return result
 
 
+def project_independent_T_nomination(pool, model_decision, *, source_sha256):
+    """Keep a useful but UNACCEPTED SOURCE+TEXT physical lead when G is absent.
+
+    No second semantic model call: the original T reply nominated one real
+    observed OSM physical ID among all supplied candidates. The existing host
+    proof may still fail on missing source↔physical binding, missing individual
+    wing scope or an unsupported source quote. This *research priority* never
+    authorizes POI/facts, doesn't blacklist any other body, and can trigger
+    a targeted existing-image/REF search using model-authored architectural
+    features. All original candidates remain reversible reserve.
+    """
+    if (not isinstance(pool,dict) or not isinstance(model_decision,dict)
+            or not _sha(source_sha256)
+            or model_decision.get('decision')!='accepted_architectural_text'):
+        return None
+    ids=pool.get('candidate_ids') or []
+    if (not isinstance(ids,list) or len(ids)<2 or
+            len(set(ids))!=len(ids)):
+        return None
+    cid=model_decision.get('candidate_id')
+    if not isinstance(cid,str) or cid not in ids:
+        return None
+    source_models=[
+        {'article_id':a['article_id'],
+         'source_sha256':a.get('source_sha256'),
+         'image_url':u,'image_fetched_and_compared':False}
+        for a in pool.get('checked_articles') or []
+        if isinstance(a,dict)
+        for u in a.get('source_image_links') or []
+        if isinstance(u,str) and u.startswith('https://')]
+    alternatives=[row['candidate_id']
+        for row in model_decision.get('material_alternatives') or []
+        if isinstance(row,dict) and row.get('candidate_id') in ids
+        and row['candidate_id']!=cid]
+    unique_targets=list(dict.fromkeys([cid,*alternatives]))
+    distinctive=model_decision.get('discriminating_combination')
+    images=[]
+    if isinstance(distinctive,str) and distinctive.strip():
+        images=[{'target_candidate_ids':unique_targets,
+            'needed_view_or_feature':distinctive,
+            'how_this_image_would_distinguish_bodies':(
+                'Model-authored SOURCE-specific structural comparison; '
+                'verify against received original images of the nominated '
+                'building and the model-named alternatives.'),
+            'reuse_actual_article_ids':[a['article_id']
+                for a in pool.get('checked_articles') or []
+                if a['article_id'] in {
+                    binding['article_id'] for binding
+                    in model_decision.get('article_bindings') or []}],
+            'source':'same_closed_SOURCE_TEXT_model_discriminating_combination'}]
+    reserve=[x for x in ids if x!=cid]
+    return {'contract':_CONTRACT,'status':'conditional_T_shortlist',
+        'model_effect':'individual_body_proposed_proof_not_yet_authorized',
+        'source_sha256':source_sha256,
+        'T_model_result_sha256':hashlib.sha256(json.dumps(model_decision,
+            sort_keys=True,ensure_ascii=False).encode()).hexdigest(),
+        'G_funnel_available':False,
+        'G_initial_physical_count':None,
+        'before_T_active_count':len(ids),
+        'after_T_active_count':1,
+        'after_T_reserved_count':len(reserve),
+        'active_physical_candidate_ids':[cid],
+        'reserve_physical_candidate_ids':reserve,
+        'T_reduced_active_count':True,
+        'conditional_T_research_priority_not_identity':True,
+        'reconsider_reserve_on_new_evidence':True,
+        't_explicit_contradictions':[],
+        'T_proof_accepted':False,
+        'accepted_physical_id':None,
+        'G_group_not_ground_truth':True,
+        'source_support':'prior model SOURCE/text source article claims, not physical proof',
+        'next_distinguishing_question':distinctive or '',
+        'downstream_REF':{
+            'needed_for_T_acceptance':False,
+            'image_research_goals':images,
+            'image_goal_provenance':'same_closed_SOURCE_TEXT_model',
+            'already_acquired_source_image_links':source_models,
+            'target_candidate_ids':unique_targets,
+            'next_distinguishing_question':distinctive or '',
+            'independently_available_G_or_REF_can_accept':True},
+        'identity_authorized_by_shortlist_count_alone':False}
+
+
 def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
         source_sha256, g_source_sha256,
         independent_closed_T_leads=()):
