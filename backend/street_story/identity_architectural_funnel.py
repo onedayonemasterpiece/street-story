@@ -606,7 +606,7 @@ def acquired_article_images_for_existing_REF(funnel_result, actual_articles):
     """Convert already-read publisher images to the EXISTING Live REF contract.
 
     Do not assign web articles to physical bodies by title, address or G
-    shortlist. These are \`web:\` image candidates: the existing SOURCE/REF
+    shortlist. These are web: image candidates: the existing SOURCE/REF
     model must nominate reference_subject_candidate_id, after which its
     unchanged reference_subject_binding and visual_match gates independently
     validate the body. URLs/captions are factual media metadata only.
