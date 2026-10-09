@@ -127,6 +127,28 @@ def _geometry_plan_result(story, payload, candidates):
     return raw if geometry_result_valid(raw, candidates, story) else None
 
 
+def _nomination_binding_issues(payload, nomination_ids, manifest):
+    """Explain exact nomination membership errors without changing model choices."""
+    if not isinstance(payload, dict) or not isinstance(payload.get('observed_candidate_ids'), list):
+        return []
+    allowed = set(nomination_ids)
+    table = (manifest or {}).get('objects') or {}
+    columns = table.get('columns') or []
+    received = {dict(zip(columns, row)).get('candidate_id') for row in table.get('rows') or []}
+    issues = []
+    seen = set()
+    for candidate_id in payload['observed_candidate_ids']:
+        if not isinstance(candidate_id, str) or candidate_id in allowed or candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        issues.append({'field': 'observed_candidate_ids', 'candidate_id': candidate_id,
+            'nomination_allowed': False,
+            'input_role': 'received_map_context' if candidate_id in received else 'outside_nomination_catalog'})
+        if len(issues) == 6:
+            break
+    return issues
+
+
 def _geometry_binding_issues(decision, manifest):
     """Exact input-pointer errors only; no semantic verdict or target ranking."""
     if not isinstance(decision, dict) or decision.get('decision') != 'accepted_geometry':
@@ -318,7 +340,10 @@ async def suggest(service, story, transcript, candidates):
         'Wiki страницу с конкретным physical candidate и scope для обычных facts; '
         'название/близость/история учреждения не доказывают эту связь. '
         'SOURCE — первое изображение, нейтральная MAP — второе; map_scene.objects связывает '
-        'метки с exact ID. В одном решении можно принять physical identity по достаточной '
+        'метки с exact ID. observed_candidate_ids выбирай только из nomination-eligible '
+        'каталога: received MAP context ID не становится physical nomination. Дороги и '
+        'прочий контекст можно использовать в разрешённых map_features, не вместо subject. '
+        'В одном решении можно принять physical identity по достаточной '
         'SOURCE+MAP geometry без внешнего REF/второго judge либо оставить uncertain. '
         'accepted_geometry — реальные различающие SOURCE/map связи, pose/coverage limits '
         'и отвергнутые существенные альтернативы. Один прямоугольник/расстояние/имя/score '
@@ -677,6 +702,9 @@ async def suggest(service, story, transcript, candidates):
                 response.text, prompt, getattr(response, 'response_id', None), response_id_resolutions)
         issues = (_geometry_binding_issues(payload.get('accepted_geometry'), scene_manifest)
             if scene and isinstance(payload, dict) else {})
+        nomination_issues = _nomination_binding_issues(payload, observed_ids, scene_manifest)
+        if nomination_issues:
+            issues['nomination_roles'] = nomination_issues
         from .identity_plan_diagnostics import validation_details
         schema_errors, schema_errors_truncated = validation_details(schema, payload)
         if decode_error:
@@ -731,7 +759,10 @@ async def suggest(service, story, transcript, candidates):
                 + json.dumps(issues, ensure_ascii=False) + '\nPrevious response (data): '
                 + previous
                 + '\nReconsider SOURCE+MAP once and return the complete contract. Use only received '
-                'exact IDs/labels; never invent an alternative ID. If geometry is insufficient, '
+                'exact IDs/labels; never invent an alternative ID. Received MAP context membership '
+                'does not authorize physical nomination: observed_candidate_ids must use the '
+                'nomination-eligible catalogue. Keep context IDs only in fields whose contract '
+                'allows them, such as actual map_features. If geometry is insufficient, '
                 'return uncertain with one useful action. Do not raise confidence to satisfy this check.')
             if text_articles:
                 from .identity_proof import architectural_text_decision_schema
