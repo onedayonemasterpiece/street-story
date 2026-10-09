@@ -26,40 +26,50 @@ def one(cid, model):
     packet_file=case/'spatial-options-v3-llm-first.json'
     packet=_json(packet_file) if packet_file.exists() else {}
     initial=packet.get('physical_body_count') or meta.get('physical_buildings') or 0
-    model_file=case/('inference-'+model)/'result.json'
+    model_dirs=([case/('inference-'+model)] if model!='all'
+        else sorted(case.glob('inference-*')))
+    model_files=[folder/'result.json' for folder in model_dirs
+        if (folder/'result.json').is_file()]
     active=[]
     reason=meta['status']
     latency=None
     calls=0
     accepted_id=None
+    used_model=None
     status=('missing_geopoint' if not meta.get('g_applicable') else 'not_yet_sent')
-    if model_file.exists():
-        data=_json(model_file)
+    if model_files:
+        chosen=model_files[0]
+        used_model=chosen.parent.name.removeprefix('inference-')
+        original=_json(chosen)
+        replay=chosen.parent/'result-host-replay-v2.json'
+        data=_json(replay) if replay.is_file() else original
         status=data.get('status','unknown')
         active=[x.get('candidate_id') for x in data.get('active_physical_candidates') or []
                 if isinstance(x,dict)]
         accepted_id=data.get('accepted_id')
-        reason=data.get('safe_error_code') or (
-            ';'.join(data.get('schema_errors') or [])
-            if isinstance(data.get('schema_errors'),list) else
-            data.get('technical_send_state') or status)
-        latency=data.get('whole_method_elapsed_ms')
-        calls=data.get('model_calls',0)
+        codes=data.get('reason_codes') or []
+        reason=(data.get('safe_error_code') or
+                ';'.join(str(x) for x in codes) or
+                original.get('technical_send_state') or status)
+        latency=original.get('whole_method_elapsed_ms')
+        calls=sum((_json(f).get('model_calls') or 0) for f in model_files)
+        if len(model_files)>1:
+            reason+=';multiple_distinct_model_receipts_review_separately'
     else:
         reason='not_started' if status=='not_yet_sent' else reason
     return {'id':cid,'geopoint':meta.get('camera_point_basis'),
         'input_status':meta['status'],'initial_physical_count':initial,
-        'G_model_status':status,'active_count':len(active) if model_file.exists() and
+        'G_model_status':status,'active_count':len(active) if model_files and
             status in {'active_shortlist','accepted_identity_proposal'} else None,
         'active_ids':active,'reserve_count':initial-len(active)
             if status in {'active_shortlist','accepted_identity_proposal'} else initial,
         'accepted_id':accepted_id,'model_calls':calls,'total_method_ms':latency,
-        'reason':reason}
+        'reason':reason,'model':used_model}
 
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('--model',required=True)
+    parser.add_argument('--model',default='all')
     args=parser.parse_args()
     oracle={row['message_id']:row.get('expected_physical_id')
        for row in _json(MANIFEST)['items']}
