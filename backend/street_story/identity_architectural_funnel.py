@@ -215,14 +215,25 @@ def prepare_t_g_funnel(g_result, observed_candidates, source_articles, *,
         if article['article_id'] in aid:
             raise ValueError('duplicate_T_article')
         aid.append(article['article_id'])
-        # Links were captured from *this article's actually fetched HTML*
-        # (or an actually acquired encyclopedia page). Never fabricate a view.
+        # Only literal URLs already present in this actually read HTML are
+        # eligible. Publisher title/ALT is untrusted descriptive metadata,
+        # NOT visual confirmation, address proof, or a body-level identity.
+        # Preserve it so the SAME T model can request a useful REF rather
+        # than blindly downloading header/icons from the publisher page.
+        records={row['image_url']:row for row in article.get('source_image_records') or []
+            if isinstance(row,dict) and isinstance(row.get('image_url'),str)}
         for value in article.get('source_image_links') or []:
-            if isinstance(value,str) and value.startswith('https://'):
-                images.append({'article_id':article['article_id'],
-                    'source_sha256':article['source_sha256'],
-                    'image_url':value,
-                    'image_fetched_and_compared':False})
+            if not isinstance(value,str) or not value.startswith('https://'):
+                continue
+            item=records.get(value) or {}
+            images.append({'article_id':article['article_id'],
+                'source_sha256':article['source_sha256'],
+                'image_url':value,
+                'publisher_img_title':str(item.get('publisher_img_title') or '')[:260],
+                'publisher_img_alt':str(item.get('publisher_img_alt') or '')[:260],
+                'linked_publisher_page_url':item.get('linked_publisher_page_url'),
+                'image_fetched_and_compared':False,
+                'caption_not_a_visual_match':True})
     model_active = []
     for cid in active:
         row = catalog[cid]
