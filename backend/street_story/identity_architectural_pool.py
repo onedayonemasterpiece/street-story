@@ -107,7 +107,7 @@ def _verified_articles(receipt, max_articles):
 def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         candidate_ids=None, max_articles=8, source_only_evidence=None,
         allow_unresolved_physical=False, g_funnel=None,
-        g_source_sha256=None):
+        g_source_sha256=None, independent_closed_T_leads=()):
     """Prepare one contrastive *T model call* for 1..8 real verified articles.
 
     A prior SOURCE-only model nomination, actual OSM address join or G lead
@@ -148,7 +148,8 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         g_input=prepare_t_g_funnel(
             g_funnel,actual_map,checked,
             source_sha256=receipt.get('original_source_sha256'),
-            g_source_sha256=g_source_sha256)
+            g_source_sha256=g_source_sha256,
+            independent_closed_T_leads=independent_closed_T_leads)
         if g_input['stage'] != 'T_while_G_shortlist_unconfirmed':
             # A sufficient independent G result is not a T barrier; a G
             # UNKNOWN still permits normal independent SOURCE+T discovery.
