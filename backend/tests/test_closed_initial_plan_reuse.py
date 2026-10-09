@@ -110,20 +110,25 @@ async def test_restart_cached_full_regional_inventory_keeps_identical_joint_inpu
     service, story, active, initial = prepared_plan(tmp_path, literal_addresses=True)
     story['_identity_search_context'] = {'reverse_address': {'city': 'Город', 'road': 'Тестовая улица'}}
     http_calls = []
+    reads_closed = False
     def handler(request):
         http_calls.append(request)
-        assert len(http_calls) <= 2, 'A known-unsent wake must use the received catalogue cache only'
+        assert not reads_closed, 'A known-unsent wake must use the received source cache only'
         return response(inventory(21, 35, next_page=False) if b'p=2' in request.url.query else inventory())
     offline(monkeypatch, handler)
     original_candidates = copy.deepcopy(active)
     calls, _ = install(service, initial, monkeypatch)
     await identity_discovery.suggest(service, story, '', active)
-    assert len(http_calls) == 2 and len(story['_identity_regional_catalogue']['results']) == 35
+    # Initial work includes the new exact nominated-address read as well as
+    # the full street inventory. The restart must not repeat any of them.
+    assert len(story['_identity_regional_catalogue']['results']) == 35
+    original_http_count = len(http_calls)
+    reads_closed = True
     fresh = type(service)(service.settings, providers=service.providers)
     snapshot = current_snapshot(fresh, story)
     snapshot.pop('_identity_regional_catalogue')  # Rebuild from actual saved publisher bytes.
     await identity_discovery.prepare_search_plan(fresh, snapshot, '', original_candidates)
-    assert len(http_calls) == 2 and calls == ['initial', 'followup']
+    assert len(http_calls) == original_http_count and calls == ['initial', 'followup']
     assert len(snapshot['_identity_search_plan_payload']['regional_catalogue']['results']) == 35
 
 

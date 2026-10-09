@@ -957,9 +957,9 @@ async def _suggest(service, story, transcript, candidates):
                     service, story, candidates, wiki_payload, wiki_pages)
                 lookup = {'kind':'independent_selected_text_routes', 'regional':regional_receipt,
                     'wikipedia':wiki_lookup, 'status':wiki_lookup.get('status') if wiki_lookup else 'unavailable'}
-            if (not text_articles and geometry_rejection
+            if (len(text_articles) < 2 and geometry_rejection
                     and not (set(issues) - {'host_evidence_contract'})
-                    and not selected_regional and not wiki_payload.get('selected_wikipedia_page_ids')
+                    and not selected_regional
                     and (not regional or regional.get('route') in {None, 'none'})):
                 # The model skipped source reading because it believed its G
                 # proof was sufficient. That premise is now false. Reuse the
@@ -974,12 +974,28 @@ async def _suggest(service, story, transcript, candidates):
                 if nominated is not None:
                     request = {'route': 'address', 'candidate_ids': [nominated['candidate_id']],
                         'reason': 'Acquire literal address text for the closed model nomination after insufficient G proof.'}
-                    text_articles, nomination_lookup = await acquire_regional_text(
+                    additional_articles, nomination_lookup = await acquire_regional_text(
                         service, story, [*observed, *candidates], request)
+                    # A selected encyclopedia body may provide only general
+                    # style/history. Complement it with the nominated body's
+                    # literal-address description; the T model still decides
+                    # whether either source actually distinguishes SOURCE.
+                    existing_urls = {item['url'] for item in text_articles}
+                    additional_articles = [item for item in additional_articles if item['url'] not in existing_urls]
+                    pending_articles = []
+                    if len(text_articles) + len(additional_articles) <= 2:
+                        text_articles.extend(additional_articles)
+                    else:
+                        # The existing T operation owns one/two articles. Keep
+                        # all acquired alternatives; never pick its first card
+                        # or silently truncate a different source's evidence.
+                        pending_articles = additional_articles
                     lookup = {'kind': 'insufficient_geometry_address_text',
                         'initial_selected_text': lookup, 'regional': nomination_lookup,
                         'query_scope': nomination_lookup.get('query_scope'),
-                        'status': nomination_lookup.get('status'), 'identity_established': False}
+                        'status': ('partial' if pending_articles or text_articles and not additional_articles
+                            else nomination_lookup.get('status')),
+                        'pending_acquired_articles': pending_articles, 'identity_established': False}
                     record_identity_event(service, story['id'], 'identity_unconfirmed_address_text_acquired', {
                         'candidate_id': nominated['candidate_id'], 'article_count': len(text_articles),
                         'status': nomination_lookup.get('status'), 'reason': nomination_lookup.get('reason'),

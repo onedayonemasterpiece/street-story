@@ -590,3 +590,19 @@ ambiguous addresses, original-input readback and UNKNOWN fences remain. The
 affected suite passed **85 checks in 30.54 s**, including uncertain/blank-final-ID
 MAP-detail nomination to T/facts/POI. The original real response replay reached
 actual publisher T input with zero new inference. A new frozen canary is required.
+
+Cold132 on `90c38443cadb22e4e4c952420cb66128c24d6838` reached real compact T
+on Gemini 3.5 Flash Lite (HTTP 200) with a model-selected Wikipedia body. Its
+positive answer cited only `generic_style` and `historical_fact`; the unchanged
+structural proof correctly rejected it. No accepted identity/facts resulted.
+Hosted Backend and Android passed on this SHA.
+
+The existing nominated-address reader can now complement a selected Wiki body
+before joint2, instead of running only when no text was acquired. Actual raw
+source bodies and provenance remain separate. If the existing one/two-article T
+operation cannot hold all acquired alternatives, all pending bodies survive in
+the lookup receipt rather than silently choosing/truncating cards. The affected
+suite passed **86 checks in 34.00 s**, including two-source T to ordinary
+facts/POI and zero new HTTP/semantic sends after known-unsent restart. Next actual
+T/fact verification starts with the retained completed G turn, explicitly marked
+as receipt continuation rather than a new cold G inference.

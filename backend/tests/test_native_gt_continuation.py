@@ -35,11 +35,11 @@ async def test_sufficient_original_native_readback_needs_no_google_executor_or_t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown'])
+@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown'])
 async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_one_joint2(tmp_path, monkeypatch, outcome):
     svc, snapshot, active = geometry_setup(tmp_path)
     sid = snapshot['id']
-    address_route = outcome in {'address_text', 'map_detail_text', 'address_missing'}
+    address_route = outcome in {'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing'}
     url = ('https://www.prussia39.ru/sight/index.php?sid=7000' if address_route
         else 'https://archive.example/gate-history')
     article_id = 'prussia39:sid:7000' if address_route else 'wiki:13'
@@ -50,6 +50,13 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     svc.store.cache_put('public-article-acquisition-v1:' + hashlib.sha256(url.encode()).hexdigest(),
         {'final_url': url, 'mime': 'text/html', 'body': base64.b64encode(raw_body).decode(),
          'sha256': hashlib.sha256(raw_body).hexdigest(), 'acquired_at': svc.store.now()}, 86400)
+    wiki_url = 'https://archive.example/gate-history' if outcome == 'wiki_address_text' else url
+    if outcome == 'wiki_address_text':
+        wiki_body = ('<main><p>A public school history containing general style and institution names. '
+            'It does not describe structural facade combinations visible in the source.</p></main>').encode()
+        svc.store.cache_put('public-article-acquisition-v1:' + hashlib.sha256(wiki_url.encode()).hexdigest(),
+            {'final_url': wiki_url, 'mime': 'text/html', 'body': base64.b64encode(wiki_body).decode(),
+             'sha256': hashlib.sha256(wiki_body).hexdigest(), 'acquired_at': svc.store.now()}, 86400)
     bad = geometry_decision()
     bad['spatial_correspondence']['pattern_kind'] = 'frontage_sequence'
     initial = payload(bad)
@@ -92,7 +99,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
                     'article_id': article_id, 'canonical_url': url,
                     'address_text': 'Калининград, ул. Тестовая, ' + ('8' if outcome == 'address_missing' else '7')}]}
             async def article(self, acquired_url):
-                assert acquired_url == url and outcome in {'address_text', 'map_detail_text'}
+                assert acquired_url == url and outcome in {'address_text', 'wiki_address_text', 'map_detail_text'}
                 address_reads.append(acquired_url)
                 return {'status': 'completed', 'article_id': article_id, 'canonical_url': url,
                     'text': TEXT + ' ' + CLAIM, 'raw_content_sha256': hashlib.sha256(raw_body).hexdigest(),
@@ -156,12 +163,15 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         if address_route:
             assert address_reads == [('Калининград', 'Тестовая улица, 7'), url]
             assert 'insufficient_geometry_address_text' in contents[-1] or article_id in contents[-1]
+        if outcome == 'wiki_address_text':
+            assert 'wiki:13' in contents[-1] and article_id in contents[-1]
+            assert 'It does not describe structural facade combinations' in contents[-1]
         return SimpleNamespace(text=json.dumps(decision))
 
     async def lookup(*args):
         return snapshot['_identity_map_snapshot']
     async def wikipedia(*args):
-        return [] if outcome in {'geometry', 'address_text', 'map_detail_text', 'address_missing'} else [{'pageid': 13, 'title': 'Observed physical building', 'url': url}]
+        return [] if outcome in {'geometry', 'address_text', 'map_detail_text', 'address_missing'} else [{'pageid': 13, 'title': 'Observed physical building', 'url': wiki_url}]
     async def forbidden(*args, **kwargs):
         pytest.fail('No REF, third judge or replacement planner is allowed')
     svc.providers.osm.lookup = lookup
