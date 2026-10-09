@@ -7,7 +7,8 @@ recorded separately from genuinely new model choices.
 import copy
 
 from street_story.identity_spatial_funnel import project_g_funnel
-from street_story.identity_spatial_choice import visual_spatial_choice_schema
+from street_story.identity_spatial_choice import (
+    visual_spatial_choice_schema, parse_spatial_choice_json)
 
 SOURCE='1'*64
 MODEL='2'*64
@@ -213,3 +214,29 @@ def test_source_nominated_focused_g_can_still_accept_without_t_or_ref():
     assert out['accepted'] is True
     assert out['accepted_id']=='osm:way:1'
     assert out['accepted_proof']['canonical_poi_fact_binding_granted'] is False
+
+def test_g_json_transport_only_repairs_unquoted_object_keys_not_source_content():
+    raw='{"decision":"shortlist","candidate_label":0,"source_observations":['
+    raw+='"The words what_remains_uncertain: appear in SOURCE"],'
+    raw+='"active_hypotheses":[{"label":301,'
+    raw+='what_remains_uncertain:"A viewing-angle ambiguity",'
+    raw+='"source_match":"Photographed corner"}]}'
+    obj,repairs=parse_spatial_choice_json(raw)
+    assert repairs==['quoted_unquoted_object_keys:1']
+    assert obj['active_hypotheses'][0]['label']==301
+    assert obj['active_hypotheses'][0]['what_remains_uncertain']=='A viewing-angle ambiguity'
+    assert obj['source_observations']==[
+        'The words what_remains_uncertain: appear in SOURCE']
+    assert parse_spatial_choice_json('{"key":true}')[1]==[]
+    assert parse_spatial_choice_json('{"broken":')[0]=={}
+
+
+def test_grouped_or_alias_contrast_labels_only_reference_received_osm():
+    model=response()
+    model['contrasted_alternatives']=[
+        {'other_label':303,'reason_rejected':'Different observed plane'},
+        {'labels':[304],'why_not':'Across the photographed road'}]
+    out=run(model)
+    assert out['status']=='active_shortlist'
+    assert out['active_count']==2
+    assert out['accepted'] is False
