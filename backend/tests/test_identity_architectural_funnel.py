@@ -350,13 +350,24 @@ def test_already_read_publisher_image_urls_flow_to_targeted_ref_without_refetch(
     source_article=next(item for item in receipt['articles']
         if item['article_id']=='catalog:physical-building')
     source_article['source_image_links']=[actual_image]
+    source_article['source_image_records']=[{
+        'image_url':actual_image,
+        'publisher_img_alt':'Observed entrance and projecting bay',
+        'publisher_img_title':'Publisher gallery image caption',
+        'linked_publisher_page_url':'https://www.prussia39.ru/photo/show_photos.php?phid=123',
+        'visual_subject_confirmed':False}]
     prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
         source_sha256=receipt['original_source_sha256'],
         g_source_sha256=receipt['original_source_sha256'])
     assert prepared['existing_image_links']==[{
         'article_id':'catalog:physical-building',
         'source_sha256':source_article['source_sha256'],
-        'image_url':actual_image,'image_fetched_and_compared':False}]
+        'image_url':actual_image,
+        'publisher_img_title':'Publisher gallery image caption',
+        'publisher_img_alt':'Observed entrance and projecting bay',
+        'linked_publisher_page_url':'https://www.prussia39.ru/photo/show_photos.php?phid=123',
+        'image_fetched_and_compared':False,
+        'caption_not_a_visual_match':True}]
     result=close_t_g_funnel(prepared,_t_result(),
         source_sha256=receipt['original_source_sha256'])
     assert result['downstream_REF']['already_acquired_source_image_links']==(
