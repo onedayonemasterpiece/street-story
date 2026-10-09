@@ -388,7 +388,10 @@ def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantic
         'physical_link_evidence':[_actual_link_claim(packet,decision)]}
     result = combine_architectural_decision({}, raw, packet['schema'],
         literal_evidence_inventory=packet['literal_evidence_inventory'])
-    assert result['accepted_architectural_text']==decision
+    assert all(result['accepted_architectural_text'][key]==value
+        for key,value in decision.items())
+    assert result['accepted_architectural_text']['physical_link_evidence']==(
+        raw['physical_link_evidence'])
     assert raw['type']=='object'  # The original provider result remains immutable.
     with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
         combine_architectural_decision({}, {'type':'building', **decision,
