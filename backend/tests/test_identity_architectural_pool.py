@@ -317,6 +317,7 @@ def test_no_host_address_parser_can_preselect_a_physical_candidate():
     # A publisher postal range is still shown as the raw evidence string,
     # and no parser emits "exact" or "complex" joins ahead of the model.
     receipt['articles'][0]['address']='Observed literal street 7–9'
+    receipt['articles'][0]['address_provenance']='publisher_article_metadata_table'
     again=prepare_architectural_pool(story,candidates,receipt,
         candidate_ids=['osm:way:7'])
     addresses=[row['literal_value'] for row in
