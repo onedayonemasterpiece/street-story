@@ -93,11 +93,17 @@ Catalog metadata and selected-body acquisition must be arranged within that
 operation budget; simply adding a third mandatory judge is not the target.
 
 Fill free worker slots as results complete under existing resource admission.
-The SOURCE/MAP joint prefers the already configured tertiary model from the
+The SOURCE/MAP joint uses the already configured tertiary model from the
 registered model tuples. Repeated closed lightweight answers selected wrong
 physical objects despite intact SOURCE, map and address joins; this is the measured
 reason for that role's routing. Ordinary text planning keeps its configured web
 route, and fact extraction remains Live-first. No preliminary judge is added.
+If that visual-role model is unavailable or absent from the registered tuples,
+retain its exact unavailable cause/retry time and use the existing independent
+text planner if available. Do not silently send SOURCE/MAP to a lightweight
+text model and treat that substituted answer as a spatial decision. This role
+selection does not restrict independent search, ordinary text model failover or
+full SOURCE/REF comparison routes. UNKNOWN still observes its original request.
 The initial joint SDK call releases its key before reading selected article bodies
 or validating its semantic result. A useful second joint gets its own ordinary
 executor timeout. If the shared controller definitively refused it before send,
@@ -292,6 +298,18 @@ On `d8557ba`, photo102 then supplied a contract-valid wrong geometry identity.
 The acceptance harness stopped it at 14.07 seconds, before eligible facts. This
 confirmed that pointer coherence alone did not resolve the semantic interpretation
 failure. The prepared SOURCE/MAP routing change still needs live acceptance.
+
+On frozen `2993537`, all six registered Gemini3.8Flash keys were denied by shared
+RPD admission before an SDK send, with Retry-After 77,019.88–77,023.74 seconds.
+The former model loop then sent one Gemini3.5FlashLite request and accepted the
+wrong neighbouring footprint. Ordinary acceptance Stop ended at 21.90 seconds;
+zero facts were accepted. This tests neither Gemini3.8 recognition nor global
+Google availability. Further paid diagnostics stopped. The offline correction
+above removes that silent substitution while retaining independent text search.
+Its focused identity, repair, admission and original-readback checks passed
+52 tests (2 saved-case checks skipped) in 29.41 seconds. Two outdated CI assertions
+about the previous pointer wording/schema were updated to the current exact-ID
+contract; host membership checks remain strict.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates

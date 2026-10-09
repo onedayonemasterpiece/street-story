@@ -170,8 +170,9 @@ def _joint_initial_routes(settings, gemini, *, scene_available):
     """Reuse registered models for the actual joint visual reasoning role.
 
     SOURCE/MAP has measured interpretation failures on the lightweight route.
-    Its configured tertiary is preferred without adding a preliminary judge;
-    ordinary text planning and fact extraction retain their own routing.
+    Its configured tertiary owns this role without adding a preliminary judge.
+    An unavailable visual route must not silently substitute the lightweight
+    text planner for a spatial verdict. Independent text fallback stays available.
     """
     routes, seen = [], set()
     for route in [*(getattr(gemini, 'web_search_routes', None) or []),
@@ -181,6 +182,8 @@ def _joint_initial_routes(settings, gemini, *, scene_available):
             seen.add(route[0])
     preferred = getattr(settings, 'gemini_web_search_tertiary_model' if scene_available
         else 'gemini_web_search_model', None)
+    if scene_available and preferred:
+        return [route for route in routes if route[0] == preferred]
     return sorted(routes, key=lambda route: route[0] != preferred) if preferred else routes
 
 
@@ -1047,6 +1050,9 @@ async def suggest(service, story, transcript, candidates):
     if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
         return await fallback(RetryableProviderError('identity_google_planner_unavailable'))
     if not routes:
+        if scene and getattr(getattr(service, 'settings', None), 'gemini_web_search_tertiary_model', None) and (
+                getattr(gemini, 'web_search_routes', None) or getattr(gemini, 'research_routes', None)):
+            return await fallback(GeminiUnavailable(None, 'identity_visual_model_not_registered'))
         try:
             response = await gemini.executor.execute('grounded_research', send_initial)
             return await process_initial_response(response, executor=gemini.executor)
@@ -1072,8 +1078,13 @@ async def suggest(service, story, transcript, candidates):
             return await process_initial_response(response, model=model, quota=quota, executor=executor)
         except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
-    return await fallback(GeminiUnavailable(min(retry_at) if retry_at else None,
-        'all_identity_discovery_models_unavailable'))
+    unavailable_at = min(retry_at) if retry_at else None
+    record_identity_event(service, story['id'], 'identity_joint_route_unavailable',
+        {'role': 'source_map' if scene else 'text_planning', 'models': [route[0] for route in routes],
+         'retry_at': unavailable_at, 'provider_send_state': initial_outcome or 'not_sent',
+         'independent_text_fallback': True})
+    return await fallback(GeminiUnavailable(unavailable_at,
+        'identity_visual_model_unavailable' if scene else 'all_identity_discovery_models_unavailable'))
 
 
 async def api(service, client, endpoint, params):

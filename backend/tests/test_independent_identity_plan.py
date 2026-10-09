@@ -142,7 +142,9 @@ async def test_planner_can_promote_existing_building_outside_active_shortlist(tm
         rows = context['location_search_context']['observed_physical_candidates']['rows']
         assert physical['candidate_id'] in [row[0] for row in rows]
         contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
-        assert contract['properties']['observed_candidate_ids']['items'] == {'type': 'string', 'maxLength': 100}
+        pointer = contract['properties']['observed_candidate_ids']['items']
+        assert pointer['type'] == 'string' and pointer['maxLength'] == 100
+        assert 'enum' not in pointer and 'Exact received ID or @N' in pointer['description']
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
             'visual_query': '', 'commons_query': '', 'article_queries': ['Observed city Observed street'],
             'observed_candidate_ids': [physical['candidate_id']], 'first_wave_hypotheses': []}))

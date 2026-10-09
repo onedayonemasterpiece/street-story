@@ -1,6 +1,7 @@
 # Product recovery validation, 2026-10-09
 
-Status: development in progress; no accepted product release. The deployed backend
+Status: final live acceptance blocked by configured visual-model RPD admission;
+no accepted product release. Further paid diagnostics stopped. The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.
 
@@ -10,6 +11,48 @@ evidence. Runtime receives original photo bytes, available camera metadata and
 explicit owner camera context; report-only building labels/addresses are not seeds.
 
 ## Latest diagnostic and bounded correction
+
+Frozen `29935371ac190a7a2eb92d6d80b4391226760365` cold photo102 is **NO PASS**.
+At 2026-10-09 02:36 UTC, shared quota admission denied all six configured
+Gemini3.8Flash keys with reason `rpd`, `provider_send_state=not_sent` and
+Retry-After **77,019.879–77,023.743 s** (approximately the next UTC daily reset).
+No Gemini3.8 SDK inference occurred. This is a specific route admission blocker,
+not proof that all Google/provider resources are exhausted.
+
+The existing loop subsequently sent one Gemini3.5FlashLite request. Its actual
+closed response accepted `osm:way:133035102`, the wrong neighbour, by geometry.
+Ordinary wrong-object Stop ended the bounded canary at **21.900 s**, with zero
+eligible facts/POI assertions. The post-stop report snapshot was captured at
+22.196 s. SOURCE/MAP provenance and actual building-address memberships are
+present; the decision supplies only generic contour agreement and no compared
+alternative. The actual plan declared only its selected subject, so a guard
+covering declared alternatives would not repair this failure. Gemini3.8 spatial
+recognition remains untested. Other final cases were not run on this SHA.
+
+Further live/paid runs stopped on this objective blocker. The independent offline
+correction retains the configured SOURCE/MAP role instead of silently substituting
+the repeatedly failing lightweight text model. Unavailability retains its retry
+time and the existing independent text planner; ordinary text and REF routing
+remain available. UNKNOWN and existing addressed requests still forbid resend.
+The affected identity/repair/admission/text-fallback checks passed **52 tests,
+2 saved-case skips, in 29.41 s**; Ruff and diff checks passed. Hosted `2993537`
+backend CI failed two stale pointer wording/schema assertions (2,450 passed,
+5 skipped), now corrected without weakening exact host IDs. Its Android checks
+and CI emulator passed; release was skipped. These are CI results, not final
+five-building product acceptance.
+
+Observed diagnostic totals through this canary are **95 actual Google SDK calls**,
+**49 closed answers / 2,077,744 reported total tokens**, 21 typed HTTP failures and
+25 UNKNOWN outcomes. Fourteen closed Live operations report **66,441 tokens**.
+Six Gemini3.8 admission denials and the metadata GET are not model inference.
+These are historical diagnostic lower bounds, not costs of a successful release.
+The latest canary alone reports **67,277 Google tokens**, no Live/review sends.
+Actual monetary spending remains **unknown** without the provider billing ledger.
+Source logs, model-specific quota evidence, independent audits and refreshed
+machine-readable accounting are retained with the product-result artifact.
+
+The following sections preserve per-version diagnostic history; results from
+different SHAs do not combine into PASS.
 
 Frozen `045d8028556a784f2b656ae61d017a59b32df221` photo102 is **FAIL**:
 actual Prussia39 catalogue arrived at 8.878 s and its article body at 20.742 s,

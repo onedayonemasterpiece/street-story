@@ -45,7 +45,8 @@ async def test_real_joint_transport_receives_namespace_scope_cue_without_extra_g
         instruction = config.system_instruction
         assert 'Never prepend an OSM prefix to an article page number' in instruction
         assert '[] supplies no such association' in instruction
-        assert 'exact @N MAP-label references in identifier fields' in instruction
+        assert 'copy a received exact ID or use the string @N' in instruction
+        assert 'first_wave subject_id, spatial_hypotheses, regional selections/lookups' in instruction
         assert 'rejected_alternatives may be []' in instruction
         assert 'return uncertain if it leaves identity unresolved' in instruction
         return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
