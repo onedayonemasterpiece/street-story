@@ -156,7 +156,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         acquired.append({key: copy.deepcopy(article[key]) for key in (
             'article_id', 'url', 'title', 'address', 'address_provenance', 'coordinates', 'scope',
             'binding_basis', 'source_sha256', 'text_sha256', 'text',
-            'lookup_candidate_ids', 'card_variants') if key in article})
+            'lookup_candidate_ids', 'card_variants','source_image_links')
+            if key in article})
     if prior:
         nominations.extend(prior['candidate_ids'])
     ids=(list(g_prepared['original_active_ids']) if g_prepared is not None
@@ -299,6 +300,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         + json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
     return {'prompt': instruction, 'schema': schema, 'candidate_ids': ids,
         'article_ids': article_ids, 'literal_evidence_inventory':evidence,
+        'physical_link_inventory':evidence,
         'g_funnel_prepared':g_prepared,
         'grounded_refs_required':require_grounded_refs,
         'utf8_bytes': len(instruction.encode()),
