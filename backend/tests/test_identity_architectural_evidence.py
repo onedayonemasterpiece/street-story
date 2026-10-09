@@ -8,7 +8,8 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from street_story.identity_architectural_evidence import (
-    literal_evidence_inventory, physical_link_schema, validate_model_physical_links)
+    literal_evidence_inventory, physical_link_schema, validate_model_physical_links,
+    compact_model_evidence)
 
 
 def _scene():
@@ -127,3 +128,29 @@ def test_unobserved_candidate_and_unverified_article_rejected_before_model():
     corrupted[0]['raw_body_sha256_verified']=False
     with pytest.raises(ValueError,match='unverified_article'):
         literal_evidence_inventory(story,candidates,corrupted,candidate_ids=['osm:way:7'])
+
+
+
+def test_compact_model_records_keep_every_unranked_osm_body_and_source_ref():
+    story,candidates,articles=_scene()
+    # Add very distant/unaddressed bodies: a fixed top-K or postal predicate
+    # would silently suppress them, but this is a pure lossless transport.
+    for number in range(50):
+        candidates.append({'candidate_id':f'osm:way:{100+number}',
+            'identity_eligible':True,'map_object':{'tags':{'building':'yes'}},
+            'map_address':{'street':'Любая историческая улица',
+                'house_number':f'{number} корпус условный'}})
+    story['_identity_observed_candidates']=candidates
+    ids=[c['candidate_id'] for c in candidates]
+    full=literal_evidence_inventory(story,candidates,articles,candidate_ids=ids)
+    compact=compact_model_evidence(full)
+    assert compact['supplier_ranking']=='none'
+    assert len(compact['observed_OSM_physical_bodies'])==len(ids)
+    assert [row[0] for row in compact['observed_OSM_physical_bodies']]==ids
+    assert {record[0] for row in compact['observed_OSM_physical_bodies']
+        for record in row[1]}==set(full['osm_refs'])
+    assert {record[0] for row in compact['publisher_article_rows']
+        for record in row['refs']}==set(full['publisher_refs'])
+    assert compact['original_ref_counts']=={
+        'publisher':len(full['publisher_refs']),'osm':len(full['osm_refs'])}
+    assert len(str(compact))<len(str(full))
