@@ -266,7 +266,9 @@ class HeadlessFacts:
                                   (job['story_id'],)).fetchone()[0]
             complete = (manifest_complete(manifest) and not manifest['counts']['sources_snippet_only']
                         and not review_packets.pending_candidates(db, job['story_id'], run_id))
-            outcome = ('useful_complete' if complete else 'useful_partial') if eligible else 'no_supported_facts'
+            outcome = (('useful_complete' if complete else 'useful_partial') if eligible else
+                       'resource_blocked' if reason == 'live_research_original_outcome_unavailable' else
+                       'no_supported_facts')
             value = {'outcome': outcome, 'reason': reason, 'coverage_complete': complete, 'eligible_count': eligible}
             set_run_state(db, run_id, 'completed', detail=outcome, now=self.service.store.now(), completed=True)
             pending = snapshot[1].get('pending_fact_request')
@@ -298,6 +300,47 @@ class HeadlessFacts:
                and not isinstance(state['retry_at'], bool) and math.isfinite(state['retry_at'])
                and state['retry_at'] > self.service.store.now()]
         return min(due) if due else None
+
+    def _only_unobservable_live_work(self, job, run_id, story):
+        """A closed Live socket has no remote readback; keep its send fenced.
+
+        End only when every remaining unit has that exact receipt and no unread
+        source, saved result or review can advance independently. Other providers'
+        unknowns and Live sends without closure evidence retain normal waiting.
+        """
+        from .research_adapter import ProductResearchAdapter
+        with self.service.store.connection() as db:
+            if (db.execute("SELECT 1 FROM research_run_sources WHERE run_id=? "
+                           "AND source_version_id IS NULL AND status!='failed' LIMIT 1", (run_id,)).fetchone()
+                    or review_packets.pending_candidates(db, job['story_id'], run_id)):
+                return False
+            chunks = {row[0] for row in db.execute("SELECT chunk_id FROM research_chunk_runs WHERE run_id=? "
+                "AND status NOT IN ('extracted','no_claims','failed','cancelled')", (run_id,))}
+            checkpoints = list(db.execute("SELECT stage,value_json FROM research_checkpoints "
+                "WHERE job_id=? AND stage LIKE 'headless_fact_unit:%'", (job['id'],)))
+        if not chunks:
+            return False
+        fenced = set()
+        for row in checkpoints:
+            state = json.loads(row['value_json'])
+            if state.get('chunk_id') not in chunks or state.get('phase') != 'unknown':
+                continue
+            unit = row['stage'].removeprefix('headless_fact_unit:')
+            if self.service.store.checkpoint_get(job['id'], 'headless_fact_result:' + unit):
+                return False
+            # This read-only lookup needs only the shared service/store, not a
+            # new provider client or admission controller.
+            receipts = ProductResearchAdapter._fact_pool_receipts(self, story, unit)
+            unknowns = [(role, receipt) for role, receipt in receipts.items()
+                        if ProductResearchAdapter._fact_pool_unknown(receipt)]
+            if not unknowns or any(role != 'facts_live' or receipt.get('provider_id') != 'google-live'
+                    or receipt.get('phase') != 'unknown'
+                    or receipt.get('error_code') != 'live_research_timeout'
+                    or receipt.get('provider_send_state') not in {'submitted', 'unknown'}
+                    for role, receipt in unknowns):
+                return False
+            fenced.add(state['chunk_id'])
+        return fenced == chunks
 
     async def _discover_requested_gap(self, job, run_id, goal, scope, provider, control_revision):
         payload = json.loads(job.get('payload_json') or '{}')
@@ -664,6 +707,8 @@ class HeadlessFacts:
                 if snapshot[2]['status_detail'] == 'research_fact_discovery_pending' or (payload.get('research_query') and cached_only):
                     return await self._discover_requested_gap(job, run_id, goal, scope, provider, control_revision)
                 return self._finish(job, run_id, control_revision, 'source_batches_reviewed')
+            if self._only_unobservable_live_work(job, run_id, story):
+                return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
             self._partial(run_id, 'research_fact_source_coverage_partial',
                           retry_at=self._pending_retry_at(job, run_id))
         story, research, _ = snapshot
@@ -765,6 +810,8 @@ class HeadlessFacts:
                                       'research_fact_review_partial' if unreviewed else 'source_batches_reviewed'),
                               now=self.service.store.now(), completed=False)
             if pending or unread:
+                if self._only_unobservable_live_work(job, run_id, story):
+                    return self._finish(job, run_id, control_revision, 'live_research_original_outcome_unavailable')
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
                 due = self._pending_retry_at(job, run_id) if len(failures) == len(units) else None
                 due = self._capacity_retry(job, run_id, failures, due, bool(suggestions))

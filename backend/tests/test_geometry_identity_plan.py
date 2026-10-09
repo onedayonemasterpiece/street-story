@@ -72,6 +72,38 @@ class Executor:
         return await call('offline-fixture', 5)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text_component', [None, {'decision': 'accepted_architectural_text',
+    'candidate_id': 'osm:way:3', 'article_bindings': []}])
+async def test_sufficient_geometry_survives_inapplicable_text_without_paid_repair(tmp_path, text_component):
+    service, story, active = geometry_setup(tmp_path)
+    original = payload(geometry_decision())
+    original['accepted_architectural_text'] = text_component
+    calls = []
+
+    async def generate(*args, **kwargs):
+        calls.append('joint')
+        assert len(calls) == 1, 'Independently valid G needs no repair of rejected T'
+        return SimpleNamespace(text=json.dumps(original))
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Independently sufficient G needs no other planner')
+
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
+    history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    accepted = history['search_plan']['payload']
+    assert accepted['geometry_proof']['validated'] is True
+    if text_component is not None:
+        assert accepted['rejected_architectural_text']['decision'] == text_component
+        assert 'accepted_architectural_text' not in accepted
+    else:
+        assert accepted.get('accepted_architectural_text') is None
+    assert original['accepted_architectural_text'] == text_component
+    assert len(calls) == 1
+
+
 def test_large_osm_dictionary_stays_in_host_validation_without_repeated_provider_enums():
     from jsonschema import Draft202012Validator
     from street_story.identity_source_selection import identity_transport_schema

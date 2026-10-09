@@ -624,6 +624,26 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_plan_diagnostics import retain_closed_invalid, validation_details
         validation_schema = original_schema if original_schema is not None else (legacy_schema if original_schema_readback else schema)
         errors, errors_truncated = validation_details(validation_schema, payload)
+        rejected_text = None
+        if errors and isinstance(payload, dict) and 'accepted_architectural_text' in payload:
+            # G and T are independent evidence components. Validate the whole
+            # remaining plan strictly; a broken T cannot repair or excuse G.
+            import copy
+            independent_schema = copy.deepcopy(validation_schema)
+            independent_schema.get('properties', {}).pop('accepted_architectural_text', None)
+            independent_schema['required'] = [key for key in independent_schema.get('required', [])
+                                               if key != 'accepted_architectural_text']
+            independent_payload = {key: value for key, value in payload.items() if key != 'accepted_architectural_text'}
+            independent_errors, _ = validation_details(independent_schema, independent_payload)
+            if not independent_errors and (independent_payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
+                retain_closed_invalid(service, story, payload, validation_schema,
+                    code='identity_architectural_text_schema_invalid', raw_json=raw_json,
+                    raw_json_available=raw_json_available, provider_response_id=provider_response_id,
+                    errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
+                rejected_text = {'reason': 'identity_architectural_text_schema_invalid',
+                                 'decision': payload['accepted_architectural_text']}
+                payload = independent_payload
+                errors = []
         def reject(code):
             hypotheses = (payload.get('first_wave_hypotheses') or []) if isinstance(payload, dict) else []
             retain_closed_invalid(service, story, payload, validation_schema, code=code,
@@ -653,17 +673,30 @@ async def _suggest(service, story, transcript, candidates):
         source_map_receipt = joint_source_map_receipt() if original_schema is None else {}
         geometry_proof = None
         text_proof = None
+        if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
+            from .identity_proof import freeze_geometry_proof
+            geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
+                [*observed, *candidates])
+        if rejected_text and geometry_proof is None:
+            reject('identity_search_plan_malformed')
         if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
             from .identity_proof import freeze_architectural_text_proof
             if story.get('_identity_search_plan_route') != 'qualified_text_fallback':
                 text_proof = freeze_architectural_text_proof(story, payload['accepted_architectural_text'],
                     source_text_receipt, [*observed, *candidates])
             if text_proof is None:
-                reject('identity_architectural_text_proof_invalid')
+                if geometry_proof is None:
+                    reject('identity_architectural_text_proof_invalid')
+                rejected_text = {'reason': 'identity_architectural_text_proof_invalid',
+                                 'decision': payload['accepted_architectural_text']}
+                payload = {key: value for key, value in payload.items() if key != 'accepted_architectural_text'}
+        if rejected_text:
+            # Host admission metadata preserves the actual rejected decision;
+            # the immutable closed provider answer is never rewritten.
+            payload = {**payload, 'rejected_architectural_text': rejected_text}
+            record_identity_event(service, story['id'], 'identity_architectural_text_not_accepted',
+                {'reason': rejected_text['reason'], 'preserved_geometry_proof': True})
         if (payload.get('accepted_geometry') or {}).get('decision') == 'accepted_geometry':
-            from .identity_proof import freeze_geometry_proof
-            geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
-                [*observed, *candidates])
             if geometry_proof is None:
                 if not (payload.get('selected_wikipedia_page_ids') or payload.get('first_wave_hypotheses') or text_proof):
                     reject('identity_geometry_proof_invalid')
@@ -897,6 +930,10 @@ async def _suggest(service, story, transcript, candidates):
         from .identity_proof import freeze_geometry_proof
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
             joint_source_map_receipt(), [*observed, *candidates]) if isinstance(payload, dict) else None)
+        if initial_geometry is not None and initial_validation_error is None:
+            # Independent G already passed strict admission. An inapplicable T
+            # component retained above does not justify another paid repair.
+            issues.pop('schema_validation', None)
         if scene and initial_validation_error in {
                 'identity_geometry_proof_invalid', 'identity_first_wave_coverage_incomplete'}:
             # Schema-valid JSON can still omit required physical evidence or

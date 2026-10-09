@@ -720,3 +720,31 @@ The isolated actual changed-review check on 504aaae did not receive a closed sem
 The actual existing Live reviewer completed the corrected JSON-Schema setup and one text operation in 8.781 seconds on 6bc778c, confirming the wire repair. Its synthetic semantic qualification FAILED: it treated a museum-opening duplicate as a conflict and supported a completed-restoration candidate by replacing its claim with the source's planned-restoration wording. It is not admitted as a reviewer. The verifier prompt now explicitly evaluates original item.text, reserves semantic corrections for repair_needed/insufficient, and distinguishes equivalent wording from incompatibility. This creates a new v7 contract while all original closed/UNKNOWN operations remain immutable. No actual rejected claim has been accepted or rewritten. A changed-prompt qualification is separate from product acceptance.
 
 The changed v7 original-candidate qualification on the existing Live model passed all five controls in a real closed 8.222-second operation: schema, own quotation, nearby duplicate, nearby conflict and planned/completed negative. The existing qualification file now includes that immutable hashed evidence, with its prior version retained; no backend restart or deployment occurred. Installer validation now recognizes this exact existing Live route only with independent semantic proof, a closed response and an actual text send, preserving the qualified OpenCode routes. 116 affected qualification/review/Live regressions passed. No new transport or model catalog was introduced. Next validation reuses the actual retained source/claim ledger and performs only the changed reviewer operation before final cold photo acceptance.
+
+## Independent proof admission and unobservable Live outcome
+
+The actual 2595a15 cold132 receipt proves one submitted Live text operation,
+`live_research_timeout`, and a closed socket without durable remote readback.
+The existing worker nevertheless scheduled another 300-second wait. Its exact
+unknown send now remains fenced, while a scope with only those unobservable
+units and no unread source, saved result or pending review ends with
+`live_research_original_outcome_unavailable`. Other provider unknowns and
+independent pending work retain their existing behavior. Read-only replay of
+the original database confirmed this precise condition with zero sends.
+The fact suite passed 43 checks. This is an explanatory technical outcome,
+not an assertion that the source contains no supported facts.
+
+Strictly valid G survives an inapplicable or malformed T component. The
+remaining plan and G proof must still independently validate; the original
+closed response and rejected T remain evidence, and no extra paid repair is
+required merely to repair T. Neither invalid G nor contradictory valid proofs
+gain acceptance from this change.
+
+The retained peer blind-v4 T102 parsed answer reproduced its original common
+proof SHA exactly through current decode and freeze validation without
+inference or administrative identity import. Prepared SOURCE, model, positive
+article raw bytes and normalized text match the own uncertain102 operation.
+The peer supplied three articles/eight physical candidates versus one/one.
+The original pre-send prompt bytes and raw wire whitespace were not retained;
+the regenerated request does not reproduce the original request hash. Their
+exact comparison remains unavailable and is not claimed as verified.

@@ -191,6 +191,43 @@ async def test_unknown_core_keeps_original_wait_and_does_not_use_ready_continuat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('role,expected_terminal', [('facts_live', True), ('facts', False)])
+async def test_only_closed_unobservable_live_unknown_finishes_without_resending(tmp_path, role, expected_terminal):
+    from street_story.research_adapter import ProductResearchAdapter, canonical
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    calls = []
+
+    async def unknown(page, story, context):
+        calls.append(page['_unit_id'])
+        binding, _ = ProductResearchAdapter.attempt(SimpleNamespace(service=svc), story, role, page['_unit_id'])
+        receipt = {'binding': binding, 'phase': 'unknown', 'provider_send_state': 'submitted',
+                   'provider_id': 'google-live' if role == 'facts_live' else 'opencode',
+                   'error_code': 'live_research_timeout' if role == 'facts_live' else 'original_response_unknown',
+                   'text_sends': 1, 'session_id': 'closed-live' if role == 'facts_live' else 'durable-thread'}
+        with svc.store.tx() as db:
+            db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                       (canonical(receipt), binding['attempt_id']))
+        raise RetryableProviderError('original_response_unknown')
+
+    researcher.extract_fact_page = unknown
+    try:
+        for _ in range(2):
+            if expected_terminal:
+                result = await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+                assert result['outcome'] == 'resource_blocked'
+                assert result['reason'] == 'live_research_original_outcome_unavailable'
+            else:
+                with pytest.raises(RetryableProviderError):
+                    await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert len(calls) == 1 and svc.story(job['story_id'])['facts'] == []
+        with svc.store.connection() as db:
+            receipt = json.loads(db.execute('SELECT receipt_json FROM research_provider_attempts').fetchone()[0])
+            assert receipt['phase'] == 'unknown' and receipt['text_sends'] == 1
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_frozen_fact_preparation_does_not_starve_live_receipts(tmp_path, monkeypatch):
     svc, job, researcher, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 400)
     facts = HeadlessFacts(svc)
