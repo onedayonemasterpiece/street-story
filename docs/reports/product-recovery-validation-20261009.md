@@ -54,6 +54,27 @@ uses independent cold104 on the new frozen commit, preserving cold102's UNKNOWN
 receipt rather than creating a duplicate. The complete same-version product
 gate and deployment remain pending.
 
+The independent cold104 on `fcfabc7e36685f23246b6c93da5264c23468030c` received
+one closed HTTP503 from Gemini3.8 in 9.842 seconds. Its Native spatial reserve
+was not invoked: the route incorrectly blocked model rotation for every closed
+provider failure. Independent text fallback exceeded its Live input envelope;
+the case ended at 180.025 seconds with no object/facts. This is a concrete routing
+defect, not evidence of a global resource shortage. The correction permits a
+different model after a received availability/auth/model error, preserves each
+failed route in the durable marker, and prohibits retrying that same model after
+restart. UNKNOWN and semantic responses retain their existing fence. **79 focused
+checks passed in 26.83 seconds**, including HTTP429/503 to Native and registered
+Google alternatives without weakening geometry evidence. Real Luna spatial
+recognition still needs verification.
+
+Hosted backend CI on `fcfabc7` found 18 failures (2,470 passed, five skipped):
+the Prussia admission fixture still asserted the old short call timeout after
+SOURCE/MAP moved to the existing total attempt budget. Its assertion now checks
+that joint budget, and optional admission retry headroom uses the same actual
+budget. **97 related checks passed in 45.25 seconds**, then **21 route checks in
+8.71 seconds**, including a real persisted-marker restart after closed503 that
+skips the failed model. Final hosted CI remains required on the corrected commit.
+
 The current method contract is [photo search methods](../photo-search-methods.md),
 following the latest unified owner prompt. Earlier audit prompts are historical
 evidence. Runtime receives original photo bytes, available camera metadata and

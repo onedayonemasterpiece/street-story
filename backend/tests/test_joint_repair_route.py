@@ -99,7 +99,8 @@ async def test_visual_quota_cause_remains_observable_when_no_independent_planner
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('reserve', ['google', 'native', 'native_denied'])
-async def test_unsent_primary_uses_secondary_pixels_with_same_proof_contract(tmp_path, reserve):
+@pytest.mark.parametrize('primary_status', [None, 429, 503])
+async def test_unavailable_primary_uses_secondary_pixels_with_same_proof_contract(tmp_path, reserve, primary_status):
     service, story, active = geometry_setup(tmp_path)
     service.settings = replace(service.settings, gemini_web_search_model='initial',
         gemini_web_search_tertiary_model='alternative')
@@ -107,13 +108,19 @@ async def test_unsent_primary_uses_secondary_pixels_with_same_proof_contract(tmp
     quota = object()
     class Denied:
         async def execute(self, operation, call):
-            calls.append('primary_unsent')
+            calls.append('primary_unsent' if primary_status is None else 'primary_closed_error')
+            if primary_status is not None:
+                return await call('fixture', 60)
             raise GeminiUnavailable(service.store.now() + 300, 'rpd_not_sent')
     class Allowed:
         async def execute(self, operation, call):
             calls.append('google_secondary')
             return await call('fixture', 60)
     async def generate(key, timeout, contents, config, **kwargs):
+        if kwargs['model'] == 'alternative':
+            from google.genai.errors import ClientError, ServerError
+            error = ServerError if primary_status >= 500 else ClientError
+            raise error(primary_status, {'error': {'code': primary_status, 'message': 'Fixture availability failure'}})
         assert kwargs['model'] == 'initial' and kwargs['quota'] is quota
         assert len(contents) == 3 and all(part.inline_data.data for part in contents[:2])
         return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
@@ -133,11 +140,53 @@ async def test_unsent_primary_uses_secondary_pixels_with_same_proof_contract(tmp
     service.providers.research = SimpleNamespace(source_map_available=reserve != 'google',
         plan_source_map=native, source_map_receipt=lambda snapshot: native_receipts[-1] if native_receipts else None)
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert calls == (['primary_unsent', 'native_secondary', 'google_secondary'] if reserve == 'native_denied'
-        else ['primary_unsent', 'native_secondary' if reserve == 'native' else 'google_secondary'])
+    first = 'primary_unsent' if primary_status is None else 'primary_closed_error'
+    assert calls == ([first, 'native_secondary', 'google_secondary'] if reserve == 'native_denied'
+        else [first, 'native_secondary' if reserve == 'native' else 'google_secondary'])
     assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
     assert story['_identity_search_plan_payload']['source_map_receipt']['model_id'] == (
         'gpt-6-luna' if reserve == 'native' else 'initial')
+    if primary_status is not None:
+        from street_story.identity_plan_diagnostics import joint_operation_marker
+        marker = joint_operation_marker(service, story, stage='initial')
+        assert marker['closed_route_failures'][0]['model_id'] == 'alternative'
+        assert marker['closed_route_failures'][0]['status_code'] == primary_status
+
+
+@pytest.mark.asyncio
+async def test_restart_skips_model_with_received503_and_reassigns_same_bound_source_map(tmp_path):
+    from google.genai.errors import ServerError
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='initial',
+        gemini_web_search_tertiary_model='alternative')
+    calls = []
+    class Primary:
+        async def execute(self, role, call):
+            calls.append('failed_model')
+            return await call('fixture', 60)
+    class Reserve:
+        available = False
+        async def execute(self, role, call):
+            calls.append('reserve')
+            if not self.available:
+                raise GeminiUnavailable(service.store.now() + 60, 'fixture_unsent')
+            return await call('fixture', 60)
+    reserve = Reserve()
+    async def generate(key, timeout, contents, config, **kwargs):
+        if kwargs['model'] == 'alternative':
+            raise ServerError(503, {'error': {'code': 503, 'message': 'Fixture unavailable'}})
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+    service.providers.gemini = SimpleNamespace(executor=Primary(), _generate=generate,
+        web_search_routes=[('alternative', object(), object(), Primary()),
+            ('initial', object(), object(), reserve)])
+    service.providers.research = None
+    with pytest.raises(GeminiUnavailable):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    reserve.available = True
+    fresh = type(service)(service.settings, providers=service.providers)
+    await identity_discovery.prepare_search_plan(fresh, story, '', active)
+    assert calls == ['failed_model', 'reserve', 'reserve']
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
 
 
 @pytest.mark.asyncio

@@ -757,7 +757,9 @@ async def _suggest(service, story, transcript, candidates):
             # An executor key/model loop cannot repeat an already addressed
             # joint2 after a lost/error response. Preserve the original outcome.
             raise PermanentProviderError('identity_joint_followup_outcome_unknown')
-        if initial_outcome and initial_outcome != 'not_sent':
+        from .identity_plan_diagnostics import joint_route_reassignable
+        if initial_outcome and initial_outcome != 'not_sent' and not joint_route_reassignable(
+                joint_operation_marker(service, story, stage='initial'), model):
             raise PermanentProviderError('identity_joint_initial_already_addressed')
         text_articles, source_text_receipt = [], {}
         from google.genai.errors import APIError
@@ -789,7 +791,9 @@ async def _suggest(service, story, transcript, candidates):
                 'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
                 'phase': phase, 'status_code': status_code, 'error_type': type(exc).__name__,
                 'model': model, 'timeout_seconds': timeout,
-                'fresh_google_retry_allowed': phase == 'not_sent'})
+                'fresh_google_retry_allowed': phase == 'not_sent',
+                'different_model_allowed': joint_route_reassignable(
+                    joint_operation_marker(service, story, stage='initial'))})
             # Retain a closed diagnostic category, never provider payloads or keys.
             detail = str(exc).lower()
             reason = ('schema_depth' if 'schema' in detail and 'nest' in detail else
@@ -802,8 +806,8 @@ async def _suggest(service, story, transcript, candidates):
                         json.dumps(response_contract, sort_keys=True).encode()).hexdigest()})
             if phase == 'not_sent':
                 raise
-            # Stop key/model failover after a possibly sent or closed failed
-            # operation. Only the latter may use the existing independent route.
+            # Stop same-executor key replay. A received availability error may
+            # select a different registered model outside this executor.
             raise PermanentProviderError(f'identity_joint_initial_{phase}') from exc
         initial_outcome = 'response_closed'
         joint_operation_marker(service, story, stage='initial', binding=initial_binding,
@@ -1111,8 +1115,12 @@ async def _suggest(service, story, transcript, candidates):
                         joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
                             prepared_request=prepared_request, code='identity_joint_followup_not_sent')
                     delay = _retry_after(exc, service.store.now()) if isinstance(exc, SharedQuotaDenied) else None
+                    joint_timeout = bool(scene) and callable(getattr(executor, 'execute_joint', None))
                     operation_timeout = float(getattr(getattr(getattr(executor, 'pool', None), 'policy', None),
-                        'call_timeout', getattr(getattr(service, 'settings', None), 'gemini_call_timeout_seconds', 20)))
+                        'attempt_timeout' if joint_timeout else 'call_timeout',
+                        getattr(getattr(service, 'settings', None),
+                            'gemini_attempt_timeout_seconds' if joint_timeout else 'gemini_call_timeout_seconds',
+                            60 if joint_timeout else 20)))
                     remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 0
                     can_retry = (admission_attempt == 0 and phase == 'not_sent' and isinstance(exc, SharedQuotaDenied)
                         and delay is not None and 0 < delay <= 60 and delay + operation_timeout < remaining)
@@ -1258,6 +1266,16 @@ async def _suggest(service, story, transcript, candidates):
         reserve_work(service, story['id'], 'planner_calls',
             [digest([story['photo_sha256'], prompt, schema])])
     routes = _joint_initial_routes(getattr(service, 'settings', None), gemini, scene_available=bool(scene))
+    from .identity_plan_diagnostics import joint_route_reassignable
+    failed_marker = joint_operation_marker(service, story, stage='initial') or {}
+    failed_models = {row['model_id'] for row in failed_marker.get('closed_route_failures', [])}
+    if joint_route_reassignable(failed_marker):
+        failed_models.add(failed_marker['model_id'])
+    routes = [route for route in routes if route[0] not in failed_models]
+    if joint_route_reassignable(failed_marker):
+        result = await native_joint()
+        if result is not None:
+            return result
     if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
         return await fallback(RetryableProviderError('identity_google_planner_unavailable'))
     if not routes:
@@ -1290,6 +1308,8 @@ async def _suggest(service, story, transcript, candidates):
             continue
         except PermanentProviderError as exc:
             if str(exc) == 'gemini:unsupported_model':
+                continue
+            if joint_route_reassignable(joint_operation_marker(service, story, stage='initial')):
                 continue
             return await fallback(exc)
         except RetryableProviderError as exc:

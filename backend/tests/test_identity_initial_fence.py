@@ -11,7 +11,7 @@ from pydantic import SecretStr
 
 from street_story import identity_discovery
 from street_story.gemini import GeminiExecutor, GeminiKeyPool
-from street_story.identity_plan_diagnostics import joint_operation_marker, provider_outcome
+from street_story.identity_plan_diagnostics import joint_operation_marker, provider_outcome, joint_route_reassignable
 from street_story.providers import RetryableProviderError, PermanentProviderError
 from test_observed_address_search_context import observed
 from test_structured_identity_first_wave import choice, payload
@@ -29,6 +29,22 @@ def snapshot(service, story):
 def pool(service):
     return GeminiExecutor(GeminiKeyPool(service.store,
         (SecretStr('fixture-a'), SecretStr('fixture-b')), 'fixture-model'))
+
+
+@pytest.mark.parametrize('phase,status,old_model,new_model,allowed', [
+    ('closed_failure', 503, 'preferred', 'reserve', True),
+    ('closed_failure', 429, 'preferred', 'reserve', True),
+    ('closed_failure', 404, 'preferred', 'reserve', True),
+    ('closed_failure', 503, 'preferred', 'preferred', False),
+    ('closed_failure', 400, 'preferred', 'reserve', False),
+    ('closed_failure', None, 'preferred', 'reserve', False),
+    ('unknown', 503, 'preferred', 'reserve', False),
+    ('response_closed', 503, 'preferred', 'reserve', False),
+])
+def test_only_received_availability_error_allows_different_model(phase, status, old_model, new_model, allowed):
+    marker = {'phase': phase, 'status_code': status, 'model_id': old_model}
+    assert joint_route_reassignable(marker, new_model) is allowed
+    assert not joint_route_reassignable({**marker, 'response_sha256': 'semantic-response'}, new_model)
 
 
 @pytest.mark.asyncio

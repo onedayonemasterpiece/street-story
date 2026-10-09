@@ -52,8 +52,7 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
         assert request.url.path == '/sight/index.php' and b'sid=34' in request.url.query
         assert sum(pool._in_flight.values()) == 0, 'Initial SDK key must be released before article transport'
         bodies.append(request)
-        # Longer than the actual executor callback timeout: ordinary HTTP must
-        # not inherit the SDK/key lease's .1-second envelope.
+        # Ordinary article transport runs after the initial SDK lease is released.
         await original_sleep(.15)
         return response(html(f'<td style="text-align:justify">{TEXT}</td>'))
     offline(monkeypatch, handler)
@@ -64,7 +63,7 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
 
     async def generate(key, timeout, contents, config, **kwargs):
         assert sum(pool._in_flight.values()) == 1
-        assert 0 < timeout <= .1
+        assert 0 < timeout <= policy.attempt_timeout
         requests.append((contents, config.model_dump(mode='json', exclude_none=True), kwargs))
         if len(requests) == 1:
             sdk_sends.append('initial')

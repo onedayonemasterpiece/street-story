@@ -39,10 +39,20 @@ def _checked_research(service, story, db, scope):
     return research
 
 
+def joint_route_reassignable(marker, model_id=None):
+    """A received availability error permits a different model, never UNKNOWN replay."""
+    marker = marker or {}
+    return (marker.get('phase') == 'closed_failure'
+        and marker.get('status_code') in {401, 403, 404, 408, 429, 500, 502, 503, 504}
+        and not marker.get('response_sha256') and not marker.get('closed_plan')
+        and bool(marker.get('model_id'))
+        and (model_id is None or model_id != marker['model_id']))
+
+
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
         response_sha256=None, status_code=None, closed_plan=None, prepared_request=None,
         admission_retry=None, retry_not_sent=False, model_id=None):
-    """One scoped SOURCE+MAP operation; only authoritative not_sent permits reassignment."""
+    """One scoped operation; unsent or received availability errors allow reassignment."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
     from .providers import RetryableProviderError
@@ -71,12 +81,16 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             and retry['retry_at'] <= service.store.now()
             and prepared_request is not None and retry.get('prepared_request_sha256') == prepared_request['sha256'])
         if phase == 'send_intent' and previous and not (
-                stage == 'initial' and previous['phase'] == 'not_sent' or retry_permitted):
+                stage == 'initial' and (previous['phase'] == 'not_sent'
+                    or model_id is not None and joint_route_reassignable(previous, model_id)) or retry_permitted):
             raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
         if previous and previous.get('binding') != binding:
             raise RetryableProviderError(f'identity_joint_{stage}_binding_changed')
         marker = {**previous, 'scope': scope, 'binding': binding, 'phase': phase,
             'updated_at': service.store.now()}
+        if phase == 'send_intent' and joint_route_reassignable(previous, model_id):
+            marker['closed_route_failures'] = [*(previous.get('closed_route_failures') or []),
+                {key: previous[key] for key in ('model_id', 'status_code', 'updated_at')}]
         if model_id is not None:
             marker['model_id'] = model_id
         if prepared_request is not None:

@@ -124,14 +124,18 @@ already addressed request. Remaining owned work is drained on operation exit.
 Fill free worker slots as results complete under existing resource admission.
 The SOURCE/MAP joint prefers the configured tertiary Gemini model. Following the
 owner's October 9 clarification, it is no longer a mandatory single-model
-dependency: a definitive unsent refusal permits another registered model tuple,
-including Lite. Each model uses its own existing controller limits and receives
+dependency: a definitive unsent refusal or received availability error (such as
+HTTP 429/503) permits a different registered model tuple, including Lite. A
+received semantic response and an UNKNOWN outcome do not authorize rotation.
+Closed service failures retain their model and status; the failed model is not
+repeated after restart. Each model uses its own controller limits and receives
 the same SOURCE, MAP and proof contract; a 500-RPD allowance does not change the
 acceptance threshold. Wrong lightweight outputs remain regression evidence,
 not a blanket capability ban. Model selection is logged and frozen in the receipt.
 
 `gpt-6-luna` is an explicit secondary SOURCE/MAP route after the preferred Google
-route is unsent. It reuses the installed Native vision transport, tool-free profile,
+route is unsent or returns a definitive availability error. It reuses the installed
+Native vision transport, tool-free profile,
 shared workload admission and account quota permission. It receives the exact
 prepared SOURCE and MAP bytes, with MAP labelled as a map rather than a reference
 facade. Its addressed prompt, schema, images and original host proof context are
