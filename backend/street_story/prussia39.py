@@ -27,6 +27,7 @@ BASE = 'https://www.prussia39.ru'
 DATABASE = BASE + '/sight/database.php'
 COORDINATES = BASE + '/sight/map_coord.php'
 COOLDOWN = 'prussia39:transport-cooldown-v1'
+READ_TIMEOUT_SECONDS = 12.0
 _LOCKS = weakref.WeakKeyDictionary()
 DEFAULTS = {
     'text_n': 'Название достопримечательности', 'text_np': 'Населенный пункт',
@@ -351,7 +352,7 @@ class Prussia39Adapter:
             lock = asyncio.Lock()
             locks[lock_key] = lock
         try:
-            async with asyncio.timeout(12), lock:
+            async with asyncio.timeout(READ_TIMEOUT_SECONDS), lock:
                 cached = self.store.cache_get(key)
                 receipt['cache_hit'] = bool(cached)
                 if body is None:

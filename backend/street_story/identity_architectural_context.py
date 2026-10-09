@@ -49,12 +49,12 @@ def regional_preparation_query(story, candidates):
 
 
 async def prepare_regional_catalogue(service, story, candidates, *, allow_network=True):
-    """At most three seconds of optional inventory preparation, not a barrier.
+    """Prepare inventory within the publisher's ordinary bounded read envelope.
 
     One observed continuation can expose omitted cards inside the same small
     preparation envelope. It never cascades through a street's page tree.
     """
-    from .prussia39 import Prussia39Adapter, cached_get_available
+    from .prussia39 import Prussia39Adapter, READ_TIMEOUT_SECONDS, cached_get_available
     from .research_budget import ResearchTerminated
     query = regional_preparation_query(story, candidates)
     if query is None or not hasattr(getattr(service, 'store', None), 'cache_get'):
@@ -79,7 +79,10 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
         'requested_url':url, 'method':'GET', 'query_key':query_key}
     if not allow_network and not cached_get_available(service.store, url):
         return dict(receipt, error_code='joint_image_planner_unavailable')
-    wait = 3.0
+    # This retrieval overlaps SOURCE/map preparation and precedes model admission.
+    # Cancelling it earlier than the actual reader's envelope repeatedly deprived
+    # the first joint call of cold cards, leaving no call for selected text.
+    wait = READ_TIMEOUT_SECONDS
     started = False
     adapter = None
     try:

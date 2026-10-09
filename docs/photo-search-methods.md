@@ -172,12 +172,16 @@ Wiki remains complementary. Full physical candidates, frozen operations,
 resource control and the upload-based deadlines remain in place.
 
 Optional early regional preparation uses only an already received camera street
-or one unambiguous observed locality/street and is bounded to three seconds.
+or one unambiguous observed locality/street. It now uses the publisher reader's
+existing 12-second envelope, further bounded by the upload-based identity deadline,
+while overlapping SOURCE/MAP preparation and before acquiring a model key.
 Late or partial cards remain visible, but do not authorize automatic first-two
 selection or another mandatory judge. Independent text fallback preserves the
 received packet; its Native addressed prompt can still be large, and Live's
 24 KB planning limit remains a real limitation.
-Early catalogue preparation can miss observed cold lookups taking 5–15 seconds.
+The former three-second preparation cutoff repeatedly lost cold cards. Aligning
+it with the reader envelope preserves responses slower than three seconds; a
+response exceeding the ordinary reader limit can still be unavailable.
 A complete literal address lookup with 1–2 results can supply their actual bodies
 for the second joint call. A late broad or partial catalogue cannot currently
 produce that text proof within the same two-call budget. Preserve its inventory
@@ -190,7 +194,8 @@ copied candidate prose instead of literal source evidence and were rejected.
 The operator stopped it at 168.69 s. This establishes an identity result, not
 product acceptance. Private review schemas now enumerate only exact frozen quote labels. Saved
 answers verify that candidate prose is rejected at this transport boundary;
-new live fact acceptance remains unverified.
+later live fact acceptance is reported below; this saved transport check alone
+did not establish it.
 The next frozen canary (`80fb6cd`) stopped at 29.58 seconds before identity: its
 optional joint follow-up was known not sent after a temporary shared TPM denial.
 The caller prevented the closed initial plan from continuing independently.
@@ -208,6 +213,19 @@ The SOURCE, MAP and full 667-object pool match earlier successful geometry runs;
 the rejected alternative instead used an invented OSM prefix for a Wiki page ID.
 Current planning instructions explicitly separate article IDs from received map
 objects; exact host validation and outside-coverage uncertainty remain unchanged.
+
+On frozen `24bbff5`, photo104 established the correct physical tower by actual
+Wiki architectural text in 31.32 seconds, without REF. Seven reviewed facts
+reached canonical POI memory at 238.97 seconds; the run naturally ended at
+242.44 seconds with useful partial coverage. Independent readback verified at
+least three substantive atomic claims. One source-supported compound claim was
+incorrectly marked atomic; this remains a quality defect. Prussia preparation
+timed out, so this case does not verify Prussia text acquisition. Photo102 then
+failed at 40.25 seconds: both model answers nominated a received map road where
+the field required an allowed candidate. The host rejected it correctly; neither
+identity nor facts were accepted. Its already received camera street was correct,
+but the three-second catalogue cutoff delivered no cards. Other final cases were
+not run on this version.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates

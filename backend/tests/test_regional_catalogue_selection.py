@@ -198,7 +198,7 @@ async def test_preparation_truthful_empty_form_transport(tmp_path, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_slow_optional_preparation_has_three_second_bound_and_drains_request(tmp_path, monkeypatch):
+async def test_slow_optional_preparation_has_reader_bound_and_drains_request(tmp_path, monkeypatch):
     cancelled = asyncio.Event()
 
     async def handler(request):
@@ -208,13 +208,29 @@ async def test_slow_optional_preparation_has_three_second_bound_and_drains_reque
             cancelled.set()
 
     offline(monkeypatch, handler)
+    # Exercise actual cancellation without sleeping for the production envelope.
+    monkeypatch.setattr(prussia39, "READ_TIMEOUT_SECONDS", .1)
     obj = candidate()
     s = story(obj)
     start = time.monotonic()
     receipt = await context.prepare_regional_catalogue(SimpleNamespace(store=Cache(tmp_path / "cache")), s, [obj])
-    assert time.monotonic() - start < 3.7 and cancelled.is_set()
+    assert time.monotonic() - start < .7 and cancelled.is_set()
     assert receipt["status"] == "transport_failed" and receipt["error_code"] == "regional_preparation_wait_expired"
     assert not receipt["inventory_complete"]
+
+
+@pytest.mark.asyncio
+async def test_cold_cards_survive_old_three_second_preparation_cutoff(tmp_path, monkeypatch):
+    async def handler(request):
+        await asyncio.sleep(3.05)
+        return response(inventory())
+
+    offline(monkeypatch, handler)
+    obj = candidate()
+    receipt = await context.prepare_regional_catalogue(
+        SimpleNamespace(store=Cache(tmp_path / "cache")), story(obj), [obj])
+    assert receipt["status"] == "completed"
+    assert receipt["results"] and receipt["preparation_started"]
 
 
 @pytest.mark.asyncio

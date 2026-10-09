@@ -128,8 +128,36 @@ blocker. Causes included incomplete minimal-adapter compatibility, stale initial
 planning expectations, an obsolete text-unavailability fixture, devserver-only
 installer transport and filesystem assumptions. The targeted corrections above
 passed locally. Hosted Android checks and emulator jobs on that old version passed;
-they are not final product E2E. New candidate CI and the bounded product canary
-remain pending; these offline results establish no release PASS.
+they are not final product E2E. These offline results establish no release PASS.
+
+## Frozen `24bbff5` product evidence
+
+Photo104 established `osm:relation:3665416` by acquired Wiki architectural text
+in **31.32 s**, with no external REF. A real Live extraction and qualified
+semantic review committed seven eligible claims to the same physical POI at
+**238.97 s**; the natural useful-partial outcome completed at **242.44 s**.
+Independent own-passage and POI readback verified at least three substantive
+atomic claims: foundation date (distinct from construction), diameter, and the
+paired defensive purpose. The source's 1853/1859 construction conflict remains
+explicit. One supported construction-and-namesake claim was wrongly reviewed
+as atomic; this granularity defect remains open. Secondary heritage-status text
+does not constitute a dated 2026 registry verification.
+
+Photo102 failed at **40.25 s**, with no identity or facts. Both closed answers
+nominated a received road ID in a field restricted to candidate IDs. The map
+also contained the actual building and its address entrances; the gate correctly
+rejected the road. Prussia preparation had the correct already-received street,
+but the three-second cutoff delivered zero cards. No broader paid set followed.
+The prepared reader-budget correction preserves the existing 12-second publisher
+read envelope before model admission and passed **59 offline tests in 21.45 s**,
+including delayed cards beyond the obsolete cutoff and cancellation/draining.
+This is not a new live acceptance result.
+
+Hosted backend CI on `24bbff5` passed. Android checks passed, but instrumentation
+failed its month-old original-photo selector (one failure of 27 tests). The
+retained DocumentsUI hierarchy shows the Camera card still at the Images root;
+its exact navigation failure remains to be resolved before Android acceptance.
+There is no final five-building/backend PASS, accepted release or deployment.
 
 ## Usage and remaining acceptance
 
