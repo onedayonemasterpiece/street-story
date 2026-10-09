@@ -403,7 +403,12 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         observed_reverse = next((item for item in full_map_pool
             if (item.get('osm_type') or item.get('type')) == reverse_kind
             and str(item.get('osm_id') or item.get('id')) == str(reverse_id)), {})
-        reverse.update({key: observed_reverse[key] for key in ('members', 'physical_components',
+        # A reverse-geocoder entry and the same received OSM ID are one
+        # observed subject. Preserve its actual map tags/contour before ID
+        # deduplication; the sparse reverse entry must not erase the physical
+        # records that were shown in SOURCE/MAP and nominated for T.
+        reverse.update({key: observed_reverse[key] for key in ('tags', 'geometry', 'nodes',
+            'building_entrance_node_ids', 'members', 'physical_components',
             'identity_eligible', 'identity_ineligible_reason', 'identity_role') if key in observed_reverse})
         for item in [reverse, *map_pool]:
             osm_type = str(item.get("osm_type") or item.get("type") or "")

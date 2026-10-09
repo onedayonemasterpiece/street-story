@@ -178,3 +178,32 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
     assert 'osm:way:2' in priority['reserve_candidate_ids']
     assert len(calls) == 2 and not story.get('_identity_geometry_result')
     assert history['acquired_text_articles'][0]['text'] == receipt['articles'][0]['text']
+
+
+@pytest.mark.asyncio
+async def test_broad_early_inventory_keeps_metadata_and_page_capacity_for_model_choice(tmp_path, monkeypatch):
+    import json
+    from street_story import identity_discovery
+    from test_geometry_identity_plan import geometry_setup, geometry_decision, payload, Executor
+    service, story, active = geometry_setup(tmp_path)
+    rows = [{'article_id': f'prussia39:sid:{i}', 'canonical_url': f'https://www.prussia39.ru/sight/index.php?sid={i}'}
+        for i in range(5)]
+    async def metadata(*args, **kwargs):
+        return {'status': 'completed', 'inventory_complete': True, 'results': rows,
+            'physical_prefetch_plan': {'prefetch_article_ids': [row['article_id'] for row in rows]},
+            'query_scope': {'route': 'coordinate'}}
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Broad unscreened bodies cannot consume the page budget before the model chooses.')
+    async def generate(key, timeout, contents, config, **kwargs):
+        packet = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
+        from street_story.identity_source_selection import expand_planner_packet
+        packet = expand_planner_packet(packet)
+        assert len(packet['regional_catalogue']['results']) == 5
+        assert 'acquired_architectural_text' not in packet
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+    monkeypatch.setattr(context, 'prepare_regional_catalogue', metadata)
+    monkeypatch.setattr(context, 'acquire_architectural_pool_text', forbidden)
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = None
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'

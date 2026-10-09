@@ -411,10 +411,17 @@ async def _suggest(service, story, transcript, candidates):
             # read. A small complete inventory can be supplied whole without
             # pre-proving its physical binding or silently taking first rows.
             prefetched_ids = list(dict.fromkeys(row['article_id'] for row in regional_catalogue['results']))
-        if prefetched_ids and len(catalogue_article_ids) <= 8:
+        early_page_capacity = min(8, max(0, int(service.settings.identity_max_pages) - 3))
+        if prefetched_ids and len(catalogue_article_ids) <= early_page_capacity:
             from .identity_architectural_context import acquire_architectural_pool_text
             early_text_articles, early_text_lookup = await acquire_architectural_pool_text(
                 service, story, regional_catalogue, prefetched_ids)
+        elif prefetched_ids:
+            record_identity_event(service, story['id'], 'identity_early_text_reserved_for_selection', {
+                'received_article_count': len(catalogue_article_ids),
+                'early_page_capacity': early_page_capacity, 'selection_required': True,
+                'reason': 'preserve_pages_for_model_selected_text_and_reference',
+                'identity_established': False})
     model_source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     import io
     from PIL import Image

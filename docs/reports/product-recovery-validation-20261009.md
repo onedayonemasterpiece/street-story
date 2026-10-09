@@ -846,3 +846,44 @@ Retained evidence:
 The 11 critical requirements and acceptance manifest/deadlines are unchanged.
 The live deployment remains db0c0d08024441536a2e59f5c3c433b12c7f4189; this checkpoint
 does not claim deployment or owner acceptance.
+
+### Frozen 18a765d acceptance and targeted repairs
+
+`18a765d9f3670fbfa37a89bdfd289f98e79e688b` passed the complete local backend
+suite (2630 passed, 2 skipped), hosted backend CI, Android build/unit checks and
+Android emulator. Its mandatory cold acceptance did **not** pass:
+
+| SOURCE | Identity / facts | Terminal time | Actual blocker |
+| --- | --- | ---: | --- |
+| 104 | none / 0 | 34.152 s | Five broad prefetched publisher bodies plus catalogue used all six page units before the correctly nominated Wiki article could be read. |
+| 132 | none / 0 | 180.050 s | No accepted identity response; repeated real Google admission refusals, native attempt remained created/not_sent. |
+| 102 | none / 0 | 180.063 s | No accepted identity response; real quota/admission failures and terminated text fallback attempts. |
+| 111 | none / 0 | 169.078 s | Closed native G was inconclusive; source search progressed, with one original source-selection request UNKNOWN; page envelope then exhausted. |
+| 130 | none / 0 | 180.431 s | Closed native model nominated a received physical body; sparse reverse entry had erased that same ID's real building tags/contour, so T packet preparation raised ValueError before a T send. |
+
+No wrong acceptance occurred; zero identity/facts is not quality PASS. Other
+21 SOURCEs are explicitly NOT_RUN in this integrator acceptance, not claimed
+method coverage. G/T own corpus coverage separately. The native account-only
+quota observation changed from 0% remaining at18:50Z to100% at19:27Z; this is not
+proof of another transport's allowance and does not rewrite the failed attempts.
+
+Two evidence-backed seam repairs follow this frozen run: eager whole-inventory
+TEXT must leave page capacity for a model-selected article and reference; when
+capacity is insufficient, all catalogue metadata remains available for model
+selection rather than taking arbitrary first rows. Exact reverse/OSM ID dedup
+now retains received raw tags, contour and verified entrance membership. No
+Nominatim category or distance becomes physical proof. The changed seams passed
+81 checks; the initial isolated page-budget check passed65.
+
+Actual closed130 replay preserves the original SOURCE SHA and model response
+SHA. Before repair, T preparation reproduces
+`unobserved_physical_subject_in_semantic_link_inventory`; after repair it supplies
+the same acquired SID1384 to T and preserves the model's one active body plus203
+reserve bodies. No T inference, identity or fact is claimed by this replay.
+Evidence: `real-130-T-handoff-replay.json` in the retained task directory.
+
+Peer deliveries checked at this milestone: T249 f95d271 and G250 e69d6d0.
+Their standalone shortlist adapters remain method experiments; the integrated
+product uses its existing joint reply/visual feedback, preserving the same model
+owned priority semantics without introducing a second orchestrator or additional
+mandatory T certificate. No wholesale branch import or peer checkout edit.
