@@ -8,7 +8,7 @@ import logging
 from types import SimpleNamespace
 from weakref import WeakValueDictionary
 
-from . import review_packets
+from . import headless_review_quotes, review_packets
 from .live import FUNCTIONS
 from .service import ConflictError, canonical
 
@@ -56,8 +56,17 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'when support cannot resolve them, without declaring historical claims false. Check the exact '
       'physical subject: building versus institution, individual part versus larger complex; an '
       'institution\'s founding date is not automatically the building\'s construction date. '
+      'For basis_quotes prefer the exact quote_ref label on a chosen own evidence slice in '
+      'quote_catalog. Copy its label unchanged; the host resolves it to that literal passage. '
+      'A label proves only passage addressing, never semantic support: inspect its passage and '
+      'still check one atomic claim, every qualifier and exact physical subject. Never use another '
+      'fact\'s label or unselected evidence. Alternatively copy a short unchanged literal quotation. '
+      'Example: source "Built in 1859; named after General A" cannot be quoted as "Built; named '
+      'after A": that is a paraphrase. Do not accept a candidate combining independently selectable '
+      'construction and namesake claims, or a current use inferred from an undated currently. '
+      'Return repair_needed or insufficient when the semantic checks fail even with a valid label. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v2:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v3:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:
@@ -187,7 +196,7 @@ class HeadlessFactReview:
                     LOG.info('street_story_background_fact_review_fallback story_id=%s unit_id=%s model_id=%s reason=malformed',
                              job['story_id'], unit, client.model_id)
                     continue
-                self._put(job, unit, {'phase': 'result', 'args': args, 'route': role, 'model_id': client.model_id})
+                self._put(job, unit, {**frozen, 'phase': 'result', 'args': args, 'model_id': client.model_id})
                 return args
             except asyncio.CancelledError:
                 self._put(job, unit, {**frozen, 'phase': 'unknown'})
@@ -388,8 +397,9 @@ class HeadlessFactReview:
                 if self.harness._snapshot(job, run_id, control_revision) is None:
                     continue
                 try:
+                    resolved_args = headless_review_quotes.resolve_quotes(packet, args)
                     value = await self.harness.adapter.execute_tool(session, {
-                        'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': args})
+                        'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': resolved_args})
                     if value.get('eligible_count') is not None:
                         committed += 1
                         self._put(job, unit, {'phase': 'committed', 'packet_ref': packet['packet_ref']})
@@ -430,6 +440,10 @@ class HeadlessFactReview:
                 packet = review_packets.read(self.harness.adapter, session, packet['next_args'])
                 items.extend(packet['items'])
             packet = {**packet, 'items': items}
+            if saved.get('phase') == 'result' and saved.get('frozen_packet'):
+                packet = saved['frozen_packet']
+            elif saved.get('phase') != 'result':
+                packet = headless_review_quotes.with_quote_catalog(packet)
         except ConflictError:
             self._put(job, unit, {'phase': 'stale'})
             return None, unit, saved
