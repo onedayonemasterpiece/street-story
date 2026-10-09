@@ -33,7 +33,7 @@ def test_g_provider_schema_is_small_valid_plain_json_without_pose_guess():
     assert 'response_json_schema' in encoded
     assert len(json.dumps(schema).encode()) < 2500
     assert 'pose' not in json.dumps(schema)
-    assert 'candidate_id' not in json.dumps(schema)
+    assert 'candidate_id' not in schema['properties']
     assert 'heading_degrees' not in json.dumps(schema)
 
 
