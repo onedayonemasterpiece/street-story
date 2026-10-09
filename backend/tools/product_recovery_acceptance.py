@@ -435,6 +435,39 @@ def read_case(service, case, item):
     return case
 
 
+def stop_wrong_physical_case(service, case, item):
+    """Stop acceptance spending after a report-only object expectation fails.
+
+    This sends ordinary Stop with the current SOURCE/generation fence, never a
+    correct address, candidate ID or repair hint to the runtime/model.
+    """
+    if (case.get('operator_stopped') or (case.get('identity') or {}).get('status') != 'match'
+            or (case.get('gates') or {}).get('correct_physical_object') is not False):
+        return False
+    expected = item.get('expected_physical_ids') or [item.get('expected_physical_id')]
+    expected = [identifier for identifier in expected if identifier]
+    if not expected:
+        return False
+    with service.store.tx() as db:
+        row = service._story_row(db, case['story_id'])
+        research = json.loads(row['research_json'] or '{}')
+        identity = research.get('visual_identity') or {}
+        if (row['photo_sha256'] != item['sha256'] or identity.get('status') != 'match'
+                or identity.get('candidate_id') in expected):
+            return False
+        body = {'action': 'stop', 'purpose': 'facts', 'expected_photo_sha256': row['photo_sha256'],
+            'expected_identity_generation': int(research.get('identity_generation') or 0),
+            'expected_control_revision': int(research.get('research_control_revision') or 0)}
+    from street_story.service import ConflictError
+    try:
+        service.mutate_research_control(case['story_id'],
+            'acceptance-wrong-object:' + digest({'story_id': case['story_id'], **body}), body)
+    except ConflictError:
+        return False  # A newer SOURCE/control must not be stopped by this readback.
+    case['acceptance_stop_reason'] = 'wrong_physical_object'
+    return True
+
+
 def apply_hard_cap(service, story_id):
     from street_story.research_budget import finish_attempt
     from street_story.research_control import research_stopped
@@ -550,6 +583,8 @@ async def run(args):
                 while True:
                     apply_hard_cap(service, case['story_id'])
                     read_case(service, case, item)
+                    if stop_wrong_physical_case(service, case, item):
+                        read_case(service, case, item)
                     report['sdk_accounting'] = summarize_sdk_journal(journal_path)
                     save(report_path, report)
                     save(output/f'case-{item["message_id"]}.json', case)

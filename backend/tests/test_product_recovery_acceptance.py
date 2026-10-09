@@ -348,6 +348,46 @@ def test_operator_stop_after_identity_ends_harness_without_acceptance_or_deadlin
     assert harness.read_case(svc, case, item())['total_elapsed_s'] == 290
 
 
+def test_wrong_object_stops_only_acceptance_spending_without_runtime_answer(tmp_path):
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 210
+    wrong_expectation = {**item(), 'expected_physical_id': 'osm:way:other-report-only'}
+    with svc.store.connection() as db:
+        wrong_expectation['sha256'] = svc._story_row(db, case['story_id'])['photo_sha256']
+    harness.read_case(svc, case, wrong_expectation)
+    calls = []
+    ordinary_stop = svc.mutate_research_control
+
+    def observed(story_id, key, body):
+        calls.append(body)
+        return ordinary_stop(story_id, key, body)
+
+    svc.mutate_research_control = observed
+    assert harness.stop_wrong_physical_case(svc, case, wrong_expectation)
+    result = harness.read_case(svc, case, wrong_expectation)
+    assert result['status'] == 'OPERATOR_STOPPED' and result['terminal']
+    assert result['acceptance_stop_reason'] == 'wrong_physical_object'
+    assert not result['gates']['correct_physical_object']
+    assert 'other-report-only' not in json.dumps(calls)
+    assert not harness.stop_wrong_physical_case(svc, case, wrong_expectation)
+
+
+@pytest.mark.parametrize('scenario', ['correct', 'unknown_truth', 'hypothesis', 'changed_source'])
+def test_acceptance_stop_never_applies_to_correct_unaccepted_unknown_or_stale_case(tmp_path, scenario):
+    svc, _now, case = readback_fixture(tmp_path)
+    entry = item()
+    harness.read_case(svc, case, entry)
+    if scenario == 'unknown_truth':
+        entry.pop('expected_physical_id')
+    elif scenario == 'hypothesis':
+        case['identity']['status'] = 'uncertain'
+    elif scenario == 'changed_source':
+        entry['sha256'] = 'a' * 64
+    if scenario != 'correct':
+        case['gates']['correct_physical_object'] = False
+    assert not harness.stop_wrong_physical_case(svc, case, entry)
+
+
 @pytest.mark.parametrize('field,value', [('photo_sha256', 'other-photo'), ('identity_generation', 77)])
 def test_stale_operator_stop_does_not_terminate_current_harness(tmp_path, field, value):
     from street_story.research_control import stop_research
