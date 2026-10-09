@@ -60,7 +60,10 @@ def literal_evidence_inventory(story, candidates, articles, *, candidate_ids=Non
                 'candidate_id':cid,
                 'entry_id':address['mapped_entry_id'],
                 'kind':'observed_OSM_postal_entry',
-                'literal_value':dict(address['address']),
+                'literal_value':{key:address['address'][key] for key in
+                    ('city','street','house_number','town','village','state','country')
+                    if isinstance(address['address'].get(key),str)
+                    and address['address'][key].strip()},
                 'provenance':('osm_own_building_postal_tags'
                     if address['mapped_entry_id'] == cid
                     else 'verified_osm_closed_way_entrance_membership')}
