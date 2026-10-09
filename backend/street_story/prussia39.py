@@ -26,6 +26,7 @@ from .article_media import MAX_PAGE_BYTES, cached_public_page, resolve_public
 BASE = 'https://www.prussia39.ru'
 DATABASE = BASE + '/sight/database.php'
 COORDINATES = BASE + '/sight/map_coord.php'
+TITLE_SEARCH = BASE + '/search.php'
 COOLDOWN = 'prussia39:transport-cooldown-v1'
 READ_TIMEOUT_SECONDS = 12.0
 _LOCKS = weakref.WeakKeyDictionary()
@@ -201,6 +202,61 @@ def parse_address(soup, page_url):
             'inventory_complete': total == len(results) and not pages}
 
 
+def parse_title_search(soup, page_url):
+    """Observed regional site name/keyword search, not a building verdict.
+
+    A search hit is a *publisher* card with its own modern postal scope,
+    not an OSM object. Only real result-row links and their literal article
+    identifiers are selected; thumbnail/gallery links and navigation do not
+    create results.
+    """
+    results, seen = [], set()
+    for link in soup.find_all('a', href=True):
+        if link.get_text(' ', strip=True).casefold() != 'подробнее о достопримечательности':
+            continue
+        try:
+            card = _card(link)
+        except (ValueError, TypeError):
+            continue
+        if card['sid'] in seen:
+            continue
+        cell = link.find_parent('td')
+        if cell is None or not re.search(
+                r'text-align\s*:\s*justify', cell.get('style', ''), re.I):
+            continue
+        title = cell.find('b')
+        address = cell.find('p', style=lambda value: isinstance(value, str)
+            and re.search(r'font-size\s*:\s*0?8pt', value, re.I) is not None)
+        if title is None:
+            continue
+        card['title'] = title.get_text(' ', strip=True)[:200]
+        card['address_text'] = address.get_text(' ', strip=True)[:360] if address else ''
+        whole = cell.get_text(' ', strip=True)
+        card['annotation'] = whole.replace(card['title'], '', 1).replace(
+            card['address_text'], '', 1).replace('Подробнее о достопримечательности', '').strip()[:400]
+        results.append(card)
+        seen.add(card['sid'])
+    # Search page inventory is scoped to the concrete received site search.
+    # An empty page never means the requested building does not exist.
+    if not results and not any('поиск' in str(t).casefold()
+            for t in [soup.title.get_text(' ', strip=True) if soup.title else '',
+                      soup.get_text(' ', strip=True)[:350]]):
+        raise ValueError('title_search_response_not_recognized')
+    pagination = []
+    for link in soup.find_all('a', href=True):
+        url = urljoin(page_url, link['href'])
+        parsed = urlsplit(url)
+        if (parsed.hostname in {'www.prussia39.ru', 'prussia39.ru'}
+                and parsed.path == '/search.php'
+                and parse_qs(parsed.query).get('p') and url != page_url):
+            pagination.append(url)
+    return {'results':results, 'total_count':len(results),
+        'pagination_urls':list(dict.fromkeys(pagination)),
+        'inventory_complete':not bool(pagination),
+        'inventory_scope':'observed_publisher_title_search_page',
+        'received_row_count':len(results)}
+
+
 def parse_coordinates(soup):
     arrays = {}
     for script in soup.find_all('script'):
@@ -279,6 +335,22 @@ class Prussia39Adapter:
         if name:
             params['text_n'] = _literal(name)
         return DATABASE + '?' + urlencode(params, encoding='cp1251', errors='strict')
+
+    @staticmethod
+    def title_url(value):
+        query = _literal(value)
+        if not 2 <= len(query) <= 160:
+            raise ValueError('title_query_length_invalid')
+        return TITLE_SEARCH + '?' + urlencode(
+            {'text': query, 'search_obj': '2'}, encoding='cp1251', errors='strict')
+
+    async def title_search(self, query):
+        """One literal model-nominated name/architectural keyword lookup."""
+        try:
+            url = self.title_url(query)
+        except (ValueError, UnicodeError) as exc:
+            return {'status':'not_sent', 'error_code':str(exc), 'results':[]}
+        return await self._read(url, 'title', original_query={'text':str(query)})
 
     async def address_search(self, city, address, *, name=''):
         try:
@@ -391,7 +463,8 @@ class Prussia39Adapter:
                 soup, encoding = _decode(raw)
                 receipt['encoding'] = encoding
                 parsed = (parse_article(soup) if kind == 'article' else parse_coordinates(soup)
-                          if kind == 'coordinate' else parse_address(soup, final))
+                          if kind == 'coordinate' else parse_title_search(soup, final)
+                          if kind == 'title' else parse_address(soup, final))
                 receipt.update(parsed, status='completed' if kind == 'article' or parsed['results'] else 'completed_empty')
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
