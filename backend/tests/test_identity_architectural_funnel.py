@@ -401,3 +401,84 @@ def test_independent_T_unknown_or_only_one_body_never_creates_new_authority():
     packet['candidate_ids']=ids[:1]
     assert project_independent_T_nomination(packet,decision,
         source_sha256=receipt['original_source_sha256']) is None
+
+
+
+def test_T_projects_into_existing_Codex_research_priority_not_second_planner():
+    story,candidates,decision,receipt,g=_inputs()
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    result=close_t_g_funnel(prepared,_t_result(),
+        source_sha256=receipt['original_source_sha256'])
+    native=to_existing_research_priority(result,receipt['articles'])
+    assert native['candidate_ids']==['osm:way:7']
+    assert native['next_step']=='targeted_search'
+    assert native['next_question'].startswith('Which photographed body')
+    assert native['contradictions']==[{
+        'candidate_id':'osm:way:8',
+        'reason':'Visible second body has a different portal pattern',
+        'conditions':'Assumes SOURCE shows full lower portal',
+        'scope':'facade','source_url':'https://archive.example/physical-building'}]
+    assert set(native)=={'candidate_ids','reason','next_question','next_step',
+        'contradictions'}
+
+
+def test_unaccepted_T_does_not_export_conditional_negative_as_global_blacklist():
+    story,candidates,decision,receipt,g=_inputs()
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    provisional=close_t_g_funnel(prepared,_t_result(effect='confirmed'),
+        source_sha256=receipt['original_source_sha256'])
+    native=to_existing_research_priority(provisional,receipt['articles'])
+    assert native['candidate_ids']==['osm:way:7']
+    assert native['contradictions']==[]
+    assert provisional['conditional_T_research_priority_not_identity'] is True
+
+
+def test_uncited_T_model_difference_is_not_exported_as_architecture_refutation():
+    story,candidates,decision,receipt,g=_inputs()
+    prepared=prepare_t_g_funnel(g,candidates,receipt['articles'],
+        source_sha256=receipt['original_source_sha256'],
+        g_source_sha256=receipt['original_source_sha256'])
+    model=_t_result()
+    model['explicitly_contradicted'][0]['article_ids']=[]
+    narrowed=close_t_g_funnel(prepared,model,
+        source_sha256=receipt['original_source_sha256'])
+    assert narrowed['t_explicit_contradictions'][0]['review_state']==(
+        'uncited_model_difference_not_refutation')
+    assert to_existing_research_priority(narrowed,receipt['articles'])['contradictions']==[]
+    assert 'osm:way:8' in narrowed['reserve_physical_candidate_ids']
+
+
+def test_G_confirmed_without_text_and_G_nohelp_with_text_do_not_block_normal_product():
+    story,candidates,decision,receipt,g=_inputs()
+    g.update(status='accepted_identity_proposal',accepted=True,accepted_id='osm:way:7')
+    no_articles={'original_source_sha256':receipt['original_source_sha256'],
+        'articles':[]}
+    accepted=prepare_architectural_pool(story,candidates,no_articles,g_funnel=g,
+        g_source_sha256=receipt['original_source_sha256'])
+    assert accepted['skip_T'] is True
+    assert accepted['g_handoff']['stage']=='already_accepted_G'
+    g.update(status='no_useful_reduction',accepted=False,active=[],
+        reserve=[{'candidate_id':cid} for cid in
+            ('osm:way:7','osm:way:8','osm:way:9','osm:way:10')])
+    independent=prepare_architectural_pool(story,candidates,receipt,
+        g_funnel=g,candidate_ids=['osm:way:7','osm:way:8'],
+        g_source_sha256=receipt['original_source_sha256'])
+    assert independent.get('skip_T') is not True
+    assert independent['candidate_ids']==['osm:way:7','osm:way:8']
+    assert independent['t_g_funnel_context'] is None
+
+
+def test_no_actual_architectural_text_yields_reversible_G_partial_value_and_image_route():
+    story,candidates,decision,receipt,g=_inputs()
+    empty={'original_source_sha256':receipt['original_source_sha256'],
+        'articles':[]}
+    result=prepare_architectural_pool(story,candidates,empty,g_funnel=g,
+        g_source_sha256=receipt['original_source_sha256'])
+    assert result['skip_T'] is True
+    assert result['reason']=='no_acquired_architectural_text'
+    assert result['g_handoff']['original_active_ids']==['osm:way:7','osm:way:8']
+    assert result['next_step']=='existing_images_or_expanded_publisher_search'
