@@ -627,7 +627,9 @@ async def test_restart_observes_exact_addressed_review_without_replacing_its_pac
     async def run(story, received_role, received_unit, invoke, *, client):
         assert received_role == role and received_unit == unit
         return await invoke({'phase': 'submitted', 'session_id': 'ses_original', 'message_id': 'msg_original'})
-    svc.providers.research = SimpleNamespace(run=run)
+    def fresh_order(*_args, **_kwargs):
+        pytest.fail('Changed cold-start latency must never reorder an original addressed review')
+    svc.providers.research = SimpleNamespace(run=run, order_fact_routes=fresh_order)
     monkeypatch.setattr(engine, '_qualified_routes', lambda available=True: [route])
     committed = await engine.run(job, RUN, 0)
     if case in {'missing_message', 'changed_route'}:

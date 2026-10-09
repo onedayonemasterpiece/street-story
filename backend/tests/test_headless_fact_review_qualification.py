@@ -82,6 +82,23 @@ def test_matching_existing_text_proof_remains_available_without_live_proof():
     assert engine([live, text], [proof(text)])._qualified_routes() == [text]
 
 
+def test_timing_metadata_cannot_qualify_or_rebind_review_route():
+    selected = route('facts')
+    entry = proof(selected)
+    entry.update(qualification_sha256='a' * 64, qualification_review_timing={
+        'source_sha256': 'a' * 64, 'elapsed_ms': 34284, 'operation': 'semantic_fact_review',
+        'phase': 'completed', **{k: selected[k] for k in ('provider_id', 'model_id', 'endpoint')},
+        'directory': selected['client'].directory})
+    reviewer = engine([selected], [entry])
+    decorated = reviewer._qualified_routes()
+    assert decorated[0]['review_latency_hint'] == entry['qualification_review_timing']
+    assert 'review_latency_hint' not in selected  # No shared pool/client mutation.
+    entry['qualification_review_timing']['source_sha256'] = 'b' * 64
+    assert reviewer._qualified_routes() == [selected]
+    entry['own_passages_verified'] = False
+    assert reviewer._qualified_routes() == []
+
+
 def test_live_first_extraction_and_qualified_text_review_use_same_existing_pool(tmp_path):
     service, _, _, _ = make_service(tmp_path)
     provider = object.__new__(ProductResearchAdapter)

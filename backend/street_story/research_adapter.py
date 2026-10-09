@@ -865,7 +865,8 @@ class ProductResearchAdapter:
 
         Receipts are scheduling evidence, never qualification or permission to
         resend. Original-operation recovery bypasses this ordering entirely.
-        With no measured history the existing rotation remains the tie-breaker.
+        A verified review qualification timing is a cold-start hint only; actual
+        same-stage dispatch history overrides it. Rotation breaks unmeasured ties.
         """
         if not routes:
             return routes
@@ -910,14 +911,25 @@ class ProductResearchAdapter:
                 # Time spent on closed failures is part of the expected time
                 # to a useful completion, not a successful fast response.
                 expected = sum(durations) / successes if successes else math.inf if durations else None
+                if expected is None and review:
+                    hint = route.get('review_latency_hint') or {}
+                    elapsed = hint.get('elapsed_ms')
+                    if (hint.get('operation') == 'semantic_fact_review' and hint.get('phase') == 'completed'
+                            and all(hint.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                            and hint.get('directory') == getattr(route['client'], 'directory', None)
+                            and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+                            and math.isfinite(elapsed) and elapsed > 0):
+                        expected = elapsed / 1000
                 observations.append((route, expected, outstanding, len(durations)))
         measured = [expected for _, expected, _, _ in observations if expected is not None and math.isfinite(expected)]
         if not measured:
             return rotated
         neutral = median(measured)
         ranked = sorted(observations, key=lambda item: (neutral if item[1] is None else item[1]) * (item[2] + 1))
-        LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s',
-                 'review' if review else 'extract', ranked[0][0]['model_id'], ranked[0][3], ranked[0][2], ranked[0][1])
+        basis = ('dispatch_receipts' if ranked[0][3] else
+                 'qualification_receipt' if ranked[0][1] is not None else 'unmeasured')
+        LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s latency_basis=%s',
+                 'review' if review else 'extract', ranked[0][0]['model_id'], ranked[0][3], ranked[0][2], ranked[0][1], basis)
         return [route for route, _, _, _ in ranked]
 
     def _fact_pool_receipts(self, story, unit):

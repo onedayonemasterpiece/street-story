@@ -11,6 +11,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -1188,7 +1189,10 @@ def validate_fact_semantic_pool(caches, evidence, text):
                 or not route.get('qualification_sha256')
                 or proofs.get(path) != route['qualification_sha256']):
             raise DeployError('fact semantic qualification incomplete')
-        report = json.loads(Path(path).read_text())
+        raw_report = Path(path).read_bytes()
+        if hashlib.sha256(raw_report).hexdigest() != route['qualification_sha256']:
+            raise DeployError('fact semantic qualification evidence changed')
+        report = json.loads(raw_report)
         receipt = report.get('receipt') or {}
         if (report.get('qualified') is not True or report.get('phase') != 'completed'
                 or report.get('model_id') != model or report.get('provider_id') != 'opencode'
@@ -1196,6 +1200,23 @@ def validate_fact_semantic_pool(caches, evidence, text):
                 or not all(report.get(flag) is True for flag in flags)
                 or receipt.get('phase') != 'completed' or receipt.get('model_id') != model):
             raise DeployError('fact semantic qualification receipt incomplete')
+        # Export only a measured cold-start scheduling hint from the already
+        # verified review receipt. Product scheduling never opens receipt paths.
+        # Extraction timings and externally supplied hints cannot substitute.
+        route.pop('qualification_review_timing', None)
+        elapsed = receipt.get('elapsed_ms')
+        result = receipt.get('result') or {}
+        if (receipt.get('provider_id') == route['provider_id'] and receipt.get('role') == 'facts'
+                and (receipt.get('isolation') or {}).get('directory') == route['directory']
+                and isinstance(result, dict) and result.get('packet_ref')
+                and isinstance(result.get('decisions'), list) and result['decisions']
+                and result.get('relations_complete') is True
+                and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+                and math.isfinite(elapsed) and elapsed > 0):
+            route['qualification_review_timing'] = {
+                'operation': 'semantic_fact_review', 'phase': 'completed', 'elapsed_ms': elapsed,
+                'source_sha256': route['qualification_sha256'],
+                **{key: route[key] for key in ('provider_id', 'model_id', 'endpoint', 'directory')}}
         seen.add(model)
 
 

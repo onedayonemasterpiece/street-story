@@ -87,12 +87,22 @@ class HeadlessFactReview:
         proof = self.service.store.cache_get('fact-semantic-verification-v1') or {}
         entries = proof.get('routes') or []
         routes = build() if callable(build) else []
-        return [route for route in routes if route.get('qualified') and route.get('endpoint')
-            and (not available or route['available']) and any(isinstance(entry, dict)
+        selected = []
+        for route in routes:
+            if not (route.get('qualified') and route.get('endpoint') and (not available or route['available'])):
+                continue
+            entry = next((entry for entry in entries if isinstance(entry, dict)
                 and all(entry.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
                 and (not entry.get('directory') or entry['directory'] == route['client'].directory)
                 and all(entry.get(key) is True for key in ('schema_verified', 'own_passages_verified',
-                    'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified')) for entry in entries)]
+                    'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified'))), None)
+            if entry is not None:
+                timing = entry.get('qualification_review_timing')
+                if (isinstance(timing, dict) and timing.get('source_sha256')
+                        and timing['source_sha256'] == entry.get('qualification_sha256')):
+                    route = {**route, 'review_latency_hint': timing}
+                selected.append(route)
+        return selected
 
     def _result_route_qualified(self, saved):
         identity = saved.get('route_identity')

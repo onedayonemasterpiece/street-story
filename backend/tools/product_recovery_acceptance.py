@@ -486,6 +486,8 @@ async def run(args):
         path = Path(evidence['path'])
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
             raise ValueError('Provider qualification evidence changed')
+    installer.validate_fact_semantic_pool(qualification['caches'], qualification['evidence'],
+        qualification['caches'].get('research-text-verification-v1') or {})
     frozen = {'policy': 'product-recovery-acceptance-v1', 'source_sha': sha,
         'manifest_sha256': manifest_digest, 'environment_sha256': environment_digests,
         'qualification_sha256': digest(qualification), 'caps_from_upload': CAPS,
