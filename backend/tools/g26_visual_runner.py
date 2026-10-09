@@ -228,7 +228,10 @@ def prepare_model_detail(cid, base, initial_input, initial_packet, *, model=MODE
            source['geographic_basis']=='owner_approximate_hint' else {}),
        '_camera_hints':hints}
     began=time.monotonic()
-    view=model_nominated_detail(story,model,initial_packet)
+    prior_host=first/'result.json'
+    host_result=json.loads(prior_host.read_text()) if prior_host.is_file() else {}
+    view=model_nominated_detail(story,model,initial_packet,
+        prior_host_unaccepted=(host_result.get('accepted') is False))
     if view is None:
         return None,None
     img=base/'map.detail.png'
