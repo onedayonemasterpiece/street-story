@@ -923,3 +923,56 @@ schema rejection, without logging its message or request payload.
 An isolated exact-aa344e0 source snapshot with this repair passed 95 affected
 checks. Two final checks in the actual checkout passed, including the added
 closed-failure observation/no-resend regression and SOURCE/G→T priority handoff. Evidence is retained in the managed streaming-funnel task directory.
+
+
+### Frozen 054f05f and common transport repairs
+
+All five originals completed on `054f05fff81fcff5df2ae0301609fb039661f6b4`,
+with the unchanged manifest and 180/300/480-second limits.
+
+| SOURCE | Identity / eligible facts | Time from upload | Result |
+| --- | --- | --- | --- |
+| 104 | Correct osm:relation:3665416 / 6 | identity102.063s; first381.359s; terminal480.116s | FAIL: late first fact / research deadline |
+| 130 | none / 0 | terminal181.013s | FAIL: original Google SOURCE/MAP UNKNOWN after transport timeout |
+| 132 | none / 0 | terminal180.524s | FAIL: original Google SOURCE/MAP UNKNOWN after transport timeout |
+| 102 | none / 0 | terminal104.768s | FAIL: malformed closed proof; no physical identity accepted |
+| 111 | none / 0 | terminal180.697s | CONDITIONAL_CONTEXT_AVAILABLE; not release PASS |
+
+104's actual compact T response now completes without HTTP400 and accepts the
+correct physical body independently of inconclusive G. This supports the prior
+schema transport hypothesis; it does not make the earlier closed failures PASS.
+Its actual 12-fact review packet measured127312 UTF-8 wire bytes. Live refused
+capacity, then two text fallbacks timed out before six facts were projected.
+A readonly replay measured one whole fact at19364bytes. The batching repair
+therefore respects the existing24k preferred Live packet target, preserving whole
+candidate/passages and actual capacity for a single large fact. Semantic support,
+qualifiers and POI projection remain model decisions in the existing review queue.
+
+Native strict SOURCE/MAP serialization previously required every property of an
+exclusive source_quote/source_span_ref citation, making that positive evidence
+form unsatisfiable. New requests select the already issued span-reference form
+for transport; complete host validation, literal SHA-bound resolution and frozen
+old readbacks remain unchanged. Neither this change nor batching rewrites any
+UNKNOWN or closed model response.
+
+T249 delivery572706cf49491167aabfccdb066ca44d2818d798 and unchanged
+G250e69d6d0 were selectively reviewed. Only observed publisher image-link
+metadata was imported: the actual cached HTML supplies model-visible URLs,
+without another HTTP request, semantic URL filtering or a visual identity claim.
+No standalone method orchestrator, deterministic postal selection or extra
+mandatory T schema was imported.
+
+Isolated affected checks: fact/review123 passed; JSON-mode fixture alignment35
+passed; Native transport/literal-span36 passed; publisher/media/T117 passed.
+An initial mixed-checkout media run used old SDK-shape assertions and failed2
+fixtures; the corrected isolated source/test run passed117. Hosted054 backend
+failed9 stale SDK assertions, now updated to inspect the complete issued JSON-mode
+instruction; Android build/checks and emulator both passed054. Earlier aa emulator
+failure was a Pixel Launcher ANR overlay, confirmed from its screenshot/hierarchy.
+No Android selector or acceptance requirement was weakened.
+
+The following candidate requires its own unchanged five-case cold acceptance and
+exact-SHA hosted checks. The live deployment remainsdb0c0d0; no owner acceptance
+or deployment is claimed. Retained evidence includes cold-054f05f,
+funnel-evidence-054f05f.json, review-104-sizing-replay.json, review.xml,
+review-identity.xml, native-repair.xml and media-final.xml.

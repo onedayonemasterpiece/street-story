@@ -252,3 +252,56 @@ async def test_publisher_address_21_is_not_silently_inferred_as_22(tmp_path):
         page = await Prussia39Adapter(Cache(tmp_path / 'cache'),http,resolver=resolver).article(52)
     assert page['address_text'].endswith('Гастелло, 21')
     assert page['address_provenance'] == 'publisher_article_metadata_table'
+
+
+def test_received_publisher_html_image_links_are_observed_only_and_domain_bound():
+    from bs4 import BeautifulSoup
+    from street_story.prussia39 import parse_article
+    html_body=(
+        '<html><head><title>Real source text</title></head><body>'
+        '<td style="text-align:justify">Общий вид жилого дома.'
+        '<a href="/photos/subject-1.jpg">Полная фотография</a>'
+        '<img src="/photos/subject-2.png"/>'
+        '<a href="https://example.org/other-building.jpg">Other</a>'
+        '<img src="javascript:alert(1)"/>'
+        '<img src="https://www.prussia39.ru:invalid/photo.jpg"/>'
+        '</td></body></html>')
+    parsed=parse_article(BeautifulSoup(html_body,'html.parser'))
+    assert parsed['source_image_links']==[
+        'https://www.prussia39.ru/photos/subject-1.jpg',
+        'https://www.prussia39.ru/photos/subject-2.png']
+    assert parsed['text']
+    assert all(u.startswith('https://www.prussia39.ru/') for u in parsed['source_image_links'])
+
+
+
+@pytest.mark.asyncio
+async def test_already_read_architectural_article_retains_real_image_urls_without_fetch(tmp_path):
+    requests=[]
+    source=html(
+        '<table><tr><td style="text-align:justify">'
+        'На фасаде сохранились три фигурных эркера и портал.'
+        '<img src="images/facade.jpg"/>'
+        '<a href="/sight/photos/portal.png">Портал</a>'
+        '<a href="https://evil.invalid/exterior.jpg">Неизвестный внешний источник</a>'
+        '<img src="//evil.invalid/tracker.png"/>'
+        '</td></tr></table>')
+    async def handler(request):
+        requests.append(request)
+        return response(source)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        adapter=Prussia39Adapter(Cache(tmp_path/'cache'),http,resolver=resolver)
+        url='https://www.prussia39.ru/sight/index.php?sid=9837'
+        receipt=await adapter.article(url)
+        again=await adapter.article(url)
+    assert len(requests)==1
+    assert receipt['status']=='completed'
+    assert again['cache_hit'] is True
+    assert receipt['raw_body_sha256_verified'] is True
+    assert receipt['source_image_links']==[
+        'https://www.prussia39.ru/sight/images/facade.jpg',
+        'https://www.prussia39.ru/sight/photos/portal.png']
+    assert 'эркера' in receipt['text']
+    assert receipt['source_sha256']==hashlib.sha256(source).hexdigest()
+    # The image URLs are *source leads*, never proof they depict SOURCE.
+    assert 'visual_reference_verified' not in receipt

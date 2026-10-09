@@ -221,7 +221,9 @@ async def test_unconfirmed_selected_card_reaches_existing_t_even_when_search_cov
         assert "initial_geometry_rejection_not_identity" in contents[-1]
         assert '"physical_binding_claimed":false' in contents[-1]
         assert TEXT in contents[-1]
-        assert "first_wave_hypotheses" not in config.response_json_schema["properties"]
+        assert config.response_json_schema is None
+        issued = json.loads(config.system_instruction.split("\n", 1)[1])
+        assert "first_wave_hypotheses" not in issued["properties"]
         assert "_identity_geometry_result" not in s
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         return SimpleNamespace(text=json.dumps(with_received_physical_links(decision, contents)))

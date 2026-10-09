@@ -388,7 +388,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         acquired.append({key: copy.deepcopy(article[key]) for key in (
             'article_id', 'url', 'title', 'address', 'address_provenance', 'coordinates', 'scope',
             'binding_basis', 'physical_binding_claimed', 'source_sha256', 'text_sha256', 'text',
-            'lookup_candidate_ids', 'card_variants') if key in article})
+            'lookup_candidate_ids', 'card_variants', 'source_image_links') if key in article})
     if prior:
         nominations.extend(prior['candidate_ids'])
     ids = list(dict.fromkeys(nominations))

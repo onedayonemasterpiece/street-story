@@ -208,9 +208,23 @@ class NativeVisionProvider:
             host_contract = deepcopy(schema)
             pointer_rule = 'Exact received ID or @N from MAP label N. Never construct an OSM ID from N.'
             pointer_rule_used = False
+            citation_ref_used = False
             def strict(node):
-                nonlocal pointer_rule_used
+                nonlocal pointer_rule_used, citation_ref_used
                 if isinstance(node, dict):
+                    properties = node.get('properties', {})
+                    # Requiring every property would make these mutually
+                    # exclusive citation forms impossible. Native chooses an
+                    # issued literal span pointer; the complete host contract
+                    # and immutable span resolver still validate the evidence.
+                    if (isinstance(properties, dict)
+                            and {'source_quote', 'source_span_ref'} <= properties.keys()
+                            and node.get('oneOf') == [
+                                {'required': ['source_quote']}, {'required': ['source_span_ref']}]
+                            and properties['source_span_ref'].get('enum')):
+                        properties.pop('source_quote')
+                        node.pop('oneOf')
+                        citation_ref_used = True
                     if node.get('description') == pointer_rule:
                         # One instruction conveys this identical annotation
                         # for every pointer; validation constraints stay intact.
@@ -248,11 +262,15 @@ class NativeVisionProvider:
             supported(contract)
             if pointer_rule_used and pointer_rule not in prompt:
                 prompt += '\nPointer rule for every identifier: ' + pointer_rule
+            if citation_ref_used:
+                prompt += '\nFor architectural citations, choose an issued source_span_ref; '
+                prompt += 'do not return source_quote alongside that pointer.'
             if transport_constraints:
                 prompt += '\nReturn unique identifier arrays and obey the physical evidence contract; '
                 prompt += 'the backend also validates conditional evidence requirements on the complete answer.'
             frozen = {'contract': contract, 'host_contract': host_contract,
                 'host_only_constraint_paths': transport_constraints,
+                'citation_transport': 'issued_span_ref' if citation_ref_used else 'unchanged',
                 'prompt': prompt, 'host_context': deepcopy(host_context),
                 'images': [{'label': label, 'mime_type': mime,
                             'data': base64.b64encode(data).decode('ascii'),

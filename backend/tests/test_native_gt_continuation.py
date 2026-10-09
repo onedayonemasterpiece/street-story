@@ -160,7 +160,9 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         assert TEXT in contents[-1] and CLAIM in contents[-1]
         assert 'previous_model_hypotheses_not_evidence' in contents[-1]
         assert 'first_wave_hypotheses' not in config.system_instruction
-        assert config.response_json_schema == json.loads(config.system_instruction.split('\n', 1)[1])
+        assert config.response_json_schema is None
+        issued = json.loads(config.system_instruction.split('\n', 1)[1])
+        assert issued['properties']['decision']['enum'] == ['accepted_architectural_text', 'uncertain']
         if outcome.startswith('malformed_'):
             return SimpleNamespace(text=('{' if outcome == 'malformed_json' else
                 '{"decision":"accepted_architectural_text"}'), response_id='closed-malformed-T')

@@ -125,7 +125,7 @@ class HeadlessFactReview:
                  job['story_id'], unit)
 
     @staticmethod
-    def _route_accepts_prompt(route, prompt, *, schema=None):
+    def _route_accepts_prompt(route, prompt, *, schema=None, batching=False):
         # A preferred packet size guides batching, never provider eligibility.
         # Measure setup/schema/trigger, keeping each source passage whole.
         if route.get('role') == 'facts_live':
@@ -135,8 +135,14 @@ class HeadlessFactReview:
                 # This frozen operation sends text only. UTF-8 bytes are a
                 # conservative token upper bound, not a measured token count.
                 # Include setup, system and function schema measured by client.
-                return size['input_utf8_bytes'] <= (size.get('input_limit_bytes')
-                    or size.get('input_token_limit') or size.get('packet_target_bytes') or 24000)
+                limit = (size.get('input_limit_bytes') or size.get('input_token_limit')
+                    or size.get('packet_target_bytes') or 24000)
+                if batching:
+                    # A model's context capacity is not the preferred size of
+                    # one small Live operation. Split whole candidate groups;
+                    # a single large fact still keeps all qualified routes.
+                    limit = min(limit, size.get('packet_target_bytes') or 24000)
+                return size['input_utf8_bytes'] <= limit
             return len(prompt.encode('utf-8')) <= 24000
         limit = getattr(getattr(route.get('client'), 'limits', None), 'max_input_chars', 24000)
         return len(prompt) <= limit
@@ -149,7 +155,7 @@ class HeadlessFactReview:
             return any(cls._route_accepts_prompt(route, prompt, schema=schema) for route in routes)
         live = [route for route in routes if route.get('role') == 'facts_live']
         preferred = live or routes
-        return all(cls._route_accepts_prompt(route, prompt, schema=schema) for route in preferred)
+        return all(cls._route_accepts_prompt(route, prompt, schema=schema, batching=True) for route in preferred)
 
     async def _infer(self, packet, job, unit, saved, ordinal=0):
         if saved.get('phase') == 'result':

@@ -290,7 +290,7 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
             self.packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
             size = provider.live_facts.input_size(prompt, schema)
             assert size['input_limit_bytes'] is None
-            bound = size.get('input_token_limit') or size['packet_target_bytes']
+            bound = size['packet_target_bytes']
             assert size['input_utf8_bytes'] <= bound or len(self.packet['items']) == 1
             for item in self.packet['items']:
                 assert item['passage'] == item['text'] and item['passage'] in texts
@@ -333,7 +333,7 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
         remaining = len(review_packets.pending_candidates(db, job['story_id'], RUN))
-        assert remaining == 0 if known_context else 0 < remaining < len(texts)
+        assert 0 < remaining < len(texts)
     # Full shared setup/schema escaping can yield smaller packets. Existing
     # bounded worker turns continue until all whole candidates are reviewed.
     for _ in range(len(texts)):
@@ -342,7 +342,7 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
                 break
         assert await engine.run(job, RUN, 0) > 0
     assert len(sends) == len(starts) and sum(sends) == len(texts)
-    assert len(sends) == 1 if known_context else len(sends) > 1
+    assert len(sends) > 1
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
         assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == len(texts)
@@ -902,3 +902,20 @@ async def test_existing_live_tool_contract_reviews_only_with_matching_semantic_q
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
         assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] == 0
+
+
+def test_live_context_capacity_does_not_inflate_small_review_batch_target():
+    class Live:
+        def input_size(self, prompt, schema):
+            return {'input_utf8_bytes': len(prompt.encode()) + 3000,
+                'input_limit_bytes': None, 'input_token_limit': 131072,
+                'packet_target_bytes': 24000}
+    route = {'role': 'facts_live', 'client': Live()}
+    large = 'Ж' * 20000
+    # This whole fact remains eligible for the model, independent of batching.
+    assert HeadlessFactReview._packet_fits([route], large, single=True, schema={})
+    # Multiple whole facts must be grouped by the existing small-operation
+    # target instead of growing up to the model's context limit.
+    assert not HeadlessFactReview._packet_fits([route], large, schema={})
+    assert HeadlessFactReview._packet_fits([route], 'Ж' * 5000, schema={})
+    assert not HeadlessFactReview._packet_fits([route], 'Ж' * 66000, single=True, schema={})
