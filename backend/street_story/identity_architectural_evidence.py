@@ -132,6 +132,55 @@ def literal_evidence_inventory(story, candidates, articles, *, candidate_ids=Non
         'host_address_parser_used':False}
 
 
+
+def compact_model_evidence(inventory):
+    """Transmit ALL originally observed literal evidence once, in compact form.
+
+    A pure size optimization. No address parsing, fuzzy joins, relevance
+    scoring, postcode/suffix decisions, geographic radius, candidate cutoff,
+    or inferred relation. The full inventory remains frozen on the host to
+    verify model-selected ref IDs.
+    """
+    if not isinstance(inventory,dict) or inventory.get('contract')!='llm-first-literal-evidence-v1':
+        raise ValueError('invalid_unranked_architectural_evidence')
+    physical=[]
+    count_osm=0
+    for body in inventory['physical_subjects']:
+        rows=[]
+        for observed in body['literal_observed_evidence']:
+            if observed['kind']=='observed_OSM_tag':
+                rows.append([observed['ref'],f"tag:{observed['tag']}",observed['literal_value']])
+            else:
+                # The entry_id identifies either the actual physical footprint
+                # or a node that is *verified* on that building's closed way.
+                rows.append([observed['ref'],observed['entry_id'],observed['literal_value']])
+            count_osm+=1
+        physical.append([body['candidate_id'],rows])
+    publisher=[]
+    count_publisher=0
+    for article in inventory['articles']:
+        rows=[]
+        for observed in article['actual_acquired_publisher_records']:
+            rows.append([observed['ref'],observed['provenance'],observed['literal_value']])
+            count_publisher+=1
+        publisher.append([article['article_id'],rows])
+    # Complete coverage is verified by comparing pointer sets, not by a
+    # particular order, a regex, a house number or a hand-authored whitelist.
+    assert count_osm==len(inventory['osm_refs'])
+    assert count_publisher==len(inventory['publisher_refs'])
+    assert len(physical)==len(inventory['physical_subjects'])
+    return {'contract':'llm-first-raw-provenance-compact-v1',
+        'publisher_article_rows':[{
+            'article_id':aid,'refs':rows} for aid,rows in publisher],
+        'observed_OSM_physical_bodies':physical,
+        'osm_rows':['candidate_id',['
+            'ref_id','OSM_node_or_tag_key','literal_value']],
+        'supplier_ranking':'none',
+        'original_ref_counts':{'publisher':count_publisher,'osm':count_osm},
+        'inference_scope':'LLM decides historical/modern/complex meaning; '
+            'same word or numeric label does not establish a physical match.'}
+
+
 def physical_link_schema(article_ids, candidate_ids, publisher_refs, osm_refs):
     """Compact model response, admitted only through observed pointer tables."""
     return {'type':'array','maxItems':2,'items':{
