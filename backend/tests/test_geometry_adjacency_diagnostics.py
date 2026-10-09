@@ -122,3 +122,24 @@ def test_explicit_detail_retains_original_ids_and_side_coverage(tmp_path):
     assert {r[1] for r in baseline['rows']} == {r[1] for r in detailed['rows']}
     assert any(p[2] for row in detailed['rows'] for p in row[-2])  # actual connected pairs
     assert original['manifest']['objects'] == expanded['manifest']['objects']
+
+
+def test_rounded_equal_points_do_not_create_nonadjacent_osm_corners():
+    # Two very close raw coordinates may round to the same displayed .1m.
+    # Their arbitrary equal rounded positions do NOT prove OSM shared vertices.
+    a = side(1, (0, 0), (5, 0), 5)
+    b = side(8, (5, 0), (5, 4), 4)
+    assert observed_connected_pairs([a, b])[0] == []
+
+
+def test_last_to_first_wrap_requires_original_closed_ring():
+    sides = [
+        side(0, (0, 0), (6, 0), 6),
+        side(1, (6, 0), (6, 4), 4),
+        side(2, (6, 4), (0, 4), 6),
+        side(3, (0, 4), (0, 0), 4),
+    ]
+    assert [0, 3, 0] not in [p[:3] for p in observed_connected_pairs(sides)[0]]
+    confirmed = observed_connected_pairs(sides, closed_rings={0: 3})[0]
+    assert [0, 3, 0] in [p[:3] for p in confirmed]
+    assert [0, 1, 2] in [p[:3] for p in confirmed]
