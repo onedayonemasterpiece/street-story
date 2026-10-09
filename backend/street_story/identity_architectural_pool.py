@@ -29,6 +29,10 @@ _FEATURE_MARKERS = re.compile(
     r'утрач|реставр|перестро|реконстру|изменен|изменён|'
     r'gable|bay window|facade|roof|window|portal|restor',
     re.IGNORECASE)
+_CHANGE_MARKERS = re.compile(
+    r'реставр|утрач|перестро|реконстру|надстро|изменен|изменён|'
+    r'демонтир|снесен|снесён|восстанов|destroy|renovat|demolish',
+    re.IGNORECASE)
 _HEX_SHA = re.compile(r'[0-9a-f]{64}')
 
 
@@ -54,7 +58,8 @@ def _excerpt(text, *, max_chars=3800):
         important = bool(_FEATURE_MARKERS.search(part))
         sections.append((match.start(), match.end(), important))
     order = sorted((part for part in sections if part[2]),
-        key=lambda part:part[0])
+        key=lambda part:(not bool(_CHANGE_MARKERS.search(text[part[0]:part[1]])),
+                          part[0]))
     if not order:
         order = sections
     # Keep a small literal introductory context (building subject/time),
