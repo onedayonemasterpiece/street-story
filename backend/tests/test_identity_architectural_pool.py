@@ -203,3 +203,30 @@ def test_unbound_neighbor_stable_match_blocks_premature_accepted():
         source_text_receipt=receipt)
     assert result['accepted'] is False
     assert result['reason']=='unresolved_stable_match_in_unbound_article'
+
+
+
+def test_without_GPS_model_can_nominate_article_but_never_accept_physical_ID():
+    story,candidates,decision,receipt=_three_documents()
+    packet=prepare_architectural_pool(
+        story,[],receipt,candidate_ids=[],allow_unresolved_physical=True)
+    assert packet['candidate_ids']==[]
+    assert packet['schema']['properties']['candidate_id']['enum']==['']
+    assert 'unresolved_no_GPS_subject' in packet['prompt']
+    answer=_closed_answer(decision,packet['article_ids'],packet)
+    answer.update(decision='uncertain',candidate_id='',
+        material_alternatives=[],material_alternatives_resolved=False)
+    for entry in answer['article_bindings']:
+        entry['candidate_id']=''
+        entry['physical_binding_resolved']=False
+    result=close_architectural_pool_response(story,[],packet,answer,
+        source_text_receipt=receipt)
+    assert result['accepted'] is False
+    assert result['physical_OSM_link_still_required'] is True
+    assert result['unresolved_article_hypothesis_ids']==[
+        'catalog:physical-building']
+    with pytest.raises(ValueError,match='model_architectural_pool_response_malformed'):
+        answer['decision']='accepted_architectural_text'
+        answer['candidate_id']='osm:way:1234567'
+        close_architectural_pool_response(story,[],packet,answer,
+            source_text_receipt=receipt)
