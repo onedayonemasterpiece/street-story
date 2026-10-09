@@ -4,7 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from street_story.identity_architectural_context import acquire_regional_text, regional_preparation_query
+from street_story.identity_architectural_context import (
+    acquire_regional_text, regional_preparation_query,
+    catalogue_physical_address_links, bounded_physically_linked_article_ids,
+    catalogue_model_context)
 from street_story import prussia39
 
 
@@ -143,3 +146,62 @@ async def test_addressless_subject_coordinate_lookup_uses_body_not_camera(monkey
     _, receipt = await acquire_regional_text(SimpleNamespace(store=object()), story, [building], request)
     assert calls == [(54.7, 20.5)]
     assert receipt['query_scope']['position_kind'] == 'subject_point_not_camera'
+
+
+def test_t_article_selection_sees_real_entrance_links_before_reading_body():
+    story, building, _request = inputs()
+    cards = [
+        {'article_id':'prussia39:sid:61',
+            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=61',
+            'title':'Нейтральный фасад', 'address_text':'Город, Тестовая улица, 22А'},
+        {'article_id':'prussia39:sid:62',
+            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=62',
+            'title':'Соседний фасад', 'address_text':'Город, Тестовая улица, 22Б'},
+        {'article_id':'prussia39:sid:61',
+            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=61',
+            'title':'Тот же каталог', 'address_text':'Город, Тестовая улица, 22А'}]
+    linked = catalogue_physical_address_links(story, [building], cards)
+    assert linked['prussia39:sid:61']['matched_observed_physical_subjects'] == [{
+        'candidate_id':'osm:way:7', 'mapped_entry_ids':['osm:node:8'],
+        'verified_compound_entrance_ids':[],
+        'join_policy':'publisher_card_and_observed_footprint_or_entrance',
+        'identity_inferred':False}]
+    assert linked['prussia39:sid:62']['matched_observed_physical_subjects'] == []
+    catalogue={'results':cards, 'physical_address_links':linked}
+    prefetch=bounded_physically_linked_article_ids(catalogue)
+    assert prefetch['prefetch_article_ids'] == ['prussia39:sid:61']
+    assert prefetch['physical_identity_inferred'] is False
+    model=catalogue_model_context(catalogue)
+    assert model['results'][0]['publisher_address_to_OSM_hypotheses'][0]['candidate_id']=='osm:way:7'
+    assert model['results'][1]['publisher_address_to_OSM_hypotheses'] == []
+    assert model['physical_prefetch_plan'] == {}  # Never invent a retrieval call.
+
+
+def test_t_retrieval_does_not_pick_first_two_of_three_physically_linked_articles():
+    story,building,_ = inputs()
+    cards=[{'article_id':f'prussia39:sid:{sid}',
+        'canonical_url':f'https://www.prussia39.ru/sight/index.php?sid={sid}',
+        'address_text':'Город, Тестовая улица, 22А'}
+        for sid in [7,8,9]]
+    links=catalogue_physical_address_links(story,[building],cards)
+    result=bounded_physically_linked_article_ids({
+        'results':cards,'physical_address_links':links})
+    assert result['candidate_article_ids'] == [
+        'prussia39:sid:7','prussia39:sid:8','prussia39:sid:9']
+    assert result['prefetch_article_ids'] == []
+    assert result['ambiguous_excess_article_count']==1
+    assert result['physical_identity_inferred'] is False
+
+
+def test_t_shared_publisher_postal_address_keeps_separate_physical_bodies():
+    story,building,_=inputs()
+    other={'candidate_id':'osm:way:9',
+        'map_address':{'city':'Город','street':'Тестовая улица','house_number':'22А'},
+        'map_object':{'tags':{'building':'yes'}}}
+    card={'article_id':'prussia39:sid:64',
+        'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=64',
+        'address_text':'Город, Тестовая улица, 22А'}
+    result=catalogue_physical_address_links(story,[building,other],[card])
+    bound=result['prussia39:sid:64']['matched_observed_physical_subjects']
+    assert {link['candidate_id'] for link in bound} == {'osm:way:7','osm:way:9'}
+    assert all(link['identity_inferred'] is False for link in bound)
