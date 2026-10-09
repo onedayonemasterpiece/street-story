@@ -138,6 +138,35 @@ def source_map_prompt(packet):
         +json.dumps(for_vision(packet),ensure_ascii=False,separators=(',',':')))
 
 
+
+def frozen_physical_observations(context):
+    """Use original saved OSM identity/addresses, without a second OSM fetch.
+
+    The frozen physical context is bound to the original neutral MAP; its
+    address rows are observed data, not a historic-name/POI inference.
+    Multiple addresses stay as literals for downstream T to interpret.
+    """
+    cols=context.get('columns') or []
+    entries=[]
+    for values in context.get('rows') or []:
+        row=dict(zip(cols,values))
+        cid=row.get('candidate_id')
+        if not isinstance(cid,str) or not cid.startswith(('osm:way:','osm:relation:')):
+            continue
+        names=row.get('literal_address_entries') or []
+        streets={(entry[2],entry[3]) for entry in names
+            if isinstance(entry,list) and len(entry)>3 and
+            entry[0]==cid and isinstance(entry[2],str) and
+            isinstance(entry[3],str)}
+        tags={}
+        if len(streets)==1:
+            street,number=next(iter(streets))
+            tags={'addr:street':street,'addr:housenumber':number}
+        entries.append({'candidate_id':cid,'tags':tags,
+            'literal_address_entries':names,
+            'observed_name':row.get('observed_name')})
+    return entries
+
 def replay_closed(cid, model):
     """Revalidate ONE completed provider answer without another image-model send."""
     case=ROOT/'cases'/str(cid)
@@ -160,15 +189,9 @@ def replay_closed(cid, model):
     packet=json.loads(options_path.read_text())
     model_answer=json.loads(raw)
     receipt=json.loads((case/'input-receipt.json').read_text())
-    from g26_prepare_inputs import SOURCE_INDEX, observed_osm
-    meta={x['message_id']:x for x in json.loads(SOURCE_INDEX.read_text())['items']}[cid]
     original=Path(receipt['source_path']).read_bytes()
-    coordinate=tuple(meta['camera_point'])
-    osm,_origin=observed_osm(cid,coordinate)
-    from street_story.identity_scene import scene_entries
-    story={'latitude':coordinate[0],'longitude':coordinate[1],
-           '_identity_map_snapshot':osm}
-    handoff=project_g_funnel(model_answer,packet,scene_entries(story,[]),
+    observed_entries=frozen_physical_observations(_json(case/'physical_context.json'))
+    handoff=project_g_funnel(model_answer,packet,observed_entries,
         source_sha256=hashlib.sha256(original).hexdigest(),
         model_source_sha256=receipt['source_model_sha256'],
         actual_source_sha256=receipt['original_photo_sha256'],
@@ -289,19 +312,11 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
         return {'id':cid,'status':'SOURCE_changed','method_calls':0}
     if hashlib.sha256(image).hexdigest()!=input_receipt['map_sha256']:
         return {'id':cid,'status':'MAP_changed','method_calls':0}
-    from g26_prepare_inputs import SOURCE_INDEX, observed_osm
-    meta={v['message_id']:v for v in _json(SOURCE_INDEX)['items']}[cid]
-    lat,lon=meta['camera_point']
-    osm,_=observed_osm(cid,(lat,lon))
-    from street_story.camera_hints import read_camera_hints
-    from street_story.identity_scene import scene_entries
-    story={'latitude':lat,'longitude':lon,'photo_sha256':original_sha,
-        '_identity_original_source_sha256':original_sha,
-        '_identity_map_snapshot':osm,
-        '_camera_position_verified':meta['geographic_basis']=='original_exif',
-        '_location_provenance':{'kind':'owner_approx_camera'} if
-             meta['geographic_basis']=='owner_approximate_hint' else {},
-        '_camera_hints':read_camera_hints(raw)}
+    # Original map/body measurements are already verified and cached.
+    # A SOURCE+MAP shortlist does not need reconstructed polygon XML to
+    # deliver the existing addresses and physical IDs to T.
+    observed_entries=frozen_physical_observations(
+        _json(case/'physical_context.json'))
     path.mkdir(parents=True,mode=0o700,exist_ok=True)
     output_input={'id':cid,'model':model,
         'role':'existing_google_grounded_research_image',
@@ -389,7 +404,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
     except ValueError:
         model_answer={}
     errors=list(Draft202012Validator(schema).iter_errors(model_answer))
-    handoff=project_g_funnel(model_answer,packet,scene_entries(story,[]),
+    handoff=project_g_funnel(model_answer,packet,observed_entries,
          source_sha256=original_sha,
          model_source_sha256=output_input['model_SOURCE_sha256'],
          actual_source_sha256=original_sha,
