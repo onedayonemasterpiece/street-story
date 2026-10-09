@@ -142,3 +142,30 @@ def test_schema_invalid_and_source_map_mismatch_fail_closed():
         actual_map_sha256=packet['map_sha256'])
     assert proof['status']=='invalid'
     assert 'source_map_not_original_bound' in proof['reason_codes']
+
+
+def test_original_106_prior_model_nominated_pair_has_signed_osm_order_and_gap():
+    # These two candidates come from a prior CLOSED model response (106-v5),
+    # not an operator-supplied correct identity for this G method.
+    story,scene,_packet=prepared(106)
+    alternatives=['osm:way:150596899','osm:way:150596903']
+    detail=render_scene(story,[],detail_candidate_ids=alternatives)
+    ctx=physical_decision_context(story,[],detail['manifest'])
+    packet=spatial_option_catalog(story,[],detail['manifest'],ctx,
+                                  focus_candidate_ids=alternatives)
+    rows=[(k,v) for k,v in packet['options'].items()
+          if v['kind']=='physical_pair']
+    assert len(rows)==1
+    key,item=rows[0]
+    assert key.startswith('P')
+    assert item['observed_boundary_gap_m']<1
+    assert 'second_centroid_clockwise_from_first_deg' in item
+    assert 'nominal_map_centroid_distance_m' in item
+    assert 'second_centroid_outward_offset_from_first_wall_m' in item
+    assert item['not_a_verified_passage'] is True
+    assert item['frontage_setback_requires_SOURCE'] is True
+    assert packet['physical_body_count']==_packet['physical_body_count']
+    assert len(packet['all_received_physical_bodies'])==len(_packet['all_received_physical_bodies'])
+    assert sorted(packet['expanded_labels'])==sorted(
+        int(label) for label,cid in packet['private_label_to_osm_id'].items()
+        if cid in alternatives)
