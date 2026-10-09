@@ -74,6 +74,8 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         return {**bad,'reason_codes':['model_body_not_received']}
     all_options=packet.get('options') or {}
     reasons=[]
+    warnings=[]
+    nominal_inward_corner=False
     valid=[]
     for oid in response['selected_option_ids']:
         option=all_options.get(oid)
@@ -93,7 +95,8 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         if kind=='observed_corner':
             side=option.get('camera_side_advisory') or []
             if 'nominal_interior' in side:
-                reasons.append('nominal_camera_rear_wall_uncertainty')
+                nominal_inward_corner=True
+                warnings.append('nominal_camera_rear_wall_requires_position_review')
     refs=[]
     for alt in response['contrasted_alternatives']:
         label=alt['label']
@@ -119,6 +122,17 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         if response['decision']=='accept':
             reasons.append('acceptance_with_unresolved_map_detail')
     if response['decision']=='accept':
+        # Camera coordinate provenance is not a measured GPS error radius.
+        # A nominated wall facing away from an ORIGINAL EXIF point is strong
+        # evidence against a corner-only proof, but not physical impossibility
+        # under every unknown camera translation/crop. With an approximate
+        # owner point this remains an explicit warning, not an EXIF-grade veto.
+        if (nominal_inward_corner and packet.get('camera_basis')=='original_exif'
+                and not any(opt['kind'] in {'physical_pair','road_axis_direction',
+                        'single_frontage'} for _key,opt in valid)):
+            reasons.append('nominal_camera_rear_wall_uncertainty')
+        if len(response['source_observations'])<2:
+            reasons.append('insufficient_distinct_source_observations')
         if not response['source_observations'] or any(not s.strip()
               for s in response['source_observations']):
             reasons.append('no_source_spatial_observation')
@@ -149,6 +163,7 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         'candidate_id':cid,'candidate_label':candidate,
         'accepted':accepted,'proof':None,'reason_codes':list(dict.fromkeys(reasons)),
         'model_pattern':response['source_pattern'],
+        'conditional_geometric_warnings':list(dict.fromkeys(warnings)),
         'selected_measured_options':[oid for oid,_v in valid],
         'alternatives':refs,'requested_detail_labels':response['request_detail_labels']}
     if accepted:
