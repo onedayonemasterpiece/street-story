@@ -58,6 +58,41 @@ async def partial(harness, job):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('advisory_key', [None, '', 'model-advisory-key'])
+async def test_headless_advisory_key_does_not_change_unreviewed_candidate_authority(tmp_path, advisory_key):
+    from jsonschema import Draft202012Validator
+    from street_story.research_adapter import FACT_PAGE_SCHEMA
+
+    svc, job = fixture(tmp_path, count=1)
+    calls = []
+
+    async def extract(page, story, context):
+        payload = result(page)
+        candidate = payload['result']['facts'][0]
+        if advisory_key is None:
+            candidate.pop('claim_key')
+        else:
+            candidate['claim_key'] = advisory_key
+        Draft202012Validator(FACT_PAGE_SCHEMA).validate(payload['result'])
+        calls.append(page['chunk_id'])
+        return payload
+
+    svc.providers.research = SimpleNamespace(client=SimpleNamespace(model_id='controlled-model'), extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    await partial(harness, job)
+    await partial(harness, job)
+    with svc.store.connection() as db:
+        rows = db.execute('SELECT semantic_key,eligibility,owner_selected FROM fact_assertions WHERE story_id=?',
+                          (job['story_id'],)).fetchall()
+        assert len(rows) == 1 and len(calls) == 1
+        assert rows[0]['semantic_key'].startswith('extractor-candidate:')
+        assert rows[0]['eligibility'] == 'unreviewed' and rows[0]['owner_selected'] == 0
+        assert db.execute('SELECT COUNT(*) FROM fact_evidence_spans e JOIN fact_observations o '
+                          'ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.status=\'accepted\'',
+                          (job['story_id'],)).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_three_frozen_cores_extract_in_parallel_first_candidate_saved_before_slow_units(tmp_path):
     svc, job = fixture(tmp_path)
     release, started, saved = asyncio.Event(), asyncio.Event(), asyncio.Event()

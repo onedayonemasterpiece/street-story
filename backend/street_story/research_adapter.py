@@ -66,14 +66,18 @@ FACT_PAGE_SCHEMA = {'type':'object','properties':{
     'source_matches_poi':{'type':'boolean'},'source_content_valid':{'type':'boolean'},
     'continuation_needed':{'type':'boolean'},'facts':{'type':'array','maxItems':32,'items':{
         'type':'object','properties':{
-            'text':{'type':'string','minLength':1,'maxLength':1200},'claim_key':{'type':'string'},
+            'text':{'type':'string','minLength':1,'maxLength':1200},
+            # Headless extraction stores opaque candidates keyed by the frozen
+            # batch/index; semantic equivalence is decided by the reviewer.
+            # An advisory model key must not discard otherwise complete claims.
+            'claim_key':{'type':'string','description':'Optional advisory key; the backend assigns candidate IDs. Semantic equivalence requires review.'},
             'existing_fact_id':{'type':'string'},'confidence':{'type':'number','minimum':0,'maximum':1},
             'source_refs':{'type':'array','items':{'type':'string'}},
             'passage_ids':{'type':'array','minItems':1,'items':{'type':'integer'}},
             'verdict':{'enum':['supported','insufficient','contradicted','possible_conflict']},
             'atomic':{'type':'boolean'},'support_complete':{'type':'boolean'},'qualifiers_preserved':{'type':'boolean'},
             'review_reason':{'type':'string','minLength':1,'maxLength':500}},
-        'required':['text','claim_key','existing_fact_id','confidence','passage_ids','verdict','atomic','support_complete','qualifiers_preserved','review_reason']}}},
+        'required':['text','existing_fact_id','confidence','passage_ids','verdict','atomic','support_complete','qualifiers_preserved','review_reason']}}},
     'required':['facts','source_matches_poi','source_content_valid','continuation_needed']}
 
 
