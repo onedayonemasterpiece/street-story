@@ -102,7 +102,9 @@ def check_visual_geometry_nomination(response, scene_manifest, physical_context,
             corners = subject.get('observed_connected_side_pairs') or []
             requested = (relation['segment_ring_index'], relation['first_segment_index'],
                 relation['second_segment_index'])
-            if not any(tuple(pair[:3]) == requested for pair in corners):
+            if not any(pair[0] == requested[0] and
+                    {pair[1],pair[2]} == {requested[1],requested[2]}
+                    for pair in corners):
                 reasons.append('corner_not_observed_in_supplied_map_excerpt')
         elif kind == 'street_termination':
             road = relation['road_candidate_id']
