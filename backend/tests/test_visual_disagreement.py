@@ -88,8 +88,10 @@ def test_fake_osm_corner_and_unobserved_label_fail_closed():
 
 
 def test_actual_corner_wrap_may_be_reported_in_reverse_visual_order():
-    _story,scene,physical,labels=actual_case()
+    story,_overview,_initial_context,labels=actual_case()
     ids=['osm:way:133035111','osm:way:133035113']
+    scene=render_scene(story,[],detail_candidate_ids=ids)
+    physical=physical_decision_context(story,[],scene['manifest'])
     data=proposed(labels['osm:way:133035113'])
     data['first_corner_segment_index']=0
     data['second_corner_segment_index']=5  # real ring closes 5 -> 0, not 0 -> 5
