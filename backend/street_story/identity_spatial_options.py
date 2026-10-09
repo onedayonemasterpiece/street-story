@@ -63,6 +63,85 @@ def _wall_segments(story, entry):
     return sides, closed
 
 
+
+def _outer_polygon_xy(story, entry):
+    """Return one actually closed outer footprint in camera-relative meters."""
+    from .identity_map_context import osm_geometry_context
+    from .identity_spatial_features import _point, _local
+    origin = _point(story)
+    if origin is None:
+        return None
+    geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+    rings = [r for r in geometry.get('rings') or []
+             if r.get('role') in ('outer', None) and r.get('closed') is True]
+    if len(rings)!=1:
+        return None
+    pts = [_point(p) for p in rings[0].get('points') or []]
+    if len(pts)<4 or any(p is None for p in pts) or pts[0]!=pts[-1]:
+        return None
+    return [_local(p, origin) for p in pts[:-1]]
+
+
+def _polygon_center_and_area(points):
+    if not points or len(points)<3:
+        return None
+    weighted_x, weighted_y, twice_area = 0., 0., 0.
+    for a, b in zip(points, points[1:]+points[:1]):
+        cross=a[0]*b[1]-b[0]*a[1]
+        twice_area+=cross
+        weighted_x+=(a[0]+b[0])*cross
+        weighted_y+=(a[1]+b[1])*cross
+    if abs(twice_area)<.05:
+        return None
+    return ((weighted_x/(3*twice_area), weighted_y/(3*twice_area)),
+            twice_area/2)
+
+
+def _pair_geometry_from_camera(story, entries, first_id, second_id):
+    """Position-dependent observed plan relationships, not a SOURCE assertion.
+
+    A negative relative frontage offset means the *second footprint centroid*
+    sits to the polygon-inside side of the first body's nominally camera-facing
+    longest outer wall. It does NOT prove a true setback, main-facade hierarchy
+    or visibility; rotation/crop and actual camera accuracy are unmeasured.
+    """
+    first=_outer_polygon_xy(story,entries[first_id])
+    second=_outer_polygon_xy(story,entries[second_id])
+    if first is None or second is None:
+        return {}
+    a=_polygon_center_and_area(first)
+    b=_polygon_center_and_area(second)
+    if a is None or b is None:
+        return {}
+    centroid_a, signed_area_a=a
+    centroid_b,_signed_area_b=b
+    def bearing(p):
+        return math.degrees(math.atan2(p[0],p[1]))%360
+    delta=((bearing(centroid_b)-bearing(centroid_a)+180)%360)-180
+    result={'second_centroid_clockwise_from_first_deg':_round(delta,1),
+        'nominal_map_centroid_distance_m':_round(math.dist(centroid_a,centroid_b),1),
+        'nominal_camera_point_is_not_yaw':True}
+    edges=[]
+    for index,(x,y) in enumerate(zip(first,first[1:]+first[:1])):
+        length=math.dist(x,y)
+        if length<2:continue
+        def outside(p):
+            signed=((y[0]-x[0])*(p[1]-x[1])
+                    -(y[1]-x[1])*(p[0]-x[0]))/length
+            return signed if signed_area_a<0 else -signed
+        # Only a geometric "exterior" plan side toward nominal camera.
+        # The camera itself is (0,0) in this metric local frame.
+        if outside((0.,0.))>2.:
+            edges.append((length,index,outside(centroid_b)))
+    if edges:
+        _,index,offset=max(edges,key=lambda x:(x[0],-x[1]))
+        result.update(first_nominal_front_ring_index=0,
+            first_nominal_front_segment_index=index,
+            second_centroid_outward_offset_from_first_wall_m=_round(offset,1),
+            'offset_provenance':'OSM plan centroid vs first camera-exterior '
+                'wall, nominal camera coordinate; NOT a measured facade setback')
+    return result
+
 def spatial_option_catalog(story, candidates, manifest, physical, *,
                            focus_candidate_ids=(), max_initial_bodies=18):
     from .identity_scene import scene_entries
@@ -177,10 +256,14 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
                 gaps = (measured or {}).get('boundary_gaps') or []
                 gap = gaps[0].get('observed_boundary_gap_m') if gaps else None
                 if _round(gap) is not None:
+                    pair=_pair_geometry_from_camera(story,entries,cid,alt)
                     add(f'P{labels[cid]}.{labels[alt]}', {
                         'kind': 'physical_pair', 'body_labels': [labels[cid], labels[alt]],
                         'observed_boundary_gap_m': _round(gap),
-                        'not_a_verified_passage': True})
+                        **pair,
+                        'not_a_verified_passage': True,
+                        'not_a_measured_camera_pose': True,
+                        'frontage_setback_requires_SOURCE': True})
 
     return {'version': VERSION,'map_sha256': manifest.get('image_sha256'),
         'camera_basis': (manifest.get('camera') or {}).get('position_status'),
