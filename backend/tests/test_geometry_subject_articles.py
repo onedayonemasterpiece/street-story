@@ -172,6 +172,24 @@ def test_geometry_keeps_bound_received_regional_page_for_normal_fact_reader(acqu
     assert reviewed_reference_articles(identity) == {}
 
 
+def test_mixed_received_regional_selections_keep_only_accepted_subject_card():
+    identity, research, payload = regional_subject_fixture()
+    neighbor_url = 'https://www.prussia39.ru/sight/index.php?sid=8'
+    payload['regional_catalogue']['results'].append({'article_id': 'prussia39:sid:8',
+        'canonical_url': neighbor_url, 'title': 'Actual neighboring building card'})
+    payload['regional_article_selections'].append({**payload['regional_article_selections'][0],
+        'article_id': 'prussia39:sid:8', 'candidate_id': 'osm:way:8',
+        'scope': 'The neighboring physical building'})
+    found = acquired_subject_articles(identity, research)
+    assert list(found) == [REGIONAL_URL]
+    assert found[REGIONAL_URL]['subject_candidate_ids'] == [identity['candidate_id']]
+    assert neighbor_url not in found
+    assert reviewed_reference_articles(identity) == {}
+    # Independent validation must preserve the actual host limit too.
+    payload['regional_article_selections'].append(dict(payload['regional_article_selections'][0]))
+    assert acquired_subject_articles(identity, research) == {}
+
+
 @pytest.mark.parametrize('change', ['unreceived', 'unresolved', 'scope', 'basis', 'neighbor',
                                   'catalogue_photo', 'catalogue_generation', 'catalogue_control'])
 def test_regional_selection_cannot_bind_unreceived_unresolved_or_stale_card(change):

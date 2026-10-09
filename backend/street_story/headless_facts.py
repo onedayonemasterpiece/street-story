@@ -159,9 +159,10 @@ def acquired_subject_articles(identity, research):
             cards = {card['article_id']: card for card in reversed(catalogue.get('results') or [])
                      if isinstance(card, dict) and card.get('article_id')}
             received = {'results': list(cards.values())}
-            if Draft202012Validator(regional_selection_schema(aliases, received)).is_valid(selections):
+            validator = Draft202012Validator(regional_selection_schema(aliases, received))
+            if isinstance(selections, list) and len(selections) <= 2:
                 for selection in selections:
-                    if (selection['physical_binding_resolved'] is True and selection['scope'].strip()
+                    if (validator.is_valid([selection]) and selection['physical_binding_resolved'] is True and selection['scope'].strip()
                             and selection['binding_basis'].strip()):
                         card = cards[selection['article_id']]
                         lead({**card, 'url': card.get('canonical_url')}, {selection['candidate_id']}, provenance={
