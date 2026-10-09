@@ -67,6 +67,24 @@ def measured_correspondence(story, candidates, decision, receipt):
             return None
         if not any(a == b for a in features[0]['coordinates'] for b in features[1]['coordinates']):
             return None
+        # A true joined OSM corner need not be the photographed corner.
+        # With ORIGINAL EXIF position (not search context/owner guess), a
+        # confidently rear-facing exterior wall at that camera anchor
+        # contradicts a model claim that BOTH adjoining walls are visible.
+        # Do not silently substitute other joined sides, adjust yaw or
+        # infer undocumented GPS accuracy. Positive exterior halfplanes
+        # alone never prove SOURCE visibility.
+        camera_basis = ((receipt.get('manifest') or {}).get('camera') or {}).get('position_status')
+        if camera_basis == 'original_exif':
+            from .identity_camera_visibility import observed_corner_halfplane
+            first, second = refs
+            if (first.get('ring_index') != second.get('ring_index') or
+                    observed_corner_halfplane(
+                        story, receipt['manifest'], cid,
+                        first.get('ring_index'), first.get('segment_index'),
+                        second.get('segment_index'), candidates=candidates
+                    ).get('status') != 'both_walls_nominally_exterior'):
+                return None
     elif pattern == 'frontage_sequence':
         if len(ids) < 2 or not fronts or axis is not None:
             return None
@@ -90,15 +108,41 @@ def measured_correspondence(story, candidates, decision, receipt):
             pose=pose, front_segments=fronts, street_axis=axis)
         if measured is None:
             return None
-        if pattern == 'corner' and measured['front_segments'][0]['side_angle_difference_degrees'] in {0, -180, 180}:
-            return None
+        if pattern == 'corner':
+            # A nearly straight/anti-parallel pair is not a discriminating
+            # photographed corner even when the OSM ends technically touch.
+            # This checks only actual map-plane geometry; it NEVER infers the
+            # photographed return, pose or target identity.
+            turn = abs(measured['front_segments'][0]['side_angle_difference_degrees'])
+            if min(turn, 180-turn) < 8:
+                return None
         if pattern == 'street_termination':
             hits = measured['street_axis_ray_intersections']
-            if not hits or hits[0]['candidate_id'] != cid:
+            axis_info = measured.get('street_axis_scenario') or {}
+            difference = abs(axis_info.get('heading_difference_degrees', 180))
+            # A model could formerly claim an unrelated arbitrary road, point
+            # its ray at any desired building, and pass the 'first hit' guard.
+            # Heading need only broadly follow the observed road in either
+            # direction, not a falsely exact camera bearing.
+            axis_misalignment = min(difference, abs(180-difference))
+            if (not hits or hits[0]['candidate_id'] != cid or
+                    axis_misalignment > 30):
                 return None
-        # A horizontal viewing scenario must place nominated bodies in front.
-        if any(item['relative_bearing_degrees'] is None or abs(item['relative_bearing_degrees']) >= 90
-                for item in measured['objects']):
+        # Only bodies claimed to be visibly present in SOURCE must lie in
+        # front of the camera. A *rejected* alternative may legitimately be
+        # behind the viewer (notably the opposite end of a street). Requiring
+        # all compared candidates to be forward silently rejected real proofs.
+        # A frontage_sequence, by contrast, asserts a VISIBLE left-to-right
+        # sequence, so every member must have a forward bearing.
+        objects_by_id = {row['candidate_id']:row for row in measured['objects']}
+        selected = objects_by_id.get(cid) or {}
+        relative = selected.get('relative_bearing_degrees')
+        if relative is None or abs(relative) >= 90:
+            return None
+        if pattern == 'frontage_sequence' and any(
+                row['relative_bearing_degrees'] is None or
+                abs(row['relative_bearing_degrees']) >= 90
+                for row in measured['objects']):
             return None
         measurements.append(measured)
     if pattern == 'frontage_sequence' and any(

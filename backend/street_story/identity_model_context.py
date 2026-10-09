@@ -49,8 +49,12 @@ def physical_decision_context(story, candidates, manifest):
     """
     from .identity_scene import scene_entries
     from .identity_source_selection import observed_address_context
-    from .identity_map_context import osm_geometry_context
+    from .identity_map_context import osm_geometry_context, geometry_camera_context
     from .identity_spatial_features import _local, _point
+    from .identity_corner_context import observed_connected_pairs, preserve_one_connected_pair
+    from .identity_road_context import observed_bidirectional_road_axes
+    from .identity_camera_visibility import nominal_exterior_sides
+    from .identity_shape_context import observed_plan_shape, SHAPE_COLUMNS, POLICY as SHAPE_POLICY
     import math
     entries = scene_entries(story, candidates)
     addresses = observed_address_context(story, entries)
@@ -70,6 +74,38 @@ def physical_decision_context(story, candidates, manifest):
     for entry in entries:
         cid = entry['candidate_id']
         row = rows.get(cid, {})
+        # Some actual multipolygons have only joined outer-member geometry.
+        # Earlier map metadata may omit their distance/bearing values.
+        # Recover those from the SAME received OSM member vertices only when
+        # SOURCE really has original EXIF or explicit owner camera position.
+        camera_basis = (manifest.get('camera') or {}).get('position_status')
+        derived_camera = {}
+        # Only join measured RELATION member-way contours that the provider
+        # supplied literally. Do not synthesize missing camera measurements
+        # for ordinary way DTOs or a bare centre: they remain unknown until
+        # their own real OSM geometry measurements are obtained.
+        has_relation_fragments = (cid.startswith('osm:relation:') and
+            any(isinstance(part, dict) and part.get('type') == 'way'
+                and part.get('geometry') for part in (entry.get('members') or [])))
+        if (camera_basis in {'original_exif', 'owner_approximate'} and
+                origin is not None and has_relation_fragments and
+                (row.get('boundary_distance_m') is None or
+                 not isinstance(row.get('bearing_start_end_span_degrees'), (tuple, list)) or
+                 any(value is None for value in
+                     row.get('bearing_start_end_span_degrees')))):
+            derived_camera = geometry_camera_context(entry, origin[0], origin[1])
+        boundary_distance = (row.get('boundary_distance_m') if
+            row.get('boundary_distance_m') is not None else
+            derived_camera.get('boundary_distance_m'))
+        interval = row.get('bearing_start_end_span_degrees')
+        if (not isinstance(interval, (tuple, list)) or len(interval) != 3 or
+                any(value is None for value in interval)):
+            angles = (derived_camera.get('footprint_bearing_interval') or {})
+            if all(angles.get(k) is not None for k in (
+                    'start_degrees','end_degrees','angular_span_degrees')):
+                interval = [round(angles['start_degrees'],1),
+                    round(angles['end_degrees'],1),
+                    round(angles['angular_span_degrees'],1)]
         tags = {**(entry.get('tags') or {}), **(entry.get('map_object') or {}).get('tags', {})}
         if not (tags.get('building') not in {None, '', 'no'} or tags.get('building:part')):
             continue
@@ -83,6 +119,9 @@ def physical_decision_context(story, candidates, manifest):
                 address.get('house_number'), 'osm_closed_way_node_membership'])
         sides = []
         geometry = entry.get('map_geometry') or osm_geometry_context(entry)
+        closed_rings = {ri: len(ring['points'])-2 for ri, ring in
+            enumerate(geometry.get('rings') or []) if ring.get('closed') is True
+            and len(ring.get('points') or []) >= 4}
         for ri, ring in enumerate(geometry.get('rings') or []):
             points = [_point(point) for point in ring.get('points') or []]
             if origin and all(point is not None for point in points):
@@ -98,16 +137,39 @@ def physical_decision_context(story, candidates, manifest):
             and min(p[1] for p in vertices) <= window[3]))
         selected_sides = (sides if cid in expanded_ids else
             sorted(sides, key=lambda side: (-side[2], side[0], side[1]))[:4] if in_window else [])
-        result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
-            row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
+        if cid not in expanded_ids and selected_sides:
+            selected_sides = preserve_one_connected_pair(sides, selected_sides,
+                closed_rings=closed_rings)
+        connected_pairs, omitted_connections = observed_connected_pairs(selected_sides,
+            closed_rings=closed_rings)
+        facing = nominal_exterior_sides(story, manifest, geometry)
+        morphology = observed_plan_shape(entry)
+        outward_indices = [[side[0], side[1]] for side in facing['outward_segments']]
+        inward_indices = [[side[0], side[1]] for side in facing['inward_segments']]
+        result.append([row.get('label'), cid, row.get('geometry_status'), boundary_distance,
+            interval, row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
             tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
             selected_sides, len(sides) - len(selected_sides),
-            _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal)])
+            _outline_angular_scale(interval, reference_diagonal),
+            outward_indices, inward_indices, morphology, connected_pairs, omitted_connections])
     return {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
         'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
-        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal'],
+        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal',
+        'nominal_camera_exterior_side_indices', 'nominal_camera_inward_side_indices',
+        'plan_morphology', 'observed_connected_side_pairs', 'omitted_connected_pair_count'],
+        'plan_morphology_columns': SHAPE_COLUMNS,
+        'plan_morphology_policy': SHAPE_POLICY,
+        'camera_side_halfplane_policy': {
+            'position_basis': (manifest.get('camera') or {}).get('position_status'),
+            'epsilon_m_is_not_measured_gps_accuracy': 2.0,
+            'policy': 'These indexes classify original OSM outer wall sides by exterior '
+                'or interior halfplane relative to the nominal camera coordinate. '
+                'Camera yaw, photo crop, heights, obstructions and GPS accuracy '
+                'are NOT inferred. Exterior is necessary, NOT sufficient for SOURCE '
+                'visibility; inward claims are conditional contradictions. '
+                'No physical body is ranked, removed, or accepted by this column.'},
         'source_angular_reference': {
             'diagonal_fov_35mm_deg': reference_diagonal,
             'camera_position_status': (manifest.get('camera') or {}).get('position_status'),
@@ -116,11 +178,17 @@ def physical_decision_context(story, candidates, manifest):
                 'Only already observed OSM boundary vertices are used. Photo crop/calibration, '
                 'which facade is visible, GPS uncertainty and horizontal yaw remain unknown. '
                 'No body is removed when this measurement is unavailable.'},
+        'bidirectional_road_axis_cues': observed_bidirectional_road_axes(
+            story, candidates, manifest),
         'segment_columns': ['ring_index', 'segment_index', 'length_m', 'start_east_north_m', 'end_east_north_m'],
+        'connected_pair_columns': ['ring_index', 'first_segment_index', 'second_segment_index',
+            'observed_turn_degrees'],
         'primitive_excerpt_extent_east_north_m': window,
         'expansion': 'Request map_detail with exact received target_candidate_ids. All body rows remain reachable; '
             'only side excerpts use the displayed area, not identity eligibility or nearest-K. '
-            'Explicit requested bodies expose all observed sides, including short setbacks.',
+            'Explicit requested bodies expose all observed sides, including short setbacks. '
+            'observed_connected_side_pairs name ONLY joined original OSM segments and their map-plane turn; '
+            'they are not visible SOURCE corners, chosen facades or measured yaw.',
         'rows': result, 'address_columns': ['entry_id', 'city', 'street', 'house_number', 'provenance'],
         'received_body_count': len(result),
         'policy': 'Every received physical body remains reachable, including far telephoto subjects. '

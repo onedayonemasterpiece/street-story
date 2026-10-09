@@ -32,6 +32,8 @@ def geometry_setup(tmp_path):
 def geometry_decision():
     return {'decision': 'accepted_geometry', 'candidate_id': 'osm:way:2',
         'candidate_label': 1,
+        # SOURCE camera is south-west of the rectangle; the REAL visible
+        # corner uses south and west OSM sides (0,3), not the rear east side.
         'spatial_correspondence': {'pattern_kind': 'corner',
             'source_pattern': 'Two adjacent sides of the main volume form a visible return; the next body lies farther right.',
             'pitch_basis': 'Low upward view; vertical pitch is unknown and is separate from horizontal yaw.',
@@ -39,7 +41,7 @@ def geometry_decision():
             'candidate_ids': ['osm:way:2'],
             'pose': {'east_m': 0, 'north_m': 0, 'heading_degrees': 55},
             'front_segments': [{'first': {'candidate_id': 'osm:way:2', 'kind': 'segment', 'ring_index': 0, 'segment_index': 0},
-                'second': {'candidate_id': 'osm:way:2', 'kind': 'segment', 'ring_index': 0, 'segment_index': 1}}],
+                'second': {'candidate_id': 'osm:way:2', 'kind': 'segment', 'ring_index': 0, 'segment_index': 3}}],
             'street_axis': None,
             'uncertainty_scenarios': [{'pose': {'east_m': -2, 'north_m': -2, 'heading_degrees': 60},
                 'assumption': 'Explicit two-metre position and five-degree yaw perturbation, not EXIF accuracy.',
