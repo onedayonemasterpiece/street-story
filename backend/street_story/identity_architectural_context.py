@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import math
+import re
 
 import httpx
 
@@ -376,6 +377,43 @@ def lookup_schema(candidate_ids):
         'required': ['route', 'candidate_ids', 'reason'], 'additionalProperties': False}
 
 
+
+def literal_address_card_selection(rows, street, house_number):
+    """Select only explicitly matching *catalogue metadata* after a broad search.
+
+    This is an evidence acquisition hint, not an architectural match or a POI
+    identity decision. Exact house-number tokens keep 22 distinct from 22/24,
+    222 and 22A. Historical names and ambiguous publisher addresses are not
+    silently geocoded, converted or treated as missing sources.
+    """
+    if not isinstance(rows, list) or not isinstance(street, str) or not isinstance(house_number, str):
+        return []
+    words = lambda value: re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+    # Street-type abbreviations are mechanical address formatting, not aliases.
+    street_words = [word for word in words(street) if word not in {
+        'ул', 'улица', 'пр', 'проспект', 'пер', 'переулок'}]
+    number = house_number.strip().casefold()
+    if not street_words or not number or not re.fullmatch(r"[\w/-]+", number, re.UNICODE):
+        return []
+    # Never infer one house number from a compound number or longer alphanumeric token.
+    number_pattern = re.compile(r"(?<![\w/-])" + re.escape(number) + r"(?![\w/-])", re.UNICODE)
+    selected = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get('address_text')
+        if not isinstance(raw, str) or not raw.strip() or not row.get('canonical_url'):
+            continue
+        tokens = words(raw)
+        street_present = any(tokens[i:i + len(street_words)] == street_words
+            for i in range(len(tokens) - len(street_words) + 1))
+        if street_present and number_pattern.search(raw.casefold()):
+            selected.append(row)
+    # Several address variants may be the same publisher article; the normal
+    # reader deduplicates URLs, and the unfiltered original inventory survives.
+    return selected
+
+
 async def acquire_regional_text(service, story, candidates, request):
     """Read at most two cards from one narrow literal query; no target scoring.
 
@@ -441,16 +479,30 @@ async def acquire_regional_text(service, story, candidates, request):
         record_identity_event(service, story['id'], 'identity_regional_lookup_completed', {
             'route': request['route'], 'status': lookup.get('status'), 'result_count': len(results),
             'candidate_ids': ids, 'cache_hit': lookup.get('cache_hit', False)})
-        if (lookup.get('status') != 'completed' or lookup.get('inventory_complete') is not True
-                or not 1 <= len(results) <= 2):
+        # A publisher search can return many cards or a partial page even when
+        # one exact modern address is clearly labelled. Read only that received
+        # literal metadata match; never take the first two or claim a full index.
+        chosen = results if (lookup.get('inventory_complete') is True and
+            1 <= len(results) <= 2) else []
+        if request['route'] == 'address' and not chosen and lookup.get('status') == 'completed':
+            labelled = literal_address_card_selection(results, street, number)
+            distinct = list(dict.fromkeys(row['canonical_url'] for row in labelled))
+            if 1 <= len(distinct) <= 2:
+                chosen = labelled
+                lookup['literal_address_selection'] = {
+                    'policy': 'exact_received_catalogue_address_metadata_v1',
+                    'matched_rows': len(labelled), 'selected_urls': len(distinct),
+                    'identity_inferred': False,
+                    'inventory_complete': lookup.get('inventory_complete') is True}
+        if lookup.get('status') != 'completed' or not chosen:
             if lookup.get('status') == 'completed' and results:
-                lookup['limitation'] = ('Broad inventory arrived after the initial joint call. '
-                    'No automatic first-two selection or third paid selector/judge; metadata remains retained.')
+                lookup['limitation'] = ('Received catalogue remains fully available; no first-two shortcut. '
+                    'No closed unambiguous address card was available for an automatic body read.')
             return [], lookup
         if hasattr(service, 'settings'):
             from .research_budget import reserve_work
-            reserve_work(service, story['id'], 'pages', [item['canonical_url'] for item in results])
-        urls = list(dict.fromkeys(item['canonical_url'] for item in results))
+            reserve_work(service, story['id'], 'pages', [item['canonical_url'] for item in chosen])
+        urls = list(dict.fromkeys(item['canonical_url'] for item in chosen))
         pages = await asyncio.gather(*(adapter.article(url) for url in urls))
     articles = []
     for page in pages:
