@@ -8,7 +8,7 @@ from street_story import headless_fact_review, review_packets
 from street_story.errors import RetryableProviderError
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.research_runs import manifest_exhausted, run_manifest
-from test_headless_fact_review_parallel import ControlledReview, candidates
+from test_headless_fact_review_parallel import ControlledReview, candidates, controlled_review_route, qualify_controlled_review
 from test_headless_fact_pool import RUN
 
 
@@ -30,6 +30,7 @@ class ClosedInvalidReview(HeadlessFactReview):
     """A completed semantic response rejected by the actual own-evidence gate."""
     def __init__(self, harness):
         super().__init__(harness)
+        self.fixture_route = qualify_controlled_review(harness)
         self.calls = 0
 
     async def _infer(self, packet, job, unit, saved, ordinal=0):
@@ -40,13 +41,14 @@ class ClosedInvalidReview(HeadlessFactReview):
              'claims': [item['text']], 'basis_quotes': ['A foreign passage absent from this source.'],
              'reason': 'Invalid supplied literal quote.'} for item in packet['items']],
             'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}
-        self._put(job, unit, {'phase': 'result', 'args': args})
+        self._put(job, unit, {'phase': 'result', 'args': args,
+                             'route_identity': self._route_identity(self.fixture_route)})
         return args
 
 
 def use_review(harness, engine, monkeypatch):
     monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, **kwargs:
-                        [{'client': SimpleNamespace(), 'available': True}])
+                        [controlled_review_route()])
     async def review(job, run_id, revision):
         return await engine.run(job, run_id, revision)
     monkeypatch.setattr(harness, '_review_candidates', review)

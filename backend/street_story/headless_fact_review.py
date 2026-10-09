@@ -67,7 +67,7 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'construction and namesake claims, or a current use inferred from an undated currently. '
       'Return repair_needed or insufficient when the semantic checks fail even with a valid label. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v4:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v5-qualified-review:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:
@@ -88,11 +88,25 @@ class HeadlessFactReview:
         entries = proof.get('routes') or []
         routes = build() if callable(build) else []
         return [route for route in routes if route.get('qualified') and route.get('endpoint')
-            and (not available or route['available']) and (route.get('role') == 'facts_live' or any(isinstance(entry, dict)
+            and (not available or route['available']) and any(isinstance(entry, dict)
                 and all(entry.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
                 and (not entry.get('directory') or entry['directory'] == route['client'].directory)
                 and all(entry.get(key) is True for key in ('schema_verified', 'own_passages_verified',
-                    'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified')) for entry in entries))]
+                    'qualifier_negative_verified', 'nearby_duplicate_verified', 'nearby_conflict_verified')) for entry in entries)]
+
+    def _result_route_qualified(self, saved):
+        identity = saved.get('route_identity')
+        return bool(identity and all(identity.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                    and any(identity == self._route_identity(route)
+                            for route in self._qualified_routes(available=False)))
+
+    def _close_unqualified_result(self, job, unit, saved):
+        # Preserve the closed result and original contract for technical audit;
+        # this unit cannot project claims or dispatch another unchanged request.
+        self._put(job, unit, {**saved, 'phase': 'exhausted', 'technical_only': True,
+                             'error_code': 'fact_review_route_unqualified'})
+        LOG.info('street_story_background_fact_review_unqualified story_id=%s unit_id=%s technical_only=true',
+                 job['story_id'], unit)
 
     @staticmethod
     def _route_accepts_prompt(route, prompt):
@@ -116,6 +130,9 @@ class HeadlessFactReview:
 
     async def _infer(self, packet, job, unit, saved, ordinal=0):
         if saved.get('phase') == 'result':
+            if not self._result_route_qualified(saved):
+                self._close_unqualified_result(job, unit, saved)
+                return None
             return saved['args']
         if saved.get('phase') in {'started', 'unknown', 'committed', 'rejected', 'stale', 'exhausted'}:
             return None
@@ -131,7 +148,10 @@ class HeadlessFactReview:
         routes = self._qualified_routes(available=not observing)
         if observing:
             expected = saved.get('route_identity')
-            routes = [route for route in routes if expected == self._route_identity(route)]
+            build = getattr(getattr(self.service.providers, 'research', None), '_fact_pool_routes', None)
+            configured = build() if callable(build) else routes
+            routes = [route for route in configured if route.get('client') is not None
+                      and expected == self._route_identity(route)]
             if not routes:
                 return None  # Changed configuration cannot replace an original operation.
         provider = getattr(self.service.providers, 'research', None)
@@ -194,6 +214,10 @@ class HeadlessFactReview:
                     lambda binding, client=client: client._run('facts', prompt, binding, schema), client=client)
                 from jsonschema import Draft202012Validator
                 args = response.get('result')
+                result = {**frozen, 'phase': 'result', 'args': args, 'model_id': client.model_id}
+                if not self._result_route_qualified(result):
+                    self._close_unqualified_result(job, unit, result)
+                    return None
                 if (not Draft202012Validator(schema).is_valid(args)
                         or args.get('packet_ref') != packet['packet_ref']):
                     closed_routes.add(role)
@@ -202,7 +226,7 @@ class HeadlessFactReview:
                     LOG.info('street_story_background_fact_review_fallback story_id=%s unit_id=%s model_id=%s reason=malformed',
                              job['story_id'], unit, client.model_id)
                     continue
-                self._put(job, unit, {**frozen, 'phase': 'result', 'args': args, 'model_id': client.model_id})
+                self._put(job, unit, result)
                 return args
             except asyncio.CancelledError:
                 self._put(job, unit, {**frozen, 'phase': 'unknown'})
@@ -294,11 +318,15 @@ class HeadlessFactReview:
             if not prior or prior.get('phase') != 'completed':
                 continue
             args = prior.get('result')
+            result = {**saved, 'phase': 'result', 'args': args,
+                      'model_id': prior.get('model_id') or prior.get('model')}
+            if not self._result_route_qualified(result):
+                self._close_unqualified_result(job, unit, result)
+                continue
             schema = saved.get('verifier_schema', public_schema)
             if not Draft202012Validator(schema).is_valid(args) or args.get('packet_ref') != saved.get('packet_ref'):
                 continue
-            self._put(job, unit, {**saved, 'phase': 'result', 'args': args,
-                'model_id': prior.get('model_id') or prior.get('model')})
+            self._put(job, unit, result)
             LOG.info('street_story_background_fact_review_recovered story_id=%s unit_id=%s original_result=true',
                      job['story_id'], unit)
 
@@ -417,6 +445,9 @@ class HeadlessFactReview:
                 outcome = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
                 session.model = outcome.get('model_id') or session.model
                 if self.harness._snapshot(job, run_id, control_revision) is None:
+                    continue
+                if not self._result_route_qualified(outcome):
+                    self._close_unqualified_result(job, unit, outcome)
                     continue
                 try:
                     resolved_args = headless_review_quotes.resolve_quotes(packet, args)

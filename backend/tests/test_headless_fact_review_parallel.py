@@ -128,12 +128,32 @@ async def candidates(tmp_path, count=6, source_texts=None):
     return svc, job, HeadlessFacts(svc)
 
 
+def controlled_review_route(client=None):
+    client = client or SimpleNamespace(model_id='fixture', directory=None)
+    return {'role': 'facts_fixture', 'provider_id': 'fixture', 'model_id': 'fixture',
+            'endpoint': 'fixture:controlled-review', 'client': client, 'qualified': True, 'available': True}
+
+
+def qualify_controlled_review(harness):
+    route = controlled_review_route()
+    harness.service.providers.research._fact_pool_routes = lambda: [route]
+    entry = {**{key: route[key] for key in ('provider_id', 'model_id', 'endpoint')},
+             'schema_verified': True, 'own_passages_verified': True, 'qualifier_negative_verified': True,
+             'nearby_duplicate_verified': True, 'nearby_conflict_verified': True}
+    harness.service.store.cache_put('fact-semantic-verification-v1', {'routes': [entry]}, ttl_seconds=3600)
+    return route
+
+
 class ControlledReview(HeadlessFactReview):
     MAX_PACKET_FACTS = 3  # Deliberately force siblings to exercise stale/unknown fences.
     active = 0
     peak = 0
     calls = 0
     mode = 'positive'
+
+    def __init__(self, harness):
+        super().__init__(harness)
+        self.fixture_route = qualify_controlled_review(harness)
 
     async def _infer(self, packet, job, unit, saved, ordinal=0):
         if saved.get('phase') in {'unknown', 'started'}:
@@ -144,7 +164,8 @@ class ControlledReview(HeadlessFactReview):
         await asyncio.sleep(.02)
         type(self).active -= 1
         if type(self).mode == 'unknown':
-            self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': 'facts_review_fixture'})
+            self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': 'facts_review_fixture',
+                                 'route_identity': self._route_identity(self.fixture_route)})
             return None
         decisions=[]
         for fact in sorted({r['fact'] for r in packet['items']}):
@@ -155,7 +176,8 @@ class ControlledReview(HeadlessFactReview):
                 'claims':[item['text']],'basis_quotes':[item['text']], 'reason':'Controlled own exact passage.'})
         args={'packet_ref':packet['packet_ref'],'decisions':decisions,'relations_complete':True,
               'conflicts':[],'coverage_complete':False,'missing_aspects':[]}
-        self._put(job, unit, {'phase':'result','args':args})
+        self._put(job, unit, {'phase':'result','args':args,
+                             'route_identity': self._route_identity(self.fixture_route)})
         return args
 
 
@@ -232,7 +254,8 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
             calls.append(packet['total_facts'])
             return await super()._infer(packet, *args, **kwargs)
     engine = BoundedReview(harness)
-    engine._qualified_routes = lambda **_: [{'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=budget))}]
+    engine._qualified_routes = lambda **_: [controlled_review_route(
+        SimpleNamespace(directory=None, limits=SimpleNamespace(max_input_chars=budget)))]
     committed = await engine.run(job, RUN, 0)
     assert committed == len(calls) and committed > 1
     assert calls and max(calls) < 6
@@ -286,6 +309,11 @@ async def test_cyrillic_packets_split_before_actual_live_send_and_finish_remaini
 
     provider.live_facts = LiveSemanticClient(provider, host_factory=Host)
     svc.providers.research = provider
+    svc.store.cache_put('fact-semantic-verification-v1', {'routes': [{
+        'provider_id': provider.live_facts.provider_id, 'model_id': provider.live_facts.model_id,
+        'endpoint': provider.live_facts.endpoint, 'schema_verified': True, 'own_passages_verified': True,
+        'qualifier_negative_verified': True, 'nearby_duplicate_verified': True,
+        'nearby_conflict_verified': True}]}, ttl_seconds=3600)
     engine = HeadlessFactReview(harness)
     session = SimpleNamespace(id='estimate-bytes', resource_id=job['story_id'], actor=None,
                               closed=False, model='fixture', state={})
@@ -375,9 +403,9 @@ async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp
             calls.append(packet['total_facts'])
             return await super()._infer(packet, *args, **kwargs)
     engine = AvailableReview(harness)
-    routes = [{'role': 'facts_live', 'available': False, 'client': SimpleNamespace()},
-              {'role': 'facts_native', 'available': True,
-               'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=24000))}]
+    routes = [{**controlled_review_route(), 'role': 'facts_live', 'available': False},
+              {**controlled_review_route(SimpleNamespace(directory=None, limits=SimpleNamespace(max_input_chars=24000))),
+               'role': 'facts_native'}]
     engine._qualified_routes = lambda available=True: [r for r in routes if not available or r['available']]
     assert await engine.run(job, RUN, 0) == 1
     assert calls == [12]
@@ -387,7 +415,7 @@ async def test_packet_sizing_uses_available_routes_before_cooling_live_route(tmp
 async def test_ready_review_packets_continue_same_job_after_progress_without_claiming_complete(tmp_path, monkeypatch):
     from street_story.errors import RetryableProviderError
     svc, job, harness = await candidates(tmp_path, count=3)
-    routes = [{'available': True, 'client': SimpleNamespace(limits=SimpleNamespace(max_input_chars=24000))}]
+    routes = [controlled_review_route(SimpleNamespace(directory=None, limits=SimpleNamespace(max_input_chars=24000)))]
     monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, **kwargs: routes)
     class SinglePacketReview(ControlledReview):
         MAX_PACKET_FACTS = 1
@@ -543,8 +571,8 @@ async def test_completed_original_review_is_recovered_after_checkpoint_interrupt
         receipt = {'binding': {'fact_unit_id': unit}, 'phase': 'completed', 'model_id': 'original-fixture', 'result': args}
         db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
             ('original-completed', 'original-logical', job['story_id'], saved['route'], json.dumps(receipt), svc.store.now(), svc.store.now()))
-    # There is no configured review client; recovery must consume the original
-    # closed response, guard its packet, and commit without another inference.
+    # The original controlled route retains semantic qualification; recovery
+    # commits its exact closed response without another inference.
     assert await HeadlessFactReview(harness).run(job, RUN, 0) == 1
     assert ControlledReview.calls == 1
     with svc.store.connection() as db:
@@ -620,7 +648,7 @@ async def test_closed_client_pending_backend_review_retries_and_resumes_without_
         calls.append(page['chunk_id'])
         return result(page)
     svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
-    monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, available=True: [{}])
+    monkeypatch.setattr(HeadlessFactReview, '_qualified_routes', lambda self, available=True: [controlled_review_route()])
     first = HeadlessFacts(svc)
     async def temporarily_unavailable(*args):
         return 0
@@ -811,7 +839,7 @@ async def test_semantic_text_pool_closed_fallback_and_unknown_fence_are_distinct
 
 
 @pytest.mark.asyncio
-async def test_existing_live_tool_contract_can_review_without_mandatory_helper_qualification(tmp_path):
+async def test_existing_live_tool_contract_reviews_only_with_matching_semantic_qualification(tmp_path, monkeypatch):
     from contextvars import ContextVar
     from street_story.research_adapter import ProductResearchAdapter
     svc, job, harness = await candidates(tmp_path, count=1)
@@ -836,6 +864,15 @@ async def test_existing_live_tool_contract_can_review_without_mandatory_helper_q
             return {'result': args, 'receipt': receipt}
     provider.live_facts = Live()
     svc.providers.research = provider
+    assert await HeadlessFactReview(harness).run(job, RUN, 0) == 0
+    assert calls == []
+    svc.store.cache_put('fact-semantic-verification-v1', {'routes': [{
+        'provider_id': provider.live_facts.provider_id, 'model_id': provider.live_facts.model_id,
+        'endpoint': provider.live_facts.endpoint, 'schema_verified': True, 'own_passages_verified': True,
+        'qualifier_negative_verified': True, 'nearby_duplicate_verified': True,
+        'nearby_conflict_verified': True}]}, ttl_seconds=3600)
+    now = svc.store.now()
+    monkeypatch.setattr(svc.store, 'now', lambda: now + 61)  # Preserve the original NOT SENT retry checkpoint.
     assert await HeadlessFactReview(harness).run(job, RUN, 0) == 1
     assert len(calls) == 1
     with svc.store.connection() as db:

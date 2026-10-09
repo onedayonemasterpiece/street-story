@@ -8,7 +8,7 @@ from street_story import headless_review_quotes, review_packets
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.live import FUNCTIONS
 from street_story.service import ConflictError
-from test_headless_fact_review_parallel import candidates, RUN
+from test_headless_fact_review_parallel import candidates, qualify_controlled_review, RUN
 
 
 def packet_fixture():
@@ -152,6 +152,7 @@ async def test_private_original_readback_and_recovery_use_exact_saved_schema(tmp
 @pytest.mark.asyncio
 async def test_label_review_commits_own_literals_without_rewriting_closed_answer(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=2)
+    route = qualify_controlled_review(harness)
     answers = []
     class LabelReview(HeadlessFactReview):
         async def _infer(self, packet, job, unit, saved, ordinal=0):
@@ -162,7 +163,8 @@ async def test_label_review_commits_own_literals_without_rewriting_closed_answer
                 for item in packet['items']], 'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             answers.append(deepcopy(args))
-            self._put(job, unit, {'phase': 'result', 'args': args, 'frozen_packet': packet})
+            self._put(job, unit, {'phase': 'result', 'args': args, 'frozen_packet': packet,
+                                 'route_identity': self._route_identity(route)})
             return args
     assert await LabelReview(harness).run(job, RUN, 0) == 1
     assert all(d['basis_quotes'][0].startswith(headless_review_quotes.PREFIX) for d in answers[0]['decisions'])
