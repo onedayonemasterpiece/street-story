@@ -492,9 +492,12 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     strong_passages={(line['article_id'],line['source_quote'])
         for line in positive_correspondences
         if line['status']=='stable_match' and line.get('feature_kind') in strong}
-    stable_kinds={line.get('feature_kind') for line in positive_correspondences
-        if line['status']=='stable_match' and line.get('feature_kind') in strong | {'levels'}}
-    structurally_supported=(len(stable_kinds)>=2 and bool(stable_kinds & strong)
+    stable_strong_kinds={line.get('feature_kind') for line in positive_correspondences
+        if line['status']=='stable_match' and line.get('feature_kind') in strong}
+    # A storey count plus one shared door opening is still a generic match
+    # between neighboring historical buildings. The combination needs two
+    # *independent discriminating shapes/passages*, not levels+color scaffolding.
+    structurally_supported=(len(stable_strong_kinds)>=2
         or len(strong_passages)>=2)
     if not structurally_supported:
         return dict(reviewed,reason='not_enough_independent_structural_architecture',
