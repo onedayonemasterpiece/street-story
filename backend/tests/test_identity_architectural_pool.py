@@ -39,6 +39,11 @@ def _closed_answer(decision,ids,packet):
         assert candidates
         relation.pop('source_quote')
         relation['source_span_ref']=candidates[0]
+    assert result['correspondences']
+    second=copy.deepcopy(result['correspondences'][0])
+    second['feature_kind']='bay'
+    second['source_observation']='The separate central bay projects forward along the three window axes.'
+    result['correspondences'].append(second)
     return {**result, 'article_comparisons':[{
         'article_id':cid,
         'visual_fit':'distinctive_match' if cid==decision['article_bindings'][0]['article_id'] else 'generic_only',
@@ -149,3 +154,52 @@ def test_literal_evidence_refs_are_exact_and_never_semantically_rewritten():
     assert all(ref['source_text_sha256']==article['text_sha256'] for ref in refs.values())
     assert len(result[0]['passages'])>=2
     assert any('Утрачен декор' in span['source_quote'] for span in refs.values())
+
+
+
+def test_negative_neighbor_article_quote_is_preserved_not_positive_binding():
+    story,candidates,decision,receipt=_three_documents()
+    packet=prepare_architectural_pool(story,candidates,receipt,candidate_ids=['osm:way:7'])
+    reply=_closed_answer(decision,packet['article_ids'],packet)
+    neighbor=next((ref,span) for ref,span in packet['source_span_refs'].items()
+        if span['article_id']=='catalog:neighbor-two')
+    reply['correspondences'].append({'article_id':'catalog:neighbor-two',
+        'source_span_ref':neighbor[0], 'source_observation':'Neighbor has a different roof.',
+        'feature_kind':'roof','status':'structural_contradiction',
+        'reason':'This rejected article describes the roof of another observed body.'})
+    review=close_architectural_pool_response(story,candidates,packet,reply,
+        source_text_receipt=receipt)
+    assert review['accepted'] is True
+    assert review['negative_article_evidence'][0]['article_id']=='catalog:neighbor-two'
+    assert all(line['article_id']=='catalog:physical-building'
+        for line in review['proof']['decision']['correspondences'])
+
+
+def test_generic_historical_text_cannot_become_individual_architecture_proof():
+    story,candidates,decision,receipt=_three_documents()
+    packet=prepare_architectural_pool(story,candidates,receipt,candidate_ids=['osm:way:7'])
+    reply=_closed_answer(decision,packet['article_ids'],packet)
+    for item in reply['correspondences']:
+        item['feature_kind']='historical_fact'
+        item['source_observation']='The building is historically important.'
+    result=close_architectural_pool_response(story,candidates,packet,reply,
+        source_text_receipt=receipt)
+    assert result['accepted'] is False
+    assert result['reason']=='not_enough_independent_structural_architecture'
+
+
+def test_unbound_neighbor_stable_match_blocks_premature_accepted():
+    story,candidates,decision,receipt=_three_documents()
+    packet=prepare_architectural_pool(story,candidates,receipt,candidate_ids=['osm:way:7'])
+    reply=_closed_answer(decision,packet['article_ids'],packet)
+    ref=next(ref for ref,span in packet['source_span_refs'].items()
+        if span['article_id']=='catalog:neighbor-one')
+    reply['correspondences'].append({
+        'article_id':'catalog:neighbor-one','source_span_ref':ref,
+        'source_observation':'Another plausible facade is visible.',
+        'feature_kind':'composition','status':'stable_match',
+        'reason':'This alternate article has an unresolved visible similarity.'})
+    result=close_architectural_pool_response(story,candidates,packet,reply,
+        source_text_receipt=receipt)
+    assert result['accepted'] is False
+    assert result['reason']=='unresolved_stable_match_in_unbound_article'
