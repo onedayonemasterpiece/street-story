@@ -80,9 +80,19 @@ def physical_decision_context(story, candidates, manifest):
         # SOURCE really has original EXIF or explicit owner camera position.
         camera_basis = (manifest.get('camera') or {}).get('position_status')
         derived_camera = {}
+        # Only join measured RELATION member-way contours that the provider
+        # supplied literally. Do not synthesize missing camera measurements
+        # for ordinary way DTOs or a bare centre: they remain unknown until
+        # their own real OSM geometry measurements are obtained.
+        has_relation_fragments = (cid.startswith('osm:relation:') and
+            any(isinstance(part, dict) and part.get('type') == 'way'
+                and part.get('geometry') for part in (entry.get('members') or [])))
         if (camera_basis in {'original_exif', 'owner_approximate'} and
-                origin is not None and (row.get('boundary_distance_m') is None or
-                row.get('bearing_start_end_span_degrees') is None)):
+                origin is not None and has_relation_fragments and
+                (row.get('boundary_distance_m') is None or
+                 not isinstance(row.get('bearing_start_end_span_degrees'), (tuple, list)) or
+                 any(value is None for value in
+                     row.get('bearing_start_end_span_degrees'))):
             derived_camera = geometry_camera_context(entry, origin[0], origin[1])
         boundary_distance = (row.get('boundary_distance_m') if
             row.get('boundary_distance_m') is not None else
