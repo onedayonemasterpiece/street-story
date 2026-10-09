@@ -205,3 +205,22 @@ def test_t_shared_publisher_postal_address_keeps_separate_physical_bodies():
     bound=result['prussia39:sid:64']['matched_observed_physical_subjects']
     assert {link['candidate_id'] for link in bound} == {'osm:way:7','osm:way:9'}
     assert all(link['identity_inferred'] is False for link in bound)
+
+
+
+def test_complex_catalogue_presents_article_before_exact_corpus_resolution():
+    story, building, _request = inputs()
+    card={'article_id':'prussia39:sid:707',
+        'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=707',
+        'address_text':'Город, Тестовая улица, 22А, 24'}
+    linked=catalogue_physical_address_links(story,[building],[card])
+    assert linked['prussia39:sid:707']['matched_observed_physical_subjects'] == []
+    candidates=linked['prussia39:sid:707']['complex_postal_membership_hypotheses']
+    assert [candidate['candidate_id'] for candidate in candidates] == ['osm:way:7']
+    assert candidates[0]['corpus_identity_inferred'] is False
+    catalogue={'results':[card],'physical_address_links':linked}
+    plan=bounded_physically_linked_article_ids(catalogue)
+    assert plan['candidate_article_ids']==['prussia39:sid:707']
+    assert plan['physical_identity_inferred'] is False
+    context=catalogue_model_context(catalogue)
+    assert context['results'][0]['publisher_complex_postal_membership_not_identity']==candidates
