@@ -382,6 +382,17 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     # model contradiction is provisional when physical scope failed proof.
     is_reduced=(len(effective)<len(before) and final in {
         'active_shortlist','conditional_T_shortlist'})
+    # A T model's one-body nomination is NOT a REF whitelist when the
+    # source-to-individual-body proof failed. Carry *independent closed*
+    # prior G/T physical nominees into the targeted comparison without
+    # reopening hundreds of unobserved/unexamined OSM candidates.
+    # These are previous model selections, not host geometry/address scores.
+    ref_targets=(list(dict.fromkeys([
+        *effective,*prepared.get('G_original_active_ids',[]),
+        *(row['candidate_id'] for row in
+            prepared.get('independent_T_leads_reopened') or [])]))
+        if final in {'conditional_T_shortlist','unconfirmed_model_claim'}
+        else list(effective))
     pending=[{'candidate_id':row['candidate_id'],
         'review_state':('model_explicit_contradiction'
             if row['article_ids'] else 'uncited_model_difference_not_refutation'),
@@ -446,6 +457,7 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'after_T_reserved_count':len(reserved),
         'active_physical_candidate_ids':list(effective),
         'reserve_physical_candidate_ids':reserved,
+        'conditional_REF_peer_candidate_ids':ref_targets,
         't_explicit_contradictions':pending,
         'unaccepted_model_contradiction_claims':rejected_unverified,
         'T_reduced_active_count':is_reduced,
@@ -463,7 +475,7 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
             'image_research_goals':model_image_goals,
             'image_goal_provenance':image_goal_source,
             'already_acquired_source_image_links':copy.deepcopy(prepared['existing_image_links']),
-            'target_candidate_ids':list(effective),
+            'target_candidate_ids':ref_targets,
             'next_distinguishing_question':model_result['next_distinguishing_question'],
             'independently_available_G_or_REF_can_accept':True},
         'identity_authorized_by_shortlist_count_alone':False}
@@ -499,6 +511,11 @@ def to_existing_research_priority(funnel_result, actual_articles):
         urls[row['article_id']]=row['url']
     active=funnel_result['active_physical_candidate_ids']
     ref=funnel_result.get('downstream_REF') or {}
+    if funnel_result.get('conditional_T_research_priority_not_identity'):
+        # Codex's priority must research BOTH the provisional one-body lead
+        # and independently nominated peers. This is a reversible research
+        # group, not an acceptance claim or a global map blacklist.
+        active=ref.get('target_candidate_ids') or active
     image_goals=ref.get('image_research_goals') or []
     acquired_images=ref.get('already_acquired_source_image_links') or []
     next_question=funnel_result.get('next_distinguishing_question') or ''
