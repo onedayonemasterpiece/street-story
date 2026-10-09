@@ -411,11 +411,14 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     match_ids={row['article_id'] for row in assessments if row['visual_fit']=='distinctive_match'}
     if not 1<=len(supporting)<=2 or not supporting<=match_ids:
         return dict(reviewed,reason='positive_binding_not_supported_by_model_contrast')
-    # A model may supply negative evidence against neighboring articles.
-    # Preserve it separately; never fabricate a positive source binding.
-    # A stable *color* or generic history match on an unrelated article is
-    # not enough to veto a strongly individuated architectural description.
-    strong={'bay','roof','window_axes','openings','outline','composition'}
+    # The model decides whether a SOURCE-visible architectural combination
+    # is individually distinctive. Python must not invent an extra semantic
+    # requirement like "two different feature kinds", "2+ structural spans",
+    # "neighbor article mentions color", or a fixed architecture vocabulary.
+    # Mechanical consistency is still checked: citations belong to actual
+    # articles, positive bindings refer to the chosen physical candidate,
+    # accepted physical scope is grounded, and an explicit contradiction of
+    # the SAME positive article cannot silently coexist with acceptance.
     positive_correspondences=[]
     negative_correspondences=[]
     for line in decision['correspondences']:
@@ -423,34 +426,13 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             positive_correspondences.append(line)
         else:
             negative_correspondences.append(line)
-            if line['status']=='stable_match' and line.get('feature_kind') in strong:
-                return dict(reviewed,reason='unresolved_stable_match_in_unbound_article',
-                    negative_article_evidence=negative_correspondences)
-    if any(row['visual_fit']=='distinctive_match' and row['article_id'] not in supporting
-            for row in assessments):
-        return dict(reviewed,reason='other_distinctive_article_not_resolved',
+    if any(line['status']=='structural_contradiction'
+            for line in positive_correspondences):
+        return dict(reviewed,
+            reason='positive_article_has_unresolved_structural_contradiction',
             negative_article_evidence=negative_correspondences)
-    if any(line['status']=='structural_contradiction' for line in positive_correspondences):
-        return dict(reviewed,reason='positive_article_has_unresolved_structural_contradiction',
-            negative_article_evidence=negative_correspondences)
-    # A distinctive composition may contain multiple independent features
-    # classed under the same broad type ("composition"): a round fortification
-    # volume and crenellated parapet are not identical observations. Require
-    # either two different structural kinds OR two different SHA-bound
-    # structural source passages. Generic style, color and historical facts
-    # alone never satisfy this gate.
-    strong_passages={(line['article_id'],line['source_quote'])
-        for line in positive_correspondences
-        if line['status']=='stable_match' and line.get('feature_kind') in strong}
-    stable_strong_kinds={line.get('feature_kind') for line in positive_correspondences
-        if line['status']=='stable_match' and line.get('feature_kind') in strong}
-    # A storey count plus one shared door opening is still a generic match
-    # between neighboring historical buildings. The combination needs two
-    # *independent discriminating shapes/passages*, not levels+color scaffolding.
-    structurally_supported=(len(stable_strong_kinds)>=2
-        or len(strong_passages)>=2)
-    if not structurally_supported:
-        return dict(reviewed,reason='not_enough_independent_structural_architecture',
+    if not any(line['status']=='stable_match' for line in positive_correspondences):
+        return dict(reviewed,reason='no_positive_structural_correspondence',
             negative_article_evidence=negative_correspondences)
     reviewed['negative_article_evidence']=negative_correspondences
     reviewed['positive_article_evidence_span_count']=len(positive_correspondences)
