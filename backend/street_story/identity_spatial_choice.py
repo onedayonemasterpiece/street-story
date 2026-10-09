@@ -33,14 +33,17 @@ def visual_spatial_choice_schema():
         'contrasted_alternatives':{'type':'array','maxItems':5,'items':{
             'type':'object','properties':{
                 'label':{'type':'integer'},
+                'other_label':{'type':'integer'},
                 'labels':{'type':'array','minItems':1,'maxItems':48,
                     'items':{'type':'integer'}},
                 'source_vs_map_difference':string,
                 'reason':string,
+                'reason_rejected':string,
                 'why_not':string,
                 'observed_option_ids':{'type':'array',
                     'items':{'type':'string','maxLength':32},'maxItems':3}},
-            'anyOf':[{'required':['label']},{'required':['labels']}]}},
+            'anyOf':[{'required':['label']},{'required':['labels']},
+                      {'required':['other_label']}]}},
         # Model chooses scene-sized active physical hypotheses; this is not a
         # deterministic nearest-K ranking or an acceptance certificate.
         'active_hypotheses':{'type':'array','maxItems':48,'items':{
@@ -150,7 +153,7 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
         # with literal "labels" and "why_not". This expands only explicitly
         # provided map references; never guesses a competitor from prose.
         rivals=(alternative.get('labels') if isinstance(alternative.get('labels'),list)
-                else [alternative.get('label')])
+                else [alternative.get('label',alternative.get('other_label'))])
         for other in dict.fromkeys(rivals):
             if other==label or other not in labels:
                 warnings.append('optional_contrast_not_distinct_received_body')
@@ -168,7 +171,8 @@ def check_spatial_choice(response, packet, *, source_sha256, model_source_sha256
             compared.append({'label':other,'candidate_id':labels[other],
                 'option_ids':mapped,
                 'model_visual_difference':alternative.get('source_vs_map_difference')
-                  or alternative.get('reason') or alternative.get('why_not') or ''})
+                  or alternative.get('reason') or alternative.get('reason_rejected')
+                  or alternative.get('why_not') or ''})
     requested = [label_value for label_value in detail_labels if label_value in labels]
     if len(requested)!=len(detail_labels):
         warnings.append('unreceived_detail_request_skipped')
