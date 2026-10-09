@@ -99,8 +99,10 @@ def main():
                 counts['known_expected_active_evaluable']+=1
                 counts['correct_active_shortlisted' if hit else
                        'wrong_active_shortlisted']+=1
-        if item['G_model_status']=='no_useful_reduction':counts['new_no_reduction']+=1
-        if item['G_model_status']=='provider_failed':counts['new_provider_blocked']+=1
+        if item['G_model_status']=='no_useful_reduction':
+            counts['new_no_reduction']+=1
+        if item['G_model_status']=='provider_failed':
+            counts['new_provider_blocked']+=1
         if item['accepted_id'] and expected:
             counts['correct_accepted' if item['accepted_id']==expected else
                    'wrong_accepted']+=1
