@@ -165,6 +165,12 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(initial))
         assert len(calls) == 2
+        assert config.response_mime_type == 'application/json'
+        assert config.response_json_schema is None
+        # Provider transport cannot drop the complete host proof contract.
+        issued = json.loads(config.system_instruction.split('\n', 1)[1])
+        assert 'allOf' in issued
+        assert issued['properties']['candidate_id']['enum'] == ['osm:way:2', 'osm:way:3', '']
         assert set(reads) == {'osm:way:2', 'osm:way:3'}
         assert receipt['articles'][0]['text'] in contents[-1]
         return SimpleNamespace(text=json.dumps(answer))

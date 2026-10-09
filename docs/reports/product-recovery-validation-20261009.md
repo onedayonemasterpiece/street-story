@@ -887,3 +887,39 @@ Their standalone shortlist adapters remain method experiments; the integrated
 product uses its existing joint reply/visual feedback, preserving the same model
 owned priority semantics without introducing a second orchestrator or additional
 mandatory T certificate. No wholesale branch import or peer checkout edit.
+
+
+### Exact aa344e0 integration delivery
+
+The unchanged acceptance manifest ran all five mandatory cold originals on
+`aa344e0f2165167426490fbf2fbee788c56a7340`, independently of earlier failures.
+102 reached the expected `osm:way:133035113` and eight source-backed eligible
+canonical POI claims (`PASS_CANDIDATE`, 100.391 seconds from upload). This is
+actual cold product evidence, distinct from the earlier closed-proof replays.
+104 and 130 reached the existing compact architectural comparison but received
+closed Google HTTP400 responses, at 72.320 and 51.964 seconds respectively.
+132 exceeded the unchanged 180-second identity deadline; 111 returned
+`CONDITIONAL_CONTEXT_AVAILABLE` at 180.807 seconds without accepted physical
+identity or eligible facts. These failures
+remain failures; no deploy/release acceptance is claimed.
+
+Exact-SHA hosted backend tests and Android build/checks passed. Emulator smoke
+failed at `Original-photo DocumentsUI must open`; its retained log is
+`aa-android-failed.log`. The earlier 18a765d emulator pass does not count as an
+aa344e0 pass.
+
+The frozen failed T requests included the complete host JSON Schema in
+`response_json_schema`, including `allOf/if/then/contains` (130 had empty
+`allOf`). Google's API documents a limited schema subset:
+<https://ai.google.dev/api/generate-content#v1beta.GenerationConfig>. The exact
+server message was not retained, so schema rejection remains a hypothesis.
+The integration repair uses the same JSON-mode transport as joint1, retaining
+the complete issued schema in the model instruction, immutable request binding
+and unchanged host validation. It changes no semantic decision, proof
+requirement, candidate shortlist or canonical-fact eligibility. Concise failure
+telemetry additionally records whether the provider explicitly reported a
+schema rejection, without logging its message or request payload.
+
+An isolated exact-aa344e0 source snapshot with this repair passed 95 affected
+checks. Two final checks in the actual checkout passed, including the added
+closed-failure observation/no-resend regression and SOURCE/G→T priority handoff. Evidence is retained in the managed streaming-funnel task directory.

@@ -232,3 +232,26 @@ async def test_accepted_initial_geometry_never_acquires_body_or_waits_for_text_a
     assert len(requests) == 1 and sends == ['initial'] and len(bodies) == 1 and not waits
     assert TEXT in requests[0][0][-1]  # Ready early text needs no additional model call.
     assert story['_identity_geometry_result']['proof_kind'] == 'geometry'
+
+
+@pytest.mark.asyncio
+async def test_closed_schema_failure_is_observable_and_never_resubmitted(tmp_path, monkeypatch):
+    from google.genai.errors import ClientError
+    error = ClientError(400, {'error': {'code': 400, 'status': 'INVALID_ARGUMENT',
+        'message': 'Invalid response schema; private payload must not be logged'}})
+    service, story, active, requests, bodies, sends, waits, _ = setup(tmp_path, monkeypatch, error)
+    with pytest.raises(ClientError):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    marker = joint_followup_marker(service, story)
+    assert marker['phase'] == 'closed_failure' and marker['status_code'] == 400
+    with service.store.connection() as db:
+        raw = db.execute("SELECT payload_json FROM live_diagnostics WHERE story_id=? "
+            "AND event_type='identity_joint_followup_unavailable' ORDER BY id DESC LIMIT 1",
+            (story['id'],)).fetchone()['payload_json']
+    event = json.loads(raw)
+    assert event['schema_rejection_reported'] is True and event['fresh_retry_allowed'] is False
+    assert 'private payload' not in raw
+    with pytest.raises(PermanentProviderError):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(requests) == 2 and len(bodies) == 1 and sends == ['initial'] and not waits
+    assert '_identity_geometry_result' not in story

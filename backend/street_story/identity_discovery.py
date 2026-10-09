@@ -1373,14 +1373,21 @@ async def _suggest(service, story, transcript, candidates):
                 followup_prompt, followup_contract = compact_t['prompt'], compact_t['schema']
                 if issues:
                     followup_prompt += '\nOriginal host rejection (hypothesis is unconfirmed): ' + json.dumps(issues, ensure_ascii=False)
+                # The complete proof contract contains host-only JSON Schema
+                # conditions (allOf/if/then/contains). Gemini's constrained
+                # decoder supports only a subset. Use the same JSON-mode
+                # transport as joint1; keep the full issued contract in the
+                # instruction, frozen request and host response validation.
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
-                    response_json_schema=followup_contract,
                     system_instruction='Return only the SOURCE/architectural-text decision object. '
                         'Use the attached actual image and acquired article text, never a prior identity claim.\n'
                         + json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')))
                 record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_prepared', {
                     'prompt_utf8_bytes': len(followup_prompt.encode()), 'article_count': len(compact_t['article_ids']),
-                    'candidate_count': len(compact_t['candidate_ids'])})
+                    'candidate_count': len(compact_t['candidate_ids']),
+                    'output_mode': 'json_with_host_validation',
+                    'schema_sha256': hashlib.sha256(json.dumps(followup_contract, sort_keys=True,
+                        separators=(',', ':')).encode()).hexdigest()})
             if hasattr(service, 'settings'):
                 from .research_budget import reserve_work
                 from .service import digest
@@ -1493,7 +1500,11 @@ async def _suggest(service, story, transcript, candidates):
                     record_identity_event(service, story['id'], 'identity_joint_followup_unavailable',
                         {'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
                          'error_type': type(exc).__name__, 'phase': phase, 'provider_send_state': phase,
-                         'status_code': status_code, 'fresh_retry_allowed': can_retry,
+                         'status_code': status_code,
+                         # Retain a provider-reported schema rejection without
+                         # logging its message, prompt or private request data.
+                         'schema_rejection_reported': status_code == 400 and 'schema' in str(exc).lower(),
+                         'fresh_retry_allowed': can_retry,
                          'retry_at': retry_at, 'wait_seconds': delay if can_retry else None,
                          'same_unit': True, 'admission_attempt': admission_attempt + 1})
                     if can_retry:
