@@ -108,6 +108,8 @@ def test_compound_address_and_suffixes_remain_distinct():
 def _comparison_fixture():
     story, candidates, decision, receipt = text_inputs()
     main = candidates[0]['candidate_id']
+    candidates[0]['map_address']={'city':'Город',
+        'street':'Тестовая улица','house_number':'6'}
     neighbor = {'candidate_id': 'osm:way:88', 'map_object': {'tags': {'building': 'yes'}},
         'map_address': {'city': 'Город', 'street': 'Тестовая улица', 'house_number': '6А'}}
     candidates.append(neighbor)
@@ -126,6 +128,24 @@ def _comparison_fixture():
     return story, candidates, decision, receipt
 
 
+
+
+def _actual_link_claim(packet, decision):
+    inv=packet['literal_evidence_inventory']
+    aid=decision['article_bindings'][0]['article_id']
+    cid=decision['candidate_id']
+    publisher_ref=next(ref for ref,row in inv['publisher_refs'].items()
+        if row['article_id']==aid)
+    osm_ref=next(ref for ref,row in inv['osm_refs'].items()
+        if row['candidate_id']==cid)
+    return {'article_id':aid,'candidate_id':cid,'publisher_ref':publisher_ref,
+        'osm_ref':osm_ref,'relationship':'same_individual_physical_body',
+        'subject_scope':'specific_photographed_OSM_body',
+        'architectural_scope_explanation':
+            'SOURCE uniquely depicts this particular observed building facade.',
+        'postal_interpretation':
+            'LLM compared original publisher evidence and actual OSM address.'}
+
 def test_compact_source_article_packet_reuses_original_text_and_keeps_alternatives():
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)
@@ -140,11 +160,15 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert 'No assertion that other MAP bodies do not exist' in packet['prompt']
     assert 'accepted_architectural_text' in packet['schema']['properties']['decision']['enum']
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']
+    assert packet['literal_evidence_inventory']['host_address_parser_used'] is False
+    assert 'publisher_and_OSM_literal_evidence_unjoined' in packet['prompt']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
         'reason': 'SOURCE shows a different arrangement of bay and gable.'}]
     plan = {'entity_name': '', 'first_wave_hypotheses': [],
         'accepted_geometry': {'decision': 'uncertain'}}
-    adopted = combine_architectural_decision(plan, decision, packet['schema'])
+    answer={**decision, 'physical_link_evidence':[_actual_link_claim(packet,decision)]}
+    adopted = combine_architectural_decision(plan, answer, packet['schema'],
+        literal_evidence_inventory=packet['literal_evidence_inventory'])
     assert adopted['accepted_geometry'] == plan['accepted_geometry']
     assert adopted['accepted_architectural_text'] == decision
     assert 'accepted_architectural_text' not in plan
@@ -158,7 +182,9 @@ def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     decision['material_alternatives_resolved'] = False
     packet = prepare_architectural_comparison(story, candidates, receipt)
     decision['decision'] = 'uncertain'
-    result = combine_architectural_decision({}, decision, packet['schema'])
+    result = combine_architectural_decision({}, {**decision,
+        'physical_link_evidence':[]}, packet['schema'],
+        literal_evidence_inventory=packet['literal_evidence_inventory'])
     assert result['accepted_architectural_text']['decision'] == 'uncertain'
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
 
@@ -366,7 +392,7 @@ def test_model_receives_physical_address_uncertainty_as_data_not_a_verdict():
     receipt['articles'][0]['card_variants'] = [
         {'canonical_url':url, 'address_text':'Город, Тестовая улица, 6'}]
     packet = prepare_architectural_comparison(story, candidates, receipt)
-    assert 'literal_publisher_address_links_not_identity' in packet['prompt']
+    assert 'publisher_and_OSM_literal_evidence_unjoined' in packet['prompt']
     assert 'no_exact_publisher_address_join_observed' in packet['prompt']
     assert 'physical-scope uncertainty' in packet['prompt']
     assert packet['utf8_bytes'] < 20_000
@@ -427,14 +453,20 @@ def test_exact_compound_publisher_group_can_cover_two_verified_osm_entrances_wit
 def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantics():
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)
-    raw = {'type':'object', **decision}
-    result = combine_architectural_decision({}, raw, packet['schema'])
+    raw = {'type':'object', **decision,
+        'physical_link_evidence':[_actual_link_claim(packet,decision)]}
+    result = combine_architectural_decision({}, raw, packet['schema'],
+        literal_evidence_inventory=packet['literal_evidence_inventory'])
     assert result['accepted_architectural_text']==decision
     assert raw['type']=='object'  # The original provider result remains immutable.
     with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
-        combine_architectural_decision({}, {'type':'building', **decision}, packet['schema'])
+        combine_architectural_decision({}, {'type':'building', **decision,
+            'physical_link_evidence':[_actual_link_claim(packet,decision)]}, packet['schema'],
+            literal_evidence_inventory=packet['literal_evidence_inventory'])
     with pytest.raises(ValueError,match='architectural_comparison_model_response_invalid'):
-        combine_architectural_decision({}, {'type':'object','made_up_identity':True, **decision}, packet['schema'])
+        combine_architectural_decision({}, {'type':'object','made_up_identity':True,
+            **decision,'physical_link_evidence':[_actual_link_claim(packet,decision)]}, packet['schema'],
+            literal_evidence_inventory=packet['literal_evidence_inventory'])
 
 
 def test_closer_map_contour_is_only_an_observed_competitor_not_a_T_veto():
