@@ -78,7 +78,7 @@ def test_original_111_multipolygon_gets_real_distance_angle_and_shape():
     assert way['outline_span_over_exif_diagonal']==pytest.approx(1.126,abs=.03)
     assert ctx['plan_morphology_columns']==SHAPE_COLUMNS
     assert len(rival['plan_morphology'])==len(SHAPE_COLUMNS)
-    assert 'NOT image silhouette' not in ctx['plan_morphology_policy'] or True
+    assert 'NOT image silhouette' in ctx['plan_morphology_policy']
     # The wrong nearby apartment complex cannot silently replace the far way.
     assert {r[1] for r in ctx['rows']}=={
         'osm:way:95290265','osm:relation:19306342'}
