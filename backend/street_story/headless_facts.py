@@ -78,12 +78,13 @@ def acquired_subject_articles(identity, research):
     aliases = subject_aliases(identity.get('candidates') or []).get(
         identity.get('candidate_id'), {identity.get('candidate_id')})
     articles = {}
-    def lead(item, subject_ids):
+    def lead(item, subject_ids, *, provenance=None):
         url = public_url(str(item.get('url') or ''))
         if url and aliases.intersection(subject_ids):
             articles.setdefault(url, {'url': url, 'title': str(item.get('title') or item.get('name') or url),
                 'subject_candidate_ids': sorted(aliases.intersection(subject_ids)),
-                'acquisition_kind': 'accepted_identity_subject_lead', 'visual_reference_verified': False})
+                'acquisition_kind': 'accepted_identity_subject_lead', 'visual_reference_verified': False,
+                **(provenance or {})})
     for page in research.get('wikipedia') or []:
         if isinstance(page, dict):
             lead(page, {str(item.get('candidate_id') or '') for item in
@@ -114,11 +115,58 @@ def acquired_subject_articles(identity, research):
             subjects.update(source.get('memory_candidate_ids') or [])
             lead(source, subjects)
         pages = {f"wiki:{page.get('pageid')}": page for page in research.get('wikipedia') or [] if isinstance(page, dict)}
-        for binding in (plan.get('payload') or {}).get('subject_article_bindings') or []:
+        payload = plan.get('payload') or {}
+        for binding in payload.get('subject_article_bindings') or []:
             if (isinstance(binding, dict) and binding.get('physical_binding_resolved') is True
                     and str(binding.get('scope') or '').strip() and str(binding.get('binding_basis') or '').strip()
                     and binding.get('candidate_id') in aliases and binding.get('article_id') in pages):
                 lead(pages[binding['article_id']], {binding['candidate_id']})
+        # A joint call may accept geometry after reading a nominated article.
+        # Keep that actual text acquisition as a lead independently of whether
+        # it became an architectural-text identity proof. The normal reader
+        # reuses the raw-byte cache and every claim still needs semantic review.
+        text_receipt = payload.get('source_text_receipt') or {}
+        if text_receipt.get('source_photo_sha256') == photo:
+            for article in text_receipt.get('articles') or []:
+                if not isinstance(article, dict):
+                    continue
+                text, digest = article.get('text'), article.get('source_sha256')
+                if (article.get('input_kind') != 'acquired_article_text'
+                        or article.get('raw_body_sha256_verified') is not True
+                        or not isinstance(text, str) or not text.strip()
+                        or not isinstance(digest, str) or len(digest) != 64
+                        or any(char not in '0123456789abcdef' for char in digest)
+                        or article.get('text_sha256') != hashlib.sha256(text.encode()).hexdigest()
+                        or not str(article.get('scope') or '').strip()
+                        or not str(article.get('binding_basis') or '').strip()):
+                    continue
+                lead(article, set(article.get('lookup_candidate_ids') or []), provenance={
+                    'article_id': str(article.get('article_id') or ''),
+                    'physical_scope': str(article['scope'])[:400],
+                    'binding_basis': str(article['binding_basis'])[:400],
+                    'source_sha256': digest, 'text_sha256': article['text_sha256']})
+        # Initial geometry acceptance need not wait for article bodies. Only a
+        # closed explicit selection of a card actually received in this scope
+        # can schedule its ordinary reader; nearby/unselected cards stay leads
+        # for identity discovery alone.
+        catalogue = payload.get('regional_catalogue') or {}
+        scope = catalogue.get('scope') or {}
+        if (scope.get('photo_sha256') == photo and scope.get('generation') == generation
+                and scope.get('control_revision') == revision):
+            from jsonschema import Draft202012Validator
+            from .identity_architectural_context import regional_selection_schema
+            selections = payload.get('regional_article_selections') or []
+            cards = {card['article_id']: card for card in reversed(catalogue.get('results') or [])
+                     if isinstance(card, dict) and card.get('article_id')}
+            received = {'results': list(cards.values())}
+            if Draft202012Validator(regional_selection_schema(aliases, received)).is_valid(selections):
+                for selection in selections:
+                    if (selection['physical_binding_resolved'] is True and selection['scope'].strip()
+                            and selection['binding_basis'].strip()):
+                        card = cards[selection['article_id']]
+                        lead({**card, 'url': card.get('canonical_url')}, {selection['candidate_id']}, provenance={
+                            'article_id': selection['article_id'], 'physical_scope': selection['scope'],
+                            'binding_basis': selection['binding_basis']})
     return articles
 
 
