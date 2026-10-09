@@ -312,7 +312,7 @@ def test_unaccepted_T_reuses_actual_G_model_question_as_targeted_ref_hint():
     assert result['downstream_REF']['image_research_goals'][0][
         'needed_view_or_feature']=='Which building owns the central bay?'
     assert result['downstream_REF']['image_research_goals'][0][
-        'target_candidate_ids']==['osm:way:7']
+        'target_candidate_ids']==['osm:way:7','osm:way:8']
     assert result['identity_authorized_by_shortlist_count_alone'] is False
 
 
