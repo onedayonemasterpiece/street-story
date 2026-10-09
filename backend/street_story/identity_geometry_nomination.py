@@ -42,12 +42,14 @@ def visual_geometry_nomination_schema():
         'candidate_label': {'type': 'integer'},
         'source_observations': {'type': 'array', 'items': statement,
             'maxItems': 5},
+        'source_horizontal_extent': {'type': 'string',
+            'enum': ['broad', 'medium', 'narrow', 'unknown']},
         'spatial_relations': {'type': 'array', 'items': item, 'maxItems': 3},
         'alternative_labels': {'type': 'array', 'items': {'type': 'integer'},
             'maxItems': 5},
         'uncertainties': {'type': 'array', 'items': statement, 'maxItems': 5}},
         'required': ['decision', 'candidate_label', 'source_observations',
-            'spatial_relations', 'alternative_labels', 'uncertainties']}
+            'source_horizontal_extent', 'spatial_relations', 'alternative_labels', 'uncertainties']}
 
 
 def check_visual_geometry_nomination(response, scene_manifest, physical_context, *,
@@ -117,6 +119,20 @@ def check_visual_geometry_nomination(response, scene_manifest, physical_context,
             reasons.append('insufficient_distinct_physical_bodies')
     if response['decision'] == 'nominated' and not response['spatial_relations']:
         reasons.append('no_spatial_relationship_supplied')
+    if response['decision'] == 'nominated' and not any(
+            kind in {'corner', 'frontage_sequence', 'street_termination',
+                     'setback', 'neighbour_order'} for kind in kinds):
+        reasons.append('no_discriminating_spatial_relation')
+    # The angle ratio is ADVISORY only: the focal-35mm framing, unknown crop,
+    # camera translation and visible facade versus entire plan are not
+    # interchangeable measurements. Never reject or rank an identity by it.
+    ratio = subject.get('outline_span_over_exif_diagonal')
+    if (response['source_horizontal_extent'] == 'broad'
+            and physical_context.get('source_angular_reference', {}).get(
+                'camera_position_status') == 'original_exif'
+            and isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+            and ratio < .25):
+        reasons.append('nominal_angular_scale_conflict_recheck_crop_or_pose')
     alternative_ids = []
     for label in response['alternative_labels']:
         if label not in by_label or label == index:
