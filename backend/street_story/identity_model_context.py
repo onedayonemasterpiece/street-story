@@ -49,11 +49,12 @@ def physical_decision_context(story, candidates, manifest):
     """
     from .identity_scene import scene_entries
     from .identity_source_selection import observed_address_context
-    from .identity_map_context import osm_geometry_context
+    from .identity_map_context import osm_geometry_context, geometry_camera_context
     from .identity_spatial_features import _local, _point
     from .identity_corner_context import observed_connected_pairs, preserve_one_connected_pair
     from .identity_road_context import observed_bidirectional_road_axes
     from .identity_camera_visibility import nominal_exterior_sides
+    from .identity_shape_context import observed_plan_shape, SHAPE_COLUMNS, POLICY as SHAPE_POLICY
     import math
     entries = scene_entries(story, candidates)
     addresses = observed_address_context(story, entries)
@@ -73,6 +74,27 @@ def physical_decision_context(story, candidates, manifest):
     for entry in entries:
         cid = entry['candidate_id']
         row = rows.get(cid, {})
+        # Some actual multipolygons have only joined outer-member geometry.
+        # Earlier map metadata may omit their distance/bearing values.
+        # Recover those from the SAME received OSM member vertices only when
+        # SOURCE really has original EXIF or explicit owner camera position.
+        camera_basis = (manifest.get('camera') or {}).get('position_status')
+        derived_camera = {}
+        if (camera_basis in {'original_exif', 'owner_approximate'} and
+                origin is not None and (row.get('boundary_distance_m') is None or
+                row.get('bearing_start_end_span_degrees') is None)):
+            derived_camera = geometry_camera_context(entry, origin[0], origin[1])
+        boundary_distance = (row.get('boundary_distance_m') if
+            row.get('boundary_distance_m') is not None else
+            derived_camera.get('boundary_distance_m'))
+        interval = row.get('bearing_start_end_span_degrees')
+        if interval is None:
+            angles = (derived_camera.get('footprint_bearing_interval') or {})
+            if all(angles.get(k) is not None for k in (
+                    'start_degrees','end_degrees','angular_span_degrees')):
+                interval = [round(angles['start_degrees'],1),
+                    round(angles['end_degrees'],1),
+                    round(angles['angular_span_degrees'],1)]
         tags = {**(entry.get('tags') or {}), **(entry.get('map_object') or {}).get('tags', {})}
         if not (tags.get('building') not in {None, '', 'no'} or tags.get('building:part')):
             continue
@@ -110,21 +132,24 @@ def physical_decision_context(story, candidates, manifest):
         connected_pairs, omitted_connections = observed_connected_pairs(selected_sides,
             closed_rings=closed_rings)
         facing = nominal_exterior_sides(story, manifest, geometry)
+        morphology = observed_plan_shape(entry)
         outward_indices = [[side[0], side[1]] for side in facing['outward_segments']]
         inward_indices = [[side[0], side[1]] for side in facing['inward_segments']]
-        result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
-            row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
+        result.append([row.get('label'), cid, row.get('geometry_status'), boundary_distance,
+            interval, row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
             tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
             selected_sides, len(sides) - len(selected_sides),
-            _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal),
-            outward_indices, inward_indices, connected_pairs, omitted_connections])
+            _outline_angular_scale(interval, reference_diagonal),
+            outward_indices, inward_indices, morphology, connected_pairs, omitted_connections])
     return {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
         'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
         'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal',
         'nominal_camera_exterior_side_indices', 'nominal_camera_inward_side_indices',
-        'observed_connected_side_pairs', 'omitted_connected_pair_count'],
+        'plan_morphology', 'observed_connected_side_pairs', 'omitted_connected_pair_count'],
+        'plan_morphology_columns': SHAPE_COLUMNS,
+        'plan_morphology_policy': SHAPE_POLICY,
         'camera_side_halfplane_policy': {
             'position_basis': (manifest.get('camera') or {}).get('position_status'),
             'epsilon_m_is_not_measured_gps_accuracy': 2.0,
