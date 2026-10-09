@@ -276,25 +276,29 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     if model_effect=='confirmed' and (
             not t_accepted or accepted_candidate_id not in before_set
             or accepted_candidate_id not in retained):
-        # The caller's existing freeze/host checks, not the model claim,
-        # determine independent T acceptance.
-        final='unconfirmed_model_claim'
+        # The model's visual comparison may be useful even if its
+        # publisher->individual-wing proof was not admitted. It can make
+        # a REVERSIBLE one-body *research priority* (never identity).
+        # Do not replace G reserve, create a POI or mark refuted buildings.
+        final=('conditional_T_shortlist'
+            if 0<len(retained)<len(before) else 'unconfirmed_model_claim')
     else:
         final=('accepted_T_identity' if model_effect=='confirmed' else
             'active_shortlist' if model_effect=='narrowed' else 'no_useful_text')
-    effective = retained if model_effect=='narrowed' else (
+    effective = retained if final in {'active_shortlist','conditional_T_shortlist'} else (
         [accepted_candidate_id] if final=='accepted_T_identity' else before)
     deferred=[cid for cid in before if cid not in effective and cid not in contradicted]
     reserved=list(dict.fromkeys([*prepared['original_reserve_ids'],
         *contradicted,*deferred]))
     if final=='unconfirmed_model_claim':
-        # The original semantic claim did NOT survive the actual host SOURCE
-        # proof. Preserve every G body for expansion, and do not turn the
-        # rejected model's confident text into a permanent contradiction.
         effective=before
         reserved=prepared['original_reserve_ids']
         deferred=[]
-    is_reduced=(len(effective)<len(before) and final=='active_shortlist')
+    # A conditional model-nominated one-body priority is not a factual
+    # negative finding against any other physical body. Even an explicit
+    # model contradiction is provisional when physical scope failed proof.
+    is_reduced=(len(effective)<len(before) and final in {
+        'active_shortlist','conditional_T_shortlist'})
     pending=[{'candidate_id':cid,'review_state':'model_explicit_contradiction',
         'reason':next(row['source_vs_article_reason'] for row in explicit
             if row['candidate_id']==cid),
@@ -304,16 +308,42 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     pending += [{'candidate_id':cid,'review_state':'not_selected_not_refuted'}
         for cid in deferred]
     rejected_unverified=(copy.deepcopy(explicit)
-        if final=='unconfirmed_model_claim' else [])
-    if final=='unconfirmed_model_claim':
-        pending=[]
+        if final in {'unconfirmed_model_claim','conditional_T_shortlist'} else [])
+    if final in {'unconfirmed_model_claim','conditional_T_shortlist'}:
+        pending=[{'candidate_id':cid,'review_state':'model_contradiction_not_authorized',
+            'conditions':next(row['contradiction_conditions'] for row in explicit
+                if row['candidate_id']==cid)}
+            for cid in contradicted]+[
+            {'candidate_id':cid,'review_state':'not_selected_not_refuted'}
+            for cid in deferred]
     expand=(model_result['new_map_evidence_needed']
         or final=='unconfirmed_model_claim')
     explanation=model_result['reserve_expansion_reason']
-    if final=='unconfirmed_model_claim':
-        explanation=('T model claimed an individual body but its actual '
-            'publisher/OSM/structural proof was not admitted; original G '
-            'reserve must remain eligible for independent evidence.')
+    if final in {'unconfirmed_model_claim','conditional_T_shortlist'}:
+        explanation=('T proposed one physical body but its full publisher/OSM/'
+            'structural identity proof was not admitted; every other original '
+            'G body remains eligible for independent evidence.')
+    # Targeted REF can use the original G model's already-authored visual
+    # question even when an overconfident T response said "no images needed"
+    # but its physical binding later failed the real proof.
+    already_model_authored_question=(prepared.get('model_input') or {}).get(
+        'G_next_distinguishing_question')
+    model_image_goals=copy.deepcopy(model_result['targeted_images'])
+    if (final in {'conditional_T_shortlist','unconfirmed_model_claim'}
+            and not model_image_goals
+            and isinstance(already_model_authored_question,str)
+            and already_model_authored_question.strip()):
+        model_image_goals=[{
+            'target_candidate_ids':list(effective),
+            'needed_view_or_feature':already_model_authored_question,
+            'how_this_image_would_distinguish_bodies':(
+                'Previously model-authored G question, not a host-computed '
+                'architectural conclusion; compare SOURCE and candidate REF images.'),
+            'reuse_actual_article_ids':list(prepared['source_article_ids']),
+            'source':'G_previously_closed_model_distinguishing_question'}]
+    image_goal_source=('G_closed_model_question_reused'
+        if model_image_goals and not model_result['targeted_images']
+        else 'same_T_model_RESPONSE')
     return {'contract':_CONTRACT,'status':final,'model_effect':model_effect,
         'source_sha256':source_sha256,'G_model_answer_sha256':prepared['g_model_answer_sha256'],
         'T_model_result_sha256':hashlib.sha256(json.dumps(
@@ -329,6 +359,7 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'reconsider_reserve_on_new_evidence':True,
         'G_group_not_ground_truth':True,
         'T_proof_accepted':final=='accepted_T_identity',
+        'conditional_T_research_priority_not_identity':final=='conditional_T_shortlist',
         'accepted_physical_id':accepted_candidate_id if final=='accepted_T_identity' else None,
         'source_support':copy.deepcopy(model_result['supporting_observations']),
         'next_distinguishing_question':model_result['next_distinguishing_question'],
@@ -336,7 +367,8 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'reserve_expansion_reason':explanation,
         'downstream_REF':{
             'needed_for_T_acceptance':False,
-            'image_research_goals':copy.deepcopy(model_result['targeted_images']),
+            'image_research_goals':model_image_goals,
+            'image_goal_provenance':image_goal_source,
             'already_acquired_source_image_links':copy.deepcopy(prepared['existing_image_links']),
             'target_candidate_ids':list(effective),
             'next_distinguishing_question':model_result['next_distinguishing_question'],
