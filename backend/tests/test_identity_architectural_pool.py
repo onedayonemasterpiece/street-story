@@ -178,7 +178,9 @@ def test_literal_evidence_refs_are_exact_and_never_semantically_rewritten():
     assert result[0]['article_id']=='catalog:ref'
     assert all(body[ref['start']:ref['end']]==ref['source_quote'] for ref in refs.values())
     assert all(ref['source_text_sha256']==article['text_sha256'] for ref in refs.values())
-    assert len(result[0]['passages'])>=2
+    assert len(result[0]['passages'])>=1
+    assert ''.join(span['source_quote'] for span in refs.values()) == body
+    assert result[0]['all_passages_displayed'] is True
     assert any('Утрачен декор' in span['source_quote'] for span in refs.values())
 
 
