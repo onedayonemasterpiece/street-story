@@ -148,79 +148,59 @@ async def test_addressless_subject_coordinate_lookup_uses_body_not_camera(monkey
     assert receipt['query_scope']['position_kind'] == 'subject_point_not_camera'
 
 
-def test_t_article_selection_sees_real_entrance_links_before_reading_body():
-    story, building, _request = inputs()
-    cards = [
-        {'article_id':'prussia39:sid:61',
-            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=61',
-            'title':'Нейтральный фасад', 'address_text':'Город, Тестовая улица, 22А'},
+def test_raw_publisher_cards_are_not_postal_joined_to_an_osm_address():
+    story,body,_=inputs()
+    cards=[{'article_id':'prussia39:sid:61',
+        'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=61',
+        'title':'Facade hypothesis',
+        'address_text':'Город, Тестовая улица, 22А'},
         {'article_id':'prussia39:sid:62',
-            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=62',
-            'title':'Соседний фасад', 'address_text':'Город, Тестовая улица, 22Б'},
-        {'article_id':'prussia39:sid:61',
-            'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=61',
-            'title':'Тот же каталог', 'address_text':'Город, Тестовая улица, 22А'}]
-    linked = catalogue_physical_address_links(story, [building], cards)
-    assert linked['prussia39:sid:61']['matched_observed_physical_subjects'] == [{
-        'candidate_id':'osm:way:7', 'mapped_entry_ids':['osm:node:8'],
-        'verified_compound_entrance_ids':[],
-        'join_policy':'publisher_card_and_observed_footprint_or_entrance',
-        'identity_inferred':False}]
-    assert linked['prussia39:sid:62']['matched_observed_physical_subjects'] == []
-    catalogue={'results':cards, 'physical_address_links':linked}
-    prefetch=bounded_physically_linked_article_ids(catalogue)
-    assert prefetch['prefetch_article_ids'] == ['prussia39:sid:61']
-    assert prefetch['physical_identity_inferred'] is False
-    model=catalogue_model_context(catalogue)
-    assert model['results'][0]['publisher_address_to_OSM_hypotheses'][0]['candidate_id']=='osm:way:7'
-    assert model['results'][1]['publisher_address_to_OSM_hypotheses'] == []
-    assert model['physical_prefetch_plan'] == {}  # Never invent a retrieval call.
+        'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=62',
+        'title':'Another facade', 'address_text':'Город, Тестовая улица, 22Б'}]
+    records=catalogue_physical_address_links(story,[body],cards)
+    assert records['prussia39:sid:61']['publisher_modern_address_metadata']==[
+        'Город, Тестовая улица, 22А']
+    assert records['prussia39:sid:62']['publisher_modern_address_metadata']==[
+        'Город, Тестовая улица, 22Б']
+    assert all(v['address_semantics_not_interpreted'] and not v['identity_inferred']
+        for v in records.values())
+    catalogue={'results':cards,'physical_address_links':records}
+    plan=bounded_physically_linked_article_ids(catalogue)
+    assert plan['candidate_article_ids']==[
+        'prussia39:sid:61','prussia39:sid:62']
+    assert plan['prefetch_article_ids']==plan['candidate_article_ids']
+    assert 'No host address ranking' in plan['selection_policy']
+    context=catalogue_model_context(catalogue)
+    assert context['results'][0]['original_publisher_postal_metadata_not_an_identity']==[
+        'Город, Тестовая улица, 22А']
+    assert 'publisher_address_to_OSM_hypotheses' not in context['results'][0]
 
 
-def test_t_retrieval_does_not_pick_first_two_of_three_physically_linked_articles():
-    story,building,_ = inputs()
+def test_three_uninterpreted_real_cards_are_not_silently_reduced_to_two():
+    story,body,_=inputs()
     cards=[{'article_id':f'prussia39:sid:{sid}',
         'canonical_url':f'https://www.prussia39.ru/sight/index.php?sid={sid}',
-        'address_text':'Город, Тестовая улица, 22А'}
+        'address_text':'Город, историческое наименование, корпус неизвестен'}
         for sid in [7,8,9]]
-    links=catalogue_physical_address_links(story,[building],cards)
-    result=bounded_physically_linked_article_ids({
-        'results':cards,'physical_address_links':links})
-    assert result['candidate_article_ids'] == [
+    catalogue={'results':cards,
+        'physical_address_links':catalogue_physical_address_links(story,[body],cards)}
+    result=bounded_physically_linked_article_ids(catalogue)
+    assert result['candidate_article_ids']==[
         'prussia39:sid:7','prussia39:sid:8','prussia39:sid:9']
-    assert result['prefetch_article_ids'] == []
+    assert result['prefetch_article_ids']==[]
     assert result['ambiguous_excess_article_count']==1
     assert result['physical_identity_inferred'] is False
 
 
-def test_t_shared_publisher_postal_address_keeps_separate_physical_bodies():
-    story,building,_=inputs()
-    other={'candidate_id':'osm:way:9',
-        'map_address':{'city':'Город','street':'Тестовая улица','house_number':'22А'},
-        'map_object':{'tags':{'building':'yes'}}}
-    card={'article_id':'prussia39:sid:64',
-        'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=64',
-        'address_text':'Город, Тестовая улица, 22А'}
-    result=catalogue_physical_address_links(story,[building,other],[card])
-    bound=result['prussia39:sid:64']['matched_observed_physical_subjects']
-    assert {link['candidate_id'] for link in bound} == {'osm:way:7','osm:way:9'}
-    assert all(link['identity_inferred'] is False for link in bound)
-
-
-
-def test_complex_catalogue_presents_article_before_exact_corpus_resolution():
-    story, building, _request = inputs()
-    card={'article_id':'prussia39:sid:707',
+def test_complex_and_historical_address_ambiguities_await_the_model():
+    story,body,_=inputs()
+    cards=[{'article_id':'prussia39:sid:707',
         'canonical_url':'https://www.prussia39.ru/sight/index.php?sid=707',
-        'address_text':'Город, Тестовая улица, 22А, 24'}
-    linked=catalogue_physical_address_links(story,[building],[card])
-    assert linked['prussia39:sid:707']['matched_observed_physical_subjects'] == []
-    candidates=linked['prussia39:sid:707']['complex_postal_membership_hypotheses']
-    assert [candidate['candidate_id'] for candidate in candidates] == ['osm:way:7']
-    assert candidates[0]['corpus_identity_inferred'] is False
-    catalogue={'results':[card],'physical_address_links':linked}
-    plan=bounded_physically_linked_article_ids(catalogue)
-    assert plan['candidate_article_ids']==['prussia39:sid:707']
-    assert plan['physical_identity_inferred'] is False
-    context=catalogue_model_context(catalogue)
-    assert context['results'][0]['publisher_complex_postal_membership_not_identity']==candidates
+        'address_text':'Улица бывшая Х., 22–24, перестроена после войны'}]
+    a=catalogue_physical_address_links(story,[body],cards)
+    assert a['prussia39:sid:707']['publisher_modern_address_metadata']==[
+        'Улица бывшая Х., 22–24, перестроена после войны']
+    assert a['prussia39:sid:707']['address_semantics_not_interpreted'] is True
+    context=catalogue_model_context({'results':cards,'physical_address_links':a})
+    assert 'host string match' in context['coverage_policy']
+    assert 'ул.' not in str(a)
