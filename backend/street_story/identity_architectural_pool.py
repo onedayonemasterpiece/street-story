@@ -21,157 +21,59 @@ from .identity_source_selection import observed_address_context
 
 # These words only choose literal passage spans to transmit. Their presence
 # never proves a match or rules out an article, and no building name appears.
-_FEATURE_MARKERS = re.compile(
-    r'эркер|фронтон|ризалит|арочн|свод|портал|проем|проём|окон|окн[аоуы]|'
-    r'мансард|черепиц|крыше|крыш[аеуы]|башен|башн|декор|карниз|'
-    r'фасад|этаж|гибел|фахверк|устроен|объем|объём|надстро|'
-    r'утрач|реставр|перестро|реконстру|изменен|изменён|'
-    r'gable|bay window|facade|roof|window|portal|restor',
-    re.IGNORECASE)
-_CHANGE_MARKERS = re.compile(
-    r'реставр|утрач|перестро|реконстру|надстро|изменен|изменён|'
-    r'демонтир|снесен|снесён|восстанов|destroy|renovat|demolish',
-    re.IGNORECASE)
 _HEX_SHA = re.compile(r'[0-9a-f]{64}')
 
 
-def _excerpt(text, *, max_chars=3800):
-    """Return exact source substrings, prioritizing descriptive passages.
+def _excerpt(text, *, max_chars=12000):
+    """Bound transport bytes, not building semantics.
 
-    This is string *selection*, not a semantic judgment; historical changes
-    are deliberately included. The caller keeps source_sha256 of raw bytes
-    and text_sha256 of the exact joined model input text. Entire original
-    body remains available from the existing verified publisher cache.
+    Most acquired article bodies fit whole. For an unusually long page keep
+    evenly distributed verbatim windows, independent of language, street,
+    building type, architectural keywords, author or the test corpus. A
+    truncated input is flagged, never represented as a complete source.
     """
-    if not isinstance(text, str) or not text.strip() or max_chars < 1200:
+    if not isinstance(text,str) or not text.strip() or max_chars<1200:
         raise ValueError('architectural_excerpt_input_invalid')
-    if len(text) <= max_chars:
+    if len(text)<=max_chars:
         return [{'start':0,'end':len(text),'text':text}]
-    # Preserve paragraph boundaries, original positions and punctuation;
-    # no generated or rewritten architectural claims enter model input.
-    sections = []
-    for match in re.finditer(r'[^\n]+', text):
-        part = match.group()
-        if not part.strip():
-            continue
-        important = bool(_FEATURE_MARKERS.search(part))
-        sections.append((match.start(), match.end(), important))
-    order = sorted((part for part in sections if part[2]),
-        key=lambda part:(not bool(_CHANGE_MARKERS.search(text[part[0]:part[1]])),
-                          part[0]))
-    if not order:
-        order = sections
-    # Keep a small literal introductory context (building subject/time),
-    # then use available characters for architectural + restoration prose.
-    window = [(0, min(len(text), 220))]
-    capacity = max_chars - window[0][1] - 100
-    for start,end,_ in order:
-        if capacity < 60:
-            break
-        # Long paragraphs can hold multiple independent features. Preserve
-        # their beginning and a later feature window rather than arbitrary
-        # output-token truncation from the tail.
-        segments = [(start, min(end,start+1100))]
-        if end-start > 1100:
-            feature_positions = [m.start() for m in _FEATURE_MARKERS.finditer(text[start:end])]
-            if feature_positions:
-                second = start + feature_positions[len(feature_positions)//2]
-                segments.append((max(start,second-130), min(end,second+600)))
-        for a,b in segments:
-            if capacity < 60:
-                break
-            # Preserve the part of a real architectural paragraph beyond
-            # the short subject introduction instead of dropping the entire
-            # paragraph when its first characters overlap that prefix.
-            for x,y in sorted(window):
-                if x <= a < y:
-                    a=y
-            b=min(b,a+capacity)
-            if b>a and all(b<=x or a>=y for x,y in window):
-                window.append((a,b))
-                capacity -= b-a
-    window.sort()
-    merged=[]
-    for a,b in window:
-        if merged and a<=merged[-1][1]:
-            merged[-1]=(merged[-1][0],max(merged[-1][1],b))
-        else:
-            merged.append((a,b))
-    return [{'start':a,'end':b,'text':text[a:b]} for a,b in merged]
+    windows=4
+    span=max_chars//windows
+    positions=[round(i*(len(text)-span)/(windows-1)) for i in range(windows)]
+    return [{'start':a,'end':a+span,'text':text[a:a+span]}
+        for a in positions]
 
 
+def _source_span_options(checked, *, max_spans_per_article=32):
+    """Language-agnostic literal text ranges, including every usual 12K body.
 
-def _source_span_options(checked, *, max_spans_per_article=14):
-    """Real verbatim spans, stable by article order and source character ranges.
-
-    LLM selects a reference, never writes a long quote. An invalid or
-    cross-article reference must fail without invented fallback citations.
+    Fixed consecutive windows cover the actual publisher model input. No
+    feature dictionary, period vocabulary, facade keyword selection or
+    inferred building information can suppress an article passage.
     """
-    refs = {}
-    results = []
+    refs={}
+    results=[]
     for row in checked:
-        text = row['text']
-        chunks = []
-        for paragraph in re.finditer(r'[^\n]+', text):
-            for sentence in re.finditer(r'[^.!?;]+(?:[.!?;]+|$)', paragraph.group()):
-                a, b = paragraph.start() + sentence.start(), paragraph.start() + sentence.end()
-                while a < b and text[a].isspace():
-                    a += 1
-                while a < b and text[b-1].isspace():
-                    b -= 1
-                if b-a < 12:
-                    continue
-                for start in range(a, b, 420):
-                    end = min(start+420, b)
-                    if len(text[start:end].strip()) >= 12:
-                        chunks.append((start, end))
-        if not chunks:
-            chunks = [(0, min(len(text), 420))]
-        if len(chunks)<=max_spans_per_article:
-            selected=chunks
-        else:
-            # Structural and temporal diversity, NOT SOURCE/identity scoring.
-            # First-N historically hid later alterations, arches and gables
-            # behind biographical text. We sample independent feature types
-            # and documented changes while preserving the literal source.
-            important=[
-                _CHANGE_MARKERS,
-                re.compile(r'эркер|bay.window|балкон',re.I),
-                re.compile(r'фронтон|щипц|gable|ступенчат',re.I),
-                re.compile(r'портал|арка|арочн|про[её]м|arch|portal',re.I),
-                re.compile(r'окон|окн[аоуы]|window|переплет',re.I),
-                re.compile(r'ризалит|выступ|утоплен|галере|projection',re.I),
-                re.compile(r'крыш|кровл|скат|шатер|roof|spire',re.I),
-                re.compile(r'этаж|ярус|levels|storey|floor',re.I),
-                re.compile(r'лепнин|декор|орнамент|барельеф|рельеф',re.I)]
-            chosen=set(range(min(2,len(chunks))))
-            for pattern in important:
-                matching=[i for i,(a,b) in enumerate(chunks)
-                    if pattern.search(text[a:b])]
-                if matching and len(chosen)<max_spans_per_article:
-                    chosen.add(matching[0])
-                # Last mention of a documented change can matter more
-                # than the introductory pre-war construction date.
-                if pattern is _CHANGE_MARKERS and matching and len(chosen)<max_spans_per_article:
-                    chosen.add(matching[-1])
-            for i in range(len(chunks)):
-                if len(chosen)>=max_spans_per_article:
-                    break
-                chosen.add(i)
-            selected=[chunks[i] for i in sorted(chosen)]
-        passages = []
-        for start,end in selected:
-            span_ref = f'p{len(refs):04d}'
-            literal = text[start:end]
-            refs[span_ref] = {
-                'article_id': row['article_id'],
-                'start': start, 'end': end, 'source_quote': literal,
-                'source_text_sha256': row['text_sha256']}
-            passages.append({'span_ref': span_ref, 'literal_text': literal})
-        results.append({'article_id': row['article_id'],
-            'passages': passages,
-            'all_passages_displayed': len(chunks) <= max_spans_per_article})
-    return results, refs
+        actual=row['text']
+        ranges=[(start,min(start+420,len(actual)))
+            for start in range(0,len(actual),420)]
+        # For rare input exceeding 32 windows, use uniformly distributed
+        # indices, not regex-based historical/architecture relevance scores.
+        if len(ranges)>max_spans_per_article:
+            positions=[round(i*(len(ranges)-1)/(max_spans_per_article-1))
+                for i in range(max_spans_per_article)]
+            ranges=[ranges[i] for i in dict.fromkeys(positions)]
+        passages=[]
+        for start,end in ranges:
+            value=actual[start:end]
+            ref=f'p{len(refs):04d}'
+            refs[ref]={'article_id':row['article_id'],
+                'start':start,'end':end,'source_quote':value,
+                'source_text_sha256':row['text_sha256']}
+            passages.append({'span_ref':ref,'literal_text':value})
+        results.append({'article_id':row['article_id'],
+            'passages':passages,
+            'all_passages_displayed':len(actual)<=420*max_spans_per_article})
+    return results,refs
 
 
 def _verified_articles(receipt, max_articles):
@@ -194,7 +96,7 @@ def _verified_articles(receipt, max_articles):
             raise ValueError('unverified_article_body_or_text_hash')
         if aid in {row['article_id'] for row in checked}:
             raise ValueError('duplicate_publisher_article')
-        fragments=_excerpt(text)
+        fragments=_excerpt(text,max_chars=12000)
         excerpt='\n'.join(part['text'] for part in fragments)
         selected={**article, 'text':excerpt,
             'text_sha256':hashlib.sha256(excerpt.encode()).hexdigest(),
