@@ -53,7 +53,7 @@ def test_original_102_opaque_corner_requires_real_join_not_any_two_long_facades(
     assert all(wrong_ends)
     assert not any(a==b for a in wrong_ends[0]['coordinates']
         for b in wrong_ends[1]['coordinates'])
-    assert context['received_body_count']==3
+    assert context['received_body_count']==4  # two independent blind model nominees now retained
 
 
 def test_original_106_neighbour_setback_and_real_gap_without_invented_passage():
