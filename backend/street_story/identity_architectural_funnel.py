@@ -245,6 +245,9 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
     reserved=list(dict.fromkeys([*prepared['original_reserve_ids'],
         *contradicted,*deferred]))
     if final=='unconfirmed_model_claim':
+        # The original semantic claim did NOT survive the actual host SOURCE
+        # proof. Preserve every G body for expansion, and do not turn the
+        # rejected model's confident text into a permanent contradiction.
         effective=before
         reserved=prepared['original_reserve_ids']
         deferred=[]
@@ -257,6 +260,17 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         for cid in contradicted]
     pending += [{'candidate_id':cid,'review_state':'not_selected_not_refuted'}
         for cid in deferred]
+    rejected_unverified=(copy.deepcopy(explicit)
+        if final=='unconfirmed_model_claim' else [])
+    if final=='unconfirmed_model_claim':
+        pending=[]
+    expand=(model_result['new_map_evidence_needed']
+        or final=='unconfirmed_model_claim')
+    explanation=model_result['reserve_expansion_reason']
+    if final=='unconfirmed_model_claim':
+        explanation=('T model claimed an individual body but its actual '
+            'publisher/OSM/structural proof was not admitted; original G '
+            'reserve must remain eligible for independent evidence.')
     return {'contract':_CONTRACT,'status':final,'model_effect':model_effect,
         'source_sha256':source_sha256,'G_model_answer_sha256':prepared['g_model_answer_sha256'],
         'T_model_result_sha256':hashlib.sha256(json.dumps(
@@ -267,6 +281,7 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'active_physical_candidate_ids':list(effective),
         'reserve_physical_candidate_ids':reserved,
         't_explicit_contradictions':pending,
+        'unaccepted_model_contradiction_claims':rejected_unverified,
         'T_reduced_active_count':is_reduced,
         'reconsider_reserve_on_new_evidence':True,
         'G_group_not_ground_truth':True,
@@ -274,8 +289,8 @@ def close_t_g_funnel(prepared, model_result, *, source_sha256, t_accepted=False,
         'accepted_physical_id':accepted_candidate_id if final=='accepted_T_identity' else None,
         'source_support':copy.deepcopy(model_result['supporting_observations']),
         'next_distinguishing_question':model_result['next_distinguishing_question'],
-        'request_reserve_expansion':model_result['new_map_evidence_needed'],
-        'reserve_expansion_reason':model_result['reserve_expansion_reason'],
+        'request_reserve_expansion':expand,
+        'reserve_expansion_reason':explanation,
         'downstream_REF':{
             'needed_for_T_acceptance':False,
             'image_research_goals':copy.deepcopy(model_result['targeted_images']),
