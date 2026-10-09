@@ -202,73 +202,62 @@ def verified_publisher_physical_scope(story, candidates, source_text_receipt, de
 
 
 def source_subject_competition_guard(story, candidates, decision):
-    """Do not promote article/OSM agreement over a closer observed building.
+    """Report observed physical competitors; distance NEVER vetoes T identity.
 
-    A verified EXIF camera position plus OSM contour distances can reveal that
-    a source-compatible article describes a building *behind* another physical
-    candidate. Architectural TEXT alone has not shown which footprint SOURCE
-    actually depicts. This is a conservative necessary admission condition;
-    it does not score architecture or reject a good article hypothesis.
+    A closer map contour may be sideways, behind the camera or outside the
+    SOURCE frame. Distance-to-footprint gives only a search ordering, not a
+    visibility ray, photograph subject or physical-building proof. The T LLM
+    must confront plausible competing facades using SOURCE architecture.
 
-    Independent accepted spatial identity G can establish the photographed
-    farther body without using this T-only guard. Without verified camera
-    coordinates or measured footprints, this guard makes no proximity claim.
+    Backward-compatible name for the existing Codex handoff: this function
+    always returns an *informational* context, never a geometry permission.
+    Invalid physical IDs and physical binding are validated by the already
+    authoritative freeze_architectural_text_proof and publisher scope gate.
     """
-    if (not isinstance(decision, dict) or
-            decision.get('decision') != 'accepted_architectural_text'):
-        return {'applicable': False, 'supported': False,
-                'reason': 'no_positive_text_identity_to_admit'}
-    cid = decision.get('candidate_id')
-    if not isinstance(cid, str) or not cid or not cid.startswith('osm:'):
-        return {'applicable': True, 'supported': False,
-                'reason': 'no_observed_physical_osm_subject'}
-    if story.get('_camera_position_verified') is not True:
-        return {'applicable': False, 'supported': True,
-                'reason': 'camera_geography_not_verified_no_distance_veto'}
-    observed = {item.get('candidate_id'): item
-        for item in [*candidates, *(story.get('_identity_observed_candidates') or [])]
-        if isinstance(item, dict) and isinstance(item.get('candidate_id'), str)}
-    chosen = observed.get(cid)
-    if not chosen or not candidate_identity_eligible(chosen):
-        return {'applicable': True, 'supported': False,
-                'reason': 'subject_not_observed_or_ineligible'}
+    if (not isinstance(decision, dict)
+            or decision.get('decision') != 'accepted_architectural_text'):
+        return {'applicable':False,'supported':True,
+            'reason':'no_positive_T_subject_to_compare','potential_competitors':[]}
+    cid=decision.get('candidate_id')
+    observed={item['candidate_id']:item for item in
+        [*candidates, *(story.get('_identity_observed_candidates') or [])]
+        if isinstance(item,dict) and isinstance(item.get('candidate_id'),str)}
+    if cid not in observed:
+        return {'applicable':False,'supported':True,
+            'reason':'subject_not_in_observed_map_context_proof_validator_checks_it',
+            'potential_competitors':[]}
 
-    def measured_distance(candidate):
-        # Only boundary distance from actual OSM geometry, not a centroid or
-        # arbitrary title distance; no photo target position is invented.
-        value = candidate.get('boundary_distance_m')
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
+    def distance(item):
         import math
-        return float(value) if math.isfinite(value) and value >= 0 else None
+        value=item.get('boundary_distance_m')
+        if isinstance(value,bool) or not isinstance(value,(int,float)):
+            return None
+        return float(value) if math.isfinite(value) and value>=0 else None
 
-    target_distance = measured_distance(chosen)
-    if target_distance is None:
-        return {'applicable': False, 'supported': True,
-                'reason': 'no_measured_contour_distance_no_distance_veto'}
-    closer = []
-    for other_id, other in observed.items():
-        if (other_id == cid or not other_id.startswith('osm:')
-                or not candidate_identity_eligible(other) or article_candidate(other)):
+    others=[]
+    for other_id,candidate in observed.items():
+        if (other_id==cid or not other_id.startswith('osm:')
+                or not candidate_identity_eligible(candidate)
+                or article_candidate(candidate)):
             continue
-        tags = (other.get('map_object') or {}).get('tags') or {}
+        tags=(candidate.get('map_object') or {}).get('tags') or {}
         if tags.get('entrance') or not (tags.get('building') or tags.get('building:part')):
             continue
-        distance = measured_distance(other)
-        if distance is not None and distance + 2.0 < target_distance:
-            closer.append((distance, other_id))
-    closer.sort()
-    if closer:
-        return {'applicable': True, 'supported': False,
-            'reason': 'closer_observed_physical_footprints_need_independent_SOURCE_to_G_link',
-            'claimed_body_distance_m': target_distance,
-            'closer_physical_count': len(closer),
-            'closer_candidate_ids': [item[1] for item in closer[:8]],
-            'policy': 'Architecture/text and postal agreement do not by themselves identify a farther building behind others.'}
-    return {'applicable': True, 'supported': True,
-        'reason': 'no_closer_observed_footprint_competes_at_verified_camera_position',
-        'claimed_body_distance_m': target_distance}
-
+        others.append({'candidate_id':other_id,
+            'observed_boundary_distance_m':distance(candidate),
+            'proximity_not_visibility':True,
+            'visual_exclusion_requires_source_evidence':True})
+    others.sort(key=lambda row:(row['observed_boundary_distance_m']
+        if row['observed_boundary_distance_m'] is not None else float('inf'),
+        row['candidate_id']))
+    return {'applicable':False,'supported':True,
+        'reason':'proximity_is_not_SOURCE_subject_evidence',
+        'subject_candidate_id':cid,
+        'subject_boundary_distance_m':distance(observed[cid]),
+        'potential_competitor_count':len(others),
+        'potential_competitors':others,
+        'policy':'A closer OSM body is a semantic comparison candidate, '
+            'not a T rejection or an assertion that it is visible in SOURCE.'}
 
 def prepare_architectural_comparison(story, candidates, source_text_receipt):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
