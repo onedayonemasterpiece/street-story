@@ -175,18 +175,36 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
         return (-span, dist, row['label'])
     detailed = focus if focus else set(sorted(body, key=display_order)[:max_initial_bodies])
     cols = physical.get('plan_morphology_columns') or []
+    camera_basis=(manifest.get('camera') or {}).get('position_status')
     index = []
     for row in sorted(body.values(), key=lambda r: r['label']):
         shape = dict(zip(cols, row.get('plan_morphology') or []))
         sector = row.get('bearing_start_end_span_degrees')
         span = sector[2] if isinstance(sector, (tuple, list)) and len(sector) == 3 else None
+        # These are literal observed OSM street/number pairs, including
+        # address nodes proven to belong to a closed way. They are optional
+        # map context, NEVER the expected PHOTO identity or a match criterion.
+        address_pairs=[]
+        for address in row.get('literal_address_entries') or []:
+            if (isinstance(address,(tuple,list)) and len(address)>3
+                    and isinstance(address[2],str)
+                    and isinstance(address[3],str)):
+                pair=[address[2],address[3]]
+                if pair not in address_pairs:
+                    address_pairs.append(pair)
         index.append([row['label'], _round(row.get('boundary_distance_m'), 1),
             _round(span, 1), _round(shape.get('long_axis_m'), 1),
             _round(shape.get('short_axis_m'), 1), _round(shape.get('footprint_elongation')),
             _round(shape.get('explicit_height_m'), 1), _round(shape.get('observed_building_levels'), 1),
             bool(shape.get('status') == 'observed_closed_outer'), row['candidate_id'] in detailed,
             _round(sector[0], 1) if isinstance(sector, (tuple,list)) and len(sector)==3 else None,
-            _round(sector[1], 1) if isinstance(sector, (tuple,list)) and len(sector)==3 else None])
+            _round(sector[1], 1) if isinstance(sector, (tuple,list)) and len(sector)==3 else None,
+            address_pairs, row.get('observed_name')])
+    if camera_basis=='original_exif':
+        # Display the most angularly substantial real mapped contours first,
+        # WITHOUT selecting, scoring identity, deleting or truncating anyone.
+        # The SOURCE model can prefer a narrow telephoto/cropped building.
+        index.sort(key=lambda r:(-(r[2] if r[2] is not None else -1),r[0]))
 
     entries = {item.get('candidate_id'): item for item in scene_entries(story, candidates)}
     options = {}
@@ -278,7 +296,8 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
         'physical_body_count': len(body),'all_received_index_columns': [
             'body_label','nominal_boundary_m','plan_angular_span_deg','plan_long_m',
             'plan_short_m','elongation','mapped_height_m','mapped_levels',
-            'complete_plan','detail_expanded','sector_start_deg','sector_end_deg'],
+            'complete_plan','detail_expanded','sector_start_deg','sector_end_deg',
+            'observed_address_pairs','observed_osm_name'],
         'all_received_physical_bodies': index,
         'expanded_labels': sorted(labels[cid] for cid in detailed),
         'presentation_stage': 'focused_geometry' if focus else 'source_map_overview',
@@ -295,7 +314,13 @@ def spatial_option_catalog(story, candidates, manifest, physical, *,
           'Model selects real visible SOURCE pattern or UNKNOWN, '
           'never a fabricated yaw or a map geometry not in options. Plan is 2D, '
           'corner visibility depends on camera position and 3D occlusion, '
-          'street ray direction is NOT measured camera heading.'}
+          'street ray direction is NOT measured camera heading. '
+          'For ORIGINAL EXIF only, observed plan angular extent orders displayed '
+          'rows but does not certify PHOTO identity, yaw or near-only eligibility. '
+          'For approximate camera points, both sides of any photographed street '
+          'remain plausible even if the map hint appears inside a wrong building. '
+          'Observed address pairs are OSM context for possible street-level '
+          'grouping, never PHOTO recognition or a house-number truth oracle.'}
 
 
 def option_digest(packet):
