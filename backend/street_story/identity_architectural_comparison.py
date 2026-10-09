@@ -95,7 +95,8 @@ def source_subject_competition_guard(story, candidates, decision):
             'not a T rejection or an assertion that it is visible in SOURCE.'}
 
 def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
-        require_grounded_refs=False):
+        require_grounded_refs=False, g_funnel=None, g_source_sha256=None,
+        independent_closed_T_leads=()):
     """Return one short SOURCE/T decision prompt and its strict existing schema.
 
     The context includes *all* prior explicitly nominated alternatives (with their
@@ -106,10 +107,27 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
     """
     receipt = source_text_receipt or {}
     articles = receipt.get('articles')
-    if (receipt.get('source_image_input') is not True or not isinstance(articles, list)
-            or not 1 <= len(articles) <= 2):
-        raise ValueError('actual_source_and_one_or_two_acquired_articles_required')
     observed = [*candidates, *(story.get('_identity_observed_candidates') or [])]
+    g_prepared=None
+    if g_funnel is not None:
+        from .identity_architectural_funnel import prepare_t_g_funnel
+        g_stage=prepare_t_g_funnel(g_funnel,observed,articles or [],
+            source_sha256=receipt.get('original_source_sha256'),
+            g_source_sha256=g_source_sha256,
+            independent_closed_T_leads=independent_closed_T_leads)
+        if g_stage['stage']=='already_accepted_G':
+            return {'skip_T':True,'g_funnel_prepared':g_stage,
+                'input_contract':'source-architectural-independent-G-accepted-v1'}
+        if g_stage['stage']=='T_while_G_shortlist_unconfirmed':
+            g_prepared=g_stage
+    if not articles:
+        return {'skip_T':True,'reason':'no_acquired_architectural_text',
+            'g_funnel_prepared':g_prepared,
+            'next_step':'existing_images_or_expanded_publisher_search',
+            'input_contract':'source-architectural-no-text-v1'}
+    if (receipt.get('source_image_input') is not True
+            or not isinstance(articles,list) or not 1<=len(articles)<=2):
+        raise ValueError('actual_source_and_one_or_two_acquired_articles_required')
     catalog = {item.get('candidate_id'): item for item in observed
         if isinstance(item, dict) and isinstance(item.get('candidate_id'), str)}
     prior = receipt.get('conditional_initial_decision')
@@ -141,7 +159,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
             'lookup_candidate_ids', 'card_variants') if key in article})
     if prior:
         nominations.extend(prior['candidate_ids'])
-    ids = list(dict.fromkeys(nominations))
+    ids=(list(g_prepared['original_active_ids']) if g_prepared is not None
+        else list(dict.fromkeys(nominations)))
     if not ids or any(
             cid not in catalog or not candidate_identity_eligible(catalog[cid])
             or article_candidate(catalog[cid])
@@ -203,6 +222,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         'physical_candidates': physical,
         'publisher_and_OSM_literal_evidence_unjoined':compact_model_evidence(evidence),
         'postal_relationship_decision_by':'SOURCE_TEXT_LLM_not_address_parser',
+        'G_to_T_active_shortlist_not_ground_truth':(
+            g_prepared['model_input'] if g_prepared is not None else None),
         'previous_model_hypotheses_not_evidence': initial,
         'initial_geometry_rejection_not_identity': copy.deepcopy(receipt.get('initial_geometry_rejection') or {}),
         'coverage_limit': 'Only explicitly nominated bodies are shown. No assertion that other MAP bodies do not exist.',
@@ -217,6 +238,10 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         schema['properties']['physical_link_evidence'] = physical_link_schema(
             article_ids, ids, evidence['publisher_refs'], evidence['osm_refs'])
         schema['required'].append('physical_link_evidence')
+    if g_prepared is not None:
+        from .identity_architectural_funnel import t_g_funnel_schema
+        schema['properties']['t_funnel']=t_g_funnel_schema(g_prepared)
+        schema['required'].append('t_funnel')
     instruction = (
         'Compare the actual SOURCE pixels against verbatim acquired article text. '
         'Return only the architectural text decision object matching the supplied JSON schema. '
@@ -254,6 +279,14 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         'any historical/address interpretation. '
         'Explain physical address/entrance binding independently of photographed features '
         'and confront each material physical alternative, including those earlier nominated. '
+        'If the optional G active shortlist is supplied, include t_funnel '
+        'in this SAME SOURCE+TEXT model response; retain plausible physical '
+        'bodies, mark explicit article-scoped contradictions with conditions, '
+        'and request specific SOURCE-visible distinguishing views for REF. '
+        'The G reserve stays reversible; a single remaining body is never '
+        'identity without the independent T/G/REF proof. '
+        'If none of G active candidates match real SOURCE pixels, request '
+        'reserve expansion instead of forcing an incorrect body. '
         'One matching article, absence of a neighbor article, generic style or historically '
         'famous name cannot prove physical identity. A unique stable configuration '
         'MAY establish identity without an external reference photo only if the described '
@@ -266,13 +299,15 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt, *,
         + json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
     return {'prompt': instruction, 'schema': schema, 'candidate_ids': ids,
         'article_ids': article_ids, 'literal_evidence_inventory':evidence,
+        'g_funnel_prepared':g_prepared,
         'grounded_refs_required':require_grounded_refs,
         'utf8_bytes': len(instruction.encode()),
         'input_contract': packet['contract']}
 
 
 def combine_architectural_decision(original_plan, answer, schema, *,
-        literal_evidence_inventory=None):
+        literal_evidence_inventory=None, g_funnel_prepared=None,
+        source_sha256=None, source_articles=None):
     """Verify REAL model-selected source pointers, then attach unchanged T.
 
     This new LLM-first contract requires the exact inventory from the frozen
@@ -284,12 +319,25 @@ def combine_architectural_decision(original_plan, answer, schema, *,
         raise ValueError('closed_original_plan_and_model_answer_required')
     normalized=normalize_architectural_decision(answer,schema)
     from .identity_architectural_evidence import validate_model_physical_links
-    claim=copy.deepcopy(normalized.pop('physical_link_evidence',None))
+    claim=copy.deepcopy(normalized.get('physical_link_evidence'))
     if claim is not None and normalized['decision']=='accepted_architectural_text':
         supported=validate_model_physical_links(
             literal_evidence_inventory,claim,normalized)
         if not supported['supported']:
             raise ValueError('architectural_physical_evidence_not_grounded:'+supported['reason'])
+    t_context=normalized.pop('t_funnel',None)
+    t_result=None
+    if g_funnel_prepared is not None:
+        from .identity_architectural_funnel import (
+            close_t_g_funnel,to_existing_research_priority)
+        if t_context is None or (normalized['decision']=='accepted_architectural_text'
+                and t_context['effect']!='confirmed'):
+            raise ValueError('architectural_G_T_semantic_claims_inconsistent')
+        t_result=close_t_g_funnel(g_funnel_prepared,t_context,
+            source_sha256=source_sha256,t_accepted=False)
+        guidance=to_existing_research_priority(t_result,source_articles)
+    elif t_context is not None:
+        raise ValueError('unbound_T_G_shortlist_model_response')
     # An older already addressed model operation has no physical_link_evidence
     # property. Keep it byte-compatible; the integrator must explicitly opt
     # into require_grounded_refs on new SOURCE+TEXT operations. The existing
@@ -297,6 +345,9 @@ def combine_architectural_decision(original_plan, answer, schema, *,
     # acquired text SHA, positive bindings and SOURCE citations.
     result=copy.deepcopy(original_plan)
     result['accepted_architectural_text']=normalized
+    if t_result is not None:
+        result['T_shortlist_and_REF_plan']=t_result
+        result['research_priority']=guidance
     return result
 
 
