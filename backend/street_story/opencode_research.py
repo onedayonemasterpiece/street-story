@@ -638,6 +638,11 @@ class OpenCodeResearch:
                                     receipt['summary_json_valid'] = False
                                     receipt['assistant_text_sha256'] = hashlib.sha256(content.encode()).hexdigest()
                                     result = {'summary': ''}
+                            if isinstance(snapshot, dict) and snapshot.get('kind') == 'source_map':
+                                from .identity_source_map_prompt import normalize_source_map_visual_result
+                                result, normalization = normalize_source_map_visual_result(result)
+                                if normalization:
+                                    receipt['format_normalizations'] = normalization
                             from jsonschema import Draft202012Validator
                             if not Draft202012Validator(schema).is_valid(result):
                                 if role != 'search':
