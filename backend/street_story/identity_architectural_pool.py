@@ -461,10 +461,11 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     match_ids={row['article_id'] for row in assessments if row['visual_fit']=='distinctive_match'}
     if not 1<=len(supporting)<=2 or not supporting<=match_ids:
         return dict(reviewed,reason='positive_binding_not_supported_by_model_contrast')
-    # A model may supply *negative* architectural evidence against neighboring
-    # articles. This MUST NOT be rewritten as a positive binding, but dropping
-    # it from the frozen decision is not hiding evidence: the original response
-    # and all negative observations remain independently hashed in reviewed.
+    # A model may supply negative evidence against neighboring articles.
+    # Preserve it separately; never fabricate a positive source binding.
+    # A stable *color* or generic history match on an unrelated article is
+    # not enough to veto a strongly individuated architectural description.
+    strong={'bay','roof','window_axes','openings','outline','composition'}
     positive_correspondences=[]
     negative_correspondences=[]
     for line in decision['correspondences']:
@@ -472,20 +473,30 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             positive_correspondences.append(line)
         else:
             negative_correspondences.append(line)
-            if line['status']=='stable_match':
+            if line['status']=='stable_match' and line.get('feature_kind') in strong:
                 return dict(reviewed,reason='unresolved_stable_match_in_unbound_article',
                     negative_article_evidence=negative_correspondences)
+    if any(row['visual_fit']=='distinctive_match' and row['article_id'] not in supporting
+            for row in assessments):
+        return dict(reviewed,reason='other_distinctive_article_not_resolved',
+            negative_article_evidence=negative_correspondences)
     if any(line['status']=='structural_contradiction' for line in positive_correspondences):
         return dict(reviewed,reason='positive_article_has_unresolved_structural_contradiction',
             negative_article_evidence=negative_correspondences)
-    # An individual combination is more than just color, century, building
-    # function, generic style or a simple storey count. A cropped facade may
-    # provide only two stable kinds; demand two distinct *architecture* kinds,
-    # at least one from a discriminating shape/openings/roof pattern.
-    strong={'bay','roof','window_axes','openings','outline','composition'}
+    # A distinctive composition may contain multiple independent features
+    # classed under the same broad type ("composition"): a round fortification
+    # volume and crenellated parapet are not identical observations. Require
+    # either two different structural kinds OR two different SHA-bound
+    # structural source passages. Generic style, color and historical facts
+    # alone never satisfy this gate.
+    strong_passages={(line['article_id'],line['source_quote'])
+        for line in positive_correspondences
+        if line['status']=='stable_match' and line.get('feature_kind') in strong}
     stable_kinds={line.get('feature_kind') for line in positive_correspondences
         if line['status']=='stable_match' and line.get('feature_kind') in strong | {'levels'}}
-    if not (len(stable_kinds)>=2 and stable_kinds & strong):
+    structurally_supported=(len(stable_kinds)>=2 and bool(stable_kinds & strong)
+        or len(strong_passages)>=2)
+    if not structurally_supported:
         return dict(reviewed,reason='not_enough_independent_structural_architecture',
             negative_article_evidence=negative_correspondences)
     reviewed['negative_article_evidence']=negative_correspondences
