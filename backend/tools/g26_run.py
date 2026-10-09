@@ -198,7 +198,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
     input_receipt=_json(inp)
     if input_receipt.get('status')!='ready':
         return {'id':cid,'status':input_receipt['status'],'method_calls':0}
-    full=_json(case/'spatial-options-v3-llm-first.json')
+    full=_json(case/'spatial-options-v3-bearing-v2.json')
     packet=compact_packet(full)
     prompt=source_map_prompt(packet)
     schema=visual_spatial_choice_schema()
