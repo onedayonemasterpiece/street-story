@@ -356,7 +356,8 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
     if t_prepared is not None:
         from .identity_architectural_funnel import close_t_g_funnel
         t_status=close_t_g_funnel(t_prepared,t_model,
-            source_sha256=(source_text_receipt or {}).get('original_source_sha256'))
+            source_sha256=(source_text_receipt or {}).get('original_source_sha256'),
+            same_model_visible_architecture=normalized.get('discriminating_combination'))
     if (len(set(item['article_id'] for item in assessments))!=len(pool['article_ids'])
             or set(item['article_id'] for item in assessments)!=set(pool['article_ids'])):
         raise ValueError('unassessed_real_publisher_article')
@@ -491,7 +492,8 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
         from .identity_architectural_funnel import close_t_g_funnel
         t_status=close_t_g_funnel(t_prepared,t_model,
             source_sha256=(source_text_receipt or {}).get('original_source_sha256'),
-            t_accepted=True,accepted_candidate_id=proof['candidate_id'])
+            t_accepted=True,accepted_candidate_id=proof['candidate_id'],
+            same_model_visible_architecture=decision.get('discriminating_combination'))
     return {**reviewed,'accepted':True,'proof':proof,
         # A successfully accepted T identity does not need a speculative
         # fallback research shortlist. For G-backed accepted T, retain the
