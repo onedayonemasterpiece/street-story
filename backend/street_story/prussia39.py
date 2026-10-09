@@ -110,6 +110,35 @@ def _page_url(value):
     return urlunsplit(('https', 'www.prussia39.ru', parsed.path, parsed.query, ''))
 
 
+
+def _title_page_url(value, previous_receipt):
+    """Only a numbered pagination URL actually received for the same query.
+
+    Search result pagination uses /search.php rather than /sight/database.php;
+    the address paginator cannot safely parse that unrelated DOM. Never allow
+    a publisher link to silently change the SOURCE-derived query or host.
+    """
+    if (not isinstance(value, str) or not isinstance(previous_receipt, dict)
+            or previous_receipt.get('operation') != 'title'
+            or value not in (previous_receipt.get('pagination_urls') or [])
+            or len(value) > 4096):
+        raise ValueError('title_pagination_not_observed')
+    parsed = urlsplit(value)
+    if (parsed.scheme != 'https' or parsed.hostname != 'www.prussia39.ru'
+            or parsed.username or parsed.password or parsed.port not in (None, 443)
+            or parsed.path != '/search.php' or parsed.fragment):
+        raise ValueError('invalid_title_pagination_url')
+    params = parse_qs(parsed.query, encoding='cp1251', errors='strict')
+    prior_query = (previous_receipt.get('original_query') or {}).get('text')
+    if (not isinstance(prior_query, str) or
+            params.get('text') != [_literal(prior_query)] or
+            params.get('search_obj') != ['2'] or
+            not re.fullmatch(r'[1-9][0-9]{0,2}', (params.get('p') or [''])[0]) or
+            len(params.get('p') or []) != 1):
+        raise ValueError('title_pagination_query_changed')
+    return urlunsplit(('https', 'www.prussia39.ru', parsed.path, parsed.query, ''))
+
+
 def _decode(raw):
     if not raw:
         raise ValueError('empty_body')
@@ -351,6 +380,21 @@ class Prussia39Adapter:
         except (ValueError, UnicodeError) as exc:
             return {'status':'not_sent', 'error_code':str(exc), 'results':[]}
         return await self._read(url, 'title', original_query={'text':str(query)})
+
+    async def title_search_page(self, observed_pagination_url, *, previous_receipt):
+        """One explicit continuation of a SOURCE-derived publisher title query.
+
+        The caller owns how many continuation pages to request; no cascading
+        traversal or implicit claims that a keyword result is a building.
+        """
+        try:
+            url = _title_page_url(observed_pagination_url, previous_receipt)
+        except (ValueError, TypeError, UnicodeError) as exc:
+            return {'status':'not_sent', 'error_code':str(exc), 'results':[]}
+        return await self._read(url, 'title',
+            original_query={'text':(previous_receipt.get('original_query') or {}).get('text'),
+                            'parent_query_sha256':previous_receipt.get('query_sha256'),
+                            'pagination_kind':'observed_publisher_title_page'})
 
     async def address_search(self, city, address, *, name=''):
         try:
