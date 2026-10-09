@@ -150,6 +150,23 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
 
 
+def test_singleton_t_contract_rejects_self_alternative_without_rewriting_the_closed_answer():
+    import copy
+    from jsonschema import Draft202012Validator
+    from street_story.identity_architectural_comparison import normalize_architectural_decision
+    story, candidates, decision, receipt = _comparison_fixture()
+    receipt['conditional_initial_decision']['candidate_ids'] = [candidates[0]['candidate_id']]
+    prepared = prepare_architectural_comparison(story, candidates, receipt)
+    assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 0
+    assert Draft202012Validator(prepared['schema']).is_valid(decision)
+    decision['material_alternatives'] = [{'candidate_id': decision['candidate_id'],
+        'reason': 'Only nominated body.'}]
+    original = copy.deepcopy(decision)
+    with pytest.raises(ValueError, match='model_response_invalid'):
+        normalize_architectural_decision(decision, prepared['schema'])
+    assert decision == original
+
+
 def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     story, candidates, decision, receipt = _comparison_fixture()
     decision['scope'] = 'Article describes a complex covering house 6 and neighboring 6A.'

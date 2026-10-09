@@ -41,6 +41,16 @@ rejection remains a recorded route failure and cannot discard complete evidence
 or block independent qualified routes. Each headless semantic operation starts a
 fresh scoped session rather than accumulating another operation's dialogue.
 
+G and T explicitly compare the visible physical volume's height/width proportions
+and narrow or elongated form against adjoining buildings. The model must first
+separate attached facades and their window axes. G relates this observation to
+actual mapped contour sides and extent; T relates it to documented architecture.
+Shape can reject an alternative when the mismatch survives plausible viewpoint,
+crop, occlusion and end-on-view explanations. A narrow facade does not imply a
+short footprint in depth; missing height remains unknown. Pixel aspect ratio is
+not a map measurement, and shape agreement alone never accepts identity. This
+generic comparison adds no control address, expected ID or building-specific rule.
+
 The initial MAP keeps the full overview and every physical body row. Indexed side
 excerpts are limited to the displayed area and explicitly state omissions; this
 is a presentation limit, not a candidate shortlist. An uncertain joint decision

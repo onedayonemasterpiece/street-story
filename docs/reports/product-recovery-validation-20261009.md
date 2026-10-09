@@ -2,6 +2,70 @@
 
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
+
+## Frozen b022307 product result and selected-card continuation
+
+Blind cold132 on `b02230727af905e52f474830d00b6fe9c7e5d626` passed all
+identity180/first-fact300/whole480 gates: independent T accepted the physical
+building in 64.961 seconds, the first eligible canonical claim arrived in
+92.309 seconds, and the normal workers finished in 233.459 seconds with 11
+reviewed claims independently read back from POI. Construction date, facade
+material, risalit/window-axis/gable composition and dated heritage designation
+provide distinct substantive physical facts; institutional history is separate.
+The undated current superlative was withheld. No correct ID, address or reference
+was supplied to the models. Backend and Android hosted checks passed on this SHA.
+
+Same-SHA blind cold102 failed in 61.647 seconds with no accepted object/facts.
+Its original closed Luna response nominated a physical body and explicitly
+selected a received Prussia39 card, while leaving physical binding unresolved.
+The source reader required that binding to be resolved *before* reading the
+body. Consequently joint2 received no article and its generic repair failed the
+first-wave subject-ID schema. This was an acquisition handoff defect, not quota.
+The original SOURCE/MAP, Luna turn, malformed joint2 and unconfirmed hypothesis
+remain retained; none is administratively accepted or overwritten.
+
+The repair allows the received selected body to be read for the original
+unconfirmed physical nomination. It carries `physical_binding_claimed=false`
+to the supplied compact T comparison. All other acquisition fences and the
+common physical proof, exact quote, alternative and unresolved-scope checks
+remain in force. The existing joint2 must independently resolve identity;
+incomplete search coverage alone is never accepted. Actual continuation and
+final same-SHA acceptance remain pending. Evidence is retained under
+`/home/dev/artifacts/street-story/20261009T105848Z-gt-product-integration-20261009/`.
+
+The acquisition repair passed 131 compatible checks. No-inference readback of
+the actual closed G prepared the acquired article and compact T contract with
+unchanged SOURCE/MAP hashes. One real T continuation then returned the nominated
+body with four exact matching structural quotations in 7.499 provider seconds,
+but included the chosen body in `material_alternatives`. The common validator
+correctly rejected this self-alternative; no claim or POI was committed. This
+exposes an issued-schema mismatch, not missing source text or a quota denial.
+The compact singleton response contract now mirrors the unchanged host rule:
+there are zero *other received* bodies, so `material_alternatives` is empty.
+This does not exclude unknown bodies or infer correctness. Raw closed answers
+remain unchanged and malformed self-alternatives are still rejected. The focused
+T/reader/proof suite passed 63 checks. Actual final verification remains pending.
+
+The corrected T response then remained genuinely uncertain about the window-axis
+count in the upward crop; its raw response is retained. It was not repeated for
+a positive answer. The existing original G action explicitly requested a facade
+reference from its selected source. The continuation now preserves that acquired
+source as an unconfirmed reference action despite incomplete first-wave coverage,
+and passes its actual media to the existing visual queue. It neither manufactures
+search choices nor accepts identity/facts. An unavailable reference ends with
+explained uncertainty rather than a provider error. The ordinary proof authority
+and Stop/generation fences remain unchanged. The focused continuation/native/G/T
+suite passed 76 checks.
+
+The owner's narrow-volume observation exposed a missing explicit comparison in
+the existing G/T instructions. Both now compare the target's visible proportions
+and narrow/elongated form against attached neighbors, separating volume boundaries
+and window axes. They must consider crop, yaw, occlusion and an end-on view of a
+long footprint; missing heights are never invented. Shape supports elimination,
+not standalone acceptance. No control address or ID is embedded. The geometry,
+T and spatial-contract checks passed 76 tests; this is implementation verification,
+not yet evidence of improved real-photo accuracy.
+
 The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.

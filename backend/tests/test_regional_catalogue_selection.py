@@ -183,6 +183,83 @@ async def test_partial_inventory_can_read_a_selected_known_card_without_claiming
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("text_resolves_binding", [False, True])
+async def test_unconfirmed_selected_card_reaches_existing_t_even_when_search_coverage_is_incomplete(
+        tmp_path, monkeypatch, text_resolves_binding):
+    service, s, active = geometry_setup(tmp_path)
+    s.update(latitude=54.7, longitude=20.5)
+    s["_identity_search_context"] = {"reverse_address": {"city": "Город", "road": "Тестовая улица"}}
+    for item in s["_identity_observed_candidates"]:
+        item["map_address"] = {"city": "Город", "street": "Тестовая улица",
+            "house_number": "6" if item["candidate_id"] == "osm:way:2" else "6А"}
+    calls, reads = [], []
+    def handler(request):
+        reads.append(request)
+        if request.url.path == "/sight/database.php":
+            return response(inventory(21, 35, next_page=False) if b"p=2" in request.url.query else inventory())
+        assert len(calls) == 1 and b"sid=34" in request.url.query
+        return response(html(f'<td style="text-align:justify">{TEXT}</td>'))
+    offline(monkeypatch, handler)
+    initial = geometry_decision()
+    initial.update(decision="uncertain", candidate_id="", next_action={
+        "kind": "reference_image", "target_candidate_ids": ["osm:way:2"], "reason": "Inspect this unconfirmed body."})
+    chosen = dict(selection(), physical_binding_resolved=False)
+    first = {**payload(initial), "regional_article_selections": [chosen]}
+    _story, _catalog, decision, _receipt = text_inputs(candidate_id="osm:way:2")
+    for field in ("article_bindings", "correspondences"):
+        decision[field][0]["article_id"] = "prussia39:sid:34"
+    decision["material_alternatives"] = [{"candidate_id": "osm:way:3",
+        "reason": "The SOURCE/text bay precedes the return; the neighboring body reverses that arrangement."}]
+    if not text_resolves_binding:
+        decision["decision"] = "uncertain"
+        decision["article_bindings"][0]["physical_binding_resolved"] = False
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            return SimpleNamespace(text=json.dumps(first))
+        assert len(calls) == 2 and len(reads) == 3
+        assert "identity_first_wave_coverage_incomplete" in contents[-1]
+        assert '"physical_binding_claimed":false' in contents[-1]
+        assert TEXT in contents[-1]
+        assert "first_wave_hypotheses" not in config.response_json_schema["properties"]
+        assert "_identity_geometry_result" not in s
+        assert contents[0].inline_data.data == calls[0][0].inline_data.data
+        return SimpleNamespace(text=json.dumps(decision))
+    async def forbidden(*args, **kwargs):
+        pytest.fail("No repeated G, extra planner or REF after independent T")
+    service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
+    if text_resolves_binding:
+        await identity_discovery.prepare_search_plan(service, s, "", active)
+        assert s["_identity_geometry_result"]["proof_kind"] == "architectural_text"
+    else:
+        history, _ = await identity_discovery.prepare_search_plan(service, s, "", active)
+        assert "_identity_geometry_result" not in s
+        partial = history['search_plan']['payload']
+        assert partial['search_coverage_incomplete'] is True
+        assert partial['first_wave_hypotheses'] == []
+        assert history['planned_queries'] == []
+        assert partial['unconfirmed_reference_action']['identity_accepted'] is False
+        from street_story import article_media
+        media_reads = []
+        async def actual_selected_media(svc, snapshot, sources, excluded, *, receipts, first_ready):
+            media_reads.append(sources)
+            assert first_ready and len(sources) == 1
+            assert sources[0]['url'] == partial['source_text_receipt']['articles'][0]['url']
+            return [{'candidate_id': 'web:fixture', 'url': sources[0]['url'],
+                'reference_image_urls': ['https://example.org/actual-facade.jpg']}]
+        monkeypatch.setattr(article_media, 'article_candidates', actual_selected_media)
+        result, pending = await identity_discovery.recover(service, s, '', active, set())
+        assert result['status'] == 'uncertain' and result['_article_media_pending']
+        assert pending[0]['candidate_id'] == 'web:fixture'
+        assert len(media_reads) == 1 and len(calls) == 2
+    saved = service._identity_snapshot(s["id"])[1]["identity_physical_hypothesis"]
+    assert saved["identity_accepted"] is False
+    assert saved["closed_payload"]["regional_article_selections"][0]["physical_binding_resolved"] is False
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body,status",
     [
