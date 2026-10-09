@@ -166,6 +166,24 @@ def _closed_invalid_followup_route(settings, gemini, issues, model, quota, execu
     return model, quota, executor
 
 
+def _joint_initial_routes(settings, gemini, *, scene_available):
+    """Reuse registered models for the actual joint visual reasoning role.
+
+    SOURCE/MAP has measured interpretation failures on the lightweight route.
+    Its configured tertiary is preferred without adding a preliminary judge;
+    ordinary text planning and fact extraction retain their own routing.
+    """
+    routes, seen = [], set()
+    for route in [*(getattr(gemini, 'web_search_routes', None) or []),
+            *(getattr(gemini, 'research_routes', None) or [])]:
+        if route[0] not in seen:
+            routes.append(route)
+            seen.add(route[0])
+    preferred = getattr(settings, 'gemini_web_search_tertiary_model' if scene_available
+        else 'gemini_web_search_model', None)
+    return sorted(routes, key=lambda route: route[0] != preferred) if preferred else routes
+
+
 def _nomination_binding_issues(payload, nomination_ids, manifest):
     """Explain exact nomination membership errors without changing model choices."""
     if not isinstance(payload, dict) or not isinstance(payload.get('observed_candidate_ids'), list):
@@ -1025,7 +1043,7 @@ async def suggest(service, story, transcript, candidates):
         from .service import digest
         reserve_work(service, story['id'], 'planner_calls',
             [digest([story['photo_sha256'], prompt, schema])])
-    routes = getattr(gemini, 'research_routes', None)
+    routes = _joint_initial_routes(getattr(service, 'settings', None), gemini, scene_available=bool(scene))
     if not hasattr(gemini, '_generate') or not hasattr(gemini, 'executor'):
         return await fallback(RetryableProviderError('identity_google_planner_unavailable'))
     if not routes:
@@ -1035,11 +1053,6 @@ async def suggest(service, story, transcript, candidates):
         except (GeminiUnavailable, PermanentProviderError, RetryableProviderError) as exc:
             return await fallback(exc)
     retry_at = []
-    preferred_model = getattr(getattr(service, 'settings', None), 'gemini_web_search_model', None)
-    if preferred_model:
-        # Keep the existing registered tuple's pool/quota/executor intact.
-        # This only selects its order for the joint image operation.
-        routes = sorted(routes, key=lambda route: route[0] != preferred_model)
     for model, _pool, quota, executor in routes:
         async def routed_call(key, timeout, *, _model=model, _quota=quota):
             return await send_initial(key, timeout, model=_model, quota=_quota)

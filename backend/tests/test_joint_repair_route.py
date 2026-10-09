@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from street_story import identity_discovery
+from street_story.gemini import GeminiUnavailable
 from street_story.providers import RetryableProviderError
 from test_geometry_identity_plan import geometry_decision, geometry_setup, payload
 
@@ -26,6 +27,18 @@ def test_route_change_requires_closed_contract_issues_and_registered_tuple(issue
         else (expected, old_quota, old_executor))
 
 
+@pytest.mark.parametrize('scene_available,preferred', [(True, 'alternative'), (False, 'initial')])
+def test_joint_visual_role_prefers_configured_registered_model_without_changing_its_tuple(scene_available, preferred):
+    first = ('initial', object(), object(), object())
+    alternative = ('alternative', object(), object(), object())
+    settings = SimpleNamespace(gemini_web_search_model='initial', gemini_web_search_tertiary_model='alternative')
+    gemini = SimpleNamespace(web_search_routes=[first, alternative], research_routes=[first])
+    routes = identity_discovery._joint_initial_routes(settings, gemini, scene_available=scene_available)
+    assert len(routes) == 2 and routes[0][0] == preferred
+    assert routes[0] is (alternative if scene_available else first)
+    assert identity_discovery._joint_initial_routes(settings, SimpleNamespace(), scene_available=True) == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('lost', [False, True])
 async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model_without_resend(tmp_path, lost):
@@ -37,8 +50,14 @@ async def test_existing_second_joint_uses_own_registered_quota_and_freezes_model
     class Executor:
         def __init__(self, name):
             self.name = name
+            self.admissions = 0
 
         async def execute(self, role, call):
+            self.admissions += 1
+            if self.name == 'alternative' and self.admissions == 1:
+                # Registered preferred route temporarily has no slot; no SDK
+                # invocation or addressed operation occurred on that attempt.
+                raise GeminiUnavailable(None, 'fixture_no_slot_before_send')
             assert not leases
             leases.append(self.name)
             try:
