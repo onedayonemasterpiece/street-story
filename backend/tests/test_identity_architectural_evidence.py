@@ -39,9 +39,12 @@ def _scene():
 
 
 def _linked(inventory):
-    pub=next(iter(inventory['publisher_refs']))
+    pub=next(k for k,v in inventory['publisher_refs'].items()
+        if v['article_id']=='prussia39:sid:11'
+        and v['provenance']=='observed_publisher_article_metadata')
     osm=next(k for k,v in inventory['osm_refs'].items()
-        if v['candidate_id']=='osm:way:7')
+        if v['candidate_id']=='osm:way:7'
+        and v['kind']=='observed_OSM_postal_entry')
     return {'article_id':'prussia39:sid:11','candidate_id':'osm:way:7',
         'publisher_ref':pub,'osm_ref':osm,
         'relationship':'historical_address_relation',
@@ -154,3 +157,42 @@ def test_compact_model_records_keep_every_unranked_osm_body_and_source_ref():
     assert compact['original_ref_counts']=={
         'publisher':len(full['publisher_refs']),'osm':len(full['osm_refs'])}
     assert len(str(compact))<len(str(full))
+
+
+
+def test_real_records_url_and_osm_postal_are_not_a_mechanical_physical_link():
+    story,candidates,articles=_scene()
+    inv=literal_evidence_inventory(story,candidates,articles,
+        candidate_ids=['osm:way:7','osm:way:8'])
+    weak=_linked(inv)
+    weak['publisher_ref']=next(ref for ref,row in inv['publisher_refs'].items()
+        if row['provenance']=='acquired_publisher_article_url')
+    reply={'decision':'accepted_architectural_text',
+        'candidate_id':'osm:way:7',
+        'article_bindings':[{'article_id':'prussia39:sid:11'}]}
+    proof=validate_model_physical_links(inv,[weak],reply)
+    assert proof['supported'] is False
+    assert proof['reason']=='no_substantive_publisher_to_OSM_physical_link_evidence'
+    assert proof['publisher_provenance']=='acquired_publisher_article_url'
+
+
+def test_direct_observed_osm_provider_ref_binds_publisher_without_address_parser():
+    story,candidates,articles=_scene()
+    candidates[0]['map_object']['tags']['ref:prussia39']='11'
+    inv=literal_evidence_inventory(story,candidates,articles,
+        candidate_ids=['osm:way:7','osm:way:8'])
+    claim=_linked(inv)
+    claim['publisher_ref']=next(ref for ref,row in inv['publisher_refs'].items()
+        if row['provenance']=='acquired_publisher_article_url')
+    claim['osm_ref']=next(ref for ref,row in inv['osm_refs'].items()
+        if row['candidate_id']=='osm:way:7' and row.get('tag')=='ref:prussia39')
+    decision={'decision':'accepted_architectural_text','candidate_id':'osm:way:7',
+        'article_bindings':[{'article_id':'prussia39:sid:11'}]}
+    accepted=validate_model_physical_links(inv,[claim],decision)
+    assert accepted['supported'] is True
+    candidates[0]['map_object']['tags']['ref:prussia39']='999'
+    bad=literal_evidence_inventory(story,candidates,articles,
+        candidate_ids=['osm:way:7','osm:way:8'])
+    stale=validate_model_physical_links(bad,[claim],decision)
+    assert stale['supported'] is False
+    assert stale['reason']=='no_substantive_publisher_to_OSM_physical_link_evidence'
