@@ -259,7 +259,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
     encoded=config.model_dump(exclude_none=True,mode='json')
     if (schema_transport=='structured' and 'response_json_schema' not in encoded):
         raise ValueError('provider_did_not_serialize_G_schema')
-    path=case/('inference-'+model.replace('/','-'))
+    path=case/('inference-'+model.replace('/','-')+'-bearing-v2')
     intent=path/'provider-intent.json'
     result_path=path/'result.json'
     if result_path.exists():
