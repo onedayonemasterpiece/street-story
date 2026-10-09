@@ -57,11 +57,12 @@ def preflight(cid):
         'physical_count':packet['physical_body_count'],
         'expanded_body_count':len(packet['expanded_labels']),
         'option_count':len(packet['options']),'option_kinds':kinds,
+        'presentation_stage':packet['presentation_stage'],
         'full_index_count':len(packet['all_received_physical_bodies']),
         'serialised_model_bytes':len(json.dumps(displayed,ensure_ascii=False).encode()),
         'options_sha256':option_digest(packet),
         'method_calls':0,'precompute_ms':round((time.monotonic()-start)*1000,1)}
-    detail_path=case/'spatial-options-v3.json'
+    detail_path=case/'spatial-options-v3-llm-first.json'
     if not detail_path.exists():
         detail_path.write_text(json.dumps(packet,ensure_ascii=False,indent=2))
         os.chmod(detail_path,0o600)
@@ -78,8 +79,8 @@ def main():
                 'error_type':type(exc).__name__,'error_code':str(exc)[:240],
                 'method_calls':0})
     if set(args.ids)==set(ALL):
-        path=ROOT/'g26-spatial-preflight.json'
-        path.write_text(json.dumps({'contract':'G-options-v3',
+        path=ROOT/'g26-spatial-preflight-llm-first.json'
+        path.write_text(json.dumps({'contract':'G-options-v3-llm-first',
             'oracle_not_loaded':True,'cases':rows},ensure_ascii=False,indent=2))
         os.chmod(path,0o600)
     print(json.dumps({'total':len(rows),'usable':sum(x['status']=='usable_spatial_options' for x in rows),
@@ -89,5 +90,6 @@ def main():
             'id':row['id'],'status':row['status'],
             'bodies':row.get('physical_count'),'options':row.get('option_count'),
             'types':row.get('option_kinds'),'packet_bytes':row.get('serialised_model_bytes'),
+            'stage':row.get('presentation_stage'),
             'ms':row.get('precompute_ms')} for row in rows]},ensure_ascii=False))
 if __name__=='__main__':main()
