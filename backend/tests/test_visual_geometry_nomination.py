@@ -48,7 +48,7 @@ def test_original_132_conditional_witness_checks_real_road_and_both_directions()
     relation={'kind':'street_termination',
         'source_observation':'SOURCE shows an approach ending in a cross street before the frontal building.',
         'map_body_labels':[subject],
-        'road_label':road,'road_direction_index':1,
+        'road_candidate_id':'osm:way:67826885','road_direction_index':1,
         'segment_ring_index':0,'first_segment_index':0,'second_segment_index':0}
     original=proposal(subject,relation,alternatives=[bodies['osm:way:192220354']])
     result=check_visual_geometry_nomination(original,manifest,capsule)
@@ -75,7 +75,7 @@ def test_original_106_frontage_can_preserve_visual_nomination_without_fake_camer
     relation={'kind':'frontage_sequence',
         'source_observation':'The photographed long front ends at a corner and a second body continues behind it.',
         'map_body_labels':[subject,neighbour],
-        'road_label':0,'road_direction_index':0,
+        'road_candidate_id':'','road_direction_index':0,
         'segment_ring_index':0,'first_segment_index':0,'second_segment_index':1}
     output=check_visual_geometry_nomination(proposal(subject,relation),
         scene['manifest'],capsule)
