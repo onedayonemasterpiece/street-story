@@ -10,7 +10,7 @@ from jsonschema import Draft202012Validator
 
 from street_story.identity_architectural_funnel import (
     close_t_g_funnel, prepare_t_g_funnel, t_g_funnel_schema,
-    project_independent_T_nomination)
+    project_independent_T_nomination, to_existing_research_priority)
 from street_story.identity_architectural_pool import (
     close_architectural_pool_response, prepare_architectural_pool)
 from test_identity_architectural_pool import _closed_answer, _three_documents
@@ -102,7 +102,8 @@ def test_t_reduction_preserves_contradictions_unexamined_and_precise_ref_request
     assert closed['t_explicit_contradictions']==[{
         'candidate_id':'osm:way:8','review_state':'model_explicit_contradiction',
         'reason':result['explicitly_contradicted'][0]['source_vs_article_reason'],
-        'conditions':result['explicitly_contradicted'][0]['contradiction_conditions']}]
+        'conditions':result['explicitly_contradicted'][0]['contradiction_conditions'],
+        'source_article_ids':['catalog:physical-building']}]
     assert closed['identity_authorized_by_shortlist_count_alone'] is False
     assert closed['downstream_REF']['target_candidate_ids']==['osm:way:7']
     assert closed['downstream_REF']['image_research_goals'][0][
