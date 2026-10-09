@@ -28,6 +28,24 @@ def test_default_https_port_has_one_public_resource_identity():
     assert public_url('https://[2606:4700:4700::1111]:443/photo') == 'https://[2606:4700:4700::1111]/photo'
 
 
+def test_individual_photo_page_links_preserve_article_pixels_and_caption_before_layout_images():
+    title, media = extract_media('''<title>Actual building</title><div id="content">
+      <div id="popupContact"><h1>Login</h1></div><img src="/layout.gif">
+    </div><table><tr><td>
+      <a href="/photo/show.php?phid=17"><img src="/thumbnails/facade.jpg" alt="Facade in 1960"></a>
+      <a href="/other-place/"><img src="/unrelated.jpg"></a>
+      <a href="https://elsewhere.example/photo/show.php?phid=18"><img src="/foreign.jpg"></a>
+    </td></tr></table>
+    <nav><a href="/photo/show.php?phid=19"><img src="/navigation.jpg"></a></nav>
+    ''', 'https://example.org/article/?id=2')
+    assert title == 'Actual building'
+    assert media[0]['image_url'] == 'https://example.org/thumbnails/facade.jpg'
+    assert media[0]['detail_page_url'] == 'https://example.org/photo/show.php?phid=17'
+    assert media[0]['alt'] == 'Facade in 1960'
+    assert media[0]['article_url'] == 'https://example.org/article/?id=2'
+    assert len(media) == 2
+
+
 @pytest.mark.asyncio
 async def test_transient_http_error_and_empty_browser_does_not_exhaust_article(tmp_path):
     from street_story.article_media import article_candidates

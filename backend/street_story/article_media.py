@@ -195,10 +195,26 @@ def collection_reference(candidate, store=None):
 def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     """Use article/main/gallery media, never the site's whole image inventory."""
     soup = BeautifulSoup(document, 'html.parser')
-    title = (soup.find('h1') or soup.find('title'))
+    # Legacy pages may place an authentication popup's h1 before the article.
+    # The document title describes the resource; use h1 only if it is absent.
+    title = (soup.find('title') or soup.find('h1'))
     title = title.get_text(' ', strip=True)[:180] if title else ''
     collection, _detail_sources = collection_cards(soup, page_url)
     collection_ids = {id(card) for card in collection}
+
+    def photo_detail_url(anchor):
+        if anchor is None or not anchor.get('href'):
+            return None
+        linked = public_url(urljoin(page_url, anchor['href']))
+        if not linked:
+            return None
+        detail = urlsplit(linked)
+        if (detail.netloc == urlsplit(page_url).netloc
+                and re.search(r'/(?:photo|photos|image|images)/', detail.path, re.I)
+                and re.search(r'(?:^|&)(?:phid|photo_id|image_id)=\d+(?:&|$)', detail.query)):
+            return linked
+        return None
+
     roots = soup.select('article, [itemprop="articleBody"], main, [role="main"]')
     # Older article/photo pages use table cells rather than semantic <main>.
     # Keep the same chrome/dimension/public-URL checks within declared content.
@@ -206,6 +222,12 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     content_roots.extend(soup.find_all(['div', 'section', 'table', 'td'],
         id=re.compile(r'^(?:content|main-content|article|article-content|gallery|photo)$', re.I)))
     roots.extend(node for node in content_roots if not any(parent in roots for parent in node.parents))
+    # An explicit photo-description anchor scopes its own thumbnail even on
+    # legacy table pages without a declared main/gallery container. Keep all
+    # collection, chrome, visibility and dimension checks below.
+    roots.extend(anchor for anchor in soup.find_all('a', href=True)
+        if anchor.find('img') is not None and photo_detail_url(anchor)
+        and not any(parent in roots for parent in anchor.parents))
     media, seen = [], set()
 
     def local_context(node, root):
@@ -281,6 +303,18 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
                 continue
             if parent and parent.get('href') and not str(parent.get('href')).startswith('#'):
                 if linked and not file_link and urlsplit(linked).path.rstrip('/') != urlsplit(page_url).path.rstrip('/'):
+                    # Individual photo-description links contain an actual
+                    # article thumbnail. Preserve its pixels and detail-page
+                    # provenance, rather than treating that HTML URL as pixels
+                    # or confusing it with another article/collection card.
+                    photo_detail = photo_detail_url(parent)
+                    if not photo_detail:
+                        continue
+                    before = len(media)
+                    add(image.get('data-original') or image.get('data-src') or image.get('src'),
+                        'article_photo_detail', alt or str(image.get('title') or ''), node=image, root=root)
+                    if len(media) > before:
+                        media[-1]['detail_page_url'] = linked
                     continue
             srcset = image.get('data-srcset') or image.get('srcset') or ''
             variants = []
@@ -327,6 +361,9 @@ def extract_media(document: str, page_url: str) -> tuple[str, list[dict]]:
     if og:
         url = public_url(urljoin(page_url, og.get('content', '')))
         media.sort(key=lambda item: item['image_url'] != url)
+    # Explicit photo-description anchors declare a stronger media role than
+    # unlabelled layout images; this is transport ordering, never a match.
+    media.sort(key=lambda item: item['kind'] != 'article_photo_detail')
     return title, media
 
 

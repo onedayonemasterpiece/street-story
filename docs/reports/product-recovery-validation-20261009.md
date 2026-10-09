@@ -66,6 +66,33 @@ not standalone acceptance. No control address or ID is embedded. The geometry,
 T and spatial-contract checks passed 76 tests; this is implementation verification,
 not yet evidence of improved real-photo accuracy.
 
+Blind cases on frozen `2595a15cbecf09231729798a2040bd9b1502d81b`:
+132 accepted the correct physical object through T at 100.346 seconds, but its
+Live fact operation submitted one text request and timed out without a response
+or measured usage. The receipt remains UNKNOWN; it was not sent again. Normal
+workers ended at 441.745 seconds with zero eligible facts: BLOCKED, not product
+PASS. No quota denial or provider root cause is established by this receipt.
+102 explicitly observed the tall target separately from its lower neighbor,
+retained that physical hypothesis and reached the selected-source REF continuation.
+It still failed the 180-second identity gate (180.645 seconds, zero facts).
+The source's legacy table contains four photo-description thumbnails outside
+the declared content container. The reader skipped these real photographs,
+returned layout images and used a login popup heading as the candidate name.
+
+The reader now scopes same-origin photo-description anchors with typed photo IDs
+as media, preserves their actual thumbnail URL, caption and detail-page URL, and
+orders these explicitly declared photographs before unlabelled layout images.
+Existing collection/chrome/visibility/dimension guards still apply; an HTML detail
+page is never passed as image pixels. The document title takes precedence over
+an unrelated popup h1. No control-specific domain, address or identifier was added.
+Readback of the immutable actual HTML SHA256
+`21482c6ab608affd7a8d66a95f0cfdb562d5e51e52284fa00caecb498c1d7372`
+preserves all four captioned photos and the correct title, with zero inference
+sends. Article/continuation regression checks passed 41 tests; Ruff passed.
+Evidence: `article-media-selected-3875-before.json` and
+`article-media-selected-3875-after.json` in the retained task directory above.
+This verifies extraction, not physical identity or a completed product result.
+
 The deployed backend
 remains `db0c0d08024441536a2e59f5c3c433b12c7f4189`. A prepared branch or successful
 offline check does not establish deployment or user-visible success.
