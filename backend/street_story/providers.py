@@ -1530,10 +1530,31 @@ class GeminiClient:
                     # Public acquisition stores raw bytes and MIME, so decoding
                     # must honor the document charset rather than httpx's UTF-8
                     # default after recreating the response from cache.
-                    decoded = UnicodeDammit(raw_bytes, is_html=True)
-                    if decoded.unicode_markup is None:
-                        raise ValueError('article_encoding_unreadable')
-                    normalized_text, text_limited = _read_article_text(decoded.unicode_markup)
+                    from .prussia39 import canonical_article, _decode, parse_article
+                    try:
+                        publisher_sid, _ = canonical_article(requested_url)
+                    except ValueError:
+                        publisher_sid = None
+                    if publisher_sid is not None:
+                        # Reuse the publisher's body contract on the SAME acquired
+                        # bytes. Navigation/login text is not an article fallback.
+                        try:
+                            final_sid, _ = canonical_article(current_url)
+                            if final_sid != publisher_sid:
+                                raise ValueError('article_redirect_changed')
+                            page, source_encoding = _decode(raw_bytes)
+                            article = parse_article(page)
+                        except ValueError as exc:
+                            error_code = 'publisher_' + str(exc)
+                            raise
+                        normalized_text = article['text'][:120_000]
+                        text_limited = len(article['text']) > len(normalized_text)
+                    else:
+                        decoded = UnicodeDammit(raw_bytes, is_html=True)
+                        if decoded.unicode_markup is None:
+                            raise ValueError('article_encoding_unreadable')
+                        normalized_text, text_limited = _read_article_text(decoded.unicode_markup)
+                        source_encoding = decoded.original_encoding
                     if len(normalized_text) < 80:
                         error_code = "page_text_too_short"
                         raise ValueError(error_code)
@@ -1593,7 +1614,7 @@ class GeminiClient:
                         "content_type": content_type,
                         "normalized_text": normalized_text,
                         "redirect_chain": redirect_chain,
-                        "source_encoding": decoded.original_encoding,
+                        "source_encoding": source_encoding,
                         "raw_content_sha256": hashlib.sha256(raw_bytes).hexdigest(),
                     }
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPError, OSError, ValueError, UnicodeError) as exc:

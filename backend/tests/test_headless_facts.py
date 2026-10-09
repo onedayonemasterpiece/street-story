@@ -109,6 +109,63 @@ async def fixture(tmp_path, *, text=CLAIM + ' This is an inspectable public arti
 
 
 @pytest.mark.asyncio
+async def test_empty_closed_core_advances_actual_unread_passages_without_waiting_or_repeating(tmp_path):
+    svc, job, researcher, reader, fetches = await fixture(tmp_path,
+        text=('Page navigation without historical findings. ' * 85) + CLAIM)
+    facts = HeadlessFacts(svc)
+    try:
+        with pytest.raises(RetryableProviderError) as first:
+            await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert first.value.retry_at == pytest.approx(svc.store.now() + 1, abs=.1)
+        assert researcher.pages[0]['has_more_passages'] is True
+        assert researcher.model_units[researcher.pages[0]['_unit_id']]['result']['facts'] == []
+        assert svc.story(job['story_id'])['facts'] == []
+        for _ in range(4):
+            try:
+                outcome = await facts.run(job, 'headless-run', 'Find historical facts', 'history')
+            except RetryableProviderError as waiting:
+                assert waiting.retry_at == pytest.approx(svc.store.now() + 1, abs=.1)
+                continue
+            assert outcome is None or outcome['coverage_complete'] is False
+            with svc.store.connection() as db:
+                assert not db.execute("SELECT 1 FROM research_chunk_runs WHERE run_id=? "
+                    "AND status NOT IN ('extracted','no_claims')", ('headless-run',)).fetchone()
+            break
+        else:
+            pytest.fail('All actual pages must exhaust finitely')
+        assert len(fetches) == 1
+        assert len(researcher.pages) == len({page['_unit_id'] for page in researcher.pages})
+        assert [page['batch_index'] for page in researcher.pages] == list(range(len(researcher.pages)))
+        facts_rows = svc.story(job['story_id'])['facts']
+        assert len(facts_rows) == 1 and facts_rows[0]['text'] == CLAIM
+        with svc.store.connection() as db:
+            assert db.execute('SELECT eligibility FROM fact_assertions WHERE story_id=?',
+                              (job['story_id'],)).fetchone()[0] == 'unreviewed'
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unknown_core_keeps_original_wait_and_does_not_use_ready_continuation(tmp_path):
+    svc, job, researcher, reader, _ = await fixture(tmp_path, text='Unread public article. ' * 200)
+    calls = []
+
+    async def unknown(page, story, context):
+        calls.append(page['_unit_id'])
+        raise RetryableProviderError('original_response_unknown')
+
+    researcher.extract_fact_page = unknown
+    try:
+        for _ in range(2):
+            with pytest.raises(RetryableProviderError) as waiting:
+                await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+            assert waiting.value.retry_at >= svc.store.now() + 299
+        assert len(calls) == 1 and svc.story(job['story_id'])['facts'] == []
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_frozen_fact_preparation_does_not_starve_live_receipts(tmp_path, monkeypatch):
     svc, job, researcher, reader, _ = await fixture(tmp_path, text=(CLAIM + ' Historical detail.\n') * 150)
     facts = HeadlessFacts(svc)

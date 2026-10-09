@@ -706,6 +706,7 @@ class HeadlessFacts:
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
         suggestions, failures = [], []
+        ready_continuation = False
         review_task = None
         reviewed = 0
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
@@ -723,6 +724,11 @@ class HeadlessFacts:
                     committed = await self._commit_unit(unit, extracted, job, run_id, goal, scope, control_revision)
                     if committed:
                         suggestions.append(extracted['result'])
+                        # The frozen reader, not a model's search suggestion,
+                        # proves that this closed core has unread passages.
+                        ready_continuation |= (unit['page'].get('has_more_passages') is True
+                            and extracted['result']['source_content_valid']
+                            and extracted['result']['source_matches_poi'])
                         if review_task is None or review_task.done():
                             if review_task is not None:
                                 reviewed += await review_task
@@ -762,6 +768,8 @@ class HeadlessFacts:
                 unvisited = set(unfinished) - {unit['page']['chunk_id'] for unit in units}
                 due = self._pending_retry_at(job, run_id) if len(failures) == len(units) else None
                 due = self._capacity_retry(job, run_id, failures, due, bool(suggestions))
+                if ready_continuation:
+                    due = self.service.store.now() + 1
                 self._partial(run_id, 'research_fact_next_page' if unread or unvisited
                               else 'research_fact_source_coverage_partial', retry_at=due)
             if unreviewed:
