@@ -93,9 +93,19 @@ def source_map_prompt(packet):
         'volumes. These may belong to different OSM polygons even when the '
         'photograph visually fuses them. Only THEN use neutral MAP and actual '
         'host-measured OSM relationships to nominate the corresponding bodies. '
-        'The full original index includes true-north plan sector endpoints; '
-        'they help reason about relative position, NOT camera yaw or certainty. '
-        'Do not confuse a nearby wall with the MAIN photographed building. '
+        'The full original index includes real OSM address pairs and '
+        'true-north plan sectors, NOT photographic truth or known camera yaw. '
+        'If camera_basis=original_exif, rows with larger observed plan angular '
+        'extent appear first, but every body is eligible: SOURCE telephoto or '
+        'upper-only crops may depict a far building with a small sector. '
+        'Use physical plan scale and observed photograph crop to compare '
+        'large foreground facades with rival map bodies. '
+        'If camera_basis=owner_approximate, the red camera HINT is only an '
+        'area-search anchor; it may be on the WRONG SIDE OF THE STREET '
+        'or even inside a different OSM building. Compare both sides of '
+        'the actual photographed foreground street and retain plausible '
+        'opposite-side OSM bodies. No nearest-K or address-number rule. '
+        'Do not confuse a nearby wing with the MAIN photographed facade. '
         'Return decision=shortlist and active_hypotheses with a SCENE-APPROPRIATE '
         'number of physically plausible building labels (not fixed top 3 or 8). '
         'For each state a specific SOURCE spatial compatibility observation '
@@ -171,11 +181,14 @@ def frozen_physical_observations(context):
 def replay_closed(cid, model, *, schema_transport='json-mode'):
     """Revalidate ONE completed provider answer without another image-model send."""
     case=ROOT/'cases'/str(cid)
-    path=case/('inference-'+model.replace('/','-')+'-bearing-v2-'+schema_transport)
+    path=case/('inference-'+model.replace('/','-')+'-street-v3-'+schema_transport)
     if not path.exists():
-        old=case/('inference-'+model.replace('/','-'))
-        if old.exists():
-            path=old
+        for previous in (
+                case/('inference-'+model.replace('/','-')+'-bearing-v2-'+schema_transport),
+                case/('inference-'+model.replace('/','-'))):
+            if previous.exists():
+                path=previous
+                break
     raw_path=path/'closed-model-response.json'
     receipt_path=path/'provider-intent.json'
     options_path=path/'sent-options.json'
@@ -237,7 +250,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
     input_receipt=_json(inp)
     if input_receipt.get('status')!='ready':
         return {'id':cid,'status':input_receipt['status'],'method_calls':0}
-    full=_json(case/'spatial-options-v3-bearing-v2.json')
+    full=_json(case/'spatial-options-v3-street-v3.json')
     packet=compact_packet(full)
     prompt=source_map_prompt(packet)
     schema=visual_spatial_choice_schema()
@@ -261,7 +274,7 @@ async def run_one(cid,model,*,dry,schema_transport='structured'):
     encoded=config.model_dump(exclude_none=True,mode='json')
     if (schema_transport=='structured' and 'response_json_schema' not in encoded):
         raise ValueError('provider_did_not_serialize_G_schema')
-    path=case/('inference-'+model.replace('/','-')+'-bearing-v2-'+schema_transport)
+    path=case/('inference-'+model.replace('/','-')+'-street-v3-'+schema_transport)
     intent=path/'provider-intent.json'
     result_path=path/'result.json'
     if result_path.exists():
