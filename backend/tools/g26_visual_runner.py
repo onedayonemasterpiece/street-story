@@ -214,8 +214,10 @@ def prepare_model_detail(cid, base, initial_input, initial_packet, *, model=MODE
         return None,None
     if model['decision'] not in ('candidate','needs_detail','accept'):
         return None,None
-    private=base/'input-detail.json'
-    options_file=base/'spatial-options-detail.json'
+    # Each visual route has a distinct closed predecessor. Never reuse a
+    # cached map_detail based on another provider/model's proposed candidate.
+    private=first/'input-detail.json'
+    options_file=first/'spatial-options-detail.json'
     if private.exists() and options_file.exists():
         original=json.loads(private.read_text())
         narrowed=json.loads(options_file.read_text())
@@ -240,7 +242,7 @@ def prepare_model_detail(cid, base, initial_input, initial_packet, *, model=MODE
         prior_host_unaccepted=(host_result.get('accepted') is False))
     if view is None:
         return None,None
-    img=base/'map.detail.png'
+    img=first/'map.detail.png'
     if not img.exists():
         img.write_bytes(view['map']['bytes'])
         os.chmod(img,0o600)
@@ -259,7 +261,7 @@ def prepare_model_detail(cid, base, initial_input, initial_packet, *, model=MODE
       'detail_generated_without_truth':True}
     save(private,adapted)
     save(options_file,view['spatial_options'])
-    save(base/'detail-manifest.json',manifest)
+    save(first/'detail-manifest.json',manifest)
     return adapted,view['spatial_options']
 
 def report():
