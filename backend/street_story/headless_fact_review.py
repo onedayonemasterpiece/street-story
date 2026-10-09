@@ -172,7 +172,9 @@ class HeadlessFactReview:
                                for key in ('session_id', 'message_id'))):
                 return None
             if prior.get('phase') == 'aborted' and prior.get('abort_acknowledged') is not True:
-                self._put(job, unit, {'phase': 'unknown', 'packet_ref': packet['packet_ref'], 'route': role})
+                original = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or saved
+                self._put(job, unit, {**original, 'phase': 'unknown',
+                    'packet_ref': original.get('packet_ref', packet['packet_ref']), 'route': role})
                 return None
             if prior.get('phase') in {'failed', 'aborted'}:
                 if prior.get('phase') == 'aborted' or prior.get('provider_send_state') == 'response_closed':
@@ -195,7 +197,8 @@ class HeadlessFactReview:
                 if (not Draft202012Validator(schema).is_valid(args)
                         or args.get('packet_ref') != packet['packet_ref']):
                     closed_routes.add(role)
-                    self._put(job, unit, {'phase': 'closed_error', 'route': role, 'closed_routes': sorted(closed_routes)})
+                    self._put(job, unit, {**frozen, 'phase': 'closed_error', 'invalid_args': args,
+                                         'closed_routes': sorted(closed_routes)})
                     LOG.info('street_story_background_fact_review_fallback story_id=%s unit_id=%s model_id=%s reason=malformed',
                              job['story_id'], unit, client.model_id)
                     continue
@@ -224,8 +227,10 @@ class HeadlessFactReview:
                     temporary = True
         exhausted = bool(all_routes) and not temporary and all(
             'facts_review_' + route['model_id'] in closed_routes for route in all_routes)
-        self._put(job, unit, {'phase': 'exhausted' if exhausted else 'closed_error',
-                             'packet_ref': packet['packet_ref'], 'closed_routes': sorted(closed_routes),
+        latest = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or saved
+        self._put(job, unit, {**latest, 'phase': 'exhausted' if exhausted else 'closed_error',
+                             'packet_ref': latest.get('packet_ref', packet['packet_ref']),
+                             'closed_routes': sorted(closed_routes),
                              **({} if exhausted else {'retry_at': self.service.store.now()+60})})
         LOG.info('street_story_background_fact_review_closed story_id=%s unit_id=%s exhausted=%s',
                  job['story_id'], unit, exhausted)
