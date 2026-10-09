@@ -65,11 +65,13 @@ def test_single_visible_facade_accepts_without_pretend_yaw_or_three_alternatives
          if row[1]=='osm:way:150596899')
     label=next(int(k) for k,v in packet['private_label_to_osm_id'].items() if v==cid)
     first=check(opinion(label),packet)
-    assert first['status']=='accepted_visual_scope_v3'
+    assert first['status']=='needs_detail'
     assert first['candidate_id']==cid
-    assert first['accepted'] is True
+    assert first['accepted'] is False
     assert first['evidence_grade']=='llm_source_map_scope'
-    assert first['proof']['canonical_poi_fact_binding_granted'] is False
+    assert 'overview_only_model_nomination_requires_source_nominated_detail' in first['geometric_warnings']
+    assert first['requested_detail_labels']==[label]
+    assert first['proof'] is None
     # The model may optionally ask for a more detailed OSM option; the first
     # semantic decision is not discarded just because no wall indices were sent.
     # No arbitrary top-N heuristic; expand exactly the LLM-selected received
