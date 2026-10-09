@@ -15,7 +15,7 @@ from jsonschema import Draft202012Validator
 
 
 def visual_disagreement_schema():
-    text={'type':'string','maxLength':300}
+    text={'type':'string','maxLength':600}
     return {'type':'object','properties':{
         'decision':{'type':'string','enum':['distinguished','uncertain']},
         'selected_body_label':{'type':'integer'},
@@ -74,7 +74,8 @@ def check_visual_disagreement(answer, candidate_ids, physical_context, map_manif
     if answer['visible_corner']:
         chosen=(answer['corner_ring_index'],answer['first_corner_segment_index'],
             answer['second_corner_segment_index'])
-        if not any(tuple(pair[:3])==chosen
+        if not any(pair[0] == chosen[0] and
+                   {pair[1],pair[2]} == {chosen[1],chosen[2]}
                    for pair in row.get('observed_connected_side_pairs') or []):
             reasons.append('corner_pair_not_observed_in_received_osm')
     ratio=row.get('outline_span_over_exif_diagonal')
