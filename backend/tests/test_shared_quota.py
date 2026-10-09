@@ -86,6 +86,30 @@ def response():
 
 
 @pytest.mark.asyncio
+async def test_final_request_admission_includes_system_schema_media_and_output(rig):
+    from google.genai import types
+    from ai_resource_control.client import estimate_input_tokens
+    g, controller = rig
+    cfg = types.GenerateContentConfig(system_instruction='Проверить собственное свидетельство. ' * 20,
+        response_mime_type='application/json', response_schema={'type': 'object', 'properties': {
+            'verdict': {'type': 'string', 'enum': ['supported', 'uncertain']}}}, max_output_tokens=512)
+    source = types.Part.from_bytes(data=b'actual-source-placeholder', mime_type='image/jpeg')
+    text = 'Источник содержит дату и оговорку.'
+    async def provider(*args, **kwargs):
+        return response()
+    g._provider_request = provider
+    try:
+        await g._generate(KEYS[0], 20, [source, text], cfg)
+        reserved = next(value['p_reserved_tpm'] for name, value in controller.events if name == 'google_ai_reserve')
+        envelope = {'contents': [{'inline_data': {'mime_type': 'image/jpeg', 'data': ''}}, {'text': text}],
+                    'config': cfg.model_dump(mode='json', exclude_none=True)}
+        assert reserved == estimate_input_tokens(envelope) + 8192 + 512 + 1000
+        assert reserved > len(text.encode()) + 8192 + 512 + 1000
+    finally:
+        await g.quota.http.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('operation',['transcription','grounded_research'])
 @pytest.mark.parametrize('failure',['google_ai_api_keys','google_ai_reserve','google_ai_mark_sent','google_ai_requests'])
 async def test_controller_outage_never_calls_provider(rig,operation,failure,caplog):

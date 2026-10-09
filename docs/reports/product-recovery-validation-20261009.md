@@ -3,6 +3,37 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Overnight request and product availability repair
+
+The actual closed 102 G answer and acquired articles were replayed without
+inference. Its malformed G fields had forced a 394,237-byte combined correction
+instead of the existing independent T comparison. The T input is now 31,009
+UTF-8 bytes (host schema 5,360 bytes), preserving both complete articles and both
+declared physical alternatives. All 393 received objects remain in the original
+catalogue; no target or reserve is removed by a semantic host rule.
+
+Rejected G acceptance/proof is retained in its original diagnostic receipt.
+T receives separately labelled observations, unconfirmed nominations,
+alternative hypotheses and the rejection question; it must inspect SOURCE
+again. Compatibility readback also strips the acceptance decision from older
+prior receipts. This request repair is not evidence of corrected model accuracy
+on 130; an actual changed-input model comparison is still required.
+
+Eligible semantic-review commits now expose `facts_ready` immediately while
+independent review remains pending. The regression uses ordinary fact selection,
+the real draft tool, a restarted service and a delayed original response.
+The original terminal gate remains unchanged; the acceptance table additionally
+records useful-product availability and elapsed time explicitly.
+
+Google admission now includes final system instructions, schema/tools, content,
+media allowance and output reserve using the installed shared estimator. These
+are conservative admission estimates, not measured tokenizer/billing totals.
+The offline failure matrix reuses the existing adapters/workers and includes
+reverse/Overpass, REF/text, gallery/article, UNKNOWN/independent route,
+pending-review/restart and shared-quota/Stop/changed-SOURCE negative controls.
+Full tests and current-version cold/product E2E evidence are pending at this
+checkpoint. No merge, deployment or universal recognition claim is made.
+
 ## Frozen b022307 product result and selected-card continuation
 
 Blind cold132 on `b02230727af905e52f474830d00b6fe9c7e5d626` passed all

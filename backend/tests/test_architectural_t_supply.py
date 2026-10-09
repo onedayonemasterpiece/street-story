@@ -150,6 +150,10 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert 'hypotheses_not_evidence' in packet['prompt']
     assert 'osm:way:88' in packet['prompt']
     assert 'SOURCE image is a separate model input' in packet['prompt']
+    import json
+    transmitted = json.loads(packet['prompt'].rsplit('\n', 1)[-1])
+    hypotheses = transmitted['previous_model_hypotheses_not_evidence']['geometry_hypotheses_not_evidence']
+    assert hypotheses['status'] == 'unconfirmed' and 'decision' not in hypotheses
     assert 'No assertion that other MAP bodies do not exist' in packet['prompt']
     assert 'accepted_architectural_text' in packet['schema']['properties']['decision']['enum']
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']

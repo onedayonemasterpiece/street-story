@@ -138,8 +138,8 @@ def _conditional_text_prior(payload, nomination_ids):
         return None
     prior = {key: copy.deepcopy(payload[key]) for key in (
         'source_scene_observations', 'observed_candidate_ids', 'spatial_hypotheses',
-        'accepted_geometry', 'first_wave_hypotheses', 'research_priority') if key in payload}
-    if not prior:
+        'first_wave_hypotheses', 'research_priority') if key in payload}
+    if not prior and not isinstance(payload.get('accepted_geometry'), dict):
         return None
     geometry = payload.get('accepted_geometry') if isinstance(payload.get('accepted_geometry'), dict) else {}
     spatial = payload.get('spatial_hypotheses') if isinstance(payload.get('spatial_hypotheses'), list) else []
@@ -154,6 +154,16 @@ def _conditional_text_prior(payload, nomination_ids):
         *(item.get('candidate_id') for item in rejected if isinstance(item, dict)),
         *(item.get('candidate_id') for item in spatial if isinstance(item, dict))]
     allowed = set(nomination_ids)
+    # Preserve the raw closed G answer in its existing diagnostic receipt.
+    # T receives observations and hypotheses, never a rejected acceptance or
+    # its claimed proof. Even a prior elimination must be reassessed in pixels.
+    prior['geometry_hypotheses'] = {
+        'candidate_id': geometry.get('candidate_id'),
+        'alternatives': [{'candidate_id': item.get('candidate_id'),
+                         'prior_reason_not_evidence': item.get('reason')}
+                        for item in rejected if isinstance(item, dict)],
+        'status': 'unconfirmed',
+    }
     prior.update(policy='conditional-initial-joint-v1', input_kind='model_hypothesis_not_evidence',
         candidate_ids=list(dict.fromkeys(cid for cid in declared if isinstance(cid, str) and cid in allowed)))
     return prior
@@ -1363,11 +1373,10 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_architectural_text_comparison_started',
                     {'article_ids': [item['article_id'] for item in text_articles], 'attempt': 1})
             compact_t = None
-            # A semantic G-proof failure does not require replaying a giant
-            # planner. Malformed pointers still use the combined correction
-            # contract. A requested MAP expansion is supplied unchanged even
-            # when independent T can establish identity from acquired text.
-            if text_articles and not (set(issues) - {'host_evidence_contract'}):
+            # Acquired, verified articles and received physical nominations
+            # have their own binding checks. Unrelated malformed G fields do
+            # not require resending the full planner/map catalogue to T.
+            if text_articles:
                 from .identity_architectural_comparison import prepare_architectural_comparison
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
                 source_text_receipt['physical_link_inventory'] = compact_t['physical_link_inventory']

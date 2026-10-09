@@ -433,14 +433,18 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
             key: [str(text)[:300] for text in values[:6] if isinstance(text, str)]
             for key, values in (prior.get('source_scene_observations') or {}).items()
             if key in {'observed', 'inferred', 'unknown'} and isinstance(values, list)}
-        geometry = prior.get('accepted_geometry') or {}
+        # Older closed receipts retain accepted_geometry verbatim for readback.
+        # Never pass their acceptance/decision/proof on as an anchor to T.
+        geometry = prior.get('geometry_hypotheses') or prior.get('accepted_geometry') or {}
         if isinstance(geometry, dict):
-            initial['geometry_nomination_not_proof'] = {
+            alternatives = geometry.get('alternatives') or geometry.get('rejected_alternatives') or []
+            initial['geometry_hypotheses_not_evidence'] = {
                 'candidate_id': geometry.get('candidate_id'),
-                'decision': geometry.get('decision'),
-                'rejected_alternatives': [
-                    {'candidate_id': row.get('candidate_id'), 'reason': str(row.get('reason') or '')[:300]}
-                    for row in (geometry.get('rejected_alternatives') or [])[:8] if isinstance(row, dict)]}
+                'status': 'unconfirmed',
+                'alternatives': [
+                    {'candidate_id': row.get('candidate_id'),
+                     'prior_reason_not_evidence': str(row.get('prior_reason_not_evidence') or row.get('reason') or '')[:300]}
+                    for row in alternatives if isinstance(row, dict)]}
     query = (receipt.get('lookup') or {}).get('query_scope')
     packet = {
         'contract': 'source-architectural-comparison-input-v1',

@@ -691,7 +691,12 @@ async def test_closed_client_pending_backend_review_retries_and_resumes_without_
 
 
 @pytest.mark.asyncio
-async def test_original_readback_allows_other_candidates_and_rejects_changed_ledger_commit(tmp_path):
+async def test_original_readback_allows_selection_draft_and_restart_before_last_review(tmp_path):
+    import httpx
+    from street_story.app import create_app
+    from street_story.config import reveal
+    from street_story.live import StreetStoryLiveAdapter
+
     svc, job, harness = await candidates(tmp_path, count=6)
     ControlledReview.mode = 'unknown'
     await ControlledReview(harness).run(job, RUN, 0)
@@ -720,10 +725,38 @@ async def test_original_readback_allows_other_candidates_and_rejects_changed_led
         with svc.store.connection() as db:
             count = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
         assert count == 3 and not task.done()
+        # These facts came through extraction and semantic packet commit.
+        # Exercise normal product selection while the original readback waits.
+        app = create_app(settings=svc.settings, service=svc)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://testserver',
+                headers={'Authorization': 'Bearer ' + reveal(svc.settings.device_token)}) as client:
+            shown = (await client.get('/v1/stories/' + job['story_id'])).json()
+            assert shown['state'] == 'facts_ready'
+            selected = [f['fact_id'] for f in shown['facts'] if f['eligibility'] == 'eligible']
+            assert len(selected) == 3
+            response = await client.post('/v1/stories/' + job['story_id'] + '/facts',
+                headers={'Idempotency-Key': 'partial-value-selection'}, json={'selected_fact_ids': selected})
+            assert response.status_code == 200, response.text
+        draft = '\n'.join(f['text'] for f in shown['facts'] if f['fact_id'] in selected)
+        await harness.adapter.execute_tool(session, {'name': 'edit_text', 'id': 'partial-value-draft',
+            'args': {'expected_text_revision': 0, 'new_text': draft, 'change_summary': 'Use selected reviewed claims.'}})
+        assert not task.done()
+        reopened = type(svc)(svc.settings, providers=svc.providers)
+        restored = reopened.story(job['story_id'])
+        assert restored['draft_text'] == draft
+        assert {f['fact_id'] for f in restored['facts'] if f['selected']} == set(selected)
+        assert any(f['eligibility'] == 'unreviewed' for f in restored['facts'])
+        assert StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None)._topic_state(job['story_id'])['story']['draft_text'] == draft
     finally:
         release.set()
         await task
-    assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit)['phase'] == 'stale'
+    # Restart revoked the old worker lease: retain its closed result for
+    # readback, but it cannot commit after the owner has selected/edited.
+    assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit)['phase'] == 'result'
+    assert reopened.story(job['story_id'])['draft_text'] == draft
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'",
+                          (job['story_id'],)).fetchone()[0] == 3
 
 
 @pytest.mark.asyncio

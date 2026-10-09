@@ -1000,24 +1000,41 @@ class GeminiClient:
         if isinstance(requested_output, int) and not isinstance(requested_output, bool) and 0 < requested_output <= 8192:
             output_limit = requested_output
         config.max_output_tokens = output_limit
-        # Same reservation contract as the existing GoogleAI gateway: estimated
-        # input + bounded output + safety margin, reconciled with actual usage.
-        # This is not a provider token-count/remaining-quota guarantee.
-        size = 1000 + output_limit
+        # Account for the complete final request, including system/schema/tools.
+        # Reuse the shared conservative estimator; its units are an admission
+        # estimate, never a tokenizer result or measured billed usage.
+        from ai_resource_control.client import estimate_input_tokens, MEDIA_RESOLUTION_IMAGE_UNITS
+        envelope_parts, media_units, media_bytes = [], 0, 0
         for part in contents:
             if isinstance(part, str):
-                size += len(part.encode('utf-8'))
+                envelope_parts.append({'text': part})
             else:
                 inline = getattr(part, 'inline_data', None)
                 data = getattr(inline, 'data', b'') or b''
                 mime = getattr(inline, 'mime_type', '') or ''
-                size += 8192 if mime.startswith('image/') else max(8192, len(data)//4)
+                if inline is not None:
+                    envelope_parts.append({'inline_data': {'mime_type': mime, 'data': ''}})
+                    media_bytes += len(data)
+                    resolution = str(getattr(config, 'media_resolution', None) or 'MEDIA_RESOLUTION_UNSPECIFIED')
+                    media_units += (MEDIA_RESOLUTION_IMAGE_UNITS.get(resolution, 8192)
+                                    if mime.startswith('image/') else max(8192, len(data)//4))
+                else:
+                    envelope_parts.append(part.model_dump(mode='json', exclude_none=True))
+        envelope = {'contents': envelope_parts, 'config': config.model_dump(mode='json', exclude_none=True)}
+        estimated_input = estimate_input_tokens(envelope) + media_units
+        size = 1000 + output_limit + estimated_input
         if operation == "transcription":
             quota = quota or self.transcription_quota
             model = model or self.settings.gemini_transcription_model
         else:
             quota = quota or self.quota
             model = model or self.settings.gemini_model
+        logging.getLogger(__name__).info('street_story_request_input_prepared %s', json.dumps({
+            'model': model, 'operation': operation,
+            'input_estimate_basis': 'shared_conservative_estimator_final_content_config_v1',
+            'estimated_input_tokens': estimated_input, 'output_allowance': output_limit,
+            'reserved_tpm': size, 'serialized_content_config_utf8_bytes': len(json.dumps(
+                envelope, ensure_ascii=False, separators=(',', ':')).encode()), 'media_bytes': media_bytes}))
         provider_invoked = False
         async def invoke():
             nonlocal provider_invoked

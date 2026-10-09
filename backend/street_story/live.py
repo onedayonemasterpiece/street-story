@@ -4749,9 +4749,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "unreviewed_count": unreviewed_count,
             }
             db.execute(
-                "UPDATE stories SET research_json=?,revision=revision+1,updated_at=? "
+                "UPDATE stories SET research_json=?,state=CASE "
+                "WHEN state IN ('researching','identity_ready') AND ? AND error_code IS NULL "
+                "THEN CASE WHEN draft_text IS NULL OR trim(draft_text)='' "
+                "THEN 'facts_ready' ELSE 'review' END ELSE state END,"
+                "revision=revision+1,updated_at=? "
                 "WHERE id=?",
-                (canonical(research), now, story_id),
+                (canonical(research), eligible_count > 0, now, story_id),
             )
             result = {
                 "research_run_id": run_id,

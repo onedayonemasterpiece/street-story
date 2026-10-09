@@ -30,7 +30,9 @@ def test_conditional_prior_keeps_source_and_negative_claims_but_requires_only_re
     prior = identity_discovery._conditional_text_prior(initial, ['osm:way:2', 'osm:way:3'])
     assert prior['input_kind'] == 'model_hypothesis_not_evidence'
     assert prior['candidate_ids'] == ['osm:way:2', 'osm:way:3']
-    assert prior['accepted_geometry']['rejected_alternatives'][0]['candidate_id'] == 'osm:way:999'
+    assert 'accepted_geometry' not in prior
+    assert prior['geometry_hypotheses']['status'] == 'unconfirmed'
+    assert prior['geometry_hypotheses']['alternatives'][0]['candidate_id'] == 'osm:way:999'
     assert prior['source_scene_observations'] == initial['source_scene_observations']
     prior['source_scene_observations']['observed'].append('Changed local copy')
     assert initial == original
@@ -67,10 +69,13 @@ def test_text_freeze_requires_reassessment_of_actual_prior_alternatives(resoluti
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('comparative', [False, True])
-async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_claim(tmp_path, monkeypatch, comparative):
+@pytest.mark.parametrize('malformed_g', [False, True])
+async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_claim(tmp_path, monkeypatch, comparative, malformed_g):
     service, story, active = geometry_setup(tmp_path)
     initial = prior_for()
     initial['accepted_geometry']['decision'] = 'uncertain'
+    if malformed_g:
+        initial['accepted_geometry']['decisive_relations'][0]['map_features'][0]['candidate_id'] = 'unreceived-invalid-id'
     initial['regional_lookup'] = {'route': 'address', 'candidate_ids': ['osm:way:2'],
         'reason': 'Actual architectural text may distinguish the return and bay.'}
     _story, _catalog, decision, receipt = text_inputs(candidate_id='osm:way:2')
@@ -92,12 +97,16 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
             return SimpleNamespace(text=json.dumps(initial))
         assert len(calls) == 2 and reads == ['selected text']
         assert 'previous_model_hypotheses_not_evidence' in contents[-1]
+        assert 'accepted_geometry' not in config.system_instruction
+        assert 'unreceived-invalid-id' not in contents[-1]
         assert initial['accepted_geometry']['rejected_alternatives'][0]['reason'] in contents[-1]
         assert initial['source_scene_observations']['unknown'][0] in contents[-1]
         assert 'absence of a neighbor article' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        hypotheses = packet['previous_model_hypotheses_not_evidence']
+        assert 'decision' not in hypotheses['geometry_hypotheses_not_evidence']
         inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']
         decision['physical_link_evidence'] = [{
             'article_id': receipt['articles'][0]['article_id'], 'candidate_id': decision['candidate_id'],

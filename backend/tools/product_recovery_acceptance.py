@@ -372,6 +372,17 @@ def read_case(service, case, item):
         case['identity_elapsed_s'] = min(case.get('identity_elapsed_s', float('inf')), max(0, identity_at - started))
     if first_at is not None:
         case['first_eligible_elapsed_s'] = min(case.get('first_eligible_elapsed_s', float('inf')), max(0, first_at - started))
+    # Availability is distinct from the original terminal/coverage metric.
+    # Ordinary product projection exposes current verified claims immediately;
+    # an independent pending review must not hide selection/editorial tools.
+    visible = service.story(row['id'])
+    visible_eligible = [fact for fact in visible.get('facts') or [] if fact.get('eligibility') == 'eligible']
+    useful_available = (identity.get('status') == 'match'
+        and visible.get('state') in {'facts_ready', 'review', 'visual_ready', 'scheduling', 'scheduled', 'published'}
+        and len(proved) >= item['min_useful_facts']
+        and len(visible_eligible) >= item['min_useful_facts'])
+    if useful_available:
+        case.setdefault('useful_product_elapsed_s', max(0, now - started))
     outcome = research.get('automatic_research_outcome')
     purpose = 'facts' if identity.get('status') == 'match' else 'identity'
     stopped = not outcome and research_stopped(research, purpose,
@@ -410,6 +421,8 @@ def read_case(service, case, item):
     case.update(status='RUNNING', operator_stopped=bool(stopped), uploaded_at=started, elapsed_from_upload_s=max(0, now-started),
         conditional_identity_context=identity_research_context(service, row, research),
         total_elapsed_s=total, terminal=terminal, state=row['state'], error_code=row['error_code'],
+        useful_product_available=useful_available,
+        useful_product_in_480s=case.get('useful_product_elapsed_s', float('inf')) <= CAPS['total_seconds'],
         identity=identity, candidate_map_object=candidate.get('map_object'), physical_id=identity.get('candidate_id'),
         poi_id=research.get('poi_id'), mode='warm' if research.get('poi_reused_fact_count') else 'cold',
         poi_reused_fact_count=research.get('poi_reused_fact_count', 0), camera=research.get('photo_camera_hints'),
