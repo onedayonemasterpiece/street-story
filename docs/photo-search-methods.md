@@ -66,6 +66,13 @@ a required step after sufficient geometry. The target route is:
    votes. If sufficient, accept `architectural_text` or `combined`; otherwise
    retain the concrete ambiguity and choose one useful action.
 
+When selected text arrives for a second joint operation, carry the initial SOURCE
+observations, uncertainty and declared physical alternatives as conditional model
+hypotheses, never as acquired evidence. The model must reconsider them against the
+actual SOURCE/MAP/TEXT. A final text proof must explicitly address every previously
+declared received nomination other than its subject. The host checks this pointer
+coverage; it cannot establish that the model's comparative reasoning is correct.
+
 Cache a literal street lookup across candidates and neighbouring photos. A second
 route requires an identified gap in the first; empty external `site:` results are
 not proof that a card is absent. No publisher-wide crawler, address-to-answer
@@ -126,6 +133,12 @@ meaning and subject scope. Architecture and historical claims from Prussia39 sti
 require review; institution founding is not building construction. Display the
 first substantive accepted fact immediately. Address-only, upload status and generic
 city summaries do not count as useful facts.
+The ordinary reader uses Prussia39's verified article-body parser on the same
+cached raw bytes; login/navigation is not an article fallback. Original source
+versions remain immutable. After a closed, committed core with valid subject and
+content, actual unread frozen passages can schedule the existing continuation
+promptly. A model's `continuation_needed` alone cannot authorize that transition;
+UNKNOWN keeps its original operation and wait.
 Explicitly selected, received regional cards can schedule the ordinary fact reader
 after identity without delaying geometry for their bodies. Already acquired and
 bound text remains a source lead even if geometry established identity. Validate
@@ -240,6 +253,19 @@ is outside a nomination field's catalogue, without broadening that field or
 remapping the ID. Saved photo102 data also confirms that its bound entrance
 number reaches the real literal Prussia address query unchanged; the failed
 model answer never requested that narrower route.
+
+On frozen `045d802`, photo102 acquired actual Prussia39 catalogue metadata at
+8.88 seconds and the selected article body at 20.74 seconds. It nevertheless
+accepted the wrong neighbouring physical object at 30.00 seconds. Its second joint
+answer omitted the initial alternatives and used generic architectural agreement;
+valid hashes did not establish correct identity. Zero facts were accepted; ordinary
+operator Stop ended the run at 233.66 seconds. The ordinary facts reader also
+placed navigation before the article and deferred an empty first core for 300 seconds.
+The prepared corrections preserve conditional alternatives, freeze the actual
+publisher body and promptly continue closed cores with actual unread passages.
+Saved replays verify those boundaries, not recognition correctness. The acceptance
+harness now sends ordinary fenced Stop after a report-only wrong-object failure,
+without supplying the expected object or a repair hint to runtime.
 
 There is no accepted release, final five-building PASS, deployment or Android
 acceptance yet. Per-version failures, tests, usage bounds and remaining gates

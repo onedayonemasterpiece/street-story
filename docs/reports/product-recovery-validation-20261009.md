@@ -9,6 +9,42 @@ following the latest unified owner prompt. Earlier audit prompts are historical
 evidence. Runtime receives original photo bytes, available camera metadata and
 explicit owner camera context; report-only building labels/addresses are not seeds.
 
+## Latest diagnostic and bounded correction
+
+Frozen `045d8028556a784f2b656ae61d017a59b32df221` photo102 is **FAIL**:
+actual Prussia39 catalogue arrived at 8.878 s and its article body at 20.742 s,
+but architectural identity selected neighbouring `osm:way:133035102` at 29.997 s
+instead of independently labelled `osm:way:133035113`. Actual SOURCE/TEXT hashes
+and request binding passed; semantic physical discrimination did not. Zero facts
+or POI assertions were accepted. Ordinary fenced operator Stop ended at 233.662 s.
+Two Google SDK responses reported 136,859 total tokens and one closed Live
+extraction reported 2,558; no review was sent. Monetary cost remains unknown.
+
+The second joint lost prior alternatives when no schema repair was needed.
+Prepared correction `2cb4e18` preserves initial SOURCE observations/uncertainty
+as conditional hypotheses and requires explicit material-alternative coverage in
+the same existing second call. The saved erroneous answer fails that new coverage
+guard; semantic correctness still requires a live result. Its isolated affected
+set passed 122 tests in 43.62 s.
+
+The ordinary fact reader froze 5,438 characters including navigation before the
+1,046-character publisher body. Its empty first core deferred useful continuation
+for 300 seconds. Prepared `e80c064` reuses the verified publisher parser on the
+same cached raw bytes; the saved replay matches the acquired article body hash
+without HTTP/model calls and retains the previous source version. Closed committed
+cores with valid content/subject and actual unread passages schedule the existing
+job after one second; UNKNOWN does not take that path. Sixty isolated affected
+checks passed in 28.49 s.
+
+Acceptance-only `3987ae9` sends ordinary fenced Stop immediately after report-only
+wrong-object detection, without injecting a correct address or candidate into
+runtime. Twenty-five checks passed in 18.33 s. Ruff and diff checks passed for the
+three changes. These sets overlap and are not summed. Hosted backend, Android
+checks and emulator succeeded on `045d802`; release was skipped. This is CI evidence,
+not the final product/emulator acceptance required after the five-building gate.
+The merged continuity/body/continuation/acceptance set passed **86 tests in 25.57 s**;
+Ruff and diff checks passed. All eleven critical requirements retain their digest.
+
 ## Bounded live diagnostics
 
 All listed runs are cold photo104 diagnostics, not final-set acceptance. Other
