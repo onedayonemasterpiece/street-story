@@ -140,6 +140,9 @@ def test_model_not_frozen_proof_cannot_approve_an_individual_building():
         t_accepted=False,accepted_candidate_id='osm:way:7')
     assert bad['status']=='unconfirmed_model_claim'
     assert bad['after_T_active_count']==2
+    assert bad['request_reserve_expansion'] is True
+    assert bad['T_proof_accepted'] is False
+    assert bad['reserve_physical_candidate_ids']==['osm:way:9','osm:way:10']
     accepted=close_t_g_funnel(prepared,proposed,
         source_sha256=receipt['original_source_sha256'],
         t_accepted=True,accepted_candidate_id='osm:way:7')
