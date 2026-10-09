@@ -172,11 +172,12 @@ async def suggest(service, story, transcript, candidates):
         if not (callable(original_readback) and original_readback(story)):
             if addressed_followup['phase'] == 'response_closed':
                 raise PermanentProviderError(addressed_followup.get('code') or 'identity_joint_followup_already_closed')
-            if addressed_followup['phase'] == 'not_sent':
+            if addressed_followup['phase'] == 'not_sent' and not (addressed_initial or {}).get('closed_plan'):
                 raise PermanentProviderError('identity_joint_followup_not_sent')
-            if addressed_followup['phase'] == 'closed_failure':
+            elif addressed_followup['phase'] == 'closed_failure':
                 raise PermanentProviderError('identity_joint_followup_closed_failure')
-            raise RetryableProviderError('identity_joint_followup_outcome_unknown')
+            elif addressed_followup['phase'] != 'not_sent':
+                raise RetryableProviderError('identity_joint_followup_outcome_unknown')
     from .identity_source_selection import (regional_source_profile, model_identity_context,
         first_wave_catalog, first_wave_schema, render_first_wave, compact_scene_manifest,
         wikipedia_metadata_context, grounded_wave_catalog, geometry_decision_schema, identity_transport_schema)
@@ -247,7 +248,7 @@ async def suggest(service, story, transcript, candidates):
     # Optional bounded HTTP preparation overlaps the existing SOURCE/map CPU
     # work. No reverse acquisition is awaited; this owned task is always drained.
     image_planner = getattr(service.providers, 'gemini', None)
-    allow_catalogue_network = (callable(getattr(image_planner, '_generate', None))
+    allow_catalogue_network = (not addressed_followup and callable(getattr(image_planner, '_generate', None))
         and callable(getattr(getattr(image_planner, 'executor', None), 'execute', None)))
     catalogue_task = asyncio.create_task(prepare_regional_catalogue(service, story, candidates,
         allow_network=allow_catalogue_network),
@@ -397,6 +398,15 @@ async def suggest(service, story, transcript, candidates):
             'If this spatial correspondence is not established, return uncertain and the best next action.'),
     )
     gemini = service.providers.gemini
+    initial_schema = copy.deepcopy(schema)
+    from .service import canonical
+    initial_unit_binding = {
+        'input_sha256': hashlib.sha256(canonical([original_source_sha256, model_source_sha256,
+            (scene or {}).get('manifest', {}).get('image_sha256'), source_preparation, prompt]).encode()).hexdigest(),
+        'schema_sha256': hashlib.sha256(canonical(initial_schema).encode()).hexdigest(),
+        'configuration_sha256': hashlib.sha256(canonical([config.model_dump(mode='json', exclude_none=True),
+            getattr(getattr(service, 'settings', None), 'gemini_web_search_model', None),
+            [route[0] for route in getattr(gemini, 'research_routes', None) or []]]).encode()).hexdigest()}
     text_articles = []
     source_text_receipt = {}
     joint_followup_used = bool(addressed_followup)
@@ -414,7 +424,7 @@ async def suggest(service, story, transcript, candidates):
             'joint_image_input': story.get('_identity_search_plan_route') != 'qualified_text_fallback'}
             if scene else {})
     def accept(payload, *, original_schema_readback=False, original_schema=None,
-            raw_json=None, raw_json_available=None, provider_response_id=None):
+            raw_json=None, raw_json_available=None, provider_response_id=None, validate_only=False):
         from .identity_plan_diagnostics import retain_closed_invalid, validation_details
         validation_schema = original_schema if original_schema is not None else (legacy_schema if original_schema_readback else schema)
         errors, errors_truncated = validation_details(validation_schema, payload)
@@ -489,6 +499,8 @@ async def suggest(service, story, transcript, candidates):
         if rendered and not ready_wiki and not single_geometry_action and len(queries) < 3 and result[2]:
             queries.append(result[2])
         queries.extend(payload.get('article_queries') or [])
+        if validate_only:
+            return result
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:8]
         if result[2] and not ready_wiki and not single_geometry_action and result[2] not in story['_identity_article_queries']:
@@ -521,6 +533,28 @@ async def suggest(service, story, transcript, candidates):
         from .identity_wikipedia_metadata import selected_candidates
         candidates[:] = selected_candidates(candidates, observed, wiki_pages, payload)
         return result
+    def reuse_initial_plan():
+        from .identity_plan_diagnostics import reusable_closed_initial_plan
+        marker = joint_operation_marker(service, story, stage='initial')
+        saved = reusable_closed_initial_plan(marker, initial_unit_binding)
+        if saved is None:
+            raise PermanentProviderError('identity_joint_initial_closed_plan_unavailable')
+        # Only the identical original input/configuration/schema may resume.
+        # Revalidate every semantic/proof guard; this is not a new model result.
+        schema.clear()
+        schema.update(copy.deepcopy(saved['schema']))
+        story['_identity_search_plan_route'] = 'google'
+        response_id_resolutions[:] = saved['identity_response_id_resolutions']
+        result = accept(copy.deepcopy(saved['payload']), raw_json=saved['raw_json'],
+            raw_json_available=True, provider_response_id=saved['provider_response_id'])
+        record_identity_event(service, story['id'], 'identity_closed_initial_plan_reused', {
+            'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
+            'reason': 'optional_followup_not_sent', 'raw_json_sha256': marker['response_sha256'],
+            'input_sha256': initial_unit_binding['input_sha256'],
+            'schema_sha256': initial_unit_binding['schema_sha256'], 'fresh_planner_sent': False})
+        return result
+    if addressed_followup and addressed_followup['phase'] == 'not_sent' and not original_available:
+        return reuse_initial_plan()
     async def call(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
         nonlocal initial_binding, initial_outcome, initial_failure
@@ -533,9 +567,7 @@ async def suggest(service, story, transcript, candidates):
         text_articles, source_text_receipt = [], {}
         from google.genai.errors import APIError
         from .service import canonical, ConflictError
-        initial_binding = {'input_sha256': hashlib.sha256(canonical([model_source_sha256,
-            (scene or {}).get('manifest', {}).get('image_sha256'), prompt]).encode()).hexdigest(),
-            'schema_sha256': hashlib.sha256(canonical(schema).encode()).hexdigest()}
+        initial_binding = initial_unit_binding
         joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase='send_intent')
         initial_outcome = 'send_intent'
         try:
@@ -619,6 +651,18 @@ async def suggest(service, story, transcript, candidates):
                     errors=errors, errors_truncated=truncated)
             return decoded
         payload = decode_joint(response)
+        try:
+            accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
+                raw_json_available=isinstance(response.text, str),
+                provider_response_id=getattr(response, 'response_id', None), validate_only=True)
+        except PermanentProviderError:
+            # Malformed/invalid original decisions still use only the existing
+            # bounded repair. They can never authorize original-plan reuse.
+            pass
+        else:
+            from .identity_plan_diagnostics import retain_closed_initial_plan
+            retain_closed_initial_plan(service, story, initial_binding, payload, initial_schema,
+                response.text, prompt, getattr(response, 'response_id', None), response_id_resolutions)
         issues = (_geometry_binding_issues(payload.get('accepted_geometry'), scene_manifest)
             if scene and isinstance(payload, dict) else {})
         from .identity_plan_diagnostics import validation_details
@@ -735,6 +779,11 @@ async def suggest(service, story, transcript, candidates):
                     {'generation': story.get('_identity_generation', research.get('identity_generation') or 0),
                      'error_type': type(exc).__name__, 'phase': phase, 'provider_send_state': phase,
                      'status_code': status_code, 'fresh_retry_allowed': False})
+                if phase == 'not_sent' and (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
+                    # Actual acquired text remains source work, not a proof:
+                    # SOURCE+TEXT was prepared but never sent to a model.
+                    source_text_receipt.update(source_image_input=False, provider_send_state='not_sent')
+                    return reuse_initial_plan()
                 # Stop the executor key loop while preserving the actual
                 # original outcome for the caller/readback path below.
                 raise PermanentProviderError('identity_joint_followup_outcome_unknown') from exc

@@ -40,7 +40,7 @@ def _checked_research(service, story, db, scope):
 
 
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
-        response_sha256=None, status_code=None):
+        response_sha256=None, status_code=None, closed_plan=None):
     """One scoped SOURCE+MAP operation; only authoritative not_sent permits reassignment."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
@@ -72,6 +72,10 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             marker['response_sha256'] = response_sha256
         if status_code is not None:
             marker['status_code'] = status_code
+        if closed_plan is not None:
+            if stage != 'initial' or phase != 'response_closed':
+                raise ValueError('closed plan requires a closed initial operation')
+            marker.setdefault('closed_plan', closed_plan)
         research[key] = marker
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
         return marker
@@ -80,6 +84,45 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
 def joint_followup_marker(service, story, **kwargs):
     """Compatibility for the existing durable joint2 contract."""
     return joint_operation_marker(service, story, stage='followup', **kwargs)
+
+
+def retain_closed_initial_plan(service, story, binding, payload, schema, raw_json, prompt,
+        provider_response_id=None, resolutions=None):
+    """Retain a host-validated original answer before an optional TEXT send.
+
+    Full JSON is required for reuse; oversized responses are never reconstructed
+    from a prefix. The current exact input/configuration and schema remain fenced.
+    """
+    from .service import canonical
+    if (not isinstance(payload, dict) or not isinstance(raw_json, str)
+            or len(raw_json.encode()) > RAW_JSON_BYTES
+            or len(canonical(payload).encode()) > RAW_JSON_BYTES
+            or len(canonical(schema).encode()) > 262144
+            or len(prompt.encode()) > 262144):
+        return None
+    saved = {'contract': 'identity-closed-initial-plan-v1', 'binding': binding,
+        'payload': payload, 'schema': schema, 'raw_json': raw_json, 'prompt': prompt,
+        'provider_response_id': provider_response_id[:160] if isinstance(provider_response_id, str) else None,
+        'identity_response_id_resolutions': resolutions or []}
+    saved['sha256'] = hashlib.sha256(canonical(saved).encode()).hexdigest()
+    return joint_operation_marker(service, story, stage='initial', binding=binding,
+        phase='response_closed', closed_plan=saved)
+
+
+def reusable_closed_initial_plan(marker, binding):
+    """Verify the immutable receipt before the caller revalidates its contract."""
+    from .service import canonical
+    saved = (marker or {}).get('closed_plan') or {}
+    if (not saved or marker.get('phase') != 'response_closed'
+            or marker.get('binding') != binding or saved.get('binding') != binding
+            or saved.get('contract') != 'identity-closed-initial-plan-v1'):
+        return None
+    content = {key: value for key, value in saved.items() if key != 'sha256'}
+    if (hashlib.sha256(canonical(content).encode()).hexdigest() != saved.get('sha256')
+            or hashlib.sha256(saved.get('raw_json', '').encode()).hexdigest() != marker.get('response_sha256')
+            or hashlib.sha256(canonical(saved.get('schema')).encode()).hexdigest() != binding['schema_sha256']):
+        return None
+    return saved
 
 
 def provider_outcome(error):

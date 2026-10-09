@@ -250,7 +250,7 @@ async def test_closed_invalid_geometry_uses_one_qualified_fallback_not_google_ke
         return SimpleNamespace(text=json.dumps(payload(decision)))
     async def fallback(story, prompt, schema):
         calls.append('fallback')
-        assert 'SOURCE image is unavailable' in prompt
+        assert 'SOURCE and MAP images are unavailable' in prompt
         return {'result': {key: value for key, value in payload(decision).items() if key != 'accepted_geometry'}}
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=fallback)
