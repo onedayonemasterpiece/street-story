@@ -196,17 +196,37 @@ def project_g_funnel(model_output, options_packet, observed_entries, *,
         'legacy_closed_response_replay':legacy,
         'other_bodies_retained_for_reconsideration':True,
         'canonical_POI_memory_updated':False}
+    # Geometric ambiguity can be about the wrong SIDE of an observed street,
+    # especially when the supplied camera point is only owner-approximate.
+    # Preserve the street-level original OSM neighborhood for T/REF without
+    # scoring it as a SOURCE match, making even-number/address assumptions,
+    # applying nearest-K, or selecting identity by distance.
+    #
+    # Exact same-street keys are an observed graph link, not an identity rule.
+    # If no literal street exists, the full reversible reserve remains usable.
+    observed_streets={row.get('literal_address',{}).get('addr:street')
+                      for row in active}
+    observed_streets.discard(None)
+    corridor=[row for row in result['reserve']
+              if row.get('literal_address',{}).get('addr:street') in observed_streets]
+    result['contextual_street_candidate_count']=len(corridor)
+    result['contextual_street_candidate_ids']=[row['candidate_id'] for row in corridor]
     # The active group is a REVERSIBLE model suggestion, never an exclusion
     # certificate. T may reopen any member of the original observed OSM pool.
     # A no-reduction outcome still supplies a usable T inventory immediately.
     unreduced=status=='no_useful_reduction'
     fallback=result['reserve'] if unreduced else []
+    scene_search=(result['reserve'] if unreduced else [*active,*corridor])
     result['downstream_T']={
         'scope':('original_osm_pool_unreduced' if unreduced else
                  'source_osm_shortlist_unconfirmed' if not accepted else
                  'accepted_G_candidate_for_codex_review'),
         'active_physical_candidates':fallback if unreduced else active,
         'g_prioritized_candidates':active if not unreduced else [],
+        'scene_search_candidates':scene_search,
+        'contextual_observed_street_candidates':corridor,
+        'scene_search_count':len(scene_search),
+        'contextual_not_a_model_match_or_identity':True,
         'candidate_scope':'original_osm_pool' if unreduced else 'reversible_G_shortlist',
         'original_physical_count':index_count,
         'original_reserve_candidate_ids':[item['candidate_id'] for item in result['reserve']],
