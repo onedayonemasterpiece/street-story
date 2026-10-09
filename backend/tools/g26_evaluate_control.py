@@ -27,7 +27,7 @@ def main():
         source_ready=(case/'input-receipt.json').is_file()
         if not source_ready:
             outcome.append({'photo':cid,'input':'missing_geopoint',
-                'grade':'missing_required_input','model_calls':0})
+                'grade':'missing_required_input','model_calls_confirmed_or_possibly_sent':0})
             continue
         receipt=json.loads((case/'input-receipt.json').read_text())
         modes=[case/'model-G-v3',
