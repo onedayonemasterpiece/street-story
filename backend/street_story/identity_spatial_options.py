@@ -124,7 +124,8 @@ def _pair_geometry_from_camera(story, entries, first_id, second_id):
     edges=[]
     for index,(x,y) in enumerate(zip(first,first[1:]+first[:1])):
         length=math.dist(x,y)
-        if length<2:continue
+        if length<2:
+            continue
         def outside(p):
             signed=((y[0]-x[0])*(p[1]-x[1])
                     -(y[1]-x[1])*(p[0]-x[0]))/length
@@ -138,7 +139,7 @@ def _pair_geometry_from_camera(story, entries, first_id, second_id):
         result.update(first_nominal_front_ring_index=0,
             first_nominal_front_segment_index=index,
             second_centroid_outward_offset_from_first_wall_m=_round(offset,1),
-            'offset_provenance':'OSM plan centroid vs first camera-exterior '
+            offset_provenance='OSM plan centroid vs first camera-exterior '
                 'wall, nominal camera coordinate; NOT a measured facade setback')
     return result
 
