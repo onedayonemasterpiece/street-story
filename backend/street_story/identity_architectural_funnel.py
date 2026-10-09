@@ -599,3 +599,91 @@ def to_existing_research_priority(funnel_result, actual_articles):
         'contradictions':contradictions}
 
 
+
+
+
+def acquired_article_images_for_existing_REF(funnel_result, actual_articles):
+    """Convert already-read publisher images to the EXISTING Live REF contract.
+
+    Do not assign web articles to physical bodies by title, address or G
+    shortlist. These are \`web:\` image candidates: the existing SOURCE/REF
+    model must nominate reference_subject_candidate_id, after which its
+    unchanged reference_subject_binding and visual_match gates independently
+    validate the body. URLs/captions are factual media metadata only.
+    """
+    from urllib.parse import urlsplit
+
+    from .article_media import public_url
+    from .identity_references import unsupported_reference_url
+
+    if (not isinstance(funnel_result,dict)
+            or funnel_result.get('contract')!=_CONTRACT
+            or not _sha(funnel_result.get('source_sha256'))
+            or not isinstance(actual_articles,list)):
+        raise ValueError('unverified_T_REF_handoff')
+    if funnel_result.get('T_proof_accepted') is True:
+        return []
+    permitted={row.get('article_id') for row in actual_articles
+        if isinstance(row,dict)
+        and row.get('raw_body_sha256_verified') is True
+        and row.get('input_kind')=='acquired_article_text'
+        and _sha(row.get('source_sha256'))}
+    gallery=((funnel_result.get('downstream_REF') or {})
+        .get('already_acquired_source_image_links') or [])
+    # Only genuine existing article receipts and their observed image records
+    # enter this adapter. No generated search URLs or synthetic REF comparisons.
+    allowed_by_article={}
+    for article in actual_articles:
+        if not isinstance(article,dict) or article.get('article_id') not in permitted:
+            continue
+        aid=article['article_id']
+        url=public_url(article.get('url'))
+        if not url:
+            continue
+        observed_urls=set(article.get('source_image_links') or [])
+        observed_records={
+            row.get('image_url'):row for row in article.get('source_image_records') or []
+            if isinstance(row,dict) and isinstance(row.get('image_url'),str)}
+        for item in gallery:
+            if (not isinstance(item,dict) or item.get('article_id')!=aid
+                    or item.get('source_sha256')!=article['source_sha256']):
+                continue
+            value=item.get('image_url')
+            image_url=public_url(value)
+            if not image_url or value not in observed_urls or unsupported_reference_url(image_url):
+                continue
+            host=(urlsplit(image_url).hostname or '').lower()
+            owner=(urlsplit(url).hostname or '').lower()
+            if host not in {owner,'upload.wikimedia.org'}:
+                continue
+            group=allowed_by_article.setdefault((aid,url),{})
+            record=observed_records.get(value) or {}
+            # First occurrence retains original acquired publisher order.
+            group.setdefault(image_url,{
+                'article_url':url,'image_url':image_url,
+                'kind':'article_original_gallery_image',
+                'alt':str(record.get('publisher_img_alt') or item.get('publisher_img_alt') or '')[:260],
+                'figcaption':str(record.get('publisher_img_title')
+                    or item.get('publisher_img_title') or '')[:260],
+                'section_heading':'','context_text':'',
+                'article_title':str(article.get('title') or '')[:180]})
+    result=[]
+    for (aid,url),images in allowed_by_article.items():
+        if not images:
+            continue
+        # Stable source identity groups multiple views under the same web
+        # candidate. This does not assert any OSM ID, relationship or name.
+        web_id='web:t-article:'+hashlib.sha256((aid+'\n'+url).encode()).hexdigest()[:20]
+        article=next(item for item in actual_articles if item['article_id']==aid)
+        result.append({'candidate_id':web_id,'url':url,
+            'name':str(article.get('title') or aid)[:180],
+            'discovery':'web_article_media',
+            'identity_eligible':False,'identity_role':'unverified_article_REF',
+            'reference_image_urls':list(images),
+            'article_media':list(images.values()),
+            'discovery_provenance':{
+                'source':'T_verified_already_acquired_article_gallery',
+                'article_id':aid,'source_sha256':article['source_sha256'],
+                'original_T_source_sha256':funnel_result['source_sha256'],
+                'physical_identity_claimed':False}})
+    return result
