@@ -156,19 +156,6 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
         raise ValueError('unresolved_physical_policy_invalid')
     if any(not isinstance(cid,str) or cid not in observed for cid in nominated):
         raise ValueError('unobserved_physical_candidate_id')
-    physical_context=observed_address_context(story,list(observed.values()))
-    physical=[]
-    for cid in nominated:
-        cand=observed[cid]
-        physical.append({'candidate_id':cid,'name':str(cand.get('name') or '')[:120],
-            'literal_address_entries':[{
-                'entry_id':item['mapped_entry_id'],
-                'address':{key:item['address'][key] for key in
-                    ('city','street','house_number') if item['address'].get(key)},
-                'provenance':('osm_physical_own_address' if item['mapped_entry_id']==cid
-                    else 'osm_closed_way_node_membership')}
-                for item in _subject_addresses(physical_context,cand)],
-            'observed_levels':((cand.get('map_object') or {}).get('tags') or {}).get('building:levels')})
     # No Python verdict on postal spelling, suffixes, number ranges or
     # historical alias. Give the SOURCE+TEXT model literal, SHA-bound records
     # and observed OSM footprint/entrance members, with reference handles.
@@ -214,7 +201,6 @@ def prepare_architectural_pool(story, candidates, source_text_receipt, *,
             'model_excerpt_sha256':row['text_sha256'],
             'truncated_from_full_publisher_article':row['full_original_text_sha256']!=row['text_sha256']}
             for row in checked],
-        'observed_physical_bodies':inventory['physical_subjects'],
         'publisher_and_OSM_literal_records_NOT_prejoined':{
             'publisher_articles':inventory['articles'],
             'observed_OSM_bodies':inventory['physical_subjects']},
