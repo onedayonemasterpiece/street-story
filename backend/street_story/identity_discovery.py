@@ -1,6 +1,7 @@
 """Bounded joint SOURCE/map identity decision and conditional source recovery."""
 from __future__ import annotations
 import asyncio
+import copy
 import hashlib
 import html
 import json
@@ -127,6 +128,28 @@ def _geometry_plan_result(story, payload, candidates):
     return raw if geometry_result_valid(raw, candidates, story) else None
 
 
+def _conditional_text_prior(payload, nomination_ids):
+    """Carry the first model decision as hypotheses, never acquired evidence."""
+    if not isinstance(payload, dict):
+        return None
+    prior = {key: copy.deepcopy(payload[key]) for key in (
+        'source_scene_observations', 'observed_candidate_ids', 'spatial_hypotheses',
+        'accepted_geometry', 'first_wave_hypotheses') if key in payload}
+    if not prior:
+        return None
+    geometry = payload.get('accepted_geometry') if isinstance(payload.get('accepted_geometry'), dict) else {}
+    spatial = payload.get('spatial_hypotheses') if isinstance(payload.get('spatial_hypotheses'), list) else []
+    nominated = payload.get('observed_candidate_ids') if isinstance(payload.get('observed_candidate_ids'), list) else []
+    rejected = geometry.get('rejected_alternatives') if isinstance(geometry.get('rejected_alternatives'), list) else []
+    declared = [*nominated, geometry.get('candidate_id'),
+        *(item.get('candidate_id') for item in rejected if isinstance(item, dict)),
+        *(item.get('candidate_id') for item in spatial if isinstance(item, dict))]
+    allowed = set(nomination_ids)
+    prior.update(policy='conditional-initial-joint-v1', input_kind='model_hypothesis_not_evidence',
+        candidate_ids=list(dict.fromkeys(cid for cid in declared if isinstance(cid, str) and cid in allowed)))
+    return prior
+
+
 def _nomination_binding_issues(payload, nomination_ids, manifest):
     """Explain exact nomination membership errors without changing model choices."""
     if not isinstance(payload, dict) or not isinstance(payload.get('observed_candidate_ids'), list):
@@ -220,7 +243,6 @@ async def suggest(service, story, transcript, candidates):
             'items': {'type': 'string', 'enum': observed_ids}}
         from .identity_architectural_context import lookup_schema
         schema['properties']['regional_lookup'] = lookup_schema(observed_ids)
-    import copy
     legacy_schema = copy.deepcopy(schema)
     if 'observed_candidate_ids' in legacy_schema['properties']:
         legacy_schema['properties']['observed_candidate_ids'] = {'type': 'array', 'maxItems': 6, 'items': {'type': 'string'}}
@@ -766,12 +788,16 @@ async def suggest(service, story, transcript, candidates):
                 'return uncertain with one useful action. Do not raise confidence to satisfy this check.')
             if text_articles:
                 from .identity_proof import architectural_text_decision_schema
+                conditional_prior = _conditional_text_prior(payload, observed_ids)
                 source_text_receipt = {'source_photo_sha256': story.get('photo_sha256'),
                     'original_source_sha256': original_source_sha256, 'model_source_sha256': model_source_sha256,
                     'source_preparation': source_preparation,
                     'source_image_input': True, 'articles': text_articles, 'lookup': lookup}
+                if conditional_prior:
+                    source_text_receipt['conditional_initial_decision'] = conditional_prior
                 schema['properties']['accepted_architectural_text'] = architectural_text_decision_schema(
-                    observed_ids, [item['article_id'] for item in text_articles])
+                    observed_ids, [item['article_id'] for item in text_articles],
+                    material_alternative_limit=max(8, len(conditional_prior['candidate_ids'])) if conditional_prior else 8)
                 followup_contract = identity_transport_schema(schema)
                 followup_config = types.GenerateContentConfig(response_mime_type='application/json',
                     system_instruction=config.system_instruction + '\nFollow-up contract: ' + json.dumps(
@@ -788,6 +814,17 @@ async def suggest(service, story, transcript, candidates):
                     'Architectural TEXT is an independent identity proof; an unaccepted geometry claim '
                     'does not disqualify it and must not be upgraded just to accompany it. '
                     'Return the complete JSON contract; no mandatory REF.')
+                if conditional_prior:
+                    followup_prompt += ('\nConditional initial model decision (hypotheses, never evidence):\n'
+                        + json.dumps(conditional_prior, ensure_ascii=False, separators=(',', ':'))
+                        + '\nRe-evaluate these SOURCE observations, uncertainty and candidate alternatives '
+                        'against actual SOURCE+MAP+TEXT. An initial positive or negative assertion is not proof. '
+                        'Before accepting architectural identity, material_alternatives must explicitly address '
+                        'every declared candidate_ids entry other than the final subject, using distinguishing '
+                        'SOURCE/text relations or explaining why it is no longer a material alternative. '
+                        'Shared generic elements or the sole available article do not resolve alternatives. '
+                        'If a material alternative remains unresolved, return uncertain; do not invent '
+                        'unobserved features or claim the prior assertion establishes its rejection.')
                 record_identity_event(service, story['id'], 'identity_architectural_text_comparison_started',
                     {'article_ids': [item['article_id'] for item in text_articles], 'attempt': 1})
             if hasattr(service, 'settings'):

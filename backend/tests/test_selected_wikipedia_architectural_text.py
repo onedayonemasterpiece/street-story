@@ -150,6 +150,8 @@ async def test_explicit_regional_nomination_keeps_prussia_route_instead_of_wiki_
     service, story, active = geometry_setup(tmp_path)
     story['_identity_wikipedia_metadata'] = pages()
     _story, _catalog, decision, receipt = text_inputs(candidate_id='osm:way:2')
+    decision['material_alternatives'] = [{'candidate_id': 'osm:way:3',
+        'reason': 'The actual SOURCE/text bay and cornice arrangement differs from the neighboring return ordering.'}]
     uncertain = geometry_decision()
     uncertain['decision'] = 'uncertain'
     initial = {**payload(uncertain), **selected(), 'regional_lookup': {

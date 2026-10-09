@@ -109,6 +109,8 @@ async def test_nominated_architectural_lookup_closes_identity_without_ref_or_ext
     from test_architectural_text_identity import text_inputs
     service, story, active = geometry_setup(tmp_path)
     _input, _catalog, text_decision, receipt = text_inputs(candidate_id='osm:way:2')
+    text_decision['material_alternatives'] = [{'candidate_id': 'osm:way:3',
+        'reason': 'SOURCE and the text place the return behind the three-axis bay; this neighbor puts it beside the bay.'}]
     articles = receipt['articles']
     uncertain = geometry_decision()
     uncertain['decision'] = 'uncertain'

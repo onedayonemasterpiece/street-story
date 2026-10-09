@@ -176,7 +176,7 @@ def accepted_identity(identity, photo_sha256=None, generation=None, control_revi
 TEXT_POLICY = 'architectural_text_identity_v1'
 
 
-def architectural_text_decision_schema(candidate_ids, article_ids):
+def architectural_text_decision_schema(candidate_ids, article_ids, *, material_alternative_limit=8):
     """The joint SOURCE/text model decides sufficiency and physical scope."""
     text = {'type': 'string', 'maxLength': 600}
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
@@ -195,7 +195,7 @@ def architectural_text_decision_schema(candidate_ids, article_ids):
                 'structural_contradiction', 'historical_or_mutable_difference']}, 'reason': text},
             'required': ['article_id', 'source_quote', 'source_observation', 'status', 'reason'],
             'additionalProperties': False}},
-        'material_alternatives': {'type': 'array', 'maxItems': 8, 'items': {'type': 'object', 'properties': {
+        'material_alternatives': {'type': 'array', 'maxItems': material_alternative_limit, 'items': {'type': 'object', 'properties': {
             'candidate_id': cid, 'reason': text}, 'required': ['candidate_id', 'reason'], 'additionalProperties': False}},
         'material_alternatives_resolved': {'type': 'boolean'},
         'unresolved_contradictions': {'type': 'array', 'maxItems': 8, 'items': text},
@@ -249,8 +249,11 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
         table[aid] = article
     observed = story.get('_identity_observed_candidates') or []
     catalog = {item.get('candidate_id'): item for item in [*candidates, *observed] if isinstance(item, dict)}
+    prior = receipt.get('conditional_initial_decision')
+    prior_ids = prior.get('candidate_ids') if isinstance(prior, dict) else None
     if not isinstance(decision, dict) or not Draft202012Validator(
-            architectural_text_decision_schema(list(catalog), list(table))).is_valid(decision):
+            architectural_text_decision_schema(list(catalog), list(table),
+                material_alternative_limit=max(8, len(prior_ids)) if isinstance(prior_ids, list) else 8)).is_valid(decision):
         return None
     cid, candidate = decision.get('candidate_id'), catalog.get(decision.get('candidate_id'))
     if (decision['decision'] != 'accepted_architectural_text' or not candidate
@@ -281,6 +284,20 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     if not stable or any(item['candidate_id'] in {'', cid} or not item['reason'].strip()
             for item in decision['material_alternatives']):
         return None
+    if prior is not None:
+        if (not isinstance(prior, dict) or prior.get('policy') != 'conditional-initial-joint-v1'
+                or prior.get('input_kind') != 'model_hypothesis_not_evidence'
+                or not isinstance(prior.get('candidate_ids'), list)
+                or any(not isinstance(value, str) or value not in catalog
+                    for value in prior['candidate_ids'])
+                or len(set(prior['candidate_ids'])) != len(prior['candidate_ids'])):
+            return None
+        # This checks pointer coverage only. A previous model rejection is
+        # conditional context, never proof of architectural discrimination.
+        required = set(prior['candidate_ids']) - {cid}
+        addressed = {item['candidate_id'] for item in decision['material_alternatives']}
+        if not required <= addressed:
+            return None
     proof = {'validated': True, 'policy': TEXT_POLICY, 'candidate_id': cid, **scope,
         'source_photo_sha256': scope['photo_sha256'], 'original_source_sha256': receipt['original_source_sha256'],
         'model_source_sha256': receipt['model_source_sha256'], 'candidate_context_sha256': _digest(_text_candidate_context(candidate)),

@@ -258,6 +258,8 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
     decision = copy.deepcopy(decision)
     decision["article_bindings"][0]["article_id"] = "prussia39:sid:34"
     decision["correspondences"][0]["article_id"] = "prussia39:sid:34"
+    decision["material_alternatives"] = [{"candidate_id": "osm:way:3",
+        "reason": "The SOURCE/text three-axis bay precedes the return; this neighboring body reverses that arrangement."}]
 
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
@@ -307,6 +309,8 @@ async def test_unavailable_regional_text_keeps_independently_selected_wiki_in_sa
         "regional_lookup": {"route": "address", "candidate_ids": ["osm:way:2"], "reason": "Read distinguishing regional architecture."},
     }
     _story, _candidates, decision, receipt = text_inputs(candidate_id="osm:way:2")
+    decision["material_alternatives"] = [{"candidate_id": "osm:way:3",
+        "reason": "The acquired Wiki text and SOURCE agree on the bay/cornice ordering; the neighbor has the reverse return."}]
     reads, calls = [], []
 
     async def regional(*args):
