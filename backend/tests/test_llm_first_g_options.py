@@ -135,7 +135,7 @@ def test_impossible_map_reference_and_mismatched_image_remain_hard_invalid():
         focus_candidate_ids=[packet['private_label_to_osm_id'][str(label)]])
     bad=check(opinion(label,selected=['C999999.0.9.10']),detail)
     assert not bad['accepted']
-    assert bad['status']=='needs_detail'
+    assert bad['status']=='candidate_unconfirmed'  # already expanded; invented OSM primitive remains unsupported
     assert 'unreceived_osm_option_reference' in bad['reason_codes']
     assert check(opinion(label),packet,map_hash='0'*64)['status']=='invalid'
     forged=check(opinion(123456789),packet)
