@@ -276,11 +276,19 @@ def verified_publisher_physical_scope(story, candidates, source_text_receipt, de
         if not link.get('publisher_modern_address_metadata'):
             return {'applicable': True, 'supported': False,
                     'reason': 'publisher_modern_address_not_observed', 'article_id':aid}
+        complex_members=[item['candidate_id'] for item in link['physical_links']
+            if item.get('publisher_complex_postal_membership_entry_ids')]
         matched = [item for item in link['physical_links']
             if item['exact_literal_entry_ids']
                 or item['publisher_full_group_covered_by_distinct_verified_entrances']]
         candidates_matched = list(dict.fromkeys(item['candidate_id'] for item in matched))
         if cid not in candidates_matched:
+            if cid in complex_members:
+                return {'applicable':True,'supported':False,
+                    'reason':'publisher_complex_postal_membership_requires_corpus_resolution',
+                    'article_id':aid,
+                    'publisher_complex_possible_physical_corpora':list(dict.fromkeys(complex_members)),
+                    'retrieval_link_valid':True, 'physical_identity_inferred':False}
             return {'applicable': True, 'supported': False,
                     'reason': 'article_modern_address_not_bound_to_nominated_physical_body',
                     'article_id':aid, 'received_matching_physical_count':len(candidates_matched)}
