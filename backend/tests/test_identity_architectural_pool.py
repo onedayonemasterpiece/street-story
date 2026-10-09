@@ -214,7 +214,7 @@ def test_generic_historical_text_cannot_become_individual_architecture_proof():
     result=close_architectural_pool_response(story,candidates,packet,reply,
         source_text_receipt=receipt)
     assert result['accepted'] is False
-    assert result['reason']=='not_enough_independent_structural_architecture'
+    assert result['reason']=='existing_T_proof_invalid'
 
 
 def test_unbound_neighbor_stable_match_blocks_premature_accepted():
