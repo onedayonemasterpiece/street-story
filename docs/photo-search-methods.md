@@ -118,6 +118,16 @@ require review; institution founding is not building construction. Display the
 first substantive accepted fact immediately. Address-only, upload status and generic
 city summaries do not count as useful facts.
 
+Headless extraction assigns an opaque candidate ID from its frozen batch and
+position. A model `claim_key` is advisory here; its absence does not establish
+equivalence or invalidate otherwise complete evidence. Interactive author tools
+retain their semantic-key contract. Candidates stay unreviewed until the reviewer
+checks their own passages, one independently selectable claim, temporal qualifiers
+and physical subject. Private quote labels address literal slices of the exact
+frozen packet and selected own evidence; they do not supply a support verdict.
+Paraphrased quotes remain invalid. Original responses and UNKNOWN operations stay
+immutable and are observed under their original contract after restart.
+
 First replay saved evidence and negative controls, including the wrong dormitory,
 house 21 versus 22, water tower versus 121 and unresolved6/6A. Then use one frozen
 candidate/configuration/manifest with at most five live cases:102,104,111,130,132;
@@ -195,7 +205,19 @@ closed/UNKNOWN state. The shared reservation journal is not refunded by this
 classification. Thirty-eight affected boundary/quota/fence checks passed.
 
 A saved-source-only Live contract diagnostic on `3c6e492` completed in 10.66 s;
-it does not establish product acceptance. No final five-case PASS or deployment
+it does not establish product acceptance.
+
+Cold104 on `2142455` identified the independently labelled physical object
+`osm:relation:3665416` through geometry at 15.67 s, then ended naturally at the
+facts deadline after 480.94 s with zero eligible facts. All nine review quotes
+were paraphrases rather than literal own evidence; the evidence-ID joins were
+valid. A later extraction answer omitted advisory keys on eight of thirteen
+candidates and was rejected as malformed, followed by unsuccessful fallback
+operations. This run establishes neither useful facts nor product PASS. Saved
+packets are used to verify literal addressing and required evidence fields
+without reprocessing the expired run as acceptance.
+
+No final five-case PASS or deployment
 is claimed. Release evidence
 must report the final source/deployed SHA, per-building facts/sources, first useful
 fact and full times, actual sends/usage, known costs and remaining unknowns.
