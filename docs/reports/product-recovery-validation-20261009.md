@@ -3,6 +3,33 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Ready-fact editorial continuation after actual5353f2f failure
+
+Hosted5353f2f backend38027083135 and Android38027083101 succeeded; these are
+technical checks, not accepted product delivery. Current-source cold104 still
+FAILED189.942s with no identity/facts in job_4da8405890327e40277cf55c:
+Native resource admission CONTROL_UNAVAILABLE, Google3.8 registry timeout,
+independent3.5 reached. It did not exercise the new real Native setup15s bound.
+Registered production health05:20:29 timed out; backend systemd remained active,
+no restarts, unchangeddb0c0d0. Targeted600s registered log coverage was complete
+with no matching research_terminal/native_visual/CONTROL_UNAVAILABLE events.
+
+Actual same-story102 editorial revision job_f123ea94e01424420332a83b FAILED
+at the unchanged120s selection-step cap; Stop acknowledged. No new selection,
+draft, voice or visual generation. Mira read review packets instead of selecting
+ready facts and persisted one provisional central-bay candidate decision in
+pf4d77f1d11aa. Its result_json/request_json remainNULL; relations are incomplete
+and canonical eligibility remains unreviewed. A successful finalize_fact_review
+tool frame therefore proves only staged decisions here, not completed review.
+The preceding closed1442934 review receipt and original visual remain intact.
+
+The model stage guidance now distinguishes changing owner selection among
+eligible facts from canonical reconsideration. It explicitly permits switching
+from review to editor for the same author request while keeping other pending
+reviews saved. No semantic parser, silent finalization or identity mutation.
+73 existing editor/review/completion fixtures passed29.53s in
+job_17e9a08ec1df731ca9939011. Actual continuation still requires verification.
+
 ## Compact initial physical context and actual warm102 failure
 
 Actual compact-input132 on fcec6c1 still FAILED at188.654s, no identity/facts;

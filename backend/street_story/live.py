@@ -833,7 +833,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'then read and finalize the new revisions. finalize_fact_review saves only '
                 'the current frozen decisions; its receipt is required before reporting a '
                 'saved correction. Do not change selection, concept, text or visual during '
-                'review. Continue through the editor stage when the author next asks for them.'
+                'review. For an author request to choose already eligible facts or edit the '
+                'story, switch to editor and carry out that same request. Other pending '
+                'reviews remain saved and do not require completion before using ready facts.'
             )
         elif capability == 'research':
             # Selection, concept and draft are an ordinary continuation of the
@@ -876,6 +878,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
               'author to repeat it. Stages: identity (object), research (facts), review (evidence), '
               'editor (selection/concept/text), publication (image/post). '
               'Never switch to the current stage again: use its available tools to complete the request. '
+              'Changing the owner selection among eligible facts belongs to editor; it does '
+              'not itself request new source discovery or a new canonical fact verdict. '
               'Changing stage is not consent for new mutations or confirmation of a publication.')
         if capability == 'review':
             configuration['context_instruction'] = (
