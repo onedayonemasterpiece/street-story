@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from .model_facts import merge_source_payloads, normalized_claim_key, validated_model_fact_text
@@ -150,18 +151,20 @@ def _assertion_exists(db, story_id: str, assertion_id: str) -> bool:
     )
 
 
-def accept_fact_basis(db, story_id, assertion_id, evidence_ids, *, operation, now):
+def accept_fact_basis(db, story_id, assertion_id, evidence_ids, *, operation, now, reassessment=False):
     """Freeze the already assessed claim and its own selected immutable spans.
 
     Caller owns semantic assessment and the transactional Stop/run/lease fences.
     Inventory growth is independent of this admission; no inference occurs here.
+    Only an explicit new positive assessment may renew a withdrawn admission;
+    hydration and refresh retain their default readback authority.
     """
     assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
                            (story_id, assertion_id)).fetchone()
     story = db.execute('SELECT research_json FROM stories WHERE id=?', (story_id,)).fetchone()
     if not assertion or not story or not evidence_ids:
         raise ValueError('fact_basis_missing')
-    if accepted_basis_valid(db, story_id, assertion):
+    if accepted_basis_valid(db, story_id, assertion) and not (reassessment and assertion['review_status'] == 'withheld'):
         return  # Compatible support cannot rewrite the original admission.
     research = json.loads(story['research_json'] or '{}')
     identity = research.get('visual_identity') or {}
@@ -178,6 +181,15 @@ def accept_fact_basis(db, story_id, assertion_id, evidence_ids, *, operation, no
                           for eid in dict.fromkeys(evidence_ids)]}
     db.execute('UPDATE fact_assertions SET accepted_revision_digest=revision_digest,accepted_basis_json=? '
                'WHERE story_id=? AND assertion_id=?', (_canonical(basis), story_id, assertion_id))
+    if reassessment and assertion['review_status'] == 'withheld':
+        # A new guarded positive assessment may renew an explicitly withdrawn
+        # admission. Ordinary refresh/growth never calls this semantic boundary.
+        db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' "
+                   "WHERE story_id=? AND assertion_id=?", (story_id, assertion_id))
+        logging.getLogger(__name__).info(
+            'street_story_fact_reassessment component=fact_ledger state=prepared story_id=%s assertion_id=%s contract=%s packet_ref=%s run_id=%s own_span_count=%s',
+            story_id, assertion_id, operation.get('contract'), operation.get('packet_ref'),
+            operation.get('run_id'), len(basis['evidence']))
 
 
 def accepted_basis_valid(db, story_id, assertion):

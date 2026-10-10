@@ -4265,7 +4265,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             (story_id, fact['fact_id'], save_batch_id, run_id))]
                         accept_fact_basis(db, story_id, fact['fact_id'], own_ids,
                                           operation={'contract': session.state.get('semantic_reading_contract') or 'live-batch',
-                                                     'run_id': run_id, 'batch_id': save_batch_id}, now=now)
+                                                     'run_id': run_id, 'batch_id': save_batch_id}, now=now, reassessment=True)
                     else:
                         from .fact_ledger import accepted_basis_valid
                         admitted = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
@@ -4752,7 +4752,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 if fid not in (packet_rejected or []):
                     accept_fact_basis(db, story_id, fid, ids,
                                       operation={'contract': review_detector, 'run_id': run_id,
-                                                 'packet_ref': args.get('packet_ref')}, now=now)
+                                                 'packet_ref': args.get('packet_ref')}, now=now, reassessment=True)
             refresh_review_status(db, story_id, now)
             from .poi_memory import persist_research_memory, sync_poi_review_from_story
             # Repairs create new own assertions outside the extraction save path.

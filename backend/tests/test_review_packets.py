@@ -8,6 +8,48 @@ from street_story.research_budget import PAGE_UNITS, response_units
 
 
 @pytest.mark.asyncio
+async def test_real_negative_review_after_canonical_growth_and_new_reassessment(tmp_path):
+    from street_story.poi_memory import persist_research_memory
+    import json
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    try:
+        chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+        await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-adverse-growth', 'args': findings(chunk, QUOTES)})
+        packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
+        await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-before-growth', 'args': {
+            'packet_ref': packet['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'supported'} for n in range(3)],
+            'relations_complete': True, 'conflicts': [], 'coverage_complete': True, 'missing_aspects': []}})
+        text = packet['items'][1]['text']
+        with svc.store.tx() as db:
+            fid = json.loads(db.execute('SELECT payload_json FROM live_review_packets WHERE packet_ref=?', (packet['packet_ref'],)).fetchone()[0])['items'][1]['id']
+            identity = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()[0])['visual_identity']
+            source = {'url': 'https://another.example/corroboration', 'supports': [{'kind': 'page_excerpt', 'text': text}]}
+            persist_research_memory(db, identity, [{'fact_id': fid, 'claim_key': fid, 'text': text, 'confidence': .9, 'sources': [source]}],
+                [source], 'another-story-corroboration', svc.store.now(), research_run_id='another-run')
+        scoped = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': [fid]}})
+        await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'negative-after-growth', 'args': {
+            'packet_ref': scoped['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'insufficient', 'claims': [text]}],
+            'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}})
+        with svc.store.connection() as db:
+            assert db.execute('SELECT eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?', (session.resource_id, fid)).fetchone()[0] == 'withheld'
+            assert {r[0] for r in db.execute('SELECT eligibility FROM poi_research_assertions WHERE assertion_id=?', (fid,))} == {'withheld'}
+            negative_at = db.execute('SELECT MAX(reviewed_at) FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0]
+        assert next(f for f in svc.story(session.resource_id)['facts'] if f['fact_id'] == fid)['eligibility'] == 'withheld'
+        fresh = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {
+            'run_id': run_id, 'fact_ids': [fid], 'supersedes_packet_ref': scoped['packet_ref'], 'recheck_facts': [0]}})
+        await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'positive-reassessment', 'args': {
+            'packet_ref': fresh['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported',
+                'claims': [text], 'basis_quotes': [text], 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True}],
+            'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}})
+        with svc.store.connection() as db:
+            assert db.execute('SELECT eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?', (session.resource_id, fid)).fetchone()[0] == 'eligible'
+            assert {r[0] for r in db.execute('SELECT eligibility FROM poi_research_assertions WHERE assertion_id=?', (fid,))} == {'eligible'}
+            assert db.execute('SELECT MIN(reviewed_at) FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0] > negative_at
+    finally:
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_scoped_reconsideration_keeps_unrelated_review_and_requires_new_own_decision(tmp_path):
     svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
     chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})

@@ -133,7 +133,9 @@ An accepted unchanged claim retains its own accepted evidence basis when compati
 support grows or a recheck opens. Changed meaning/physical subject, missing own basis
 or a material contradiction blocks that claim locally. Shared POI observations retain
 the canonical admission independently of the publication story; warm hydration binds
-its own evidence IDs without a new synthetic model verdict. These source contracts
+its own evidence IDs without a new synthetic model verdict. An explicitly withdrawn
+claim can regain admission only through a new guarded positive assessment of its
+own evidence; refresh and hydration cannot renew that authority. These source contracts
 require candidate acceptance evidence before being treated as deployed behavior.
 
 The worker claims durable SQLite jobs by lease and recovers expired `running`
