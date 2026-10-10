@@ -36,6 +36,18 @@ job_8af00bc8ef1ad5b11a7f3fed; Ruff and diff checks passed.
 Development uses permitted chatgpt/street-story-reliability-20261010 integration
 branch based on16b459b, retaining PR246 work; no denied branch write is bypassed.
 
+Actualfd4c12d retained102 job_d4c4bcf4f3dfd2b3a1cb0d9a: publication -> editor
+transition accepted with9 functions; selection/concept/draft were saved. The
+draft revision conflict was read back and corrected by Mira. Original FAIL
+editable_draft_readback_timeout is preserved: the runner advanced on the first
+three selected IDs even though one was withheld; Mira corrected the selection
+0.2s after that step. The runner then waited against the stale selection. No
+voice/new visual was sent; Stop acknowledged. Selection readiness now requires
+every chosen claim to be eligible, and turn completion must follow the latest
+tool-response boundary. The corrected model choice still includes a compound
+construction claim; independent narrow reconsideration of that own-source claim
+precedes the next editorial segment. Old cold identity is not repeated.
+
 ## Reboot checkpoint: bounded capability bundles
 
 Owner requested a graceful stop for adding host RAM/reboot and explicitly

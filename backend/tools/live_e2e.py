@@ -1242,6 +1242,10 @@ async def run_retained_story(args):
         def selected(story):
             return {f["fact_id"] for f in story.get("facts", []) if f.get("selected")}
 
+        def ready_selection(story):
+            chosen = [f for f in story.get("facts", []) if f.get("selected")]
+            return len(chosen) >= 3 and all(f.get("eligibility") == "eligible" for f in chosen)
+
         async def wait_step(name, tool, condition, checkpoint, tool_checkpoint, timeout=120):
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -1251,7 +1255,10 @@ async def run_retained_story(args):
                 if (
                     condition(current)
                     and any(t["name"] == tool and t["state"] == "completed" for t in report["tool_trace"][tool_checkpoint:])
-                    and any(e.get("type") == "turn_complete" for e in events[checkpoint:])
+                    and any(e.get("type") == "turn_complete" and e.get("seq", 0) > max(
+                        (written.get("seq", 0) for written in events[checkpoint:]
+                         if written.get("type") == "timing" and written.get("stage") == "tool_response_written"), default=0)
+                        for e in events[checkpoint:])
                     and time.monotonic() > playback_until + 0.3
                     and time.monotonic() > last_event_at + 2
                 ):
@@ -1446,17 +1453,17 @@ async def run_retained_story(args):
                         lambda story: bool(story.get("visual")),
                     )
                 else:
-                    selection_request = "Выбери для будущей публикации не менее трёх самостоятельных содержательных атомарных проверенных фактов из этой истории. Прочитай их с источниками и сохрани выбор. Пока не пиши текст и не создавай изображение."
+                    selection_request = "Выбери для будущей публикации не менее трёх самостоятельных содержательных атомарных проверенных фактов из этой истории. Сначала прочитай полный get_facts и собственные доказательства выбранных утверждений через get_evidence. Не выбирай составное утверждение с несколькими независимо выбираемыми сведениями, даже если у него старый eligible. Сохрани выбор из готовых качественных фактов, не жди проверки остальных кандидатов. Пока не пиши текст и не создавай изображение."
                     if args.revise_atomic_selection:
                         selection_request = "Перейди к выбору уже готовых фактов для публикации. Прочитай существующие допущенные факты с их собственными источниками и сохрани другой набор не менее трёх самостоятельных содержательных атомарных фактов. Дата постройки, этажность, отдельный арендатор и отдельная деталь фасада — независимо выбираемые сведения, даже если источник объединяет их предложением. Сейчас нужен обычный выбор среди готовых фактов: не начинай новое исследование и не жди проверки остальных кандидатов. Объект, текст и изображение на этом шаге сохрани."
                     chosen = (
                         first
-                        if args.resume and not args.revise_atomic_selection and len(selected(first)) >= 3
+                        if args.resume and not args.revise_atomic_selection and not args.review_fact_ids and ready_selection(first)
                         else await text_step(
                             "fact_selection",
                             selection_request,
                             "select_facts",
-                            lambda s: len(selected(s)) >= 3 and (not args.revise_atomic_selection or selected(s) != selected(first)),
+                            lambda s: ready_selection(s) and (not args.revise_atomic_selection or selected(s) != selected(first)),
                         )
                     )
                     choice = selected(chosen)
