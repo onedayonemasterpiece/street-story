@@ -415,11 +415,19 @@ class NativeVisionProvider:
         if submitted:
             receipt['resource_reconciliation'] = 'readback_only_original_reservation_unchanged'
         try:
+            receipt['transport_stage'] = 'resource_admission'
+            await self._save(binding, receipt)
+            logger.info('native_visual_boundary story_id=%s attempt_id=%s stage=resource_admission state=start submitted=%s',
+                        story['id'], binding['attempt_id'], submitted)
             async with admission as lease:
                 try:
                     if not receipt['thread_id']:
                         if receipt['phase'] != 'created':
                             raise RetryableProviderError('native_thread_creation_unknown', retry_at=self.service.store.now() + 300)
+                        receipt['transport_stage'] = 'config_read'
+                        await self._save(binding, receipt)
+                        logger.info('native_visual_boundary story_id=%s attempt_id=%s stage=config_read state=start',
+                                    story['id'], binding['attempt_id'])
                         config = await client.request('config/read', {'includeLayers': False, 'cwd': cwd})
                         flags = ('shell_tool', 'unified_exec', 'view_image', 'multi_agent', 'multi_agent_v2', 'apps', 'plugins',
                                  'hooks', 'browser_use', 'computer_use', 'image_generation', 'code_mode_host',
@@ -429,7 +437,10 @@ class NativeVisionProvider:
                                           'model_reasoning_effort': 'medium'})
                         overrides.update({f'mcp_servers.{name}.enabled': False for name in (config.get('config', {}).get('mcp_servers') or {})})
                         receipt['phase'] = 'thread_create_intent'
+                        receipt['transport_stage'] = 'thread_start'
                         await self._save(binding, receipt)
+                        logger.info('native_visual_boundary story_id=%s attempt_id=%s stage=thread_start state=start',
+                                    story['id'], binding['attempt_id'])
                         response = await client.request('thread/start', {'cwd': cwd, 'model': MODEL,
                             'approvalPolicy': 'never', 'sandbox': 'read-only', 'config': overrides, 'dynamicTools': [],
                             'baseInstructions': BASE_INSTRUCTIONS,
@@ -448,10 +459,15 @@ class NativeVisionProvider:
                     if not submitted:
                         if not receipt['profile_verified']:
                             raise RetryableProviderError('native_effective_profile_unverified', retry_at=self.service.store.now() + 300)
+                        receipt['transport_stage'] = 'quota_read'
+                        await self._save(binding, receipt)
+                        logger.info('native_visual_boundary story_id=%s attempt_id=%s stage=quota_read state=start',
+                                    story['id'], binding['attempt_id'])
                         grant = await self.permission.ensure(client)
                         receipt['quota_permission'] = {k: grant[k] for k in ('account_hash', 'issued_at', 'expires_at', 'remaining_percent')}
                         await lease.before_send({'thread_id': receipt['thread_id'], 'quota_expires_at': grant['expires_at']})
                         receipt['phase'] = 'prompt_intent'
+                        receipt['transport_stage'] = 'turn_start'
                         await self._save(binding, receipt)
                         try:
                             response = await client.request('turn/start', {'threadId': receipt['thread_id'], 'model': MODEL, 'effort': 'medium',
@@ -467,7 +483,7 @@ class NativeVisionProvider:
                                                story['id'], binding['attempt_id'], receipt['thread_id'],
                                                error.get('code'), error['category'], error.get('turn_rejected', False))
                             raise
-                        receipt.update(turn_id=response['turn']['id'], phase='submitted')
+                        receipt.update(turn_id=response['turn']['id'], phase='submitted', transport_stage='turn_read')
                         await self._save(binding, receipt)
                     read_failures = 0
                     while time.monotonic() - started < self.timeout:
@@ -606,6 +622,9 @@ class NativeVisionProvider:
                     and receipt.get('provider_send_state') != 'possibly_sent'):
                 receipt.update(provider_send_state='not_sent', retry_safe=True)
             receipt['error_type'] = type(exc).__name__
+            logger.warning('native_visual_boundary story_id=%s attempt_id=%s stage=%s state=error phase=%s error_type=%s elapsed_ms=%s',
+                           story['id'], binding['attempt_id'], receipt.get('transport_stage'), receipt['phase'],
+                           type(exc).__name__, round((time.monotonic() - started) * 1000))
             if getattr(exc, 'resource_failure', False):
                 code = getattr(exc, 'code', '')
                 code = code if isinstance(code, str) and re.fullmatch(r'RESOURCE_[A-Z_]{1,80}', code) else 'RESOURCE_UNAVAILABLE'

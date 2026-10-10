@@ -32,7 +32,8 @@ def test_frozen_photo102_geometry_contrast_is_an_advisory_scale_not_identificati
     # a correct building ID or actual sensor/crop calibration.
 
 
-def test_physical_scene_includes_all_received_candidates_and_exif_outline_context():
+@pytest.mark.parametrize('include_plan_morphology', [True, False])
+def test_physical_scene_includes_all_received_candidates_and_exif_outline_context(include_plan_morphology):
     from street_story.identity_map_context import geometry_camera_context
     first, second, remote = building(2, 20), building(3, 50), building(4, 200)
     # The normal OSM provider supplies measured boundary bearing intervals.
@@ -44,7 +45,8 @@ def test_physical_scene_includes_all_received_candidates_and_exif_outline_contex
         '_identity_map_snapshot': {'observed_pool': measured}}
     saved = copy.deepcopy(source)
     rendered = render_scene(source, [])
-    capsule = physical_decision_context(source, [], rendered['manifest'])
+    capsule = physical_decision_context(source, [], rendered['manifest'],
+        include_plan_morphology=include_plan_morphology)
     rows = [dict(zip(capsule['columns'], row)) for row in capsule['rows']]
     assert {row['candidate_id'] for row in rows} == {
         'osm:way:2', 'osm:way:3', 'osm:way:4'}
@@ -56,6 +58,13 @@ def test_physical_scene_includes_all_received_candidates_and_exif_outline_contex
     assert all(row['outline_span_over_exif_diagonal'] is not None for row in rows)
     assert not any('identity' in row for row in rows)
     assert source == saved
+    # The compact first view omits derived summaries, not bodies or observed
+    # outline primitives. The ordinary detail path retains full shape evidence.
+    full = physical_decision_context(source, [], rendered['manifest'])
+    assert [row[:-1] for row in full['rows']] == [
+        row[:-1] if include_plan_morphology else row for row in capsule['rows']]
+    assert ('plan_morphology' in capsule['columns']) == include_plan_morphology
+    assert ('plan_morphology_columns' in capsule) == include_plan_morphology
     source['_camera_position_verified'] = False
     no_camera = render_scene(source, [])
     result = physical_decision_context(source, [], no_camera['manifest'])

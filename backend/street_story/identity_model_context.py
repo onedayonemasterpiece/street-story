@@ -40,7 +40,7 @@ def _outline_angular_scale(bearing_interval, diagonal_degrees):
     return round(span / diagonal_degrees, 3)
 
 
-def physical_decision_context(story, candidates, manifest):
+def physical_decision_context(story, candidates, manifest, *, include_plan_morphology=True):
     """One literal row per received body; entrance addresses stay beside it.
 
     This is presentation of the received pool, never a nearest shortlist or a
@@ -99,19 +99,19 @@ def physical_decision_context(story, candidates, manifest):
             and min(p[1] for p in vertices) <= window[3]))
         selected_sides = (sides if cid in expanded_ids else
             sorted(sides, key=lambda side: (-side[2], side[0], side[1]))[:4] if in_window else [])
-        result.append([row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
+        body = [row.get('label'), cid, row.get('geometry_status'), row.get('boundary_distance_m'),
             row.get('bearing_start_end_span_degrees'), row.get('extent_east_north_m'),
             row.get('longest_observed_segments_m'), row.get('height_levels'), literal,
             tags.get('name'), row.get('contour_roles'), row.get('contours_complete'),
             selected_sides, len(sides) - len(selected_sides),
-            _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal),
-            observed_plan_shape(entry)])
-    return {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
+            _outline_angular_scale(row.get('bearing_start_end_span_degrees'), reference_diagonal)]
+        if include_plan_morphology:
+            body.append(observed_plan_shape(entry))
+        result.append(body)
+    context = {'columns': ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
         'bearing_start_end_span_degrees', 'extent_east_north_m', 'longest_segments_m',
         'height_levels', 'literal_address_entries', 'observed_name', 'contour_roles', 'contours_complete',
-        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal', 'plan_morphology'],
-        'plan_morphology_columns': SHAPE_COLUMNS,
-        'plan_morphology_policy': SHAPE_POLICY,
+        'observed_side_segments', 'omitted_side_count', 'outline_span_over_exif_diagonal'],
         'source_angular_reference': {
             'diagonal_fov_35mm_deg': reference_diagonal,
             'camera_position_status': (manifest.get('camera') or {}).get('position_status'),
@@ -133,6 +133,12 @@ def physical_decision_context(story, candidates, manifest):
             'levels, city or addresses are unknown. A visible side is nominated by an actual segment; '
             'no facade, camera yaw or obstruction is inferred from map north. Use map_detail with exact '
             'labels for a needed contour/pose relation; the full pool is retained, no nearest-K exclusion.'}
+    if include_plan_morphology:
+        context['columns'].append('plan_morphology')
+        context.update(plan_morphology_columns=SHAPE_COLUMNS, plan_morphology_policy=SHAPE_POLICY)
+    else:
+        context['expansion'] += ' Derived plan morphology is supplied with map_detail; the initial view keeps observed outlines and sides.'
+    return context
 
 
 def fact_review_subject(identity, **scope):

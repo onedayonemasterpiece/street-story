@@ -478,7 +478,8 @@ async def _suggest(service, story, transcript, candidates):
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     from .identity_model_context import physical_decision_context
-    physical_context = physical_decision_context(story, candidates, scene['manifest']) if scene else None
+    physical_context = physical_decision_context(story, candidates, scene['manifest'],
+        include_plan_morphology=False) if scene else None
     model_scene = scene_manifest
     if scene:
         # Actual full label/primitive provenance stays in the frozen receipt.

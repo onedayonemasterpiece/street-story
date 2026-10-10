@@ -3,6 +3,35 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Compact initial physical context and actual warm102 failure
+
+The first SOURCE/MAP view now defers derived plan-morphology summaries to the
+existing map_detail path. Every received physical body, observed outline/side,
+address membership, map label, source passage and article remains available.
+No candidate shortlist or deterministic identity verdict is introduced. The
+ordinary detail view still supplies full morphology and requested short sides.
+
+Read-only reconstruction of the frozen736132 Native envelope measured158661
+owned text characters/167106 UTF-8 bytes and estimated65175 reserved tokens.
+The compact equivalent measures142472 characters/150917 bytes and estimated
+59779 reserved tokens, below the registered local60000 minute-token capacity.
+All212 body IDs and observed primitives are unchanged; packet roundtrip is
+lossless, articles/images/contract unchanged. This is the installed conservative
+estimator plus output/image allowance, not measured provider usage or inference.
+53 focused scene/geometry/Native/discovery fixtures passed28.67s in
+job_252ef3d7763620651f71dd37. Native receipts/logs now identify resource admission,
+config read, thread creation, quota observation and turn boundaries separately.
+
+The actual39d108a second API upload on existing102 POI memory FAILED;
+job_36f2b46335c9b16f5f2a8d40/story_ad3052c45e117b5a9d4653de, duration265.465s.
+No accepted identity, hydrated facts, model thread/turn or Google attempt.
+Native stayed created/NotSent and was cancelled. Recovered job output shows
+resource_reserve HTTP200 before increasingly delayed ASGI polling, deadline and
+Stop. A resource-admission stall is therefore not established. Shared memory
+pressure/full swap was observed; no OOM or all-provider outage is claimed.
+Prior draft/selection survived and the new story stayed empty. Original failed
+receipt and clocks remain unchanged; there is no warm-reuse PASS on this version.
+
 ## 96e7e75 ordinary Mira result import and visual inspection
 
 Actual job_c6594bc5618ee0a9d2398d3d completed23.407s, mechanical_pass=true,
