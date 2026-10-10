@@ -141,9 +141,13 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         proof = story['_identity_geometry_result']['architectural_text_proof']
         assert proof['source_text_receipt']['conditional_initial_decision']['candidate_ids'] == ['osm:way:2', 'osm:way:3']
     else:
-        with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
-            await identity_discovery.prepare_search_plan(service, story, '', active)
+        history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
+        assert history['search_plan']['payload']['closed_comparison_unusable'] == 'identity_architectural_comparison_invalid'
+        assert story['_identity_accepted_result']['status'] == 'uncertain'
+        assert story['_identity_accepted_result']['_comparison_deferred'] is True
         assert '_identity_geometry_result' not in story
+        # The raw semantic operation remains rejected and cannot be repeated;
+        # only the acquired-source queue has an independent continuation.
         with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
             await identity_discovery.suggest(service, story, '', active)
     assert len(calls) == 2 and reads == ['selected text']

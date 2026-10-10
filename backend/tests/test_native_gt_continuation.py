@@ -310,8 +310,16 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
                 assert joint_followup_marker(svc, fresh)['phase'] == 'unknown'
                 assert ref_calls == ['REF']  # Independent work; the unknown T is never resent.
             else:
+                history, _ = await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+                assert history['search_plan']['payload']['closed_comparison_unusable'] == 'identity_architectural_comparison_invalid'
+                assert fresh['_identity_accepted_result']['status'] == 'uncertain'
+                assert fresh['_identity_accepted_result']['_comparison_deferred'] is True
+                assert '_identity_geometry_result' not in fresh
+                with svc.store.connection() as db:
+                    retained = json.loads(svc._story_row(db, sid)['research_json'])['identity_closed_invalid_followup_plan']
+                assert retained == diagnostic
                 with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
-                    await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+                    await identity_discovery.suggest(svc, fresh, '', active)
             assert calls == expected_calls
             return
         identity = current['visual_identity']
