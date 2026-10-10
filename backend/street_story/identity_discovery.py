@@ -306,13 +306,15 @@ async def _suggest(service, story, transcript, candidates):
     native_saved = native_reader(story) if callable(native_reader) else None
     native_original = bool(native_saved and (native_saved.get('turn_id') or
         native_saved.get('phase') not in {'created', 'failed', 'aborted'}))
+    native_followup_reader = getattr(getattr(service.providers, 'research', None), 'source_map_followup_receipt', None)
+    native_followup_saved = native_followup_reader(story) if callable(native_followup_reader) else None
     if addressed_initial and addressed_initial['phase'] == 'send_intent' and not original_available and not native_original:
         raise RetryableProviderError('identity_joint_initial_outcome_unknown')
     if addressed_initial and addressed_initial['phase'] == 'response_closed' and not addressed_followup and not original_available and not native_original:
         raise PermanentProviderError('identity_joint_initial_already_closed')
     if addressed_followup:
         original_readback = getattr(getattr(service.providers, 'research', None), 'has_identity_search_plan_readback', None)
-        if not (callable(original_readback) and original_readback(story)):
+        if not native_followup_saved and not (callable(original_readback) and original_readback(story)):
             if addressed_followup['phase'] == 'response_closed':
                 raise PermanentProviderError(addressed_followup.get('code') or 'identity_joint_followup_already_closed')
             if addressed_followup['phase'] == 'not_sent' and not (addressed_initial or {}).get('closed_plan'):
@@ -478,8 +480,15 @@ async def _suggest(service, story, transcript, candidates):
     if regional_catalogue.get('results'):
         schema['properties']['regional_article_selections'] = regional_selection_schema(observed_ids, regional_catalogue)
     from .identity_model_context import physical_decision_context
+    frozen_prompt = (frozen_initial or {}).get('prompt') or ((native_saved or {}).get('frozen_source_map') or {}).get('prompt')
+    frozen_overview = False
+    if frozen_prompt and 'Данные ниже — только контекст:\n' in frozen_prompt:
+        from .identity_source_selection import expand_planner_packet
+        frozen_packet, _ = json.JSONDecoder().raw_decode(frozen_prompt.split('Данные ниже — только контекст:\n', 1)[1])
+        frozen_overview = bool((expand_planner_packet(frozen_packet).get('map_scene') or {}).get('physical_bodies', {}).get('deferred_fields'))
+    overview_only = frozen_overview or (not addressed_initial and not native_original)
     physical_context = physical_decision_context(story, candidates, scene['manifest'],
-        include_plan_morphology=False) if scene else None
+        include_plan_morphology=False, overview_only=overview_only) if scene else None
     model_scene = scene_manifest
     if scene:
         # Actual full label/primitive provenance stays in the frozen receipt.
@@ -520,10 +529,16 @@ async def _suggest(service, story, transcript, candidates):
     if early_text_articles:
         from .identity_architectural_evidence import model_literal_evidence_inventory
         packet['acquired_architectural_text'] = {
-            'articles': early_text_articles,
+            # Literal passages already carry the complete acquired text once.
+            # Keep full articles/HTTP receipts in the owned proof capsule.
+            'articles': ([{key: value for key, value in article.items() if key != 'text'}
+                          for article in early_text_articles]
+                         if overview_only else early_text_articles),
             'literal_source_passages': early_text_passages,
-            'publisher_and_OSM_literal_records_NOT_prejoined': model_literal_evidence_inventory(early_physical_link_inventory),
-            'retrieval_receipt': early_text_lookup,
+            'publisher_and_OSM_literal_records_NOT_prejoined': model_literal_evidence_inventory(early_physical_link_inventory,
+                                                                                              overview=overview_only),
+            'retrieval_receipt': ({'article_count': len(early_text_articles), 'status': 'acquired'}
+                                  if overview_only else early_text_lookup),
             'physical_identity_inferred': False,
             'policy': 'Observe SOURCE independently first. Compare acquired descriptions to its actual '
                 'facade/volumes, including neighboring bodies and crop. Article/address links are retrieval '
@@ -1006,7 +1021,7 @@ async def _suggest(service, story, transcript, candidates):
             'schema_sha256': initial_unit_binding['schema_sha256'], 'fresh_planner_sent': False})
         return result
     if (addressed_followup and addressed_followup['phase'] in {'not_sent', 'unknown', 'closed_failure'}
-            and not original_available and (addressed_initial or {}).get('closed_plan')):
+            and not original_available and not native_followup_saved and (addressed_initial or {}).get('closed_plan')):
         return reuse_initial_plan()
     async def send_initial(key, timeout, *, model=None, quota=None):
         nonlocal text_articles, source_text_receipt, joint_followup_used, joint_followup_failure, joint_followup_binding
@@ -1308,7 +1323,11 @@ async def _suggest(service, story, transcript, candidates):
                         if row[1] in action['target_candidate_ids']]},
                     'conditional_initial_decision': prior}
         if issues or new_text_acquired or detail_request:
-            if executor is None or not callable(getattr(gemini, '_generate', None)):
+            native_followup = (initial_route == 'native_source_map'
+                and callable(getattr(researcher, 'plan_source_map_followup', None))
+                and (native_followup_saved or getattr(researcher, 'source_map_available', False))
+                and (not addressed_followup or (addressed_followup.get('prepared_request') or {}).get('model') == 'gpt-6-luna'))
+            if not native_followup and (executor is None or not callable(getattr(gemini, '_generate', None))):
                 raise PermanentProviderError('identity_joint_followup_route_unavailable')
             # Binding repair and newly acquired TEXT share this one optional
             # joint followup. A rejected geometry claim remains rejected even
@@ -1450,12 +1469,12 @@ async def _suggest(service, story, transcript, candidates):
             initial_unknown_models = sorted(name for name, operation in
                 (initial_marker.get('route_operations') or {}).items()
                 if operation.get('phase') in {'unknown', 'send_intent'})
-            model, quota, executor = _closed_invalid_followup_route(
+            model, quota, executor = (('gpt-6-luna', None, None) if native_followup else _closed_invalid_followup_route(
                 getattr(service, 'settings', None), gemini, issues, model, quota, executor,
                 architectural_comparison=bool(compact_t),
                 initial_marker=initial_marker,
                 unavailable_models={row['model_id'] for row in
-                    initial_marker.get('closed_route_failures') or []})
+                    initial_marker.get('closed_route_failures') or []}))
             if model != previous_model or initial_unknown_models:
                 record_identity_event(service, story['id'], 'identity_joint_repair_route_selected',
                     {'reason': 'source_architectural_comparison' if compact_t else 'closed_initial_contract_invalid', 'initial_model': previous_model,
@@ -1469,7 +1488,7 @@ async def _suggest(service, story, transcript, candidates):
                 'map_image_bytes': len(scene['bytes']) if scene else 0, 'model': model,
                 'map_detail': bool(detail_request), 'article_count': len(text_articles)})
             joint_followup_used = True
-            story['_identity_search_plan_route'] = 'google'
+            story['_identity_search_plan_route'] = 'native_source_map' if native_followup else 'google'
             from .service import canonical, ConflictError
             issued_followup_schema = compact_t['schema'] if compact_t else schema
             joint_followup_binding = {
@@ -1487,8 +1506,23 @@ async def _suggest(service, story, transcript, candidates):
                 'map_image_sha256': (scene or {}).get('manifest', {}).get('image_sha256'),
                 'source_text_sha256': hashlib.sha256(canonical(source_text_receipt).encode()).hexdigest()}
             prepared_request['sha256'] = hashlib.sha256(canonical(prepared_request).encode()).hexdigest()
+            native_readback_only = bool(native_followup and native_followup_saved
+                and native_followup_saved.get('phase') not in {'created', 'failed', 'aborted'})
+            if native_readback_only:
+                # Observe the original addressed payload, never re-issue a
+                # reconstructed followup after catalog/editor changes.
+                prepared_request = copy.deepcopy(addressed_followup['prepared_request'])
+                followup_prompt = prepared_request['prompt']
+                issued_followup_schema = prepared_request['schema']
+                joint_followup_binding = prepared_request['binding']
             retry_claim = False
             def check_prepared_request():
+                if native_readback_only:
+                    frozen = {key: value for key, value in prepared_request.items() if key != 'sha256'}
+                    if (hashlib.sha256(canonical(frozen).encode()).hexdigest() != prepared_request['sha256']
+                            or prepared_request['original_source_sha256'] != hashlib.sha256(service._source_photo_bytes(story['id'])).hexdigest()):
+                        raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
+                    return  # Native reader separately enforces photo/generation/Stop and cannot send.
                 current = {**prepared_request,
                     'schema': copy.deepcopy(issued_followup_schema),
                     'config': followup_config.model_dump(mode='json', exclude_none=True),
@@ -1565,8 +1599,33 @@ async def _suggest(service, story, transcript, candidates):
             for admission_attempt in range(2):
                 check_prepared_request()
                 try:
-                    execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
-                    response = await execute('grounded_research', send_followup)
+                    if native_followup:
+                        from types import SimpleNamespace
+                        joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
+                                              prepared_request=prepared_request)
+                        try:
+                            answer = await researcher.plan_source_map_followup(story, followup_prompt, issued_followup_schema,
+                                [('SOURCE', source_mime, source_bytes),
+                                 *([('MAP', scene['mime_type'], scene['bytes'])] if scene else [])],
+                                {'source_map_receipt': joint_source_map_receipt(), 'schema': issued_followup_schema,
+                                 'source_text_receipt': source_text_receipt})
+                        except RetryableProviderError as exc:
+                            saved = researcher.source_map_followup_receipt(story) or {}
+                            exc.receipt = saved
+                            joint_followup_failure = exc
+                            phase = ('not_sent' if saved.get('provider_send_state') == 'not_sent' else
+                                     'closed_failure' if saved.get('phase') == 'failed' else 'unknown')
+                            joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
+                                                  code='identity_native_followup_' + phase)
+                            if (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
+                                source_text_receipt.update(source_image_input=False, provider_send_state=phase)
+                                return reuse_initial_plan()
+                            raise
+                        response = SimpleNamespace(text=json.dumps(answer['result'], ensure_ascii=False),
+                                                   response_id=answer['receipt'].get('turn_id'))
+                    else:
+                        execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
+                        response = await execute('grounded_research', send_followup)
                     break
                 except (GeminiUnavailable, PermanentProviderError, SharedQuotaDenied) as attempt_error:
                     if followup_integrity_failure is not None:
@@ -1711,9 +1770,11 @@ async def _suggest(service, story, transcript, candidates):
         role_schema = identity_text_discovery_schema(schema)
         text_packet = {**plain_packet, 'map_scene': None}
         if physical_context:
+            address_index = physical_context['columns'].index('literal_address_entries')
+            name_index = physical_context['columns'].index('observed_name')
             text_packet['location_search_context'] = {**text_packet['location_search_context'], 'physical_subjects': {
                 'columns': ['candidate_id', 'literal_address_entries', 'observed_name'],
-                'rows': [[row[1], row[8], row[9]] for row in physical_context['rows']],
+                'rows': [[row[1], row[address_index], row[name_index]] for row in physical_context['rows']],
                 'address_columns': physical_context['address_columns'],
                 'policy': 'Literal received subjects and verified entrance membership; no SOURCE pixels '
                     'are provided to this role. Choose queries/pages, never accept physical identity.'}}

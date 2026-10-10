@@ -7,6 +7,7 @@ relevant negative scope. No scenario uses production credentials or inference.
 from importlib import import_module
 
 import pytest
+from test_headless_fact_review_parallel import reset_host as reset_host
 
 
 SCENARIOS = [
@@ -32,9 +33,43 @@ SCENARIOS = [
      'test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope', {}),
 ]
 
+SCENARIOS.extend([
+    *[(f'same_poi_{case}', 'test_headless_fact_review_parallel',
+       'test_same_poi_waiting_reviewer_does_not_block_other_story_or_commit_stale_result', {'case': case})
+      for case in ('independent', 'overlap', 'stop', 'new_source')],
+    *[(f'completed_accounting_{failure}', 'test_native_vision',
+       'test_completed_native_result_survives_accounting_and_reconciles_exact_original_lease', {'failure': failure})
+      for failure in ('unavailable', 'lost_response')],
+    *[(f'pending_accounting_{phase}', 'test_native_vision',
+       'test_accounting_failure_never_promotes_unknown_or_unsent_to_success', {'phase': phase})
+      for phase in ('unknown', 'created')],
+    ('native_followup_original_readback', 'test_research_adapter_fence',
+     'test_native_followup_observes_original_frozen_turn_without_fresh_admission', {}),
+    ('native_closed_then_detail_without_google', 'test_spatial_correspondence_contract',
+     'test_closed_native_initial_uses_native_for_new_visual_detail_without_google', {}),
+])
+
+# Ten deterministic schedules permute the component failure/recovery order,
+# not semantic decisions. Each driver owns fresh actual product persistence;
+# no provider invocation, recognition result or inference count is fabricated.
+PERMUTATIONS = []
+for schedule in range(10):
+    ordered = SCENARIOS[schedule:] + SCENARIOS[:schedule]
+    if schedule % 2:
+        ordered = list(reversed(ordered))
+    for scenario, module, name, arguments in ordered:
+        arguments = dict(arguments)
+        if scenario == 'reverse_503_overpass_healthy':
+            arguments['failure'] = ('503', 'timeout', 'malformed')[schedule % 3]
+        elif scenario == 'gallery_other_article_ready':
+            arguments['units'] = (0, 2)[schedule % 2]
+        elif scenario == 'saved_review_original_readback':
+            arguments['case'] = ('addressed', 'saved_contract', 'missing_message', 'changed_route')[schedule % 4]
+        PERMUTATIONS.append((f'{schedule:02d}-{scenario}', module, name, arguments))
+
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('scenario,module,name,arguments', SCENARIOS, ids=[row[0] for row in SCENARIOS])
+@pytest.mark.parametrize('scenario,module,name,arguments', PERMUTATIONS, ids=[row[0] for row in PERMUTATIONS])
 async def test_existing_product_failure_scopes(tmp_path, monkeypatch, scenario, module, name, arguments):
     import inspect
     driver = getattr(import_module(module), name)

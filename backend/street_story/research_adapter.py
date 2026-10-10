@@ -216,6 +216,11 @@ class ProductResearchAdapter:
 
     async def checkpoint(self, binding, receipt):
         with self.service.store.tx() as db:
+            previous = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                  (binding['attempt_id'],)).fetchone()
+            accounting = json.loads(previous[0]).get('accounting_finalization') if previous else None
+            if accounting:
+                receipt = {**receipt, 'accounting_finalization': accounting}
             db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
                 (canonical(receipt), self.service.store.now(), binding['attempt_id']))
             if (receipt.get('phase') == 'completed' and receipt.get('result')
@@ -229,6 +234,67 @@ class ProductResearchAdapter:
                 from .research_budget import note_evidence
                 note_evidence(self.service, db, binding['story_id'], binding['attempt_id'],
                               generation=binding.get('generation'))
+
+    def _accounting_record(self, binding, value=None):
+        """Private exact lease capsule in the existing attempt journal, never telemetry."""
+        if value is not None:
+            path = self.service.store.path
+            for private in (path, path.with_name(path.name+'-wal'), path.with_name(path.name+'-shm')):
+                if private.exists():
+                    private.chmod(0o600)
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding.get('attempt_id'),)).fetchone()
+            if not row:
+                return None, {}
+            receipt = json.loads(row[0])
+            if value is not None:
+                receipt['accounting_finalization'] = value
+                db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                           (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+            return receipt.get('accounting_finalization'), receipt
+
+    @staticmethod
+    def _accounting_authority(control):
+        config = control.config
+        return hashlib.sha256(canonical([getattr(config, 'url', None), config.consumer,
+            getattr(config, 'expected_ledger_id', None)]).encode()).hexdigest()
+
+    async def recover_accounting(self, *, limit=2):
+        """Reconcile only original finalizations; no reserve, send or product write."""
+        if getattr(self, 'control', None) is None:
+            return
+        from ai_resource_control.workload import WorkloadLease
+        with self.service.store.connection() as db:
+            rows = list(db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
+                "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
+                "ORDER BY updated_at LIMIT ?", (limit,)))
+        for row in rows:
+            record = json.loads(row['receipt_json'])['accounting_finalization']
+            if record.get('retry_at', 0) > self.service.store.now():
+                continue
+            if record['authority_sha256'] != self._accounting_authority(self.control):
+                LOG.warning('street_story_accounting attempt_id=%s stage=reconcile state=pending code=RESOURCE_BINDING_CHANGED',
+                            row['attempt_id'])
+                continue
+            identity = record['lease']
+            lease = WorkloadLease(self.control, {'request_id': identity['p_request_id'],
+                'fence': identity['p_fence'], 'ttl_ms': 0}, identity['p_owner_token'], self.control.clock())
+            lease.sent = record['sent']
+            try:
+                async with asyncio.timeout(3):
+                    await lease.finalize(record['metadata'], record['terminal_state'])
+            except Exception as exc:
+                if not getattr(exc, 'resource_failure', False) and not isinstance(exc, TimeoutError):
+                    raise
+                record.update(error_code=_failure_code(exc), retry_at=self.service.store.now()+30)
+                LOG.warning('street_story_accounting attempt_id=%s stage=reconcile state=pending code=%s',
+                            row['attempt_id'], record['error_code'])
+            else:
+                record.update(state='completed', completed_at=self.service.store.now())
+                record.pop('retry_at', None)
+                LOG.info('street_story_accounting attempt_id=%s stage=reconcile state=completed', row['attempt_id'])
+            self._accounting_record({'attempt_id': row['attempt_id']}, record)
 
     def guard_binding(self, binding, *, db=None):
         if not binding or not binding.get('story_id'):
@@ -262,6 +328,43 @@ class ProductResearchAdapter:
         async def admitted(binding, workload):
             owned = binding if binding.get('story_id') else adapter._active_binding.get()
             async with admission(binding, workload) as lease:
+                raw_finalize = lease.finalize
+                # The installed WorkloadAdmission invokes lease.finalize again on
+                # exit when the first RPC fails. Make that cleanup retry the exact
+                # durable payload, not its generic unknown usage. finalized remains
+                # false until the SDK observes a real successful authority reply.
+                if callable(getattr(lease, 'payload', None)) and binding.get('attempt_id'):
+                    async def durable_finalize(metadata, state):
+                        record, receipt = adapter._accounting_record(binding)
+                        if record is None:
+                            record = {'state': 'pending', 'lease': lease.payload(), 'sent': lease.sent,
+                                'metadata': copy.deepcopy(metadata), 'terminal_state': state,
+                                'authority_sha256': adapter._accounting_authority(lease.control),
+                                'created_at': adapter.service.store.now()}
+                            saved, receipt = adapter._accounting_record(binding, record)
+                            if saved is None:
+                                raise ConflictError('research_accounting_attempt_missing', 'Original attempt receipt required.')
+                        try:
+                            async with asyncio.timeout(3):
+                                await raw_finalize(record['metadata'], record['terminal_state'])
+                        except Exception as exc:
+                            if not getattr(exc, 'resource_failure', False) and not isinstance(exc, TimeoutError):
+                                raise
+                            record.update(error_code=_failure_code(exc), retry_at=adapter.service.store.now()+30)
+                            adapter._accounting_record(binding, record)
+                            LOG.warning('street_story_accounting attempt_id=%s stage=finalize state=pending code=%s result_phase=%s',
+                                        binding['attempt_id'], record['error_code'], receipt.get('phase'))
+                            # Only a durably completed validated result may be
+                            # returned despite accounting unavailability. UNKNOWN,
+                            # unsent and admission failures remain failures.
+                            if receipt.get('phase') != 'completed' or not receipt.get('result') or not record['sent']:
+                                raise
+                        else:
+                            record.update(state='completed', completed_at=adapter.service.store.now())
+                            record.pop('retry_at', None)
+                            adapter._accounting_record(binding, record)
+                            LOG.info('street_story_accounting attempt_id=%s stage=finalize state=completed', binding['attempt_id'])
+                    lease.finalize = durable_finalize
                 class FencedLease:
                     async def before_send(self, metadata):
                         adapter.guard_binding(owned)
@@ -1471,10 +1574,10 @@ class ProductResearchAdapter:
         return (self.primary_vision.available or self.opencode_vision_available
                 or self.native_vision is not None and self.native_vision.available)
 
-    def source_map_receipt(self, story):
+    def source_map_receipt(self, story, *, role='vision_native_spatial'):
         with self.service.store.connection() as db:
             rows = db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
-                "AND role='vision_native_spatial' ORDER BY created_at DESC,rowid DESC", (story['id'],)).fetchall()
+                "AND role=? ORDER BY created_at DESC,rowid DESC", (story['id'], role)).fetchall()
         for row in rows:
             receipt = json.loads(row['receipt_json'] or '{}')
             if ((receipt.get('binding') or {}).get('generation') == story.get('_identity_generation', 0)
@@ -1488,9 +1591,16 @@ class ProductResearchAdapter:
     def source_map_available(self):
         return self.native_vision is not None and self.native_vision.available
 
-    async def plan_source_map(self, story, prompt, schema, images, host_context):
+    def source_map_followup_receipt(self, story):
+        return self.source_map_receipt(story, role='vision_native_spatial_followup')
+
+    async def plan_source_map_followup(self, story, prompt, schema, images, host_context):
+        return await self.plan_source_map(story, prompt, schema, images, host_context,
+                                          role='vision_native_spatial_followup')
+
+    async def plan_source_map(self, story, prompt, schema, images, host_context, *, role='vision_native_spatial'):
         """Optional Luna operation on the existing vision admission and receipt journal."""
-        original = self.source_map_receipt(story)
+        original = self.source_map_receipt(story, role=role)
         readback = original and (original.get('turn_id') or original.get('phase') not in {'created', 'failed', 'aborted'})
         if readback:
             binding = {**original['binding'], **{key: original[key] for key in
@@ -1506,9 +1616,9 @@ class ProductResearchAdapter:
         else:
             if not self.source_map_available:
                 raise RetryableProviderError('native_source_map_unavailable')
-            unit = canonical(['source-map-spatial-v1', prompt, schema,
+            unit = canonical(['source-map-spatial-v1' if role == 'vision_native_spatial' else role, prompt, schema,
                 [hashlib.sha256(data).hexdigest() for _label, _mime, data in images]])
-            binding, saved = self.attempt(story, 'vision_native_spatial', unit)
+            binding, saved = self.attempt(story, role, unit)
             if saved:
                 return {'result': saved['result'], 'receipt': saved,
                         'host_context': saved['frozen_source_map']['host_context']}

@@ -1059,6 +1059,9 @@ class StreetStoryService:
             if claim_kind in {'identity', 'identity_visual'}:
                 return False  # Accounting recovery stays with the original worker.
             self._observe_terminal_attempts()
+            recover_accounting = getattr(self.providers.research, 'recover_accounting', None)
+            if callable(recover_accounting):
+                await recover_accounting()
             quota = getattr(self.providers.gemini, 'quota', None)
             if quota is not None:
                 try:

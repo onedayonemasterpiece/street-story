@@ -33,6 +33,91 @@ CAPS = {'identity_seconds': 180, 'first_eligible_seconds': 300, 'total_seconds':
 ACTIVE = {'ready', 'retry', 'running'}
 
 
+def instrument_control_boundary():
+    """Read-only timings around the installed authority, without payloads/URLs."""
+    from ai_resource_control.client import Control
+    original = Control.request
+    async def observed(self, method, path, payload=None, params=None):
+        started = time.monotonic()
+        record = {'method': method, 'operation': path if re.fullmatch(r'rpc/[a-z0-9_]+', path) else 'registry'}
+        try:
+            result = await original(self, method, path, payload, params)
+        except BaseException as exc:
+            record.update(outcome='error', error_type=type(exc).__name__, code=getattr(exc, 'code', None))
+            raise
+        else:
+            record.update(outcome='response', ok=result.get('ok') if isinstance(result, dict) else None)
+            return result
+        finally:
+            record['duration_ms'] = round((time.monotonic()-started)*1000)
+            logging.getLogger('street_story.control_boundary').info('resource_control_boundary %s', json.dumps(record))
+    Control.request = observed
+    return lambda: setattr(Control, 'request', original)
+
+
+def inspect_retained_initial(path, output):
+    """Offline assembled-envelope check from real frozen inputs; never infer identity."""
+    import base64
+    import io
+    from PIL import Image
+    from jsonschema import Draft202012Validator
+    from street_story.identity_model_context import physical_overview_context
+    from street_story.identity_architectural_evidence import literal_overview_inventory
+    from street_story.identity_source_selection import compact_planner_packet, expand_planner_packet
+    from street_story.native_vision import native_text_envelope
+    path, output = managed(path), managed(output)
+    if output.exists():
+        raise ValueError('Original request-inspection evidence must not be overwritten')
+    with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as db:
+        frozen = next(json.loads(row[0])['frozen_source_map'] for row in db.execute(
+            'SELECT receipt_json FROM research_provider_attempts ORDER BY created_at')
+            if json.loads(row[0]).get('frozen_source_map'))
+    prefix, tail = frozen['prompt'].split('Данные ниже — только контекст:\n', 1)
+    encoded, end = json.JSONDecoder().raw_decode(tail)
+    packet = expand_planner_packet(encoded)
+    bodies = packet['map_scene']['physical_bodies']
+    original_ids = [row[1] for row in bodies['rows']]
+    packet['map_scene']['physical_bodies'] = physical_overview_context(bodies)
+    text = packet.get('acquired_architectural_text')
+    if text:
+        text['articles'] = [{key: value for key, value in article.items() if key != 'text'}
+                            for article in text['articles']]
+        text['retrieval_receipt'] = {'article_count': len(text['articles']), 'status': 'acquired'}
+        text['publisher_and_OSM_literal_records_NOT_prejoined'] = literal_overview_inventory(
+            text['publisher_and_OSM_literal_records_NOT_prejoined'])
+    encoded = compact_planner_packet(packet)
+    if expand_planner_packet(encoded) != packet:
+        raise ValueError('Planner packet roundtrip changed received references')
+    prompt = prefix + 'Данные ниже — только контекст:\n' + json.dumps(encoded, ensure_ascii=False, separators=(',', ':')) + tail[end:]
+    Draft202012Validator.check_schema(frozen['contract'])
+    def envelope(value):
+        raw = json.dumps(native_text_envelope([{'type': 'text', 'text': value},
+            *[{'type': 'text', 'text': part['label']} for part in frozen['images']]], frozen['contract']),
+            ensure_ascii=False, separators=(',', ':'))
+        return {'text_chars': len(raw), 'text_utf8_bytes': len(raw.encode()),
+                'estimated_reservation_tokens': (len(raw)+2)//3+8192+4096,
+                'envelope_sha256': hashlib.sha256(raw.encode()).hexdigest()}
+    images = []
+    for part in frozen['images']:
+        data = base64.b64decode(part['data'], validate=True)
+        if hashlib.sha256(data).hexdigest() != part['sha256']:
+            raise ValueError('Frozen image changed')
+        with Image.open(io.BytesIO(data)) as image:
+            images.append({'label': part['label'], 'bytes': len(data), 'sha256': part['sha256'],
+                           'width': image.width, 'height': image.height})
+    if [row[1] for row in packet['map_scene']['physical_bodies']['rows']] != original_ids:
+        raise ValueError('Received physical pool changed')
+    report = {'scope': 'Offline assembled Native envelope, not inference or measured provider usage',
+              'before': envelope(frozen['prompt']), 'after': envelope(prompt), 'images': images,
+              'body_count': len(original_ids), 'all_body_ids_retained': True, 'lossless_packet_roundtrip': True,
+              'output_allowance': 8192, 'schema_valid': True, 'source_database': str(path),
+              'deferred_fields': packet['map_scene']['physical_bodies']['deferred_fields'],
+              'articles_full_text_retained_in_original_receipt': True}
+    save(output, report)
+    print(json.dumps(report), flush=True)
+    return report
+
+
 def instrument_google_sdk(client_type, path):
     """Journal the real SDK invocation boundary, independent of product receipts."""
     from street_story.headless_vision import _usage
@@ -576,6 +661,7 @@ async def run(args):
         service.store.cache_put(key, value, 3600)
     journal_path = output/'google-sdk-calls.jsonl'
     restore_sdk = instrument_google_sdk(GeminiClient, journal_path)
+    restore_control = instrument_control_boundary()
     restore_references = block_directed_reference_inference(service, selected)
     try:
         async with app.router.lifespan_context(app):
@@ -621,6 +707,7 @@ async def run(args):
     finally:
         restore_references()
         restore_sdk()
+        restore_control()
         report['sdk_accounting'] = summarize_sdk_journal(journal_path)
         save(report_path, report)
     return report
@@ -628,13 +715,19 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--manifest', type=Path, required=True)
+    parser.add_argument('--manifest', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--expected-sha', required=True)
+    parser.add_argument('--expected-sha')
+    parser.add_argument('--inspect-initial-db', type=Path, help='Offline assembled-input check; no model/network operations')
     parser.add_argument('--availability-from', type=Path, action='append', default=[],
                         help='Prior frozen run: import only same-config observed provider429 history')
     parser.add_argument('--messages', default='104', help='Ordered IDs; default is the simple canary')
     args = parser.parse_args()
+    if args.inspect_initial_db:
+        inspect_retained_initial(args.inspect_initial_db, args.output)
+        return
+    if not args.manifest or not args.expected_sha:
+        parser.error('Actual acceptance requires --manifest and --expected-sha')
     if args.messages and not re.fullmatch(r'[0-9]+(?:,[0-9]+)*', args.messages):
         parser.error('Invalid --messages selection')
     asyncio.run(run(args))

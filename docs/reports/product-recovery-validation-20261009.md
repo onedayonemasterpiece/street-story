@@ -7,6 +7,56 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 Current evidence milestone (not a release acceptance):
 
+- Retained102 ordinary draft correction on aaf366a completed in
+  job_802552f2d782203c3d00fece, e2e-selected-draft-fidelity-v42.json,
+  edit_text call2618913. The final Russian prose now says the building survived
+  the almost complete WWII destruction of its neighborhood, without adding
+  exclusivity. Nordstern tenant and east cornice/consoles match the other two
+  selected claims. Semantic review of this compatible editorial chain passes:
+  the exact original identity/own evidence, three independent selections,
+  concept/draft, actual prepared voice, inspected visual and reopen are proved.
+  The v42 segment reuses closed v40 voice/visual with unchanged bytes, not a
+  new cold identity run or physical-microphone acceptance. Old failed clocks
+  and REVIEW_REQUIRED runner records are preserved; full corpus/release pending.
+- Finalization now journals its exact original lease capsule, state and usage
+  before RPC in the existing attempt receipt. SDK fallback cleanup retries the
+  same payload, never generic unknown in place of completed usage. A durable
+  validated completed result survives authority unavailability; lease.finalized
+  stays false until actual authority confirmation. Idle recovery reuses the
+  original lease/fence and authority binding with bounded RPC, no reserve or
+  inference. The private capsule contains the necessary original owner token;
+  DB/WAL/SHM permissions are restricted0600 and it is excluded from telemetry.
+  Tests cover unavailable/lost reply, restart, exact idempotent completion,
+  changed authority and UNKNOWN/unsent negatives. Live closed semantic receipts
+  also survive SDK release-error telemetry while resource finalization remains
+  explicitly unconfirmed. OpenCode uses the same admission wrapper.
+- Initial G now presents all received bodies once with overview primitives;
+  full contours/sides/morphology remain frozen and are exposed for requested
+  active groups. Initial T source passages occur once, with exact publisher/OSM
+  refs; repeated physical/address projections and nested provenance stay in the
+  owned capsule. No nearest-K or far/unnamed-body exclusion. Stored presentation
+  shapes are preserved for original-operation reconstruction. Fresh Native
+  detail/T followup uses its own visual route and original frozen observer;
+  a successful Native initial no longer requires Google followup.
+- Offline actual132 frozen-envelope reconstruction through existing versioned
+  product_recovery_acceptance --inspect-initial-db:167106→110338 UTF-8 bytes,
+  reservation estimate65175→46374 (local60000,22.7% headroom); output8192 and
+  image allowance included. All212 body IDs and SOURCE960x1280/MAP2560x1350
+  hashes retained; schema and lossless pointer roundtrip verified. This is
+  envelope evidence, not inference/provider-token usage. v45 intermediate
+  measurement55842 is retained, not presented as the final compact result.
+- Backend verifier instructions are one coherent compact v10 policy, with
+  original-claim scope, independent propositions, precise subject/time and only
+  own quote labels. Older addressed requests keep frozen prompt/schema. Closed
+  refusals depend on touched canonical/projection versions, not the whole
+  unrelated eligible ledger. Two initial failures exposed the needed own
+  projection fence; two T fixture assertions expected repeated whole text and
+  now verify complete transmitted literal passages and actual accepted proof.
+  251 affected checks passed157.83s in job_4b8f90d17b25c3c19afb838d;
+  autonomous Live14 passed3.76s. Original failing v44/v45/v46 evidence retained.
+  Existing failure matrix expanded to200 cases across ten ordered schedules;
+  its run remains pending. It is fake-provider orchestration, not200 images.
+
 - Actual1fac retained102 narrow review job_935fed6cc50bea9b34d52da1 remains
   FAIL at the original readback deadline. The final tail subsequently proved
   pa9624195f595 closed with durable request/result and repair claim817ae4;

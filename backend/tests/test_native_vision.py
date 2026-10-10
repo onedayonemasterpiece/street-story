@@ -101,6 +101,134 @@ def setup(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['unavailable', 'lost_response'])
+async def test_completed_native_result_survives_accounting_and_reconciles_exact_original_lease(tmp_path, failure):
+    import time
+    from contextvars import ContextVar
+    from ai_resource_control.client import ResourceError
+    from ai_resource_control.workload import WorkloadAdmission
+    from street_story.research_adapter import ProductResearchAdapter
+    from street_story.service import canonical
+    from test_research_control import fixture
+
+    service, sid, photo = fixture(tmp_path)
+    adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter._active_binding = ContextVar('test_accounting_binding', default=None)
+
+    class Authority:
+        config = SimpleNamespace(consumer='street-story')
+        clock = staticmethod(time.monotonic)
+        unavailable = True
+        def __init__(self):
+            self.calls, self.applied = [], {}
+        async def rpc(self, name, payload):
+            self.calls.append((name, copy.deepcopy(payload)))
+            if name == 'workload_reserve':
+                return {'request_id': payload['p_request_id'], 'fence': 3, 'ttl_ms': 60000}, self.clock()
+            if name == 'workload_finalize':
+                if self.unavailable and not (failure == 'lost_response' and not self.applied):
+                    raise ResourceError('RESOURCE_CONTROL_UNAVAILABLE')
+                prior = self.applied.setdefault(payload['p_request_id'], copy.deepcopy(payload))
+                assert prior == payload  # Real authority rejects a changed terminal payload.
+                if self.unavailable:
+                    raise ResourceError('RESOURCE_CONTROL_UNAVAILABLE')
+            return {}, self.clock()
+
+    authority = Authority()
+    adapter.control = authority
+    provider, client, snapshot, story, context, *_ = setup(tmp_path)
+    provider.service = service
+    provider.checkpoint = adapter.checkpoint
+    provider.admission = adapter.fenced_admission(WorkloadAdmission(authority, 'codex-native:owner-reserve'))
+    story.update(id=sid, photo_sha256=photo)
+    binding, _ = adapter.attempt(story, 'vision_native', 'accounting-result')
+    result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+    assert result['receipt']['phase'] == 'completed' and result['result']['status'] == 'mismatch'
+    record, receipt = adapter._accounting_record(binding)
+    assert record['state'] == 'pending' and receipt['phase'] == 'completed'
+    assert record['metadata']['actual_total_tokens'] == 321 and record['terminal_state'] == 'completed'
+    requests = [p for n, p in authority.calls if n == 'workload_finalize']
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0]['p_actual_tokens'] == 321 and requests[0]['p_status'] == 'completed'
+    assert sum(n == 'workload_send' for n, _ in authority.calls) == 1
+    assert sum(n == 'turn/start' for n, _ in client.calls) == 1
+
+    # Another provider checkpoint must not discard the private pending capsule.
+    await adapter.checkpoint(binding, {k: v for k, v in receipt.items() if k != 'accounting_finalization'})
+    reopened = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    reopened.service, reopened.control = type(service)(service.settings), authority
+    assert service.store.path.stat().st_mode & 0o777 == 0o600
+    changed = Authority()
+    changed.config = SimpleNamespace(consumer='another-ledger-binding')
+    reopened.control = changed
+    record['retry_at'] = 0
+    adapter._accounting_record(binding, record)
+    await reopened.recover_accounting()
+    assert not changed.calls and reopened._accounting_record(binding)[0]['state'] == 'pending'
+    reopened.control = authority
+    authority.unavailable = False
+    with service.store.tx() as db:
+        record['retry_at'] = 0
+        receipt['accounting_finalization'] = record
+        db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                   (canonical(receipt), binding['attempt_id']))
+    await reopened.recover_accounting()
+    await reopened.recover_accounting()
+    restored, saved = reopened._accounting_record(binding)
+    assert restored['state'] == 'completed' and saved['result'] == result['result']
+    assert len(authority.applied) == 1
+    requests = [p for n, p in authority.calls if n == 'workload_finalize']
+    assert len(requests) == 3 and all(p == requests[0] for p in requests)
+    assert sum(n == 'workload_reserve' for n, _ in authority.calls) == 1
+    assert sum(n == 'turn/start' for n, _ in client.calls) == 1
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['unknown', 'created'])
+async def test_accounting_failure_never_promotes_unknown_or_unsent_to_success(tmp_path, phase):
+    import time
+    from contextvars import ContextVar
+    from ai_resource_control.client import ResourceError
+    from ai_resource_control.workload import WorkloadAdmission
+    from street_story.research_adapter import ProductResearchAdapter
+    from test_research_control import fixture
+
+    service, sid, photo = fixture(tmp_path)
+    adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter._active_binding = ContextVar('test_accounting_negative', default=None)
+    class Authority:
+        config = SimpleNamespace(consumer='street-story')
+        clock = staticmethod(time.monotonic)
+        def __init__(self):
+            self.calls = []
+        async def rpc(self, name, payload):
+            self.calls.append((name, copy.deepcopy(payload)))
+            if name == 'workload_reserve':
+                return {'request_id': payload['p_request_id'], 'fence': 2, 'ttl_ms': 60000}, self.clock()
+            if name == 'workload_finalize':
+                raise ResourceError('RESOURCE_CONTROL_UNAVAILABLE')
+            return {}, self.clock()
+    authority = Authority()
+    binding, _ = adapter.attempt({'id': sid, 'photo_sha256': photo}, 'vision_native', 'negative-accounting')
+    admitted = adapter.fenced_admission(WorkloadAdmission(authority, 'codex-native:owner-reserve'))
+    with pytest.raises(ResourceError):
+        async with admitted(binding, {'estimated_tokens': 100}) as lease:
+            if phase == 'unknown':
+                await lease.before_send({})
+            await adapter.checkpoint(binding, {'binding': binding, 'phase': phase})
+            await lease.finalize({'usage': 'unknown'}, 'unknown' if phase == 'unknown' else 'aborted')
+    record, receipt = adapter._accounting_record(binding)
+    assert record['state'] == 'pending' and receipt['phase'] == phase and not receipt.get('result')
+    requests = [p for n, p in authority.calls if n == 'workload_finalize']
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0]['p_actual_tokens'] is None
+    assert requests[0]['p_status'] == ('unknown' if phase == 'unknown' else 'aborted')
+
+
+@pytest.mark.asyncio
 async def test_pipeline_comparisons_share_fifteen_minute_permission_and_owned_transport(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     for attempt in ('first', 'second'):

@@ -137,7 +137,7 @@ def literal_evidence_inventory(story, candidates, articles, *, candidate_ids=Non
         'host_address_parser_used':False}
 
 
-def model_literal_evidence_inventory(inventory):
+def model_literal_evidence_inventory(inventory, *, overview=False):
     """Present each received record once; keep the full host inventory intact."""
     import copy
     result = copy.deepcopy(inventory)
@@ -167,6 +167,35 @@ def model_literal_evidence_inventory(inventory):
         'The ref column identifies the original record. Physical_subjects is a column table. '
         'No subject, address, article or alternative is removed. '
         'These literal references are retrieval/provenance links, never physical identity evidence by themselves.')
+    return literal_overview_inventory(result) if overview else result
+
+
+def literal_overview_inventory(inventory):
+    """Initial G/T pointers; full literal provenance stays in the owned capsule."""
+    import copy
+    result = copy.deepcopy(inventory)
+    # Physical bodies, addresses and neutral labels are already in map_scene.
+    # Do not repeat their complete subject projection here. All evidence refs
+    # and their body/entry relationship remain available, including far bodies.
+    result.pop('physical_subjects', None)
+    result.pop('candidate_ids', None)
+    for table in result['osm_refs']['tables']:
+        old_columns = table['columns']
+        indexes = [i for i, key in enumerate(old_columns) if key != 'source_url']
+        rows = []
+        for row in table['rows']:
+            values = [row[index] for index in indexes]
+            for i, key in enumerate([old_columns[index] for index in indexes]):
+                if key == 'literal_value' and isinstance(values[i], dict):
+                    values[i] = {name: value for name, value in values[i].items()
+                                 if name not in {'source_url', 'provenance'}}
+            rows.append(values)
+        table.update(columns=[old_columns[index] for index in indexes], rows=rows)
+    result['record_reference_policy'] = ('All original refs and body/entry relationships remain in osm_refs.tables. '
+        'Physical subject metadata is supplied once in map_scene.physical_bodies. Full source URLs and '
+        'nested provenance remain in the frozen host records; exact refs retrieve them. Postal literals, '
+        'historic tags and scope stay unchanged. Interpret physical/address meaning from SOURCE and '
+        'article evidence; pointer validity alone never proves identity. Request map_detail for body detail.')
     return result
 
 

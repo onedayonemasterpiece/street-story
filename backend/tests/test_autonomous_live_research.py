@@ -15,7 +15,7 @@ SCHEMA = {'type': 'object', 'properties': {'facts': {'type': 'array', 'items': {
           'required': ['facts'], 'additionalProperties': False}
 
 
-def client(svc, behavior, *, tool_args=None, followup_calls=(), late_events=()):
+def client(svc, behavior, *, tool_args=None, followup_calls=(), late_events=(), cleanup_events=()):
     adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
     adapter.service = svc
     calls = []
@@ -59,6 +59,8 @@ def client(svc, behavior, *, tool_args=None, followup_calls=(), late_events=()):
             for event in late_events:
                 self.adapter.on_event(self.session, event)
         async def stop_all(self):
+            for event in cleanup_events:
+                self.adapter.on_event(self.session, event)
             calls.append(('stop', None))
     return LiveSemanticClient(adapter, host_factory=Host), calls
 
@@ -69,6 +71,24 @@ def binding(svc, story):
             ('live-original', 'one-unit', story['id'], 'facts_live', '{}', svc.store.now(), svc.store.now()))
     return {'attempt_id': 'live-original', 'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
             'generation': 0, 'control_revision': 0, 'purpose': 'facts'}
+
+
+@pytest.mark.asyncio
+async def test_completed_live_result_survives_resource_release_error_without_resend(tmp_path):
+    svc, _, story = service(tmp_path)
+    provider, calls = client(svc, 'valid', cleanup_events=[
+        {'type': 'error', 'code': 'RESOURCE_CONTROL_UNAVAILABLE'}])
+    result = await provider._run('facts', 'Frozen own evidence', binding(svc, story), SCHEMA)
+    assert result['result'] == {'facts': ['Evidence-backed result']}
+    assert result['receipt']['phase'] == 'completed'
+    assert result['receipt']['resource_finalization'] == 'unconfirmed'
+    assert result['receipt']['cleanup_error_code'] == 'RESOURCE_CONTROL_UNAVAILABLE'
+    with svc.store.connection() as db:
+        saved = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts "
+            "WHERE attempt_id='live-original'").fetchone()[0])
+    assert saved['phase'] == 'completed' and saved['result'] == result['result']
+    assert saved['text_sends'] == 1 and saved['usage_snapshots'] == [{'totalTokenCount': 77}]
+    assert [name for name, _ in calls] == ['start', 'input', 'stop']
 
 
 @pytest.mark.asyncio

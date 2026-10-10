@@ -103,11 +103,15 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
         assert len(calls) == 1
-        assert all(a['text'] in contents[-1] for a in articles)
         from street_story.identity_source_selection import expand_planner_packet
         raw_packet = contents[-1].split('Данные ниже — только контекст:\n', 1)[1]
         packet, _ = json.JSONDecoder().raw_decode(raw_packet)
         packet = expand_planner_packet(packet)
+        passages = packet['acquired_architectural_text']['literal_source_passages']
+        for article in articles:
+            own = next(row for row in passages if row['article_id'] == article['article_id'])
+            assert own['all_passages_displayed'] is True
+            assert ' '.join(' '.join(p['literal_text'] for p in own['passages']).split()) == ' '.join(article['text'].split())
         inventory = packet['acquired_architectural_text']['publisher_and_OSM_literal_records_NOT_prejoined']
         osm_records = [dict(zip(table['columns'], row))
             for table in inventory['osm_refs']['tables'] for row in table['rows']]

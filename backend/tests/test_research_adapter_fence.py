@@ -27,7 +27,7 @@ async def test_adapter_shutdown_closes_owned_resource_controller_after_clients()
 
 
 @pytest.mark.asyncio
-async def test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path):
+async def test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path, followup=False):
     from street_story.errors import RetryableProviderError
     service, sid, photo = fixture(tmp_path)
     adapter = object.__new__(ProductResearchAdapter)
@@ -49,15 +49,22 @@ async def test_spatial_native_reads_original_turn_without_fresh_availability_and
             await adapter.checkpoint(binding, receipt)
             return {'result': receipt['result'], 'receipt': receipt, 'host_context': frozen}
     adapter.native_vision = Native()
+    plan = adapter.plan_source_map_followup if followup else adapter.plan_source_map
+    read_receipt = adapter.source_map_followup_receipt if followup else adapter.source_map_receipt
     story = {'id': sid, 'photo_sha256': photo, '_identity_generation': 0}
     host = {'source_map_receipt': {'manifest': 'original-map'}}
     with pytest.raises(RetryableProviderError, match='native_turn_outcome_unknown'):
-        await adapter.plan_source_map(story, 'original', {}, [('SOURCE', 'image/jpeg', b'pixels')], host)
+        await plan(story, 'original', {}, [('SOURCE', 'image/jpeg', b'pixels')], host)
     adapter.native_vision.available = False
-    result = await adapter.plan_source_map(story, 'different', {}, [], {})
+    result = await plan(story, 'different', {}, [], {})
     assert result['host_context'] == host and adapter.native_vision.sends == 1
-    assert adapter.source_map_receipt({**story, 'photo_sha256': 'new-source'}) is None
-    assert adapter.source_map_receipt({**story, '_identity_research_control_revision': 1}) is None
+    assert read_receipt({**story, 'photo_sha256': 'new-source'}) is None
+    assert read_receipt({**story, '_identity_research_control_revision': 1}) is None
+
+
+@pytest.mark.asyncio
+async def test_native_followup_observes_original_frozen_turn_without_fresh_admission(tmp_path):
+    await test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path, followup=True)
 
 
 @pytest.mark.asyncio
