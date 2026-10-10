@@ -14,6 +14,12 @@ clarification supersedes the earlier single-tertiary / no-Lite routing restricti
 The eleven critical requirements in `.devcoveer/requirements.json` remain binding.
 The current owner-approved recovery target and execution priorities are the
 [10 October universal recovery brief](prompts/street-story-universal-product-recovery-20261010.md).
+The [core and end-to-end execution design](design/street-story-first-usable-slice-20261010.md)
+is the concrete to-be contract for the next bounded implementation: accepted photo,
+autonomous backend work, exact identity/hint recovery, usable facts and reopen.
+It combines the necessary dependencies of the first two stages; it is not implemented yet.
+The [product acceptance procedure](testing/street-story-product-acceptance-20261010.md) defines the unchanged image corpus, execution protocol and per-input evidence.
+The recovery brief remains the full-task entrypoint; completing this core slice is a checkpoint, not a substitute for final product verification.
 Its [measured day audit](reports/street-story-measured-day-audit-20261010.md)
 records observations and limitations; it is not proof that proposed repairs shipped.
 
