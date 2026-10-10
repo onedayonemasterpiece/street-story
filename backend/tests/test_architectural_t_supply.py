@@ -224,6 +224,38 @@ def test_no_gps_requirement_for_architectural_semantics_when_article_already_exi
     assert prepare_architectural_comparison(story, candidates, receipt)['article_ids']
 
 
+@pytest.mark.parametrize('change', ['added_city', 'changed_street', 'changed_number', 'changed_origin'])
+def test_received_postal_record_replay_allows_only_additional_literal_fields(change):
+    import copy
+    from street_story.identity_architectural_evidence import literal_evidence_inventory
+    story, candidates, decision, receipt = _comparison_fixture()
+    main = candidates[0]
+    main['map_address'] = {'street': 'Literal street', 'house_number': '7'}
+    inventory = literal_evidence_inventory(story, candidates, receipt['articles'])
+    receipt['physical_link_inventory'] = inventory
+    ref = next(ref for ref, row in inventory['osm_refs'].items()
+        if row['candidate_id'] == main['candidate_id'] and row['kind'] == 'observed_OSM_postal_entry')
+    decision['physical_link_evidence'][0]['osm_ref'] = ref
+    decision['material_alternatives'] = [{'candidate_id': 'osm:way:88', 'reason': 'Different physical configuration.'}]
+    original = copy.deepcopy(receipt)
+    before = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert before
+    if change == 'added_city':
+        story['research_json'] = json.dumps({'osm': {'observed_pool': [{
+            'type': 'way', 'id': 7, 'tags': {'addr:city': 'Literal observed city',
+                'addr:street': 'Literal street', 'addr:housenumber': '7'}}]}})
+    elif change == 'changed_street':
+        main['map_address']['street'] = 'Another street'
+    elif change == 'changed_number':
+        main['map_address']['house_number'] = '8'
+    else:
+        inventory['osm_refs'][ref]['provenance'] = 'invented_origin'
+    after = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert (after is not None) == (change == 'added_city')
+    if after:
+        assert after['proof_sha256'] == before['proof_sha256'] and receipt == original
+
+
 def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_input_gate():
     story, candidates, _, receipt = _comparison_fixture()
     extra = [{'candidate_id': f'osm:way:{i}', 'map_object': {'tags': {'building': 'yes'}}}

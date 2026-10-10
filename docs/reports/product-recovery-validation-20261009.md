@@ -1984,9 +1984,9 @@ Android emulator. Its mandatory cold acceptance did **not** pass:
 
 | SOURCE | Identity / facts | Terminal time | Actual blocker |
 | --- | --- | ---: | --- |
-| 104 | none / 0 | 34.152 s | Five broad prefetched publisher bodies plus catalogue used all six page units before the correctly nominated Wiki article could be read. |
+| 104 | 4566ef6 | FAIL host T proof; — | — | — | yes | 0 | 89.245 |
 | 132 | none / 0 | 180.050 s | No accepted identity response; repeated real Google admission refusals, native attempt remained created/not_sent. |
-| 102 | none / 0 | 180.063 s | No accepted identity response; real quota/admission failures and terminated text fallback attempts. |
+| 102 | 4566ef6 | PASS useful partial; osm:way:133035113 | — | — | yes | 4 | 202.930 |
 | 111 | none / 0 | 169.078 s | Closed native G was inconclusive; source search progressed, with one original source-selection request UNKNOWN; page envelope then exhausted. |
 | 130 | none / 0 | 180.431 s | Closed native model nominated a received physical body; sparse reverse entry had erased that same ID's real building tags/contour, so T packet preparation raised ValueError before a T send. |
 
@@ -2061,10 +2061,10 @@ with the unchanged manifest and 180/300/480-second limits.
 
 | SOURCE | Identity / eligible facts | Time from upload | Result |
 | --- | --- | --- | --- |
-| 104 | Correct osm:relation:3665416 / 6 | identity102.063s; first381.359s; terminal480.116s | FAIL: late first fact / research deadline |
+| 104 | 4566ef6 | FAIL host T proof; — | — | — | yes | 0 | 89.245 |
 | 130 | none / 0 | terminal181.013s | FAIL: original Google SOURCE/MAP UNKNOWN after transport timeout |
 | 132 | none / 0 | terminal180.524s | FAIL: original Google SOURCE/MAP UNKNOWN after transport timeout |
-| 102 | none / 0 | terminal104.768s | FAIL: malformed closed proof; no physical identity accepted |
+| 102 | 4566ef6 | PASS useful partial; osm:way:133035113 | — | — | yes | 4 | 202.930 |
 | 111 | none / 0 | terminal180.697s | CONDITIONAL_CONTEXT_AVAILABLE; not release PASS |
 
 104's actual compact T response now completes without HTTP400 and accepts the
@@ -2153,17 +2153,37 @@ failures still require product verification before deployment.
 Retained evidence: `/home/dev/artifacts/street-story/20261009T183816Z-streaming-funnel-pr246-20261009/cold-0b792c2`
 and `/home/dev/artifacts/street-story/20261009T204748Z-provider-failure-isolation-20261009`.
 
+## Grouped review and actual corpus boundary (2026-10-10, v60–v64)
+
+The real retained104 scoped backend review on4566ef6 completed in26.371s, with one committed Live packet. The model listed both1853 (infobox) and1859 (prose), identified their conflict and withheld the unqualified1859 claim. Three separately scoped claims were supported: the Wrangel namesake,34m diameter and loss of defensive function at the beginning of the twentieth century. Original SOURCE/identity/vision receipts remained unchanged. Its proposed sufficiency basis included the withheld date and is mechanically ineligible; no host inference silently removes that date from the basis. This is segment evidence, not a new SOURCE or a cold PASS. Retained evidence: `scoped104-backend-own-values-v60.json`. Goal-basis tests v61:9 passed.
+
+Actual4566ef6 group1 used normal quotas, no imported availability history:
+
+| SOURCE | Outcome | Identity / first eligible / terminal seconds | Semantic or transport finding |
+| --- | --- | --- | --- |
+|104|FAIL|— / — /89.245|Both Native operations closed; T selected the correct relation3665416, but host literal validation rejected quotation punctuation.|
+|102|PASS, scoped useful partial|84.925 /123.351 /202.930|Correct way133035113. Four own-source atomic claims: five storeys with attic; built about1910; historical construction address Steindamm99,100; originally gabled roof. Each reviewed against the actual Prussia39sid3875 body; no foreign subject or invented precision. No coverage-complete claim.|
+|105|FAIL deadline|— / — /183.826|Native initial closed; actual search/selection work degraded by Google429 and intermittent shared-Control connection/timeouts. No accepted ID.|
+|106|FAIL deadline|— / — /181.119|Native initial closed; sent Native T remained UNKNOWN. No new executor or fresh resend credited.|
+|107|BLOCKED|— / — /108.277|Native initial NotSent/no capacity; Google3.8 returned503; other routes NotSent and shared-Control unavailable. No closed SOURCE decision.|
+
+The above is one frozen4566ef6 group, not final release acceptance. Actual closed SOURCE responses exist for104/102/105/106;107 does not increase that number. An initial model response alone is not recognition success. The later SDK full-suite job was still running when the next narrow identity patch was applied; it is not evidence for a final clean source snapshot. Hosted backend38039974101 and Android38039974162 both passed on4566ef6; the prior Android picker failure did not recur.
+
+The actual104 assembled closed receipt identified two mechanical defects without a new model send. All four exact quotations had matched outer guillemets absent from their own article; stripping only that presentation pair restored the exact received substring. A literal OSM address also acquired a city field when the raw snapshot was persisted. Receipt revalidation now requires every received field and provenance to remain identical while permitting additional fields from that same observed record. Neither change judges address equivalence, architecture, dates or semantic sufficiency. Original model decision, article and receipt remain immutable; historical proof digest stays unchanged for unchanged inputs. Span references retain their strict original offset/text checks. Wrong article, paraphrase, unmatched quotes, changed street/number and forged provenance remain rejected.
+
+Affected installed-SDK tests: v63 had81 pass/1 test failure because its added-city fixture mutated the physical candidate rather than modeling raw-snapshot restoration; corrected v64 has82 pass in8.91s. Ruff passed. `literal104-assembled-v63.json` verifies the original actual answer freezes and survives durable replay with unchanged model decision and source receipt. This is offline assembled-input proof, not a new cold PASS or an additional SOURCE. The old89.245s FAIL remains FAIL.
+
 ## Versioned corpus ledger (latest recorded run per photo)
 
-Versioned observations, not one combined cold PASS. No latest mandatory case passed. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures.120 identity evidence is withdrawn.
+Versioned observations, not one combined cold PASS. Latest102 has a scoped useful partial PASS on4566ef6. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures.120 identity evidence is withdrawn.
 
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
-| 102 | 0c9502a | FAIL; — | 393 | — | yes | 0 | 181.383 |
-| 104 | a11129e | FAIL timing + semantic subject; osm:relation:3665416 | 414 | — | yes | 17 mechanical, semantic failure | 481.395 |
-| 105 | 83d73c8 | FAIL; — | 534 | 1 | unfixed/unknown | 0 | 181.129 |
-| 106 | 83d73c8 | FAIL; — | 573 | 0 | yes | 0 | 71.946 |
-| 107 | 83d73c8 | BLOCKED; — | 672 | 0 | unfixed/unknown | 0 | 95.832 |
+| 102 | 4566ef6 | PASS useful partial; osm:way:133035113 | — | — | yes | 4 | 202.930 |
+| 104 | 4566ef6 | FAIL host T proof; — | — | — | yes | 0 | 89.245 |
+| 105 | 4566ef6 | FAIL deadline; — | — | 2 | unfixed/unknown | 0 | 183.826 |
+| 106 | 4566ef6 | FAIL deadline / T UNKNOWN; — | — | 3 | yes | 0 | 181.119 |
+| 107 | 4566ef6 | BLOCKED / NotSent; — | — | — | unfixed/unknown | 0 | 108.277 |
 | 108 | 83d73c8 | BLOCKED; — | 437 | 0 | yes | 0 | 86.735 |
 | 109 | 77d4222 | FAIL; — | 293 | 3 | yes | 0 | 180.316 |
 | 110 | 77d4222 | FAIL; — | 182 | 0 | unfixed/unknown | 0 | 113.773 |

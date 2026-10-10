@@ -16,7 +16,8 @@ import re
 
 from .identity_architectural_comparison import normalize_architectural_decision
 from .identity_architectural_context import _physical_subject
-from .identity_proof import architectural_text_decision_schema, freeze_architectural_text_proof, TEXT_CONTRACT
+from .identity_proof import (architectural_text_decision_schema, freeze_architectural_text_proof,
+    literal_architectural_quote, TEXT_CONTRACT)
 
 # These words only choose literal passage spans to transmit. Their presence
 # never proves a match or rules out an article, and no building name appears.
@@ -451,7 +452,7 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             or not seen<=supporting or not seen):
         return dict(reviewed,reason='positive_binding_not_supported_by_model_contrast')
     articles=[row for row in pool['checked_articles'] if row['article_id'] in supporting]
-    if any(not all(rel['source_quote'] in row['text']
+    if any(not all(literal_architectural_quote(rel['source_quote'], row['text']) is not None
             for rel in decision['correspondences'] if rel['article_id']==row['article_id'])
             for row in articles):
         return dict(reviewed,reason='source_quote_not_in_actual_transmitted_excerpt')

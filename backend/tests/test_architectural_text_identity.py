@@ -98,6 +98,28 @@ def test_text_identity_has_actual_source_hash_and_exact_lead_without_fake_ref():
     assert 'Main physical building' in compact['physical_scope']
 
 
+@pytest.mark.parametrize('opening,closing', [('«', '»'), ('“', '”'), ('"', '"')])
+def test_literal_quote_presentation_preserves_original_decision_and_replay(opening, closing):
+    story, candidates, decision, receipt = text_inputs()
+    decision['correspondences'][0]['source_quote'] = opening + decision['correspondences'][0]['source_quote'] + closing
+    original = copy.deepcopy(decision)
+    proof = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert proof and proof['decision'] == original and decision == original
+    identity = architectural_identity()
+    identity['architectural_text_proof'] = json.loads(json.dumps(proof))
+    assert architectural_text_result_valid(identity, candidates, story)
+
+
+@pytest.mark.parametrize('quote', ['«The facade has invented arches.»',
+    '«The facade has a central bay with three vertical window axes and a semicircular cornice.”',
+    '«The facade has a central “bay” with three vertical window axes and a semicircular cornice.»',
+    '«The facade contains a central bay.»', '«   »'])
+def test_quote_presentation_cannot_repair_changed_or_foreign_words(quote):
+    story, candidates, decision, receipt = text_inputs()
+    decision['correspondences'][0]['source_quote'] = quote
+    assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
+
+
 def test_joint_model_selected_span_freezes_same_literal_proof_without_rewriting_claims():
     from street_story.identity_architectural_pool import joint_source_spans
     from street_story.identity_proof import architectural_text_decision_schema

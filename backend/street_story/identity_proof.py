@@ -245,6 +245,33 @@ def _text_candidate_context(candidate):
         'wikipedia_url') if key in candidate}
 
 
+def literal_architectural_quote(quote, text):
+    """Resolve quotation presentation to an exact substring of its own article."""
+    if not isinstance(quote, str) or not isinstance(text, str) or not quote.strip():
+        return None
+    if quote in text:
+        return quote
+    if len(quote) > 2 and (quote[0], quote[-1]) in {('«', '»'), ('“', '”'), ('"', '"')}:
+        literal = quote[1:-1]
+        if literal.strip() and literal in text:
+            return literal
+    return None
+
+
+def _received_literal_record_matches(received, observed):
+    # Compact DTOs can omit fields restored later from the same OSM record.
+    # Every received value must still match literally; new fields are not
+    # credited to the model's original evidence or interpreted by the host.
+    left = {key: value for key, value in received.items() if key != 'ref'}
+    right = {key: value for key, value in observed.items() if key != 'ref'}
+    literal = left.get('literal_value')
+    if isinstance(literal, dict) and isinstance(right.get('literal_value'), dict):
+        if not literal or any(right['literal_value'].get(key) != value for key, value in literal.items()):
+            return False
+        right = {**right, 'literal_value': literal}
+    return left == right
+
+
 def freeze_architectural_text_proof(story, decision, source_text_receipt, candidates):
     """Freeze actual SOURCE/text inputs and literal pointers, never judge features.
 
@@ -297,12 +324,10 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
         try:
             expected = literal_evidence_inventory(story, list(catalog.values()), list(table.values()),
                 candidate_ids=inventory['candidate_ids'])
-            def without_ref(row):
-                return {key: value for key, value in row.items() if key != 'ref'}
             for link in links or []:
                 for kind, field in [('publisher_refs', 'publisher_ref'), ('osm_refs', 'osm_ref')]:
                     received = inventory[kind].get(link.get(field))
-                    if not received or not any(without_ref(received) == without_ref(row)
+                    if not received or not any(_received_literal_record_matches(received, row)
                             for row in expected[kind].values()):
                         return None
             link_proof = validate_model_physical_links(inventory, links, decision)
@@ -339,7 +364,7 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     stable = False
     for relation in decision['correspondences']:
         if (relation['article_id'] not in bound or not relation['source_quote'].strip()
-                or relation['source_quote'] not in table[relation['article_id']]['text']
+                or literal_architectural_quote(relation['source_quote'], table[relation['article_id']]['text']) is None
                 or not relation['source_observation'].strip() or not relation['reason'].strip()):
             return None
         stable |= relation['status'] == 'stable_match' and (not structural
