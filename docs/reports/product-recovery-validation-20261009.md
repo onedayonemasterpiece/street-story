@@ -3,6 +3,41 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## bd92e8a cold canary and definitive unsent key admission
+
+The exact bd92e8a cold104 canary failed: no accepted identity or eligible facts,
+natural deadline_exceeded at222.116s, with the original180/300/480s gates. Its
+actual Native SOURCE/MAP turn closed. The next SOURCE/architectural-text unit
+selected Google3.8 key slot2 and received an authoritative RPD denial before
+SDK invocation, retry17175.4s. The callback wrapped that denial as a permanent
+invalid request and ended the remaining-key executor. This was one refused key,
+not evidence that every registered account or provider was unavailable.
+
+The existing callback now permits the same frozen request to use another key
+from its existing bounded executor after an immediate, authoritative SharedQuotaDenied
+not_sent with a cooldown exceeding the existing60s admission-wait allowance.
+The executor excludes attempted keys and enforces its existing total timeout.
+The full SOURCE/T bytes, model, output allowance, schema and binding remain
+unchanged; planner-unit count remains two. Short admission waits retain the
+existing single exact-request retry. Unknown/closed provider outcomes, restart,
+changed SOURCE/generation/Stop and changed frozen contracts forbid another send.
+A request-integrity failure propagates separately from optional closed-plan reuse
+and cannot overwrite an unsent receipt as a provider UNKNOWN. The first guard
+run exposed two source/schema integrity propagation failures; both were fixed.
+All28 final admission/UNKNOWN/restart/Stop/source/schema controls passed29.30s.
+The prior broad168-test run had166 passes and those two failures; its original
+failed report remains retained and is not declared green.
+
+Independent REF routes did run in the failed canary. Later controller calls
+measured48.9s Google and60.6s Native while host memory PSI some avg60 reached31.72
+and CPU pressure78.34; Native process exit-9 is retained with cause unproved.
+No provider allowance or product deadline was raised. The original failure and
+all original addressed operations remain retained. New real acceptance is pending.
+
+Evidence: cold-bd92e8a/case-104.json, cold-bd92e8a/workers.log and the versioned
+unsent-key-corrected-v21.xml and original failed guard reports in the retained central task directory. Production stays
+db0c0d0; signed test build0.1.1223 remains compatible, without owner acceptance.
+
 ## 27a7c66 full verification and Native final-input accounting
 
 Exact27a7c66 trusted full verification with the installed pinned private SDK:
@@ -1387,7 +1422,7 @@ Versioned observations, not one combined cold PASS. No latest mandatory case pas
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
 | 102 | 7623da2 | FAIL; — | 393 | — | yes | 0 | 191.414 |
-| 104 | 7623da2 | CONDITIONAL_CONTEXT_AVAILABLE; — | 414 | — | yes | 0 | 188.382 |
+| 104 | bd92e8a | FAIL; — | 414 | — | yes | 0 | 222.116 |
 | 105 | 83d73c8 | FAIL; — | 534 | 1 | unfixed/unknown | 0 | 181.129 |
 | 106 | 83d73c8 | FAIL; — | 573 | 0 | yes | 0 | 71.946 |
 | 107 | 83d73c8 | BLOCKED; — | 672 | 0 | unfixed/unknown | 0 | 95.832 |

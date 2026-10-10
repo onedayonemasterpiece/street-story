@@ -63,7 +63,7 @@ def joint_route_reassignable(marker, model_id=None):
 
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
         response_sha256=None, status_code=None, closed_plan=None, prepared_request=None,
-        admission_retry=None, retry_not_sent=False, model_id=None):
+        admission_retry=None, retry_not_sent=False, retry_unsent_key=False, model_id=None):
     """Keep each initial route's original binding/outcome across independent failover."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
@@ -101,9 +101,13 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             and retry.get('retry_count') == 0 and isinstance(retry.get('retry_at'), (int, float))
             and retry['retry_at'] <= service.store.now()
             and prepared_request is not None and retry.get('prepared_request_sha256') == prepared_request['sha256'])
+        key_retry_permitted = (stage == 'followup' and retry_unsent_key
+            and previous.get('phase') == 'not_sent' and not retry
+            and prepared_request is not None and previous.get('prepared_request') == prepared_request)
         if phase == 'send_intent' and previous and not (
                 stage == 'initial' and (previous['phase'] == 'not_sent'
-                    or model_id is not None and joint_route_reassignable(previous, model_id)) or retry_permitted):
+                    or model_id is not None and joint_route_reassignable(previous, model_id))
+                or retry_permitted or key_retry_permitted):
             raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
         if phase == 'send_intent' and switching and target and target.get('phase') != 'not_sent':
             raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
@@ -130,6 +134,8 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             marker['admission_retry'] = admission_retry
         if retry_permitted:
             marker['admission_retry'] = {**retry, 'retry_count': 1}
+        if key_retry_permitted:
+            marker['unsent_key_retries'] = int(previous.get('unsent_key_retries') or 0) + 1
         if phase != previous.get('phase') and phase in {'send_intent', 'response_closed'}:
             for field in ('code', 'status_code', 'response_sha256'):
                 marker.pop(field, None)

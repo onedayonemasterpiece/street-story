@@ -28,7 +28,7 @@ def denial(delay=47.462, *, state='not_sent'):
     return error
 
 
-def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=False):
+def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=False, key_count=1):
     service, story, active, initial = prepared_plan(tmp_path, literal_addresses=True)
     service.settings = replace(service.settings, gemini_web_search_tertiary_model='fixture-model')
     story.update(latitude=54.7, longitude=20.5)
@@ -39,8 +39,8 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
         initial['accepted_geometry']['rejected_alternatives'][0]['candidate_id'] = 'osm:way:999'
     clock = [service.store.now()]
     monkeypatch.setattr(service.store, 'now', lambda: clock[0])
-    policy = GeminiPolicy(call_timeout=.1, attempt_timeout=1)
-    pool = GeminiKeyPool(service.store, (SecretStr('fixture-a'), SecretStr('fixture-b')), 'fixture-model',
+    policy = GeminiPolicy(call_timeout=.1, attempt_timeout=5 if key_count > 1 else 1)
+    pool = GeminiKeyPool(service.store, tuple(SecretStr(f'fixture-{i}') for i in range(key_count)), 'fixture-model',
         policy=policy, clock=lambda: clock[0])
     executor = GeminiExecutor(pool)
     requests, bodies, sdk_sends, waits = [], [], [], []
@@ -93,6 +93,83 @@ def setup(tmp_path, monkeypatch, error, *, wake=None, repeated=False, geometry=F
         research_routes=[('fixture-model', pool, quota, executor)])
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     return service, story, active, requests, bodies, sdk_sends, waits, pool
+
+
+@pytest.mark.asyncio
+async def test_rpd_refusal_uses_another_key_for_identical_text_unit_without_wait(tmp_path, monkeypatch):
+    service, story, active, requests, bodies, sends, waits, pool = setup(
+        tmp_path, monkeypatch, denial(17000), key_count=2)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert sends == ['initial', 'useful-text'] and not waits and len(bodies) == 1
+    assert len(requests) == 3 and requests[1] == requests[2]
+    assert story['_identity_geometry_result']['proof_kind'] == 'architectural_text'
+    marker = joint_followup_marker(service, story)
+    assert marker['phase'] == 'response_closed' and marker['unsent_key_retries'] == 1
+    assert not marker.get('admission_retry') and sum(pool._in_flight.values()) == 0
+    assert len(service._identity_snapshot(story['id'])[1]['research_budget']['work_units']['planner_calls']) == 2
+
+
+@pytest.mark.asyncio
+async def test_all_rpd_keys_exhausted_preserve_unsent_receipt_and_never_restart_send(tmp_path, monkeypatch):
+    service, story, active, requests, bodies, sends, waits, pool = setup(
+        tmp_path, monkeypatch, denial(17000), key_count=3, repeated=True)
+    original_active = copy.deepcopy(active)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(requests) == 4 and sends == ['initial'] and not waits and len(bodies) == 1
+    assert requests[1] == requests[2] == requests[3]
+    marker = joint_followup_marker(service, story)
+    assert marker['phase'] == 'not_sent' and marker['unsent_key_retries'] == 2
+    assert sum(pool._in_flight.values()) == 0
+    fresh = type(service)(service.settings, providers=service.providers)
+    fresh.store.now = service.store.now
+    await identity_discovery.prepare_search_plan(fresh, current_snapshot(fresh, story), '', original_active)
+    assert len(requests) == 4 and len(bodies) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', [None, 'response_closed'])
+async def test_long_denial_without_proven_unsent_never_rotates_key(tmp_path, monkeypatch, state):
+    service, story, active, requests, _, sends, waits, pool = setup(
+        tmp_path, monkeypatch, denial(17000, state=state), key_count=2)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(requests) == 2 and sends == ['initial'] and not waits
+    marker = joint_followup_marker(service, story)
+    assert marker['phase'] == ('unknown' if state is None else 'closed_failure')
+    assert not marker.get('unsent_key_retries') and sum(pool._in_flight.values()) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['photo', 'generation', 'stop', 'source_bytes', 'schema'])
+async def test_unsent_key_failover_rechecks_source_and_stop_before_send(tmp_path, monkeypatch, change):
+    service, story, active, requests, _, sends, waits, pool = setup(
+        tmp_path, monkeypatch, denial(17000), key_count=2)
+    original_generate = service.providers.gemini._generate
+    async def generate(*args, **kwargs):
+        try:
+            return await original_generate(*args, **kwargs)
+        except SharedQuotaDenied:
+            if change == 'source_bytes':
+                service._source_photo_bytes = lambda _: b'changed-source'
+            else:
+                with service.store.tx() as db:
+                    row = service._story_row(db, story['id'])
+                    research = json.loads(row['research_json'])
+                    if change == 'photo':
+                        db.execute('UPDATE stories SET photo_sha256=? WHERE id=?', ('f' * 64, story['id']))
+                    elif change == 'generation':
+                        research['identity_generation'] = 1
+                    elif change == 'schema':
+                        research['identity_joint_followup']['prepared_request']['schema']['required'] = []
+                    else:
+                        research['research_controls'] = {'identity': {'photo_sha256': story['photo_sha256'],
+                            'identity_generation': 0, 'revision': 0, 'stopped': True}}
+                    db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+            raise
+    service.providers.gemini._generate = generate
+    with pytest.raises((ConflictError, PermanentProviderError, RetryableProviderError)):
+        await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(requests) == 2 and sends == ['initial'] and not waits
+    assert sum(pool._in_flight.values()) == 0
 
 
 @pytest.mark.asyncio

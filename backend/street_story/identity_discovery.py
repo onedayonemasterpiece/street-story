@@ -1424,7 +1424,7 @@ async def _suggest(service, story, transcript, candidates):
                 'map_detail': bool(detail_request), 'article_count': len(text_articles)})
             joint_followup_used = True
             story['_identity_search_plan_route'] = 'google'
-            from .service import canonical
+            from .service import canonical, ConflictError
             issued_followup_schema = compact_t['schema'] if compact_t else schema
             joint_followup_binding = {
                 'input_sha256': hashlib.sha256(canonical([model_source_sha256,
@@ -1459,16 +1459,43 @@ async def _suggest(service, story, transcript, candidates):
                     # provider executor. It is neither quota nor an UNKNOWN
                     # SDK send and must not be swallowed by optional-plan reuse.
                     raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
+            followup_integrity_failure = None
             async def send_followup(key, timeout):
                 nonlocal joint_followup_failure, joint_model_id
+                nonlocal followup_integrity_failure
+                from .quota import SharedQuotaDenied
+                from .gemini import _retry_after
                 # No executor failover may dispatch another possibly sent joint2.
+                unsent_key_retry = False
                 if joint_followup_failure is not None:
-                    raise PermanentProviderError('identity_joint_followup_already_attempted')
+                    previous_phase, _ = provider_outcome(joint_followup_failure)
+                    previous_delay = _retry_after(joint_followup_failure, service.store.now())
+                    if (previous_phase == 'not_sent' and isinstance(joint_followup_failure, SharedQuotaDenied)
+                            and previous_delay is not None and previous_delay > 60 and not retry_claim):
+                        # The executor excludes every attempted key. A long
+                        # authoritative admission refusal may try another
+                        # registered key without sending the original twice.
+                        unsent_key_retry = True
+                    else:
+                        raise PermanentProviderError('identity_joint_followup_already_attempted')
+                try:
+                    check_prepared_request()
+                except (ConflictError, PermanentProviderError, RetryableProviderError) as exc:
+                    # A changed SOURCE/Stop/contract is not a provider outcome
+                    # and cannot be swallowed by optional closed-plan reuse.
+                    followup_integrity_failure = exc
+                    joint_followup_failure = exc
+                    raise
+                if unsent_key_retry:
+                    joint_followup_failure = None
                 try:
                     joint_model_id = model
-                    check_prepared_request()
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
-                        prepared_request=prepared_request, retry_not_sent=retry_claim)
+                        prepared_request=prepared_request, retry_not_sent=retry_claim,
+                        retry_unsent_key=unsent_key_retry)
+                    if unsent_key_retry:
+                        record_identity_event(service, story['id'], 'identity_joint_followup_unsent_key_failover',
+                            {'model': model, 'same_prepared_request': True, 'provider_send_state': 'not_sent'})
                     return await gemini._generate(key, timeout, [
                         types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
                         *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
@@ -1483,17 +1510,22 @@ async def _suggest(service, story, transcript, candidates):
                     joint_followup_failure = exc
                     if isinstance(exc, asyncio.CancelledError):
                         raise
+                    delay = _retry_after(exc, service.store.now()) if isinstance(exc, SharedQuotaDenied) else None
+                    if phase == 'not_sent' and delay is not None and delay > 60 and not retry_claim:
+                        raise  # Existing bounded key executor, no SDK invocation.
                     # Release the current key and stop its failover loop first.
                     raise PermanentProviderError('identity_joint_followup_attempt_ended') from exc
+            from .quota import SharedQuotaDenied
             for admission_attempt in range(2):
                 check_prepared_request()
                 try:
                     execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
                     response = await execute('grounded_research', send_followup)
                     break
-                except (GeminiUnavailable, PermanentProviderError) as attempt_error:
+                except (GeminiUnavailable, PermanentProviderError, SharedQuotaDenied) as attempt_error:
+                    if followup_integrity_failure is not None:
+                        raise followup_integrity_failure
                     from .research_budget import require_remaining
-                    from .quota import SharedQuotaDenied
                     from .gemini import _retry_after
                     exc = joint_followup_failure or attempt_error
                     phase, status_code = provider_outcome(exc)
