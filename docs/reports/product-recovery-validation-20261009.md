@@ -7,6 +7,34 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 Current evidence milestone (not a release acceptance):
 
+- d3effe2 actual104 in job_7f32d536abac8d31240a4903 remains FAIL:
+  correct osm:relation:3665416 identity68.561s, first eligible136.582s,
+  terminal511.397s, seven proved eligible. The existing480s gate is unchanged;
+  runner-forced useful_partial/acceptance_upload_deadline_exceeded is not
+  natural completion. The unqualified1859 claim was again wrongly supported
+  despite both own competing dates and the v11 instruction. One earlier closed
+  answer also confused slice ordinals with assertion numbers and was rejected.
+  No corpus/release acceptance follows from these seven rows.
+- Fresh v12 closed review presents one assertion with all its own slices,
+  keeping original public packets/quote journals immutable. Exact fact-number
+  enums prevent inventing assertion numbers. The same reviewer response now
+  explicitly inventories relevant own evidence values/conflicts and may name
+  a useful-goal basis from newly supported and already eligible assertions;
+  no separate mandatory sufficiency judge or inference is added. Declared
+  unresolved conflicts cannot be submitted as supported. Fresh requests retain
+  their exact model presentation/schema for original UNKNOWN observation.
+  Scoped backend reconsideration reuses the public own-fact review fences and
+  shared commit path; it protects unchanged UNKNOWN scopes across this story's
+  jobs and leaves independent assertions untouched. The existing versioned
+  acceptance tool can measure this segment in the retained DB with no SOURCE
+  upload/identity replay, keeping old cold reports and vision receipts intact.
+  grouped-scoped-live-v59.xml:104 passed74.21s, including actual installed
+  Live adapter/setup sizing and explicit reconsideration/UNKNOWN negatives.
+  Earlier v58:150 passed5 failed from fixtures reading the prior flat model
+  packet; those wire fixtures now read the actual grouped format. The old
+  90bd hosted failure was one obsolete absent-send-state assertion (2876
+  passed85 skipped); the fixture now asserts possibly_sent/retry_safe=false
+  for a failed Native turn, retaining actual usage and no request refund.
 - Actual90bd05e104/132 in job_1dbb03c417bc2cfe13a5c129 both FAIL; original
   case records remain in cold-90bd05e-corpus.104 accepted the correct
   osm:relation:3665416 by architectural text in53.221s, first eligible96.686s,

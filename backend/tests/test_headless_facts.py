@@ -358,7 +358,8 @@ async def review_candidates(svc, sid, run_id):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('sufficient,verified', [(True, True), (False, True), (True, False)])
-async def test_model_sufficient_reviewed_result_finishes_before_independent_unknown_tail(tmp_path, monkeypatch, sufficient, verified):
+@pytest.mark.parametrize('decision_origin', ['extractor', 'reviewer'])
+async def test_model_sufficient_reviewed_result_finishes_before_independent_unknown_tail(tmp_path, monkeypatch, sufficient, verified, decision_origin):
     from test_headless_fact_review_parallel import ControlledReview
     svc, job, researcher, reader, _ = await fixture(tmp_path)
     harness = HeadlessFacts(svc)
@@ -377,12 +378,19 @@ async def test_model_sufficient_reviewed_result_finishes_before_independent_unkn
         else:
             await tail_started.wait()
         value = await original(page, story, context)
-        value['result']['research_sufficient'] = sufficient
+        value['result']['research_sufficient'] = sufficient if decision_origin == 'extractor' else False
         value['result']['research_sufficient_basis'] = {'candidate_indices': [0], 'known_fact_ids': []}
         return value
     researcher.search_articles, researcher.extract_fact_page = search, extract
     ControlledReview.mode = 'positive'
-    engine = ControlledReview(harness)
+    class Review(ControlledReview):
+        async def _infer(self, packet, job, unit, saved, ordinal=0):
+            args = await super()._infer(packet, job, unit, saved, ordinal)
+            if decision_origin == 'reviewer':
+                args.update(research_sufficient=sufficient,
+                    research_sufficient_basis={'candidate_indices': [0], 'known_fact_ids': []})
+            return args
+    engine = Review(harness)
     async def review(job, run_id, revision, **kwargs):
         count = await engine.run(job, run_id, revision, **kwargs) if verified else 0
         reviewed.set()

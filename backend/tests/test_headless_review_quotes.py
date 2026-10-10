@@ -59,6 +59,56 @@ def test_quote_catalog_cannot_resolve_another_result_packet():
             {'fact': 0, 'evidence': [0], 'basis_quotes': [packet['items'][0]['quote_ref']]}]})
 
 
+def test_grouped_model_view_retains_all_competing_own_slices_once_per_assertion():
+    packet = packet_fixture()
+    for item in packet['items']:
+        item['text'] = 'Дата постройки 1859 год.' if item['fact'] == 0 else 'Названа в честь генерала.'
+    original = deepcopy(packet)
+    view = headless_review_quotes.model_packet(packet)
+    assert packet == original and len(view['facts']) == 2
+    own = view['facts'][0]
+    assert own['fact'] == 0 and len(own['evidence']) == 2
+    assert [slice['passage'] for evidence in own['evidence'] for slice in evidence['slices']] == [
+        'Башня была построена в 1859 году.', 'Дата постройки 1853 год']
+    assert {s['quote_ref'] for fact in view['facts'] for e in fact['evidence'] for s in e['slices']} == set(packet['quote_catalog'])
+
+
+def test_fresh_private_value_assessment_is_required_and_cannot_support_declared_conflict():
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    packet['verifier_presentation'] = 'one_assertion_all_own_slices_v1'
+    schema = headless_review_quotes.response_schema(packet, public_schema())
+    args = answer(packet)
+    for decision in args['decisions']:
+        decision.pop('own_evidence_values', None)
+        decision.pop('own_value_conflicts', None)
+    assert not Draft202012Validator(schema).is_valid(args)
+    for decision in args['decisions']:
+        decision.update(own_evidence_values=[], own_value_conflicts=[])
+    assert Draft202012Validator(schema).is_valid(args)
+    args['decisions'][0]['fact'] = 2
+    assert not Draft202012Validator(schema).is_valid(args)
+    args['decisions'][0]['fact'] = 0
+    args['decisions'][0]['own_value_conflicts'] = ['The same construction property has two own-source dates.']
+    with pytest.raises(ConflictError, match='unresolved own-value conflicts'):
+        headless_review_quotes.public_result(packet, args)
+    args['decisions'][0]['verdict'] = 'repair_needed'
+    public = headless_review_quotes.public_result(packet, args)
+    assert 'own_evidence_values' not in public['decisions'][0]
+    assert args['decisions'][0]['own_value_conflicts']  # Preserve original private result.
+
+
+@pytest.mark.parametrize('foreign', [False, True])
+def test_review_goal_basis_resolves_only_received_candidate_and_eligible_ids(foreign):
+    packet = packet_fixture()
+    packet['eligible_facts'] = [{'fact_id': 'known_own', 'text': 'Own eligible proposition.'}]
+    items = [{'id': 'new_own', 'text': 'New proposition.'}]
+    args = {'research_sufficient': True, 'research_sufficient_basis': {
+        'candidate_indices': [0], 'known_fact_ids': ['foreign' if foreign else 'known_own']}}
+    assert headless_review_quotes.sufficient_basis(packet, args, items) == (
+        [] if foreign else [('new_own', 'New proposition.'), ('known_own', 'Own eligible proposition.')])
+
+
 def public_schema():
     return next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
 
@@ -66,6 +116,8 @@ def public_schema():
 def answer(packet):
     return {'packet_ref': packet['packet_ref'], 'decisions': [
         {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
+         **({'own_evidence_values': [], 'own_value_conflicts': []}
+            if packet.get('verifier_presentation') else {}),
          'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
          'claims': ['One independently selectable claim.'], 'basis_quotes': [item['quote_ref']],
          'reason': 'Own literal selected evidence.'} for item in packet['items']],

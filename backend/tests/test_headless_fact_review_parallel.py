@@ -5,10 +5,24 @@ from types import SimpleNamespace
 import pytest
 
 from street_story import review_packets
+from street_story.headless_review_quotes import model_packet
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.headless_facts import HeadlessFacts
 from street_story.service import ConflictError
 from test_headless_fact_pool import fixture, result, RUN
+
+
+def model_decisions(packet):
+    """Controlled model answer over the actual fresh grouped wire format."""
+    decisions = []
+    for fact in packet['facts']:
+        evidence = fact['evidence']
+        quotes = [s['quote_ref'] for e in evidence for s in e['slices'] if s.get('quote_ref')]
+        decisions.append({'fact': fact['fact'], 'evidence': [e['evidence'] for e in evidence],
+            'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+            'claims': [fact['text']], 'basis_quotes': quotes or [fact['text']], 'reason': 'Own unchanged frozen passage.',
+            **({'own_evidence_values': [], 'own_value_conflicts': []} if packet.get('verifier_presentation') else {})})
+    return decisions
 
 
 @pytest.mark.parametrize('quote,expected', [
@@ -188,6 +202,44 @@ def reset_host():
 
 
 @pytest.mark.asyncio
+async def test_explicit_backend_reconsideration_changes_only_requested_eligible_claim(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=3)
+    engine = ControlledReview(harness)
+    assert await engine.run(job, RUN, 0) == 1
+    with svc.store.connection() as db:
+        ids = [row[0] for row in db.execute('SELECT assertion_id FROM fact_assertions ORDER BY assertion_id')]
+        other = [list(row) for row in db.execute('SELECT assertion_id,revision_digest,eligibility FROM fact_assertions '
+            'WHERE assertion_id<>? ORDER BY assertion_id', (ids[0],))]
+    assert await engine.run(job, RUN, 0, fact_ids=[ids[0]]) == 1
+    with svc.store.connection() as db:
+        assert [list(row) for row in db.execute('SELECT assertion_id,revision_digest,eligibility FROM fact_assertions '
+            'WHERE assertion_id<>? ORDER BY assertion_id', (ids[0],))] == other
+        assert db.execute('SELECT eligibility FROM fact_assertions WHERE assertion_id=?', (ids[0],)).fetchone()[0] == 'eligible'
+
+
+@pytest.mark.asyncio
+async def test_explicit_scope_never_repeats_unknown_but_independent_claim_can_progress(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=6)
+    engine = ControlledReview(harness)
+    ControlledReview.mode = 'unknown'
+    assert await engine.run(job, RUN, 0) == 0
+    with svc.store.connection() as db:
+        current = review_packets.bundle(db, job['story_id'])
+    blocked = engine._unknown_candidates(job, current)
+    assert len(blocked) == 3
+    original_calls = ControlledReview.calls
+    ControlledReview.mode = 'positive'
+    with pytest.raises(ConflictError, match='UNKNOWN scope'):
+        await engine.run(job, RUN, 0, fact_ids=[next(iter(blocked))])
+    assert ControlledReview.calls == original_calls
+    independent = next(fid for fid in current if fid not in blocked)
+    assert await engine.run(job, RUN, 0, fact_ids=[independent]) == 1
+    with svc.store.connection() as db:
+        current = review_packets.bundle(db, job['story_id'])
+    assert engine._unknown_candidates(job, current) == blocked
+
+
+@pytest.mark.asyncio
 async def test_one_bounded_packet_reviews_twelve_candidates_without_stale_sibling_rework(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=12)
     class GroupedReview(ControlledReview):
@@ -241,12 +293,12 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
     # Measure the actual closed request, including its quote labels, rather
     # than the public interactive packet's duplicate instruction field.
     first, _, _ = HeadlessFactReview(harness)._prepare_packet(job, RUN, session, ids)
-    budget = len(VERIFIER_PROMPT + canonical(first)) - 300
+    budget = len(VERIFIER_PROMPT + canonical(model_packet(first))) - 300
     calls = []
     class BoundedReview(ControlledReview):
         MAX_PACKET_FACTS = 12
         async def _infer(self, packet, *args, **kwargs):
-            assert len(VERIFIER_PROMPT + canonical(packet)) <= budget or len(packet['items']) == 1
+            assert len(VERIFIER_PROMPT + canonical(model_packet(packet))) <= budget or len(packet['items']) == 1
             for item in packet['items']:
                 assert item['passage'] == item['text'] and item['passage_complete'] is True
             calls.append(packet['total_facts'])
@@ -289,10 +341,12 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
             size = provider.live_facts.input_size(prompt, schema)
             assert size['input_limit_bytes'] is None
             bound = size['packet_target_bytes']
-            assert size['input_utf8_bytes'] <= bound or len(self.packet['items']) == 1
-            for item in self.packet['items']:
-                assert item['passage'] == item['text'] and item['passage'] in texts
-                assert item['passage_complete'] is True
+            assert size['input_utf8_bytes'] <= bound or len(self.packet['facts']) == 1
+            for fact in self.packet['facts']:
+                for evidence in fact['evidence']:
+                    for slice in evidence['slices']:
+                        assert slice['passage'] == fact['text'] and slice['passage'] in texts
+                        assert slice['passage_complete'] is True
             starts.append(prompt)
             self.adapter.on_event(self.session, {'type': 'ready'})
             return {'session_id': self.session.id}
@@ -300,11 +354,8 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
             self.guard()
             sends.append(self.packet['total_facts'])
             self.adapter.on_event(self.session, {'type': 'input_timing', 'text_sent_at': 1})
-            args = {'packet_ref': self.packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
-                 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
-                 'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own unchanged passage.'}
-                for item in self.packet['items']], 'relations_complete': True, 'conflicts': [],
+            args = {'packet_ref': self.packet['packet_ref'], 'decisions': model_decisions(self.packet),
+                'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             await self.adapter.execute_tool(self.session, {'name': RESULT_TOOL, 'id': 'bounded', 'args': args})
         async def stop_all(self):
@@ -326,7 +377,7 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
     with svc.store.connection() as db:
         ids = review_packets.pending_candidates(db, job['story_id'], RUN)
     full, _, _ = engine._prepare_packet(job, RUN, session, ids)
-    prompt = VERIFIER_PROMPT + canonical(full)
+    prompt = VERIFIER_PROMPT + canonical(model_packet(full))
     assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
@@ -378,7 +429,7 @@ async def test_fresh_large_live_packet_keeps_live_route_and_complete_evidence(tm
     # An indivisible frozen unit can contain a large conflict ledger. Its own
     # assertion and passage remain intact; an unavailable route cannot clip it.
     packet['nearby_existing_claims'] = [{'fact_id': f'existing-{i}', 'text': 'Ж' * 450} for i in range(23)]
-    prompt = VERIFIER_PROMPT + canonical(packet)
+    prompt = VERIFIER_PROMPT + canonical(model_packet(packet))
     assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
     calls = []
     class Client:
@@ -999,11 +1050,8 @@ async def test_existing_live_tool_contract_reviews_only_with_matching_semantic_q
         async def _run(self, role, prompt, binding, schema):
             calls.append(binding['attempt_id'])
             packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
-            args = {'packet_ref': packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
-                 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
-                 'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own literal frozen passage.'}
-                for item in packet['items']], 'relations_complete': True, 'conflicts': [],
+            args = {'packet_ref': packet['packet_ref'], 'decisions': model_decisions(packet),
+                'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             receipt = {'binding': binding, 'phase': 'completed', 'model_id': self.model_id,
                        'provider_id': self.provider_id, 'result': args}

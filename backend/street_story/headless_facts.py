@@ -554,7 +554,13 @@ class HeadlessFacts:
         if self._snapshot(job, run_id, control_revision) is None:
             return False
         with self.service.store.connection() as db:
-            for result in results:
+            reviews = [json.loads(row[0]) for row in db.execute('SELECT value_json FROM research_checkpoints '
+                "WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],))]
+            decisions = [*results, *({'research_sufficient': r.get('research_sufficient'),
+                'source_content_valid': True, 'source_matches_poi': True,
+                '_committed_sufficiency_basis': r.get('sufficiency_basis')}
+                for r in reviews if r.get('phase') == 'committed')]
+            for result in decisions:
                 basis = result.get('_committed_sufficiency_basis')
                 if (result.get('research_sufficient') is not True
                         or result.get('source_content_valid') is not True
