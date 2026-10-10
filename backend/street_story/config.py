@@ -57,6 +57,7 @@ class Settings:
     vibepublish_bearer_token: SecretStr | str | None = field(repr=False)
     osm_user_agent: str
     vibepublish_http_host: str | None = None
+    rkb_poi_service_token: SecretStr | str | None = field(default=None, repr=False)
     gemini_fallback_model: str = 'gemini-3.5-flash-lite'
     gemini_web_search_model: str = 'gemini-3.5-flash-lite'
     gemini_web_search_tertiary_model: str = 'gemini-3.8-flash'
@@ -90,7 +91,7 @@ class Settings:
     def __post_init__(self):
         if self.publication_test_alias and not re.fullmatch(r"street_story_e2e_[a-zA-Z0-9_]{1,80}", self.publication_test_alias):
             raise ValueError("Test destination must be an explicit Street Story E2E alias")
-        for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key','research_gigachat_key'):
+        for name in ('device_token', 'gemini_api_key', 'vibepublish_bearer_token', 'gemini_quota_supabase_key','research_gigachat_key','rkb_poi_service_token'):
             object.__setattr__(self, name, secret(getattr(self, name)))
         object.__setattr__(self, 'gemini_api_keys', tuple(secret(k) for k in self.gemini_api_keys))
 
@@ -100,7 +101,7 @@ class Settings:
         return tuple(dict.fromkeys(values))
 
     def redact(self, message: str) -> str:
-        for value in (*self.gemini_keys, self.gemini_api_key, self.device_token, self.vibepublish_bearer_token, self.gemini_quota_supabase_key):
+        for value in (*self.gemini_keys, self.gemini_api_key, self.device_token, self.vibepublish_bearer_token, self.gemini_quota_supabase_key, self.rkb_poi_service_token):
             raw = reveal(value)
             if raw:
                 message = message.replace(raw, '[redacted]')
@@ -161,6 +162,7 @@ class Settings:
             gemini_transcription_model=os.getenv('GEMINI_TRANSCRIPTION_MODEL', 'gemini-3.5-flash-lite'),
             gemini_transcription_fallback_model=os.getenv('GEMINI_TRANSCRIPTION_FALLBACK_MODEL', 'gemini-3.1-flash-lite'),
             vibepublish_base_url=os.getenv('VIBEPUBLISH_BASE_URL', '').rstrip('/') or None,
+            rkb_poi_service_token=os.getenv('STREET_STORY_RKB_POI_SERVICE_TOKEN', '').strip() or None,
             vibepublish_http_host=_dns_host('VIBEPUBLISH_HTTP_HOST'),
             vibepublish_bearer_token=os.getenv('VIBEPUBLISH_BEARER_TOKEN'),
             osm_user_agent=os.getenv('STREET_STORY_OSM_USER_AGENT', 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story)'),

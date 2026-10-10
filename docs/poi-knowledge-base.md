@@ -6,6 +6,10 @@ Street Story accumulates a regional POI knowledge base as a by-product of editor
 work. This is initially a logical view over the existing SQLite stories, accepted
 object identities and facts, not a new service or database.
 
+## POIs sourced from books
+
+RKB's MCP model can select a Street Story POI or create a candidate at a real historic/memorialized physical site, even where the original building no longer stands. This uses Street Story's existing POI authority and preserves links to RKB source evidence and stories without copying the book. See [POI/RKB contract](rkb-poi-link.md). Automatic name matching never creates or merges an identity.
+
 ## Data model
 
 A POI is keyed by the stable accepted object identity. Each topic keeps
