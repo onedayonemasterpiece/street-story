@@ -70,7 +70,8 @@ def test_text_freeze_requires_reassessment_of_actual_prior_alternatives(resoluti
 @pytest.mark.asyncio
 @pytest.mark.parametrize('comparative', [False, True])
 @pytest.mark.parametrize('malformed_g', [False, True])
-async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_claim(tmp_path, monkeypatch, comparative, malformed_g):
+@pytest.mark.parametrize('article_count', [1, 3])
+async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_claim(tmp_path, monkeypatch, comparative, malformed_g, article_count):
     service, story, active = geometry_setup(tmp_path)
     initial = prior_for()
     initial['accepted_geometry']['decision'] = 'uncertain'
@@ -79,6 +80,11 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
     initial['regional_lookup'] = {'route': 'address', 'candidate_ids': ['osm:way:2'],
         'reason': 'Actual architectural text may distinguish the return and bay.'}
     _story, _catalog, decision, receipt = text_inputs(candidate_id='osm:way:2')
+    for index in range(1, article_count):
+        article = copy.deepcopy(receipt['articles'][0])
+        article.update(article_id=f'catalog:alternative:{index}',
+            url=f'https://archive.example/alternative/{index}')
+        receipt['articles'].append(article)
     if comparative:
         decision['material_alternatives'] = [{'candidate_id': 'osm:way:3',
             'reason': 'SOURCE shows the return behind the bay; this alternative puts the return beside it.'}]
@@ -105,6 +111,8 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
+        assert len(packet['articles']) == article_count
+        assert len(packet['literal_source_passages']) == article_count
         hypotheses = packet['previous_model_hypotheses_not_evidence']
         assert 'decision' not in hypotheses['geometry_hypotheses_not_evidence']
         inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']

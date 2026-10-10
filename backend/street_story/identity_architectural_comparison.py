@@ -421,8 +421,8 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     receipt = source_text_receipt or {}
     articles = receipt.get('articles')
     if (receipt.get('source_image_input') is not True or not isinstance(articles, list)
-            or not 1 <= len(articles) <= 2):
-        raise ValueError('actual_source_and_one_or_two_acquired_articles_required')
+            or not articles):
+        raise ValueError('actual_source_and_acquired_articles_required')
     observed = [*candidates, *(story.get('_identity_observed_candidates') or [])]
     catalog = {item.get('candidate_id'): item for item in observed
         if isinstance(item, dict) and isinstance(item.get('candidate_id'), str)}

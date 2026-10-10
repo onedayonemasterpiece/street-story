@@ -209,7 +209,8 @@ def _issued_span_decision(decision, packet, receipt):
 
 
 @pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match'])
-def test_declined_article_is_context_without_vetoing_or_proving_the_supported_body(damage):
+@pytest.mark.parametrize('article_count', [2, 3])
+def test_declined_article_is_context_without_vetoing_or_proving_the_supported_body(damage, article_count):
     from street_story.identity_architectural_evidence import literal_evidence_inventory
     story, candidates, decision, receipt = _comparison_fixture()
     unrelated = {**receipt['articles'][0], 'article_id': 'catalog:other-plaque',
@@ -227,6 +228,16 @@ def test_declined_article_is_context_without_vetoing_or_proving_the_supported_bo
         'source_quote': unrelated['text'], 'source_observation': 'No plaque is visible in SOURCE.',
         'status': 'not_observable', 'feature_kind': 'historical_fact',
         'reason': 'The unrelated plaque cannot establish this body.'})
+    if article_count == 3:
+        other = {**unrelated, 'article_id': 'catalog:other-body',
+            'url': 'https://archive.example/other-body'}
+        receipt['articles'].append(other)
+        decision['article_bindings'].append({**decision['article_bindings'][1],
+            'article_id': other['article_id']})
+        decision['correspondences'].append({**decision['correspondences'][1],
+            'article_id': other['article_id']})
+        receipt['physical_link_inventory'] = literal_evidence_inventory(
+            story, candidates, receipt['articles'], candidate_ids=[c['candidate_id'] for c in candidates])
     decision['material_alternatives'] = [{'candidate_id': candidates[1]['candidate_id'],
         'reason': 'Its facade differs from the source-described central bay.'}]
     if damage == 'foreign_positive_pointer':
@@ -244,7 +255,7 @@ def test_declined_article_is_context_without_vetoing_or_proving_the_supported_bo
     else:
         assert proof is not None
         assert proof['decision']['article_bindings'][1]['physical_binding_resolved'] is False
-        assert len(proof['decision']['correspondences']) == 2
+        assert len(proof['decision']['correspondences']) == article_count
         assert [source['article_id'] for source in proof['article_sources']] == [
             receipt['articles'][0]['article_id']]
         assert len(proof['physical_link_validation']['verified_bindings']) == 1

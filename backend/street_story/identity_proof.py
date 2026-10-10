@@ -200,7 +200,7 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
                 'is pictured unresolved, choose uncertain; a matching article or generic feature combination '
                 'does not resolve that physical scope. Preserve the alternative bodies as useful hypotheses.'},
         'candidate_id': cid, 'scope': text, 'discriminating_combination': text,
-        'article_bindings': {'type': 'array', 'maxItems': 2, 'items': {'type': 'object', 'properties': {
+        'article_bindings': {'type': 'array', 'maxItems': max(2, len(aid['enum'])), 'items': {'type': 'object', 'properties': {
             'article_id': aid, 'candidate_id': cid, 'scope': text, 'binding_basis': text,
             'physical_binding_resolved': {'type': 'boolean'}},
             'required': ['article_id', 'candidate_id', 'scope', 'binding_basis', 'physical_binding_resolved'],
@@ -281,7 +281,7 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     if not isinstance(receipt, dict):
         return None
     articles = receipt.get('articles') or []
-    if not isinstance(articles, list) or not 1 <= len(articles) <= 2:
+    if not isinstance(articles, list) or not articles:
         return None
     table = {}
     for article in articles:
