@@ -1,10 +1,18 @@
 # POI knowledge base
 
+Documentation baseline: [implementation `e40dba99`](https://github.com/onedayonemasterpiece/street-story/tree/e40dba990ff56a989811cdbd43825e146835fa45).
+This docs-only synchronization does not update product code or prove deployment.
+Target changes are identified separately and tracked in the [recovery brief](prompts/street-story-universal-product-recovery-20261010.md).
+
 Date: 2026-10-02.
 
 Street Story accumulates a regional POI knowledge base as a by-product of editorial
 work. This is initially a logical view over the existing SQLite stories, accepted
 object identities and facts, not a new service or database.
+
+## POIs sourced from books
+
+RKB's MCP model can select a Street Story POI or create a candidate at a real historic/memorialized physical site, even where the original building no longer stands. This uses Street Story's existing POI authority and preserves links to RKB source evidence and stories without copying the book. See [POI/RKB contract](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/docs/rkb-poi-link.md). Automatic name matching never creates or merges an identity.
 
 ## Data model
 
@@ -193,21 +201,17 @@ look similar.
 
 ### Canonical POI claim model
 
-Move toward the following logical entities without requiring a separate service:
+Street Story has one existing POI authority. Web research persists canonical
+knowledge directly in `poi_research_assertions`, `poi_research_observations` and
+`poi_research_sources`; story facts are its publication projection. These records
+do not need to be copied into `poi_claims` to become reusable accepted knowledge.
 
-~~~text
-pois
-poi_aliases
-poi_claimspoi_evidence
-poi_conflicts
-poi_review_cases
-poi_review_decisions
-expert_profiles
-~~~
-
-Existing story facts remain valid producer evidence during migration. They can be
-projected into the new POI claim/evidence model without rewriting already published
-stories.
+`poi_claims`, `poi_claim_evidence` and `poi_external_events` retain their typed
+external-evidence intake responsibilities. They are not a replacement canonical
+store or a mandatory migration target for Street Story web research. Owner
+selection, concept and draft stay local to each story. The [RKB bridge](https://github.com/onedayonemasterpiece/street-story/blob/e40dba990ff56a989811cdbd43825e146835fa45/docs/rkb-poi-link.md)
+uses stable POI/entity references and authorized evidence readback without copying
+the book corpus or automatically accepting historical claims.
 
 A claim is the semantic statement. Evidence is a source-specific observation
 supporting or contradicting it. This lets one claim have web evidence and several

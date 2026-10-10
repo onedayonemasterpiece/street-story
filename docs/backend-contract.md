@@ -1,5 +1,9 @@
 # Street Story backend contract · MVP
 
+Documentation baseline: [implementation `e40dba99`](https://github.com/onedayonemasterpiece/street-story/tree/e40dba990ff56a989811cdbd43825e146835fa45).
+This docs-only synchronization does not update product code or prove deployment.
+Target changes are identified separately and tracked in the [recovery brief](prompts/street-story-universal-product-recovery-20261010.md).
+
 Status: the Android client and backend source are implemented on `work/street-story-mvp-20260908`. Deployment/redeployment is a separate physical runtime step on DevCoveer and must use the exact source SHA exposed by `/healthz`.
 
 ## Deployment boundary
@@ -115,13 +119,43 @@ Canonical states remain `photo_ready`, `queued`, `researching`, `review`, `visua
 
 ## Research / facts
 
-The worker claims durable SQLite jobs by lease and recovers expired `running` work after restart. The research path is:
+### Required autonomy and accepted-basis lifetime
 
-1. transcribe missing M4A chunks with the configured Gemini pool, strictly by `chunk_index`;
-2. bounded Nominatim reverse + Overpass nearby lookup with persistent cache;
-3. MediaWiki geosearch/extract/canonical URLs with persistent cache;
-4. grounded Gemini research over source photo, owner voice and structured source context;
-5. persist candidate facts, evidence URLs, summary and publication draft.
+Target contract: once upload and work are durably accepted, closing/minimizing the
+client, microphone Stop, reconnect, fact selection or editing does not cancel the
+accepted background task. Explicit scoped research Stop remains authoritative.
+Reopen reads saved work/results and usable partial; it does not renew the original run
+budget or resend UNKNOWN operations. Local pending upload is not server acceptance.
+
+An accepted unchanged claim revision retains its accepted evidence basis by
+default. Opening recheck, adding compatible support, refreshing a URL or editing
+another story field is not factual invalidation. Material contradiction, changed
+subject/meaning, revoked evidence or a time-sensitive current-state assertion can
+require targeted reevaluation; old historical assertions remain distinguishable.
+
+Implementation status: these are owner-required targets, not a claim that e40 has
+closed every lifecycle gap. The recovery brief records remaining Live edit/close
+pause paths, broad evidence-digest invalidation and same-session inventory-read
+coupling. Change those paths and their tests with the related implementation slice.
+
+The worker claims durable SQLite jobs by lease and recovers expired `running`
+work after restart. The current target is the adaptive [photo-search contract](photo-search-methods.md):
+
+1. Preserve the original photo and actual camera metadata; transcribe available
+   owner M4A chunks by `chunk_index` without making voice a prerequisite for photo identity.
+2. Reuse compatible evidence and prepare bounded physical OSM context. Reverse
+   geocoding and optional Wiki metadata do not block an already ready map.
+3. Accept a sufficiently supported physical object through geometry, acquired
+   architectural text (including Prussia39 discovery), actual visual reference or
+   compatible combined proof. Each method opens the same facts path; a REF is
+   required only for the reference method.
+4. Fetch/freeze subject-scoped sources, extract small bounded facts through the
+   ordinary Live-first path and semantically review their own supporting passages.
+   Grounded search and qualified helper models are conditional acquisition/fallback
+   routes, not a mandatory Gemini chain before every accepted fact.
+5. Persist reviewed eligible facts and provenance in shared POI memory and the
+   story projection; retain owner selection for editorial drafts. Exhausted,
+   blocked and deadline states have finite truthful outcomes.
 
 Facts have stable `fact_id`, `evidence_supported`, selection state and source objects. Unsupported facts are always unselected/disabled. Refinement preserves the owner toggle when the stable fact survives. Runtime readback exposes bounded research provenance and durable retry evidence; quota/rate retry is not converted into fabricated facts.
 
@@ -177,3 +211,4 @@ The worker submits `POST /v1/publications` with provider-native `delivery.kind=a
 - `GET /healthz` (public liveness + exact source SHA)
 
 No local publication timer, no provider credentials in Street Story, no Fly.io.
+
