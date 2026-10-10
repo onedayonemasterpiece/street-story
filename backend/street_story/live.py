@@ -871,7 +871,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'eligible inventory and get_evidence for each chosen claim\'s own passages. '
                 'Choose facts semantically according to the owner\'s request; one checkbox '
                 'chooses one independent substantive claim. Use select_facts only on an explicit '
-                'request to choose or change selection. Persist an owner\'s angle with set_concept '
+                'request to choose or change selection. Save that choice with select_facts before '
+                'saying facts are selected; only its successful durable receipt confirms selection. '
+                'Persist an owner\'s angle with set_concept '
                 'while preserving selection. A concept/text/image request is not permission to '
                 'change selection. For a requested draft use edit_text and only selected '
                 'evidence-backed facts, with subject/time qualifications intact. Write connected '
@@ -1127,7 +1129,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             break
             capability = ('identity' if not context['physical_identity_accepted']
                           else 'publication' if publication_ready
-                          else 'review' if reviewing and (not eligible_available or requested_review) else 'research')
+                          else 'review' if reviewing and (not eligible_available or requested_review)
+                          else 'editor' if eligible_available else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
             initialized['context'] = self._capability_context(initialized['context'], capability)

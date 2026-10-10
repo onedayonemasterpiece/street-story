@@ -2432,3 +2432,25 @@ Focused acquisition, provider routing, UNKNOWN/input fences, article transport,
 completion and runner checks passed. Evidence root remains
 `/home/dev/artifacts/street-story/20261009T214809Z-overnight-product-finish-20261009`;
 `retained-102-104-completion-recall.json` records the offline completion segment.
+
+Frozen1c4725b installed-SDK verification completed with2845 passed,2 skipped and
+one obsolete HTTP403-to-browser expectation. The fixture now exercises an
+HTTP503 transient failure; the existing403/429 no-bypass/cooldown tests remain.
+Actual changed106 reached compact T with SOURCE, MAP, acquired regional text
+and publisher photos. Native follow-up was authoritatively NotSent at admission;
+the Google fallback stayed UNKNOWN. Independent REF continued, but the case
+ended at the unchanged identity deadline. This is acquisition/dispatch evidence,
+not a successful recognition or a semantic uncertain-T answer.
+
+Fresh ordinary photo API104 createdstory_437619b9adeebd5c967f7434. Both actual
+Native SOURCE and T responses closed, accepting relation3665416; three eligible
+claims were available at276.6734s. Live then announced three chosen facts while
+durable owner selection remained empty: its initial research capability lacked
+select_facts. The failure and stopped session remain in
+`fresh-client-recall-1c4725b/e2e.json`. Ready eligible material now starts in the
+editor bundle, while unresolved identity, prepared publication and an actual
+pending author-requested review retain their existing priority. The model still
+chooses facts semantically and must persist them using select_facts before
+claiming success; initialization never selects or changes evidence eligibility.
+Continuation of this newly created story, fresh fixed15 and release readback
+remain pending; no retained historical story is credited as cold acceptance.

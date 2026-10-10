@@ -29,7 +29,7 @@ async def test_scoped_reconsideration_keeps_unrelated_review_and_requires_new_ow
     reopened = adapter.initialize(resource_id=session.resource_id, actor=getattr(session, 'actor', None), model='controlled')
     assert reopened['capability'] == 'review'
     foreign = adapter.initialize(resource_id=session.resource_id, actor={'owner': 'different'}, model='controlled')
-    assert foreign['capability'] == 'research'
+    assert foreign['capability'] == 'editor'
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'narrow-review', 'args': {
         'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0],
             'verdict': 'insufficient', 'claims': [packet['items'][0]['text']]}],
@@ -39,7 +39,35 @@ async def test_scoped_reconsideration_keeps_unrelated_review_and_requires_new_ow
         statuses = dict(db.execute('SELECT assertion_id,eligibility FROM fact_assertions'))
         assert statuses == {ids[0]: 'eligible', ids[1]: 'withheld', ids[2]: 'eligible'}
         assert db.execute('SELECT result_json FROM live_review_packets WHERE packet_ref=?', (full['packet_ref'],)).fetchone()[0] == old_receipt
-    assert adapter.initialize(resource_id=session.resource_id, actor=getattr(session, 'actor', None), model='controlled')['capability'] == 'research'
+    assert adapter.initialize(resource_id=session.resource_id, actor=getattr(session, 'actor', None), model='controlled')['capability'] == 'editor'
+    await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ready_claim_is_editable_while_unrelated_candidates_remain_unreviewed(tmp_path):
+    svc, adapter, session, _, run_id, _, reader = await fallback(tmp_path)
+    chunk = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': run_id}})
+    unsaved_choice = findings(chunk, QUOTES)
+    for fact in unsaved_choice['facts']:
+        fact['selected'] = False
+    await adapter.execute_tool(session, {'name': 'save_research_facts', 'id': 'save-partial', 'args': unsaved_choice})
+    with svc.store.connection() as db:
+        ready_id = db.execute('SELECT assertion_id FROM fact_assertions ORDER BY assertion_id LIMIT 1').fetchone()[0]
+    packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': [ready_id]}})
+    await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-one', 'args': {
+        'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported',
+            'claims': [packet['items'][0]['text']], 'basis_quotes': [packet['items'][0]['text']],
+            'atomic': True, 'support_complete': True, 'qualifiers_preserved': True}],
+        'relations_complete': True, 'conflicts': [], 'coverage_complete': False, 'missing_aspects': []}})
+    before = svc.story(session.resource_id)
+    assert sum(f['eligibility'] == 'eligible' for f in before['facts']) == 1
+    assert any(f['eligibility'] == 'unreviewed' for f in before['facts'])
+    initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='controlled')
+    assert initialized['capability'] == 'editor'
+    assert {'get_facts', 'get_evidence', 'select_facts', 'edit_text', 'continue_story'} <= {
+        tool['name'] for tool in initialized['configuration']['functions']}
+    assert svc.story(session.resource_id) == before
+    assert not any(f['selected'] for f in before['facts'])
     await reader.search_http.aclose()
 
 
