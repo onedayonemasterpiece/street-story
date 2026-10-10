@@ -7,6 +7,33 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 Current evidence milestone (not a release acceptance):
 
+- Actual90bd05e104/132 in job_1dbb03c417bc2cfe13a5c129 both FAIL; original
+  case records remain in cold-90bd05e-corpus.104 accepted the correct
+  osm:relation:3665416 by architectural text in53.221s, first eligible96.686s,
+  terminal97.619s, but only one eligible against the report-only minimum3.
+  The extractor's sufficiency decision prematurely stopped review after the
+  first accepted candidate. Its unqualified1859 claim also requires semantic
+  reconsideration: its own Wiki slices contain a competing construction date.
+ 132 Native initial and same Native T followup both completed; the latter was
+  admitted after its recorded59.659s NotSent wait. T explicitly rejected the
+  acquired plaque article as proof of the photographed physical body. Subsequent
+  REF work exceeded the original180s identity envelope (terminal180.376s,
+  no accepted physical ID). This is not simultaneous provider unavailability
+  or a new memory-pressure diagnosis; Google triage completed, some search
+  requests received429 and subsequent visual requests timed out.
+- The sufficiency decision now names its own compact basis: exact new candidate
+  indices and supplied eligible known IDs. Only unchanged independently eligible
+  members fulfill it. Historical closed results without a basis conservatively
+  require all their new claims. An invalid/empty basis cannot authorize early
+  completion; no count-based semantic judge or mandatory extra inference is
+  added. Ready review continues while an independent source tail waits. Giga
+  structural filtering preserves the selected indices instead of shifting them.
+  The coherent closed verifier now explicitly checks competing own infobox/prose
+  values and requests qualified repair or insufficiency, rather than silently
+  choosing a matching sentence. Unknown original contracts remain immutable.
+  sufficiency-basis-v55.xml:6 passed; sufficiency-and-own-conflict-v56.xml:
+  176 passed70.06s with the installed runtime SDK. These are orchestration and
+  contract tests, not actual semantic acceptance of the disputed104 claim.
 - Retained102 ordinary draft correction on aaf366a completed in
   job_802552f2d782203c3d00fece, e2e-selected-draft-fidelity-v42.json,
   edit_text call2618913. The final Russian prose now says the building survived

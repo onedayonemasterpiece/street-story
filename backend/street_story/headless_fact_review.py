@@ -59,7 +59,12 @@ VERIFIER_PROMPT = (
     'Mutable registration, condition, ownership or use needs the actual source as-of date '
     'unless own evidence verifies present status. Undated currently is not present proof; '
     'review_as_of_date_utc and retrieval time are not source or event dates. Preserve '
-    'temporal ambiguity and conflicting accounts. '
+    'temporal ambiguity and conflicting accounts. Inspect ALL attached own slices, including '
+    'infoboxes and prose, for competing dates or values of the SAME event or property. '
+    'One matching sentence does not resolve a conflicting own-source value. Distinguish '
+    'foundation, construction and later rebuilding only when the evidence establishes that '
+    'distinction; do not invent it. Use repair_needed to retain source-attributed disagreement, '
+    'or insufficient when a defensible qualified claim cannot be formed. '
     "basis_quotes contains ONLY exact quote_ref labels from this fact's selected own "
     'evidence slices in quote_catalog, copied unchanged. The host resolves their literal '
     'passages. A valid label proves addressing, never semantic support. Do not put prose, '
@@ -74,7 +79,7 @@ VERIFIER_PROMPT = (
     'keep unresolved conflicts unresolved. Set coverage_complete=false: this small packet '
     'does not complete overall research. Never select facts or change publication. Frozen packet: '
 )
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v10-compact-own-claims:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v11-own-conflicting-values:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 

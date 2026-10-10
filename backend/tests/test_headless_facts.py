@@ -378,6 +378,7 @@ async def test_model_sufficient_reviewed_result_finishes_before_independent_unkn
             await tail_started.wait()
         value = await original(page, story, context)
         value['result']['research_sufficient'] = sufficient
+        value['result']['research_sufficient_basis'] = {'candidate_indices': [0], 'known_fact_ids': []}
         return value
     researcher.search_articles, researcher.extract_fact_page = search, extract
     ControlledReview.mode = 'positive'
@@ -414,6 +415,77 @@ async def test_model_sufficient_reviewed_result_finishes_before_independent_unkn
             assert detail != 'model_goal_sufficient'
     finally:
         tail_release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('basis', ['explicit', 'legacy', 'invalid'])
+async def test_sufficiency_waits_for_exact_model_basis_after_first_review(tmp_path, monkeypatch, basis):
+    from test_headless_fact_review_parallel import ControlledReview
+    texts = [CLAIM, 'The gate has an independently documented stone arch.',
+             'The gate housed a documented local exhibition in 2010.']
+    svc, job, researcher, reader, _ = await fixture(tmp_path, text=' '.join(texts))
+    harness = HeadlessFacts(svc)
+    tail_started, tail_release = asyncio.Event(), asyncio.Event()
+    first_checked, later_review = asyncio.Event(), asyncio.Event()
+    original = researcher.extract_fact_page
+    async def search(query, story):
+        return {'sources': [{'url': URL, 'title': 'Own history'},
+                            {'url': URL + '-tail', 'title': 'Independent optional history'}]}
+    async def extract(page, story, context):
+        if page['_extractor_ordinal'] == 1:
+            tail_started.set()
+            await tail_release.wait()
+        else:
+            await tail_started.wait()
+        value = await original(page, story, context)
+        seed = value['result']['facts'][0]
+        value['result']['facts'] = [{**seed, 'text': text} for text in texts]
+        value['result']['research_sufficient'] = True
+        if basis != 'legacy':
+            value['result']['research_sufficient_basis'] = {
+                'candidate_indices': [0, 1, 2] if basis == 'explicit' else [31], 'known_fact_ids': []}
+        return value
+    researcher.search_articles, researcher.extract_fact_page = search, extract
+    class Review(ControlledReview):
+        MAX_PACKET_FACTS = 1
+        calls_here = 0
+        async def _infer(self, *args, **kwargs):
+            self.calls_here += 1
+            if self.calls_here > 1:
+                await later_review.wait()
+            return await super()._infer(*args, **kwargs)
+    engine = Review(harness)
+    monkeypatch.setattr(harness, '_review_candidates', engine.run)
+    check = harness._model_sufficient
+    def observed(*args):
+        answer = check(*args)
+        with svc.store.connection() as db:
+            count = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]
+        if count == 1:
+            assert answer is False  # One closed packet is not the model's three-claim basis.
+            first_checked.set()
+        return answer
+    monkeypatch.setattr(harness, '_model_sufficient', observed)
+    task = asyncio.create_task(harness.run(job, 'headless-run', 'Find historical facts', 'history'))
+    try:
+        await asyncio.wait_for(first_checked.wait(), 10)
+        assert not task.done() and not tail_release.is_set()
+        later_review.set()
+        if basis == 'invalid':
+            tail_release.set()
+        outcome = await asyncio.wait_for(task, 10)
+        if basis != 'invalid':
+            assert outcome['reason'] == 'model_goal_sufficient' and outcome['eligible_count'] == 3
+            assert not tail_release.is_set()
+        else:
+            assert outcome['reason'] != 'model_goal_sufficient'
+    finally:
+        tail_release.set()
+        later_review.set()
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)

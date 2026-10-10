@@ -551,15 +551,22 @@ class HeadlessFacts:
         close resource accounting. The original completed extraction remains
         in its journal; optional cancelled sends keep their original receipts.
         """
-        if not any(result.get('research_sufficient') is True
-                   and result.get('source_content_valid') is True
-                   and result.get('source_matches_poi') is True for result in results):
-            return False
         if self._snapshot(job, run_id, control_revision) is None:
             return False
         with self.service.store.connection() as db:
-            return db.execute("SELECT 1 FROM fact_assertions WHERE story_id=? AND eligibility='eligible' LIMIT 1",
-                              (job['story_id'],)).fetchone() is not None
+            for result in results:
+                basis = result.get('_committed_sufficiency_basis')
+                if (result.get('research_sufficient') is not True
+                        or result.get('source_content_valid') is not True
+                        or result.get('source_matches_poi') is not True or not basis):
+                    continue
+                if all(db.execute("SELECT 1 FROM fact_assertions a JOIN facts f "
+                    "ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+                    "WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible' "
+                    "AND f.evidence_supported=1 AND f.text=?", (job['story_id'], fid, text)).fetchone()
+                       for fid, text in basis):
+                    return True
+        return False
 
     def _review_retry_at(self, job, run_id, committed):
         """Continue ready packets promptly after progress, retaining blocked waits."""
@@ -774,6 +781,9 @@ class HeadlessFacts:
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
         suggestions, failures = [], []
+        for unit in units:
+            unit['sufficiency_known_facts'] = {fact['fact_id']: fact['text'] for fact in complete_inventory
+                                             if fact.get('eligibility') == 'eligible'}
         ready_continuation = False
         review_task = None
         reviewed = 0
@@ -784,10 +794,15 @@ class HeadlessFacts:
                 waiting = pending_tasks | ({review_task} if review_task is not None else set())
                 done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
                 if review_task in done:
-                    reviewed += await review_task
+                    just_reviewed = await review_task
+                    reviewed += just_reviewed
                     review_task = None
                     if self._model_sufficient(job, run_id, control_revision, suggestions):
                         return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
+                    if (pending_tasks and just_reviewed and self._unreviewed_actionable(job, run_id)
+                            and self._review_retry_at(job, run_id, just_reviewed) <= self.service.store.now()):
+                        review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision,
+                            stop_when=lambda: self._model_sufficient(job, run_id, control_revision, suggestions)))
                 for ready in done & pending_tasks:
                     pending_tasks.remove(ready)
                     unit, extracted, error = await ready
@@ -801,7 +816,8 @@ class HeadlessFacts:
                     try:
                         committed = await self._commit_unit(unit, extracted, job, run_id, goal, scope, control_revision)
                         if committed:
-                            suggestions.append(extracted['result'])
+                            suggestions.append({**extracted['result'],
+                                '_committed_sufficiency_basis': committed.get('sufficiency_basis')})
                             # The frozen reader, not a model's search suggestion,
                             # proves that this closed core has unread passages.
                             ready_continuation |= (unit['page'].get('has_more_passages') is True
@@ -1097,7 +1113,21 @@ class HeadlessFacts:
             'source_matches_poi': result['source_matches_poi'], 'source_content_valid': result['source_content_valid'],
             'continuation_needed': result['continuation_needed'],
         })
-        self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'])
+        # Bind the model's sufficiency decision to the exact saved candidates.
+        # Old frozen results without explicit basis conservatively rely on ALL
+        # their new claims; a single reviewed claim never represents that set.
+        basis = result.get('research_sufficient_basis')
+        indices = basis.get('candidate_indices', []) if isinstance(basis, dict) else list(range(len(claims)))
+        known_ids = basis.get('known_fact_ids', []) if isinstance(basis, dict) else []
+        saved_facts = committed.get('facts') or []
+        known = unit.get('sufficiency_known_facts') or {}
+        valid = (len(saved_facts) == len(claims) and isinstance(indices, list) and isinstance(known_ids, list)
+                 and all(type(index) is int and 0 <= index < len(saved_facts) for index in indices)
+                 and all(isinstance(fid, str) and fid in known for fid in known_ids))
+        bound_basis = ([(saved_facts[index]['fact_id'], saved_facts[index]['text']) for index in indices]
+                       + [(fid, known[fid]) for fid in known_ids]) if valid else []
+        self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'],
+                         sufficiency_basis=bound_basis)
         record_identity_event(self.service, story['id'], 'fact_background_batch', {
             'generation': story['_identity_generation'], 'run_id': run_id, 'source_version_id': page['source_version_id'],
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],
@@ -1107,4 +1137,4 @@ class HeadlessFacts:
         }, source='fact_research')
         LOG.info('street_story_headless_fact_candidate_saved story_id=%s run_id=%s chunk_id=%s batch=%s',
                  story['id'], run_id, page['chunk_id'], page['batch_index'])
-        return committed
+        return {**committed, 'sufficiency_basis': bound_basis}

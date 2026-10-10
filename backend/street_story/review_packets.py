@@ -43,7 +43,25 @@ ATOMIC_CLAIM_CHECKS = (
     'narrowed replacement. The model decides this from meaning, never punctuation.'
 )
 
-EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' '
+SUFFICIENCY_BASIS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
+    'candidate_indices': {'type': 'array', 'maxItems': 32, 'uniqueItems': True,
+                          'items': {'type': 'integer', 'minimum': 0, 'maximum': 31}},
+    'known_fact_ids': {'type': 'array', 'maxItems': 32, 'uniqueItems': True,
+                       'items': {'type': 'string', 'minLength': 1}}},
+    'required': ['candidate_indices', 'known_fact_ids']}
+
+SUFFICIENCY_CHECKS = (
+    'Decide research_sufficient for coverage_goal from meaning, not a fact count. '
+    'When true, supply research_sufficient_basis: candidate_indices are the exact zero-based '
+    'positions in your returned facts array and known_fact_ids are exact supplied eligible '
+    'host IDs. Choose the compact substantive basis that would satisfy the goal IF each '
+    'new claim passes independent review; unnecessary enrichment is not part of that basis. '
+    'One claim passing review cannot stand in for the other claims you relied on. '
+    'Location metadata alone is not sufficient historical or architectural material. '
+    'Never use an unreviewed known claim or invent an ID. When false, use empty basis arrays.'
+)
+
+EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' ' + SUFFICIENCY_CHECKS + ' '
     'Write each fact.text in Russian for publication, preserving supported scope and qualifiers. '
     'For existing_fact_id copy only an exact host fact_id from the supplied known inventory; '
     'otherwise use the empty string. Never invent IDs or use ordinal placeholders. '
