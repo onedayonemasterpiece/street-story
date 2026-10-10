@@ -41,6 +41,59 @@ def test_source_text_comparison_prefers_registered_reasoning_without_reopening_i
     assert selected == (route[0], route[2], route[3])
 
 
+@pytest.mark.parametrize('phase,expected', [('unknown', 'initial'), ('send_intent', 'initial'),
+                                         ('not_sent', 'reasoning'), ('response_closed', 'reasoning')])
+def test_new_text_followup_keeps_closed_route_after_same_wave_unknown(phase, expected):
+    initial = ('initial', object(), object(), object())
+    reasoning = ('reasoning', object(), object(), object())
+    marker = {'route_operations': {'reasoning': {'phase': phase, 'binding': {'source': 'original'}}}}
+    original = copy.deepcopy(marker)
+    selected = identity_discovery._closed_invalid_followup_route(
+        SimpleNamespace(gemini_web_search_tertiary_model='reasoning'),
+        SimpleNamespace(web_search_routes=[initial, reasoning]), {},
+        initial[0], initial[2], initial[3], architectural_comparison=True, initial_marker=marker)
+    route = initial if expected == 'initial' else reasoning
+    assert selected == (route[0], route[2], route[3])
+    assert marker == original
+
+
+@pytest.mark.asyncio
+async def test_closed_independent_source_route_owns_new_repair_without_replaying_unknown(tmp_path):
+    from street_story.identity_plan_diagnostics import joint_operation_marker
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='healthy',
+                               gemini_web_search_tertiary_model='preferred')
+    calls, original_unknown = [], []
+
+    class Allowed:
+        async def execute(self, operation, call):
+            return await call('fixture', 60)
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(kwargs['model'])
+        assert len(contents) == 3 and all(part.inline_data.data for part in contents[:2])
+        if kwargs['model'] == 'preferred':
+            raise TimeoutError('Original preferred SOURCE/MAP outcome unknown')
+        marker = joint_operation_marker(service, story, stage='initial')
+        original_unknown.append(copy.deepcopy(marker['route_operations']['preferred']))
+        decision = geometry_decision()
+        if len(calls) == 2:
+            decision['candidate_id'] = 'outside-received-catalogue'
+        return SimpleNamespace(text=json.dumps(payload(decision)))
+
+    service.providers.gemini = SimpleNamespace(executor=Allowed(), _generate=generate,
+        web_search_routes=[('preferred', object(), object(), Allowed()),
+                           ('healthy', object(), object(), Allowed())])
+    service.providers.research = None
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['preferred', 'healthy', 'healthy']
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    marker = joint_operation_marker(service, story, stage='initial')
+    assert marker['route_operations']['preferred'] == original_unknown[0] == original_unknown[1]
+    assert marker['route_operations']['preferred']['phase'] == 'unknown'
+    assert joint_operation_marker(service, story, stage='followup')['phase'] == 'response_closed'
+
+
 @pytest.mark.parametrize('scene_available,preferred', [(True, 'alternative'), (False, 'initial')])
 def test_joint_visual_role_prefers_configured_registered_model_without_changing_its_tuple(scene_available, preferred):
     first = ('initial', object(), object(), object())

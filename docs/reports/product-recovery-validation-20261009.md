@@ -3,6 +3,41 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 0c9502a actual102: returning a healthy fallback to its stalled preferred model
+
+Frozen0c9502a cold102 failed181.383s: no accepted physical ID or eligible facts.
+Native SOURCE/MAP had an authoritative token_budget NotSent for the full156280-byte
+owned textual envelope (716 received map objects,91 physical body rows); its quota
+was not raised. Google3.8 SOURCE/MAP actually invoked the SDK and remained UNKNOWN
+57.794s. The independent registered3.5 route then CLOSED6.654s. Its actual source
+decision needed bounded SOURCE/text/contract followup. That new operation preferred
+3.8 again, ignored the same-wave UNKNOWN initial route, and remained UNKNOWN57.035s.
+Observed SDK accounting:3 invocations,1 CLOSED,2 outcome_unavailable. The393-entry
+full nomination reserve contained the frozen expected body; no shortlist was cut.
+Original requests/UNKNOWN observers and original180s failure remain retained.
+
+New, unaddressed followups now keep the registered initial route that just closed
+when the preferred model has a same-wave UNKNOWN/in-flight initial request. The
+original model/account is not globally disabled, and no UNKNOWN is rotated/replayed.
+Existing selection remains unchanged after NotSent or a closed response; the
+executor/quota tuple, exact proof contract and two logical G/T operations remain
+bound. Structured routing evidence records skipped initial UNKNOWN models and
+whether the closed route was retained.132 identity/admission/source/Stop/restart
+checks passed98s, including a real adapter-path fixture preferred UNKNOWN→healthy
+closed invalid G→healthy corrected T, with the original UNKNOWN byte-for-byte
+unchanged. Ruff passed; new actual cross-case verification is pending.
+
+On actual104 at0c9502a, Mira finalized packetpc1dfac5232e3 throughcall_1505267:
+own-source not_supported correctly rejected the neighboring subject attribution.
+Independent story and canonical POI readback both show withheld. Its original
+120s E2E failure stays FAIL because reply/playback observation did not finish.
+Recovery reused that unchanged closed receipt, then saved selection/concept/draft.
+The subsequent editable_draft observation timed out because an edit had already
+closed during the preceding turn and the harness demanded another write. The
+continuation now verifies/reuses that exact current closed draft receipt. Neither
+review nor draft writes are repeated. Old selected assertions still fail current
+atomic/substantive selection review, so this is not accepted full product evidence.
+
 ## f242cf6 actual review transition and unchanged request-envelope limits
 
 Actual job_f9bfbf762d5b02baeaa80c91 independently chose the review stage after the
@@ -1526,7 +1561,7 @@ Versioned observations, not one combined cold PASS. No latest mandatory case pas
 
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
-| 102 | 7623da2 | FAIL; — | 393 | — | yes | 0 | 191.414 |
+| 102 | 0c9502a | FAIL; — | 393 | — | yes | 0 | 181.383 |
 | 104 | a11129e | FAIL timing + semantic subject; osm:relation:3665416 | 414 | — | yes | 17 mechanical, semantic failure | 481.395 |
 | 105 | 83d73c8 | FAIL; — | 534 | 1 | unfixed/unknown | 0 | 181.129 |
 | 106 | 83d73c8 | FAIL; — | 573 | 0 | yes | 0 | 71.946 |

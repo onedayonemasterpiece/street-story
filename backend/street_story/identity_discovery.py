@@ -170,13 +170,22 @@ def _conditional_text_prior(payload, nomination_ids):
 
 
 def _closed_invalid_followup_route(settings, gemini, issues, model, quota, executor, *, unavailable_models=(),
-        architectural_comparison=False):
+        architectural_comparison=False, initial_marker=None):
     """Use the registered reasoning route for contract repair or SOURCE/T.
 
     This never adds an operation or replaces an addressed request. A valid initial
     plan without visual comparison keeps its ordinary route. Each returned executor
     and quota belongs to the same registered model tuple.
     """
+    # Only select a route for a NEW followup. An earlier SOURCE/MAP request
+    # whose outcome is unknown remains fenced to its original observer. Keep
+    # the registered route that just closed instead of upgrading back to that
+    # same-wave stalled model; this is not a global model/account cooldown.
+    operations = dict((initial_marker or {}).get('route_operations') or {})
+    unavailable_models = set(unavailable_models) | {
+        name for name, operation in operations.items()
+        if operation.get('phase') in {'unknown', 'send_intent'}
+    }
     preferred = getattr(settings, 'gemini_web_search_tertiary_model', None)
     if (issues or architectural_comparison) and preferred and preferred != model:
         for registered_model, _pool, registered_quota, registered_executor in (
@@ -1407,15 +1416,22 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_geometry_binding_repair',
                     {'issue_types': list(issues), 'attempt': 1, 'article_count': len(text_articles)})
             previous_model = model
+            initial_marker = joint_operation_marker(service, story, stage='initial') or {}
+            initial_unknown_models = sorted(name for name, operation in
+                (initial_marker.get('route_operations') or {}).items()
+                if operation.get('phase') in {'unknown', 'send_intent'})
             model, quota, executor = _closed_invalid_followup_route(
                 getattr(service, 'settings', None), gemini, issues, model, quota, executor,
                 architectural_comparison=bool(compact_t),
+                initial_marker=initial_marker,
                 unavailable_models={row['model_id'] for row in
-                    (joint_operation_marker(service, story, stage='initial') or {}).get('closed_route_failures') or []})
-            if model != previous_model:
+                    initial_marker.get('closed_route_failures') or []})
+            if model != previous_model or initial_unknown_models:
                 record_identity_event(service, story['id'], 'identity_joint_repair_route_selected',
                     {'reason': 'source_architectural_comparison' if compact_t else 'closed_initial_contract_invalid', 'initial_model': previous_model,
-                     'followup_model': model, 'operation_count_unchanged': True})
+                     'followup_model': model, 'operation_count_unchanged': True,
+                     'initial_unknown_models': initial_unknown_models,
+                     'retained_closed_initial_route': model == previous_model})
             record_identity_event(service, story['id'], 'identity_joint_followup_input_prepared', {
                 'scope': 'product_system_instruction_plus_prompt_utf8_v1',
                 'text_utf8_bytes': len(followup_prompt.encode()) + len(followup_config.system_instruction.encode()),
