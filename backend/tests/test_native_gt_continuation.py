@@ -117,7 +117,7 @@ async def test_pending_native_T_keeps_original_quote_schema_after_pointer_contra
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('native_primary', [False, True])
-@pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown', 'malformed_json', 'malformed_object'])
+@pytest.mark.parametrize('outcome', ['geometry', 'text', 'text_invalid_search_pointer', 'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown', 'malformed_json', 'malformed_object'])
 async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_one_joint2(tmp_path, monkeypatch, outcome, native_primary):
     svc, snapshot, active = geometry_setup(tmp_path)
     sid = snapshot['id']
@@ -142,6 +142,10 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     bad = geometry_decision()
     bad['spatial_correspondence']['pattern_kind'] = 'frontage_sequence'
     initial = payload(bad)
+    if outcome == 'text_invalid_search_pointer':
+        initial['first_wave_hypotheses'] = [{'kind': 'address',
+            'subject_id': 'unreceived-search-only-pointer', 'query': '',
+            'reason': 'This invalid planning pointer is not a T identity decision.'}]
     if outcome == 'map_detail_text':
         bad.update(decision='uncertain', candidate_id='', next_action={'kind': 'map_detail',
             'reason': 'Inspect the actual nominated body before claiming identity.', 'target_candidate_ids': ['osm:way:2']})

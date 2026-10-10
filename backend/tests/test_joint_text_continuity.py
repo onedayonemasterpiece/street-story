@@ -116,6 +116,11 @@ async def test_same_second_joint_carries_prior_and_rejects_empty_alternative_cla
             'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
             'architectural_scope_explanation': 'The article describes this individual bay and return configuration.',
             'postal_interpretation': 'The literal records and article distinguish the individual body.'}]
+        own = next(row['passages'] for row in packet['literal_source_passages']
+            if row['article_id'] == receipt['articles'][0]['article_id'])
+        for relation in decision['correspondences']:
+            literal = relation.pop('source_quote')
+            relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
         return SimpleNamespace(text=json.dumps(decision))
 
     async def forbidden(*args, **kwargs):

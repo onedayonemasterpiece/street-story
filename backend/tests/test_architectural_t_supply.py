@@ -172,12 +172,14 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
         'reason': 'SOURCE shows a different arrangement of bay and gable.'}]
     decision = _issued_span_decision(decision, packet, receipt)
-    plan = {'entity_name': '', 'first_wave_hypotheses': [],
+    plan = {'entity_name': '', 'first_wave_hypotheses': [{'subject_id': 'unreceived-search-pointer'}],
         'accepted_geometry': {'decision': 'uncertain'}}
     adopted = combine_architectural_decision(plan, decision, packet['schema'])
     assert adopted['accepted_geometry'] == plan['accepted_geometry']
     assert adopted['accepted_architectural_text'] == decision
     assert 'accepted_architectural_text' not in plan
+    assert plan['first_wave_hypotheses'] == [{'subject_id': 'unreceived-search-pointer'}]
+    assert adopted['first_wave_hypotheses'] == []
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
 
 
