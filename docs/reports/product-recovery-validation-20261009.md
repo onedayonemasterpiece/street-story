@@ -3,11 +3,48 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## edc3649 actual111 and compact evidence tables
+
+Frozen edc3649 actual111 job_f98d2d20a9a13f70049b90e0 failed180.025s,
+with no accepted body or eligible facts. Native SOURCE/MAP CLOSED26s but nominated
+an uncertain nearby complex rather than the photographed individual body. The
+expected body remained in the54-body received pool and53-body reserve. Its chosen
+address reader returned HTTP200 parse_failed/address_total_missing, so no new
+architectural TEXT/joint2 was addressed. This run does not verify the edc T route.
+Existing identity_visual started34s; two real3.5 reference-triage answers CLOSED,
+independent public/OpenCode discovery and Live source selection answered, while
+Google search keys returned429 and one original OpenCode search timed out/aborted.
+That original FAIL and its unresolved observer remain preserved.
+
+The saved102 early-text input contains106549 bytes of literal publisher/OSM
+inventory, compared with7410 bytes of articles. Model presentation now puts OSM
+records with identical field sets and physical subjects into column tables, with
+every literal/ref/body preserved. The original host proof inventory is unchanged.
+No postal interpretation, candidate rank, accepted identity, quota, certificate,
+provider observer or operation count is assigned by this transformation.
+
+Offline reconstruction of the actual saved102 Native final owned envelope shrank
+from170599 to131737 UTF-8 bytes. Its installed estimator reserved65970 before,
+52809 after; these are estimates obtained through a mocked authority RPC, not
+actual admission or inference. Both images/550082 bytes,91 body rows,240 OSM
+records, publisher records, article text and citation spans survive exact roundtrip.
+The prior156280 number describes the generic prepared provider instruction/prompt;
+the actual Native-specific final envelope was170599, as its frozen receipt records.
+No original receipt is rewritten. The generic SOURCE/MAP instruction also asks
+the model to assess all received bodies using observed volumes/levels/roof and
+nominal EXIF angular scale before choosing targeted physical-body searches;
+there is no threshold, automatic exclusion or test-object hint.
+
+127 adapter/native/identity/text/provenance/repair checks passed68.61s; Ruff and
+diff checks passed. Actual changed-input recognition is pending, followed by
+clean atomic fact review and full editorial/voice/visual/reopen/reuse acceptance.
+
 ## 0c9502a actual102: returning a healthy fallback to its stalled preferred model
 
 Frozen0c9502a cold102 failed181.383s: no accepted physical ID or eligible facts.
-Native SOURCE/MAP had an authoritative token_budget NotSent for the full156280-byte
-owned textual envelope (716 received map objects,91 physical body rows); its quota
+Native SOURCE/MAP had an authoritative token_budget NotSent (generic prepared
+text156280 bytes; actual Native-specific owned envelope170599 bytes,716 received
+map objects,91 physical body rows); its quota
 was not raised. Google3.8 SOURCE/MAP actually invoked the SDK and remained UNKNOWN
 57.794s. The independent registered3.5 route then CLOSED6.654s. Its actual source
 decision needed bounded SOURCE/text/contract followup. That new operation preferred

@@ -109,11 +109,13 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         packet, _ = json.JSONDecoder().raw_decode(raw_packet)
         packet = expand_planner_packet(packet)
         inventory = packet['acquired_architectural_text']['publisher_and_OSM_literal_records_NOT_prejoined']
+        osm_records = [dict(zip(table['columns'], row))
+            for table in inventory['osm_refs']['tables'] for row in table['rows']]
         decision['physical_link_evidence'] = [{
             'article_id': receipt['articles'][-1]['article_id'], 'candidate_id': 'osm:way:2',
             'publisher_ref': next(ref for ref, row in inventory['publisher_refs'].items()
                 if row['article_id'] == decision['article_bindings'][0]['article_id']),
-            'osm_ref': next(ref for ref, row in inventory['osm_refs'].items() if row['candidate_id'] == 'osm:way:2'),
+            'osm_ref': next(row['ref'] for row in osm_records if row['candidate_id'] == 'osm:way:2'),
             'relationship':'same_individual_physical_body', 'subject_scope':'specific_photographed_OSM_body',
             'architectural_scope_explanation':'This article describes the specific bay and window configuration.',
             'postal_interpretation':'The received literal source and OSM records denote the chosen individual body.'}]

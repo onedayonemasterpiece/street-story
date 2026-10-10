@@ -147,8 +147,25 @@ def model_literal_evidence_inventory(inventory):
     for article in result['articles']:
         article['actual_acquired_publisher_record_refs'] = [record['ref'] for record in
             article.pop('actual_acquired_publisher_records')]
+    # These are concrete evidence records, not a generated response schema.
+    # Repeating their field names/provenance envelope for every received body
+    # dominated the first SOURCE/MAP/T request. Group only identical key sets;
+    # every literal, ref, missing field and physical alternative survives.
+    groups = {}
+    for record in result['osm_refs'].values():
+        columns = tuple(record)
+        groups.setdefault(columns, []).append([record[key] for key in columns])
+    result['osm_refs'] = {'tables': [
+        {'columns': list(columns), 'rows': rows} for columns, rows in groups.items()]}
+    subjects = result['physical_subjects']
+    if subjects:
+        columns = list(subjects[0])
+        result['physical_subjects'] = {'columns': columns,
+            'rows': [[subject[key] for key in columns] for subject in subjects]}
     result['record_reference_policy'] = ('Each evidence ref resolves to its complete unchanged record in '
-        'osm_refs or publisher_refs. No subject, address, article or alternative is removed. '
+        'osm_refs.tables (read rows against their columns) or publisher_refs. '
+        'The ref column identifies the original record. Physical_subjects is a column table. '
+        'No subject, address, article or alternative is removed. '
         'These literal references are retrieval/provenance links, never physical identity evidence by themselves.')
     return result
 

@@ -30,6 +30,35 @@ def _three_documents():
     return story,candidates,decision,receipt
 
 
+def test_model_evidence_tables_preserve_every_received_literal_and_host_proof():
+    from street_story.identity_architectural_evidence import (
+        literal_evidence_inventory, model_literal_evidence_inventory)
+    from street_story.identity_source_selection import compact_planner_packet, expand_planner_packet
+    story, candidates, _decision, receipt = _three_documents()
+    inventory = literal_evidence_inventory(story, candidates, receipt['articles'])
+    # Heterogeneous received records must keep their own fields and literal
+    # values, including Unicode suffixes and explicit nulls. No postal parser
+    # or inferred body join participates in transport compaction.
+    inventory['osm_refs']['o_extra'] = {'ref': 'o_extra', 'candidate_id': 'osm:way:7',
+        'entry_id': 'osm:node:987', 'kind': 'observed_OSM_postal_entry',
+        'literal_value': {'street': 'Straße / улица', 'house_number': '6А–8', 'city': None},
+        'provenance': 'verified_osm_closed_way_entrance_membership'}
+    original = copy.deepcopy(inventory)
+    projection = model_literal_evidence_inventory(inventory)
+    issued = expand_planner_packet(compact_planner_packet({'evidence': projection}))['evidence']
+    restored = {record['ref']: record for table in issued['osm_refs']['tables']
+        for row in table['rows'] for record in [dict(zip(table['columns'], row))]}
+    assert restored == inventory['osm_refs']
+    assert issued['publisher_refs'] == inventory['publisher_refs']
+    assert issued['candidate_ids'] == inventory['candidate_ids']
+    table = issued['physical_subjects']
+    subjects = [dict(zip(table['columns'], row)) for row in table['rows']]
+    assert [subject['candidate_id'] for subject in subjects] == inventory['candidate_ids']
+    assert all(subject['literal_observed_evidence_refs'] == [record['ref'] for record in source['literal_observed_evidence']]
+        for subject, source in zip(subjects, inventory['physical_subjects']))
+    assert inventory == original
+
+
 def _closed_answer(decision,ids,packet):
     result=copy.deepcopy(decision)
     inventory = packet['literal_evidence_inventory']
