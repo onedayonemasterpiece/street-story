@@ -1,0 +1,752 @@
+{
+  "method": "bounded source+map visual research; hypotheses are not numerical probabilities",
+  "photos": [
+    {
+      "photo": 120,
+      "source_sha256": "e55f7ed56dea1ab4d6eb57e80a0bed9061332ccc38251772f4157fb92ae5af7a",
+      "camera": {
+        "lat": 54.7123981,
+        "lon": 20.500836299722224,
+        "heading_known": false,
+        "gps_accuracy_known": false
+      },
+      "approx_horizontal_fov_deg": 71.59,
+      "fov_role": "advisory; no distance annulus, no full-footprint fit constraint for cropped photo",
+      "raw_snapshot": "osm/photo-120.osm.gz",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4974114,54.7104196,20.5042612,54.7143766",
+      "raw_sha256": "8ad16e350c3d5acee953dd8bcfbaee484eacf6472ae9e9559290ce19e7effa12",
+      "map": "osm/photo-120.map.png",
+      "complete_groups": 60,
+      "unresolved_geometries": 0,
+      "candidates": [
+        {
+          "ref": "way/133035135",
+          "role": "preferred_spatial_hypothesis",
+          "identity_status": "external_photo_address_supported",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "8",
+            "addr:street": "Барнаульская улица",
+            "building": "yes",
+            "building:levels": "4"
+          },
+          "boundary_rank": 1,
+          "bbox_rank": 1,
+          "boundary_distance_m": 6.78,
+          "bbox_center_distance_m": 30.13,
+          "centroid_bearing_deg": 338.05,
+          "whole_outer_angular_interval": {
+            "start_deg": 274.61,
+            "end_deg": 17.05,
+            "width_deg": 102.43,
+            "wraps_north": true
+          },
+          "outer_edge_lengths_m": [
+            9.57,
+            33.65,
+            41.51,
+            35.95,
+            8.77,
+            18.43,
+            23.16,
+            16.12
+          ]
+        },
+        {
+          "ref": "way/144329642",
+          "role": "alternative_corner_rectangle",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:housenumber": "40",
+            "addr:street": "улица Вагнера",
+            "building": "yes"
+          },
+          "boundary_rank": 2,
+          "bbox_rank": 2,
+          "boundary_distance_m": 25.97,
+          "bbox_center_distance_m": 39.83,
+          "centroid_bearing_deg": 75.75,
+          "whole_outer_angular_interval": {
+            "start_deg": 55.41,
+            "end_deg": 94.71,
+            "width_deg": 39.3,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            19.25,
+            21.11,
+            19.25,
+            21.11
+          ]
+        },
+        {
+          "ref": "way/133035089",
+          "role": "alternative_recessed_complex",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "6А",
+            "addr:street": "Барнаульская улица",
+            "building": "hospital"
+          },
+          "boundary_rank": 5,
+          "bbox_rank": 7,
+          "boundary_distance_m": 53.52,
+          "bbox_center_distance_m": 82.9,
+          "centroid_bearing_deg": 14.6,
+          "whole_outer_angular_interval": {
+            "start_deg": 349.05,
+            "end_deg": 25.3,
+            "width_deg": 36.25,
+            "wraps_north": true
+          },
+          "outer_edge_lengths_m": [
+            15.27,
+            10.6,
+            9.9,
+            23.27,
+            38.49,
+            62.37,
+            17.88,
+            21.82,
+            8.53,
+            1.09,
+            3.0,
+            4.04,
+            16.12,
+            7.36,
+            3.03,
+            12.4
+          ]
+        },
+        {
+          "ref": "way/108817963",
+          "role": "highrise_context_left",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Калининград",
+            "addr:country": "RU",
+            "addr:housenumber": "58",
+            "addr:street": "улица Вагнера",
+            "building": "yes",
+            "building:levels": "12"
+          },
+          "boundary_rank": 7,
+          "bbox_rank": 6,
+          "boundary_distance_m": 58.35,
+          "bbox_center_distance_m": 75.52,
+          "centroid_bearing_deg": 293.11,
+          "whole_outer_angular_interval": {
+            "start_deg": 279.83,
+            "end_deg": 306.02,
+            "width_deg": 26.18,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            6.52,
+            16.68,
+            18.32,
+            16.06,
+            6.93,
+            17.0,
+            18.73,
+            16.37
+          ]
+        }
+      ],
+      "nearest_named_roads": [
+        {
+          "name": "улица Вагнера",
+          "distance_m": 7.99,
+          "axis_deg_mod180": 90.9,
+          "highway": "tertiary"
+        },
+        {
+          "name": "Барнаульская улица",
+          "distance_m": 8.98,
+          "axis_deg_mod180": 26.49,
+          "highway": "residential",
+          "osm_way_id": 43951262,
+          "selected_segment_index": 5,
+          "equally_near_segment_axes_deg_mod180": [
+            {
+              "segment_index": 5,
+              "axis_deg_mod180": 26.49
+            },
+            {
+              "segment_index": 6,
+              "axis_deg_mod180": 20.75
+            }
+          ],
+          "axis_scope": "The nearest point is the shared vertex of both segments, at8.977591760937226m. Primary axis uses the first segment; neither alone establishes the intersection angle."
+        },
+        {
+          "name": "Космическая улица",
+          "distance_m": 124.9,
+          "axis_deg_mod180": 29.07,
+          "highway": "footway"
+        },
+        {
+          "name": "улица Бесселя",
+          "distance_m": 128.92,
+          "axis_deg_mod180": 138.74,
+          "highway": "tertiary"
+        }
+      ],
+      "scope": "Bounded manual source+map research, not measured product-model accuracy. The geometric hypothesis for Barnaulskaya8 gained separate external address/photo support, recorded in external_update; no exact pose or full-feature match is asserted.",
+      "external_update": {
+        "status": "external_photo_address_supported",
+        "source": "https://ruwest.ru/news/113055/",
+        "scope": "Different facade of same attributed brick complex; no exact camera pose claim"
+      },
+      "original_source_url": "https://t.me/c/4488229487/2/120",
+      "raw_snapshot_encoding": "gzip; raw_sha256 is for decompressed XML"
+    },
+    {
+      "photo": 121,
+      "source_sha256": "3c0889d1a97a2f7e5c52691f7b331f792ddd43ca342964229d2b481b300dcc04",
+      "camera": {
+        "lat": 54.94288409999999,
+        "lon": 20.154807199999997,
+        "heading_known": false,
+        "gps_accuracy_known": false
+      },
+      "approx_horizontal_fov_deg": 106.18,
+      "fov_role": "advisory; no distance annulus, no full-footprint fit constraint for cropped photo",
+      "raw_snapshot": "osm/photo-122.osm.gz",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.1508547,54.9412575,20.1577437,54.9452145",
+      "raw_sha256": "53c4aba59e38dcb6b5860e563ddb640cbb0baa541266e95e88a09f7c31c2a641",
+      "map": "osm/photo-121.map.png",
+      "complete_groups": 100,
+      "unresolved_geometries": 0,
+      "candidates": [
+        {
+          "ref": "way/297368195",
+          "role": "preferred_spatial_hypothesis",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "11А",
+            "addr:street": "Октябрьская улица",
+            "amenity": "restaurant",
+            "building": "yes",
+            "name": "Вика"
+          },
+          "boundary_rank": 1,
+          "bbox_rank": 1,
+          "boundary_distance_m": 4.91,
+          "bbox_center_distance_m": 11.71,
+          "centroid_bearing_deg": 71.13,
+          "whole_outer_angular_interval": {
+            "start_deg": 14.02,
+            "end_deg": 126.64,
+            "width_deg": 112.62,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            3.93,
+            4.29,
+            2.56,
+            7.04,
+            1.28,
+            8.98,
+            5.74,
+            7.18,
+            4.64,
+            2.72,
+            4.58,
+            4.64,
+            3.98,
+            3.39
+          ]
+        },
+        {
+          "ref": "way/185249815",
+          "role": "alternative_across_street",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "16",
+            "addr:street": "Октябрьская улица",
+            "building": "yes",
+            "building:levels": "2"
+          },
+          "boundary_rank": 2,
+          "bbox_rank": 2,
+          "boundary_distance_m": 18.29,
+          "bbox_center_distance_m": 26.38,
+          "centroid_bearing_deg": 232.47,
+          "whole_outer_angular_interval": {
+            "start_deg": 205.97,
+            "end_deg": 258.58,
+            "width_deg": 52.6,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            16.15,
+            18.1,
+            16.15,
+            18.1
+          ]
+        },
+        {
+          "ref": "way/313504456",
+          "role": "alternative_farther_south",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "14",
+            "addr:street": "Октябрьская улица",
+            "building": "yes",
+            "building:colour": "red",
+            "building:levels": "4",
+            "building:material": "brick",
+            "roof:colour": "gray",
+            "roof:levels": "1",
+            "roof:material": "metal"
+          },
+          "boundary_rank": 3,
+          "bbox_rank": 4,
+          "boundary_distance_m": 29.87,
+          "bbox_center_distance_m": 48.99,
+          "centroid_bearing_deg": 189.9,
+          "whole_outer_angular_interval": {
+            "start_deg": 175.84,
+            "end_deg": 208.0,
+            "width_deg": 32.16,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            9.25,
+            15.24,
+            16.2,
+            15.23,
+            6.02,
+            6.1,
+            7.91,
+            19.44,
+            14.0
+          ]
+        },
+        {
+          "ref": "way/185249646",
+          "role": "nearby_famous_context_not_assigned",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "11",
+            "addr:street": "Октябрьская улица",
+            "building": "yes",
+            "building:architecture": "art_nouveau",
+            "building:colour": "gray",
+            "building:levels": "5",
+            "building:material": "concrete",
+            "historic": "water_tower",
+            "name": "Здание водогрязелечебницы с водонапорной башней",
+            "name:en": "Mud bath building with water tower",
+            "name:ru": "Здание водогрязелечебницы с водонапорной башней",
+            "roof:colour": "red",
+            "roof:levels": "1",
+            "roof:material": "roof_tiles",
+            "roof:shape": "many",
+            "start_date": "1907..1908",
+            "tourism": "attraction",
+            "wikidata": "Q52146942",
+            "wikipedia": "ru:Водонапорная башня (Светлогорск)"
+          },
+          "boundary_rank": 5,
+          "bbox_rank": 5,
+          "boundary_distance_m": 36.21,
+          "bbox_center_distance_m": 55.85,
+          "centroid_bearing_deg": 6.89,
+          "whole_outer_angular_interval": {
+            "start_deg": 328.9,
+            "end_deg": 56.0,
+            "width_deg": 87.1,
+            "wraps_north": true
+          },
+          "outer_edge_lengths_m": [
+            16.27,
+            0.84,
+            12.22,
+            1.08,
+            4.77,
+            2.56,
+            9.64,
+            2.14,
+            4.61,
+            26.34,
+            0.69,
+            6.4,
+            4.61,
+            1.52,
+            6.11,
+            8.7,
+            3.71,
+            18.92,
+            7.74,
+            1.4,
+            25.64,
+            2.67,
+            34.57,
+            15.98,
+            29.78,
+            1.03,
+            4.2,
+            3.56,
+            29.02,
+            3.27,
+            3.79,
+            2.58,
+            3.22,
+            3.24,
+            1.5,
+            1.9,
+            1.83,
+            1.82,
+            1.83,
+            1.83,
+            1.84,
+            4.02,
+            9.71,
+            0.93,
+            16.08,
+            11.86
+          ]
+        }
+      ],
+      "nearest_named_roads": [
+        {
+          "name": "Октябрьская улица",
+          "distance_m": 7.21,
+          "axis_deg_mod180": 145.84,
+          "highway": "residential"
+        },
+        {
+          "name": "Аптечная улица",
+          "distance_m": 14.28,
+          "axis_deg_mod180": 56.42,
+          "highway": "residential"
+        },
+        {
+          "name": "Курортная улица",
+          "distance_m": 24.29,
+          "axis_deg_mod180": 88.57,
+          "highway": "residential"
+        },
+        {
+          "name": "Садовая улица",
+          "distance_m": 109.39,
+          "axis_deg_mod180": 150.19,
+          "highway": "residential"
+        }
+      ],
+      "scope": "Bounded manual vision+map comparison in research. This is not measured product-model accuracy and no external reference identification is asserted.",
+      "original_source_url": "https://t.me/c/4488229487/2/121",
+      "raw_snapshot_encoding": "gzip; raw_sha256 is for decompressed XML"
+    },
+    {
+      "photo": 122,
+      "source_sha256": "b692b40eb09e14c579a8a686d5e34d2360e72f6c21cf4b7111374b32e7dd74f0",
+      "camera": {
+        "lat": 54.94323599972222,
+        "lon": 20.154299199999997,
+        "heading_known": false,
+        "gps_accuracy_known": false
+      },
+      "approx_horizontal_fov_deg": 71.59,
+      "fov_role": "advisory; no distance annulus, no full-footprint fit constraint for cropped photo",
+      "raw_snapshot": "osm/photo-122.osm.gz",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.1508547,54.9412575,20.1577437,54.9452145",
+      "raw_sha256": "53c4aba59e38dcb6b5860e563ddb640cbb0baa541266e95e88a09f7c31c2a641",
+      "map": "osm/photo-122.map.png",
+      "complete_groups": 100,
+      "unresolved_geometries": 0,
+      "candidates": [
+        {
+          "ref": "way/185249646",
+          "role": "nearby_famous_context_not_assigned",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "11",
+            "addr:street": "Октябрьская улица",
+            "building": "yes",
+            "building:architecture": "art_nouveau",
+            "building:colour": "gray",
+            "building:levels": "5",
+            "building:material": "concrete",
+            "historic": "water_tower",
+            "name": "Здание водогрязелечебницы с водонапорной башней",
+            "name:en": "Mud bath building with water tower",
+            "name:ru": "Здание водогрязелечебницы с водонапорной башней",
+            "roof:colour": "red",
+            "roof:levels": "1",
+            "roof:material": "roof_tiles",
+            "roof:shape": "many",
+            "start_date": "1907..1908",
+            "tourism": "attraction",
+            "wikidata": "Q52146942",
+            "wikipedia": "ru:Водонапорная башня (Светлогорск)"
+          },
+          "boundary_rank": 1,
+          "bbox_rank": 4,
+          "boundary_distance_m": 7.61,
+          "bbox_center_distance_m": 43.2,
+          "centroid_bearing_deg": 71.13,
+          "whole_outer_angular_interval": {
+            "start_deg": 347.15,
+            "end_deg": 106.41,
+            "width_deg": 119.26,
+            "wraps_north": true
+          },
+          "outer_edge_lengths_m": [
+            16.27,
+            0.84,
+            12.22,
+            1.08,
+            4.77,
+            2.55,
+            9.64,
+            2.14,
+            4.61,
+            26.34,
+            0.69,
+            6.4,
+            4.61,
+            1.52,
+            6.11,
+            8.7,
+            3.71,
+            18.92,
+            7.74,
+            1.4,
+            25.63,
+            2.67,
+            34.57,
+            15.98,
+            29.78,
+            1.03,
+            4.2,
+            3.56,
+            29.02,
+            3.27,
+            3.79,
+            2.58,
+            3.22,
+            3.24,
+            1.5,
+            1.9,
+            1.83,
+            1.82,
+            1.83,
+            1.83,
+            1.84,
+            4.02,
+            9.71,
+            0.93,
+            16.08,
+            11.86
+          ]
+        },
+        {
+          "ref": "way/185249717",
+          "role": "preferred_main_building_hypothesis",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "18",
+            "addr:street": "Октябрьская улица",
+            "building": "yes",
+            "building:levels": "3"
+          },
+          "boundary_rank": 2,
+          "bbox_rank": 1,
+          "boundary_distance_m": 18.44,
+          "bbox_center_distance_m": 27.91,
+          "centroid_bearing_deg": 205.45,
+          "whole_outer_angular_interval": {
+            "start_deg": 179.16,
+            "end_deg": 231.24,
+            "width_deg": 52.08,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            24.04,
+            12.91,
+            24.04,
+            12.91
+          ]
+        },
+        {
+          "ref": "way/185249810",
+          "role": "alternative_low_neighbour_farther_right",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "22",
+            "addr:street": "Октябрьская улица",
+            "building": "retail",
+            "building:colour": "yellow",
+            "building:levels": "1",
+            "building:material": "plaster",
+            "roof:colour": "red",
+            "roof:levels": "1",
+            "roof:material": "roof_tiles",
+            "roof:orientation": "along",
+            "roof:shape": "gabled"
+          },
+          "boundary_rank": 3,
+          "bbox_rank": 3,
+          "boundary_distance_m": 23.97,
+          "bbox_center_distance_m": 40.78,
+          "centroid_bearing_deg": 290.42,
+          "whole_outer_angular_interval": {
+            "start_deg": 264.27,
+            "end_deg": 307.06,
+            "width_deg": 42.78,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            7.48,
+            7.9,
+            31.02,
+            15.39,
+            6.48,
+            3.52,
+            16.65,
+            3.52,
+            7.9
+          ]
+        },
+        {
+          "ref": "way/313512157",
+          "role": "preferred_low_neighbour_hypothesis",
+          "identity_status": "not_reference_verified",
+          "tags": {
+            "addr:city": "Светлогорск",
+            "addr:housenumber": "20",
+            "addr:street": "Октябрьская улица",
+            "building": "yes",
+            "building:levels": "2"
+          },
+          "boundary_rank": 4,
+          "bbox_rank": 2,
+          "boundary_distance_m": 28.73,
+          "bbox_center_distance_m": 34.98,
+          "centroid_bearing_deg": 248.44,
+          "whole_outer_angular_interval": {
+            "start_deg": 238.51,
+            "end_deg": 260.83,
+            "width_deg": 22.32,
+            "wraps_north": false
+          },
+          "outer_edge_lengths_m": [
+            10.82,
+            11.46,
+            10.82,
+            11.46
+          ]
+        }
+      ],
+      "nearest_named_roads": [
+        {
+          "name": "Октябрьская улица",
+          "distance_m": 4.04,
+          "axis_deg_mod180": 143.13,
+          "highway": "residential"
+        },
+        {
+          "name": "Курортная улица",
+          "distance_m": 16.81,
+          "axis_deg_mod180": 88.57,
+          "highway": "residential"
+        },
+        {
+          "name": "Аптечная улица",
+          "distance_m": 38.34,
+          "axis_deg_mod180": 56.42,
+          "highway": "residential"
+        },
+        {
+          "name": "улица Ленина",
+          "distance_m": 92.07,
+          "axis_deg_mod180": 89.82,
+          "highway": "residential"
+        }
+      ],
+      "scope": "Bounded manual vision+map comparison in research. This is not measured product-model accuracy and no external reference identification is asserted.",
+      "main_to_neighbour_outline_gap_m": 4.31,
+      "external_update": {
+        "status": "scene_address_supported_component_split_ambiguous",
+        "source": "https://yandex.com/maps/org/kofeman/33837339791/",
+        "address": "Октябрьская18",
+        "scope": "Owner SOURCE sign Кофеман→organization card; does not equate tenant with OSMway20"
+      },
+      "original_source_url": "https://t.me/c/4488229487/2/122",
+      "raw_snapshot_encoding": "gzip; raw_sha256 is for decompressed XML"
+    }
+  ],
+  "external_updates": {
+    "120": {
+      "status": "external_photo_address_supported",
+      "source": "https://ruwest.ru/news/113055/",
+      "scope": "Different facade of same attributed brick complex; no exact camera pose claim"
+    },
+    "122": {
+      "status": "scene_address_supported_component_split_ambiguous",
+      "source": "https://yandex.com/maps/org/kofeman/33837339791/",
+      "address": "Октябрьская18",
+      "scope": "Owner SOURCE sign Кофеман→organization card; does not equate tenant with OSMway20"
+    },
+    "132": {
+      "status": "verified_external_photo_by_researcher",
+      "source": "https://ru.wikipedia.org/wiki/Тильзитская_классическая_гимназия",
+      "gps_recovered": false,
+      "map_created": false,
+      "scope": "Existing owner city hypothesis + readable gymnasium sign→Wiki→downloaded photo"
+    }
+  },
+  "resource_use": {
+    "osm_http_requests": 2,
+    "network_retries": 0,
+    "new_map_cases": 3,
+    "historical_reference_fetches_by_geometry_agent": 0,
+    "product_inference_calls": 0,
+    "shared_raw_snapshot_for": [
+      121,
+      122
+    ]
+  },
+  "recommended_e2e": [
+    104,
+    111,
+    122,
+    132,
+    102
+  ],
+  "findings_path": "geometry-next-findings.md",
+  "acceptance_budget": {
+    "requested_range_cases": [
+      104,
+      111,
+      122,
+      132
+    ],
+    "mandatory_legacy_cases": [
+      102
+    ],
+    "max_full_e2e_per_release_candidate": 5,
+    "after_local_fix": "rerun only affected cases",
+    "offline_or_targeted_reserve": [
+      107,
+      109,
+      120,
+      121
+    ],
+    "reserve_cold_e2e_required": false
+  },
+  "publication_note": "Research summary only. Original photographs and reference image bytes are excluded; original hashes and metadata are in original-manifest.json. Local paths to excluded previews/references were removed. Numeric metrics unchanged."
+}

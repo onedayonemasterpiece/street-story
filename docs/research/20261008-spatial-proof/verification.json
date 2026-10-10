@@ -1,0 +1,85 @@
+{
+  "status": "passed",
+  "scope": "cached OSM hashes and offline deterministic calculations/render; no product inference",
+  "records": [
+    {
+      "path": "gymnasium/photo-132.osm.gz",
+      "raw_bytes": 576437,
+      "raw_hash_verified": true
+    },
+    {
+      "path": "kaliningrad/photo-106.osm.gz",
+      "raw_bytes": 599210,
+      "raw_hash_verified": true
+    },
+    {
+      "path": "kaliningrad/photo-125.osm.gz",
+      "raw_bytes": 474979,
+      "raw_hash_verified": true
+    },
+    {
+      "path": "sovetsk/photo-126.osm.gz",
+      "raw_bytes": 623094,
+      "raw_hash_verified": true
+    },
+    {
+      "path": "sovetsk/photo-130.osm.gz",
+      "raw_bytes": 297000,
+      "raw_hash_verified": true
+    },
+    {
+      "script": "kaliningrad/reproduce.py",
+      "exit_code": 0,
+      "elapsed_seconds": 2.707,
+      "invocation": "offline default, no --fetch"
+    },
+    {
+      "script": "sovetsk/reproduce.py",
+      "exit_code": 0,
+      "elapsed_seconds": 3.373,
+      "invocation": "offline default, no --fetch"
+    },
+    {
+      "script": "gymnasium/case132.py",
+      "exit_code": 0,
+      "elapsed_seconds": 1.507,
+      "invocation": "offline default, no --fetch"
+    },
+    {
+      "derived_json": "kaliningrad/metrics.json",
+      "semantic_readback_equal": true
+    },
+    {
+      "derived_json": "sovetsk/photo-126.scene.json",
+      "semantic_readback_equal": true
+    },
+    {
+      "derived_json": "sovetsk/photo-130.scene.json",
+      "semantic_readback_equal": true
+    },
+    {
+      "derived_json": "gymnasium/metrics-132.json",
+      "semantic_readback_equal": true
+    },
+    {
+      "map": "kaliningrad/map-106.png",
+      "byte_exact_reproduction": true
+    },
+    {
+      "map": "kaliningrad/map-125.png",
+      "byte_exact_reproduction": true
+    },
+    {
+      "map": "sovetsk/map-126.png",
+      "byte_exact_reproduction": true
+    },
+    {
+      "map": "sovetsk/map-130.png",
+      "byte_exact_reproduction": true
+    },
+    {
+      "map": "gymnasium/map-132.png",
+      "byte_exact_reproduction": true
+    }
+  ]
+}

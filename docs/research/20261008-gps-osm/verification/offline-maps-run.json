@@ -1,0 +1,21 @@
+{
+  "status": "offline_updated_map_reproduction_pass",
+  "photo_ids": [
+    111
+  ],
+  "reason": "Only the111 target annotation and map changed; geometry and plotting helpers plus the other eight maps were unchanged.",
+  "python_version": "3.12.14",
+  "network_calls": 0,
+  "provider_inference_calls": 0,
+  "render_seconds": 2.259141,
+  "target": "way/95290265",
+  "radius_m": 420,
+  "title": "Фото 111 · Дмитрия Донского, 15",
+  "map_sha256": "97ff8d6bec1ef066c259bae5a17fa7924a9ac2d92ec807cc8cbed57a82c4a651",
+  "byte_identical_to_included_map": true,
+  "geometry_helper_sha256": "9b7be42b7d9cdd339644d1591cc0be7db26ff11b99ef43a93fc6feda49f5cb5a",
+  "plot_helper_sha256": "e9c9b954fb65d3a78dafad1f215966e50c076819806a89a01d54f852f2083ab2",
+  "normalized_gps_sha256": "b00e583f7ad0011e1675ccae33fb56a00080938647d51bbb9404902778692b2b",
+  "raw_osm_sha256": "fd7745c4df4d3aa926bf9a147792f3654395cafd906c37204844c4ae8b8928dc",
+  "scope": "Map arithmetic/rendering only; does not repeat visual building identification or product inference"
+}

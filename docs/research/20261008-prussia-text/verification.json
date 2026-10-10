@@ -1,0 +1,28 @@
+{
+  "requested_link_set_complete": true,
+  "all26_source_images_reviewed": true,
+  "no_pending_cases": true,
+  "missing_gps_not_invented": true,
+  "no_ref_used_for_new_verdicts": true,
+  "grade_counts_checked": {
+    "A": 13,
+    "N": 6,
+    "H": 2,
+    "S": 1,
+    "P": 4
+  },
+  "raw_copyrighted_pages_not_in_package": true,
+  "UI_screenshots_not_in_package": true,
+  "not_a_product_pass": true,
+  "probe_offline_checks": [
+    "cp1251 body extraction on3875/2519",
+    "nearby arrays123/133",
+    "address count35 vs20+15 across two pages; real pagination p=2"
+  ],
+  "known_limits": [
+    "not blind",
+    "some discovery seeded by previous audit",
+    "8 source bodies read without retained raw/hash",
+    "HTTP ledger partial; no reliable aggregate per-photo timing"
+  ]
+}

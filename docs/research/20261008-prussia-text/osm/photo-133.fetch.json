@@ -1,0 +1,9 @@
+{
+  "url": "https://api.openstreetmap.org/api/0.6/map?bbox=21.81301400217636,54.6283570937722,21.819849997268086,54.6323141062278",
+  "sha256": "6402720f7170439817c31e2a30323e3d14b919da9363f7a79fba824fc27d9af3",
+  "camera_provenance": "original EXIF",
+  "camera": {
+    "lat": 54.6303356,
+    "lon": 21.816431999722223
+  }
+}

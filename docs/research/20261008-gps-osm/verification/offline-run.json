@@ -1,0 +1,126 @@
+{
+  "status": "offline_reproduction_pass",
+  "meaning": "Cached arithmetic and expected research outputs match; not a product identity/vision/facts PASS",
+  "python_version": "3.12.14",
+  "photo_ids": [
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112
+  ],
+  "target_status": {
+    "104": "research_expected_target",
+    "105": "research_expected_target",
+    "106": "research_expected_target",
+    "107": "research_expected_target",
+    "108": "research_expected_target",
+    "109": "research_expected_target",
+    "110": "research_expected_target",
+    "111": "research_expected_target",
+    "112": "research_expected_target"
+  },
+  "hash_verification": "All listed files verified before execution; gzip and decoded OSM verified before parsing",
+  "expected_comparison": {
+    "target_geometry_matrix.csv": true,
+    "gps_sensitivity.csv": true,
+    "target_geometry_summary.json": true
+  },
+  "network_policy": "Python audit hook rejects socket and urllib network operations in the same interpreter",
+  "network_calls": 0,
+  "provider_inference_calls": 0,
+  "maps_written": 0,
+  "timings_seconds": {
+    "verify_inputs": 0.026127,
+    "unpack_and_verify_osm": 0.077874,
+    "geometry_nine_snapshots": 2.093583,
+    "summary_and_compare": 1.322343,
+    "maps_and_copy": 0.003312,
+    "total": 3.523238
+  },
+  "candidate_counts": [
+    {
+      "photo_id": 104,
+      "complete_building_groups": 52,
+      "unresolved_buildings": 3
+    },
+    {
+      "photo_id": 105,
+      "complete_building_groups": 67,
+      "unresolved_buildings": 0
+    },
+    {
+      "photo_id": 106,
+      "complete_building_groups": 80,
+      "unresolved_buildings": 1
+    },
+    {
+      "photo_id": 107,
+      "complete_building_groups": 92,
+      "unresolved_buildings": 0
+    },
+    {
+      "photo_id": 108,
+      "complete_building_groups": 63,
+      "unresolved_buildings": 0
+    },
+    {
+      "photo_id": 109,
+      "complete_building_groups": 28,
+      "unresolved_buildings": 1
+    },
+    {
+      "photo_id": 110,
+      "complete_building_groups": 90,
+      "unresolved_buildings": 0
+    },
+    {
+      "photo_id": 111,
+      "complete_building_groups": 73,
+      "unresolved_buildings": 0
+    },
+    {
+      "photo_id": 112,
+      "complete_building_groups": 70,
+      "unresolved_buildings": 2
+    }
+  ],
+  "calculation_inputs": {
+    "normalized_gps_sha256": "b00e583f7ad0011e1675ccae33fb56a00080938647d51bbb9404902778692b2b",
+    "wrapper_sha256": "920fce20232d0aa2244a0ea8a7e915bb87c0af286d29876bbaf5e0e48f759997",
+    "geometry_helper_sha256": "9b7be42b7d9cdd339644d1591cc0be7db26ff11b99ef43a93fc6feda49f5cb5a",
+    "summary_helper_sha256": "9a6f38d521479e10ed1384584aef67919052faa3650dac2278b26e647ca066f5",
+    "raw_osm_sha256": {
+      "104": "7db8626c7847128af14e2574fd5ca1dfacf18ec3d8f4d76ec1732b60a1b3abde",
+      "105": "bea88210621d4d64c286dd79441e3b44c7e644dbcdcac1052e801f48baeb34a1",
+      "106": "9171c054faf92859b75421693c459f1afb0c8e47cc956a5f9751198c429b3d0c",
+      "107": "f2feef95263d8f9b0befe05079bbeccb3a4f3fcbce954d25787fd354b4798651",
+      "108": "e8318f0525b5681dbaf2610331a23a73da72783f7f9c540a81a2030de0c5411d",
+      "109": "4b5c4e7203766a3185a6e25a75e340bbf07c10c3568bc04d3affec5b22baeccd",
+      "110": "9ac5a4e5c8934f7250343b5bcbb32a0547012c54a3a358d8b903a478bc3257c2",
+      "111": "fd7745c4df4d3aa926bf9a147792f3654395cafd906c37204844c4ae8b8928dc",
+      "112": "44fc6b91a3556b8d3d53df86c7a5f6c740b22e8edb8fc1d5ebeb3a65900e827a"
+    },
+    "expected_output_sha256": {
+      "target_geometry_matrix.csv": "30cae1d8a73c97815157279564f2a667892f6663a8abeb49da0bc5fb8234d398",
+      "gps_sensitivity.csv": "f73435838068d304f1bab4fd22f7cdfef04004f32cab71ffb6ec0c1462083582",
+      "target_geometry_summary.json": "62195b6a5059ad38547a2c3405cf033f5d389b8ae84dd4fab54868d84058075e"
+    }
+  },
+  "temporary_files_retained": false,
+  "portability_check": {
+    "copied_bundle_to_new_directory": true,
+    "path_contained_spaces": true,
+    "cwd_outside_bundle": true,
+    "isolated_mode": true,
+    "site_packages_disabled": true
+  },
+  "tamper_check": {
+    "one_copied_gzip_byte_changed": true,
+    "rejected_before_decompression": true
+  }
+}

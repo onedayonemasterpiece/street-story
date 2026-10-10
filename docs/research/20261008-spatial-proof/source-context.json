@@ -1,0 +1,151 @@
+{
+  "date": "2026-10-08",
+  "items": [
+    {
+      "photo": 106,
+      "source_url": "https://t.me/c/4488229487/2/106",
+      "original_sha256": "ec1717997abf9a78b5443c2315fe28311709ecbe9be0c594ccc0b7c8b2e9f04f",
+      "original_bytes": 4811867,
+      "original_dimensions": [
+        4000,
+        3000
+      ],
+      "orientation": 1,
+      "focal35mm": 24,
+      "oriented_preview_sha256": "fc1078f59eb243a42a3511619e730b6845746f61c8c132937c51cffc30a59484",
+      "camera": {
+        "lat": 54.7331882,
+        "lon": 20.478384299722222,
+        "provenance": "original_exif",
+        "heading_deg": null,
+        "measured_accuracy_m": null
+      },
+      "user_map_screenshot": {
+        "filename": "image(20261008-192624).png",
+        "sha256": "3a8729d325ac1e0b04f1eb67855702c870d3078033b2d9048c65f15b1b5f5b57",
+        "dimensions": [
+          902,
+          792
+        ]
+      },
+      "research_context": "source and owner-marked screenshots inspected; result is not a blind product benchmark"
+    },
+    {
+      "photo": 125,
+      "source_url": "https://t.me/c/4488229487/2/125",
+      "original_sha256": "312e5aad64f3285f5b3be260b95b1c2c15bf205c270a5326f03bd1152bf8c411",
+      "original_bytes": 2968881,
+      "original_dimensions": [
+        4000,
+        3000
+      ],
+      "orientation": 6,
+      "focal35mm": 24,
+      "oriented_preview_sha256": "f89be08a52305ef92a602b510c8b919315caa741149931c57bab6e5e77c7a8a9",
+      "camera": {
+        "lat": 54.712702,
+        "lon": 20.527291,
+        "provenance": "owner_approximate_hint",
+        "heading_deg": null,
+        "measured_accuracy_m": null
+      },
+      "user_map_screenshot": {
+        "filename": "image(20261008-193457).png",
+        "sha256": "c8e68ea384002dce50d303b2b5105c74f692fd855270e8f1388c9a1f2acb0cd8",
+        "dimensions": [
+          743,
+          400
+        ]
+      },
+      "research_context": "source and owner-marked screenshots inspected; result is not a blind product benchmark"
+    },
+    {
+      "photo": 126,
+      "source_url": "https://t.me/c/4488229487/2/126",
+      "original_sha256": "647d44970f06e9c168ce4789d4d319df7ba5b602a7c85ba70a8a9140b2cf0b80",
+      "original_bytes": 2428355,
+      "original_dimensions": [
+        3512,
+        3000
+      ],
+      "orientation": 1,
+      "focal35mm": 24,
+      "oriented_preview_sha256": "2121d1947ea46d53ecb9e9b90092997aa523a61a5592fc0e622f6dea7d13b8ea",
+      "camera": {
+        "lat": 55.077788,
+        "lon": 21.888265,
+        "provenance": "owner_approximate_hint",
+        "heading_deg": null,
+        "measured_accuracy_m": null
+      },
+      "user_map_screenshot": {
+        "filename": "image(20261008-193001).png",
+        "sha256": "de7527bf53c6d35d556ea316aa04f3d748db36911b4883a043976d06e4ff0736",
+        "dimensions": [
+          1017,
+          809
+        ]
+      },
+      "research_context": "source and owner-marked screenshots inspected; result is not a blind product benchmark"
+    },
+    {
+      "photo": 130,
+      "source_url": "https://t.me/c/4488229487/2/130",
+      "original_sha256": "63a06c54726012c68bfcc972de010c3d8922c367f7840abba712620ebb0d3313",
+      "original_bytes": 4452645,
+      "original_dimensions": [
+        4000,
+        3000
+      ],
+      "orientation": 1,
+      "focal35mm": 24,
+      "oriented_preview_sha256": "6125e58bfbabb070261211bf8963009f6dacd3db687cf6a2933952f79219b026",
+      "camera": {
+        "lat": 55.074106,
+        "lon": 21.903648,
+        "provenance": "owner_approximate_hint",
+        "heading_deg": null,
+        "measured_accuracy_m": null
+      },
+      "user_map_screenshot": {
+        "filename": "image(20261008-193801).png",
+        "sha256": "f7bd7151c08c1e15e15a29e8ff989afd6d6f451cb8fa80bb42c999b5d57cd958",
+        "dimensions": [
+          854,
+          639
+        ]
+      },
+      "research_context": "source and owner-marked screenshots inspected; result is not a blind product benchmark"
+    },
+    {
+      "photo": 132,
+      "source_url": "https://t.me/c/4488229487/2/132",
+      "original_sha256": "4f7dc18d93b6cea0382c206fca8ff7a9707df9c600824e11361ed883cb338b7d",
+      "original_bytes": 5179508,
+      "original_dimensions": [
+        4000,
+        3000
+      ],
+      "orientation": 6,
+      "focal35mm": 24,
+      "oriented_preview_sha256": "97e47e5f681dcb5b4a65bbbf920fb5b43f0f457a798cbc7b052d96a3aeb162a4",
+      "camera": {
+        "lat": 55.079386,
+        "lon": 21.889776,
+        "provenance": "owner_approximate_hint",
+        "heading_deg": null,
+        "measured_accuracy_m": null
+      },
+      "user_map_screenshot": {
+        "filename": "image(20261008-194313).png",
+        "sha256": "5a31c7b6e4e8ba60342dacc915da6ec1e14f7cd4225e58468e0d048b2b39b70a",
+        "dimensions": [
+          1212,
+          806
+        ]
+      },
+      "research_context": "source and owner-marked screenshots inspected; result is not a blind product benchmark"
+    }
+  ],
+  "privacy": "Original images and owner screenshots are referenced, not embedded in this Git package."
+}

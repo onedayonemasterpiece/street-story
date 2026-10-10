@@ -1,0 +1,229 @@
+{
+  "coverage": "Selected persisted receipts, not an exhaustive network ledger. Shared lookups are not per-photo sends.",
+  "cohort104_112_costs": {
+    "web_queries": 18,
+    "web_query_rounds_per_case": 2,
+    "native_address_queries": 6,
+    "native_query_pagination_pages": 1,
+    "successful_fresh_main_card_gets": 5,
+    "reused_main_card_cache": 1,
+    "catalog_gets": 1,
+    "fresh_main_cards": "104,106,110,112 and108negative;107reused",
+    "transport_diagnostics": "Some initial web opens exposed 0 lines, and custom-UA urllib responses were HTTP200/0bytes. Successful final receipts use cp1251; raw 200 alone must not count as body success. Native address GETs took about14–15seconds in parallel; successful body GETs ~6–10seconds. These are retrieval experiments, not product latency benchmarks."
+  },
+  "cohort102_125_transport": {
+    "encoding": "Windows-1251 HTML and query-value percent encoding",
+    "native_name_search": "/search.php?text=...&search_obj=2 searches titles, not addresses",
+    "advanced_search": "/sight/database.php with all actual formdefaults, overriding text_adr/text_np",
+    "nearby": "POST /sight/map_coord.php; new_coords=lat,lon. Root successful123 request10.046s.",
+    "failed_routes": "Web4queries empty and one webopen empty; shortened advanced GET yielded form without results; native title searches miss addresses. These are transport/discovery failures, not lack of descriptive coverage.",
+    "timing": "Started20:56:23UTC; HTTP generally asynchronous and individual durations not logged. Do not turn task elapsed time into product latency.",
+    "cost": "Public HTTP only; no Google/Z.ai/product quotas. Additional form-debug requests and repeated output extraction exceeded nominal two-query-per-case envelope; all semantic address lookups remained bounded to one shared street catalog.31 direct public Prussia HTTP reads during agent work, plus root nearby123 and cached3875 read;2 attempted OSM HTTP requests with stdout not retained.",
+    "full_form_defaults": {
+      "text_n": "Название достопримечательности",
+      "text_np": "Населенный пункт",
+      "text_adr": "Адрес",
+      "text_link": "Официальный сайт",
+      "text_cph": "Код",
+      "text_nph": "Номер телефона",
+      "w_id_wout": "0",
+      "w_id_photo": "0",
+      "w_st_okn": "0"
+    }
+  },
+  "cohort126_133_resource_notes": [
+    "Three new bounded OSM snapshots129/131/133;126/130/132 geometry reused.",
+    "Site bodies decoded cp1251; public web open returned empty content despite available HTML.",
+    "Only results.json and findings.md are intended for publication; raw article HTML/text remain private research cache.",
+    "No production inference, canaries, deployment or Git publishing."
+  ],
+  "root_direct_http_requests_in_this_pass": 8,
+  "no_total_product_cost_or_latency_claim": true,
+  "receipts": [
+    {
+      "url": "https://www.prussia39.ru/sight/database.php",
+      "bytes": 38674,
+      "elapsed": 7.015741619001346,
+      "local_receipt_name": "transport/database.meta.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/map_coord.php",
+      "method": "POST",
+      "point": "54.917359,20.1750208",
+      "bytes": 18539,
+      "sha256": "91de07c7472454c50ecbb525ad8d54693c2cd7feec94c9531adff370af038557",
+      "elapsed": 10.046,
+      "local_receipt_name": "transport/nearby-123.meta.json",
+      "content_type": "text/html; charset=cp1251"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/map_coord.php",
+      "method": "POST",
+      "point": "54.6303356,21.816432",
+      "bytes": 18804,
+      "sha256": "903e71b4ce64c840068fec69f9c25308ae4daf8a509de6a1b0913ab0038eaed5",
+      "elapsed": 10.05,
+      "local_receipt_name": "transport/nearby-133.meta.json",
+      "content_type": "text/html; charset=cp1251"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/map_coord.php",
+      "bytes": 20868,
+      "elapsed": 7.274837264998496,
+      "local_receipt_name": "transport/nearby.meta.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/search.php?text=%CA%EE%EC%F1%EE%EC%EE%EB%FC%F1%EA%E0%FF&search_obj=2",
+      "bytes": 29082,
+      "elapsed": 7.594329325002036,
+      "local_receipt_name": "transport/search-kom.meta.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%D1%E2%E5%F2%EB%EE%E3%EE%F0%F1%EA&text_adr=%CA%F3%F0%EE%F0%F2%ED%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "method": "GET",
+      "form": null,
+      "fetched_at": "2026-10-08T21:07:19.725729+00:00",
+      "status": 200,
+      "content_type": "text/html; charset=cp1251",
+      "bytes": 40468,
+      "sha256": "5bc24e1256bf2b564d136b84b8b6f84351c775e11a06720fc4793ae19c177246",
+      "elapsed_seconds": 5.324,
+      "cache_hit": false,
+      "local_receipt_name": "transport/native-cache/8c08abcd42ee84c2c96051a3.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/index.php?sid=550",
+      "observed_utc": "2026-10-08T21:07:35Z",
+      "status": 200,
+      "final_url": "https://www.prussia39.ru/sight/index.php?sid=550",
+      "content_type": "text/html; charset=cp1251",
+      "bytes": 47242,
+      "sha256": "44d5e0764b399c2325daf695d9cd5f6ab4bc64a96fbbf603d75114f9741d1ee3",
+      "encoding": "cp1251",
+      "elapsed_seconds": 10.179,
+      "local_receipt_name": "cohort104-112/104.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/index.php?sid=2458",
+      "observed_utc": "2026-10-08T21:07:35Z",
+      "status": 200,
+      "final_url": "https://www.prussia39.ru/sight/index.php?sid=2458",
+      "content_type": "text/html; charset=cp1251",
+      "bytes": 42751,
+      "sha256": "12ef327e3727a39e313481106dac126f8c1716d03e58e1bb6caf7de29dc58766",
+      "encoding": "cp1251",
+      "elapsed_seconds": 10.119,
+      "local_receipt_name": "cohort104-112/106.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/index.php?sid=2519",
+      "status": 200,
+      "bytes": 42808,
+      "sha256": "c44d61319d1f8a31725373fecf08b813768353d8b4e25cfbd75af485bd75cfb0",
+      "encoding": "cp1251",
+      "local_receipt_name": "cohort104-112/107.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/index.php?sid=3149",
+      "observed_utc": "2026-10-08T21:07:03Z",
+      "status": 200,
+      "final_url": "https://www.prussia39.ru/sight/index.php?sid=3149",
+      "content_type": "text/html; charset=cp1251",
+      "bytes": 42501,
+      "sha256": "83732dd8be74fe46ca723eced1f240c08e9d9614e3e255cb2229db2d65954401",
+      "encoding": "cp1251",
+      "elapsed_seconds": 5.749,
+      "local_receipt_name": "cohort104-112/108-negative.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/index.php?sid=2902",
+      "method": "urllib_default_agent_unbounded_read_of_known_bounded_article",
+      "bytes": 42547,
+      "sha256": "3638598f4a18c5cd409718cb8779e65e4c4de5938c97fe589ebd1363a5547d98",
+      "encoding": "cp1251",
+      "local_receipt_name": "cohort104-112/110.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/index.php?sid=3014",
+      "method": "urllib_default_agent_unbounded_read_of_known_bounded_article",
+      "bytes": 43632,
+      "sha256": "f9880d3fd4017d8555580e140ad9319c5af71b1a1608628fcd0f7ba37c6dd27f",
+      "encoding": "cp1251",
+      "local_receipt_name": "cohort104-112/112.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/list.php?c=1&id=90&p=10",
+      "method": "urllib_default_agent_unbounded_read_of_known_bounded_article",
+      "bytes": 42887,
+      "sha256": "1dc4713a194e215e1adb6620ac16171d6cfde556b971066a47c41e831269c1b7",
+      "encoding": "cp1251",
+      "local_receipt_name": "cohort104-112/catalog-gen.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/",
+      "observed_utc": "2026-10-08T20:59:30Z",
+      "status": 200,
+      "final_url": "https://www.prussia39.ru/",
+      "content_type": null,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "encoding": "utf-8",
+      "elapsed_seconds": 6.688,
+      "local_receipt_name": "cohort104-112/homepage.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%C1%E0%F0%E0%ED%EE%E2%E0&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "status": 200,
+      "bytes": 50447,
+      "sha256": "2d1972d11b30f4ca4ba588fcc41c92bdd1a2b014fcf14c432e44cd00ea521877",
+      "local_receipt_name": "cohort104-112/lookup-104.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%D3%ED%E8%E2%E5%F0%F1%E8%F2%E5%F2%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "status": 200,
+      "bytes": 43032,
+      "sha256": "97c83ba757c7ff68b5ca2d6f99ccb317959fa2bf2f7ae886a21fea3d6461bf77",
+      "local_receipt_name": "cohort104-112/lookup-105.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%CA%EE%EC%F1%EE%EC%EE%EB%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "status": 200,
+      "bytes": 60542,
+      "sha256": "8213d5c15212b98b513742cc8b02278118ba52c36e11b89ed5e03acdfa551ee0",
+      "local_receipt_name": "cohort104-112/lookup-106.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%CA%EE%EC%F1%EE%EC%EE%EB%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0&p=2",
+      "observed_utc": "2026-10-08T21:08:17Z",
+      "status": 200,
+      "final_url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%CA%EE%EC%F1%EE%EC%EE%EB%FC%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0&p=2",
+      "content_type": "text/html; charset=cp1251",
+      "bytes": 57012,
+      "sha256": "9b065a7530c82e5d08f97bca3e5c4327041e1815336ebfcab08ef72794fe9cfb",
+      "encoding": "cp1251",
+      "elapsed_seconds": 11.495,
+      "local_receipt_name": "cohort104-112/lookup-107-page2.fetch.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%C3%E5%ED%E4%E5%EB%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "status": 200,
+      "bytes": 41377,
+      "sha256": "b06ba1f856e48e84d06f7be542e29a51e70c2c70fe92a677aea6bc13ef76a76c",
+      "local_receipt_name": "cohort104-112/lookup-108.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%CA%EB%E8%ED%E8%F7%E5%F1%EA%E0%FF&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "status": 200,
+      "bytes": 47253,
+      "sha256": "0d5acc925413f013c0375df42d45795d21ed82842056ad158b3eafc0f6868df2",
+      "local_receipt_name": "cohort104-112/lookup-109.json"
+    },
+    {
+      "url": "https://www.prussia39.ru/sight/database.php?text_n=%CD%E0%E7%E2%E0%ED%E8%E5+%E4%EE%F1%F2%EE%EF%F0%E8%EC%E5%F7%E0%F2%E5%EB%FC%ED%EE%F1%F2%E8&text_np=%CA%E0%EB%E8%ED%E8%ED%E3%F0%E0%E4&text_adr=%C4%EE%ED%F1%EA%EE%E3%EE&text_link=%CE%F4%E8%F6%E8%E0%EB%FC%ED%FB%E9+%F1%E0%E9%F2&text_cph=%CA%EE%E4&text_nph=%CD%EE%EC%E5%F0+%F2%E5%EB%E5%F4%EE%ED%E0&w_id_wout=0&w_id_photo=0&w_st_okn=0",
+      "status": 200,
+      "bytes": 50110,
+      "sha256": "40b15968de810d38adbcc1517e4054fe2fe4b3f3b5d6460a29475779ca0577db",
+      "local_receipt_name": "cohort104-112/lookup-111.json"
+    }
+  ]
+}

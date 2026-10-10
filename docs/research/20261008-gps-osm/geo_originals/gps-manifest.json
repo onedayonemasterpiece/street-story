@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "purpose": "research_expected_metadata_not_production_runtime_hints",
+  "original_image_bytes_included": false,
+  "items": [
+    {
+      "message_id": 104,
+      "sha256": "112941081c0b0da81fe091e864c16c144c9d308ecdd31ed438a690c42b71e0cd",
+      "latitude": 54.7219008,
+      "longitude": 20.514066799722222,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 9,
+        "FocalLengthIn35mmFilm": 72,
+        "DigitalZoomRatio": 3
+      }
+    },
+    {
+      "message_id": 105,
+      "sha256": "cc0dbb5ef8adf7266eae4a6ade70837672266bc33192e59e32450c235ab9b23b",
+      "latitude": 54.714790399722226,
+      "longitude": 20.5081984,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 9,
+        "FocalLengthIn35mmFilm": 72,
+        "DigitalZoomRatio": 3
+      }
+    },
+    {
+      "message_id": 106,
+      "sha256": "ec1717997abf9a78b5443c2315fe28311709ecbe9be0c594ccc0b7c8b2e9f04f",
+      "latitude": 54.7331882,
+      "longitude": 20.478384299722222,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 6.7,
+        "FocalLengthIn35mmFilm": 24,
+        "DigitalZoomRatio": 1
+      }
+    },
+    {
+      "message_id": 107,
+      "sha256": "6577dbb842ddfed4c9f86763a3713c780b82daaf21feefc17267742b5fc92361",
+      "latitude": 54.730124199722226,
+      "longitude": 20.47844819972222,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 9,
+        "FocalLengthIn35mmFilm": 72,
+        "DigitalZoomRatio": 3
+      }
+    },
+    {
+      "message_id": 108,
+      "sha256": "e7f8ae9521f6a4c5f949ff9fe47de62417c952de5550b4118970a9d9420ff092",
+      "latitude": 54.72164959972223,
+      "longitude": 20.496798999722223,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 1,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 6.7,
+        "FocalLengthIn35mmFilm": 24,
+        "DigitalZoomRatio": 1
+      }
+    },
+    {
+      "message_id": 109,
+      "sha256": "94bbdcac778e3f2e59d4b216c228e629cb5ed7f93efa669cd27b3f8b7457315a",
+      "latitude": 54.713394,
+      "longitude": 20.516686699999998,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 9,
+        "FocalLengthIn35mmFilm": 72,
+        "DigitalZoomRatio": 3
+      }
+    },
+    {
+      "message_id": 110,
+      "sha256": "ccf744200bb534b8790b98791029a92d3e06e431137702e853ef1f40248af9dd",
+      "latitude": 54.3875801,
+      "longitude": 20.6404262,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 6.7,
+        "FocalLengthIn35mmFilm": 24,
+        "DigitalZoomRatio": 1
+      }
+    },
+    {
+      "message_id": 111,
+      "sha256": "9b64f41c40b9df6ce65e779487d3fe32407032303b784ade02fce85a1a86dbde",
+      "latitude": 54.714176,
+      "longitude": 20.4862,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 30.6,
+        "FocalLengthIn35mmFilm": 240,
+        "DigitalZoomRatio": 10
+      }
+    },
+    {
+      "message_id": 112,
+      "sha256": "f50046ef6697c63ac111502dbad26426ebe8b63d7ac4f17433035635968f3d69",
+      "latitude": 54.727142399722226,
+      "longitude": 20.499019199722223,
+      "width": 4000,
+      "height": 3000,
+      "orientation": 6,
+      "gps_direction_available": false,
+      "gps_error_available": false,
+      "exif": {
+        "FocalLength": 9,
+        "FocalLengthIn35mmFilm": 72,
+        "DigitalZoomRatio": 3
+      }
+    }
+  ]
+}

@@ -1,0 +1,394 @@
+{
+  "schema_version": 1,
+  "purpose": "offline_research_reproduction_not_product_acceptance",
+  "assembled_at_utc": "2026-10-08T18:18:06.235901+00:00",
+  "photo_ids": [
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112
+  ],
+  "original_images_included": false,
+  "provider_inference_calls": 0,
+  "target_status": {
+    "104": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "relation/3665416"
+    },
+    "105": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "way/105154961"
+    },
+    "106": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "way/150596899"
+    },
+    "107": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "way/135507463"
+    },
+    "108": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "relation/1383564"
+    },
+    "109": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "relation/17986347"
+    },
+    "110": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "way/1085593396"
+    },
+    "111": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "way/95290265"
+    },
+    "112": {
+      "status": "manually_verified_research_expected_target",
+      "osm_ref": "way/91256978"
+    }
+  },
+  "source_helper_sha256": {
+    "geometry_research.py": "9b7be42b7d9cdd339644d1591cc0be7db26ff11b99ef43a93fc6feda49f5cb5a",
+    "plot_geometry.py": "e9c9b954fb65d3a78dafad1f215966e50c076819806a89a01d54f852f2083ab2",
+    "summarize_geometry.py": "9a6f38d521479e10ed1384584aef67919052faa3650dac2278b26e647ca066f5"
+  },
+  "osm_license": "© OpenStreetMap contributors; Open Database License 1.0",
+  "osm_snapshots": [
+    {
+      "photo_id": 104,
+      "gzip_path": "research/osm/photo-104.osm.gz",
+      "fetch_path": "research/osm/photo-104.fetch.json",
+      "raw_bytes": 1592793,
+      "raw_sha256": "7db8626c7847128af14e2574fd5ca1dfacf18ec3d8f4d76ec1732b60a1b3abde",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.5103297,54.7197424,20.5178039,54.7240592",
+      "fetched_at_utc": "2026-10-08T17:39:44Z",
+      "radius_m": 240
+    },
+    {
+      "photo_id": 105,
+      "gzip_path": "research/osm/photo-105.osm.gz",
+      "fetch_path": "research/osm/photo-105.fetch.json",
+      "raw_bytes": 2126862,
+      "raw_sha256": "bea88210621d4d64c286dd79441e3b44c7e644dbcdcac1052e801f48baeb34a1",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.5044619,54.7126320,20.5119349,54.7169488",
+      "fetched_at_utc": "2026-10-08T17:39:45Z",
+      "radius_m": 240
+    },
+    {
+      "photo_id": 106,
+      "gzip_path": "research/osm/photo-106.osm.gz",
+      "fetch_path": "research/osm/photo-106.fetch.json",
+      "raw_bytes": 599210,
+      "raw_sha256": "9171c054faf92859b75421693c459f1afb0c8e47cc956a5f9751198c429b3d0c",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4746461,54.7310298,20.4821225,54.7353466",
+      "fetched_at_utc": "2026-10-08T17:39:45Z",
+      "radius_m": 240
+    },
+    {
+      "photo_id": 107,
+      "gzip_path": "research/osm/photo-107.osm.gz",
+      "fetch_path": "research/osm/photo-107.fetch.json",
+      "raw_bytes": 829816,
+      "raw_sha256": "f2feef95263d8f9b0befe05079bbeccb3a4f3fcbce954d25787fd354b4798651",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4747103,54.7279658,20.4821861,54.7322826",
+      "fetched_at_utc": "2026-10-08T17:42:17Z",
+      "radius_m": 240.0
+    },
+    {
+      "photo_id": 108,
+      "gzip_path": "research/osm/photo-108.osm.gz",
+      "fetch_path": "research/osm/photo-108.fetch.json",
+      "raw_bytes": 1749863,
+      "raw_sha256": "e8318f0525b5681dbaf2610331a23a73da72783f7f9c540a81a2030de0c5411d",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4930619,54.7194912,20.5005361,54.7238080",
+      "fetched_at_utc": "2026-10-08T17:42:17Z",
+      "radius_m": 240.0
+    },
+    {
+      "photo_id": 109,
+      "gzip_path": "research/osm/photo-109.osm.gz",
+      "fetch_path": "research/osm/photo-109.fetch.json",
+      "raw_bytes": 516948,
+      "raw_sha256": "4b5c4e7203766a3185a6e25a75e340bbf07c10c3568bc04d3affec5b22baeccd",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.5129503,54.7112356,20.5204231,54.7155524",
+      "fetched_at_utc": "2026-10-08T17:42:17Z",
+      "radius_m": 240.0
+    },
+    {
+      "photo_id": 110,
+      "gzip_path": "research/osm/photo-110.osm.gz",
+      "fetch_path": "research/osm/photo-110.fetch.json",
+      "raw_bytes": 560851,
+      "raw_sha256": "9ac5a4e5c8934f7250343b5bcbb32a0547012c54a3a358d8b903a478bc3257c2",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.6367196,54.3854217,20.6441328,54.3897385",
+      "fetched_at_utc": "2026-10-08T17:42:17Z",
+      "radius_m": 240.0
+    },
+    {
+      "photo_id": 111,
+      "gzip_path": "research/osm/photo-111.osm.gz",
+      "fetch_path": "research/osm/photo-111.fetch.json",
+      "raw_bytes": 1140738,
+      "raw_sha256": "fd7745c4df4d3aa926bf9a147792f3654395cafd906c37204844c4ae8b8928dc",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4796613,54.7103989,20.4927387,54.7179531",
+      "fetched_at_utc": "2026-10-08T17:42:18Z",
+      "radius_m": 420.0
+    },
+    {
+      "photo_id": 112,
+      "gzip_path": "research/osm/photo-112.osm.gz",
+      "fetch_path": "research/osm/photo-112.fetch.json",
+      "raw_bytes": 1010981,
+      "raw_sha256": "44fc6b91a3556b8d3d53df86c7a5f6c740b22e8edb8fc1d5ebeb3a65900e827a",
+      "source_url": "https://api.openstreetmap.org/api/0.6/map?bbox=20.4952816,54.7249840,20.5027568,54.7293008",
+      "fetched_at_utc": "2026-10-08T17:43:42Z",
+      "radius_m": 240
+    }
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "role": "reproduction_source",
+      "bytes": 15333,
+      "sha256": "fc7793b81f7e031d33a55be475f6801195ef974654053d36eaaea721ae3a8a08"
+    },
+    {
+      "path": "expected/gps_sensitivity.csv",
+      "role": "expected_research_result",
+      "bytes": 1977,
+      "sha256": "f73435838068d304f1bab4fd22f7cdfef04004f32cab71ffb6ec0c1462083582"
+    },
+    {
+      "path": "expected/target_geometry_matrix.csv",
+      "role": "expected_research_result",
+      "bytes": 1803,
+      "sha256": "30cae1d8a73c97815157279564f2a667892f6663a8abeb49da0bc5fb8234d398"
+    },
+    {
+      "path": "expected/target_geometry_summary.json",
+      "role": "expected_research_result",
+      "bytes": 518703,
+      "sha256": "62195b6a5059ad38547a2c3405cf033f5d389b8ae84dd4fab54868d84058075e"
+    },
+    {
+      "path": "geo_originals/gps-manifest.json",
+      "role": "normalized_original_metadata",
+      "bytes": 4228,
+      "sha256": "b00e583f7ad0011e1675ccae33fb56a00080938647d51bbb9404902778692b2b"
+    },
+    {
+      "path": "reproduce.py",
+      "role": "reproduction_source",
+      "bytes": 11981,
+      "sha256": "920fce20232d0aa2244a0ea8a7e915bb87c0af286d29876bbaf5e0e48f759997"
+    },
+    {
+      "path": "research/geometry_research.py",
+      "role": "reproduction_source",
+      "bytes": 29860,
+      "sha256": "9b7be42b7d9cdd339644d1591cc0be7db26ff11b99ef43a93fc6feda49f5cb5a"
+    },
+    {
+      "path": "research/osm/photo-104.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 365,
+      "sha256": "f7ddf743357d9e4bb1e5d2e419d48627407468c0594ec5717ca6760562f48415"
+    },
+    {
+      "path": "research/osm/photo-104.map.png",
+      "role": "map_visualization",
+      "bytes": 529720,
+      "sha256": "3b8c660b23161a9f15b25086ce2caf9d5f01561689d3118b508098828e7c2563"
+    },
+    {
+      "path": "research/osm/photo-104.osm.gz",
+      "role": "osm_cache",
+      "bytes": 138610,
+      "sha256": "4c536bcdf4647b501990a5da527da20ecd6e1b6ab74cd40fd2a5b416e6d47eaf"
+    },
+    {
+      "path": "research/osm/photo-105.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 365,
+      "sha256": "4982b2fc8d6212c68f08d91ddddc5dca5b70dc829151abd637c8337cb0570c05"
+    },
+    {
+      "path": "research/osm/photo-105.map.png",
+      "role": "map_visualization",
+      "bytes": 690428,
+      "sha256": "506b4343b42ee811fa141c0169b097466a87820ab2c8eb060b4fcb0a2cd5104f"
+    },
+    {
+      "path": "research/osm/photo-105.osm.gz",
+      "role": "osm_cache",
+      "bytes": 169725,
+      "sha256": "a3ff3ba31287821fba0c06ee15c6609a0f702394d51e71f2588f68501e2d9047"
+    },
+    {
+      "path": "research/osm/photo-106.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 364,
+      "sha256": "8271cb9f46a8ec4dae08e777b7ddff915b8a790d53b36d1cf4c9773f7c6dd831"
+    },
+    {
+      "path": "research/osm/photo-106.map.png",
+      "role": "map_visualization",
+      "bytes": 471550,
+      "sha256": "93b37f773897e62119eb4ad753d6e45106895fb898c1f4a6fafcd77a15071585"
+    },
+    {
+      "path": "research/osm/photo-106.osm.gz",
+      "role": "osm_cache",
+      "bytes": 56574,
+      "sha256": "3de1191d92841b960c03570245c2a73a3f082f0728aba231c65bef660a29ea91"
+    },
+    {
+      "path": "research/osm/photo-107.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 366,
+      "sha256": "cc1198f6c2cf051a73f20b648abe81bd9627479c6fbc425c86d356ad4b4ddf83"
+    },
+    {
+      "path": "research/osm/photo-107.map.png",
+      "role": "map_visualization",
+      "bytes": 546990,
+      "sha256": "6acd91069828f0dd727d4d522c6048629bdda4f7649ab886f2f880e970da5f08"
+    },
+    {
+      "path": "research/osm/photo-107.osm.gz",
+      "role": "osm_cache",
+      "bytes": 81105,
+      "sha256": "82cb80e57c94b16f5ac5e6eb57d1ef653c2101202e5413b54d58e16caff65356"
+    },
+    {
+      "path": "research/osm/photo-108.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 367,
+      "sha256": "e702178660caf322760e7a672c4375ecd0277f68d2b5bd072057ad16ea4f54e4"
+    },
+    {
+      "path": "research/osm/photo-108.map.png",
+      "role": "map_visualization",
+      "bytes": 542753,
+      "sha256": "e86920f6e0cf5bb1020c306c9a33364fc5a7be9731d9ff19497177f28d634f29"
+    },
+    {
+      "path": "research/osm/photo-108.osm.gz",
+      "role": "osm_cache",
+      "bytes": 159437,
+      "sha256": "38ddc470229fe7169295c58e3bc91be7827a7fc48c68a59f7368e1b510ee29b8"
+    },
+    {
+      "path": "research/osm/photo-109.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 366,
+      "sha256": "37f3affd44ef4d1837ff8b58c68ca01aae0e061acaf978da6431bf03a8dc8f4b"
+    },
+    {
+      "path": "research/osm/photo-109.map.png",
+      "role": "map_visualization",
+      "bytes": 492765,
+      "sha256": "a8f0b05180f84cf1c1bcabd2513ff1e1413df986ad7fe1e4afbcd552dff650e0"
+    },
+    {
+      "path": "research/osm/photo-109.osm.gz",
+      "role": "osm_cache",
+      "bytes": 56799,
+      "sha256": "939bac618f7389dc9d69efd8d24fab19f599f0e75bbc34e883da673e9df69e6a"
+    },
+    {
+      "path": "research/osm/photo-110.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 366,
+      "sha256": "1e02751b92ac3a4a90249f9ac442df3c05042e18cc4a36d8575fa4c591410863"
+    },
+    {
+      "path": "research/osm/photo-110.map.png",
+      "role": "map_visualization",
+      "bytes": 460021,
+      "sha256": "145fee020f9ee4af8409881880f44c9a20fd1838ec9abe1f19ece8aa6c19e34b"
+    },
+    {
+      "path": "research/osm/photo-110.osm.gz",
+      "role": "osm_cache",
+      "bytes": 46340,
+      "sha256": "e42c6bdd602a2064524c3f3f857430bd32e776bbdffe94f956fa11de9e0d7ea6"
+    },
+    {
+      "path": "research/osm/photo-111.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 367,
+      "sha256": "64d74cd543af859957e8631c993ee322a2442c751207c3d3b5b81e892f53645c"
+    },
+    {
+      "path": "research/osm/photo-111.map.png",
+      "role": "map_visualization",
+      "bytes": 755241,
+      "sha256": "97ff8d6bec1ef066c259bae5a17fa7924a9ac2d92ec807cc8cbed57a82c4a651"
+    },
+    {
+      "path": "research/osm/photo-111.osm.gz",
+      "role": "osm_cache",
+      "bytes": 114922,
+      "sha256": "58be7ded224125d4cebc68531ea69744bac7054d20c7d3903e11ed27f0947a0d"
+    },
+    {
+      "path": "research/osm/photo-112.fetch.json",
+      "role": "osm_fetch_provenance",
+      "bytes": 365,
+      "sha256": "ebc0c5d47d80f88100ba21440920aa895135abae22513438c3e1cc1d135f00f7"
+    },
+    {
+      "path": "research/osm/photo-112.map.png",
+      "role": "map_visualization",
+      "bytes": 662200,
+      "sha256": "e9680c78da3f72ecb423274dcfffb340f9db46334fec836a603b45e30b15e733"
+    },
+    {
+      "path": "research/osm/photo-112.osm.gz",
+      "role": "osm_cache",
+      "bytes": 88211,
+      "sha256": "506d693d91922675a881fae3afe3fe1a93e88112ff339a6f5c49602ae57fd552"
+    },
+    {
+      "path": "research/plot_geometry.py",
+      "role": "reproduction_source",
+      "bytes": 19889,
+      "sha256": "e9c9b954fb65d3a78dafad1f215966e50c076819806a89a01d54f852f2083ab2"
+    },
+    {
+      "path": "research/summarize_geometry.py",
+      "role": "reproduction_source",
+      "bytes": 11100,
+      "sha256": "9a6f38d521479e10ed1384584aef67919052faa3650dac2278b26e647ca066f5"
+    },
+    {
+      "path": "verification/offline-maps-run.json",
+      "role": "offline_verification_receipt",
+      "bytes": 1059,
+      "sha256": "b03c69432907dab2c089da47533199a81f474847a578347c4bdd8e1904c09841"
+    },
+    {
+      "path": "verification/offline-run.json",
+      "role": "offline_verification_receipt",
+      "bytes": 4188,
+      "sha256": "e1671ab5c0ffada9fb36c464f2dcdd59705ea1869c58981bdb70d4560d062208"
+    }
+  ],
+  "precision_normalization": {
+    "reason": "Initial CLI origins for104-106 were rounded. This bundle uses full-precision normalized EXIF; both CSV files remain byte-identical to the final research tables.",
+    "upstream_summary_sha256": "2dffbfeb03845e97d77b82d2d650a8b18bc05b99bdedb443a4d04796e54e5a7f",
+    "normalized_summary_sha256": "62195b6a5059ad38547a2c3405cf033f5d389b8ae84dd4fab54868d84058075e",
+    "matrix_csv_byte_identical": true,
+    "sensitivity_csv_byte_identical": true,
+    "detailed_float_fields_changed": 108,
+    "maximum_absolute_numeric_delta": 2.4713970319112377e-06
+  },
+  "finalized_at_utc": "2026-10-08T18:35:44.985440+00:00"
+}
