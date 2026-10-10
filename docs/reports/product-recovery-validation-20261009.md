@@ -3,6 +3,33 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 30095cd actual102: admitted closed SOURCE answer, skipped existing T repair
+
+Actual job_dccb05fcb34fccdb207da966 completed with original FAIL74.258s.
+The131737-byte Native owned envelope was actually admitted and CLOSED; measured
+usage47778 input/2168 output/49946 total tokens. SOURCE/MAP/text nominated the
+correct physical body, but the reply chose two physical-link records for one
+positive article binding, including wrong-body OSM refs. The unchanged host
+proof validator correctly rejected it. No identity/facts were accepted.
+
+The orchestrator did not treat identity_architectural_text_proof_invalid as a
+reason for its existing single bounded followup. Unlike a syntax/G failure, that
+schema-valid T rejection therefore ended the entire request despite acquired
+TEXT and an unused joint2. That code now enters the same existing repair using
+SOURCE/MAP, acquired articles and compact nominated-body context. The initial
+closed result stays unchanged and its claimed acceptance is not evidence.
+The conditional prior now also retains the rejected T candidate/bindings/material
+alternatives; a T-only nominated neighbor is not silently lost. The link schema
+describes its existing validator rule: exactly one physical link per positive
+article, with an OSM ref belonging to the chosen body. No proof rule is weakened.
+
+124 identity/text/native-pointer/repair fixtures passed75.12s; Ruff passed.
+The new regression reproduces duplicate links in a schema-valid initial answer,
+then checks one compact repair with the same actual SOURCE/MAP images, correct
+proof admission and preservation of the T-only physical alternative. Already
+sufficient independent G/T still need no repair. New real T segment is pending;
+the historical cold FAIL cannot be relabeled by downstream recovery.
+
 ## edc3649 actual111 and compact evidence tables
 
 Frozen edc3649 actual111 job_f98d2d20a9a13f70049b90e0 failed180.025s,

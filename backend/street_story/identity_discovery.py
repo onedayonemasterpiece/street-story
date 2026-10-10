@@ -148,11 +148,18 @@ def _conditional_text_prior(payload, nomination_ids):
     wave = payload.get('first_wave_hypotheses') if isinstance(payload.get('first_wave_hypotheses'), list) else []
     action = geometry.get('next_action') if isinstance(geometry.get('next_action'), dict) else {}
     targets = action.get('target_candidate_ids') if isinstance(action.get('target_candidate_ids'), list) else []
+    text = payload.get('accepted_architectural_text')
+    text = text if isinstance(text, dict) else {}
+    text_alternatives = text.get('material_alternatives') or []
+    text_bindings = text.get('article_bindings') or []
     declared = [*((payload.get('research_priority') or {}).get('candidate_ids') or []),
         *nominated, geometry.get('candidate_id'),
         *(item.get('subject_id') for item in wave if isinstance(item, dict)), *targets,
         *(item.get('candidate_id') for item in rejected if isinstance(item, dict)),
-        *(item.get('candidate_id') for item in spatial if isinstance(item, dict))]
+        *(item.get('candidate_id') for item in spatial if isinstance(item, dict)),
+        text.get('candidate_id'),
+        *(item.get('candidate_id') for item in text_alternatives if isinstance(item, dict)),
+        *(item.get('candidate_id') for item in text_bindings if isinstance(item, dict))]
     allowed = set(nomination_ids)
     # Preserve the raw closed G answer in its existing diagnostic receipt.
     # T receives observations and hypotheses, never a rejected acceptance or
@@ -1155,7 +1162,8 @@ async def _suggest(service, story, transcript, candidates):
         if initial_text is not None:
             issues = {}  # Sufficient independent T does not require a G repair.
         if scene and initial_validation_error in {
-                'identity_geometry_proof_invalid', 'identity_first_wave_coverage_incomplete'}:
+                'identity_geometry_proof_invalid', 'identity_first_wave_coverage_incomplete',
+                'identity_architectural_text_proof_invalid'}:
             # Schema-valid JSON can still omit required physical evidence or
             # search coverage. Give that concrete failure to the existing one
             # bounded repair, rather than starting a separate oversized planner.

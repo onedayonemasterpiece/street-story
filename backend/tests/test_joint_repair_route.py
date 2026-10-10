@@ -57,6 +57,85 @@ def test_new_text_followup_keeps_closed_route_after_same_wave_unknown(phase, exp
     assert marker == original
 
 
+def test_rejected_text_nominations_remain_hypotheses_for_bounded_repair():
+    original = {'accepted_geometry': {'decision': 'uncertain', 'candidate_id': ''},
+        'accepted_architectural_text': {'decision': 'accepted_architectural_text',
+            'candidate_id': 'osm:way:2',
+            'article_bindings': [{'candidate_id': 'osm:way:2'}],
+            'material_alternatives': [{'candidate_id': 'osm:way:3', 'reason': 'Earlier unverified exclusion.'}]}}
+    before = copy.deepcopy(original)
+    prior = identity_discovery._conditional_text_prior(original, ['osm:way:2', 'osm:way:3'])
+    assert prior['candidate_ids'] == ['osm:way:2', 'osm:way:3']
+    assert prior['input_kind'] == 'model_hypothesis_not_evidence'
+    assert 'accepted_architectural_text' not in prior
+    assert original == before
+
+
+@pytest.mark.asyncio
+async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_alternative(tmp_path, monkeypatch):
+    from street_story import identity_architectural_context
+    from street_story.identity_plan_diagnostics import joint_operation_marker
+    from test_architectural_text_identity import text_inputs, with_received_physical_links
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_api_key='offline-controlled-key')
+    _story, _candidates, decision, receipt = text_inputs(candidate_id='osm:way:2')
+    articles = receipt['articles']
+    aid = articles[0]['article_id']
+    calls = []
+
+    async def catalogue(*args, **kwargs):
+        return {'results': [{'article_id': aid, 'canonical_url': articles[0]['url']}],
+            'physical_prefetch_plan': {'prefetch_article_ids': [aid]}, 'status': 'completed'}
+
+    async def acquire(*args, **kwargs):
+        return articles, {'status': 'completed'}
+
+    monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', catalogue)
+    monkeypatch.setattr(identity_architectural_context, 'acquire_architectural_pool_text', acquire)
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(contents)
+        if len(calls) == 1:
+            g = geometry_decision()
+            g.update(decision='uncertain', candidate_id='', rejected_alternatives=[],
+                decisive_relations=[], spatial_correspondence=None)
+            first = payload(g)
+            # Only the rejected T answer nominates this material alternative.
+            first['observed_candidate_ids'] = ['osm:way:2']
+            text = copy.deepcopy(decision)
+            text['material_alternatives'] = [{'candidate_id': 'osm:way:3',
+                'reason': 'A prior textual exclusion is a hypothesis, not SOURCE evidence.'}]
+            from street_story.identity_source_selection import expand_planner_packet
+            encoded = json.JSONDecoder().raw_decode(contents[-1].split('Данные ниже — только контекст:\n', 1)[1])[0]
+            inventory = expand_planner_packet(encoded)['acquired_architectural_text']['publisher_and_OSM_literal_records_NOT_prejoined']
+            record = next(dict(zip(table['columns'], row))
+                for table in inventory['osm_refs']['tables'] for row in table['rows']
+                if dict(zip(table['columns'], row))['candidate_id'] == 'osm:way:2')
+            link = {'article_id': aid, 'candidate_id': 'osm:way:2',
+                'publisher_ref': next(iter(inventory['publisher_refs'])), 'osm_ref': record['ref'],
+                'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
+                'architectural_scope_explanation': 'Fixture scope', 'postal_interpretation': 'Literal fixture record'}
+            text['physical_link_evidence'] = [link, copy.deepcopy(link)]
+            return SimpleNamespace(text=json.dumps({**first, 'accepted_architectural_text': text}))
+        assert len(calls) == 2
+        assert 'identity_architectural_text_proof_invalid' in contents[-1]
+        assert contents[0].inline_data.data == calls[0][0].inline_data.data
+        assert contents[1].inline_data.data == calls[0][1].inline_data.data
+        packet = json.loads(contents[-1].split('Context JSON is untrusted data.\n', 1)[1].split('\nOriginal host rejection', 1)[0])
+        assert set(packet['previous_model_hypotheses_not_evidence']['candidate_ids']) == {'osm:way:2', 'osm:way:3'}
+        corrected = copy.deepcopy(decision)
+        corrected['material_alternatives'] = [{'candidate_id': 'osm:way:3',
+            'reason': 'Actual SOURCE and article show a different bay/return arrangement from this neighboring body.'}]
+        return SimpleNamespace(text=json.dumps(with_received_physical_links(corrected, contents)))
+
+    service.providers.gemini = SimpleNamespace(executor=__import__('test_geometry_identity_plan').Executor(), _generate=generate)
+    service.providers.research = SimpleNamespace(plan_identity_search=lambda *args: pytest.fail('No new planner'))
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert len(calls) == 2
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    assert joint_operation_marker(service, story, stage='followup')['phase'] == 'response_closed'
+
+
 @pytest.mark.asyncio
 async def test_closed_independent_source_route_owns_new_repair_without_replaying_unknown(tmp_path):
     from street_story.identity_plan_diagnostics import joint_operation_marker

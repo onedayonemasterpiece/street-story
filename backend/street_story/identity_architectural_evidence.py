@@ -172,7 +172,11 @@ def model_literal_evidence_inventory(inventory):
 
 def physical_link_schema(article_ids, candidate_ids, publisher_refs, osm_refs):
     """Compact model response, admitted only through observed pointer tables."""
-    return {'type':'array','maxItems':2,'items':{
+    return {'type':'array','maxItems':2,
+        'description': 'Exactly one link per positively bound article_id, with no duplicate article_id. '
+            'Choose an osm_ref whose record belongs to the chosen physical candidate_id; '
+            'publisher refs and citation span refs have separate inventories.',
+        'items':{
         'type':'object', 'properties':{
             'article_id':{'type':'string','enum':list(article_ids)},
             'candidate_id':{'type':'string','enum':list(candidate_ids)},
