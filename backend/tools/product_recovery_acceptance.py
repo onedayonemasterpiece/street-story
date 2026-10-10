@@ -809,6 +809,64 @@ async def retained_review(args):
     return report
 
 
+async def retained_completion(args):
+    """Replay saved eligible model bases in RAM, leaving the retained DB intact.
+
+    This checks completion/resume orchestration, not a new cold or client result.
+    Only the closed job/run execution state is reopened in the disposable copy.
+    No provider is installed and the original identity/evidence remain unchanged.
+    """
+    from types import SimpleNamespace
+    from street_story.db import Store, ScopedConnection
+    from street_story.service import StreetStoryService
+    from street_story.headless_facts import HeadlessFacts
+    path, output = managed(args.retained_completion_db), managed(args.output)
+    if output.exists() or not args.story_id:
+        raise ValueError('Use explicit own story IDs and a fresh segment report')
+    uri = 'file:retained-completion-' + uuid.uuid4().hex + '?mode=memory&cache=shared'
+    keeper = sqlite3.connect(uri, uri=True)
+    with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as original:
+        original.backup(keeper)
+    class MemoryStore(Store):
+        def connection(self):
+            db = sqlite3.connect(uri, uri=True, isolation_level=None, factory=ScopedConnection)
+            db.row_factory = sqlite3.Row
+            return db
+    service = StreetStoryService.__new__(StreetStoryService)
+    service.store, service.providers = MemoryStore.__new__(MemoryStore), SimpleNamespace(research=None)
+    harness = HeadlessFacts(service)
+    report = {'mode': 'retained_completion_in_memory_replay', 'cold_acceptance': False,
+        'source_database': str(path), 'provider_dispatches': 0,
+        'synthetic_execution_preconditions': ['same closed job marked running', 'same run marked partial',
+            'old terminal checkpoint removed in RAM'], 'cases': []}
+    try:
+        for sid in args.story_id.split(','):
+            with service.store.tx() as db:
+                job = dict(db.execute("SELECT * FROM jobs WHERE story_id=? AND kind='research' "
+                    'ORDER BY created_at DESC LIMIT 1', (sid,)).fetchone())
+                run = dict(db.execute('SELECT * FROM research_runs WHERE story_id=? ORDER BY created_at DESC LIMIT 1',
+                    (sid,)).fetchone())
+                vision_before = [tuple(r) for r in db.execute('SELECT attempt_id,receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
+                db.execute("UPDATE jobs SET state='running' WHERE id=?", (job['id'],))
+                db.execute("UPDATE research_runs SET state='partial' WHERE run_id=?", (run['run_id'],))
+                db.execute('DELETE FROM research_checkpoints WHERE job_id=? AND stage=?',
+                    (job['id'], 'headless_fact_outcome:' + run['run_id']))
+                job['state'] = 'running'
+            started = time.monotonic()
+            outcome = await harness.run(job, run['run_id'], run['goal'], run['extraction_scope'])
+            with service.store.connection() as db:
+                vision_after = [tuple(r) for r in db.execute('SELECT attempt_id,receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]
+            report['cases'].append({'story_id': sid, 'outcome': outcome, 'elapsed_s': time.monotonic()-started,
+                'provider_receipts_unchanged': vision_before == vision_after})
+        report['status'] = 'PASS' if all(c['provider_receipts_unchanged'] and
+            (c['outcome'] or {}).get('reason') == 'model_goal_sufficient' for c in report['cases']) else 'FAIL'
+        save(output, report)
+        print(json.dumps(report, ensure_ascii=False), flush=True)
+    finally:
+        keeper.close()
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest', type=Path)
@@ -816,6 +874,7 @@ def main():
     parser.add_argument('--expected-sha')
     parser.add_argument('--inspect-initial-db', type=Path, help='Offline assembled-input check; no model/network operations')
     parser.add_argument('--retained-review-run', type=Path, help='Explicit backend review segment over an existing retained DB; no identity replay')
+    parser.add_argument('--retained-completion-db', type=Path, help='Offline in-memory completion replay; no provider or product acceptance')
     parser.add_argument('--story-id')
     parser.add_argument('--fact-ids', default='')
     parser.add_argument('--availability-from', type=Path, action='append', default=[],
@@ -824,6 +883,9 @@ def main():
     args = parser.parse_args()
     if args.inspect_initial_db:
         inspect_retained_initial(args.inspect_initial_db, args.output)
+        return
+    if args.retained_completion_db:
+        asyncio.run(retained_completion(args))
         return
     if args.retained_review_run:
         if not args.expected_sha:

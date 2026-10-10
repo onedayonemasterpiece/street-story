@@ -10,7 +10,7 @@ from street_story import identity_discovery
 from street_story.identity_plan_diagnostics import (
     RAW_JSON_BYTES, RAW_PREFIX_BYTES, VALIDATION_ERRORS, joint_followup_marker, retain_closed_invalid, validation_details,
 )
-from street_story.providers import PermanentProviderError
+from street_story.providers import PermanentProviderError, RetryableProviderError
 from street_story.service import ConflictError, canonical
 from test_observed_address_search_context import observed
 from test_structured_identity_first_wave import choice, payload
@@ -19,6 +19,41 @@ from test_visual_search_continuation import prepared
 
 SCHEMA = {'type': 'object', 'properties': {'facts': {'type': 'array', 'items': {'type': 'string'}}},
     'required': ['facts'], 'additionalProperties': False}
+
+
+@pytest.mark.parametrize('defect', [None, 'unknown', 'response_closed', 'semantic400', 'changed_prompt', 'changed_binding', 'same_model'])
+def test_closed_followup_route_reassignment_preserves_inputs_and_fences_unknown(tmp_path, defect):
+    service, _, story, _ = prepared(tmp_path)
+    snapshot = service._identity_snapshot(story['id'])[0]
+    binding = {'source_sha256': snapshot['photo_sha256']}
+    request = {'contract': 'identity-prepared-joint-followup-v1', 'binding': binding,
+        'model': 'original', 'prompt': 'Compare the same SOURCE and saved article.'}
+    request['sha256'] = hashlib.sha256(canonical(request).encode()).hexdigest()
+    joint_followup_marker(service, snapshot, binding=binding, phase='send_intent',
+        model_id='original', prepared_request=request)
+    phase = defect if defect in {'unknown', 'response_closed'} else 'closed_failure'
+    joint_followup_marker(service, snapshot, binding=binding, phase=phase,
+        status_code=400 if defect == 'semantic400' else 503)
+    before = joint_followup_marker(service, snapshot)
+    alternate = {**request, 'model': 'original' if defect == 'same_model' else 'reserve'}
+    alternate.pop('sha256')
+    if defect == 'changed_prompt':
+        alternate['prompt'] += ' New question.'
+    if defect == 'changed_binding':
+        binding = alternate['binding'] = {'source_sha256': 'changed'}
+    alternate['sha256'] = hashlib.sha256(canonical(alternate).encode()).hexdigest()
+    def assign():
+        return joint_followup_marker(service, snapshot, binding=binding, phase='send_intent',
+            model_id=alternate['model'], prepared_request=alternate, retry_closed_route=True)
+    if defect:
+        with pytest.raises(RetryableProviderError):
+            assign()
+        assert joint_followup_marker(service, snapshot) == before
+    else:
+        receipt = assign()
+        assert receipt['route_operations']['original']['prepared_request'] == request
+        assert receipt['route_operations']['original']['status_code'] == 503
+        assert receipt['prepared_request'] == alternate
 
 
 def saved(service, story):

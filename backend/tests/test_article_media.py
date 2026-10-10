@@ -84,6 +84,42 @@ async def test_missing_article_closes_acquisition_without_browser_or_false_misma
         'status': 'completed', 'image_count': 0, 'http_status': status}]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [403, 429])
+async def test_refused_page_cools_down_across_waves_while_independent_source_proceeds(tmp_path, status):
+    from street_story.article_media import article_candidates
+    from street_story.identity_discovery import _retain_article_discovery
+    svc, _ = make_service(tmp_path)
+    story = svc.create_story(key='cooldown', client_story_id='cooldown', photo_sha256='cooldown',
+        photo_mime_type='image/jpeg', photo_bytes=jpeg(), voice_protocol='voice-chunks-v2', lat=None, lon=None)
+    sources = [{'url': 'https://example.com/refused'}, {'url': 'https://example.com/ready'}]
+    requests, browser_calls = [], []
+    async def resolver(host):
+        return '93.184.216.34'
+    async def browser(url):
+        browser_calls.append(url)
+        raise AssertionError('Refusal must not be repeated through Chromium')
+    def response(request):
+        requests.append(request.url.path)
+        if request.url.path == '/refused':
+            return httpx.Response(status, headers={'Retry-After': '120'})
+        return httpx.Response(200, headers={'Content-Type': 'text/html'},
+            text='<article><img src="/facade.jpg" alt="Facade"></article>')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        receipts = []
+        found = await article_candidates(svc, story, sources, set(), http=client,
+            resolver=resolver, browser=browser, receipts=receipts)
+        _retain_article_discovery(svc, story, sources, receipts=receipts, articles=found)
+        assert len(found) == 1 and found[0]['url'].endswith('/ready')
+        refused = next(r for r in receipts if r['url'].endswith('/refused'))
+        assert refused['http_status'] == status and refused['retry_at'] >= svc.store.now() + 119
+        second = []
+        await article_candidates(svc, story, [sources[0]], set(), http=client,
+            resolver=resolver, browser=browser, receipts=second)
+        assert second[0]['reason'] == 'article_cooldown'
+    assert requests.count('/refused') == 1 and browser_calls == []
+
+
 def test_article_gallery_keeps_later_views_but_excludes_other_objects_and_ads():
     title, images = extract_media('''<h1>Ворота</h1><main><article>
       <a href="/front.jpg"><img src="/small-front.jpg"></a>

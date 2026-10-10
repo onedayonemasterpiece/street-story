@@ -1,6 +1,7 @@
 """Research narrowing keeps reserve, provenance and independent HTTP progress."""
 import asyncio
 import copy
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -153,7 +154,10 @@ async def test_first_text_proceeds_while_other_dispatched_reader_finishes(monkey
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('next_body', ['osm:way:3', 'osm:way:4'])
-async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_without_identity(tmp_path, monkeypatch, next_body):
+@pytest.mark.parametrize('lookup_failure', [None, 'one_lookup_requires_one_literal_address',
+    'address_entry_not_bound_to_nominated_footprint'])
+async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_without_identity(
+        tmp_path, monkeypatch, next_body, lookup_failure):
     import json
     from street_story import identity_discovery
     from test_geometry_identity_plan import geometry_setup, geometry_decision, payload, Executor
@@ -166,15 +170,30 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         'reason': 'Two physical facades need architectural comparison.',
         'target_candidate_ids': ['osm:way:2', 'osm:way:3']})
     initial = {**payload(g), 'research_priority': guidance(['osm:way:2', 'osm:way:3'])}
+    if lookup_failure:
+        initial['research_priority']['next_step'] = 'text'
+        initial['regional_lookup'] = {'route': 'address', 'candidate_ids': ['osm:way:2', 'osm:way:3'],
+            'address_entry_id': '', 'reason': 'Compare the two active buildings independently.'}
+        # An unrelated malformed component must not discard validated priority.
+        initial['first_wave_hypotheses'] = [{'subject_id': 'foreign:unreceived'}]
     _s, _c, answer, receipt = text_inputs(candidate_id='osm:way:2')
     answer.update(decision='uncertain', physical_link_evidence=[],
         research_priority=guidance([next_body]))
     calls, reads = [], []
+    articles = [*receipt['articles']]
+    if lookup_failure:
+        articles.extend({**articles[0], 'article_id': f'publisher:{i}',
+            'url': f'https://example.org/architecture/{i}', 'text': f'Additional received architecture text {i}.',
+            'text_sha256': hashlib.sha256(f'Additional received architecture text {i}.'.encode()).hexdigest()}
+            for i in (2, 3))
 
     async def acquire(svc, snapshot, candidates, request):
+        if len(request['candidate_ids']) > 1:
+            assert lookup_failure
+            return [], {'status': 'not_sent', 'reason': lookup_failure}
         cid = request['candidate_ids'][0]
         reads.append(cid)
-        return (receipt['articles'] if cid == 'osm:way:2' else []), {'status': 'completed'}
+        return (articles if cid == 'osm:way:2' else []), {'status': 'completed'}
 
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
@@ -189,6 +208,7 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         assert issued['properties']['candidate_id']['enum'] == ['osm:way:2', 'osm:way:3', '']
         assert set(reads) == {'osm:way:2', 'osm:way:3'}
         assert receipt['articles'][0]['text'] in contents[-1]
+        assert all(a['text'] in contents[-1] for a in articles)
         packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
         assert any(row[0] == 'osm:way:4' for row in packet['physical_reserve']['rows'])
         for relation in answer['correspondences']:
@@ -207,6 +227,7 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
     assert 'osm:way:2' in priority['reserve_candidate_ids']
     assert len(calls) == 2 and not story.get('_identity_geometry_result')
     assert history['acquired_text_articles'][0]['text'] == receipt['articles'][0]['text']
+    assert len(history['acquired_text_articles']) == len(articles)
 
 
 @pytest.mark.asyncio

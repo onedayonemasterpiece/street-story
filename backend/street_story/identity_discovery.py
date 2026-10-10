@@ -583,8 +583,13 @@ async def _suggest(service, story, transcript, candidates):
         'может запросить один address/coordinate lookup по exact observed candidate_ids (до двух). '
         'Если regional_catalogue содержит полученные карточки, regional_article_selections выбирает '
         'до двух actual article_id с exact physical candidate_id, scope, binding_basis и '
-        'physical_binding_resolved. Это выбор текста, не identity. Полученные адресные aliases '
-        'одного SID сохраняют scope комплекса; не приписывай весь комплекс одному корпусу. '
+        'physical_binding_resolved. Это выбор текста, не identity. '
+        'Предпочитай уже полученные карточки новому address lookup. Для активного корпуса '
+        'можно читать выбранную карточку при physical_binding_resolved=false: T проверит связь, '
+        'а retrieval не подтверждает её. Разные корпуса с разными адресами требуют отдельных '
+        'запросов; один address_entry_id не распространяется на соседний корпус. '
+        'Полученные адресные aliases одного SID сохраняют scope комплекса; '
+        'не приписывай весь комплекс одному корпусу. '
         'Подготовленный street/camera address — retrieval anchor, не адрес SOURCE. '
         'Partial inventory не означает отсутствие остальных карточек/зданий. Не выбирай первые '
         'две автоматически; при недостатке метаданных сохрани ограничение, без третьего judge. '
@@ -1295,7 +1300,12 @@ async def _suggest(service, story, transcript, candidates):
         if isinstance(payload, dict) and initial_geometry is None and initial_text is None and not early_text_evaluated:
             from jsonschema import Draft202012Validator
             from .identity_architectural_context import (acquire_regional_text, acquire_selected_wikipedia_text,
-                acquire_selected_regional_text)
+                acquire_selected_regional_text, acquire_active_regional_text, merge_acquired_text_versions)
+            from .identity_candidate_policy import physical_research_priority
+            priority = physical_research_priority(story, payload, [*observed, *candidates],
+                joint_source_map_receipt())
+            nomination_ids = (priority or {}).get('active_candidate_ids') or ([nomination_id] if nomination_id else [])
+            ready_articles = text_articles
             def valid_field(key):
                 return key in schema['properties'] and Draft202012Validator(schema['properties'][key]).is_valid(payload.get(key))
             regional = payload.get('regional_lookup') if valid_field('regional_lookup') else None
@@ -1305,7 +1315,7 @@ async def _suggest(service, story, transcript, candidates):
             if selected_regional:
                 text_articles, lookup = await acquire_selected_regional_text(service, story, candidates,
                     selected_regional, regional_catalogue,
-                    unconfirmed_candidate_ids=([nomination_id] if geometry_rejection and nomination_id else []))
+                    unconfirmed_candidate_ids=nomination_ids)
             elif isinstance(regional, dict) and regional.get('route') not in {None, 'none'}:
                 text_articles, lookup = await acquire_regional_text(service, story, candidates, regional)
             else:
@@ -1320,21 +1330,14 @@ async def _suggest(service, story, transcript, candidates):
                     service, story, candidates, wiki_payload, wiki_pages)
                 lookup = {'kind':'independent_selected_text_routes', 'regional':regional_receipt,
                     'wikipedia':wiki_lookup, 'status':wiki_lookup.get('status') if wiki_lookup else 'unavailable'}
-            if (len(text_articles) < 2 and geometry_rejection
-                    and not (set(issues) - {'host_evidence_contract'})
-                    and not selected_regional
-                    and (not regional or regional.get('route') in {None, 'none'})):
-                # The model skipped source reading because it believed its G
-                # proof was sufficient. That premise is now false. Reuse the
-                # existing literal-address reader for the *model's* physical
-                # nomination, before spending joint2 on independent T evidence.
-                # All own/verified entrance addresses remain in scope; the
-                # reader refuses ambiguous queries and neighboring cards.
-                from .identity_candidate_policy import physical_research_priority
-                from .identity_architectural_context import acquire_active_regional_text
-                priority = physical_research_priority(story, payload, [*observed, *candidates],
-                    joint_source_map_receipt())
-                nomination_ids = (priority or {}).get('active_candidate_ids') or ([nomination_id] if nomination_id else [])
+            if ((geometry_rejection or (priority or {}).get('next_step') == 'text')
+                    and (not text_articles or not selected_regional
+                        and (not regional or regional.get('route') in {None, 'none'}))):
+                # A failed selection/query is not a failed physical hypothesis.
+                # Read each admitted active body's own address independently;
+                # never apply one entrance or a multi-address query to both.
+                # Unrelated response defects remain diagnostics, not a barrier
+                # to this independently validated exploratory component.
                 if nomination_ids:
                     additional_articles, nomination_lookup = await acquire_active_regional_text(
                         service, story, [*observed, *candidates], nomination_ids)
@@ -1342,26 +1345,18 @@ async def _suggest(service, story, transcript, candidates):
                     # style/history. Complement it with the nominated body's
                     # literal-address description; the T model still decides
                     # whether either source actually distinguishes SOURCE.
-                    existing_urls = {item['url'] for item in text_articles}
-                    additional_articles = [item for item in additional_articles if item['url'] not in existing_urls]
-                    pending_articles = []
-                    if len(text_articles) + len(additional_articles) <= 2:
-                        text_articles.extend(additional_articles)
-                    else:
-                        # The existing T operation owns one/two articles. Keep
-                        # all acquired alternatives; never pick its first card
-                        # or silently truncate a different source's evidence.
-                        pending_articles = additional_articles
+                    text_articles = merge_acquired_text_versions([*text_articles, *additional_articles])
                     lookup = {'kind': 'insufficient_geometry_address_text',
                         'initial_selected_text': lookup, 'regional': nomination_lookup,
                         'query_scope': nomination_lookup.get('query_scope'),
-                        'status': ('partial' if pending_articles or text_articles and not additional_articles
+                        'status': ('partial' if text_articles and not additional_articles
                             else nomination_lookup.get('status')),
-                        'pending_acquired_articles': pending_articles, 'identity_established': False}
+                        'identity_established': False}
                     record_identity_event(service, story['id'], 'identity_unconfirmed_address_text_acquired', {
                         'candidate_ids': nomination_ids, 'article_count': len(text_articles),
                         'status': nomination_lookup.get('status'), 'reason': nomination_lookup.get('reason'),
                         'identity_accepted': False})
+            text_articles = merge_acquired_text_versions([*ready_articles, *text_articles])
             if lookup:
                 story['_identity_regional_lookup_receipt'] = lookup
             new_text_acquired = bool(text_articles)
@@ -1880,6 +1875,34 @@ async def _suggest(service, story, transcript, candidates):
                         retry_claim = True
                         joint_followup_failure = None
                         continue
+                    if (admission_attempt == 0 and not native_readback_only
+                            and phase == 'closed_failure'
+                            and status_code in {401, 403, 404, 408, 429, 500, 502, 503, 504}
+                            and remaining > operation_timeout + 30):
+                        # The received HTTP failure closes this route, not the
+                        # prepared SOURCE/T question. Admit one independent
+                        # registered executor with exactly the same inputs.
+                        addressed = joint_followup_marker(service, story) or {}
+                        excluded = {model, *initial_unknown_models,
+                            *(addressed.get('route_operations') or {})}
+                        alternate = next((route for route in getattr(gemini, 'web_search_routes', [])
+                            if route[0] not in excluded), None)
+                        if alternate is not None:
+                            previous_model = model
+                            model, _pool, quota, executor = alternate
+                            prepared_request = {**prepared_request, 'model': model}
+                            prepared_request.pop('sha256')
+                            prepared_request['sha256'] = hashlib.sha256(canonical(prepared_request).encode()).hexdigest()
+                            joint_followup_marker(service, story, binding=joint_followup_binding,
+                                phase='send_intent', prepared_request=prepared_request,
+                                model_id=model, retry_closed_route=True)
+                            native_followup, google_route_assigned = False, True
+                            retry_claim, joint_followup_failure = False, None
+                            record_identity_event(service, story['id'], 'identity_joint_followup_closed_route_assigned',
+                                {'from_model': previous_model, 'model': model, 'status_code': status_code,
+                                 'same_binding': True, 'additional_planner_unit': False,
+                                 'remaining_seconds': round(remaining, 3)})
+                            continue
                     joint_followup_failure = exc
                     if (phase in {'not_sent', 'unknown', 'closed_failure'}
                             and (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan')):
@@ -2809,6 +2832,8 @@ def _retain_article_discovery(service, story, sources, *, receipts=(), articles=
             page = pages.setdefault(url, {'source': dict(unique[url]), 'attempts': 0})
             page['status'] = receipt['status']
             page['attempts'] += 1
+            page['browser_attempts'] = page.get('browser_attempts', 0) + receipt.get('browser_attempts', 0)
+            page.update({key: receipt[key] for key in ('retry_at', 'http_status') if key in receipt})
             page['source'].update({key: receipt[key] for key in ('gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered') if key in receipt})
             if receipt.get('collection_boundary'):
                 page['collection_boundary'] = receipt['collection_boundary']
@@ -3205,7 +3230,8 @@ async def recover(service, story, transcript, candidates, excluded):
             page = pages.get(source['url']) or {}
             if page.get('status') in {'completed', 'partial'}:
                 cached.extend(page.get('candidates', []))
-            if page.get('status') not in {'completed', 'excluded'}:
+            if (page.get('status') not in {'completed', 'excluded'}
+                    and page.get('retry_at', 0) <= service.store.now()):
                 unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
                     if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}})
         from .live_visual_comparison import _article_acquisition_rank
