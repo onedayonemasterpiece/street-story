@@ -803,7 +803,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     }
 
     def _capability_configuration(self, configuration, capability):
-        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor; for facts choose research. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
+        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For correction or independent reconsideration of a saved fact choose review: its tools save new evidence-bound verdicts. For discovering additional facts choose research. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
             {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS),
                        'description': 'identity: identify the object; research: facts, selection, concept, text and image; review: evidence review; editor: fact selection, concept, text and image; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
              'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
@@ -2261,6 +2261,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             ],
             "next_cursor": int(page[-1]["cursor_value"]) if has_more and page else None,
             "has_more": has_more,
+            "read_only": True,
+            "instruction": (
+                "This evidence read saves no new verdict and changes no fact or POI eligibility. "
+                "For an explicitly requested correction or independent reconsideration, use "
+                "continue_story(stage=review) with that same author intent and the requested fact IDs; "
+                "finish their evidence-bound review there. Reading saved evidence does not require "
+                "new search. Do not claim a saved correction from this read alone."
+            ),
         }
 
     @staticmethod

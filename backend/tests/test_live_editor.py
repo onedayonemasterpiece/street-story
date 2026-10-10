@@ -394,6 +394,9 @@ async def test_live_get_evidence_returns_every_exact_span_with_cursor(tmp_path):
         session,
         {"name": "get_evidence", "args": {"fact_ids": [fact_id], "limit": 3}},
     )
+    assert first['read_only'] is True
+    assert 'continue_story(stage=review)' in first['instruction']
+    assert 'does not require new search' in first['instruction']
     second = await adapter.execute_tool(
         session,
         {

@@ -19,6 +19,18 @@ for the correction policy and their existing unavailable-function constraints.
 and subsequent editorial acceptance remain pending. This changes no fact verdict
 through a deterministic classifier and replays no identity/provider operation.
 
+Actual58c4680 routing recovery also failed before any correction receipt. The
+provider received a research bundle with12 functions. It read own evidence but
+attempted search_web/get_research_chunk instead of the requested retained-evidence
+review. The harness rejected those calls before the product adapter; every such
+call has a local error event, no search/research send. Original report and125.253s
+job receipt remain retained; restoring the missing setup line alone did not
+resolve actual routing. The common router description now distinguishes saved
+fact reconsideration (review) from new discovery (research), and get_evidence
+returns a bounded read-only receipt explaining that correction requires the
+review stage and no new search. Intent and semantic verdict remain model decisions.
+59 affected checks passed10.51s; new actual result remains pending.
+
 ## b8fc6c4 explicit Mira correction: semantic result without durable receipt
 
 Actual unchanged-story editorial attempt on b8fc6c4 read the own evidence through
