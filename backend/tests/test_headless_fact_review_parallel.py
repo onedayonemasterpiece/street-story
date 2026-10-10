@@ -883,10 +883,10 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
         assert StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None)._topic_state(job['story_id'])['story']['draft_text'] == draft
         initialized = StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None).initialize(
             resource_id=job['story_id'], actor=None, model='gemini-3.8-live')
-        assert initialized['capability'] == 'research'
+        assert initialized['capability'] == 'editor'
         tools = {tool['name'] for tool in initialized['configuration']['functions']}
         assert 'continue_story' in tools
-        assert not {'select_facts', 'set_concept', 'edit_text'} & tools
+        assert {'select_facts', 'set_concept', 'edit_text'} <= tools
         assert not any(event.get('name') == 'finalize_fact_review' for event in session.events)
     finally:
         release.set()

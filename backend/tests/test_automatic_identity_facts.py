@@ -22,6 +22,7 @@ def test_confirmed_photo_schedules_one_fact_request_without_voice_and_preserves_
     service._schedule_confirmed_facts()
     with service.store.tx() as db:
         jobs = list(db.execute("SELECT * FROM jobs WHERE semantic_key LIKE 'automatic-facts:%'"))
+        assert json.loads(jobs[0]['payload_json'])['minimum_useful_facts'] == 3
         assert len(jobs) == 1
         payload = json.loads(jobs[0]['payload_json'])
         assert payload['voice_session_ids'] == []

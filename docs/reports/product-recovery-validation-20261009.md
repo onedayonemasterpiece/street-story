@@ -2454,3 +2454,26 @@ chooses facts semantically and must persist them using select_facts before
 claiming success; initialization never selects or changes evidence eligibility.
 Continuation of this newly created story, fresh fixed15 and release readback
 remain pending; no retained historical story is credited as cold acceptance.
+
+The new104 continuation on017c713 passed the ordinary selection/concept/draft,
+30.077s prepared-PCM concept edit, draft refinement, VibePublish visual and
+Stop/reopen path. The model chose the namesake,42casemates/two rings and WWI
+hospital claims. The visual and original SOURCE were inspected: the same tower
+is recognizable, annotations are readable and supported by those three claims,
+and the evening treatment matches the author request. Historical draft claims
+match selection. The mechanical report remains REVIEW_REQUIRED; this explicit
+inspection is recorded in the existing incident timeline. No social dispatch
+or physical microphone acceptance is claimed.
+
+The017c713 first-five series is preserved.102 and104 accepted correct objects
+but stopped with only two eligible claims at130.2/181.6s: FAIL minimum3. Saved
+committed review checkpoints actually declared sufficiency on two claims while
+own-source candidates remained pending. New automatic fact tasks now carry
+the requested numeric minimum3; an affirmative model decision must include at
+least that many distinct independently eligible own claims in its saved basis.
+The count cannot declare semantic sufficiency, promote a pending claim or split
+an event. Existing tasks without a numeric minimum retain their old contract.
+Affected headless/review/automatic-request tests:118 passed.017c713 full SDK
+verification had2845 pass/2 skips and two stale editor-capability expectations
+of the same shared pending-review scenario, now corrected. This next candidate
+needs new frozen measurements; earlier reports are not repainted.

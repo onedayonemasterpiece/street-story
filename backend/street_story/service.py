@@ -1034,6 +1034,7 @@ class StreetStoryService:
                     continue
                 payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'], 'queue_priority': 'background',
                     'identity_generation': generation, 'voice_session_ids': [], 'mode': 'initial',
+                    'minimum_useful_facts': 3,
                     'coverage_goal': 'Найди проверенные сведения о подтверждённом объекте для будущей публикации. '
                                      'Подготовь содержательный материал, из которого автор сможет выбрать самостоятельные '
                                      'утверждения о разных сторонах объекта: истории, устройстве или использовании, '
