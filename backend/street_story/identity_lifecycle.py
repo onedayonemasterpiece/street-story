@@ -526,6 +526,10 @@ class IdentityLifecycleMixin:
                     latest.pop('identity_sources_waiting', None)
                 if matched:
                     from .poi_memory import ensure_poi_identity, hydrate_story_facts
+                    # Hydration validates its basis against the committed subject.
+                    # Bind that subject inside this same transaction before its
+                    # first ledger refresh; an old uncertain snapshot is no veto.
+                    db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(latest), story_id))
                     now = self.store.now()
                     poi_id = ensure_poi_identity(
                         db,

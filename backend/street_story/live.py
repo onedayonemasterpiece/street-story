@@ -2611,6 +2611,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if current["photo_sha256"] != row["photo_sha256"] or int(current_research.get("identity_generation") or 0) != int(research.get("identity_generation") or 0):
                 raise ConflictError("identity_candidate_changed", "Объект изменился; проверьте актуальный вариант.")
             from .poi_memory import ensure_poi_identity, hydrate_story_facts
+            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
             now = self.service.store.now()
             poi_id = ensure_poi_identity(
                 db,
@@ -4110,6 +4111,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             reconciled_candidates.append(
                 {
                     **candidate,
+                    # This is the model's explicit equivalence decision, not a
+                    # replacement command. Preserve the admitted wording/basis;
+                    # retain its new wording as an observation with own spans.
+                    "text": known_by_id[fact_id]['text'] if existing_fact_id else candidate['text'],
+                    "observation_text": candidate['text'],
                     "fact_id": fact_id,
                     "existing_fact_id": (
                         existing_fact_id or None

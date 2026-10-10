@@ -367,7 +367,8 @@ def persist_fact_candidates(
         sources = merge_source_payloads(
             [source for source in (item.get("sources") or []) if isinstance(source, dict)]
         )
-        observation_id = _observation_id(story_id, run_id, batch_id, assertion_id, text, sources)
+        observation_text = validated_model_fact_text(item.get('observation_text')) or text
+        observation_id = _observation_id(story_id, run_id, batch_id, assertion_id, observation_text, sources)
         evidence_rows = _evidence_rows(observation_id, sources)
         status = "accepted" if evidence_rows else "candidate"
         structural_error = None if evidence_rows else "evidence_span_missing"
@@ -416,7 +417,7 @@ def persist_fact_candidates(
                 batch_id,
                 assertion_id,
                 claim_key,
-                text,
+                observation_text,
                 max(0.0, min(1.0, float(item.get("confidence") or 0.0))),
                 status,
                 structural_error,
