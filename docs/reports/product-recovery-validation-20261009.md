@@ -3,6 +3,39 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Reliability finish after reboot, 2026-10-10
+
+Authoritative instructions: dbf6e220 product-reliability-finish prompt. Host now
+has7423MiB RAM/3439MiB available; registered backend health200 in3ms, running
+db0c0d0. Prior memory pressure is not assumed to be the current blocker.
+
+The16b459b hosted backend merge-check38028490803 failed three assertions in
+two tests (one repeated in the failure matrix), expecting editorial functions
+inside research. Stage instructions now preserve semantic rules explicitly:
+only the menu is filtered, never a whole sentence mentioning another tool.
+Ready eligible facts do not require automatic re-review. Research and editor
+guidance are compact explicit overlays. Shared function limits remain unchanged.
+
+Both behavior tests exercise the installed shared host research -> editor
+transition, preserving the same author intent and saving selection, concept and
+draft through product tools before reopening. The pending-review case uses
+actual extraction/review persistence with a controlled provider and a waiting
+original operation. Its repeated matrix case also passes. Initial fixture
+mistakes (legacy claim incorrectly assumed eligible, then counting the initial
+review as a new review) were corrected; no product eligibility guard was relaxed.
+
+Retained-story continuation is moved into existing backend/tools/live_e2e.py
+as an explicit CLI mode, preserving receipt checks, Stop and disabled publication.
+No new engine/transport/harness. Its selection revision requires the exact saved
+source, draft, selection and imported visual; generation UNKNOWN is observed
+through its original operation. A revised pass also saves the requested concept.
+Real Mira verification follows; these tests do not prove actual model behavior.
+Focused editor/control/visual/E2E/failure-matrix checks:86 passed in22.32s,
+job_8af00bc8ef1ad5b11a7f3fed; Ruff and diff checks passed.
+
+Development uses permitted chatgpt/street-story-reliability-20261010 integration
+branch based on16b459b, retaining PR246 work; no denied branch write is bypassed.
+
 ## Reboot checkpoint: bounded capability bundles
 
 Owner requested a graceful stop for adding host RAM/reboot and explicitly

@@ -694,6 +694,7 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
     from street_story.app import create_app
     from street_story.config import reveal
     from street_story.live import StreetStoryLiveAdapter
+    from test_live_research_control import shared_editor_session
 
     svc, job, harness = await candidates(tmp_path, count=6)
     ControlledReview.mode = 'unknown'
@@ -732,24 +733,30 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
             assert shown['state'] == 'facts_ready'
             selected = [f['fact_id'] for f in shown['facts'] if f['eligibility'] == 'eligible']
             assert len(selected) == 3
-            response = await client.post('/v1/stories/' + job['story_id'] + '/facts',
-                headers={'Idempotency-Key': 'partial-value-selection'}, json={'selected_fact_ids': selected})
-            assert response.status_code == 200, response.text
         draft = '\n'.join(f['text'] for f in shown['facts'] if f['fact_id'] in selected)
-        await harness.adapter.execute_tool(session, {'name': 'edit_text', 'id': 'partial-value-draft',
-            'args': {'expected_text_revision': 0, 'new_text': draft, 'change_summary': 'Use selected reviewed claims.'}})
+        host, session = await shared_editor_session(harness.adapter, session,
+            'Выбери три готовых факта и сохрани замысел с текстом, пока остальные проверяются.')
+        await host._handle_tool_calls(session, [{'name': 'select_facts', 'id': 'partial-value-selection',
+            'args': {'fact_ids': selected}}])
+        await host._handle_tool_calls(session, [{'name': 'set_concept', 'id': 'partial-value-concept',
+            'args': {'concept': 'Уже проверенная история'}}])
+        await host._handle_tool_calls(session, [{'name': 'edit_text', 'id': 'partial-value-draft',
+            'args': {'expected_text_revision': 0, 'new_text': draft, 'change_summary': 'Use selected reviewed claims.'}}])
         assert not task.done()
         reopened = type(svc)(svc.settings, providers=svc.providers)
         restored = reopened.story(job['story_id'])
         assert restored['draft_text'] == draft
+        assert restored['publication_concept'] == 'Уже проверенная история'
         assert {f['fact_id'] for f in restored['facts'] if f['selected']} == set(selected)
         assert any(f['eligibility'] == 'unreviewed' for f in restored['facts'])
         assert StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None)._topic_state(job['story_id'])['story']['draft_text'] == draft
         initialized = StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None).initialize(
             resource_id=job['story_id'], actor=None, model='gemini-3.8-live')
         assert initialized['capability'] == 'research'
-        assert {'select_facts', 'set_concept', 'edit_text'} <= {
-            tool['name'] for tool in initialized['configuration']['functions']}
+        tools = {tool['name'] for tool in initialized['configuration']['functions']}
+        assert 'continue_story' in tools
+        assert not {'select_facts', 'set_concept', 'edit_text'} & tools
+        assert not any(event.get('name') == 'finalize_fact_review' for event in session.events)
     finally:
         release.set()
         await task

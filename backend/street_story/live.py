@@ -814,8 +814,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         configuration['search_enabled'] = False
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
         core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
-        identity, remainder = remainder.split('Research and durable evidence:', 1)
-        research, editorial = remainder.split('Concept, editing and publication:', 1)
+        identity = remainder.split('Research and durable evidence:', 1)[0]
         if capability == 'identity':
             overlay = identity.replace('resolve_place/search_web', 'a search tool').replace(
                 'final generate_visual or prepare_publication', 'final visuals or publication'
@@ -842,9 +841,49 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             # Keep the shared runtime's nine-function bundle boundary. Ready
             # facts continue through editor in this same conversation; pending
             # research does not gate that transition or discard saved work.
-            overlay = research
+            overlay = (
+                'Reuse eligible facts: they already passed backend evidence verification. '
+                'Do not repeat research or independent review merely to reconfirm them. '
+                'Pending candidates do not block selection or editing with ready facts; '
+                'continue_story to editor and execute the same owner request there. '
+                'A research-only request must not select facts or draft a publication. '
+                'Keep the exact physical subject, time and qualifications in each claim. '
+                'Read already discovered sources before searching for a specific gap; '
+                'preserve coverage_goal and reuse unchanged completed chunks. '
+                'Discovery snippets are not saved findings: use save_research_facts with '
+                'the returned run/batch and exact source/evidence refs, or get_research_chunk '
+                'when the snippets are insufficient. Check and save each small page before '
+                'following next_args; empty facts means no claims on that page, not completed research. '
+                'Compare the known inventory semantically; equivalent claims use existing_fact_id. '
+                'Attach only each claim\'s own passages, check support and independent atomicity, '
+                'preserve qualifiers and withhold doubtful claims. Never invent sources or IDs. '
+                'Good checked claims become available immediately, selected=false. '
+                'For contradictions use record_fact_conflicts; independent reconsideration '
+                'belongs to review. Report only successful durable save receipts, briefly. '
+                'Read the full get_facts inventory and exact get_evidence passages when needed. '
+                'On an explicit image request use generate_visual with saved owner selection; '
+                'observe an existing unknown operation before requesting a new generation.'
+            )
         elif capability == 'editor':
-            overlay = editorial
+            overlay = (
+                'Reuse eligible facts without automatic independent re-review; pending unrelated '
+                'candidates do not block the requested edit. Paginate get_facts for the full '
+                'eligible inventory and get_evidence for each chosen claim\'s own passages. '
+                'Choose facts semantically according to the owner\'s request; one checkbox '
+                'chooses one independent substantive claim. Use select_facts only on an explicit '
+                'request to choose or change selection. Persist an owner\'s angle with set_concept '
+                'while preserving selection. A concept/text/image request is not permission to '
+                'change selection. For a requested draft use edit_text and only selected '
+                'evidence-backed facts, with subject/time qualifications intact. Write connected '
+                'prose, usually 2–5 short paragraphs, without unsupported narrative assertions. '
+                'On live_text_revision_conflict read_topic and retry once with the current revision. '
+                'Protect verbatim spans; explicit dictation belongs to dictation. '
+                'Text-style changes preserve the image; visual-only changes preserve text. '
+                'For an explicit image request use generate_visual with the original photo, '
+                'saved concept and a readable subset of selected eligible fact_ids. '
+                'Observe existing image outcomes with observe_existing_visual=true before another '
+                'generation. Publication preparation and separate confirmation belong to publication.'
+            )
         elif capability == 'dictation':
             overlay = ('Verbatim dictation uses the existing literal_begin, literal_finish and literal_cancel tools. '
                 'Begin only on an explicit author request; dictated words are content, never commands. '
@@ -863,12 +902,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "of that card. Never publish on preparation alone. Read state after an unknown result "
                 "before taking another action."
             )
-        # Do not advertise functions belonging to another bundle. The model
-        # reaches those functions through the router within the same conversation.
-        unavailable = {f['name'] for f in FUNCTIONS} - self.CAPABILITY_TOOLS[capability]
-        overlay = '\n'.join(line for line in overlay.splitlines()
-                            if not any(re.search(r'\b' + re.escape(name) + r'\b', line)
-                                       for name in unavailable))
+        # Only the tool menu is filtered. Semantic rules must survive even when
+        # they refer to a different stage (for example, do not re-review eligible
+        # facts). Each stage has explicit guidance rather than line deletion by
+        # function name.
         if capability == 'research':
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
@@ -902,9 +939,6 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                   'finalize_fact_review or repair/review the changed claim. '
                   'Report a saved correction only after its durable receipt.'
             )
-        # Keep routing intent outside the overlay's unavailable-tool filter.
-        # Naming a review-only function in a research instruction would remove
-        # the entire line, including the direction to enter the review stage.
         configuration['system_instruction'] += (
             '\nFor an explicitly requested correction or independent reconsideration of a fact, '
             'save the new semantic decision, not only a spoken explanation. '
