@@ -55,7 +55,50 @@ Current evidence milestone (not a release acceptance):
   251 affected checks passed157.83s in job_4b8f90d17b25c3c19afb838d;
   autonomous Live14 passed3.76s. Original failing v44/v45/v46 evidence retained.
   Existing failure matrix expanded to200 cases across ten ordered schedules;
-  its run remains pending. It is fake-provider orchestration, not200 images.
+  all200 passed168.64s on46e3e63 (job_6f76c940b36990f0b7bb5bec,
+  matrix-200-46e3e63.xml). It is fake-provider orchestration, not200 images.
+
+- Reliability continuation addresses the actual130 unsent seam: the same
+  frozen joint2 can be assigned once from refused Native admission to the
+  registered visual executor. Original Native NotSent envelope is preserved;
+  prompt/schema/images/config/binding stay equal, only model changes. UNKNOWN
+  cannot take this path. Native followups retain their semantic system guidance;
+  provider provenance reflects the actual selected executor.55 seam checks
+  passed66.02s;42 Native/fence checks passed38.14s.
+- A received extraction research_sufficient=true now ends useful_partial after
+  independently eligible facts, before optional pending extraction and later
+  review packets. Existing jobs/checkpoints preserve cancelled UNKNOWN tails;
+  reopen never resends them. No new sufficiency judge or count-derived semantic
+  decision. Negative fixtures keep waiting without model sufficiency or review.
+  First tail suite140 passed/1 failed92.22s: the negative fixture had incorrectly
+  expected normal return rather than the preserved review retry; corrected.
+- Current affected seam suite:201 passed132.18s, final-seams-v51.xml;
+  includes normal source transport, admission retry, closed semantics, actual
+  installed ARC result/cleanup, tail scope and POI review behavior. Ruff on
+  all tracked backend Python and diff checks pass. Pre-existing untracked
+  diagnostic helper is preserved and excluded from source lint/commit.
+- Hosted46e3e63 backend38035740213:2865 passed/47 failed/41 skipped.44 failures
+  were actual ARC SDK imports absent from standalone CI; three were stale
+  expectations for compact pointer/text presentation and the verifier phrase.
+  Runtime ARC contract tests now explicitly require the installed SDK; standalone
+  CI reports their absence as skips, while full devserver SDK acceptance remains
+  required. No SDK stub replaces those tests. Three ordinary tests are updated
+  to verify expanded pointers, complete literal source passages and coherent
+  closed-operation instructions. Hosted Android38035740145 passed, release
+  skipped; it does not prove a new physical-phone product path.
+
+- Actual130 on46e3e63 (job_f349b22ece379fa01317d2b4,
+  cold-46e3e63-control130) remains FAIL: terminal181.348s, no accepted
+  physical ID or eligible facts. Initial Native SOURCE/MAP completed with
+  measured27217 input+1950 output=29167 tokens; its architectural followup
+  was authoritatively NotSent RESOURCE_TOKEN_BUDGET. Google REF returned
+  uncertain, a distinct Native REF returned mismatch; OpenCode remained
+  original submitted/UNKNOWN. This is not all providers unavailable and not
+  acceptance of the nearby193106140. Control reserve/send/finalize RPCs in
+  observed boundaries completed roughly0.2–2.3s, not the historical49–60s.
+  The definitely-unsent Native followup skipped the registered visual reserve;
+  a bounded same-question executor assignment is under affected verification.
+  Old timing and original operation IDs are retained.
 
 - Actual1fac retained102 narrow review job_935fed6cc50bea9b34d52da1 remains
   FAIL at the original readback deadline. The final tail subsequently proved

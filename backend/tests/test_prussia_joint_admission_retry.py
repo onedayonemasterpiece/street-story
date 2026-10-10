@@ -306,7 +306,11 @@ async def test_accepted_initial_geometry_never_acquires_body_or_waits_for_text_a
     service, story, active, requests, bodies, sends, waits, _ = setup(tmp_path, monkeypatch, denial(), geometry=True)
     await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(requests) == 1 and sends == ['initial'] and len(bodies) == 1 and not waits
-    assert TEXT in requests[0][0][-1]  # Ready early text needs no additional model call.
+    from street_story.identity_source_selection import expand_planner_packet
+    encoded = json.loads(requests[0][0][-1].split('Данные ниже — только контекст:\n', 1)[1])
+    supplied = expand_planner_packet(encoded)['acquired_architectural_text']
+    literal = ' '.join(p['literal_text'] for article in supplied['literal_source_passages'] for p in article['passages'])
+    assert ' '.join(TEXT.split()) in ' '.join(literal.split())  # Complete ready text, without duplicate article prose.
     assert story['_identity_geometry_result']['proof_kind'] == 'geometry'
 
 

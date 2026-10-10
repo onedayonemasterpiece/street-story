@@ -357,6 +357,70 @@ async def review_candidates(svc, sid, run_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('sufficient,verified', [(True, True), (False, True), (True, False)])
+async def test_model_sufficient_reviewed_result_finishes_before_independent_unknown_tail(tmp_path, monkeypatch, sufficient, verified):
+    from test_headless_fact_review_parallel import ControlledReview
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    harness = HeadlessFacts(svc)
+    tail_started, tail_release, reviewed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = researcher.extract_fact_page
+    calls = []
+    async def search(query, story):
+        return {'sources': [{'url': URL, 'title': 'Own history'},
+                            {'url': URL + '-tail', 'title': 'Optional further history'}],
+                'receipt': {'backend': 'controlled-search'}}
+    async def extract(page, story, context):
+        calls.append(page['_unit_id'])
+        if page['_extractor_ordinal'] == 1:
+            tail_started.set()
+            await tail_release.wait()
+        else:
+            await tail_started.wait()
+        value = await original(page, story, context)
+        value['result']['research_sufficient'] = sufficient
+        return value
+    researcher.search_articles, researcher.extract_fact_page = search, extract
+    ControlledReview.mode = 'positive'
+    engine = ControlledReview(harness)
+    async def review(job, run_id, revision, **kwargs):
+        count = await engine.run(job, run_id, revision, **kwargs) if verified else 0
+        reviewed.set()
+        return count
+    monkeypatch.setattr(harness, '_review_candidates', review)
+    task = asyncio.create_task(harness.run(job, 'headless-run', 'Find historical facts', 'history'))
+    try:
+        await asyncio.wait_for(reviewed.wait(), 10)
+        if sufficient and verified:
+            outcome = await asyncio.wait_for(task, 10)
+            assert not tail_release.is_set()
+            assert outcome['outcome'] == 'useful_partial' and outcome['reason'] == 'model_goal_sufficient'
+            assert outcome['coverage_complete'] is False and outcome['eligible_count'] == 1
+            with svc.store.connection() as db:
+                phases = [json.loads(r[0])['phase'] for r in db.execute(
+                    "SELECT value_json FROM research_checkpoints WHERE stage LIKE 'headless_fact_unit:%'")]
+            assert 'unknown' in phases
+            assert await harness.run(job, 'headless-run', 'Find historical facts', 'history') == outcome
+            assert len(calls) == 2  # Reopening never resends the cancelled original tail.
+        else:
+            assert not task.done()
+            tail_release.set()
+            if verified:
+                await asyncio.wait_for(task, 10)
+            else:
+                with pytest.raises(RetryableProviderError, match='research_fact_review_partial'):
+                    await asyncio.wait_for(task, 10)
+            with svc.store.connection() as db:
+                detail = db.execute('SELECT status_detail FROM research_runs WHERE run_id=?', ('headless-run',)).fetchone()[0]
+            assert detail != 'model_goal_sufficient'
+    finally:
+        tail_release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_no_audio_headless_page_requires_live_review_in_story_and_poi_ledger(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')

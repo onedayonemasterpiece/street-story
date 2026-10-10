@@ -63,7 +63,8 @@ def joint_route_reassignable(marker, model_id=None):
 
 def joint_operation_marker(service, story, *, stage, binding=None, phase=None, code=None,
         response_sha256=None, status_code=None, closed_plan=None, prepared_request=None,
-        admission_retry=None, retry_not_sent=False, retry_unsent_key=False, model_id=None):
+        admission_retry=None, retry_not_sent=False, retry_unsent_key=False, model_id=None,
+        retry_unsent_route=False):
     """Keep each initial route's original binding/outcome across independent failover."""
     if stage not in {'initial', 'followup'}:
         raise ValueError('invalid joint operation stage')
@@ -83,7 +84,22 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
         envelope = previous
         route_operations = dict(previous.get('route_operations') or {})
         route_fields = {'route_operations', 'closed_route_failures'}
-        if stage == 'initial' and previous.get('model_id'):
+        old_model = previous.get('model_id') or (previous.get('prepared_request') or {}).get('model')
+        route_retry = (stage == 'followup' and retry_unsent_route and phase == 'send_intent'
+            and previous.get('phase') == 'not_sent' and old_model and model_id != old_model
+            and model_id and not route_operations and previous.get('binding') == binding
+            and prepared_request is not None)
+        if retry_unsent_route and not route_retry:
+            raise RetryableProviderError('identity_joint_followup_route_retry_denied')
+        if route_retry:
+            # Only the executor changes after authoritative NotSent. Preserve
+            # both exact request envelopes; never reassign a possibly sent unit.
+            old_content = {k: v for k, v in previous['prepared_request'].items() if k not in {'model', 'sha256'}}
+            new_content = {k: v for k, v in prepared_request.items() if k not in {'model', 'sha256'}}
+            if old_content != new_content:
+                raise RetryableProviderError('identity_joint_followup_binding_changed')
+            route_operations[old_model] = {k: v for k, v in previous.items() if k not in route_fields}
+        if stage == 'initial' and old_model:
             route_operations[previous['model_id']] = {
                 key: value for key, value in previous.items() if key not in route_fields}
         switching = (stage == 'initial' and model_id is not None
@@ -94,7 +110,7 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             if (stage != 'followup' or prepared_request.get('binding') != binding
                     or prepared_request.get('contract') != 'identity-prepared-joint-followup-v1'
                     or hashlib.sha256(canonical(content).encode()).hexdigest() != prepared_request.get('sha256')
-                    or previous.get('prepared_request') not in (None, prepared_request)):
+                    or not route_retry and previous.get('prepared_request') not in (None, prepared_request)):
                 raise RetryableProviderError('identity_joint_followup_binding_changed')
         retry = previous.get('admission_retry') or {}
         retry_permitted = (stage == 'followup' and retry_not_sent and previous.get('phase') == 'not_sent'
@@ -107,7 +123,7 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
         if phase == 'send_intent' and previous and not (
                 stage == 'initial' and (previous['phase'] == 'not_sent'
                     or model_id is not None and joint_route_reassignable(previous, model_id))
-                or retry_permitted or key_retry_permitted):
+                or retry_permitted or key_retry_permitted or route_retry):
             raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
         if phase == 'send_intent' and switching and target and target.get('phase') != 'not_sent':
             raise RetryableProviderError(f'identity_joint_{stage}_outcome_unknown')
@@ -126,6 +142,8 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             marker['model_id'] = model_id
         if prepared_request is not None:
             marker['prepared_request'] = prepared_request
+        if stage == 'followup' and route_operations:
+            marker['route_operations'] = route_operations
         if admission_retry is not None:
             if (stage != 'followup' or phase != 'not_sent' or retry
                     or admission_retry.get('retry_count') != 0

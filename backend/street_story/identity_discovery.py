@@ -1465,6 +1465,10 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_geometry_binding_repair',
                     {'issue_types': list(issues), 'attempt': 1, 'article_count': len(text_articles)})
             previous_model = model
+            # A Native admission refusal can assign this still-unsent joint2
+            # to the already registered visual executor. No extra question or
+            # retry of an UNKNOWN request is authorized by this reserve route.
+            unsent_google_route = (model, quota, executor)
             initial_marker = joint_operation_marker(service, story, stage='initial') or {}
             initial_unknown_models = sorted(name for name, operation in
                 (initial_marker.get('route_operations') or {}).items()
@@ -1540,9 +1544,10 @@ async def _suggest(service, story, transcript, candidates):
                     # SDK send and must not be swallowed by optional-plan reuse.
                     raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
             followup_integrity_failure = None
+            google_route_assigned = False
             async def send_followup(key, timeout):
                 nonlocal joint_followup_failure, joint_model_id
-                nonlocal followup_integrity_failure
+                nonlocal followup_integrity_failure, google_route_assigned
                 from .quota import SharedQuotaDenied
                 from .gemini import _retry_after
                 # No executor failover may dispatch another possibly sent joint2.
@@ -1570,9 +1575,12 @@ async def _suggest(service, story, transcript, candidates):
                     joint_followup_failure = None
                 try:
                     joint_model_id = model
-                    joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
-                        prepared_request=prepared_request, retry_not_sent=retry_claim,
-                        retry_unsent_key=unsent_key_retry)
+                    if google_route_assigned:
+                        google_route_assigned = False
+                    else:
+                        joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
+                            prepared_request=prepared_request, retry_not_sent=retry_claim,
+                            retry_unsent_key=unsent_key_retry, model_id=model)
                     if unsent_key_retry:
                         record_identity_event(service, story['id'], 'identity_joint_followup_unsent_key_failover',
                             {'model': model, 'same_prepared_request': True, 'provider_send_state': 'not_sent'})
@@ -1602,9 +1610,12 @@ async def _suggest(service, story, transcript, candidates):
                     if native_followup:
                         from types import SimpleNamespace
                         joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
-                                              prepared_request=prepared_request)
+                                              prepared_request=prepared_request, model_id=model)
                         try:
-                            answer = await researcher.plan_source_map_followup(story, followup_prompt, issued_followup_schema,
+                            native_followup_prompt = (followup_config.system_instruction.replace(
+                                json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')), '', 1)
+                                + '\n' + followup_prompt)
+                            answer = await researcher.plan_source_map_followup(story, native_followup_prompt, issued_followup_schema,
                                 [('SOURCE', source_mime, source_bytes),
                                  *([('MAP', scene['mime_type'], scene['bytes'])] if scene else [])],
                                 {'source_map_receipt': joint_source_map_receipt(), 'schema': issued_followup_schema,
@@ -1617,6 +1628,31 @@ async def _suggest(service, story, transcript, candidates):
                                      'closed_failure' if saved.get('phase') == 'failed' else 'unknown')
                             joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
                                                   code='identity_native_followup_' + phase)
+                            reserve_model, reserve_quota, reserve_executor = unsent_google_route
+                            if (phase == 'not_sent' and admission_attempt == 0 and not native_readback_only
+                                    and reserve_model and reserve_executor is not None
+                                    and callable(getattr(gemini, '_generate', None))):
+                                from .research_budget import require_remaining
+                                remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 0
+                                if remaining > 5:
+                                    model, quota, executor = reserve_model, reserve_quota, reserve_executor
+                                    native_followup = False
+                                    prepared_request = {**prepared_request, 'model': model}
+                                    prepared_request.pop('sha256')
+                                    prepared_request['sha256'] = hashlib.sha256(canonical(prepared_request).encode()).hexdigest()
+                                    joint_followup_marker(service, story, binding=joint_followup_binding,
+                                        phase='send_intent', prepared_request=prepared_request,
+                                        model_id=model, retry_unsent_route=True)
+                                    # send_followup consumes this exact already
+                                    # assigned envelope, rather than a second
+                                    # send_intent transition below.
+                                    google_route_assigned = True
+                                    joint_followup_failure = None
+                                    story['_identity_search_plan_route'] = 'google'
+                                    record_identity_event(service, story['id'], 'identity_joint_followup_unsent_route_assigned',
+                                        {'from_model': 'gpt-6-luna', 'model': model, 'provider_send_state': 'not_sent',
+                                         'same_binding': True, 'remaining_seconds': round(remaining, 3)})
+                                    continue
                             if (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
                                 source_text_receipt.update(source_image_input=False, provider_send_state=phase)
                                 return reuse_initial_plan()
@@ -1684,6 +1720,7 @@ async def _suggest(service, story, transcript, candidates):
             joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                 response_sha256=hashlib.sha256((response.text or '').encode()).hexdigest())
             if compact_t:
+                followup_provider = 'codex_native' if native_followup else 'google'
                 from .identity_architectural_comparison import combine_architectural_decision
                 from .identity_candidate_policy import physical_research_priority
                 answer = None
@@ -1692,12 +1729,12 @@ async def _suggest(service, story, transcript, candidates):
                     answer, resolution = resolve_identity_response_ids(json.loads(response.text or ''), resolution_packet)
                     if resolution:
                         response_id_resolutions.append({**resolution, 'joint_stage': 'followup',
-                            'provider_id': 'google', 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
+                            'provider_id': followup_provider, 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()})
                     payload = combine_architectural_decision(payload, answer, compact_t['schema'])
                 except (ValueError, TypeError) as exc:
                     from .identity_plan_diagnostics import retain_closed_invalid
                     retain_closed_invalid(service, story, answer, compact_t['schema'],
-                        code='identity_architectural_comparison_invalid', route='google', raw_json=response.text,
+                        code='identity_architectural_comparison_invalid', route=followup_provider, raw_json=response.text,
                         provider_response_id=getattr(response, 'response_id', None),
                         joint_stage='followup', operation_binding=joint_followup_binding)
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
@@ -1708,7 +1745,7 @@ async def _suggest(service, story, transcript, candidates):
                             joint_source_map_receipt()) or {}).get('active_candidate_ids')):
                     from .identity_plan_diagnostics import retain_closed_invalid
                     retain_closed_invalid(service, story, payload['accepted_architectural_text'], compact_t['schema'],
-                        code='identity_architectural_text_uncertain', route='google', raw_json=response.text,
+                        code='identity_architectural_text_uncertain', route=followup_provider, raw_json=response.text,
                         joint_stage='followup', operation_binding=joint_followup_binding)
                     joint_followup_marker(service, story, binding=joint_followup_binding, phase='response_closed',
                         code='identity_architectural_text_uncertain')
