@@ -1469,6 +1469,22 @@ async def _suggest(service, story, transcript, candidates):
                 record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_inapplicable', {
                     'reason': 'no_received_physical_nomination', 'article_count': len(text_articles),
                     'existing_joint_followup_preserved': True, 'identity_accepted': False})
+            article_reference_images = []
+            if compact_t and not native_readback_only:
+                from .identity_architectural_comparison import ready_article_references
+                article_reference_images, article_reference_receipt = await ready_article_references(
+                    service, story, text_articles)
+                if article_reference_images:
+                    source_text_receipt['article_reference_receipt'] = article_reference_receipt
+                    followup_prompt += ('\nOptional actual publisher photographs are attached as ARTICLE REF labels. '
+                        'Inspect their pixels as additional evidence, including possible contradictions. '
+                        'An article can illustrate another facade or body: its caption/address is not a SOURCE match. '
+                        'Distinguish visible composition, entrance/decor arrangement and roof form; do not invent '
+                        'shared details from the text. If individual-body scope remains unresolved, return uncertain.\n'
+                        + json.dumps(article_reference_receipt, ensure_ascii=False, separators=(',', ':')))
+                record_identity_event(service, story['id'], 'identity_t_ready_article_references', {
+                    'article_count': len(text_articles), 'reference_count': len(article_reference_images),
+                    'additional_model_calls': 0, 'text_work_preserved': True})
             if hasattr(service, 'settings') and not native_readback_only:
                 from .research_budget import reserve_work
                 from .service import digest
@@ -1501,7 +1517,7 @@ async def _suggest(service, story, transcript, candidates):
             record_identity_event(service, story['id'], 'identity_joint_followup_input_prepared', {
                 'scope': 'product_system_instruction_plus_prompt_utf8_v1',
                 'text_utf8_bytes': len(followup_prompt.encode()) + len(followup_config.system_instruction.encode()),
-                'image_count': 2 if scene else 1, 'source_image_bytes': len(source_bytes),
+                'image_count': (2 if scene else 1) + len(article_reference_images), 'source_image_bytes': len(source_bytes),
                 'map_image_bytes': len(scene['bytes']) if scene else 0, 'model': model,
                 'map_detail': bool(detail_request), 'article_count': len(text_articles)})
             joint_followup_used = True
@@ -1548,6 +1564,11 @@ async def _suggest(service, story, transcript, candidates):
                     'map_image_sha256': hashlib.sha256(scene['bytes']).hexdigest() if scene else None,
                     'source_text_sha256': hashlib.sha256(canonical(source_text_receipt).encode()).hexdigest()}
                 current.pop('sha256')
+                if (len(article_reference_images) != len(source_text_receipt.get('article_reference_receipt') or [])
+                        or any(hashlib.sha256(image[2]).hexdigest() != reference['model_image_sha256']
+                       for image, reference in zip(article_reference_images,
+                           source_text_receipt.get('article_reference_receipt') or []))):
+                    raise PermanentProviderError('identity_joint_followup_reference_changed')
                 if hashlib.sha256(canonical(current).encode()).hexdigest() != prepared_request['sha256']:
                     raise PermanentProviderError('identity_joint_followup_frozen_request_changed')
                 marker = joint_followup_marker(service, story)  # Current photo/generation/control, even before key acquisition.
@@ -1603,6 +1624,7 @@ async def _suggest(service, story, transcript, candidates):
                     return await gemini._generate(key, timeout, [
                         types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
                         *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
+                        *[types.Part.from_bytes(data=data, mime_type=mime) for _, mime, data in article_reference_images],
                         followup_prompt], followup_config, operation='grounded_research', model=model, quota=quota)
                 except (Exception, asyncio.CancelledError) as exc:
                     from .research_budget import ResearchTerminated
@@ -1643,7 +1665,8 @@ async def _suggest(service, story, transcript, candidates):
                             async with asyncio.timeout(role_timeout):
                                 answer = await researcher.plan_source_map_followup(story, native_followup_prompt, issued_followup_schema,
                                     [('SOURCE', source_mime, source_bytes),
-                                     *([('MAP', scene['mime_type'], scene['bytes'])] if scene else [])],
+                                     *([('MAP', scene['mime_type'], scene['bytes'])] if scene else []),
+                                     *article_reference_images],
                                     {'source_map_receipt': joint_source_map_receipt(), 'schema': issued_followup_schema,
                                      'source_text_receipt': source_text_receipt})
                         except (RetryableProviderError, TimeoutError) as exc:

@@ -7,6 +7,8 @@ existing architectural_text_decision_schema / freeze_architectural_text_proof.
 from __future__ import annotations
 
 import copy
+import asyncio
+import base64
 import hashlib
 import json
 from itertools import permutations
@@ -16,6 +18,58 @@ from .identity_candidate_policy import candidate_identity_eligible
 from .identity_proof import architectural_text_decision_schema
 from .identity_source_selection import observed_address_context
 from .identity_subject_binding import article_candidate
+
+
+async def ready_article_references(service, story, articles, *, timeout=4):
+    """Attach an available publisher photo to the existing T call, never judge it.
+
+    Read only HTML already acquired for T. Reuse the public reference loader;
+    missing/slow media does not require another page search or block text work.
+    """
+    from .article_media import extract_media
+    from .native_vision import native_public_image
+    from .reference_image_codec import normalize_reference
+    from .identity_telemetry import record_identity_event
+    images, receipt = [], []
+    cache_get = getattr(service.store, 'cache_get', None)
+    if not callable(cache_get):
+        return images, receipt
+    try:
+        async with asyncio.timeout(timeout):
+            for article in articles:
+                cached = cache_get('public-article-acquisition-v1:'
+                    + hashlib.sha256(article['url'].encode()).hexdigest())
+                if not cached or cached.get('sha256') != article.get('source_sha256'):
+                    continue
+                try:
+                    body = base64.b64decode(cached['body'], validate=True)
+                except (ValueError, TypeError, KeyError):
+                    continue
+                if hashlib.sha256(body).hexdigest() != cached['sha256']:
+                    continue
+                _, media = extract_media(body, cached['final_url'])
+                if not media:
+                    continue
+                descriptor = dict(media[0])
+                try:
+                    _, raw = await native_public_image(descriptor['image_url'], descriptor=descriptor)
+                    mime, data = await asyncio.to_thread(normalize_reference, raw)
+                except Exception as exc:
+                    # Acquisition is optional; cancellation/Stop still propagates.
+                    record_identity_event(service, story['id'], 'identity_t_article_reference_unavailable',
+                        {'article_id': article['article_id'], 'error_type': type(exc).__name__})
+                    continue
+                label = f'ARTICLE REF {len(images)+1}'
+                images.append((label, mime, data))
+                receipt.append({'label': label, 'article_id': article['article_id'],
+                    'article_url': article['url'], 'image_url': descriptor['image_url'],
+                    'resolved_image_url': descriptor.get('resolved_image_url', descriptor['image_url']),
+                    'raw_image_sha256': hashlib.sha256(raw).hexdigest(),
+                    'model_image_sha256': hashlib.sha256(data).hexdigest(), 'mime_type': mime})
+    except TimeoutError:
+        record_identity_event(service, story['id'], 'identity_t_article_reference_wait_ended',
+            {'ready_count': len(images), 'text_work_preserved': True})
+    return images, receipt
 
 
 def publisher_address_relation(articles, physical_candidates):

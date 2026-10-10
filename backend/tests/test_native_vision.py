@@ -300,7 +300,8 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path):
+@pytest.mark.parametrize('with_article_reference', [False, True])
+async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path, with_article_reference):
     provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
     map_file = io.BytesIO()
     Image.new('RGB', (67, 13), 'blue').save(map_file, format='PNG')
@@ -308,15 +309,20 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
     host = {'source_map_receipt': {'manifest': {'image_sha256': 'frozen-map'},
         'model_source_sha256': hashlib.sha256(source).hexdigest(),
         'map_image_sha256': hashlib.sha256(map_file.getvalue()).hexdigest()}, 'schema': VERDICT_SCHEMA}
+    if with_article_reference:
+        images.append(('ARTICLE REF 1', 'image/jpeg', source))
+        host['source_text_receipt'] = {'article_reference_receipt': [{
+            'label': 'ARTICLE REF 1', 'article_id': 'received-article',
+            'mime_type': 'image/jpeg', 'model_image_sha256': hashlib.sha256(source).hexdigest()}]}
     client.turn_status = 'inProgress'
     provider.timeout = .03
     with pytest.raises(RetryableProviderError, match='native_turn_outcome_unknown'):
         await provider.compare_source_map(story, VERDICT_SCHEMA, 'SOURCE and MAP geometry', images,
                                           {'attempt_id': 'spatial'}, host)
     first = next(params for method, params in client.calls if method == 'turn/start')
-    assert [part['text'] for part in first['input'] if part['type'] == 'text'][1:] == ['SOURCE', 'MAP']
+    assert [part['text'] for part in first['input'] if part['type'] == 'text'][1:] == [i[0] for i in images]
     pixels = [base64.b64decode(part['url'].split(',', 1)[1]) for part in first['input'] if part['type'] == 'image']
-    assert pixels == [source, map_file.getvalue()]
+    assert pixels == [i[2] for i in images]
     receipt = receipts[-1]
     assert receipt['phase'] == 'unknown'
     binding = {**receipt['binding'], **{key: receipt[key] for key in (
@@ -350,6 +356,26 @@ async def test_source_map_quota_denial_is_unsent_and_large_input_reaches_native(
     assert result['receipt']['phase'] == 'completed' and len(sends) == 1
     turn = next(params for method, params in client.calls if method == 'turn/start')
     assert turn['input'][0]['text'] == large_prompt
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad_reference', ['unissued', 'changed_bytes'])
+async def test_source_map_optional_article_photo_must_match_issued_receipt_before_any_send(tmp_path, bad_reference):
+    from street_story.providers import PermanentProviderError
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    if bad_reference == 'changed_bytes':
+        host['source_text_receipt'] = {'article_reference_receipt': [{
+            'label': 'ARTICLE REF 1', 'article_id': 'received-article',
+            'mime_type': 'image/jpeg', 'model_image_sha256': '0' * 64}]}
+    with pytest.raises(PermanentProviderError, match='image_binding_invalid'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'Compare actual acquired media',
+            [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source),
+             ('ARTICLE REF 1', 'image/jpeg', source)], {'attempt_id': 'unbound-ref'}, host)
+    assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
     await provider.close()
 
 

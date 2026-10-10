@@ -1,10 +1,13 @@
 """T-only regression: retrieve physical evidence, not a neighboring name."""
 import copy
+import base64
+import io
 import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from street_story import prussia39
 from street_story.identity_architectural_comparison import (
@@ -22,6 +25,37 @@ def catalogue_card(sid, address):
     return {'article_id': f'prussia39:sid:{sid}',
             'canonical_url': f'https://www.prussia39.ru/sight/index.php?sid={sid}',
             'address_text': address}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('acquisition', ['ready', 'unavailable', 'changed_cached_body'])
+async def test_t_uses_verified_cached_article_photo_without_extra_model_or_required_acquisition(monkeypatch, acquisition):
+    from street_story.identity_architectural_comparison import ready_article_references
+    from street_story import native_vision, identity_telemetry
+    body = b'<article><img src="https://example.org/facade.jpg" alt="Actual photo"></article>'
+    article = {'article_id': 'article:1', 'url': 'https://example.org/article',
+               'source_sha256': hashlib.sha256(body).hexdigest()}
+    cached = {'sha256': article['source_sha256'], 'final_url': article['url'],
+              'body': base64.b64encode(body if acquisition != 'changed_cached_body' else b'changed').decode()}
+    service = SimpleNamespace(store=SimpleNamespace(cache_get=lambda _: cached))
+    events, loads = [], []
+    monkeypatch.setattr(identity_telemetry, 'record_identity_event', lambda *args: events.append(args))
+    raw = io.BytesIO()
+    Image.new('RGB', (1600, 900), 'green').save(raw, format='JPEG')
+    async def load(url, *, descriptor):
+        loads.append(url)
+        if acquisition == 'unavailable':
+            raise ValueError('unavailable_public_image')
+        descriptor['resolved_image_url'] = url
+        return 'image/jpeg', raw.getvalue()
+    monkeypatch.setattr(native_vision, 'native_public_image', load)
+    images, receipt = await ready_article_references(service, {'id': 'story'}, [article])
+    if acquisition == 'ready':
+        assert len(images) == 1 and receipt[0]['article_id'] == article['article_id']
+        assert receipt[0]['model_image_sha256'] == hashlib.sha256(images[0][2]).hexdigest()
+    else:
+        assert images == receipt == []
+    assert loads == ([] if acquisition == 'changed_cached_body' else ['https://example.org/facade.jpg'])
 
 
 @pytest.mark.asyncio

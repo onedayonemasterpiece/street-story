@@ -291,9 +291,16 @@ class NativeVisionProvider:
                             'data': base64.b64encode(data).decode('ascii'),
                             'sha256': hashlib.sha256(data).hexdigest()} for label, mime, data in images]}
             proof = host_context.get('source_map_receipt') or {}
-            if ([part['label'] for part in frozen['images']] != ['SOURCE', 'MAP']
+            references = (host_context.get('source_text_receipt') or {}).get('article_reference_receipt') or []
+            if ([part['label'] for part in frozen['images'][:2]] != ['SOURCE', 'MAP']
                     or frozen['images'][0]['sha256'] != proof.get('model_source_sha256')
-                    or frozen['images'][1]['sha256'] != proof.get('map_image_sha256')):
+                    or frozen['images'][1]['sha256'] != proof.get('map_image_sha256')
+                    or len(frozen['images']) != 2 + len(references)
+                    or len({row['label'] for row in references}) != len(references)
+                    or any(image['label'] != reference['label']
+                        or image['sha256'] != reference['model_image_sha256']
+                        or image['mime_type'] != reference['mime_type']
+                        for image, reference in zip(frozen['images'][2:], references))):
                 await self._save(binding, {'binding': dict(binding), 'phase': 'failed',
                     'provider_send_state': 'not_sent', 'retry_safe': True,
                     'error_code': 'native_source_map_image_binding_invalid'})
