@@ -3,6 +3,25 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## b8fc6c4 explicit Mira correction: semantic result without durable receipt
+
+Actual unchanged-story editorial attempt on b8fc6c4 read the own evidence through
+Mira get_evidence. Without supplying the expected answer, Mira independently
+stated that the named architects belonged to the other tower and were not
+supported for this story subject. No get_review_packet/finalize_fact_review
+operation occurred; the E2E stopped with explicit_fact_reconsideration_readback_timeout.
+The original FAIL, session/tool/event receipt and Stop are retained. Spoken
+correction alone is not a new durable verdict, POI correction or E2E PASS.
+
+The existing Mira instruction now requires explicit corrections to transition
+through continue_story(stage=review) when necessary, read the small requested
+fact_ids and persist finalize/repair before claiming the fact changed. This
+leaves ordinary eligible-fact reuse intact and adds no deterministic intent
+classifier. Recovery uses the original failed pre-visual E2E record and a new
+explicit narrow semantic request; no visual or possibly sent research is repeated.
+59 Live editor/projection/research-control checks passed9.91s; Ruff passed.
+The changed v8 background packet still requires a real semantic verification.
+
 ## a11129e original cold104 and missing semantic subject context
 
 Exact a11129e passed168 affected identity/T/admission/Stop checks94.53s. In the
