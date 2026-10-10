@@ -292,7 +292,7 @@ async def test_invalid_geometry_preserves_explicit_ready_wiki_choice_without_ano
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert calls == ['joint', 'joint']  # One bounded exact-pointer repair.
+    assert calls == ['joint']  # Useful explicit REF survives without a G repair.
     saved = history['search_plan']['payload']
     assert saved['selected_wikipedia_page_ids'] == ['99']
     assert 'accepted_geometry' not in saved and 'geometry_proof' not in saved
@@ -401,8 +401,12 @@ async def test_schema_valid_unproved_geometry_gets_one_evidence_repair_before_id
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = None
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert len(calls) == 2
-    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    if failure == 'coverage':
+        assert len(calls) == 1
+        assert story['_identity_article_queries'] and '_identity_geometry_result' not in story
+    else:
+        assert len(calls) == 2
+        assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
 
 
 @pytest.mark.asyncio

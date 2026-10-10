@@ -48,7 +48,6 @@ def response_schema(packet, public_schema):
                                  'evidence; empty only for unsupported decisions. Labels establish '
                                  'literal addressing, not semantic support.')
     if packet.get('verifier_presentation') == 'one_assertion_all_own_slices_v1':
-        from .review_packets import SUFFICIENCY_BASIS_SCHEMA
         decisions['own_evidence_values'] = {'type': 'array', 'maxItems': 32, 'items': {
             'type': 'object', 'properties': {'property': {'type': 'string'}, 'value': {'type': 'string'},
                 'quote_refs': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}},
@@ -56,8 +55,12 @@ def response_schema(packet, public_schema):
         decisions['own_value_conflicts'] = {'type': 'array', 'maxItems': 12, 'items': {'type': 'string', 'maxLength': 500}}
         schema['properties']['decisions']['items'].setdefault('required', []).extend(
             ['own_evidence_values', 'own_value_conflicts'])
-        schema['properties']['research_sufficient'] = {'type': 'boolean'}
-        schema['properties']['research_sufficient_basis'] = deepcopy(SUFFICIENCY_BASIS_SCHEMA)
+        # Advisory early stopping cannot discard independent own-source
+        # verdicts. sufficient_basis validates addressing before any stop.
+        schema['properties']['research_sufficient'] = {'description': 'Optional boolean early-stop advice.'}
+        schema['properties']['research_sufficient_basis'] = {'description':
+            'Optional {candidate_indices:[integer,...], known_fact_ids:[string,...], reason:string}. '
+            'Use exact packet candidates and eligible known facts supporting the coverage goal.'}
     return schema
 
 

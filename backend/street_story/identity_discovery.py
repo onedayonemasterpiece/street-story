@@ -564,6 +564,8 @@ async def _suggest(service, story, transcript, candidates):
         packet = compact_planner_packet(packet)
     resolution_packet = {**packet, 'map_scene': scene_manifest} if scene else packet
     prompt = (
+        'Явно читаемую надпись/имя используй как точную поисковую фразу: это сильная '
+        'подсказка, но отличай имя самого объекта от вывески арендатора, рекламы и фона. '
         'Сначала прочитай SOURCE без имени ближайшего объекта. Перед выбором активных '
         'корпусов сравни их видимые объёмы, этажи и кровлю с полученными данными ВСЕХ '
         'physical_bodies, включая дальние. При телеобъективе близость к CAMERA не делает '
@@ -795,6 +797,41 @@ async def _suggest(service, story, transcript, candidates):
         errors, errors_truncated = validation_details(validation_schema, payload)
         rejected_text = None
         rejected_geometry_schema = None
+        if (errors or check_received_pointers) and isinstance(payload, dict) and not original_schema_readback and original_schema is None:
+            from jsonschema import Draft202012Validator
+            # Each independent field/item keeps its own issued contract. Plan
+            # completeness cannot invalidate another closed, useful component.
+            usable, rejected = {}, []
+            for name, contract in validation_schema.get('properties', {}).items():
+                if name not in payload:
+                    continue
+                value = payload[name]
+                pointer_contract = schema.get('properties', {}).get(name, contract) if check_received_pointers else contract
+                if isinstance(value, list) and contract.get('type') == 'array':
+                    item_contract = pointer_contract.get('items', contract.get('items', {}))
+                    items = [item for item in value if Draft202012Validator(item_contract).is_valid(item)]
+                    if contract.get('uniqueItems'):
+                        items = list({json.dumps(item, sort_keys=True): item for item in items}.values())
+                    usable[name] = items[:contract.get('maxItems', len(items))]
+                    if len(usable[name]) != len(value):
+                        rejected.append(name)
+                elif Draft202012Validator(pointer_contract).is_valid(value):
+                    usable[name] = value
+                else:
+                    rejected.append(name)
+                    if name == 'accepted_architectural_text':
+                        rejected_text = {'reason': 'identity_architectural_text_schema_invalid', 'decision': value}
+                    elif name == 'accepted_geometry':
+                        rejected_geometry_schema = {'reason': 'identity_geometry_schema_invalid', 'decision': value}
+            retain_closed_invalid(service, story, payload, validation_schema,
+                code='identity_plan_components_rejected', raw_json=raw_json,
+                route=story.get('_identity_search_plan_route', 'google'),
+                raw_json_available=raw_json_available, provider_response_id=provider_response_id,
+                errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
+            payload = {'first_wave_hypotheses': [], **usable}
+            errors = []
+            record_identity_event(service, story['id'], 'identity_plan_components_preserved',
+                {'rejected_fields': rejected, 'preserved_fields': list(usable)})
         if errors and isinstance(payload, dict) and 'accepted_architectural_text' in payload:
             # G and T are independent evidence components. Validate the whole
             # remaining plan strictly; a broken T cannot repair or excuse G.
@@ -856,7 +893,10 @@ async def _suggest(service, story, transcript, candidates):
                 reject('identity_search_plan_unreceived_pointer')
         action = (payload.get('accepted_geometry') or {}).get('next_action') or {}
         if action and (not scene or any(cid not in scene_ids for cid in action.get('target_candidate_ids') or [])):
-            reject('identity_geometry_action_unreceived_target')
+            rejected_geometry_schema = {'reason': 'identity_geometry_action_unreceived_target',
+                                        'decision': payload['accepted_geometry']}
+            payload = {key: value for key, value in payload.items() if key != 'accepted_geometry'}
+            action = {}
         source_map_receipt = joint_source_map_receipt() if original_schema is None else {}
         from .identity_candidate_policy import physical_research_priority
         priority = physical_research_priority(story, payload, [*observed, *candidates],
@@ -875,13 +915,9 @@ async def _suggest(service, story, transcript, candidates):
             from .identity_proof import freeze_geometry_proof
             geometry_proof = freeze_geometry_proof(story, payload['accepted_geometry'], source_map_receipt,
                 [*observed, *candidates])
-        if rejected_text and geometry_proof is None:
-            reject('identity_search_plan_malformed')
         if (payload.get('accepted_architectural_text') or {}).get('decision') == 'accepted_architectural_text':
             text_proof = closed_text_proof(payload)
             if text_proof is None:
-                if geometry_proof is None:
-                    reject('identity_architectural_text_proof_invalid')
                 rejected_text = {'reason': 'identity_architectural_text_proof_invalid',
                                  'decision': payload['accepted_architectural_text']}
                 payload = {key: value for key, value in payload.items() if key != 'accepted_architectural_text'}
@@ -890,7 +926,7 @@ async def _suggest(service, story, transcript, candidates):
             # the immutable closed provider answer is never rewritten.
             payload = {**payload, 'rejected_architectural_text': rejected_text}
             record_identity_event(service, story['id'], 'identity_architectural_text_not_accepted',
-                {'reason': rejected_text['reason'], 'preserved_geometry_proof': True})
+                {'reason': rejected_text['reason'], 'preserved_geometry_proof': geometry_proof is not None})
         if rejected_geometry_schema:
             payload = {**payload, 'rejected_geometry': rejected_geometry_schema}
             record_identity_event(service, story['id'], 'identity_geometry_not_accepted',
@@ -913,7 +949,15 @@ async def _suggest(service, story, transcript, candidates):
                      'candidate_label': rejected_geometry.get('candidate_label'),
                      'preserved_search_plan': True})
         if geometry_proof and text_proof and geometry_proof['candidate_id'] != text_proof['candidate_id']:
-            reject('identity_proof_subject_conflict')
+            payload = {**payload,
+                'rejected_geometry': {'reason': 'identity_proof_subject_conflict', 'decision': payload['accepted_geometry']},
+                'rejected_architectural_text': {'reason': 'identity_proof_subject_conflict', 'decision': payload['accepted_architectural_text']}}
+            payload.pop('accepted_geometry', None)
+            payload.pop('accepted_architectural_text', None)
+            geometry_proof = text_proof = None
+            action = {}
+            record_identity_event(service, story['id'], 'identity_proof_subject_conflict',
+                {'identity_established': False, 'independent_search_preserved': True})
         try:
             selected_wiki = set(payload.get('selected_wikipedia_page_ids') or [])
             ready_wiki = any(str(page.get('pageid')) in selected_wiki
@@ -945,7 +989,7 @@ async def _suggest(service, story, transcript, candidates):
             queries.append(result[2])
         queries.extend(payload.get('article_queries') or [])
         if validate_only:
-            return result
+            return payload
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
             if isinstance(q, str) and q.strip()))[:8]
         if result[2] and not ready_wiki and not single_geometry_action and result[2] not in story['_identity_article_queries']:
@@ -1146,7 +1190,7 @@ async def _suggest(service, story, transcript, candidates):
         payload = decode_joint(response)
         initial_validation_error = None
         try:
-            accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
+            payload = accept(payload, raw_json=response.text if isinstance(response.text, str) else '',
                 raw_json_available=isinstance(response.text, str),
                 provider_response_id=getattr(response, 'response_id', None), validate_only=True)
         except (PermanentProviderError, RetryableProviderError) as exc:
@@ -1167,7 +1211,7 @@ async def _suggest(service, story, transcript, candidates):
         schema_errors, schema_errors_truncated = validation_details(schema, payload)
         if decode_error:
             issues['json_syntax'] = {'validator': 'json_decode', 'raw_json_sha256': hashlib.sha256((response.text or '').encode()).hexdigest()}
-        elif schema_errors:
+        elif schema_errors and initial_validation_error is not None:
             issues['schema_validation'] = {'errors': schema_errors, 'truncated': schema_errors_truncated}
         from .identity_proof import freeze_geometry_proof
         initial_geometry = (freeze_geometry_proof(story, payload.get('accepted_geometry'),
@@ -1439,6 +1483,9 @@ async def _suggest(service, story, transcript, candidates):
             compact_nominations.extend((source_text_receipt.get('conditional_initial_decision') or {}).get('candidate_ids') or [])
             if text_articles and compact_nominations:
                 from .identity_architectural_comparison import prepare_architectural_comparison
+                # Labels and detailed bodies belong to the very MAP sent in
+                # this operation. An image without its ID table is unusable.
+                source_text_receipt = {**joint_source_map_receipt(), **source_text_receipt}
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
                 source_text_receipt['physical_link_inventory'] = compact_t['physical_link_inventory']
                 source_text_receipt['source_span_refs'] = compact_t['source_span_refs']
@@ -1486,10 +1533,15 @@ async def _suggest(service, story, transcript, candidates):
                     'article_count': len(text_articles), 'reference_count': len(article_reference_images),
                     'additional_model_calls': 0, 'text_work_preserved': True})
             if hasattr(service, 'settings') and not native_readback_only:
-                from .research_budget import reserve_work
+                from .research_budget import reserve_work, ResearchWorkExhausted
                 from .service import digest
-                reserve_work(service, story['id'], 'planner_calls',
-                    [digest([story['photo_sha256'], followup_prompt, followup_contract])])
+                try:
+                    reserve_work(service, story['id'], 'planner_calls',
+                        [digest([story['photo_sha256'], followup_prompt, followup_contract])])
+                except ResearchWorkExhausted:
+                    # Do not start this optional T/detail turn. Its already
+                    # closed initial plan and articles can still drive REF.
+                    return reuse_initial_plan()
             if issues:
                 record_identity_event(service, story['id'], 'identity_geometry_binding_repair',
                     {'issue_types': list(issues), 'attempt': 1, 'article_count': len(text_articles)})
@@ -1944,6 +1996,7 @@ async def _suggest(service, story, transcript, candidates):
             result = await planner(story, native_prompt, response_contract,
                 [('SOURCE', source_mime, source_bytes), ('MAP', scene['mime_type'], scene['bytes'])],
                 {'source_map_receipt': joint_source_map_receipt(), 'schema': schema,
+                 'independent_plan_components': True,
                  **({'source_text_receipt': source_text_receipt} if early_text_articles else {})})
         except (Exception, asyncio.CancelledError) as exc:
             saved = native_reader(story) if callable(native_reader) else None
@@ -2333,9 +2386,12 @@ async def category_candidates(service, client, searches, excluded, entity_name, 
 
 async def retrieve(service, wiki_queries, commons_query, excluded, *, entity_name='', story=None):
     if story and hasattr(service, 'settings'):
-        from .research_budget import reserve_work
-        reserve_work(service, story['id'], 'query_hypotheses', list(dict.fromkeys(
-            ' '.join(query.split()).casefold() for query in [*wiki_queries, commons_query, entity_name] if query)))
+        from .research_budget import reserve_available_work
+        allowed = reserve_available_work(service, story['id'], 'query_hypotheses', [
+            ' '.join(query.split()).casefold() for query in [*wiki_queries, commons_query, entity_name] if query])
+        wiki_queries = [query for query in wiki_queries if ' '.join(query.split()).casefold() in allowed]
+        commons_query = commons_query if ' '.join(commons_query.split()).casefold() in allowed else ''
+        entity_name = entity_name if ' '.join(entity_name.split()).casefold() in allowed else ''
     failures = []
     context = (story or {}).get('_identity_search_context') or {}
     wikipedia = getattr(getattr(service, 'providers', None), 'wikipedia', None)
@@ -2751,8 +2807,11 @@ def _claim_article_query(service, story, query):
             or previous.get('retry_at', 0) > service.store.now()):
         return None, previous
     if hasattr(service, 'settings'):
-        from .research_budget import reserve_work
-        reserve_work(service, story['id'], 'query_hypotheses', [' '.join(query.split()).casefold()])
+        from .research_budget import reserve_work, ResearchWorkExhausted
+        try:
+            reserve_work(service, story['id'], 'query_hypotheses', [' '.join(query.split()).casefold()])
+        except ResearchWorkExhausted as exc:
+            return None, {'status': 'deferred', 'sources': [], 'code': exc.reason}
     token = uuid.uuid4().hex
     history = _retain_article_discovery(service, story, [], query_results={query: {
         'status': 'in_progress', 'sources': [], 'claim_id': token,

@@ -3,6 +3,77 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Current verification and audit disposition, 2026-10-10
+
+This table supersedes older candidate summaries; the historical failures below
+remain evidence. Production remains db0c0d0. The independent audit was based on
+conversation excerpts, so its causal statements were checked against source and
+retained runtime inputs rather than treated as established root causes.
+
+| Scope | Verified result | Remaining work |
+| --- | --- | --- |
+| Frozen 2aacca1 installed SDK | 2986 passed, 2 skipped; unchanged source before/after | Final patched candidate full suite |
+| Frozen 2aacca1 actual SOURCE 102 | Correct way133035113; identity72.836s, first242.200s, terminal401.049s; 5 eligible, PASS_CANDIDATE | Ordinary editorial continuation; compound claims are not automatically clean selections |
+| Frozen 2aacca1 actual SOURCE 130 | Uncertain,138.961s; compact article-photo T was not reached | Actual cold compact T path; earlier wrong-neighbor blocker remains open |
+| Frozen 2aacca1 actual SOURCE 104 /111 | Uncertain at180.139s /129.970s | Patched-input cold contrasts |
+| Frozen 2aacca1 actual SOURCE 132 /105 /106 | Deadline at180.159s /180.452s /180.284s | Distinguish closed semantic responses, NotSent and UNKNOWN individually |
+| Coherent critical-path patch | 237 affected checks passed161.35s; Native component admission and MAP negative controls64 passed15.14s | Frozen full suite, Android and actual SOURCE acceptance |
+| Disk cleanup | 4.2GiB plus752.5MiB of successful synthetic fixtures deleted through managed dry-run/apply; pip download cache purged;5.8GiB free | Successful new pytest fixtures use failed-only retention |
+
+The actual compact T caller now supplies the manifest and label→candidate ID
+table from its frozen MAP; active bodies receive detailed contours and reserve
+bodies retain the same labels. The production104 input omitted that table.
+This is not evidence that the same defect caused every other refusal. The
+assembled caller test now covers active/reserve labels and rejects reuse of a
+closed proof after a foreign or permuted MAP table is attached.
+
+Useful G narrowing remains input to T. Failed G does not veto T; uncertain T
+retains usable searches for REF. Explicit readable names are model-interpreted
+search phrases, with tenant/advertisement/background scope distinguished by
+the model. Optional publisher photographs are acquired independently within
+the existing shared bound, so a stalled first photograph does not block a
+ready second photograph. No additional semantic classifier or model judge is
+introduced.
+
+Fresh identity plans admit each field/item under its issued contract and retain
+independently valid work. Duplicate searches are deduplicated; coverage advice
+does not reject a plan. Conflicting G/T proofs establish no identity while
+valid searches continue. New Native initial plans deliver the closed raw object
+to this same combiner instead of rejecting the full schema in transport first.
+Original addressed operations keep their frozen validation policy. Local work
+caps defer only new units of that category; cached pages and independent work
+remain usable. Real quota, overall deadline, SOURCE/generation/Stop fences and
+UNKNOWN observation rules remain enforced.
+
+Ready fact-review packets now have an owned timer wake while extraction is
+pending; Stop cancels it. Malformed auxiliary sufficiency advice cannot discard
+independently eligible verdicts and cannot authorize early completion. Existing
+structured rejection diagnostics identify the validator and schema path without
+logging private values; component-preservation and local-cap events distinguish
+partial admission from whole-response rejection. Exact source/hash/pointer,
+individual-subject proof, own-evidence, persistence and Stop checks remain
+fail-closed; plan completeness and auxiliary sufficiency are advisory.
+
+Audit corrections: the saved sid550 article explicitly says1853–1859, so the
+qualified104 period is source-backed rather than inferred from two conflicting
+years. The corrected retained102 draft describes neighborhood destruction
+without claiming it was the sole surviving building. The failure matrix has
+26 distinct driver/argument combinations; earlier200 PASS counted repeated
+fixtures rather than200 distinct schedules. The new matrix runs each once.
+The two frozen2aacca1 jobs completed before this patch began; their seven cases
+are not a completed fixed15 acceptance.130 and120 remain semantic review risks.
+
+Android2aacca1 instrumentation confirms expected1/actual0 at the running-control
+assertion. Logs do not establish a product root cause. The local projection
+fixture now isolates backend configuration using the previously verified test
+practice while preserving all three UI assertions; its emulator verification
+is pending. This does not claim the app was fixed by editing a test.
+
+Evidence: retained task `20261009T214809Z-overnight-product-finish-20261009`:
+`full-installed-sdk-2aacca1-v106.xml`, `critical-path-patch.xml`,
+`cold-2aacca1-corpus`, `cold-f23fad5-corpus/case-104.json`,
+`fixture-cleanup-20261010.json`, `android-emulator-2aacca1`.
+
 ## Reliability finish after reboot, 2026-10-10
 
 Current candidate uses model-selected source-span references for fresh T, without model-retyped quotations or a quotation-delimiter repair. Semantic SOURCE/article comparison remains the model's responsibility; the host checks issued references, source versions and persistence fences. Original addressed requests retain their original schemas. Fixed-candidate corpus and final installed-SDK acceptance remain pending.
@@ -111,8 +182,9 @@ Current evidence milestone (not a release acceptance):
   now verify complete transmitted literal passages and actual accepted proof.
   251 affected checks passed157.83s in job_4b8f90d17b25c3c19afb838d;
   autonomous Live14 passed3.76s. Original failing v44/v45/v46 evidence retained.
-  Existing failure matrix expanded to200 cases across ten ordered schedules;
-  all200 passed168.64s on46e3e63 (job_6f76c940b36990f0b7bb5bec,
+  Historical failure matrix ran200 fixture instances, representing26 distinct
+  driver/argument combinations rather than ten actual execution schedules;
+  all200 instances passed168.64s on46e3e63 (job_6f76c940b36990f0b7bb5bec,
   matrix-200-46e3e63.xml). It is fake-provider orchestration, not200 images.
 
 - Native send-state followup29 passed2.86s (native-send-state-v54.xml);

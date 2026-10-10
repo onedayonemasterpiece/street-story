@@ -589,8 +589,14 @@ class NativeVisionProvider:
                                 await asyncio.sleep(self.poll_seconds)
                                 continue
                             result = json.loads(text[-1])
-                            Draft202012Validator(source_map.get('host_contract', contract)
-                                if source_map else contract).validate(result)
+                            if source_map and source_map['host_context'].get('independent_plan_components') is True:
+                                # The identity combiner admits each issued field
+                                # independently. Keep the closed raw object and
+                                # full schema for that single admission authority.
+                                Draft202012Validator({'type': 'object'}).validate(result)
+                            else:
+                                Draft202012Validator(source_map.get('host_contract', contract)
+                                    if source_map else contract).validate(result)
                             receipt.update(phase='completed', result=result, provider_send_state='response_closed',
                                            retry_safe=False, elapsed_ms=round((time.monotonic() - started) * 1000))
                             await self._save(binding, receipt)

@@ -9,7 +9,7 @@ import pytest
 from street_story.article_media import article_candidates
 from street_story.errors import PermanentProviderError
 from street_story.identity_discovery import _claim_article_query, _retain_article_discovery, suggest
-from street_story.research_budget import ensure_budget, reserve_work, ResearchTerminated
+from street_story.research_budget import ensure_budget, reserve_work, ResearchTerminated, ResearchWorkExhausted
 from test_visual_search_continuation import prepared
 
 
@@ -21,9 +21,9 @@ def test_queries_share_cap_across_routes_and_unknown_readback_bypasses_exhausted
     assert token and result['status'] == 'in_progress'
     assert _claim_article_query(svc, snapshot, '  observed city   address 1 ')[0] is None
     assert len(ensure_budget(svc, story['id'])['work_units']['query_hypotheses']) == 1
-    with pytest.raises(ResearchTerminated) as exhausted:
-        _claim_article_query(svc, snapshot, 'Different address 2')
-    assert exhausted.value.outcome == 'search_exhausted'
+    token2, deferred = _claim_article_query(svc, snapshot, 'Different address 2')
+    assert token2 is None and deferred['status'] == 'deferred'
+    assert not json.loads(svc._identity_snapshot(story['id'])[0]['research_json']).get('automatic_research_outcome')
     _retain_article_discovery(svc, snapshot, [], query_results={'Observed City Address 1': {
         'status': 'unknown', 'claim_id': token, 'sources': []}})
     with svc.store.tx() as db:
@@ -56,10 +56,10 @@ async def test_page_cap_uses_canonical_url_not_gallery_cursor_and_stops_new_http
         for cursor in (0, 3):
             await article_candidates(svc, story, [{'url': 'https://EXAMPLE.com:443/page#photo',
                 'gallery_cursor': cursor}], set(), http=client, resolver=resolver, browser=forbidden)
-        with pytest.raises(ResearchTerminated) as exhausted:
-            await article_candidates(svc, story, [{'url': 'https://example.com/new-page'}], set(),
-                http=client, resolver=resolver, browser=forbidden)
-    assert exhausted.value.outcome == 'search_exhausted'
+        receipts = []
+        assert await article_candidates(svc, story, [{'url': 'https://example.com/new-page'}], set(),
+            http=client, resolver=resolver, browser=forbidden, receipts=receipts) == []
+    assert receipts[0]['status'] == 'deferred'
     assert calls == ['/page', '/page']  # Public transport uses the resolved IP.
     assert ensure_budget(svc, story['id'])['work_units']['pages'] == ['https://example.com/page']
 
@@ -85,9 +85,9 @@ async def test_planner_cap_counts_distinct_frozen_inputs_before_new_inference(tm
     # changing prose alone cannot reopen the closed initial operation.
     reserve_work(svc, story['id'], 'planner_calls', ['fixture-meaningful-followup-input'])
     assert reserve_work(svc, story['id'], 'planner_calls', ['fixture-meaningful-followup-input'])
-    with pytest.raises(ResearchTerminated) as exhausted:
+    with pytest.raises(ResearchWorkExhausted) as exhausted:
         reserve_work(svc, story['id'], 'planner_calls', ['fixture-third-distinct-input'])
-    assert exhausted.value.outcome == 'search_exhausted' and len(calls) == 1
+    assert exhausted.value.kind == 'planner_calls' and len(calls) == 1
 
 
 def test_wave_caps_reset_only_for_explicit_owner_wave(tmp_path):

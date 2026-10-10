@@ -359,7 +359,7 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
         assert len(reads) == (2 if accept_geometry else 3)
         assert (TEXT in contents[-1]) is (not accept_geometry)
         if malformed_first:
-            assert "schema_validation" in contents[-1] and "first_wave_hypotheses" in contents[-1]
+            assert "schema_validation" not in contents[-1]  # Missing search diagnostics do not veto T.
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         linked = with_received_physical_links(decision, contents) if not accept_geometry else None
@@ -373,7 +373,7 @@ async def test_cold_inventory_selection_and_full_text_use_at_most_two_joint_call
     history, _ = await identity_discovery.prepare_search_plan(service, s, "", active)
     result = s["_identity_geometry_result"]
     assert result["proof_kind"] == ("geometry" if accept_geometry else "architectural_text")
-    assert len(calls) == (1 if accept_geometry and not malformed_first else 2)
+    assert len(calls) == (1 if accept_geometry else 2)
     assert len(reads) == (2 if accept_geometry else 3)
     assert history["planned_queries"] == []
     assert accepted_identity(result, photo_sha256=s["photo_sha256"], generation=int(s.get("_identity_generation", 0)))
@@ -477,3 +477,26 @@ async def test_full_deadline_and_page_admission_precede_new_optional_http(tmp_pa
     monkeypatch.setattr(research_budget, "reserve_work", denied)
     receipt = await context.prepare_regional_catalogue(service, s, [obj])
     assert receipt["status"] == "not_sent" and receipt["error_code"] == "identity_page_envelope_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_optional_pagination_preserves_already_received_inventory(tmp_path, monkeypatch):
+    from street_story import research_budget
+    calls = []
+    def respond(request):
+        calls.append(str(request.url))
+        return response(inventory())
+    offline(monkeypatch, respond)
+    obj = candidate()
+    s = story(obj)
+    service = SimpleNamespace(store=Cache(tmp_path / 'cache'), settings=object())
+    monkeypatch.setattr(research_budget, 'require_remaining', lambda *args: 5.0)
+    reservations = []
+    def reserve(*args, **kwargs):
+        reservations.append(args[3])
+        if len(reservations) > 1:
+            raise research_budget.ResearchWorkExhausted('pages', 'identity_page_envelope_exhausted')
+    monkeypatch.setattr(research_budget, 'reserve_work', reserve)
+    receipt = await context.prepare_regional_catalogue(service, s, [obj])
+    assert receipt['status'] == 'completed' and receipt['results']
+    assert receipt['inventory_complete'] is False and len(calls) == 1

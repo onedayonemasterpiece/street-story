@@ -59,6 +59,29 @@ async def test_t_uses_verified_cached_article_photo_without_extra_model_or_requi
 
 
 @pytest.mark.asyncio
+async def test_second_article_photo_is_available_while_first_photo_is_stalled(monkeypatch):
+    from street_story.identity_architectural_comparison import ready_article_references
+    from street_story import native_vision, identity_telemetry
+    body = b'<article><img src="https://example.org/slow.jpg"><img src="https://example.org/ready.jpg"></article>'
+    article = {'article_id': 'article:1', 'url': 'https://example.org/article',
+               'source_sha256': hashlib.sha256(body).hexdigest()}
+    cached = {'sha256': article['source_sha256'], 'final_url': article['url'], 'body': base64.b64encode(body).decode()}
+    service = SimpleNamespace(store=SimpleNamespace(cache_get=lambda _: cached))
+    monkeypatch.setattr(identity_telemetry, 'record_identity_event', lambda *args: None)
+    raw = io.BytesIO()
+    Image.new('RGB', (30, 30), 'green').save(raw, format='JPEG')
+    async def load(url, *, descriptor):
+        if url.endswith('/slow.jpg'):
+            import asyncio
+            await asyncio.Event().wait()
+        return 'image/jpeg', raw.getvalue()
+    monkeypatch.setattr(native_vision, 'native_public_image', load)
+    images, receipt = await ready_article_references(service, {'id': 'story'}, [article], timeout=.2)
+    assert len(images) == len(receipt) == 1
+    assert receipt[0]['image_url'] == 'https://example.org/ready.jpg'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('number,returned', [
     ('22А', ['Тестовая улица, 22', 'Тестовая улица, 22/24']),
     ('6А', ['Барнаульская улица, 6']),

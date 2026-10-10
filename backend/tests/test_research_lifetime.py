@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from street_story.research_budget import ensure_budget, require_remaining, reserve_work, ResearchTerminated, finish_attempt
+from street_story.research_budget import ensure_budget, require_remaining, reserve_work, ResearchTerminated, ResearchWorkExhausted, finish_attempt
 from test_mvp_research import service
 
 
@@ -152,9 +152,9 @@ def test_exact_pair_envelope_preserves_original_units_and_resets_only_on_owner_w
     assert reserve_work(svc, sid, 'exact_pairs', ['ref1', 'ref2']) == ['ref1', 'ref2']
     assert reserve_work(svc, sid, 'exact_pairs', ['ref1']) == ['ref1', 'ref2']
     reserve_work(svc, sid, 'exact_pairs', ['ref3', 'ref4', 'ref5', 'ref6'])
-    with pytest.raises(ResearchTerminated) as exhausted:
+    with pytest.raises(ResearchWorkExhausted) as exhausted:
         reserve_work(svc, sid, 'exact_pairs', ['ref7'])
-    assert exhausted.value.outcome == 'search_exhausted'
+    assert exhausted.value.kind == 'exact_pairs'
     assert len(ensure_budget(svc, sid)['work_units']['exact_pairs']) == 6
     ensure_budget(svc, sid, explicit=True)
     assert reserve_work(svc, sid, 'exact_pairs', ['ref7']) == ['ref7']

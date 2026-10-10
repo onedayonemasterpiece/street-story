@@ -98,6 +98,9 @@ class PhotoIntakeInstrumentedTest {
     }
 
     @Test fun finishedIdentificationHasNoPauseControlsButExplicitPauseCanResume() {
+        val config = AppGraph.config(context)
+        val priorBackend = config.backendUrl
+        config.backendUrl = null
         val store = AppGraph.store(context)
         val imported = PhotoImporter.import(context, photo)
         val id = imported.clientStoryId
@@ -134,6 +137,7 @@ class PhotoIntakeInstrumentedTest {
                     wire.researchControls.getValue("identity").stopped = false
                     wire.identityProgress!!.finished = false
                     store.setStage(id, StoryStage.IDENTIFYING)
+                    assertEquals(StoryStage.IDENTIFYING, store.story(id)!!.stage)
                     projection.replace(id, wire)
                     MainActivity::class.java.getDeclaredMethod("refreshTopicDetail").apply { isAccessible = true }.invoke(activity)
                     assertEquals(1, host.childCount)
@@ -141,6 +145,7 @@ class PhotoIntakeInstrumentedTest {
                 }
             }
         } finally {
+            config.backendUrl = priorBackend
             store.deleteStory(id)
             projection.clear(id)
             prefs.edit().putString("active_story_id", prior).commit()

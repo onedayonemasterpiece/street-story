@@ -109,6 +109,18 @@ def test_review_goal_basis_resolves_only_received_candidate_and_eligible_ids(for
         [] if foreign else [('new_own', 'New proposition.'), ('known_own', 'Own eligible proposition.')])
 
 
+@pytest.mark.parametrize('advice', [None, 'invalid advisory shape', {'candidate_indices': [999], 'known_fact_ids': ['foreign']}])
+def test_invalid_sufficiency_advice_preserves_valid_own_verdict_without_early_stop(advice):
+    from jsonschema import Draft202012Validator
+    packet = packet_fixture()
+    packet['verifier_presentation'] = 'one_assertion_all_own_slices_v1'
+    args = {**answer(packet), 'research_sufficient': True, 'research_sufficient_basis': advice}
+    assert Draft202012Validator(headless_review_quotes.response_schema(packet, public_schema())).is_valid(args)
+    assert headless_review_quotes.sufficient_basis(packet, args, [{'id': 'own', 'text': 'Own claim'}]) == []
+    resolved = headless_review_quotes.public_result(packet, headless_review_quotes.resolve_quotes(packet, args))
+    assert all(decision['verdict'] == 'supported' for decision in resolved['decisions'])
+
+
 def public_schema():
     return next(tool['parameters'] for tool in FUNCTIONS if tool['name'] == 'finalize_fact_review')
 

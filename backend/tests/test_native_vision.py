@@ -438,6 +438,43 @@ async def test_source_map_native_subset_preserves_frozen_host_constraints(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_new_identity_plan_reaches_component_admission_without_transport_discard(tmp_path):
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema['properties']['observations']['uniqueItems'] = True
+    request = client.request
+
+    async def duplicate(method, params, timeout=30):
+        response = await request(method, params, timeout)
+        if method == 'thread/read':
+            message = response['thread']['turns'][0]['items'][-1]
+            payload = json.loads(message['text'])
+            payload['observations'] *= 2
+            message['text'] = json.dumps(payload)
+        return response
+
+    client.request = duplicate
+    host = {'independent_plan_components': True, 'schema': schema,
+        'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                              'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
+    try:
+        result = await provider.compare_source_map(story, schema, 'Identity plan', images,
+                                                  {'attempt_id': 'components'}, host)
+        assert result['result']['observations'] == ['Distinct facade', 'Distinct facade']
+        assert result['receipt']['phase'] == 'completed'
+        frozen = result['receipt']['frozen_source_map']
+        assert frozen['host_contract'] == schema and result['host_context'] == host
+        binding = {**result['receipt']['binding'], **{key: result['receipt'][key] for key in (
+            'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+        readback = await provider.compare_source_map(story, {}, 'Changed input', [], binding, {})
+        assert readback['result'] == result['result'] and readback['host_context'] == host
+        assert len(sends) == sum(method == 'turn/start' for method, _ in client.calls) == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
 async def test_source_map_native_citation_choice_is_satisfiable_and_host_proof_unchanged(tmp_path):
     from jsonschema import Draft202012Validator, ValidationError
     from street_story.identity_proof import architectural_text_decision_schema

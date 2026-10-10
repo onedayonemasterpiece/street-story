@@ -49,10 +49,10 @@ SCENARIOS.extend([
      'test_closed_native_initial_uses_native_for_new_visual_detail_without_google', {}),
 ])
 
-# Ten deterministic schedules permute the component failure/recovery order,
-# not semantic decisions. Each driver owns fresh actual product persistence;
-# no provider invocation, recognition result or inference count is fabricated.
+# Keep each distinct driver/argument combination once. Reordering isolated
+# fixtures does not create a new concurrent runtime history.
 PERMUTATIONS = []
+seen = set()
 for schedule in range(10):
     ordered = SCENARIOS[schedule:] + SCENARIOS[:schedule]
     if schedule % 2:
@@ -65,7 +65,10 @@ for schedule in range(10):
             arguments['units'] = (0, 2)[schedule % 2]
         elif scenario == 'saved_review_original_readback':
             arguments['case'] = ('addressed', 'saved_contract', 'missing_message', 'changed_route')[schedule % 4]
-        PERMUTATIONS.append((f'{schedule:02d}-{scenario}', module, name, arguments))
+        signature = (module, name, tuple(sorted(arguments.items())))
+        if signature not in seen:
+            seen.add(signature)
+            PERMUTATIONS.append((f'{scenario}-{len(PERMUTATIONS)}', module, name, arguments))
 
 
 @pytest.mark.asyncio

@@ -947,6 +947,63 @@ async def test_good_fact_enters_poi_while_slow_extraction_siblings_still_run(tmp
             await task
 
 
+@pytest.mark.parametrize('stop', [False, True])
+@pytest.mark.asyncio
+async def test_second_ready_review_finishes_before_slow_extraction_and_stop_fences_send(tmp_path, monkeypatch, stop):
+    from street_story.research_control import stop_research
+    svc, job = fixture(tmp_path, count=3)
+    release, first_reviewed = asyncio.Event(), asyncio.Event()
+    async def extract(page, story, context):
+        if page['_extractor_ordinal'] == 2:
+            await release.wait()
+        return result(page)
+    svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    class OnePacket(ControlledReview):
+        MAX_PACKET_FACTS = 1
+    calls = []
+    async def review(job, run_id, revision, **kwargs):
+        calls.append(run_id)
+        if len(calls) == 1:
+            # Freeze two ready candidates before the first packet finishes;
+            # the only remaining extraction will never wake this loop.
+            for _ in range(40):
+                with svc.store.connection() as db:
+                    if len(review_packets.pending_candidates(db, job['story_id'], RUN)) == 2:
+                        break
+                await asyncio.sleep(.01)
+            else:
+                pytest.fail('Two independent candidates never became ready')
+        committed = await OnePacket(harness)._run_one(job, run_id, revision)
+        if len(calls) == 1:
+            if stop:
+                stop_research(svc, job['story_id'], purpose='facts')
+            first_reviewed.set()
+        return committed
+    monkeypatch.setattr(harness, '_review_candidates', review)
+    task = asyncio.create_task(harness.run(job, RUN, 'History', 'history'))
+    try:
+        await asyncio.wait_for(first_reviewed.wait(), 2)
+        if stop:
+            await asyncio.sleep(1.2)
+        else:
+            for _ in range(60):
+                with svc.store.connection() as db:
+                    eligible = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
+                if eligible == 2:
+                    break
+                await asyncio.sleep(.025)
+            assert eligible == 2 and len(calls) == 2
+        assert not task.done() and not release.is_set()
+        if stop:
+            assert len(calls) == 1
+            with svc.store.connection() as db:
+                assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 3)
+
+
 @pytest.mark.asyncio
 async def test_repeated_local_capacity_polling_backs_off_without_model_send_or_owner_loss(tmp_path, monkeypatch):
     from street_story.errors import RetryableProviderError

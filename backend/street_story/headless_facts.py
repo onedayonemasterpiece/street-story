@@ -792,23 +792,31 @@ class HeadlessFacts:
                                              if fact.get('eligibility') == 'eligible'}
         ready_continuation = False
         review_task = None
+        review_wake = None
         reviewed = 0
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
         pending_tasks = set(tasks)
         try:
             while pending_tasks or review_task is not None:
                 waiting = pending_tasks | ({review_task} if review_task is not None else set())
+                if review_wake is not None:
+                    waiting.add(review_wake)
                 done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if review_wake in done:
+                    review_wake = None
+                    if (pending_tasks and review_task is None
+                            and self._snapshot(job, run_id, control_revision) is not None):
+                        review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision,
+                            stop_when=lambda: self._model_sufficient(job, run_id, control_revision, suggestions)))
                 if review_task in done:
                     just_reviewed = await review_task
                     reviewed += just_reviewed
                     review_task = None
                     if self._model_sufficient(job, run_id, control_revision, suggestions):
                         return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
-                    if (pending_tasks and just_reviewed and self._unreviewed_actionable(job, run_id)
-                            and self._review_retry_at(job, run_id, just_reviewed) <= self.service.store.now()):
-                        review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision,
-                            stop_when=lambda: self._model_sufficient(job, run_id, control_revision, suggestions)))
+                    if pending_tasks and just_reviewed and self._unreviewed_actionable(job, run_id):
+                        due = self._review_retry_at(job, run_id, just_reviewed)
+                        review_wake = asyncio.create_task(asyncio.sleep(max(0, due - self.service.store.now())))
                 for ready in done & pending_tasks:
                     pending_tasks.remove(ready)
                     unit, extracted, error = await ready
@@ -830,6 +838,10 @@ class HeadlessFacts:
                                 and extracted['result']['source_content_valid']
                                 and extracted['result']['source_matches_poi'])
                             if review_task is None or review_task.done():
+                                if review_wake is not None:
+                                    review_wake.cancel()
+                                    await asyncio.gather(review_wake, return_exceptions=True)
+                                    review_wake = None
                                 if review_task is not None:
                                     reviewed += await review_task
                                 if any(result.get('research_sufficient') is True for result in suggestions):
@@ -841,6 +853,9 @@ class HeadlessFacts:
                         LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
                                  story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
         finally:
+            if review_wake is not None:
+                review_wake.cancel()
+                await asyncio.gather(review_wake, return_exceptions=True)
             for task in tasks:
                 if not task.done():
                     task.cancel()

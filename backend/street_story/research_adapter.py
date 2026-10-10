@@ -19,7 +19,6 @@ from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
 from .service import ConflictError, canonical
 from .config import reveal
-from .review_packets import SUFFICIENCY_BASIS_SCHEMA
 
 LOG = logging.getLogger(__name__)
 
@@ -100,8 +99,10 @@ def _closed_malformed_visual(receipt):
 
 
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
-    'research_sufficient':{'type':'boolean'},
-    'research_sufficient_basis': SUFFICIENCY_BASIS_SCHEMA,
+    'research_sufficient':{'description':'Optional boolean early-stop advice, independent of claim validity.'},
+    'research_sufficient_basis':{'description':
+        'Optional {candidate_indices:[integer,...], known_fact_ids:[string,...], reason:string}. '
+        'Reference own new candidates and known eligible claims supporting the coverage goal.'},
     'next_research_query':{'type':'string','maxLength':500},
     'next_research_goal':{'type':'string','maxLength':1000},
     'source_matches_poi':{'type':'boolean'},'source_content_valid':{'type':'boolean'},

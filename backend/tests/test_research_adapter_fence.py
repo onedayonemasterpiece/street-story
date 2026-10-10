@@ -416,7 +416,7 @@ async def test_completed_receipt_records_only_novel_current_owned_evidence(tmp_p
 @pytest.mark.asyncio
 async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readback(tmp_path):
     from types import SimpleNamespace
-    from street_story.research_budget import ResearchTerminated, ensure_budget, reserve_work
+    from street_story.research_budget import ResearchWorkExhausted, ensure_budget, reserve_work
     service, sid, photo = fixture(tmp_path)
     ensure_budget(service, sid, explicit=True)
     adapter = object.__new__(ProductResearchAdapter)
@@ -429,7 +429,7 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
     _, story, schema, context = args
     reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(service.settings.identity_max_exact_pairs)])
     adapter.visual_pair_receipts = lambda *_: {}
-    with pytest.raises(ResearchTerminated, match='identity_exact_pair_envelope_exhausted'):
+    with pytest.raises(ResearchWorkExhausted, match='identity_exact_pair_envelope_exhausted'):
         await adapter._visual_pair_route_owned('native', story, schema, context, 'unit')
     result = {'status': 'mismatch'}
     completed = {'phase': 'completed', 'result': result}
@@ -452,7 +452,7 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
 async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, route):
     import json
     from types import SimpleNamespace
-    from street_story.research_budget import ResearchTerminated, ensure_budget, reserve_work
+    from street_story.research_budget import ResearchWorkExhausted, ensure_budget, reserve_work
     service, sid, photo = fixture(tmp_path)
     ensure_budget(service, sid, explicit=True)
     adapter = object.__new__(ProductResearchAdapter)
@@ -474,7 +474,7 @@ async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, 
     service.store.cache_put('research-vision-verification-v1', {
         'model_id': adapter.client.model_id, 'endpoint': adapter.client.endpoint,
         'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}, ttl_seconds=3600)
-    with pytest.raises(ResearchTerminated, match='identity_exact_pair_envelope_exhausted'):
+    with pytest.raises(ResearchWorkExhausted, match='identity_exact_pair_envelope_exhausted'):
         await adapter.visual_verdict(*args)
     with service.store.connection() as db:
         receipts = [json.loads(row[0]) for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]

@@ -34,6 +34,23 @@ async def ready_article_references(service, story, articles, *, timeout=4):
     cache_get = getattr(service.store, 'cache_get', None)
     if not callable(cache_get):
         return images, receipt
+    async def load(article, descriptor):
+        try:
+            _, raw = await native_public_image(descriptor['image_url'], descriptor=descriptor)
+            mime, data = await asyncio.to_thread(normalize_reference, raw)
+        except Exception as exc:
+            record_identity_event(service, story['id'], 'identity_t_article_reference_unavailable',
+                {'article_id': article['article_id'], 'error_type': type(exc).__name__})
+            return
+        label = f'ARTICLE REF {len(images)+1}'
+        images.append((label, mime, data))
+        receipt.append({'label': label, 'article_id': article['article_id'],
+            'article_url': article['url'], 'image_url': descriptor['image_url'],
+            'resolved_image_url': descriptor.get('resolved_image_url', descriptor['image_url']),
+            'raw_image_sha256': hashlib.sha256(raw).hexdigest(),
+            'model_image_sha256': hashlib.sha256(data).hexdigest(), 'mime_type': mime})
+
+    tasks = []
     try:
         async with asyncio.timeout(timeout):
             for article in articles:
@@ -48,27 +65,20 @@ async def ready_article_references(service, story, articles, *, timeout=4):
                 if hashlib.sha256(body).hexdigest() != cached['sha256']:
                     continue
                 _, media = extract_media(body, cached['final_url'])
-                if not media:
-                    continue
-                descriptor = dict(media[0])
-                try:
-                    _, raw = await native_public_image(descriptor['image_url'], descriptor=descriptor)
-                    mime, data = await asyncio.to_thread(normalize_reference, raw)
-                except Exception as exc:
-                    # Acquisition is optional; cancellation/Stop still propagates.
-                    record_identity_event(service, story['id'], 'identity_t_article_reference_unavailable',
-                        {'article_id': article['article_id'], 'error_type': type(exc).__name__})
-                    continue
-                label = f'ARTICLE REF {len(images)+1}'
-                images.append((label, mime, data))
-                receipt.append({'label': label, 'article_id': article['article_id'],
-                    'article_url': article['url'], 'image_url': descriptor['image_url'],
-                    'resolved_image_url': descriptor.get('resolved_image_url', descriptor['image_url']),
-                    'raw_image_sha256': hashlib.sha256(raw).hexdigest(),
-                    'model_image_sha256': hashlib.sha256(data).hexdigest(), 'mime_type': mime})
+                # Two independent ready views per selected article. Page order
+                # is no verdict, and failure of one view cannot block the other.
+                distinct = {row['image_url']: row for row in media}
+                for descriptor in list(distinct.values())[:2]:
+                    tasks.append(asyncio.create_task(load(article, dict(descriptor))))
+            await asyncio.gather(*tasks)
     except TimeoutError:
         record_identity_event(service, story['id'], 'identity_t_article_reference_wait_ended',
             {'ready_count': len(images), 'text_work_preserved': True})
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     return images, receipt
 
 
@@ -456,6 +466,11 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
 
     # Only existing, verified footprint/entrance membership is surfaced.
     address_context = observed_address_context(story, observed)
+    label_table = (receipt.get('manifest') or {}).get('objects') or {}
+    label_columns = label_table.get('columns') or []
+    labels = ({row[label_columns.index('candidate_id')]: row[label_columns.index('label')]
+        for row in label_table.get('rows') or []}
+        if 'candidate_id' in label_columns and 'label' in label_columns else {})
     physical = []
     for cid in ids:
         candidate = catalog[cid]
@@ -463,6 +478,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         entries = _subject_addresses(address_context, candidate)
         physical.append({
             'candidate_id': cid,
+            'map_label': labels.get(cid),
             'name': str(candidate.get('name') or tags.get('name') or '')[:160],
             'literal_address_entries': [
                 {'entry_id': anchor.get('mapped_entry_id'),
@@ -473,6 +489,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
                 for anchor in entries],
             'height_levels': tags.get('building:levels'),
             'geometry_available': bool(candidate.get('map_geometry')),
+            'map_geometry': copy.deepcopy(candidate.get('map_geometry')),
             'osm_physical_type': tags.get('building') or tags.get('building:part')})
 
     # Preserve the publisher's own contemporary address spellings and the
@@ -480,11 +497,6 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     from .identity_architectural_evidence import literal_evidence_inventory, _physical
     inventory = literal_evidence_inventory(story, observed, articles, candidate_ids=ids)
     physical_catalog = {cid: candidate for cid, candidate in catalog.items() if _physical(candidate)}
-    label_table = (receipt.get('manifest') or {}).get('objects') or {}
-    label_columns = label_table.get('columns') or []
-    labels = ({row[label_columns.index('candidate_id')]: row[label_columns.index('label')]
-        for row in label_table.get('rows') or []}
-        if 'candidate_id' in label_columns and 'label' in label_columns else {})
 
     initial = {}
     if prior:
@@ -512,6 +524,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'contract': 'source-architectural-comparison-input-v1',
         'original_photo_sha256': receipt.get('original_source_sha256'),
         'source_photo_sha256': receipt.get('source_photo_sha256'),
+        'map_image_sha256': receipt.get('map_image_sha256'),
         'articles': [{key: value for key, value in article.items() if key != 'text'} for article in acquired],
         'literal_source_passages': source_passages,
         'publisher_query_scope_not_identity': query,
@@ -573,6 +586,9 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'whole complex does not decide which OSM footprint is pictured. If that label/body '
         'cannot be resolved, use uncertain and retain useful hypotheses in research_priority. '
         'Do not infer what SOURCE shows from a prior nomination, article address or title. '
+        'Use useful G hypotheses to narrow comparison, but a failed G is not a veto of T. '
+        'An actually readable name or inscription is a strong search and identification clue; '
+        'distinguish a sign naming this body from a tenant, advertisement or background sign. '
         'Previous model observations and geometry conclusions are unconfirmed hypotheses. '
         'Compare a discriminating combination of actually visible structure with verbatim '
         'article spans. For each correspondence select source_span_ref from literal_source_passages '
