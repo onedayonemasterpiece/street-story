@@ -416,7 +416,6 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         # through the bounded RKB actor grant. No copied book texts are stored.
         import os
         import httpx
-        from .poi_model_bridge import execute_poi_command
         service_key=reveal(settings.rkb_poi_service_token)
         target=os.getenv("STREET_STORY_RKB_CONTEXT_URL","")
         if target!="http://127.0.0.1:8000/internal/street-story/poi-context" or not service_key:
