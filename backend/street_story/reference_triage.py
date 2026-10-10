@@ -155,12 +155,15 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
         rating = candidate.get('reference_triage') or {}
         if rating.get('applicability') not in APPLICABILITY or rating.get('source_sha256') != source_digest:
             candidate.pop('reference_triage', None)
-    if routes:
-        deferred = state.get('reference_triage_deferred') or []
-        state['queue'].extend({key: value for key, value in c.items() if key != 'triage_deferral'}
-            for c in deferred if c.get('triage_deferral') == 'triage_unavailable')
-        state['reference_triage_deferred'] = [c for c in deferred if c.get('triage_deferral') != 'triage_unavailable']
-        state.pop('reference_triage_waiting', None)
+    # Triage is optional scheduling. A failed/unknown atlas does not decide
+    # whether its original images can pass an independent SOURCE/REF gate.
+    deferred = state.get('reference_triage_deferred') or []
+    fallback_reasons = {'triage_unavailable', 'triage_created', 'triage_unknown',
+        'triage_failed', 'triage_closed_invalid', 'triage_allowance_exhausted'}
+    state['queue'].extend({key: value for key, value in c.items() if key != 'triage_deferral'}
+        for c in deferred if c.get('triage_deferral') in fallback_reasons)
+    state['reference_triage_deferred'] = [c for c in deferred if c.get('triage_deferral') not in fallback_reasons]
+    state.pop('reference_triage_waiting', None)
     # Replayed descriptors reuse only decisions bound to this exact SOURCE.
     for atlas_id, prior in history.items():
         manifest = prior.get('manifest') or {}
@@ -172,11 +175,9 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
                 apply_to_queue(state, atlas, prior['result'])
             except ValueError:
                 prior['phase'] = 'closed_invalid'
-                defer_references(state, {ref['reference_id'] for tile in manifest.get('tiles') or []
-                    for ref in tile['references']}, 'triage_closed_invalid')
-        elif prior.get('phase') in {'created', 'unknown', 'failed', 'closed_invalid'} or not prior.get('result'):
-            defer_references(state, {ref['reference_id'] for tile in manifest.get('tiles') or []
-                for ref in tile['references']}, 'triage_' + prior['phase'])
+                # Closed invalid sorting cannot invalidate original pixels.
+        # Other phases stay covered below: never resend their atlas, and
+        # leave originals available to the independently admitted comparator.
     deferred_ids = {c.get('reference_id') for c in state.get('reference_triage_deferred') or []}
     defer_references(state, deferred_ids, 'previous_triage_deferral')
     if state.get('queue') and (state['queue'][0].get('reference_triage') or {}).get('applicability') in APPLICABILITY:
@@ -191,12 +192,10 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
         return
     if len(history) >= MAX_ATLASES:
         state['reference_triage_budget_exhausted'] = True
-        defer_references(state, {c['reference_id'] for c in fresh}, 'triage_allowance_exhausted')
         adapter._save_visual_queue(session, state)
         return
     if not routes:
         state['reference_triage_waiting'] = True
-        defer_references(state, {c['reference_id'] for c in fresh}, 'triage_unavailable')
         adapter._save_visual_queue(session, state)
         return
     fresh = fresh[:9]
@@ -240,12 +239,10 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
             history[atlas['atlas_id']].update(phase='completed', result=saved['result'])
         except (KeyError, ValueError):
             history[atlas['atlas_id']]['phase'] = 'closed_invalid'
-            defer_references(state, materialized_ids, 'triage_closed_invalid')
         adapter._save_visual_queue(session, state)
         return
     if binding.get('phase', 'created') != 'created':
         history[atlas['atlas_id']]['phase'] = 'unknown'
-        defer_references(state, materialized_ids, 'triage_unknown')
         adapter._save_visual_queue(session, state)
         return  # Observe the original ID; independent full pairs can still proceed.
     model, _pool, quota, executor = routes[0]
@@ -304,11 +301,12 @@ async def triage_queue(adapter, session, state, story, source_bytes, identity, *
             'provider_send_state': 'response_closed' if response is not None else 'possibly_sent' if sent else 'not_sent',
             'error_type': type(exc).__name__, 'usage': _usage(response)})
         history[atlas['atlas_id']]['phase'] = phase
-        defer_references(state, materialized_ids, 'triage_' + phase)
         adapter._save_visual_queue(session, state)
         if not isinstance(exc, Exception):
             raise
-        return  # Addressed originals remain durable; independent fresh atlases may proceed.
+        LOG.info('street_story_reference_triage story_id=%s atlas_id=%s phase=%s independent_pairs_allowed=True',
+                 story['id'], atlas['atlas_id'], phase)
+        return  # Retain the original atlas; full pairs own independent admission.
     await provider.checkpoint(binding, {**receipt, 'phase': 'completed', 'provider_send_state': 'response_closed',
         'usage': _usage(response), 'provider_request_id': getattr(response, 'response_id', None), 'result': result,
         'manifest': atlas['manifest']})

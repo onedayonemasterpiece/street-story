@@ -3,6 +3,45 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## a31e7e4 readback and optional reference sorting isolation
+
+Exact a31e7e4 hosted backend, Android checks and emulator passed. Trusted local
+verification with the pinned real private SDK completed with2705 passed,
+2 skipped and1 failed: the review/restart fixture exceeded its1-second Event
+wait during severe shared-host pressure. The unchanged isolated test passed
+with21 reference controls in12.39s. This does not retrospectively turn the
+failed full suite green.
+
+The same-version mandatory cold batch completed normally in1067.493s and failed
+all five cases:132/130/111/102/104 had no accepted identity or eligible facts.
+Their observed elapsed times were182.549/184.099/254.748/186.820/181.011s.
+111's late deadline is retained as FAIL. No successful cold release is claimed.
+The3.3GiB host had its4GiB swap full and load42 while full tests and paid work
+ran together. Actual logs separately show Native token-budget refusal,
+independent text admission, native app-server exit-9 (cause unproved), and
+transport/event-loop delays. Further substantial checks are serialized;
+unrelated product services were not stopped.
+
+A corrected warm next-story104 harness continued past intermediate uncertain,
+but still failed181.841s. Its Native SOURCE/MAP response closed in23.613s;
+two optional contact-sheet attempts became UNKNOWN and no full SOURCE/REF
+comparison ran. The sorting code treated technical unknown, invalid output,
+no sorting route or the four-atlas limit as grounds to defer every original.
+The existing visual worker could consequently finish the entire story because
+an optional scheduling allowance was exhausted.
+
+The repair keeps original atlas receipts and bindings, never resends UNKNOWN,
+and restores originals deferred for technical reasons to the existing queue.
+A full SOURCE/REF comparison still needs its own provider admission, actual
+pixels, model verdict and ordinary physical-proof gate. Model-declared
+not_comparable remains deferred; sorting tiles never become identity evidence.
+The atlas cap bounds sorting alone.108 affected route/worker/Stop/photo/quota
+checks passed in30.15s. Changed real visual verification is pending.
+
+Evidence: full-a31e7e4.xml, cold-a31e7e4, editorial-104-current-3369cde/
+poi-reuse-a31e7e4.json, triage-v18.xml and triage-fences-v18.xml in the retained
+central task directory linked below. Production remainsdb0c0d0.
+
 ## Current 3369cde product proof and measured orchestration repair
 
 The current mandatory-five live batch completed with four actual closed Native

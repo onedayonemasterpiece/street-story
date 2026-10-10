@@ -718,10 +718,6 @@ class LiveVisualComparisonMixin:
             from .reference_triage import triage_queue
             await triage_queue(self, session, state, story, source_bytes, identity,
                                generation=generation, control_revision=expected['control_revision'])
-            if state.get('reference_triage_budget_exhausted') and not state['queue']:
-                return {'reference_triage_exhausted': True, 'exhausted': True, 'images_compared': 0,
-                    'instruction': 'Reference relevance allowance exhausted. Untriaged originals retained; '
-                        'no image mismatch or completed comparison was asserted.'}
         if state['queue'] and not unsettled:
             previous_head = state['queue'][0].get('reference_id')
             # Cover distinct source pages before repeatedly consuming one
@@ -992,11 +988,6 @@ class LiveVisualComparisonMixin:
             state['preferred_units'] = int(state.get('preferred_units') or 0) + 1 if candidate.get('reference_reuse') or source_rank(
                 state['sources'].get(candidate.get('url')) or {'source': {'url': candidate.get('url')}}) < 2 else 0
         if not references:
-            if state.get('reference_triage_budget_exhausted'):
-                self._save_visual_queue(session, state)
-                return {'reference_triage_exhausted': True, 'exhausted': True, 'images_compared': 0,
-                    'instruction': 'Reference relevance allowance exhausted. Untriaged originals retained; '
-                        'no image mismatch or completed comparison was asserted.'}
             # Retry failed media on a later turn; never manufacture a verdict.
             failed = state['fetch_failures']
             state['fetch_failures'] = []

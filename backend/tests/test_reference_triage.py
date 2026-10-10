@@ -135,11 +135,11 @@ async def test_unknown_triage_retains_original_operation_without_new_send_on_wak
     session = SimpleNamespace(id='offline-live', resource_id=story['id'], state={})
     monkeypatch.setattr(worker, '_save_visual_queue', lambda *args: None)
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    original = [c['reference_id'] for c in state['reference_triage_deferred']]
+    original = [c['reference_id'] for c in state['queue']]
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
     assert len(sends) == 1 and len(downloads) == 3
-    assert state['queue'] == []
-    assert [c['reference_id'] for c in state['reference_triage_deferred']] == original
+    assert [c['reference_id'] for c in state['queue']] == original
+    assert not state.get('reference_triage_deferred')
     assert not state.get('reviewed_reference_ids')
     with svc.store.connection() as db:
         rows = list(db.execute("SELECT logical_id,receipt_json FROM research_provider_attempts WHERE role='reference_triage'"))
@@ -179,7 +179,7 @@ async def test_explicit_small_output_cap_reduces_shared_reservation_and_keeps_pr
 
 
 @pytest.mark.asyncio
-async def test_four_atlas_envelope_defers_without_download_and_two_images_require_triage(tmp_path, monkeypatch):
+async def test_four_atlas_envelope_preserves_pairs_without_download_and_two_images_can_be_triaged(tmp_path, monkeypatch):
     from test_parallel_identity_pairs import prepare
     from street_story.headless_identity import HeadlessIdentity
     svc, story, source = prepare(tmp_path, count=3)
@@ -191,8 +191,8 @@ async def test_four_atlas_envelope_defers_without_download_and_two_images_requir
     candidates = [{**c, 'reference_id': f'ref:{i}'} for i, c in enumerate(research['visual_identity']['candidates'])]
     state = {'queue': candidates.copy(), 'reference_triage_atlases': {str(i): {} for i in range(4)}}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    assert state['reference_triage_budget_exhausted'] and state['queue'] == []
-    assert len(state['reference_triage_deferred']) == 3
+    assert state['reference_triage_budget_exhausted'] and state['queue'] == candidates
+    assert not state.get('reference_triage_deferred')
     assert downloads == [] and sends == []
     state = {'queue': candidates[:2]}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
@@ -262,37 +262,15 @@ async def test_unknown_atlas_allows_independent_next_atlas_but_never_resends_ori
     originals = [{**c, 'reference_id': f'ref:{i}'} for i, c in enumerate(research['visual_identity']['candidates'])]
     state = {'queue': [originals[0]]}
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
-    state['queue'].extend(originals)
+    state['queue'].append(originals[1])
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
     await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
     assert len(downloads) == len(sends) == 2
-    assert {c['reference_id'] for c in state['reference_triage_deferred']} == {'ref:0', 'ref:1'}
-    assert state['queue'] == []
+    assert {c['reference_id'] for c in state['queue']} == {'ref:0', 'ref:1'}
+    assert not state.get('reference_triage_deferred')
     with svc.store.connection() as db:
         attempts = list(db.execute("SELECT logical_id FROM research_provider_attempts WHERE role='reference_triage'"))
     assert len(attempts) == len(set(row[0] for row in attempts)) == 2
-
-
-@pytest.mark.asyncio
-async def test_real_worker_reports_triage_exhaustion_without_download_or_exact_send(tmp_path, monkeypatch):
-    from test_parallel_identity_pairs import prepare
-    import street_story.reference_triage as triage
-    svc, story, _ = prepare(tmp_path, count=1)
-    provider, downloads, sends = provider_fixture(svc, monkeypatch)
-    monkeypatch.setattr(triage, 'MAX_ATLASES', 0)
-    pairs = []
-    async def pair(*args):
-        pairs.append(args)
-        raise AssertionError('Exhausted triage cannot send unreviewed references')
-    monkeypatch.setattr(provider, 'visual_verdict', pair)
-    assert await svc.run_once(claim_kind='identity_visual')
-    _, research = svc._identity_snapshot(story['id'])
-    assert downloads == sends == pairs == []
-    assert research['visual_search_operation']['reference_triage_budget_exhausted']
-    assert len(research['visual_search_operation']['reference_triage_deferred']) == 1
-    assert not research['visual_search_operation']['reviewed_reference_ids']
-    assert research['automatic_research_outcome']['reason'] == 'reference_triage_exhausted'
-    assert research['automatic_research_outcome']['purpose'] == 'identity'
 
 
 @pytest.mark.asyncio
@@ -311,3 +289,67 @@ async def test_source_specific_rating_is_not_reused_for_different_source_pixels(
     old = state['queue'][0]['reference_triage']['atlas_id']
     await triage_queue(worker, session, state, story, image('black'), research['visual_identity'], generation=0, control_revision=0)
     assert len(sends) == 2 and state['queue'][0]['reference_triage']['atlas_id'] != old
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unknown', [True, False])
+async def test_optional_triage_failure_preserves_pair_and_original_receipt(tmp_path, monkeypatch, unknown):
+    from test_parallel_identity_pairs import prepare, response
+    svc, story, _ = prepare(tmp_path, count=1)
+    provider, _, sends = provider_fixture(svc, monkeypatch, unknown=unknown, decide=lambda manifest: {'tiles': []})
+    pairs = []
+    async def compare(snapshot, item, schema, context):
+        pairs.append(item)
+        assert len(item['_visual_image_parts']) == 2
+        return response(item, 'independent-native-fixture', 'match')
+    monkeypatch.setattr(provider, 'visual_verdict', compare)
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert len(sends) == len(pairs) == 1
+    assert svc.story(story['id'])['visual_identity']['status'] == 'match'
+    with svc.store.connection() as db:
+        receipt = json.loads(db.execute("SELECT receipt_json FROM research_provider_attempts WHERE role='reference_triage'").fetchone()[0])
+    assert receipt['phase'] == ('unknown' if unknown else 'failed')
+    assert receipt['provider_send_state'] == ('possibly_sent' if unknown else 'response_closed')
+    _, research = svc._identity_snapshot(story['id'])
+    assert len(research['visual_search_operation']['reviewed_reference_ids']) == 1
+
+
+@pytest.mark.asyncio
+async def test_optional_atlas_allowance_does_not_block_full_pair(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare, response
+    import street_story.reference_triage as triage
+    svc, story, _ = prepare(tmp_path, count=1)
+    provider, _, sends = provider_fixture(svc, monkeypatch)
+    monkeypatch.setattr(triage, 'MAX_ATLASES', 0)
+    pairs = []
+    async def compare(snapshot, item, schema, context):
+        pairs.append(item)
+        return response(item, 'independent-native-fixture', 'match')
+    monkeypatch.setattr(provider, 'visual_verdict', compare)
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert sends == [] and len(pairs) == 1
+    assert svc.story(story['id'])['visual_identity']['status'] == 'match'
+    _, research = svc._identity_snapshot(story['id'])
+    assert research['visual_search_operation']['reference_triage_budget_exhausted']
+    assert len(research['visual_search_operation']['reviewed_reference_ids']) == 1
+
+
+@pytest.mark.asyncio
+async def test_unavailable_triage_restores_legacy_originals_without_resending_unknown(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare
+    from street_story.headless_identity import HeadlessIdentity
+    svc, story, source = prepare(tmp_path, count=1)
+    provider, downloads, sends = provider_fixture(svc, monkeypatch, unknown=True)
+    _, research = svc._identity_snapshot(story['id'])
+    worker = HeadlessIdentity(svc)
+    monkeypatch.setattr(worker, '_save_visual_queue', lambda *args: None)
+    session = SimpleNamespace(id='offline-live', resource_id=story['id'], state={})
+    candidate = {**research['visual_identity']['candidates'][0], 'reference_id': 'ref:0'}
+    state = {'queue': [candidate]}
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    state['reference_triage_deferred'] = [{**state['queue'].pop(), 'triage_deferral': 'triage_unknown'}]
+    monkeypatch.setattr(provider.primary_vision, '_verified_routes', lambda: [])
+    await triage_queue(worker, session, state, story, source, research['visual_identity'], generation=0, control_revision=0)
+    assert state['queue'] == [candidate] and not state['reference_triage_deferred']
+    assert len(sends) == len(downloads) == 1
+    assert next(iter(state['reference_triage_atlases'].values()))['phase'] == 'unknown'
