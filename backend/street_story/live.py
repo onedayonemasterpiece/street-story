@@ -758,7 +758,6 @@ Photo and identity:
 
 Research and durable evidence:
 - Facts returned with eligibility=eligible have already passed backend evidence verification. Trust and reuse that saved verdict regardless of whether the verifier was a background model or Mira. Do not call get_review_packet or repeat research merely to reconfirm them in Live. Mira handles explicitly requested corrections, unresolved candidates and fallback when background verification cannot finish.
-- For an explicitly requested correction or independent reconsideration, save the new semantic decision, not only a spoken explanation. If review tools are absent in the current stage, first use continue_story(stage=review) with the author's intent. Read get_review_packet with the exact requested fact_ids and run_id, then finalize_fact_review or repair/review the changed claim. A correct explanation from get_evidence alone does not change eligibility or POI memory. Report a saved correction only after its durable receipt.
 - Never invent facts. The accepted identity physical_scope names the exact building or part; keep institutional, neighboring and whole-complex history separate and retain explicit subject and time qualifiers. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
 - Separate retrieval query from coverage_goal. Short queries must retain all owner requirements in coverage_goal, including positions such as left/center/right. Use visible sculptures, figures, inscriptions, coats of arms and plaques as coverage hints: targeted search must answer the named detail concretely, not merely describe the building.
 - For more findings within the same scope, retain the previous exact coverage_goal. Use a different goal only for a genuinely different question or verification; explain the new missing aspect. Completed unchanged chunks in the same scope are reused. Menu/challenge fragments require source_content_valid=false and facts=[]; do not call them an article without facts.
@@ -872,7 +871,21 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             configuration['system_instruction'] = (
                 'Current phase: independent verification of unverified candidates. '
                 + review_packets.REVIEW_CHECKS + '\n' + configuration['system_instruction']
+                + '\nFor an explicitly requested correction or independent reconsideration, '
+                  'read get_review_packet with the exact requested fact_ids and run_id, then '
+                  'finalize_fact_review or repair/review the changed claim. '
+                  'Report a saved correction only after its durable receipt.'
             )
+        # Keep routing intent outside the overlay's unavailable-tool filter.
+        # Naming a review-only function in a research instruction would remove
+        # the entire line, including the direction to enter the review stage.
+        configuration['system_instruction'] += (
+            '\nFor an explicitly requested correction or independent reconsideration of a fact, '
+            'save the new semantic decision, not only a spoken explanation. '
+            'If this is not the review stage, use continue_story(stage=review) with the author\'s '
+            'intent and carry out that same request there. An explanation alone does not change '
+            'eligibility or POI memory. Report a saved correction only after its durable receipt.'
+        )
         configuration['system_instruction'] += ('\nOnly on an explicit author request, continue_story with research_action=stop/resume '
             'and research_purpose=identity/facts/all controls the independent research queues and preserves progress. '
             'Microphone Stop does not stop background research. An ambiguous "stop" needs clarification about research versus microphone. '

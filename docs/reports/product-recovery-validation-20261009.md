@@ -3,6 +3,22 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## af70afb correction routing was stripped from the actual stage instruction
+
+The changed af70afb recovery also failed explicit_fact_reconsideration_readback_timeout:
+Mira again read get_evidence and correctly rejected the subject transfer in speech,
+but performed no review mutation. Both original reports remain retained. Source
+inspection found that the stage configuration removes entire overlay lines naming
+unavailable functions. The correction instruction named review-only functions,
+so the research bundle removed its routing instruction along with those names.
+The routing policy now survives outside that filter, names only the common router,
+and requires the same author request to continue in review. Exact packet/finalize
+instructions belong to the review bundle. All five generated bundles are checked
+for the correction policy and their existing unavailable-function constraints.
+59 affected Live editor/projection/control tests passed11.46s; live durable review
+and subsequent editorial acceptance remain pending. This changes no fact verdict
+through a deterministic classifier and replays no identity/provider operation.
+
 ## b8fc6c4 explicit Mira correction: semantic result without durable receipt
 
 Actual unchanged-story editorial attempt on b8fc6c4 read the own evidence through

@@ -254,6 +254,13 @@ def test_stage_prompts_advertise_only_available_tools_and_leave_room_for_transit
         for name in {f['name'] for f in FUNCTIONS} - tools:
             assert not re.search(r'\b' + re.escape(name) + r'\b', instruction), (capability, name)
         assert 'continue_story first' in instruction
+        assert 'explicitly requested correction or independent reconsideration' in instruction
+        assert 'An explanation alone does not change eligibility or POI memory' in instruction
+        if capability != 'review':
+            assert 'use continue_story(stage=review)' in instruction
+        else:
+            assert 'read get_review_packet with the exact requested fact_ids and run_id' in instruction
+            assert 'finalize_fact_review or repair/review the changed claim' in instruction
         if capability not in {'research', 'review'}:
             assert EXTRACTION_CHECKS not in instruction and REVIEW_CHECKS not in instruction
     publication = adapter._capability_configuration(full, 'publication')
