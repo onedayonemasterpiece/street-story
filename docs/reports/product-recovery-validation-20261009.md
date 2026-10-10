@@ -3,6 +3,31 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 27a7c66 full verification and Native final-input accounting
+
+Exact27a7c66 trusted full verification with the installed pinned private SDK:
+2713 passed,2 skipped in571.04s. Hosted backend, Android checks and emulator
+passed. Canonically signed Android test build0.1.1223 from7623da2 completed
+signature/checks/emulator verification; downloaded APK checksum passed. App code
+is unchanged by the subsequent backend repairs. This remains a test build with
+production backenddb0c0d0; no accepted deployment or owner acceptance is claimed.
+
+Final Native request audit found its admission input_chars counted the prompt
+only, omitting the emitted strict output schema, SOURCE/REF labels and actual
+thread instructions. The same installed WorkloadAdmission estimator now receives
+the complete owned textual envelope; all image bytes and output allowance remain
+separate. Model RPC input/schema/instructions are unchanged. Receipt metadata
+records Unicode characters and UTF-8 bytes as different units and marks unseen
+provider context unknown. No token limit, quota, output allowance or permission
+window was raised.92 affected Native transport/quota/readback/four-lane controls
+passed29.17s; new controls compare admission with actual emitted RPCs for both
+SOURCE/MAP and SOURCE/REF, including a large Cyrillic schema. They do not claim
+these character counts are exact model tokens.
+
+Evidence: full-27a7c66.xml, native-input-v20.xml, owner-build-7623da2/provenance.json
+and the actual artifact in the retained central task directory. Cold canary on
+the following frozen source is pending; prior failed cases remain unchanged.
+
 ## 7623da2 warm POI reuse and frozen cold failure
 
 The ordinary next-story104 API upload on exact7623da2 passed warm POI reuse in
@@ -1354,3 +1379,38 @@ failures still require product verification before deployment.
 
 Retained evidence: `/home/dev/artifacts/street-story/20261009T183816Z-streaming-funnel-pr246-20261009/cold-0b792c2`
 and `/home/dev/artifacts/street-story/20261009T204748Z-provider-failure-isolation-20261009`.
+
+## Versioned corpus ledger (latest recorded run per photo)
+
+Versioned observations, not one combined cold PASS. No latest mandatory case passed. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures.120 identity evidence is withdrawn.
+
+| Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
+| --- | --- | --- | ---: | ---: | --- | ---: | ---: |
+| 102 | 7623da2 | FAIL; — | 393 | — | yes | 0 | 191.414 |
+| 104 | 7623da2 | CONDITIONAL_CONTEXT_AVAILABLE; — | 414 | — | yes | 0 | 188.382 |
+| 105 | 83d73c8 | FAIL; — | 534 | 1 | unfixed/unknown | 0 | 181.129 |
+| 106 | 83d73c8 | FAIL; — | 573 | 0 | yes | 0 | 71.946 |
+| 107 | 83d73c8 | BLOCKED; — | 672 | 0 | unfixed/unknown | 0 | 95.832 |
+| 108 | 83d73c8 | BLOCKED; — | 437 | 0 | yes | 0 | 86.735 |
+| 109 | 77d4222 | FAIL; — | 293 | 3 | yes | 0 | 180.316 |
+| 110 | 77d4222 | FAIL; — | 182 | 0 | unfixed/unknown | 0 | 113.773 |
+| 111 | 7623da2 | FAIL; — | 139 | — | yes | 0 | 386.817 |
+| 112 | 77d4222 | FAIL; — | 414 | 0 | unfixed/unknown | 0 | 168.804 |
+| 118 | 77d4222 | BLOCKED; — | 478 | 1 | unfixed/unknown | 0 | 143.572 |
+| 119 | 62fb7ad | FAIL; — | 404 | 2 | unfixed/unknown | 0 | 181.209 |
+| 120 | 62fb7ad | IDENTITY_UNCONFIRMED; osm:way:96057156 (unconfirmed) | 362 | 0 | unfixed/unknown | 8 mechanical, identity unconfirmed | 401.346 |
+| 121 | 77d4222 | BLOCKED; — | 400 | 0 | unfixed/unknown | 0 | 119.284 |
+| 122 | 77d4222 | FAIL; — | 400 | 0 | yes | 0 | 92.125 |
+| 123 | 77d4222 | BLOCKED; — | 75 | 0 | unfixed/unknown | 0 | 66.625 |
+| 124 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 17.686 |
+| 125 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 11.704 |
+| 126 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 17.334 |
+| 127 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 46.148 |
+| 128 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 54.928 |
+| 129 | 62fb7ad | FAIL; — | 347 | 2 | unfixed/unknown | 0 | 181.239 |
+| 130 | 7623da2 | FAIL; — | 219 | — | yes | 0 | 192.084 |
+| 131 | 77d4222 | BLOCKED; — | 192 | 0 | unfixed/unknown | 0 | 104.739 |
+| 132 | 7623da2 | FAIL; — | 299 | — | yes | 0 | 195.180 |
+| 133 | 77d4222 | BLOCKED; — | 245 | 0 | unfixed/unknown | 0 | 97.482 |
+
+Inputs are the byte-verified frozen26-photo manifest. Unfixed target is not a correct-answer claim. Per-case source/evidence/SDK usage and camera status remain in retained case reports; provider-cost allocation not reported by a provider remains unknown. T counts and reductions are not inferred where no closed T verdict exists. Actual7623da2 closed distinct SOURCE count:1 (104); repetitions do not add N.

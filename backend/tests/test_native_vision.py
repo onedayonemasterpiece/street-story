@@ -425,3 +425,45 @@ async def test_worker_cancellation_interrupts_owned_turn_and_keeps_unknown_recei
         await task
     assert sum(method == 'turn/interrupt' for method, _ in client.calls) == 1
     assert receipts[-1]['phase'] == 'unknown' and finalized[-1][1] == 'unknown'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_map', [False, True])
+async def test_admission_counts_actual_schema_instructions_labels_and_unicode_separately(tmp_path, source_map):
+    provider, client, source, story, context, _, _, _ = setup(tmp_path)
+    workloads = []
+    original = provider.admission
+    @asynccontextmanager
+    async def observed(binding, workload):
+        workloads.append(dict(workload))
+        async with original(binding, workload) as lease:
+            yield lease
+    provider.admission = observed
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema['description'] = 'Архитектурное описание. ' * 300
+    context['observation'] = 'Кириллица остаётся Unicode'
+    if source_map:
+        host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                     'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+        result = await provider.compare_source_map(story, schema, 'Описание SOURCE и MAP',
+            [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)], {'attempt_id': 'full-envelope'}, host)
+    else:
+        result = await provider.compare_visual(None, story, schema, context, {'attempt_id': 'full-envelope'})
+    thread = next(params for method, params in client.calls if method == 'thread/start')
+    turn = next(params for method, params in client.calls if method == 'turn/start')
+    # Compare admission with the actual two emitted RPCs, excluding inline
+    # image data which the same installed estimator accounts separately.
+    actual = {'input': [part for part in turn['input'] if part['type'] == 'text'],
+              'outputSchema': turn['outputSchema'], 'baseInstructions': thread['baseInstructions'],
+              'developerInstructions': thread['developerInstructions']}
+    serialized = json.dumps(actual, ensure_ascii=False, separators=(',', ':'))
+    assert workloads[0]['input_chars'] == len(serialized) > len(turn['input'][0]['text'])
+    assert workloads[0]['max_output_tokens'] == 8192
+    metadata = result['receipt']['request_input']
+    assert metadata['text_chars'] == len(serialized)
+    assert metadata['text_utf8_bytes'] == len(serialized.encode()) > metadata['text_chars']
+    assert metadata['image_count'] == 2
+    assert metadata['image_bytes'] == sum(len(base64.b64decode(part['url'].split(',', 1)[1]))
+        for part in turn['input'] if part['type'] == 'image')
+    assert metadata['unexposed_provider_context'] == 'unknown'
+    await provider.close()
