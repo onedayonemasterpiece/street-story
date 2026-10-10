@@ -302,7 +302,15 @@ def test_readback_validates_immutable_own_and_canonical_basis_without_scan(tmp_p
         sync_poi_review_from_story(db, sid, 390)
     result = harness.read_case(svc, case, item())
     assert result['eligible_proved_count'] == 1
-    assert result['first_eligible_elapsed_s'] == 280
+    assert result['first_eligible_elapsed_s'] == 290
+    assert result['eligible_facts'][0]['admitted_at'] == 380
+    assert result['eligible_facts'][0]['available_at'] == 390
+    # A warm story uploaded after the original semantic admission cannot claim
+    # a zero-time result: its new local projection was created at 390.
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET created_at=385 WHERE id=?', (sid,))
+    fresh_case = {**harness.blank_result(item()), 'story_id': sid}
+    assert harness.read_case(svc, fresh_case, item())['first_eligible_elapsed_s'] == 5
     with svc.store.tx() as db:
         proof = json.loads(db.execute('SELECT review_proof_json FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0])
         proof['subject'] = 'osm:way:foreign'

@@ -425,7 +425,7 @@ def read_case(service, case, item):
         jobs = [dict(job) for job in db.execute('SELECT id,kind,state,attempts,last_error,created_at,updated_at '
             'FROM jobs WHERE story_id=? ORDER BY created_at', (row['id'],))]
         story_facts = [dict(fact) for fact in db.execute('SELECT a.assertion_id,a.display_text,a.revision_digest,'
-            'a.review_status,a.eligibility,a.updated_at,a.accepted_basis_json,f.sources_json FROM fact_assertions a '
+            'a.review_status,a.eligibility,a.created_at,a.updated_at,a.accepted_basis_json,f.sources_json FROM fact_assertions a '
             'JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
             'WHERE a.story_id=? AND a.eligibility=\'eligible\'', (row['id'],))]
         keys = memory_keys(db, identity)
@@ -463,10 +463,13 @@ def read_case(service, case, item):
             if matches:
                 accepted_at = json.loads(fact['accepted_basis_json'])['accepted_at'] if own_basis_valid else fact['updated_at']
                 proved.append({**fact, 'admitted_at': accepted_at,
+                               'available_at': max(float(fact['created_at']), float(accepted_at)),
                                'sources': json.loads(fact['sources_json']), 'canonical_evidence': matches})
     now, started = service.store.now(), float(row['created_at'])
     identity_at = float(identity.get('resolved_at') or now) if identity.get('status') == 'match' else None
-    first_at = min((float(fact['admitted_at']) for fact in proved), default=None)
+    # Canonical admission time is lineage, not availability in a newly uploaded
+    # story. Its local projection must exist before the author can use it.
+    first_at = min((float(fact['available_at']) for fact in proved), default=None)
     if identity_at is not None:
         case['identity_elapsed_s'] = min(case.get('identity_elapsed_s', float('inf')), max(0, identity_at - started))
     if first_at is not None:
