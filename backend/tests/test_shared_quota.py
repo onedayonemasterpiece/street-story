@@ -370,3 +370,54 @@ async def test_full_durable_pipeline_uses_shared_gate_without_repeating_stages(t
     with svc.store.connection() as db:
         job = db.execute('SELECT state,attempts FROM jobs').fetchone()
         assert job['state'] == 'done' and job['attempts'] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('controller_failure', [False, True])
+async def test_owned_control_connection_survives_requests_and_service_shutdown(tmp_path, monkeypatch, controller_failure):
+    from test_identity_lifecycle import make_service
+    for i, key in enumerate(KEYS):
+        monkeypatch.setenv(f'GOOGLE_API_KEY{i+1}', key)
+    cfg = replace(config(tmp_path), gemini_api_keys=tuple(SecretStr(k) for k in KEYS),
+        gemini_quota_supabase_url='https://quota.test', gemini_quota_supabase_key='quota-secret')
+    controller, created = Controller(), []
+    original = httpx.AsyncClient
+    def create(**kwargs):
+        client = original(transport=httpx.MockTransport(controller.handle), **kwargs)
+        created.append(client)
+        return client
+    monkeypatch.setattr('street_story.quota.httpx.AsyncClient', create)
+    gemini = GeminiClient(cfg)
+    gate = gemini.quota
+    if controller_failure:
+        controller.fail = 'google_ai_api_keys'
+        with pytest.raises(GeminiUnavailable):
+            await gate.registered_id(KEYS[0])
+        assert controller.rows == {}  # No reservation or provider dispatch.
+        controller.fail = None
+    sends = []
+    async def provider():
+        sends.append('sent')
+        return response()
+    await gate.run(KEYS[0], 20, 1024, provider)
+    await gate.recover()
+    assert sends == ['sent'] and len(created) == 1 and not created[0].is_closed
+    assert all(row['sent_at'] and row['finalized_at'] for row in controller.rows.values())
+    svc, _ = make_service(tmp_path / 'service')
+    svc.providers.gemini = gemini
+    await svc.close()
+    assert created[0].is_closed
+    with gemini.store.connection() as db:
+        assert not db.execute('SELECT 1 FROM gemini_quota_journal').fetchone()
+
+
+@pytest.mark.asyncio
+async def test_injected_controller_connection_is_closed_by_its_owner(tmp_path):
+    cfg = replace(config(tmp_path), gemini_quota_supabase_url='https://quota.test',
+                  gemini_quota_supabase_key='quota-secret')
+    controller = Controller()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(controller.handle)) as external:
+        gate = SharedQuotaGate(cfg, GeminiClient(cfg).pool, http=external)
+        assert isinstance(await gate.request('GET', 'google_ai_api_keys'), list)
+        await gate.close()
+        assert not external.is_closed

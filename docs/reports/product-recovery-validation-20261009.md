@@ -3,6 +3,51 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 7623da2 warm POI reuse and frozen cold failure
+
+The ordinary next-story104 API upload on exact7623da2 passed warm POI reuse in
+122.471s: correct relation3665416, all eight existing canonical claim IDs reused,
+old draft/selection preserved and new draft/selection empty. Google3.8's
+original outcome remained fenced; a distinct3.5 initial operation and its
+SOURCE/architectural-text followup closed. The fixture's hour-long qualification
+cache had expired, so Native was unavailable in this warm test. No extra
+qualified warm replay was started after this PASS. It is compatible downstream
+reuse evidence, not a cold recognition or new REF comparison.
+
+The serialized same-SHA mandatory cold batch completed normally1251.104s and
+failed release acceptance:104/102/111/130/132 returned no confirmed identity or
+eligible facts at188.382/191.414/386.817/192.084/195.180s.104's conditional context
+is not acceptance. Its Native SOURCE/MAP closed43.727s with36064 reported tokens;
+later T admission failed at the controller boundary.111 Native refusal was
+NotSent. Host pressure reached load39 with full4GiB swap despite no concurrent
+local test job.111's late deadline is retained as FAIL, not forgiven. Production
+remainsdb0c0d0. The current actual closed distinct-building SOURCE count is one
+(104); repeated/warm104 turns do not increase that count.
+
+Two transport/scheduling repairs follow this evidence. Shared quota requests
+reuse an owned HTTP connection across registry/reserve/mark_sent/readback/
+finalize, and service shutdown closes owned clients. Injected clients remain
+owned by their caller. Quota authority, unknown journals and send fences are
+unchanged. Qualified Native now receives a lane before duplicate Google slots,
+so a two-reference batch can use two different providers. An actual-worker
+control verifies Native's independent second reference proceeds while the
+first Google child remains pending with its original ID.63 affected checks
+passed11.64s. Real controller registry GETs (no reservation/inference) succeeded
+287.714/166.279ms using one client; setup65.438ms. This is a transport improvement,
+not proof that TLS setup alone caused the host incident.
+
+The acceptance harness's actual report reached4.85MB. Its measured JSON encoding
+was54ms on the recovered host; repeated full report/case writes now occur on
+state/fact changes, terminal, or at most every5s. Upload IDs and provider
+checkpoints remain immediately durable. Polling and180/300/480s gates remain
+unchanged. Failed prior timing/results are not rewritten.
+
+Canonical-signature test APK from7623da2 is building through normal workflow
+[38014210867](https://github.com/onedayonemasterpiece/street-story/actions/runs/38014210867).
+No deployment or owner acceptance is claimed. Evidence: cold-7623da2,
+editorial-104-current-3369cde/poi-reuse-7623da2.json, transport-v19.xml and
+controller-connection-live.json under the retained central task root below.
+
 ## a31e7e4 readback and optional reference sorting isolation
 
 Exact a31e7e4 hosted backend, Android checks and emulator passed. Trusted local

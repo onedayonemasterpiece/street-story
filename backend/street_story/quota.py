@@ -44,6 +44,7 @@ def denial_delay(result, now):
 class SharedQuotaGate:
     def __init__(self, settings, pool, *, http=None):
         self.settings, self.pool, self.store, self.http = settings, pool, pool.store, http
+        self._owned_http = None
         self.url = (settings.gemini_quota_supabase_url or '').rstrip('/')
         self.token = settings.gemini_quota_supabase_key
         # Resolve registered names by secret equality, also for legacy single-key
@@ -57,6 +58,11 @@ class SharedQuotaGate:
         self.lock = asyncio.Lock()
         self.active = set()
 
+    async def close(self):
+        if self._owned_http is not None:
+            await self._owned_http.aclose()
+            self._owned_http = None
+
     def unavailable(self):
         self.pool.event('shared_control_unavailable', 'shared_model')
         return GeminiUnavailable(self.pool.clock()+30, 'shared_control_unavailable')
@@ -64,8 +70,9 @@ class SharedQuotaGate:
     async def request(self, method, path, **kwargs):
         if not self.url.startswith('https://') or not reveal(self.token):
             raise self.unavailable()
-        own = self.http is None
-        client = self.http or httpx.AsyncClient(timeout=3, follow_redirects=False)
+        if self.http is None and self._owned_http is None:
+            self._owned_http = httpx.AsyncClient(timeout=3, follow_redirects=False)
+        client = self.http or self._owned_http
         started = time.monotonic()
         try:
             async with asyncio.timeout(4):
@@ -80,9 +87,6 @@ class SharedQuotaGate:
                 error_type=type(exc).__name__, status_code=getattr(response, 'status_code', None),
                 duration_ms=round((time.monotonic() - started) * 1000))
             raise self.unavailable() from None
-        finally:
-            if own:
-                await client.aclose()
 
     async def rpc(self, name, payload):
         return await self.request('POST', 'rpc/google_ai_'+name, json=payload)

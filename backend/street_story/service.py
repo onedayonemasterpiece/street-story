@@ -662,6 +662,9 @@ class StreetStoryService:
         close = getattr(researcher, 'close', None)
         if callable(close):
             await close()
+        close = getattr(self.providers.gemini, 'close', None)
+        if callable(close):
+            await close()
 
     def mutate_refinement(self, story_id: str, key: str, body: dict[str, Any]) -> dict[str, Any]:
         session_id = str(body.get("voice_session_id", ""))

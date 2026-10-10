@@ -593,14 +593,23 @@ async def run(args):
                     case.update(story_id=story['id'], status='RUNNING')
                     save(report_path, report)
                     service.ensure_identity(story['id'])
+                last_saved, last_signature = 0, None
                 while True:
                     apply_hard_cap(service, case['story_id'])
                     read_case(service, case, item)
                     if stop_wrong_physical_case(service, case, item):
                         read_case(service, case, item)
                     report['sdk_accounting'] = summarize_sdk_journal(journal_path)
-                    save(report_path, report)
-                    save(output/f'case-{item["message_id"]}.json', case)
+                    # Provider checkpoints and upload IDs remain durable in
+                    # SQLite. Do not encode/write every full discovery reserve
+                    # twice per second while its state is unchanged.
+                    signature = (case['status'], case.get('physical_id'), case.get('state'),
+                        case.get('eligible_proved_count'), case.get('error_code'))
+                    now = time.monotonic()
+                    if case['terminal'] or signature != last_signature or now - last_saved >= 5:
+                        save(report_path, report)
+                        save(output/f'case-{item["message_id"]}.json', case)
+                        last_saved, last_signature = now, signature
                     if case['terminal']:
                         print(json.dumps({key: case.get(key) for key in ('message_id', 'status', 'physical_id',
                             'identity_elapsed_s', 'first_eligible_elapsed_s', 'total_elapsed_s',

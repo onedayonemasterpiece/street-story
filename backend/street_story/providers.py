@@ -979,6 +979,12 @@ class GeminiClient:
         self.quota = self.research_routes[0][2]
         self.executor = self.research_routes[0][3]
 
+    async def close(self):
+        gates = {id(route[2]): route[2] for route in (
+            *self.transcription_routes, *self.research_routes, *self.web_search_routes)}
+        for gate in gates.values():
+            await gate.close()
+
     async def _generate(
         self,
         key: str,

@@ -353,3 +353,32 @@ async def test_unavailable_triage_restores_legacy_originals_without_resending_un
     assert state['queue'] == [candidate] and not state['reference_triage_deferred']
     assert len(sends) == len(downloads) == 1
     assert next(iter(state['reference_triage_atlases'].values()))['phase'] == 'unknown'
+
+
+@pytest.mark.asyncio
+async def test_two_originals_use_distinct_providers_before_duplicate_google_slots(tmp_path, monkeypatch):
+    from test_parallel_identity_pairs import prepare, response
+    from street_story.errors import RetryableProviderError
+    svc, story, _ = prepare(tmp_path, count=2)
+    provider, _, _ = provider_fixture(svc, monkeypatch)
+    routes = provider.primary_vision._verified_routes()
+    pool = SimpleNamespace(snapshot=lambda operation: {'healthy_keys': 4})
+    monkeypatch.setattr(provider.primary_vision, '_verified_routes',
+                        lambda: [(model, pool, quota, executor) for model, _, quota, executor in routes])
+    provider.native_vision = SimpleNamespace(available=True)
+    seen = []
+    async def compare(route, snapshot, item, schema, context):
+        seen.append((route, item['_visual_reference_mapping'][0]['candidate_id'],
+                     json.loads(context)['comparison_id']))
+        if route == 'google':
+            raise RetryableProviderError('original_google_outcome_unknown', retry_at=svc.store.now()+300)
+        assert route == 'native' and len(item['_visual_image_parts']) == 2
+        return response(item, 'independent-native-fixture', 'match')
+    monkeypatch.setattr(provider, 'visual_pair_route', compare)
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert [(route, cid) for route, cid, _ in seen] == [('google', 'gate:a'), ('native', 'gate:b')]
+    assert svc.story(story['id'])['visual_identity']['candidate_id'] == 'gate:b'
+    _, research = svc._identity_snapshot(story['id'])
+    pairs = research['visual_search_operation']['parallel_pairs']
+    assert pairs[0]['phase'] == 'submitted' and pairs[0]['id'] == seen[0][2]
+    assert pairs[1]['phase'] == 'completed' and pairs[1]['id'] == seen[1][2]

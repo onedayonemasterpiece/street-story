@@ -1266,9 +1266,6 @@ class ProductResearchAdapter:
             google_slots -= 1
         if opencode:
             routes.append('opencode')
-        if google_slots:
-            routes.append('google')
-            google_slots -= 1
         if native:
             routes.append('native')
         routes.extend(['google'] * min(google_slots, 4-len(routes)))
