@@ -613,6 +613,8 @@ class HeadlessFacts:
             return self.service.store.checkpoint_get(job['id'], 'headless_fact_outcome:' + run_id)
         story, research, _ = snapshot
         control_revision = story['_fact_research_control_revision']
+        if self._model_sufficient(job, run_id, control_revision, []):
+            return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
         if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
             return
         provider = getattr(self.service.providers, 'research', None)
@@ -710,6 +712,8 @@ class HeadlessFacts:
             return
         if not units:
             reviewed = await self._review_candidates(job, run_id, control_revision)
+            if self._model_sufficient(job, run_id, control_revision, []):
+                return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
             with self.service.store.connection() as db:
                 manifest = run_manifest(db, run_id)
                 complete = manifest_complete(manifest)
@@ -863,6 +867,8 @@ class HeadlessFacts:
             if review_task is not None:
                 reviewed += await review_task
         reviewed += await self._review_candidates(job, run_id, control_revision)
+        if self._model_sufficient(job, run_id, control_revision, suggestions):
+            return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
         if self._snapshot(job, run_id, control_revision) is not None:
             if self._handoff_rejected_source(job, run_id, goal, scope, control_revision):
                 return

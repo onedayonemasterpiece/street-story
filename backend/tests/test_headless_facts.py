@@ -501,6 +501,29 @@ async def test_sufficiency_waits_for_exact_model_basis_after_first_review(tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('changed_basis', [False, True])
+async def test_saved_model_basis_completes_resume_without_new_reads(tmp_path, monkeypatch, changed_basis):
+    from test_headless_fact_review_parallel import candidates, ControlledReview, RUN
+    svc, job, harness = await candidates(tmp_path, count=3)
+    assert await ControlledReview(harness).run(job, RUN, 0)
+    with svc.store.connection() as db:
+        basis = [list(r) for r in db.execute('SELECT fact_id,text FROM facts WHERE story_id=?', (job['story_id'],))]
+    if changed_basis:
+        basis[0][1] += ' Unsupported new qualifier.'
+    svc.store.checkpoint_put(job['id'], 'headless_fact_review:saved-sufficiency',
+        {'phase': 'committed', 'research_sufficient': True, 'sufficiency_basis': basis})
+    async def no_reads(*args, **kwargs):
+        raise AssertionError('Optional source work was entered')
+    monkeypatch.setattr(harness, '_prepare_units', no_reads)
+    if changed_basis:
+        with pytest.raises(AssertionError, match='Optional source work'):
+            await harness.run(job, RUN, 'History', 'history')
+    else:
+        outcome = await harness.run(job, RUN, 'History', 'history')
+        assert outcome['reason'] == 'model_goal_sufficient' and outcome['eligible_count'] == 3
+
+
+@pytest.mark.asyncio
 async def test_no_audio_headless_page_requires_live_review_in_story_and_poi_ledger(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')

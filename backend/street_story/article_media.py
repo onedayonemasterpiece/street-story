@@ -512,7 +512,10 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
         headers={'User-Agent': 'StreetStory/0.1 (+https://github.com/onedayonemasterpiece/street-story) article-media'})
     candidates = []
     semaphore = asyncio.Semaphore(4)
-    browser_slots = 2
+    snapshot = service._identity_snapshot(story['id']) if callable(getattr(service, '_identity_snapshot', None)) else None
+    history = (snapshot[1] if snapshot else json.loads(story.get('research_json') or '{}')).get('identity_article_discovery') or {}
+    pages = history.get('pages') or {}
+    browser_slots = max(0, 2 - sum(page.get('browser_attempts', 0) for page in pages.values()))
     def event(name, fields):
         record_identity_event(service, story['id'], name, {**fields, 'generation': story.get('_identity_generation', 0)})
     async def read(source):
@@ -533,6 +536,13 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
             page_url, title, media, partial, body = raw, '', [], False, b''
             browser_completed = False
             acquisition_failed = False
+            browser_attempts, retry_at, http_status = 0, 0, None
+            previous = pages.get(raw) or {}
+            if previous.get('retry_at', 0) > service.store.now():
+                if receipts is not None:
+                    receipts.append({'url': raw, 'status': 'deferred', 'reason': 'article_cooldown',
+                        'retry_at': previous['retry_at']})
+                return None
             try:
                 page_url, mime, body = await cached_public_page(service.store, client, raw, resolver=resolver)
                 if mime not in {'text/html', 'application/xhtml+xml'}:
@@ -554,6 +564,9 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 partial = bool(document.select('[data-gallery], [data-fancybox], [data-swiper], .swiper, .slick-slider, .owl-carousel, [data-lazy-src]'))
             except (httpx.HTTPError, ValueError, OSError) as exc:
                 acquisition_failed = True
+                http_status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                from .gemini import _retry_after
+                retry_at = service.store.now() + max(30, _retry_after(exc, service.store.now()) or 0)
                 event('identity_article_unavailable', {'source_url': raw, 'reason': type(exc).__name__,
                     **({'http_status': exc.response.status_code} if isinstance(exc, httpx.HTTPStatusError) else {})})
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {404, 410}:
@@ -565,12 +578,20 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     event('identity_article_closed', {'source_url': raw,
                         'http_status': exc.response.status_code, 'next_action': 'another_source'})
                     return None
+                if http_status in {403, 429}:
+                    # Access/rate refusal is not a request to bypass the same
+                    # publisher with Chromium. Independent sources stay ready.
+                    if receipts is not None:
+                        receipts.append({'url': raw, 'final_url': page_url, 'status': 'temporary_failure',
+                            'image_count': 0, 'http_status': http_status, 'retry_at': retry_at})
+                    return None
             static_ready = bool(media) and partial and not source.get('static_media_delivered')
             if static_ready:
                 source = dict(source, static_media_delivered=True)
                 event('identity_article_static_ready', {'image_count': len(media), 'partial': True})
             if (not media or partial) and not static_ready and browser_slots > 0:
                 browser_slots -= 1
+                browser_attempts = 1
                 try:
                     render = browser(page_url, cursor=source.get('gallery_cursor', 0), slide_cursor=source.get('gallery_slide_cursor', 0)) if browser is browser_media else browser(page_url)
                     rendered_title, rendered = await asyncio.wait_for(render, timeout=20)
@@ -585,6 +606,7 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                     event('identity_article_browser', {'image_count': len(media), 'headless': True})
                 except Exception as exc:
                     event('identity_article_browser_unavailable', {'reason': type(exc).__name__})
+                    retry_at = max(retry_at, service.store.now() + 30)
             if wiki:
                 from .identity_references import original_reference
                 # Reuse the existing Wikimedia thumbnail/original transport
@@ -598,12 +620,15 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                         # does not prove that the article has no illustrations.
                         'status': 'completed' if browser_completed and not acquisition_failed else 'temporary_failure',
                         'image_count': 0,
+                        'http_status': http_status, 'browser_attempts': browser_attempts,
+                        'retry_at': retry_at or (service.store.now() + 30 if not browser_completed else 0),
                         'gallery_cursor': source.get('gallery_cursor', 0),
                         'gallery_slide_cursor': source.get('gallery_slide_cursor', 0),
                         'static_media_delivered': bool(source.get('static_media_delivered'))})
                 return None
             if receipts is not None:
                 receipts.append({'url': raw, 'final_url': page_url, 'status': 'partial' if partial else 'completed', 'image_count': len(media), 'gallery_cursor': source.get('gallery_cursor', 0), 'gallery_slide_cursor': source.get('gallery_slide_cursor', 0),
+                        'browser_attempts': browser_attempts, 'retry_at': retry_at,
                         'static_media_delivered': bool(source.get('static_media_delivered'))})
             event('identity_article_media', {'candidate_id': cid, 'image_count': len(media)})
             return {'candidate_id': cid, 'name': title or str(source.get('title') or '')[:180],

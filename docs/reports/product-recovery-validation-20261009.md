@@ -2387,3 +2387,48 @@ The T model claimed a specific bent-body/article correspondence. The actual arti
 The automatic rich-source goal now explicitly asks the model for at least three substantively different claims when its sources support them, and forbids inflating the choice by splitting an address/date/event. This implements the requested author-choice intent in model instructions, without a host fact-count completion threshold or extra judge.
 
 Installed-SDK affected checks v101:100 passed; assembled joint/T pointer paths v102:71 passed. Ruff and diff checks passed. The actual saved130 article cache/body hashes were verified, and optional public photo preparation produced a62,385-byte JPEG from a received detail link (model SHA ee70827fac5c41f75e1b1dcf95ee91436e482031513e551f05e60bda245ab251). The image was viewed. This preparation is not paid inference or new SOURCE recognition credit. Fresh normal changed130 and different102 must verify the correction before corpus expansion or release.
+
+
+### Recall/useful-result follow-up, 2026-10-10
+
+The authoritative owner task is `street-story-recall-and-useful-result-20261010`
+at484a9bf7. This candidate starts from deployeda6df303, preserving SOURCE/MAP
+and the existing proof/POI/Stop/UNKNOWN contracts. Original frozen7a15 outcomes
+remain unchanged (4 supported correct identities, not a model-accuracy score).
+
+Retained106 and119 actually requested text for two active bodies. Their reader
+receipts closed respectively with `one_lookup_requires_one_literal_address` and
+`address_entry_not_bound_to_nominated_footprint`; no separate initial T was sent.
+The caller now validates physical priority independently, admits selected text
+for active unconfirmed bodies, and reads each active address independently after
+an unusable shared request. Ready acquired versions reach the existing compact T
+without the stale two-article/pending-only branch. Foreign identities remain
+ineligible and uncertain T remains unconfirmed.
+
+Prepared follow-up requests may use one other registered executor after an
+HTTP-closed technical failure when remaining time permits its ordinary admission
+and the REF reserve. Exact inputs and original route receipts survive; UNKNOWN,
+changed inputs, semantic responses and already-addressed routes cannot authorize
+this reassignment. Article403/429 respects Retry-After and never triggers a
+browser bypass. Page/browser cooldown and the existing two browser slots are
+retained across discovery waves; independent ready URLs still progress.
+
+Committed model sufficiency is checked on resume, after a no-new-unit review and
+after the final review as well as inside the parallel loop. Offline in-memory
+replay of original102/104 completed in0.255/0.238s with9/6 eligible claims, zero
+provider dispatches and unchanged original provider receipts. This is completion
+orchestration evidence with synthetic reopened execution state, not cold/client
+acceptance; the retained DB was read-only and no identity/facts were imported.
+
+The frozen evaluation manifest now includes the physically inspected132 Wiki/OSM
+equivalents and the owner's approximate camera hints for125/126, after verifying
+original SOURCE hashes. Aliases are evaluation-only; historical Stop and4/15
+remain unchanged. Minimum3 and180/300/480s metrics remain. The existing Live E2E
+runner now also supports a fresh ordinary photo API upload and automatic workers
+in an empty candidate DB before the same selection/concept/draft/voice/visual
+and reopen flow. Fresh product and fixed15 measurements are still pending.
+
+Focused acquisition, provider routing, UNKNOWN/input fences, article transport,
+completion and runner checks passed. Evidence root remains
+`/home/dev/artifacts/street-story/20261009T214809Z-overnight-product-finish-20261009`;
+`retained-102-104-completion-recall.json` records the offline completion segment.

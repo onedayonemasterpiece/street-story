@@ -1043,6 +1043,21 @@ async def run_retained_story(args):
         installer.require_mode(config, 0o600)
         os.environ.update(installer.parse_dotenv(config))
     os.environ["DATA_DIR"] = str(args.run / "data")
+    if args.fresh_manifest:
+        if args.resume or args.story_id or args.editorial_only or (args.run / 'data').exists():
+            raise RuntimeError('Fresh client E2E requires an empty run and no retained story/recovery flags')
+        from product_recovery_acceptance import load_manifest, require_frozen_checkout, runtime_qualification_caches
+        from product_recovery_acceptance import managed
+        args.run = managed(args.run)
+        args.run.mkdir(mode=0o700, parents=True, exist_ok=True)
+        require_frozen_checkout(args.expected_sha)
+        items, manifest_digest = load_manifest(args.fresh_manifest)
+        item = next(i for i in items if i['message_id'] == args.message_id)
+        photo = Path(item['path']).read_bytes()
+        if hashlib.sha256(photo).hexdigest() != item['sha256']:
+            raise RuntimeError('Original SOURCE differs from frozen manifest')
+        os.environ.update(IDENTITY_TIMEOUT_SECONDS='180', RESEARCH_TIMEOUT_SECONDS='480',
+            STREET_STORY_DEPLOY_SHA=args.expected_sha)
     from street_story.app import app
     from street_story.config import reveal
     from street_story.identity_proof import verified_physical_identity
@@ -1055,12 +1070,23 @@ async def run_retained_story(args):
         "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "story_id": sid,
         "source_run": str(args.run),
-        "scope": "actual retained story, ordinary API + real provider + shared WSS relay; prepared PCM, no Android/physical microphone claim",
+        "scope": ("fresh ordinary photo API and automatic workers" if args.fresh_manifest else "actual retained story")
+            + ", ordinary API + real provider + shared WSS relay; prepared PCM, no Android/physical microphone claim",
         "publication_dispatches": 0,
         "steps": [],
         "tool_trace": [],
         "explicit_fact_reconsideration": args.review_fact_ids,
     }
+    if args.fresh_manifest:
+        qualification = json.loads(installer.RESEARCH_QUALIFICATION.read_text())
+        installer.require_mode(installer.RESEARCH_QUALIFICATION, 0o600)
+        for evidence in qualification['evidence']:
+            if hashlib.sha256(Path(evidence['path']).read_bytes()).hexdigest() != evidence['sha256']:
+                raise RuntimeError('Registered provider qualification changed')
+        for key, value in runtime_qualification_caches(qualification, installer).items():
+            service.store.cache_put(key, value, 3600)
+        report.update(mode='fresh_client_e2e', source_sha256=item['sha256'],
+            manifest_sha256=manifest_digest, message_id=item['message_id'])
     report["snapshot_research_workers_unstarted"] = args.editorial_only
     output_name = args.output_name or ("e2e-continuation.json" if args.resume else "e2e.json")
     if Path(output_name).name != output_name or not output_name.endswith(".json"):
@@ -1301,6 +1327,34 @@ async def run_retained_story(args):
                     await service.close()
 
             async with editorial_workers() if args.editorial_only else app.router.lifespan_context(app):
+                if args.fresh_manifest:
+                    tag = 'fresh-e2e-' + uuid.uuid4().hex
+                    camera = item.get('owner_approx_camera') or {}
+                    data = {'client_story_id': tag, 'photo_sha256': item['sha256'], 'voice_protocol': 'voice-chunks-v2'}
+                    if camera:
+                        data.update(lat=str(camera['latitude']), lon=str(camera['longitude']),
+                            camera_coordinate_source='owner_approx_camera')
+                    started = time.monotonic()
+                    created = await client.post('/v1/stories', data=data,
+                        files={'photo': ('source.jpg', photo, item['mime'])},
+                        headers={'Idempotency-Key': tag, 'X-Photo-SHA256': item['sha256']})
+                    created.raise_for_status()
+                    sid = created.json()['id']
+                    report['story_id'] = sid
+                    save()
+                    while time.monotonic() - started <= 480:
+                        current = await read()
+                        if verified_physical_identity(current.get('visual_identity') or {}) and len([
+                                f for f in current.get('facts', []) if f.get('eligibility') == 'eligible']) >= 3:
+                            report['automatic_useful_elapsed_s'] = time.monotonic() - started
+                            report['steps'].append({'name': 'fresh_photo_to_verified_facts', 'completed_at': time.time()})
+                            save()
+                            break
+                        if current.get('error'):
+                            raise RuntimeError('Fresh automatic flow: ' + str(current['error'].get('code')))
+                        await asyncio.sleep(0.5)
+                    else:
+                        raise RuntimeError('Fresh automatic useful result exceeded unchanged480s')
                 first = await read()
                 identity = first.get("visual_identity") or {}
                 if not verified_physical_identity(identity):
@@ -1699,9 +1753,12 @@ def retained_story_main():
     parser = argparse.ArgumentParser(
         description="Continue a retained actual story through the ordinary shared Live editor, voice and visual APIs."
     )
-    parser.add_argument("--retained-story", action="store_true", required=True)
+    parser.add_argument("--retained-story", action="store_true")
+    parser.add_argument("--fresh-manifest", type=Path)
+    parser.add_argument("--message-id", type=int, default=104)
+    parser.add_argument("--expected-sha")
     parser.add_argument("--run", type=Path, required=True)
-    parser.add_argument("--story-id", required=True)
+    parser.add_argument("--story-id")
     parser.add_argument("--voice", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--editorial-only", action="store_true")
@@ -1713,8 +1770,13 @@ def retained_story_main():
     parser.add_argument("--revise-atomic-selection", action="store_true")
     parser.add_argument("--refine-draft-only", action="store_true")
     parser.add_argument("--draft-instruction", default="")
-    return asyncio.run(run_retained_story(parser.parse_args()))
+    args = parser.parse_args()
+    if bool(args.retained_story) == bool(args.fresh_manifest) or args.retained_story and not args.story_id:
+        parser.error('Choose one fresh-manifest or retained-story mode with its original story ID')
+    if args.fresh_manifest and not args.expected_sha:
+        parser.error('Fresh client E2E requires its frozen expected SHA')
+    return asyncio.run(run_retained_story(args))
 
 
 if __name__ == "__main__":
-    raise SystemExit(retained_story_main() if "--retained-story" in sys.argv else run())
+    raise SystemExit(retained_story_main() if '--retained-story' in sys.argv or '--fresh-manifest' in sys.argv else run())
