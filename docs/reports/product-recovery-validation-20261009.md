@@ -3,6 +3,38 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 96e7e75 ordinary Mira result import and visual inspection
+
+Actual job_c6594bc5618ee0a9d2398d3d completed23.407s, mechanical_pass=true,
+REVIEW_REQUIRED. Mira CLOSED generate_visual with observe_existing_visual=true;
+the normal importer selected the original recovered candidate. Ordinary processed
+asset API returned2166444 PNG bytes, SHA
+186a2333facc5fb6ea4b211cdfdba1b4c2527258569248b6554a666a820cd62e.
+Reopening preserved original source, selection, concept and draft. The preceding
+prepared-PCM segment acknowledged301/301 frames, max ACK0.398s, correctly saved
+the evening-walk concept and preserved selection/draft until requested refinement.
+This is recovery evidence with compatible4b identity, not a new combined cold PASS.
+
+Actual image inspection confirms the recognizable photographed facade and legible
+selected source-backed history. It also exposes an unwanted implementation caption,
+"В OSM — без названия", derived from our placeholder place label. New briefs omit
+that placeholder. The draft has a typo and an unsupported extension identifying
+the current facade as a result of1950s restoration; semantic acceptance remains
+open despite the completed voice/visual/reopen path.
+
+The same saved-reference recovery is now available through ordinary explicit
+Live observe_existing_visual: exact remote operation/job/revisions, stable recovery
+key, current SOURCE/fact/concept/input checks, then the existing importer queue.
+It issues only VibePublish reconcile_observation; no new tune/source/generation.
+Changed-photo/concept/instruction controls reject before the external request.
+76 existing Live visual/editor/MVP fixtures passed21.33s in durable
+job_2bc146b1e52d79ff5c04802f. This new unknown-to-recovery bridge is fixture verified;
+the earlier real core reconciliation remains a separately identified recovery.
+
+The existing full-worker corpus runner now records the actual SHA of original
+photo bytes rather than a SHA of its run label. Historical runs retain their
+original provenance; no recognition result is reclassified by this correction.
+
 ## 2b8708b actual102: closed repair, editorial/voice and original visual recovery
 
 Changed review job_4873025fe77b8586b6bb0683 retained FAIL at the120s step

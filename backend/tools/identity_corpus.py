@@ -52,7 +52,7 @@ async def full_worker_case(settings, output, args, item, data):
     async with app.router.lifespan_context(app):
         story = service.create_story(key=f'corpus:{args.run_name}:{item["message_id"]}',
             client_story_id=f'corpus:{args.run_name}:{item["message_id"]}',
-            photo_sha256=hashlib.sha256(f'{args.run_name}:{item["message_id"]}'.encode()).hexdigest(),
+            photo_sha256=hashlib.sha256(data).hexdigest(),
             photo_mime_type=item['mime'], photo_bytes=data,
             voice_protocol='voice-chunks-v2', lat=None, lon=None)
         story_id = story['id']
