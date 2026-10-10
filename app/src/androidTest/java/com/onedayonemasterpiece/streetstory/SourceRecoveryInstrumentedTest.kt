@@ -67,7 +67,7 @@ class SourceRecoveryInstrumentedTest {
         try {
             store.createStory(imported)
             store.setServerIdentity(id, wire.id)
-            val voice = store.createVoiceSession(id, RecordingKind.LIVE_ARCHIVE, "controlled-emulator")
+            val voice = store.createVoiceSession(id, RecordingKind.REFINEMENT, "controlled-emulator")
             store.finishVoiceSession(voice.sessionId, "2026-10-10T22:00:00Z", 0, 0)
             val stop = store.enqueueOperation(id, "research-control", "stop-$id", "{\"purpose\":\"facts\",\"action\":\"stop\"}")
             val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only") { PhotoAssets.open(context, it) }
