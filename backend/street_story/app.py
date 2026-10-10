@@ -147,6 +147,16 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
         if not supplied or not secrets.compare_digest(supplied, expected):
             raise HTTPException(status_code=401, detail="Bearer device token required")
 
+    async def rkb_poi_auth(authorization: str | None = Header(default=None)) -> None:
+        # Dedicated, narrowly scoped inter-service credential. Never accept
+        # the Android device token or a forwarded user's RKB OAuth bearer.
+        expected = reveal(settings.rkb_poi_service_token)
+        if not expected:
+            raise HTTPException(status_code=503, detail="RKB POI bridge not configured")
+        supplied = authorization[7:] if authorization and authorization.startswith("Bearer ") else ""
+        if not supplied or not secrets.compare_digest(supplied, expected):
+            raise HTTPException(status_code=401, detail="RKB POI service credential required")
+
     def idem(key: str | None) -> str:
         if not key:
             raise HTTPException(status_code=400, detail="Idempotency-Key is required")
@@ -172,6 +182,24 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     @app.get("/healthz")
     async def healthz():
         return {"ok": True, "worker_recovery": "enabled", "source_sha": source_sha}
+
+    @app.post("/v1/internal/rkb-poi", dependencies=[Depends(rkb_poi_auth)])
+    async def rkb_poi_command(request: Request):
+        from pydantic import ValidationError
+        from .poi_model_bridge import PoiBridgeConflict, execute_poi_command
+        length = int(request.headers.get("content-length") or 0)
+        if length > 16384:
+            raise HTTPException(status_code=413, detail="POI command too large")
+        body = await request.body()
+        if len(body) > 16384:
+            raise HTTPException(status_code=413, detail="POI command too large")
+        try:
+            data = json.loads(body)
+            return execute_poi_command(service.store, data)
+        except (ValidationError, ValueError) as exc:
+            if isinstance(exc, PoiBridgeConflict):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail="Invalid bounded POI command") from exc
 
     @app.post("/v1/stories", dependencies=[Depends(auth)])
     async def create_story(
@@ -381,6 +409,27 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
     async def asset(story_id: str):
         data, mime = await service.asset(story_id)
         return Response(data, media_type=mime, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/v1/pois/{poi_id}/knowledge", dependencies=[Depends(auth)])
+    async def poi_knowledge(poi_id: str):
+        # The authenticated Street Story owner can open historical knowledge
+        # through the bounded RKB actor grant. No copied book texts are stored.
+        import os
+        import httpx
+        from .poi_model_bridge import execute_poi_command
+        service_key=reveal(settings.rkb_poi_service_token)
+        target=os.getenv("STREET_STORY_RKB_CONTEXT_URL","")
+        if target!="http://127.0.0.1:8000/internal/street-story/poi-context" or not service_key:
+            raise HTTPException(status_code=503,detail="RKB POI context is not configured")
+        try:
+            async with httpx.AsyncClient(timeout=5,trust_env=False) as client:
+                answer=await client.get(target,params={"poi_ref":"streetstory://poi/"+poi_id},
+                    headers={"Authorization":"Bearer "+service_key})
+                answer.raise_for_status()
+                payload=answer.json()
+            return JSONResponse(payload,headers={"Cache-Control":"no-store"})
+        except (httpx.HTTPError,ValueError):
+            raise HTTPException(status_code=503,detail="RKB knowledge context unavailable")
 
     @app.get("/v1/capabilities", dependencies=[Depends(auth)])
     async def capabilities():

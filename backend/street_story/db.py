@@ -460,6 +460,21 @@ CREATE TABLE IF NOT EXISTS pois(
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rkb_poi_links(
+  rkb_entity_id TEXT NOT NULL,
+  actor_sub TEXT NOT NULL,
+  poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
+  site_state TEXT NOT NULL CHECK(site_state IN
+    ('standing','ruins','memorial','lost_site','historic_site')),
+  site_context TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  decision_note TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  PRIMARY KEY(rkb_entity_id,actor_sub)
+);
+CREATE INDEX IF NOT EXISTS idx_rkb_poi_links_poi
+ ON rkb_poi_links(poi_id,actor_sub);
+
 CREATE TABLE IF NOT EXISTS poi_aliases(
   poi_id TEXT NOT NULL REFERENCES pois(id) ON DELETE CASCADE,
   namespace TEXT NOT NULL,
