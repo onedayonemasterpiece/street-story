@@ -317,10 +317,10 @@ def read(adapter, session, args):
                                 cached.pop('equivalent_to', None)
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
-            from .identity_model_context import compact_physical_identity
+            from .identity_model_context import fact_review_subject
             research = json.loads(story['research_json'] or '{}')
             payload = {'bundle': exact, 'items': items,
-                       'confirmed_identity': compact_physical_identity(research.get('visual_identity') or {},
+                       'confirmed_identity': fact_review_subject(research.get('visual_identity') or {},
                            photo_sha256=story['photo_sha256'], generation=int(run['identity_generation'] or 0)),
                        'review_as_of_date_utc': datetime.fromtimestamp(adapter.service.store.now(), timezone.utc).date().isoformat()}
             if candidate_mode:

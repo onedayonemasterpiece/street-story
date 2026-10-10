@@ -892,6 +892,36 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             'After Resume read current checkpoints; never replay an old search, inference or save.')
         return configuration
 
+    @staticmethod
+    def _capability_context(context, capability):
+        if capability != 'review':
+            return context
+        from .identity_model_context import fact_review_subject
+        # Exact claims, own passages and nearby relations are paginated by the
+        # review tools. Do not resend the whole discovery/editorial inventory
+        # as setup context before that bounded read can even begin.
+        result = {key: value for key, value in context.items() if key in {
+            'current_date_utc', 'story_id', 'photo_sha256', 'identity_generation',
+            'research_controls', 'revision', 'text_revision', 'place_name',
+            'physical_identity_accepted', 'fact_count', 'selected_fact_ids',
+            'publication_concept', 'candidate_count', 'poi_location', 'facts_preview_truncated',
+        }}
+        result['visual_identity'] = fact_review_subject({**(context.get('visual_identity') or {}),
+            'physical_identity_accepted': bool(context.get('physical_identity_accepted'))})
+        result['facts'] = []
+        run = context.get('research_run') or {}
+        result['research_run'] = {key: value for key, value in run.items() if key in {
+            'run_id', 'state', 'goal', 'status_detail', 'identity_generation',
+            'pending_review_fact_ids', 'candidate_review_instruction',
+        }}
+        result['facts_read_tool'] = 'get_facts'
+        result['review_context_instruction'] = (
+            'Review only the author-requested scope. Read exact claims/evidence and nearby relations '
+            'through the review packet. Unrelated facts and editorial content remain saved; '
+            'read_topic provides their current overview if needed. Do not start new research.'
+        )
+        return result
+
     def resolve_capability(self, session, call):
         if call.get('name') != 'continue_story':
             return None
@@ -913,7 +943,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if stage == getattr(session, 'capability', None):
             return None
         return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
-            'context': initialized['context'], 'continuation': continuation}
+            'context': self._capability_context(initialized['context'], stage), 'continuation': continuation}
 
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
@@ -1016,6 +1046,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                           else 'publication' if publication_ready else 'review' if reviewing and not eligible_available else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
+            initialized['context'] = self._capability_context(initialized['context'], capability)
         return initialized
 
     def input(self, session, message: dict[str, Any]) -> None:

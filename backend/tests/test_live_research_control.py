@@ -137,6 +137,39 @@ def test_every_bundle_exposes_controls_through_one_router(tmp_path):
         assert properties['research_action']['enum'] == ['stop', 'resume']
 
 
+def test_review_setup_keeps_subject_and_run_without_resending_whole_inventory():
+    import copy
+
+    context = {
+        'story_id': 'subject-story', 'photo_sha256': 'a' * 64, 'identity_generation': 2,
+        'physical_identity_accepted': True, 'selected_fact_ids': ['selected-1'],
+        'publication_concept': 'Saved author angle', 'fact_count': 80,
+        'visual_identity': {'candidate_id': 'osm:way:91', 'candidate_name': 'Named subject',
+            'physical_scope': 'This photographed building', 'aliases': ['Old subject name'],
+            'observations': ['Detailed identity justification' * 100]},
+        'known_fact_inventory': [['fact', 'Long claim' * 1000]],
+        'draft_text': 'Saved draft' * 1000, 'previous_editorial_context': ['Old draft' * 1000],
+        'research_run': {'run_id': 'current-run', 'state': 'verifying',
+            'pending_review_fact_ids': ['requested-1'], 'identity_article_sources': ['Large discovery' * 1000]},
+    }
+    original = copy.deepcopy(context)
+    result = StreetStoryLiveAdapter._capability_context(context, 'review')
+    assert context == original
+    assert result['visual_identity']['physical_scope'] == 'This photographed building'
+    assert result['visual_identity']['candidate_name'] == 'Named subject'
+    assert result['visual_identity']['aliases'] == ['Old subject name']
+    assert result['visual_identity']['physical_identity_accepted'] is True
+    unresolved = StreetStoryLiveAdapter._capability_context({**context, 'physical_identity_accepted': False}, 'review')
+    assert unresolved['visual_identity']['physical_identity_accepted'] is False
+    assert result['research_run'] == {'run_id': 'current-run', 'state': 'verifying',
+                                    'pending_review_fact_ids': ['requested-1']}
+    assert result['selected_fact_ids'] == ['selected-1']
+    assert result['publication_concept'] == 'Saved author angle'
+    assert 'known_fact_inventory' not in result and 'draft_text' not in result
+    assert 'observations' not in result['visual_identity']
+    assert StreetStoryLiveAdapter._capability_context(context, 'editor') == original
+
+
 @pytest.mark.asyncio
 async def test_research_session_persists_requested_concept_and_text_without_stage_switch(tmp_path):
     from street_story.live import FUNCTIONS

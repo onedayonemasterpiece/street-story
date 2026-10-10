@@ -292,6 +292,7 @@ async def test_resumed_review_frames_inventory_as_candidates_and_preserves_canon
         identity = research['visual_identity']
         identity['candidate_id'] = 'confirmed-place'
         identity['candidate_name'] = 'Бранденбургские ворота (Калининград)'
+        identity['observations'] = ['Repeated physical proof detail ' * 100] * 3
         identity['candidates'] = [{'candidate_id': 'confirmed-place', 'name': identity['candidate_name'], 'entity_aliases': ['Brandenburger Tor, Kaliningrad']}]
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), session.resource_id))
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
@@ -309,6 +310,7 @@ async def test_resumed_review_frames_inventory_as_candidates_and_preserves_canon
     assert packet['confirmed_identity']['candidate_name'] == 'Бранденбургские ворота (Калининград)'
     assert 'candidates' not in packet['confirmed_identity']
     assert 'geometry_proof' not in packet['confirmed_identity']
+    assert 'observations' not in packet['confirmed_identity']
     # Re-reading a frozen packet keeps its actual original subject context,
     # rather than rebuilding model input from later presentation metadata.
     with svc.store.tx() as db:

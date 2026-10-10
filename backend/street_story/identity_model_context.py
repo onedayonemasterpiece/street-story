@@ -135,6 +135,25 @@ def physical_decision_context(story, candidates, manifest):
             'labels for a needed contour/pose relation; the full pool is retained, no nearest-K exclusion.'}
 
 
+def fact_review_subject(identity, **scope):
+    """Only the accepted name/body scope needed to interpret source sentences.
+
+    Proof digests, observations and alias authorization remain in the saved
+    identity. They are not fact evidence and need not recur on every review page.
+    """
+    if not isinstance(identity, dict):
+        return {}
+    compact = compact_physical_identity(identity, **scope)
+    result = {key: value for key, value in compact.items() if key in {
+        'candidate_id', 'candidate_name', 'canonical_name', 'locality', 'country',
+        'physical_scope', 'physical_identity_accepted',
+    }}
+    selected = next((item for item in (identity.get('candidates') or [])
+                     if isinstance(item, dict) and item.get('candidate_id') == identity.get('candidate_id')), {})
+    result['aliases'] = identity.get('aliases') or selected.get('entity_aliases') or []
+    return result
+
+
 def compact_physical_identity(identity, *, photo_sha256=None, generation=None, control_revision=None):
     if not isinstance(identity, dict):
         return {}

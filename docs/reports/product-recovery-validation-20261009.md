@@ -3,6 +3,31 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## f242cf6 actual review transition and unchanged request-envelope limits
+
+Actual job_f9bfbf762d5b02baeaa80c91 independently chose the review stage after the
+read-only get_evidence route hint. The shared framework acknowledged and completed
+that same-session transition after20 budget waits. Setup estimated35704 units;
+the original120s scenario still failed before a durable semantic decision, with
+Stop acknowledged. Subsequent correct own-claim packet read failed
+live_review_item_oversize. Offline reconstruction of the actual retained packet
+measures5642 units against the unchanged5500 allowance, with its original900-character
+literal passage. Sending only the frozen accepted subject/name/body scope yields
+4882 units; citations and assertion text are unchanged. Identity proof observations
+are not fact evidence and remain in the saved identity. New review packets retain
+subject names/aliases/geography/scope, not repeated identity proof explanations.
+Historical frozen packets and their original observer contracts remain unchanged.
+
+Review setup now carries the exact subject, current run, owner selection/concept,
+revisions and controls; the full discovery/fact/editorial archive stays accessible
+through bounded product reads. No quota, page ceiling, deadline, proof eligibility,
+verdict or provider observer is loosened. The first184-test check exposed a removed
+candidate-context field;183 passed,1 failed. The candidate framing, canonical aliases
+and location contract were restored; that original failure is retained separately.
+Corrected verification passed184 checks68.28s with the installed private SDK; Ruff
+passed. The failed original XML remains retained. New actual durable review/editorial
+acceptance is pending, including independent canonical POI negative-verdict readback.
+
 ## af70afb correction routing was stripped from the actual stage instruction
 
 The changed af70afb recovery also failed explicit_fact_reconsideration_readback_timeout:
