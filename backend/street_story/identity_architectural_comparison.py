@@ -452,11 +452,14 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
                      'prior_reason_not_evidence': str(row.get('prior_reason_not_evidence') or row.get('reason') or '')[:300]}
                     for row in alternatives if isinstance(row, dict)]}
     query = (receipt.get('lookup') or {}).get('query_scope')
+    from .identity_architectural_pool import joint_source_spans
+    source_passages, source_span_refs = joint_source_spans(articles)
     packet = {
         'contract': 'source-architectural-comparison-input-v1',
         'original_photo_sha256': receipt.get('original_source_sha256'),
         'source_photo_sha256': receipt.get('source_photo_sha256'),
-        'articles': acquired,
+        'articles': [{key: value for key, value in article.items() if key != 'text'} for article in acquired],
+        'literal_source_passages': source_passages,
         'publisher_query_scope_not_identity': query,
         'physical_candidates': physical,
         'physical_reserve': {
@@ -475,7 +478,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'source_image': 'Original SOURCE image is a separate model input; observed details must come from its pixels.'}
     schema = architectural_text_decision_schema(ids, article_ids,
         material_alternative_limit=max(8, len(ids)), structural=True,
-        physical_link_inventory=inventory)
+        physical_link_inventory=inventory, source_span_refs=source_span_refs)
     # A compact comparison can confirm only its issued article/body bindings,
     # but its next investigation may nominate any received physical reserve.
     from .identity_candidate_policy import research_priority_schema
@@ -514,7 +517,9 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'Do not infer what SOURCE shows from a prior nomination, article address or title. '
         'Previous model observations and geometry conclusions are unconfirmed hypotheses. '
         'Compare a discriminating combination of actually visible structure with verbatim '
-        'article spans. Account for cropping, perspective, another wing/view and historical changes; '
+        'article spans. For each correspondence select source_span_ref from literal_source_passages '
+        'of that article_id; do not copy or rewrite the text. You decide what it supports. '
+        'Account for cropping, perspective, another wing/view and historical changes; '
         'do not invent unobservable axes, exact pose or dimensions. Generic style, floor count, '
         'roof material and a postal match alone do not identify an individual physical body. '
         'Bind positive articles to the individual body using the supplied literal publisher_ref '
@@ -537,6 +542,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         + json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
     return {'prompt': instruction, 'schema': schema, 'candidate_ids': ids,
         'physical_link_inventory': inventory,
+        'source_span_refs': source_span_refs,
         'article_ids': article_ids, 'utf8_bytes': len(instruction.encode()),
         'input_contract': packet['contract']}
 

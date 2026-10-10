@@ -16,8 +16,7 @@ import re
 
 from .identity_architectural_comparison import normalize_architectural_decision
 from .identity_architectural_context import _physical_subject
-from .identity_proof import (architectural_text_decision_schema, freeze_architectural_text_proof,
-    literal_architectural_quote, TEXT_CONTRACT)
+from .identity_proof import architectural_text_decision_schema, freeze_architectural_text_proof, TEXT_CONTRACT
 
 # These words only choose literal passage spans to transmit. Their presence
 # never proves a match or rules out an article, and no building name appears.
@@ -144,8 +143,20 @@ def _source_span_options(checked, *, max_spans_per_article=14):
 
 
 def joint_source_spans(articles):
-    """Expose every literal passage of the already acquired joint input."""
-    return _source_span_options(articles, max_spans_per_article=None)
+    """Expose the entire acquired text by pointers, without parsing its meaning."""
+    passages, refs = [], {}
+    for article in articles:
+        text = article['text']
+        selected = []
+        for start in range(0, len(text), 420):
+            end = min(start + 420, len(text))
+            ref = f'p{len(refs):04d}'
+            refs[ref] = {'article_id': article['article_id'], 'start': start, 'end': end,
+                'source_quote': text[start:end], 'source_text_sha256': article['text_sha256']}
+            selected.append({'span_ref': ref, 'literal_text': text[start:end]})
+        passages.append({'article_id': article['article_id'], 'passages': selected,
+            'all_passages_displayed': True})
+    return passages, refs
 
 
 def normalize_joint_citation_fields(payload, receipt):
@@ -452,7 +463,7 @@ def close_architectural_pool_response(story,candidates,pool,model_answer,
             or not seen<=supporting or not seen):
         return dict(reviewed,reason='positive_binding_not_supported_by_model_contrast')
     articles=[row for row in pool['checked_articles'] if row['article_id'] in supporting]
-    if any(not all(literal_architectural_quote(rel['source_quote'], row['text']) is not None
+    if any(not all(rel['source_quote'] in row['text']
             for rel in decision['correspondences'] if rel['article_id']==row['article_id'])
             for row in articles):
         return dict(reviewed,reason='source_quote_not_in_actual_transmitted_excerpt')

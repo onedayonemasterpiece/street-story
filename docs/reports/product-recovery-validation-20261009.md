@@ -5,6 +5,8 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 ## Reliability finish after reboot, 2026-10-10
 
+Current candidate uses model-selected source-span references for fresh T, without model-retyped quotations or a quotation-delimiter repair. Semantic SOURCE/article comparison remains the model's responsibility; the host checks issued references, source versions and persistence fences. Original addressed requests retain their original schemas. Fixed-candidate corpus and final installed-SDK acceptance remain pending.
+
 Current evidence milestone (not a release acceptance):
 
 - d3effe2 actual104 in job_7f32d536abac8d31240a4903 remains FAIL:
@@ -2169,13 +2171,13 @@ Actual4566ef6 group1 used normal quotas, no imported availability history:
 
 The above is one frozen4566ef6 group, not final release acceptance. Actual closed SOURCE responses exist for104/102/105/106;107 does not increase that number. An initial model response alone is not recognition success. The later SDK full-suite job was still running when the next narrow identity patch was applied; it is not evidence for a final clean source snapshot. Hosted backend38039974101 and Android38039974162 both passed on4566ef6; the prior Android picker failure did not recur.
 
-The actual104 assembled closed receipt identified two mechanical defects without a new model send. All four exact quotations had matched outer guillemets absent from their own article; stripping only that presentation pair restored the exact received substring. A literal OSM address also acquired a city field when the raw snapshot was persisted. Receipt revalidation now requires every received field and provenance to remain identical while permitting additional fields from that same observed record. Neither change judges address equivalence, architecture, dates or semantic sufficiency. Original model decision, article and receipt remain immutable; historical proof digest stays unchanged for unchanged inputs. Span references retain their strict original offset/text checks. Wrong article, paraphrase, unmatched quotes, changed street/number and forged provenance remain rejected.
+Historical v63/v64 experiment, superseded by the pointer-only change below: the actual104 assembled closed receipt identified two mechanical defects without a new model send. All four exact quotations had matched outer guillemets absent from their own article; stripping only that presentation pair restored the exact received substring. A literal OSM address also acquired a city field when the raw snapshot was persisted. Receipt revalidation now requires every received field and provenance to remain identical while permitting additional fields from that same observed record. Neither change judges address equivalence, architecture, dates or semantic sufficiency. Original model decision, article and receipt remain immutable; historical proof digest stays unchanged for unchanged inputs. Span references retain their strict original offset/text checks. Wrong article, paraphrase, unmatched quotes, changed street/number and forged provenance remain rejected.
 
 Affected installed-SDK tests: v63 had81 pass/1 test failure because its added-city fixture mutated the physical candidate rather than modeling raw-snapshot restoration; corrected v64 has82 pass in8.91s. Ruff passed. `literal104-assembled-v63.json` verifies the original actual answer freezes and survives durable replay with unchanged model decision and source receipt. This is offline assembled-input proof, not a new cold PASS or an additional SOURCE. The old89.245s FAIL remains FAIL.
 
 ## Versioned corpus ledger (latest recorded run per photo)
 
-Versioned observations, not one combined cold PASS. Latest102 has a scoped useful partial PASS on4566ef6. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures.120 identity evidence is withdrawn.
+Versioned observations, not one combined cold PASS. Latest102 has a scoped useful partial PASS on4566ef6. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures. The older120/96057156 identity remains withdrawn; the newer120/133035135 is REVIEW_REQUIRED, not a semantic PASS.
 
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
@@ -2184,18 +2186,18 @@ Versioned observations, not one combined cold PASS. Latest102 has a scoped usefu
 | 105 | 4566ef6 | FAIL deadline; — | — | 2 | unfixed/unknown | 0 | 183.826 |
 | 106 | 4566ef6 | FAIL deadline / T UNKNOWN; — | — | 3 | yes | 0 | 181.119 |
 | 107 | 4566ef6 | BLOCKED / NotSent; — | — | — | unfixed/unknown | 0 | 108.277 |
-| 108 | 83d73c8 | BLOCKED; — | 437 | 0 | yes | 0 | 86.735 |
+| 108 | 5119d9a | FAIL page envelope exhausted; — | — | 2 | yes | 0 | 101.045 |
 | 109 | 77d4222 | FAIL; — | 293 | 3 | yes | 0 | 180.316 |
 | 110 | 77d4222 | FAIL; — | 182 | 0 | unfixed/unknown | 0 | 113.773 |
-| 111 | 7623da2 | FAIL; — | 139 | — | yes | 0 | 386.817 |
+| 111 | 5119d9a | FAIL page envelope exhausted; — | — | — | yes | 0 | 135.361 |
 | 112 | 77d4222 | FAIL; — | 414 | 0 | unfixed/unknown | 0 | 168.804 |
 | 118 | 77d4222 | BLOCKED; — | 478 | 1 | unfixed/unknown | 0 | 143.572 |
-| 119 | 62fb7ad | FAIL; — | 404 | 2 | unfixed/unknown | 0 | 181.209 |
-| 120 | 62fb7ad | IDENTITY_UNCONFIRMED; osm:way:96057156 (unconfirmed) | 362 | 0 | unfixed/unknown | 8 mechanical, identity unconfirmed | 401.346 |
+| 119 | 5119d9a | FAIL deadline / unresolved body; — | — | 2 | unfixed/unknown | 0 | 181.585 |
+| 120 | 5119d9a | REVIEW_REQUIRED; osm:way:133035135 | — | — | unfixed/unknown | 1, identity review pending | 120.957 |
 | 121 | 77d4222 | BLOCKED; — | 400 | 0 | unfixed/unknown | 0 | 119.284 |
 | 122 | 77d4222 | FAIL; — | 400 | 0 | yes | 0 | 92.125 |
 | 123 | 77d4222 | BLOCKED; — | 75 | 0 | unfixed/unknown | 0 | 66.625 |
-| 124 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 17.686 |
+| 124 | 5119d9a | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 15.708 |
 | 125 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 11.704 |
 | 126 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 17.334 |
 | 127 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 46.148 |
@@ -2207,3 +2209,25 @@ Versioned observations, not one combined cold PASS. Latest102 has a scoped usefu
 | 133 | 77d4222 | BLOCKED; — | 245 | 0 | unfixed/unknown | 0 | 97.482 |
 
 Inputs are the byte-verified frozen26-photo manifest. Unfixed target is not a correct-answer claim. Per-case source/evidence/SDK usage and camera status remain in retained case reports; provider-cost allocation not reported by a provider remains unknown. T counts and reductions are not inferred where no closed T verdict exists. Actual7623da2 closed distinct SOURCE count:1 (104); repetitions do not add N.
+
+## Fresh pointer-only T and original Native recovery (2026-10-10, v67–v86)
+
+The owner correctly challenged the quotation repair as preserving a brittle request format. The new fresh T contract therefore removes `source_quote` from the issued model schema and requires selection of an existing `source_span_ref`. The acquired article is transmitted completely through lossless contiguous passages, including short lines and original punctuation; no semantic sentence selector removes text. The model still decides the architectural meaning, physical scope, alternatives and sufficiency. The existing proof resolver materializes the selected original bytes and checks article identity, offsets and source hash. No new judge, parser, provider, admission registry or transport is added. The matched-delimiter helper from5119d9a is removed. Historical104/v63 offline acceptance is consequently superseded; neither its old model answer nor its89.245s cold FAIL is relabeled as a fresh pointer result. The same-record hydration check remains a literal received-field/provenance check.
+
+The actual104 acquired article was assembled into the new final T packet offline: all eight issued passages cover the exact original text and validate against offsets/hashes; the issued schema has no `source_quote`. Prompt30516 UTF-8 bytes, schema10962 bytes. This did not send a model request, convert the old decision or increase SOURCE count. Evidence: `t-pointer104-assembled-v67.json`.
+
+A full-planner recovery test also exposed an independent Native seam: observing an addressed UNKNOWN T tried to mark a new send and reserve a new planner unit. Observation now reads the same original prepared request, schema, SOURCE/text context and unit binding, skips new admission/work-unit reservation and preserves original SOURCE/Stop fences. The test switches the fresh contract from legacy quotations to pointers between send and observation; the old answer is validated only under its original schema and receipt. Isolated v85 passed. Earlier fixture failures remain recorded; public saved-search-plan reuse legitimately skips the planner, so the recovery test invokes the existing planner observer directly.
+
+Actual frozen5119d9a group2 completed before these source changes, with normal quotas and no availability import:
+
+| SOURCE | Outcome | Identity / first eligible / terminal seconds | Finding |
+| --- | --- | --- | --- |
+|108|FAIL|— / — /101.045|Native closed with two Händel building hypotheses; subsequent page envelope exhausted, no confirmed body.|
+|111|FAIL|— / — /135.361|Native SOURCE/MAP and detail closed; domed cylindrical body and adjacent volumes remained ambiguous. No correct recognition is credited.|
+|119|FAIL|— / — /181.585|Native T compared own Prussia39sid2538; discriminating facade match remained ambiguous between6 and6A bodies. Later REF stayed uncertain.|
+|120|REVIEW_REQUIRED|45.911 /119.109 /120.957|Proposed way133035135, one own sid2540 clinic/construction claim. Actual SOURCE was viewed; generic multi-volume/brick/address evidence does not yet establish independent semantic identity PASS. Older wrong/unconfirmed way96057156 evidence stays withdrawn.|
+|124|CLARIFICATION_REQUIRED|— / — /15.708|No GPS was invented; ordinary source-only model path requested geographic context.|
+
+Evidence: `cold-5119d9a-corpus`, durable job_bfedfaacdbd320fd53cf6248. This group and4566ef6 group1 are different source snapshots and cannot be combined as final fixed15 acceptance. Hosted5119d9a backend38041132786 and Android38041133010 both passed; neither is a physical-phone or fresh user E2E proof.
+
+Installed-SDK full suite v62 completed with2972 passed,2 skipped,2 warnings in1168.99s. Its XML includes all200 fake-worker history cases, with no failure or skip among those cases. Source changed4566ef6 to5119d9a while that suite was running, so it is explicitly not final exact-candidate acceptance. Evidence: `full-installed-sdk-4566ef6-v62.xml`. Affected installed-SDK suite v86:190 passed,3 failed in139.79s. All three failures were legacy fake-model wire expectations in geometry tests (retyped quotations and old sentence spans); updated fixtures choose actual issued pointers and reconstruct the lossless article. The three affected cases pass in isolated v87 (6.12s); v85 original-schema recovery passes. Ruff and diff whitespace checks pass. These are fixture/contract checks, not fresh recognition evidence. Final fixed-candidate corpus and exact-source full suite remain required before deployment.

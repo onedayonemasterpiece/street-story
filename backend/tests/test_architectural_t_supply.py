@@ -140,6 +140,17 @@ def _comparison_fixture():
     return story, candidates, decision, receipt
 
 
+def _issued_span_decision(decision, packet, receipt):
+    import copy
+    result = copy.deepcopy(decision)
+    for relation in result['correspondences']:
+        relation['source_span_ref'] = next(ref for ref, span in packet['source_span_refs'].items()
+            if span['article_id'] == relation['article_id'] and relation['source_quote'] in span['source_quote'])
+        relation.pop('source_quote')
+    receipt['source_span_refs'] = packet['source_span_refs']
+    return result
+
+
 def test_compact_source_article_packet_reuses_original_text_and_keeps_alternatives():
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)
@@ -160,6 +171,7 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
         'reason': 'SOURCE shows a different arrangement of bay and gable.'}]
+    decision = _issued_span_decision(decision, packet, receipt)
     plan = {'entity_name': '', 'first_wave_hypotheses': [],
         'accepted_geometry': {'decision': 'uncertain'}}
     adopted = combine_architectural_decision(plan, decision, packet['schema'])
@@ -176,6 +188,7 @@ def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     decision['material_alternatives_resolved'] = False
     packet = prepare_architectural_comparison(story, candidates, receipt)
     decision['decision'] = 'uncertain'
+    decision = _issued_span_decision(decision, packet, receipt)
     result = combine_architectural_decision({}, decision, packet['schema'])
     assert result['accepted_architectural_text']['decision'] == 'uncertain'
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
@@ -186,6 +199,7 @@ def test_compact_positive_contract_requires_each_prior_alternative_but_uncertain
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)
     validator = Draft202012Validator(packet['schema'])
+    decision = _issued_span_decision(decision, packet, receipt)
     decision['material_alternatives'] = []
     assert list(validator.iter_errors(decision))
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
@@ -267,7 +281,9 @@ def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_in
     article['text_sha256'] = hashlib.sha256(article['text'].encode()).hexdigest()
     prepared = prepare_architectural_comparison(story, candidates, receipt)
     assert len(prepared['candidate_ids']) == 12
-    assert article['text'] in prepared['prompt']
+    packet = json.loads(prepared['prompt'].split('\n', 1)[1])
+    assert ''.join(span['literal_text'] for span in packet['literal_source_passages'][0]['passages']) == article['text']
+    assert 'text' not in packet['articles'][0]
     assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 12
 
 
@@ -529,6 +545,7 @@ def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantic
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
         'reason': 'SOURCE has a distinct bay layout from this received neighbor.'}]
     packet = prepare_architectural_comparison(story, candidates, receipt)
+    decision = _issued_span_decision(decision, packet, receipt)
     raw = {'type':'object', **decision}
     result = combine_architectural_decision({}, raw, packet['schema'])
     assert result['accepted_architectural_text']==decision
@@ -666,6 +683,7 @@ def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
     candidates.append({'candidate_id': 'osm:way:89', 'identity_eligible': True,
         'map_object': {'tags': {'building': 'yes'}}})
     packet = prepare_architectural_comparison(story, candidates, receipt)
+    decision = _issued_span_decision(decision, packet, receipt)
     decision['material_alternatives'] = [
         {'candidate_id': 'osm:way:88', 'reason': 'Earlier nominated neighboring wing differs.'},
         {'candidate_id': 'osm:way:89', 'reason': 'Another received body is material despite no acquired article.'}]

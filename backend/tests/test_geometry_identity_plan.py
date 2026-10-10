@@ -111,7 +111,7 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         for article in articles:
             own = next(row for row in passages if row['article_id'] == article['article_id'])
             assert own['all_passages_displayed'] is True
-            assert ' '.join(' '.join(p['literal_text'] for p in own['passages']).split()) == ' '.join(article['text'].split())
+            assert ''.join(p['literal_text'] for p in own['passages']) == article['text']
         inventory = packet['acquired_architectural_text']['publisher_and_OSM_literal_records_NOT_prejoined']
         osm_records = [dict(zip(table['columns'], row))
             for table in inventory['osm_refs']['tables'] for row in table['rows']]
@@ -127,14 +127,14 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         g['decision'] = 'uncertain'
         if invalid_geometry:
             g['candidate_id'] = 'osm:way:unreceived'
-            from street_story.identity_architectural_pool import joint_source_spans
-            _, refs = joint_source_spans(articles)
-            for relation in decision['correspondences']:
-                literal = relation.pop('source_quote')
-                chosen = next(ref for ref, span in refs.items()
-                    if span['article_id'] == relation['article_id'] and literal == span['source_quote'])
-                assert chosen in contents[-1]
-                relation['source_span_ref'] = chosen
+        from street_story.identity_architectural_pool import joint_source_spans
+        _, refs = joint_source_spans(articles)
+        for relation in decision['correspondences']:
+            literal = relation.pop('source_quote')
+            chosen = next(ref for ref, span in refs.items()
+                if span['article_id'] == relation['article_id'] and literal in span['source_quote'])
+            assert chosen in contents[-1]
+            relation['source_span_ref'] = chosen
         return SimpleNamespace(text=json.dumps({**payload(g),'accepted_architectural_text':decision}))
 
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
@@ -246,8 +246,12 @@ async def test_nominated_architectural_lookup_closes_identity_without_ref_or_ext
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(initial))
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
-        assert articles[0]['text'] in contents[-1]
         packet, _ = json.JSONDecoder().raw_decode(contents[-1].rsplit('\n', 1)[-1])
+        own = packet['literal_source_passages'][0]['passages']
+        assert ''.join(row['literal_text'] for row in own) == articles[0]['text']
+        for relation in text_decision['correspondences']:
+            literal = relation.pop('source_quote')
+            relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
         inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']
         text_decision['physical_link_evidence'] = [{
             'article_id': articles[0]['article_id'], 'candidate_id': 'osm:way:2',

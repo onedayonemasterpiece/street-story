@@ -227,9 +227,10 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         correspondence['required'].append('feature_kind')
     if source_span_refs:
         correspondence = schema['properties']['correspondences']['items']
+        correspondence['properties'].pop('source_quote')
         correspondence['properties']['source_span_ref'] = {'type': 'string', 'enum': list(source_span_refs)}
         correspondence['required'].remove('source_quote')
-        correspondence['oneOf'] = [{'required': ['source_quote']}, {'required': ['source_span_ref']}]
+        correspondence['required'].append('source_span_ref')
     from .identity_candidate_policy import research_priority_schema
     schema['properties']['research_priority'] = research_priority_schema(candidate_ids)
     return schema
@@ -243,19 +244,6 @@ def _text_candidate_context(candidate):
         'physical_subject_evidence', 'map_object', 'map_geometry', 'map_address',
         'map_coordinates', 'physical_component', 'physical_components', 'wikidata',
         'wikipedia_url') if key in candidate}
-
-
-def literal_architectural_quote(quote, text):
-    """Resolve quotation presentation to an exact substring of its own article."""
-    if not isinstance(quote, str) or not isinstance(text, str) or not quote.strip():
-        return None
-    if quote in text:
-        return quote
-    if len(quote) > 2 and (quote[0], quote[-1]) in {('«', '»'), ('“', '”'), ('"', '"')}:
-        literal = quote[1:-1]
-        if literal.strip() and literal in text:
-            return literal
-    return None
 
 
 def _received_literal_record_matches(received, observed):
@@ -364,7 +352,7 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
     stable = False
     for relation in decision['correspondences']:
         if (relation['article_id'] not in bound or not relation['source_quote'].strip()
-                or literal_architectural_quote(relation['source_quote'], table[relation['article_id']]['text']) is None
+                or relation['source_quote'] not in table[relation['article_id']]['text']
                 or not relation['source_observation'].strip() or not relation['reason'].strip()):
             return None
         stable |= relation['status'] == 'stable_match' and (not structural
