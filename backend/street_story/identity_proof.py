@@ -350,17 +350,19 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
         return None
     bound = set()
     for binding in decision['article_bindings']:
+        if binding['physical_binding_resolved'] is False:
+            continue  # Keep the model's negative comparison without crediting it.
         if (binding['candidate_id'] != cid or binding['physical_binding_resolved'] is not True
                 or not binding['scope'].strip() or not binding['binding_basis'].strip()):
             return None
         bound.add(binding['article_id'])
     stable = False
     for relation in decision['correspondences']:
-        if (relation['article_id'] not in bound or not relation['source_quote'].strip()
+        if (not relation['source_quote'].strip()
                 or relation['source_quote'] not in table[relation['article_id']]['text']
                 or not relation['source_observation'].strip() or not relation['reason'].strip()):
             return None
-        stable |= relation['status'] == 'stable_match' and (not structural
+        stable |= relation['article_id'] in bound and relation['status'] == 'stable_match' and (not structural
             or relation.get('feature_kind') in STRUCTURAL_FEATURES)
     if not stable or any(item['candidate_id'] in {'', cid} or not item['reason'].strip()
             for item in decision['material_alternatives']):

@@ -208,6 +208,48 @@ def _issued_span_decision(decision, packet, receipt):
     return result
 
 
+@pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match'])
+def test_declined_article_is_context_without_vetoing_or_proving_the_supported_body(damage):
+    from street_story.identity_architectural_evidence import literal_evidence_inventory
+    story, candidates, decision, receipt = _comparison_fixture()
+    unrelated = {**receipt['articles'][0], 'article_id': 'catalog:other-plaque',
+        'url': 'https://archive.example/other-plaque',
+        'text': 'A memorial plaque belongs to a different building.'}
+    unrelated['source_sha256'] = hashlib.sha256(unrelated['text'].encode()).hexdigest()
+    unrelated['text_sha256'] = unrelated['source_sha256']
+    receipt['articles'].append(unrelated)
+    receipt['physical_link_inventory'] = literal_evidence_inventory(
+        story, candidates, receipt['articles'], candidate_ids=[c['candidate_id'] for c in candidates])
+    decision['article_bindings'].append({'article_id': unrelated['article_id'], 'candidate_id': '',
+        'physical_binding_resolved': False, 'scope': 'A different plaque subject.',
+        'binding_basis': 'This article does not identify the photographed body.'})
+    decision['correspondences'].append({'article_id': unrelated['article_id'],
+        'source_quote': unrelated['text'], 'source_observation': 'No plaque is visible in SOURCE.',
+        'status': 'not_observable', 'feature_kind': 'historical_fact',
+        'reason': 'The unrelated plaque cannot establish this body.'})
+    decision['material_alternatives'] = [{'candidate_id': candidates[1]['candidate_id'],
+        'reason': 'Its facade differs from the source-described central bay.'}]
+    if damage == 'foreign_positive_pointer':
+        inventory = receipt['physical_link_inventory']
+        decision['physical_link_evidence'][0]['publisher_ref'] = next(ref for ref, row
+            in inventory['publisher_refs'].items() if row['article_id'] == unrelated['article_id'])
+    elif damage == 'only_declined_match':
+        decision['correspondences'][0]['status'] = 'not_observable'
+        decision['correspondences'][1]['status'] = 'stable_match'
+    packet = prepare_architectural_comparison(story, candidates, receipt)
+    issued = _issued_span_decision(decision, packet, receipt)
+    proof = freeze_architectural_text_proof(story, issued, receipt, candidates)
+    if damage is not None:
+        assert proof is None
+    else:
+        assert proof is not None
+        assert proof['decision']['article_bindings'][1]['physical_binding_resolved'] is False
+        assert len(proof['decision']['correspondences']) == 2
+        assert [source['article_id'] for source in proof['article_sources']] == [
+            receipt['articles'][0]['article_id']]
+        assert len(proof['physical_link_validation']['verified_bindings']) == 1
+
+
 def test_compact_source_article_packet_reuses_original_text_and_keeps_alternatives():
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)

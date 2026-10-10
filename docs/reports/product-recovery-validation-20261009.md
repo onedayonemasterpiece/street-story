@@ -18,7 +18,10 @@ retained runtime inputs rather than treated as established root causes.
 | Frozen 2aacca1 actual SOURCE 104 /111 | Uncertain at180.139s /129.970s | Patched-input cold contrasts |
 | Frozen 2aacca1 actual SOURCE 132 /105 /106 | Deadline at180.159s /180.452s /180.284s | Distinguish closed semantic responses, NotSent and UNKNOWN individually |
 | Initial critical-path patch16a0393 | 237 affected checks passed161.35s; Native/MAP/adapter64 passed15.14s; Android38053334077 passed; backend CI28 failed,2745 passed,49 skipped | Followup fixes below;16a0393 is not an accepted release |
-| Current continuation correction | 200 affected checks passed157.41s;115 independent-boundary checks passed53.91s; ruff and whitespace checks passed | Commit, frozen corpus and final installed-SDK acceptance |
+| Frozen979175d continuation | 200 affected checks passed157.41s;115 independent-boundary checks passed53.91s; Android38054725132 checks/emulator passed; backend2772 passed,49 skipped,1 failed | Image-preparation test returned a wholly empty no-action plan; fixture corrected while retaining its image assertion |
+| Frozen979175d mandatory5 |104 correct58.426s, first105.487s,3 independent own-source facts177.696s; substantive PASS.102/111/130 deadline FAIL182.082/180.565/180.517s;132 resource BLOCKED165.790s. Five distinct initial SOURCE answers closed; no UNKNOWN; no wrong ID accepted | Only1/5 delivered useful facts; not release acceptance or a completed fixed15 |
+| Current102 authenticated API | Ordinary history/reopen on979175d preserves the compatible closed v42 editor result:3 selected eligible facts, corrected draft, evening concept and visual;301/301 voice ACK reused | No new inference, Android microphone or publication claim |
+| Positive-evidence boundary correction |78 affected tests passed10.71s; exact unmodified closed102 T now yields its own133035113 proof, preserving the declined plaque comparison; foreign positive pointer and declined-only match remain rejected | Frozen full suite and next actual corpus; offline replay is not a new cold PASS |
 | Disk cleanup | 4.2GiB plus752.5MiB of successful synthetic fixtures deleted through managed dry-run/apply; pip download cache purged;5.8GiB free | Successful new pytest fixtures use failed-only retention |
 
 The actual compact T caller now supplies the manifest and label→candidate ID
@@ -98,10 +101,28 @@ scope instruction, without a scene-specific host classifier or acceptance rule.
 The16a0393 full installed-SDK run was cancelled at40% after CI failures were
 known and before source changed; it has no completed acceptance verdict.
 
+The979175d group finished before further edits. Its full installed-SDK run was
+cancelled after the next concrete defect was established, so it has no final
+verdict. The102 compact T correctly accepted way133035113 and explicitly
+declined an unrelated plaque article with `physical_binding_resolved=false`.
+The host nevertheless counted that declined article as a positive binding and
+required a confirming link for it. Offline replay of the exact closed answer
+located rejection at the positive-link count and the blanket correspondence
+membership check. Its own supported evidence passes unchanged. This is a
+confirmed overbroad host veto, not a semantic uncertainty; the original cold
+FAIL remains FAIL. The correction credits only explicitly positive bindings
+and their matches, while retaining negative comparisons in the proof and
+checking actual source pointers. A declined source cannot prove the selected
+body. The remaining10 cases were not spent on this known defect.
+
 Evidence: retained task `20261009T214809Z-overnight-product-finish-20261009`:
 `full-installed-sdk-2aacca1-v106.xml`, `critical-path-patch.xml`,
 `cold-2aacca1-corpus`, `cold-f23fad5-corpus/case-104.json`,
 `fixture-cleanup-20261010.json`, `android-emulator-2aacca1`.
+Current evidence: `cold-979175d-corpus`, `semantic-104-979175d.json`,
+`retained102-current-api-reopen-979175d.json`,
+`closed102-negative-binding-rejection-979175d.json`,
+`closed102-negative-binding-proof-replay-979175d.json`.
 
 ## Reliability finish after reboot, 2026-10-10
 

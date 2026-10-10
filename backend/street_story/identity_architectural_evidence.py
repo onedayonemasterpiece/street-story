@@ -238,7 +238,10 @@ def validate_model_physical_links(inventory, model_links, decision):
         raise ValueError('missing_literal_source_evidence_inventory')
     if not isinstance(model_links, list) or not isinstance(decision, dict):
         raise ValueError('model_evidence_links_malformed')
-    bound = {item['article_id'] for item in (decision.get('article_bindings') or [])}
+    # A declined article is comparison context, not a positive source claim.
+    # Requiring a link for it would discard an independently supported body.
+    bound = {item['article_id'] for item in (decision.get('article_bindings') or [])
+        if item.get('physical_binding_resolved') is True}
     cid = decision.get('candidate_id')
     if len(model_links) != len(bound) or len({x.get('article_id') for x in model_links
             if isinstance(x, dict)}) != len(bound):
