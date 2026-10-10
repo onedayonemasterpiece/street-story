@@ -42,21 +42,26 @@ async def test_model_owned_feature_alternative_reaches_durable_queue_unchanged(f
         async def execute(self, operation, call):
             return await call('fixture', 3)
     async def generate(key, timeout, contents, config, **kwargs):
-        prompt = contents[1]
+        prompt = contents[-1]
         context = json.loads(prompt.split('Данные ниже — только контекст:\n')[1])
-        assert context['location_search_context']['nearby_address_hypotheses'] == [a, b]
-        assert 'article_queries' in config.response_json_schema['required']
+        rows = context['location_search_context']['address_anchors']['rows']
+        assert [(row[0], row[2], row[3]) for row in rows] == [
+            (a['candidate_id'], 'Fixture Street', '31'), (b['candidate_id'], 'Fixture Street', '33')]
+        contract = json.loads(config.system_instruction.split('\n', 1)[1].split('\n', 1)[0])
+        assert 'article_queries' in contract['required']
         assert 'современными внешними фотографиями' in prompt
         assert 'содержательно разные запросы' in prompt
         assert contents[0].inline_data.data == normalize_reference(jpeg())[1]
         return SimpleNamespace(text=json.dumps({'entity_name': 'Hypothesis', 'wikipedia_queries': [],
-            'visual_query': feature, 'commons_query': '', 'article_queries': plan}))
+            'visual_query': feature, 'commons_query': '', 'article_queries': plan,
+            'first_wave_hypotheses': [{'kind': 'address', 'subject_id': item['candidate_id'],
+                'query': '', 'reason': 'Plausible observed address'} for item in (a, b)]}))
     service = SimpleNamespace(_source_photo_bytes=lambda _: jpeg(),
         providers=SimpleNamespace(gemini=SimpleNamespace(executor=Executor(), _generate=generate)))
     story = {'id': 'fixture', '_identity_search_context': {'nearby': [a, b]}}
     await identity_discovery.suggest(service, story, '', [])
-    assert story['_identity_article_queries'] == list(dict.fromkeys([*plan, feature]))
-    history = {q: {'status': 'completed'} for q in plan if q != feature}
+    assert story['_identity_article_queries'] == list(dict.fromkeys(['Fixture Street 31', 'Fixture Street 33', feature, *plan]))[:8]
+    history = {q: {'status': 'completed'} for q in story['_identity_article_queries'] if q != feature}
     assert identity_discovery.next_visual_query({}, 'Wrong guess', history, story['_identity_article_queries']) == feature
     assert 'address' not in story
 
@@ -70,7 +75,8 @@ async def test_initial_recovery_uses_existing_reader_rank_with_attempt_fairness(
     pages = {sources[1]['url']: {'status': 'temporary_failure', 'attempts': int(tried_article)}}
     history = {'queries': {}, 'sources': sources, 'pages': pages}
     story = {'id': 'fixture', 'photo_sha256': 'opaque-upload'}
-    service = SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(_generate=object(), executor=object())),
+    service = SimpleNamespace(providers=SimpleNamespace(gemini=SimpleNamespace(_generate=lambda: None,
+        executor=SimpleNamespace(execute=lambda *args: None))),
         store=SimpleNamespace(now=lambda: 100), _identity_snapshot=lambda _: (story, {}))
     async def suggest(*args):
         story['_identity_article_queries'] = ['literal model exterior query']

@@ -22,6 +22,7 @@ from pydantic import SecretStr, ValidationError
 
 from .db import Store
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
+from .research_budget import ResearchTerminated
 
 logger = logging.getLogger('uvicorn.error.street_story.gemini')
 OPERATIONS = ('transcription', 'grounded_research', 'web_search')
@@ -248,14 +249,25 @@ class GeminiExecutor:
     def __init__(self, pool: GeminiKeyPool):
         self.pool = pool
 
-    async def execute(self, operation: str, call: Callable[[str, float], Awaitable[T]]) -> T:
+    async def execute_joint(self, operation: str, call: Callable[[str, float], Awaitable[T]]) -> T:
+        """One addressed visual operation uses the existing overall attempt budget.
+
+        Cancelling SOURCE/MAP at the short key-failover timeout loses its response
+        and forbids another send. This role already prevents unknown-send failover;
+        let its first call finish within the configured attempt budget instead.
+        """
+        return await self.execute(operation, call, call_timeout=self.pool.policy.attempt_timeout)
+
+    async def execute(self, operation: str, call: Callable[[str, float], Awaitable[T]],
+                      *, call_timeout: float | None = None,
+                      can_failover: Callable[[], bool] | None = None) -> T:
         started = time.monotonic()
         attempted: set[str] = set()
         while len(attempted) < min(len(self.pool.keys), self.pool.policy.max_failover_keys):
             remaining = self.pool.policy.attempt_timeout - (time.monotonic()-started)
             if remaining <= 0:
                 break
-            timeout = min(remaining, self.pool.policy.call_timeout)
+            timeout = min(remaining, self.pool.policy.call_timeout if call_timeout is None else call_timeout)
             key_id = self.pool.reserve(operation, attempted, timeout)
             if key_id is None:
                 break
@@ -268,6 +280,11 @@ class GeminiExecutor:
             except asyncio.CancelledError:
                 self.pool.finish(key_id, operation, Failure('cancelled'))
                 raise
+            except ResearchTerminated:
+                # Product completion is not a provider failure and must not
+                # cause failover to another key. Release only the local slot.
+                self.pool.finish(key_id, operation, Failure('research_finished', permanent=True))
+                raise
             except GeminiUnavailable:
                 self.pool.finish(key_id, operation, Failure('shared_control_unavailable'))
                 raise
@@ -279,6 +296,11 @@ class GeminiExecutor:
                                 latency_ms=round((time.monotonic()-call_started)*1000), failover_count=len(attempted)-1)
                 if failure.permanent and not failure.block_model:
                     raise PermanentProviderError('gemini:'+failure.category) from None
+                if can_failover is not None and not can_failover():
+                    # The adapter owns the addressed request's send boundary.
+                    # Do not reserve or penalize another key after an outcome
+                    # that must be recovered through the original request.
+                    raise self.pool.unavailable(operation) from None
                 continue
             self.pool.finish(key_id, operation, None)
             self.pool.event('success', operation, key_id, latency_ms=round((time.monotonic()-call_started)*1000), failover_count=len(attempted)-1)

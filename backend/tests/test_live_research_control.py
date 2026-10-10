@@ -1,3 +1,5 @@
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -137,30 +139,114 @@ def test_every_bundle_exposes_controls_through_one_router(tmp_path):
         assert properties['research_action']['enum'] == ['stop', 'resume']
 
 
-@pytest.mark.asyncio
-async def test_research_session_persists_requested_concept_and_text_without_stage_switch(tmp_path):
-    from street_story.live import FUNCTIONS
+def test_review_setup_keeps_subject_and_run_without_resending_whole_inventory():
+    import copy
 
-    service, adapter, session, _ = prepared(tmp_path)
+    context = {
+        'story_id': 'subject-story', 'photo_sha256': 'a' * 64, 'identity_generation': 2,
+        'physical_identity_accepted': True, 'selected_fact_ids': ['selected-1'],
+        'publication_concept': 'Saved author angle', 'fact_count': 80,
+        'visual_identity': {'candidate_id': 'osm:way:91', 'candidate_name': 'Named subject',
+            'physical_scope': 'This photographed building', 'aliases': ['Old subject name'],
+            'observations': ['Detailed identity justification' * 100]},
+        'known_fact_inventory': [['fact', 'Long claim' * 1000]],
+        'draft_text': 'Saved draft' * 1000, 'previous_editorial_context': ['Old draft' * 1000],
+        'research_run': {'run_id': 'current-run', 'state': 'verifying',
+            'pending_review_fact_ids': ['requested-1'], 'identity_article_sources': ['Large discovery' * 1000]},
+    }
+    original = copy.deepcopy(context)
+    result = StreetStoryLiveAdapter._capability_context(context, 'review')
+    assert context == original
+    assert result['visual_identity']['physical_scope'] == 'This photographed building'
+    assert result['visual_identity']['candidate_name'] == 'Named subject'
+    assert result['visual_identity']['aliases'] == ['Old subject name']
+    assert result['visual_identity']['physical_identity_accepted'] is True
+    unresolved = StreetStoryLiveAdapter._capability_context({**context, 'physical_identity_accepted': False}, 'review')
+    assert unresolved['visual_identity']['physical_identity_accepted'] is False
+    assert result['research_run'] == {'run_id': 'current-run', 'state': 'verifying',
+                                    'pending_review_fact_ids': ['requested-1']}
+    assert result['selected_fact_ids'] == ['selected-1']
+    assert result['publication_concept'] == 'Saved author angle'
+    assert 'known_fact_inventory' not in result and 'draft_text' not in result
+    assert 'observations' not in result['visual_identity']
+    assert StreetStoryLiveAdapter._capability_context(context, 'editor') == original
+
+
+async def shared_editor_session(adapter, previous, intent):
+    """Real installed host transition; only provider acknowledgement is faked."""
+    from live_interaction.session_host import LiveSessionHost, _QueueReader, _Session
+
+    host = LiveSessionHost(adapter_factory=lambda **_: adapter)
+    session = _Session(id=previous.id, resource_id=previous.resource_id, actor=previous.actor,
+        model=previous.model, state=previous.state, reader=_QueueReader(), capability='research')
+    begin_turn(session, intent, origin='text')
+    call = {'name': 'continue_story', 'id': 'same-owner-editor',
+            'args': {'stage': 'editor', 'intent': intent}}
+    task = asyncio.create_task(host._handle_tool_calls(session, [call]))
+    try:
+        sent = json.loads(await asyncio.wait_for(session.reader.readline(), 1))
+        assert sent['type'] == 'reconfigure' and sent['capability'] == 'editor'
+        assert sent['continuation'] == intent
+        assert len(sent['configuration']['functions']) <= 9
+        session.pending_transition.set_result(True)
+        await asyncio.wait_for(task, 1)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert session.capability == 'editor'
+    assert session.tool_results[call['id']]['ready']
+    return host, session
+
+
+@pytest.mark.asyncio
+async def test_research_session_continues_same_request_to_editor_and_reopens(tmp_path):
+    from street_story.live import FUNCTIONS
+    from test_headless_fact_review_parallel import candidates, ControlledReview, RUN
+
+    service, job, harness = await candidates(tmp_path, count=3)
+    ControlledReview.mode = 'positive'
+    await ControlledReview(harness).run(job, RUN, 0)
+    adapter = harness.adapter
+    initialized = adapter.initialize(resource_id=job['story_id'], actor=None, model='controlled')
+    session = SimpleNamespace(id='continue-ready', resource_id=job['story_id'], actor=None,
+        model='controlled', state=initialized['state'], closed=False)
+    ready = [fact['fact_id'] for fact in service.story(session.resource_id)['facts']
+             if fact['eligibility'] == 'eligible']
+    assert len(ready) == 3
+    with service.store.connection() as db:
+        reviews_before = db.execute("SELECT COUNT(*) FROM live_commands WHERE story_id=? AND tool_name='finalize_fact_review'",
+                                    (session.resource_id,)).fetchone()[0]
     bundle = adapter._capability_configuration({'functions': FUNCTIONS}, 'research')
     names = {function['name'] for function in bundle['functions']}
-    assert {'search_web', 'get_research_chunk', 'set_concept', 'edit_text'} <= names
-    assert 'Persist an owner' in bundle['system_instruction']
-    assert 'only selected evidence-backed facts' in bundle['system_instruction']
+    assert {'search_web', 'get_research_chunk', 'continue_story'} <= names
+    assert not {'select_facts', 'set_concept', 'edit_text'} & names
+    assert 'Do not repeat research or independent review merely to reconfirm them' in bundle['system_instruction']
     assert 'A research-only request must not select facts or draft a publication' in bundle['system_instruction']
 
-    await adapter.execute_tool(session, {'name': 'set_concept', 'id': 'requested-concept',
-                                      'args': {'concept': 'История городских ворот'}})
-    await adapter.execute_tool(session, {'name': 'edit_text', 'id': 'requested-draft',
-                                      'args': {'expected_text_revision': 0, 'new_text': 'Сохранённый текст.',
-                                               'change_summary': 'Первый текст по просьбе автора'}})
-    story = service.story(session.resource_id)
+    host, session = await shared_editor_session(adapter, session,
+        'Выбери готовый факт, сохрани замысел и текст, не дожидаясь остальных проверок.')
+    await host._handle_tool_calls(session, [{'name': 'select_facts', 'id': 'requested-selection',
+                                           'args': {'fact_ids': ready}}])
+    await host._handle_tool_calls(session, [{'name': 'set_concept', 'id': 'requested-concept',
+                                      'args': {'concept': 'История городских ворот'}}])
+    topic = await adapter.execute_tool(session, {'name': 'read_topic', 'args': {}})
+    await host._handle_tool_calls(session, [{'name': 'edit_text', 'id': 'requested-draft',
+                                      'args': {'expected_text_revision': topic['text_revision'], 'new_text': 'Сохранённый текст.',
+                                               'change_summary': 'Первый текст по просьбе автора'}}])
+    errors = [event for event in session.events if event.get('status') == 'error']
+    assert not errors, json.dumps(errors, ensure_ascii=False)
+    reopened = type(service)(service.settings, providers=service.providers)
+    story = reopened.story(session.resource_id)
+    assert {f['fact_id'] for f in story['facts'] if f['selected']} == set(ready)
     assert story['publication_concept'] == 'История городских ворот'
     assert story['draft_text'] == 'Сохранённый текст.'
     with service.store.connection() as db:
         tools = [row[0] for row in db.execute('SELECT tool_name FROM live_commands WHERE story_id=?',
                                              (session.resource_id,))]
-    assert 'set_concept' in tools and 'edit_text' in tools and 'continue_story' not in tools
+        assert db.execute("SELECT COUNT(*) FROM live_commands WHERE story_id=? AND tool_name='finalize_fact_review'",
+                          (session.resource_id,)).fetchone()[0] == reviews_before
+    assert {'select_facts', 'set_concept', 'edit_text'} <= set(tools)
 
 
 @pytest.mark.asyncio
@@ -254,6 +340,13 @@ def test_stage_prompts_advertise_only_available_tools_and_leave_room_for_transit
         for name in {f['name'] for f in FUNCTIONS} - tools:
             assert not re.search(r'\b' + re.escape(name) + r'\b', instruction), (capability, name)
         assert 'continue_story first' in instruction
+        assert 'explicitly requested correction or independent reconsideration' in instruction
+        assert 'An explanation alone does not change eligibility or POI memory' in instruction
+        if capability != 'review':
+            assert 'use continue_story(stage=review)' in instruction
+        else:
+            assert 'read get_review_packet with the exact requested fact_ids and run_id' in instruction
+            assert 'finalize_fact_review or repair/review the changed claim' in instruction
         if capability not in {'research', 'review'}:
             assert EXTRACTION_CHECKS not in instruction and REVIEW_CHECKS not in instruction
     publication = adapter._capability_configuration(full, 'publication')

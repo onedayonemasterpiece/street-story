@@ -72,6 +72,12 @@ class Settings:
     gemini_transcription_rpm: int = 0
     gemini_grounded_research_rpm: int = 0
     processing_delayed_after_seconds: float = 1800.0
+    identity_timeout_seconds: float = 180.0
+    research_timeout_seconds: float = 480.0
+    identity_max_exact_pairs: int = 6
+    identity_max_query_hypotheses: int = 8
+    identity_max_pages: int = 6
+    identity_max_planner_calls: int = 2
     publication_test_alias: str | None = None
     research_endpoint: str | None = None
     research_directory: Path | None = None
@@ -172,4 +178,10 @@ class Settings:
             gemini_transcription_rpm=int(_number('GEMINI_TRANSCRIPTION_RPM', 0, 0, 10000)),
             gemini_grounded_research_rpm=int(_number('GEMINI_GROUNDED_RESEARCH_RPM', 0, 0, 10000)),
             processing_delayed_after_seconds=_number('PROCESSING_DELAYED_AFTER_SECONDS', 1800, 1, 86400),
+            identity_timeout_seconds=_number('IDENTITY_TIMEOUT_SECONDS', 180, 1, 180),
+            research_timeout_seconds=_number('RESEARCH_TIMEOUT_SECONDS', 480, 1, 480),
+            identity_max_exact_pairs=int(_number('IDENTITY_MAX_EXACT_PAIRS', 6, 1, 20)),
+            identity_max_query_hypotheses=int(_number('IDENTITY_MAX_QUERY_HYPOTHESES', 8, 1, 20)),
+            identity_max_pages=int(_number('IDENTITY_MAX_PAGES', 6, 1, 20)),
+            identity_max_planner_calls=int(_number('IDENTITY_MAX_PLANNER_CALLS', 2, 1, 5)),
         )

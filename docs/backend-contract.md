@@ -115,13 +115,24 @@ Canonical states remain `photo_ready`, `queued`, `researching`, `review`, `visua
 
 ## Research / facts
 
-The worker claims durable SQLite jobs by lease and recovers expired `running` work after restart. The research path is:
+The worker claims durable SQLite jobs by lease and recovers expired `running`
+work after restart. The current target is the adaptive [photo-search contract](photo-search-methods.md):
 
-1. transcribe missing M4A chunks with the configured Gemini pool, strictly by `chunk_index`;
-2. bounded Nominatim reverse + Overpass nearby lookup with persistent cache;
-3. MediaWiki geosearch/extract/canonical URLs with persistent cache;
-4. grounded Gemini research over source photo, owner voice and structured source context;
-5. persist candidate facts, evidence URLs, summary and publication draft.
+1. Preserve the original photo and actual camera metadata; transcribe available
+   owner M4A chunks by `chunk_index` without making voice a prerequisite for photo identity.
+2. Reuse compatible evidence and prepare bounded physical OSM context. Reverse
+   geocoding and optional Wiki metadata do not block an already ready map.
+3. Accept a sufficiently supported physical object through geometry, acquired
+   architectural text (including Prussia39 discovery), actual visual reference or
+   compatible combined proof. Each method opens the same facts path; a REF is
+   required only for the reference method.
+4. Fetch/freeze subject-scoped sources, extract small bounded facts through the
+   ordinary Live-first path and semantically review their own supporting passages.
+   Grounded search and qualified helper models are conditional acquisition/fallback
+   routes, not a mandatory Gemini chain before every accepted fact.
+5. Persist reviewed eligible facts and provenance in shared POI memory and the
+   story projection; retain owner selection for editorial drafts. Exhausted,
+   blocked and deadline states have finite truthful outcomes.
 
 Facts have stable `fact_id`, `evidence_supported`, selection state and source objects. Unsupported facts are always unselected/disabled. Refinement preserves the owner toggle when the stable fact survives. Runtime readback exposes bounded research provenance and durable retry evidence; quota/rate retry is not converted into fabricated facts.
 

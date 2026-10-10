@@ -12,6 +12,8 @@ import math
 import os
 import time
 import uuid
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -27,9 +29,22 @@ class SharedQuotaDenied(Exception):
         self.details = {'retryDelay': str(delay)+'s'}
 
 
+def denial_delay(result, now):
+    """Respect the controller's retry and declared bucket, never invent UTC RPD."""
+    delay = result.get('retry_after_ms')
+    if isinstance(delay, (int, float)) and not isinstance(delay, bool) and math.isfinite(delay) and delay >= 0:
+        return max(1, min(delay / 1000, 86400))
+    if result.get('blocked_reason') == 'rpd' and result.get('bucket_strategy') == 'rolling_60s_pacific_day_v2':
+        local = datetime.fromtimestamp(now, ZoneInfo('America/Los_Angeles'))
+        boundary = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return max(1, min(boundary.timestamp() - now, 90000))
+    return 60
+
+
 class SharedQuotaGate:
     def __init__(self, settings, pool, *, http=None):
         self.settings, self.pool, self.store, self.http = settings, pool, pool.store, http
+        self._owned_http = None
         self.url = (settings.gemini_quota_supabase_url or '').rstrip('/')
         self.token = settings.gemini_quota_supabase_key
         # Resolve registered names by secret equality, also for legacy single-key
@@ -43,6 +58,11 @@ class SharedQuotaGate:
         self.lock = asyncio.Lock()
         self.active = set()
 
+    async def close(self):
+        if self._owned_http is not None:
+            await self._owned_http.aclose()
+            self._owned_http = None
+
     def unavailable(self):
         self.pool.event('shared_control_unavailable', 'shared_model')
         return GeminiUnavailable(self.pool.clock()+30, 'shared_control_unavailable')
@@ -50,19 +70,23 @@ class SharedQuotaGate:
     async def request(self, method, path, **kwargs):
         if not self.url.startswith('https://') or not reveal(self.token):
             raise self.unavailable()
-        own = self.http is None
-        client = self.http or httpx.AsyncClient(timeout=3, follow_redirects=False)
+        if self.http is None and self._owned_http is None:
+            self._owned_http = httpx.AsyncClient(timeout=3, follow_redirects=False)
+        client = self.http or self._owned_http
+        started = time.monotonic()
         try:
             async with asyncio.timeout(4):
                 response = await client.request(method, self.url+'/rest/v1/'+path,
                     headers={'apikey':reveal(self.token), 'Authorization':'Bearer '+reveal(self.token)}, **kwargs)
                 response.raise_for_status()
                 return response.json() if response.content else None
-        except (httpx.HTTPError, ValueError, TimeoutError):
+        except (httpx.HTTPError, ValueError, TimeoutError) as exc:
+            response = getattr(exc, 'response', None)
+            self.pool.event('shared_control_request_failed', 'shared_model',
+                method=method, endpoint_kind='rpc' if path.startswith('rpc/') else 'registry',
+                error_type=type(exc).__name__, status_code=getattr(response, 'status_code', None),
+                duration_ms=round((time.monotonic() - started) * 1000))
             raise self.unavailable() from None
-        finally:
-            if own:
-                await client.aclose()
 
     async def rpc(self, name, payload):
         return await self.request('POST', 'rpc/google_ai_'+name, json=payload)
@@ -172,15 +196,13 @@ class SharedQuotaGate:
                 with self.store.tx() as db:
                     db.execute('DELETE FROM gemini_quota_journal WHERE request_uid=?', (uid,))
                 reason = result.get('blocked_reason')
-                delay = result.get('retry_after_ms')
                 if reason not in ('rpm','tpm','rpd','no_keys','model_not_found'):
                     raise self.unavailable()
-                delay = delay/1000 if isinstance(delay,(int,float)) and math.isfinite(delay) and delay>=0 else 60
-                if reason == 'rpd':
-                    delay = max(delay,(int(now//86400)+1)*86400-now)
-                delay = max(1,min(delay,86400))
+                delay = denial_delay(result, now)
                 self.pool.apply_advisory({hashlib.sha256(key.encode()).hexdigest(): (now+delay, 1.0)})
-                self.pool.event('shared_quota_denied', 'shared_model', reason=reason, retry_after=delay)
+                self.pool.event('shared_quota_denied', 'shared_model', reason=reason, retry_after=delay,
+                    controller_retry_after_ms=result.get('retry_after_ms'),
+                    bucket_strategy=result.get('bucket_strategy'), provider_send_state='not_sent')
                 raise SharedQuotaDenied(delay)
             if result.get('api_key_id') != identifier:
                 raise self.unavailable()

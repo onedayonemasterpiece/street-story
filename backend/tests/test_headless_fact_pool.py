@@ -58,6 +58,41 @@ async def partial(harness, job):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('advisory_key', [None, '', 'model-advisory-key'])
+async def test_headless_advisory_key_does_not_change_unreviewed_candidate_authority(tmp_path, advisory_key):
+    from jsonschema import Draft202012Validator
+    from street_story.research_adapter import FACT_PAGE_SCHEMA
+
+    svc, job = fixture(tmp_path, count=1)
+    calls = []
+
+    async def extract(page, story, context):
+        payload = result(page)
+        candidate = payload['result']['facts'][0]
+        if advisory_key is None:
+            candidate.pop('claim_key')
+        else:
+            candidate['claim_key'] = advisory_key
+        Draft202012Validator(FACT_PAGE_SCHEMA).validate(payload['result'])
+        calls.append(page['chunk_id'])
+        return payload
+
+    svc.providers.research = SimpleNamespace(client=SimpleNamespace(model_id='controlled-model'), extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    await partial(harness, job)
+    await partial(harness, job)
+    with svc.store.connection() as db:
+        rows = db.execute('SELECT semantic_key,eligibility,owner_selected FROM fact_assertions WHERE story_id=?',
+                          (job['story_id'],)).fetchall()
+        assert len(rows) == 1 and len(calls) == 1
+        assert rows[0]['semantic_key'].startswith('extractor-candidate:')
+        assert rows[0]['eligibility'] == 'unreviewed' and rows[0]['owner_selected'] == 0
+        assert db.execute('SELECT COUNT(*) FROM fact_evidence_spans e JOIN fact_observations o '
+                          'ON o.observation_id=e.observation_id WHERE o.story_id=? AND o.status=\'accepted\'',
+                          (job['story_id'],)).fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_three_frozen_cores_extract_in_parallel_first_candidate_saved_before_slow_units(tmp_path):
     svc, job = fixture(tmp_path)
     release, started, saved = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -226,3 +261,37 @@ async def test_more_than_three_sources_accumulate_with_bounded_pool_not_a_source
     with svc.store.connection() as db:
         assert db.execute('SELECT state FROM research_runs WHERE run_id=?', (RUN,)).fetchone()[0] == 'verifying'
         assert {row[0] for row in db.execute('SELECT eligibility FROM fact_assertions')} == {'unreviewed'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('useful', [False, True])
+async def test_exhausted_article_ends_automatic_run_without_suppressing_other_supported_facts(tmp_path, useful):
+    from street_story.errors import PermanentProviderError
+    from test_headless_fact_review_parallel import ControlledReview
+    svc, job = fixture(tmp_path, count=2 if useful else 1)
+    calls = []
+    async def extract(page, story, context):
+        calls.append(page['_unit_id'])
+        if not useful or page['_extractor_ordinal'] == 1:
+            raise PermanentProviderError('research_fact_routes_exhausted')
+        return result(page)
+    svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    try:
+        outcome = await harness.run(job, RUN, 'History', 'history')
+    except RetryableProviderError:
+        assert useful
+        outcome = None
+    if useful:
+        ControlledReview.mode = 'positive'
+        assert await ControlledReview(harness).run(job, RUN, 0) == 1
+        outcome = await harness.run(job, RUN, 'History', 'history')
+    assert outcome['outcome'] == ('useful_partial' if useful else 'no_supported_facts')
+    assert outcome['coverage_complete'] is False
+    assert outcome['eligible_count'] == (1 if useful else 0)
+    before = list(calls)
+    assert await harness.run(job, RUN, 'History', 'history') == outcome
+    assert calls == before
+    with svc.store.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM research_chunk_runs WHERE status='failed'").fetchone()[0] == 1
+        assert db.execute('SELECT SUM(owner_selected) FROM fact_assertions').fetchone()[0] in {0, None}

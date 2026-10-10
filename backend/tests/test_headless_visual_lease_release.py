@@ -40,7 +40,9 @@ class ControlledClient(NativeClient):
             if self.first_read_error:
                 self.first_read_error = False
                 self.calls.append((method, copy.deepcopy(params)))
-                raise RetryableProviderError('controlled_read_unavailable', retry_at=1001)
+                # This is a transient GET of the original turn, not an
+                # unavailable provider configuration (which has a 5m cooldown).
+                raise RetryableProviderError('controlled_read_waiting', retry_at=1001)
         result = await super().request(method, params, timeout)
         if method == 'thread/read':
             start = next(body for name, body in self.calls if name == 'turn/start' and body['threadId'] == params['threadId'])
@@ -48,6 +50,7 @@ class ControlledClient(NativeClient):
             verdict = json.loads(message['text'])
             verdict['candidate_id'] = start['outputSchema']['properties']['candidate_id']['enum'][1]
             if 'search_feedback' in start['outputSchema']['properties']:
+                verdict['source_subject_scope'] = 'building'
                 verdict['search_feedback'] = {'reference_kind': 'modern_exterior',
                     'next_action': 'explore_alternative', 'reason': 'Distinct facade',
                     'next_query': '', 'candidate_ids': []}

@@ -77,6 +77,26 @@ def test_normal_catalog_automatically_recovers_reverse_duplicate_entity_links():
                             [by_id['osm:way:5']], catalog)
 
 
+def test_sparse_reverse_entry_cannot_erase_exact_received_physical_contour_for_t():
+    from street_story.identity_architectural_evidence import literal_evidence_inventory
+    reverse = {'osm_type': 'way', 'osm_id': 5, 'category': 'building', 'type': 'yes',
+        'display_name': 'Reverse address entry', 'selection_bucket': 'reverse'}
+    body = {'type': 'way', 'id': 5, 'tags': {'building': 'yes', 'addr:street': 'Literal street',
+        'addr:housenumber': '7'}, 'building_entrance_node_ids': [6],
+        'geometry': [{'lat': 54.7, 'lon': 20.5}, {'lat': 54.701, 'lon': 20.5},
+            {'lat': 54.701, 'lon': 20.501}, {'lat': 54.7, 'lon': 20.5}]}
+    other = {'type': 'way', 'id': 8, 'tags': {'building': 'yes', 'name': 'Other observed body'}}
+    osm = {'reverse': reverse, 'observed_pool': [body, other], 'nearby': [body, other]}
+    candidates = MvpResearchStreetStoryService._candidate_catalog(osm, [], observed_pool=True)
+    received = next(c for c in candidates if c['candidate_id'] == 'osm:way:5')
+    assert received['map_object']['tags']['building'] == 'yes'
+    assert received['map_geometry'] and received['map_address']['provenance'] == 'osm.tags'
+    assert received['map_object']['building_entrances']['candidate_ids'] == ['osm:node:6']
+    inventory = literal_evidence_inventory({}, candidates, [], candidate_ids=['osm:way:5'])
+    assert inventory['physical_subjects'][0]['candidate_id'] == 'osm:way:5'
+    assert len(candidates) == 2 and 'tags' not in reverse
+
+
 def test_same_names_addresses_and_distance_cannot_merge_institution_or_other_building():
     candidates, osm, wiki = inputs()
     candidates[-1]['name'] = candidates[0]['name']

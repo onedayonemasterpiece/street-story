@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
 import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1030,5 +1035,686 @@ def run() -> int:
         diag.write()
 
 
+async def run_retained_story(args):
+    from devcoveer_story_diag import load_installer
+
+    installer = load_installer()
+    for config in (installer.PROVIDERS_ENV, installer.SERVICE_ENV):
+        installer.require_mode(config, 0o600)
+        os.environ.update(installer.parse_dotenv(config))
+    os.environ["DATA_DIR"] = str(args.run / "data")
+    from street_story.app import app
+    from street_story.config import reveal
+    from street_story.identity_proof import verified_physical_identity
+    from live_interaction.socket_transport import serve_socket
+
+    service = app.state.service
+    sid = args.story_id
+    report = {
+        "status": "RUNNING",
+        "source_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "story_id": sid,
+        "source_run": str(args.run),
+        "scope": "actual retained story, ordinary API + real provider + shared WSS relay; prepared PCM, no Android/physical microphone claim",
+        "publication_dispatches": 0,
+        "steps": [],
+        "tool_trace": [],
+        "explicit_fact_reconsideration": args.review_fact_ids,
+    }
+    report["snapshot_research_workers_unstarted"] = args.editorial_only
+    output_name = args.output_name or ("e2e-continuation.json" if args.resume else "e2e.json")
+    if Path(output_name).name != output_name or not output_name.endswith(".json"):
+        raise RuntimeError("Output must be a fresh local JSON filename")
+    out = args.run / output_name
+    if args.refine_draft_only and (
+        not args.resume or not args.editorial_only or args.revise_atomic_selection
+        or args.observe_existing_visual or args.review_fact_ids
+    ):
+        raise RuntimeError("Draft-only correction requires an editorial continuation without research or image actions")
+    if args.resume:
+        predecessor = args.run / (args.resume_from or "e2e.json")
+        if predecessor.parent != args.run:
+            raise RuntimeError("Predecessor must belong to this actual run")
+        original = json.loads(predecessor.read_text())
+        blocked_names = {"search_web", "get_research_chunk"}
+
+        def known_closed(t):
+            if t.get("state") in {"completed", "failed", "blocked_before_adapter"}:
+                return True
+            if (
+                t.get("state") == "started"
+                and t.get("name") in {"read_topic", "get_facts", "get_evidence"}
+                and original.get("stop_acknowledged") is True
+            ):
+                return True
+            return (
+                t.get("state") == "started"
+                and t.get("name") in blocked_names
+                and any(
+                    e.get("type") == "tool_result"
+                    and e.get("name") == t["name"]
+                    and e.get("status") == "error"
+                    and e.get("message") == "Unexpected non-editorial action"
+                    for e in original.get("events", [])
+                )
+            )
+
+        allowed_predecessor = original.get("status") == "FAIL" or (
+            (args.revise_atomic_selection or args.refine_draft_only)
+            and original.get("status") == "REVIEW_REQUIRED" and original.get("mechanical_pass") is True
+        )
+        if not allowed_predecessor or any(
+            (t["name"] == "generate_visual" and not (args.observe_existing_visual or args.revise_atomic_selection or args.refine_draft_only))
+            or not known_closed(t)
+            for t in original.get("tool_trace", [])
+        ):
+            raise RuntimeError("Resume requires a known pre-visual failure; unknown visual cannot be replayed")
+        report["continuation_of"] = str(predecessor)
+    if out.exists():
+        raise RuntimeError("Existing E2E operation must be read back before any new command")
+
+    def save():
+        out.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+        out.chmod(0o600)
+
+    class VisualPreviewOnly:
+        def __init__(self, delegate):
+            self.delegate = delegate
+
+        def __getattr__(self, name):
+            if name not in {"bootstrap", "ingress_asset", "read_asset", "visual", "status"}:
+                raise RuntimeError("External publication is disabled for this task")
+            return getattr(self.delegate, name)
+
+    service.providers.vibepublish = VisualPreviewOnly(service.providers.vibepublish)
+    # Match the existing shared-host PCM acceptance; the native relay/ACK codec
+    # is the installed framework, not a copied consumer transport.
+    host = app.state.live_host
+    incoming = asyncio.Queue()
+    events = []
+    pending = {}
+    latencies = []
+    ack = 0
+    seq = 0
+    last_event_at = 0.0
+    playback_until = 0.0
+    session = None
+    socket_task = None
+    ping_task = None
+    original_execute = host.adapter.execute_tool
+
+    async def execute(session, call):
+        name = call.get("name")
+        entry = {
+            "name": name,
+            "id": call.get("id"),
+            "args_keys": sorted((call.get("args") or {}).keys()),
+            "at": time.time(),
+            "state": "started",
+        }
+        report["tool_trace"].append(entry)
+        save()
+        if name not in {
+            "read_topic",
+            "get_facts",
+            "get_evidence",
+            "continue_story",
+            "select_facts",
+            "set_concept",
+            "edit_text",
+            "generate_visual",
+            "get_review_packet",
+            "get_review_context",
+            "assess_review_packet",
+            "finalize_fact_review",
+            "repair_research_fact",
+        }:
+            entry.update(state="blocked_before_adapter", code="HARNESS_ACTION_NOT_ALLOWED")
+            save()
+            raise RuntimeError("Unexpected non-editorial action")
+        try:
+            result = await original_execute(session, call)
+        except Exception as exc:
+            entry.update(state="failed", code=str(getattr(exc, "code", type(exc).__name__)))
+            save()
+            raise
+        entry.update(state="completed")
+        save()
+        return result
+
+    host.adapter.execute_tool = execute
+    original_initialize = host.adapter.initialize
+
+    def initialize(**kwargs):
+        initialized = original_initialize(**kwargs)
+        cfg = initialized["configuration"]
+        instruction = cfg.get("system_instruction", "")
+        report.setdefault("actual_adapter_configurations", []).append(
+            {
+                "capability": initialized.get("capability"),
+                "function_names": [f["name"] for f in cfg.get("functions", [])],
+                "instruction_sha256": hashlib.sha256(instruction.encode()).hexdigest(),
+                "context_field_bytes": {
+                    k: len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode())
+                    for k, v in initialized.get("context", {}).items()
+                },
+                "correction_route_present": "use continue_story(stage=review)" in instruction,
+            }
+        )
+        save()
+        return initialized
+
+    host.adapter.initialize = initialize
+
+    async def receive():
+        return await incoming.get()
+
+    async def send(payload):
+        nonlocal ack, last_event_at, playback_until
+        last_event_at = time.monotonic()
+        if isinstance(payload, bytes):
+            rate = struct.unpack("!III", payload[:12])[2]
+            n = len(payload) - 12
+            report["output_pcm_bytes"] = report.get("output_pcm_bytes", 0) + n
+            playback_until = max(playback_until, time.monotonic()) + n / (rate * 2)
+            return
+        message = json.loads(payload)
+        if message.get("type") == "audio_ack":
+            ack = message["seq"]
+            for number in list(pending):
+                if number <= ack:
+                    latencies.append(time.monotonic() - pending.pop(number))
+        elif message.get("type") == "event":
+            events.append(message["event"])
+            report["events"] = events
+            save()
+        elif message.get("type") == "hello_ack":
+            report["hello_ack"] = True
+
+    async def close(code, reason):
+        report["socket_close"] = {"code": code, "reason": reason}
+
+    save()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+        headers={"Authorization": "Bearer " + reveal(service.settings.device_token)},
+    ) as client:
+
+        async def read():
+            response = await client.get("/v1/stories/" + sid)
+            response.raise_for_status()
+            return response.json()
+
+        def selected(story):
+            return {f["fact_id"] for f in story.get("facts", []) if f.get("selected")}
+
+        def ready_selection(story):
+            chosen = [f for f in story.get("facts", []) if f.get("selected")]
+            return len(chosen) >= 3 and all(f.get("eligibility") == "eligible" for f in chosen)
+
+        async def wait_step(name, tool, condition, checkpoint, tool_checkpoint, timeout=120):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                current = await read()
+                if any(e.get("type") in {"error", "closed"} for e in events[checkpoint:]):
+                    raise RuntimeError(name + "_provider_closed")
+                if (
+                    condition(current)
+                    and any(t["name"] == tool and t["state"] == "completed" for t in report["tool_trace"][tool_checkpoint:])
+                    and any(e.get("type") == "turn_complete" and e.get("seq", 0) > max(
+                        (written.get("seq", 0) for written in events[checkpoint:]
+                         if written.get("type") == "timing" and written.get("stage") == "tool_response_written"), default=0)
+                        for e in events[checkpoint:])
+                    and time.monotonic() > playback_until + 0.3
+                    and time.monotonic() > last_event_at + 2
+                ):
+                    report["steps"].append({"name": name, "completed_at": time.time()})
+                    save()
+                    return current
+                await asyncio.sleep(0.2)
+            raise RuntimeError(name + "_readback_timeout")
+
+        async def text_step(name, text, tool, condition):
+            checkpoint = len(events)
+            tool_checkpoint = len(report["tool_trace"])
+            await incoming.put(json.dumps({"type": "input", "message": {"text": text}}, ensure_ascii=False))
+            return await wait_step(name, tool, condition, checkpoint, tool_checkpoint)
+
+        try:
+
+            @asynccontextmanager
+            async def editorial_workers():
+                # Existing queue/worker, scoped to this story's visual operation. Do not
+                # dispatch copied possibly-sent research operations from another process.
+                async def visual_worker():
+                    while True:
+                        if not await service.run_once(claim_kind="visual", claim_story_id=sid):
+                            await asyncio.sleep(0.2)
+
+                worker = asyncio.create_task(visual_worker())
+                try:
+                    yield
+                finally:
+                    worker.cancel()
+                    await asyncio.gather(worker, return_exceptions=True)
+                    await service.close()
+
+            async with editorial_workers() if args.editorial_only else app.router.lifespan_context(app):
+                first = await read()
+                identity = first.get("visual_identity") or {}
+                if not verified_physical_identity(identity):
+                    raise RuntimeError("Actual automatic identity proof required")
+                if not any(f.get("eligibility") == "eligible" for f in first.get("facts", [])):
+                    raise RuntimeError("Actual verified facts required")
+                if args.revise_atomic_selection or args.refine_draft_only:
+                    prior = original.get("visual") or {}
+                    visual = first.get("visual") or {}
+                    if (
+                        not args.resume
+                        or args.observe_existing_visual
+                        or args.review_fact_ids
+                        or (args.refine_draft_only and not ready_selection(first))
+                        or first["photo_sha256"] != original.get("photo_sha256")
+                        or first.get("draft_text") != original.get("final_draft")
+                        or selected(first) != set(original.get("selected_fact_ids") or [])
+                        or not prior.get("selected_asset_ref")
+                        or visual.get("selected_asset_ref") != prior["selected_asset_ref"]
+                        or visual.get("operation_id") != prior.get("operation_id")
+                    ):
+                        raise RuntimeError("Editorial revision requires the exact already imported original visual and saved story context")
+                    report["editorial_revision_of_closed_visual"] = prior["operation_id"]
+                    save()
+                report.update(
+                    photo_sha256=identity.get("photo_sha256"),
+                    identity_id=identity.get("candidate_id"),
+                    proof_kind=identity.get("proof_kind"),
+                    source_available=bool(service._source_photo_bytes(sid)),
+                )
+                save()
+                session = await host.start(resource_id=sid, actor=None, model="gemini-3.8-live")
+                report["session_id"] = session["session_id"]
+                save()
+                binding = host.open_socket(session_id=session["session_id"], resource_id=sid, ticket=session["socket_ticket"])
+                socket_task = asyncio.create_task(serve_socket(binding, receive=receive, send=send, close=close))
+
+                async def ping():
+                    while True:
+                        await asyncio.sleep(10)
+                        await incoming.put('{"type":"ping"}')
+
+                ping_task = asyncio.create_task(ping())
+                await incoming.put(
+                    json.dumps(
+                        {
+                            "type": "hello",
+                            "protocol": "wl-live-v1",
+                            "attempt_id": session["attempt_id"],
+                            "cursor": 0,
+                            "connection_generation": 1,
+                        }
+                    )
+                )
+                for _ in range(100):
+                    if report.get("hello_ack"):
+                        break
+                    await asyncio.sleep(0.02)
+                if not report.get("hello_ack"):
+                    raise RuntimeError("Shared native hello_ack missing")
+                if args.review_fact_ids:
+                    review_ids = args.review_fact_ids.split(",")
+                    report["review_before"] = [f for f in first["facts"] if f["fact_id"] in review_ids]
+                    save()
+                    if args.reuse_closed_review:
+                        if not args.resume or set((original.get("explicit_fact_reconsideration") or "").split(",")) != set(review_ids):
+                            raise RuntimeError("Closed review recovery must match its original requested scope")
+                        from street_story import review_packets
+
+                        with service.store.connection() as db:
+                            current_bundle = review_packets.bundle(db, sid)
+                            receipt = None
+                            for row in db.execute(
+                                "SELECT * FROM live_review_packets WHERE story_id=? AND result_json IS NOT NULL AND request_json IS NOT NULL ORDER BY rowid DESC",
+                                (sid,),
+                            ):
+                                payload = json.loads(row["payload_json"])
+                                requested = {item["id"] for item in payload["items"]}
+                                if requested != set(review_ids):
+                                    continue
+                                if row["identity_generation"] != int(first.get("identity_generation") or 0):
+                                    continue
+                                if any(payload["bundle"].get(fid) != current_bundle.get(fid) for fid in review_ids):
+                                    continue
+                                if (payload.get("confirmed_identity") or {}).get("candidate_id") != identity.get("candidate_id"):
+                                    continue
+                                receipt = {
+                                    "packet_ref": row["packet_ref"],
+                                    "run_id": row["run_id"],
+                                    "request_sha256": hashlib.sha256(row["request_json"].encode()).hexdigest(),
+                                    "result_sha256": hashlib.sha256(row["result_json"].encode()).hexdigest(),
+                                }
+                                break
+                        if receipt is None:
+                            raise RuntimeError("No matching unchanged closed semantic receipt; no review write repeated")
+                        if any(f.get("eligibility") not in {"eligible", "withheld"} for f in first["facts"] if f["fact_id"] in review_ids):
+                            raise RuntimeError("Current review outcome remains unresolved")
+                        report["review_reused_closed_receipt"] = receipt
+                        report["steps"].append({"name": "explicit_fact_reconsideration_readback_only", "completed_at": time.time()})
+                        revised = first
+                    else:
+                        revised = await text_step(
+                            "explicit_fact_reconsideration",
+                            "Перед выбором для публикации независимо перепроверь только эти сохранённые утверждения: "
+                            + ", ".join(review_ids)
+                            + ". Прочитай их собственные полные сохранённые доказательства через get_review_packet с fact_ids. "
+                            "Проверь точный физический субъект этой истории и атомарность; не доверяй старому eligible. "
+                            "Сохрани новое решение через finalize_fact_review, а если нужна смысловая правка, сохрани её и перепроверь новую версию. "
+                            "Другие факты не меняй, новый поиск и распознавание не начинай. Текст и визуал пока не создавай.",
+                            "finalize_fact_review",
+                            lambda story: True,
+                        )
+                    report["review_after"] = [f for f in revised["facts"] if f["fact_id"] in review_ids]
+                    with service.store.connection() as db:
+                        placeholders = ",".join("?" for _ in review_ids)
+                        report["canonical_review_after"] = [
+                            dict(row)
+                            for row in db.execute(
+                                "SELECT poi_key,assertion_id,review_status,eligibility,reviewed_at FROM poi_research_assertions WHERE assertion_id IN ("
+                                + placeholders
+                                + ")",
+                                review_ids,
+                            )
+                        ]
+                    save()
+                if args.observe_existing_visual:
+                    if (
+                        not args.resume
+                        or args.review_fact_ids
+                        or not first.get("draft_text")
+                        or selected(first) != set(original.get("selected_fact_ids") or [])
+                        or first["photo_sha256"] != original.get("photo_sha256")
+                    ):
+                        raise RuntimeError("Observation must preserve exact original SOURCE, selection and saved draft")
+                    write_ids = {t["id"] for t in original["tool_trace"] if t["name"] == "edit_text" and t["state"] == "completed"}
+                    with service.store.connection() as db:
+                        receipt = db.execute(
+                            "SELECT command_id,result_json FROM live_commands WHERE story_id=? AND tool_name='edit_text' ORDER BY rowid DESC LIMIT 1",
+                            (sid,),
+                        ).fetchone()
+                    if (
+                        not receipt
+                        or receipt["command_id"] not in write_ids
+                        or json.loads(receipt["result_json"]).get("draft_text") != first["draft_text"]
+                    ):
+                        raise RuntimeError("Saved draft differs from the exact original closed write")
+                    choice = selected(first)
+                    draft = first["draft_text"]
+                    old_visual = (first.get("visual") or {}).get("operation_id")
+                    report["selected_fact_ids"] = sorted(choice)
+                    report["voice_reused_closed_segment"] = original.get("voice")
+                    report["prior_completed_steps"] = original["steps"]
+                    save()
+                    await text_step(
+                        "visual_observation",
+                        "Получи уже созданное изображение этой истории через generate_visual с observe_existing_visual=true. Не запускай генерацию заново; исходник, выбор, замысел и текст сохрани. Ничего не публикуй.",
+                        "generate_visual",
+                        lambda story: bool(story.get("visual")),
+                    )
+                else:
+                    selection_request = "Выбери для будущей публикации не менее трёх самостоятельных содержательных атомарных проверенных фактов из этой истории. Сначала прочитай полный get_facts и собственные доказательства выбранных утверждений через get_evidence. Не выбирай составное утверждение с несколькими независимо выбираемыми сведениями, даже если у него старый eligible. Сохрани выбор из готовых качественных фактов, не жди проверки остальных кандидатов. Пока не пиши текст и не создавай изображение."
+                    if args.revise_atomic_selection:
+                        selection_request = "Перейди к выбору уже готовых фактов для публикации. Прочитай существующие допущенные факты с их собственными источниками и сохрани другой набор не менее трёх самостоятельных содержательных атомарных фактов. Дата постройки, этажность, отдельный арендатор и отдельная деталь фасада — независимо выбираемые сведения, даже если источник объединяет их предложением. Сейчас нужен обычный выбор среди готовых фактов: не начинай новое исследование и не жди проверки остальных кандидатов. Объект, текст и изображение на этом шаге сохрани."
+                    chosen = (
+                        first
+                        if args.resume and not args.revise_atomic_selection and not args.review_fact_ids and ready_selection(first)
+                        else await text_step(
+                            "fact_selection",
+                            selection_request,
+                            "select_facts",
+                            lambda s: ready_selection(s) and (not args.revise_atomic_selection or selected(s) != selected(first)),
+                        )
+                    )
+                    choice = selected(chosen)
+                    report["selected_fact_ids"] = sorted(choice)
+                    save()
+                    if not args.resume or args.revise_atomic_selection or not chosen.get("publication_concept"):
+                        chosen = await text_step(
+                            "concept_dialog",
+                            "Хочу спокойный городской рассказ о внимательном взгляде пешехода на знакомое здание. Обсуди и сохрани этот замысел; выбранные факты не меняй. Текст и изображение пока не создавай. Без новых исторических утверждений.",
+                            "set_concept",
+                            lambda s: bool(s.get("publication_concept")),
+                        )
+                    chosen = await read()
+                    prior_draft_allowed = (
+                        args.resume and not args.revise_atomic_selection and not args.refine_draft_only
+                        and choice == set(original.get("selected_fact_ids") or [])
+                    )
+                    current_draft_commands = {
+                        t["id"] for t in report["tool_trace"] if t["name"] == "edit_text" and t["state"] == "completed"
+                    }
+                    if chosen.get("draft_text") and selected(chosen) == choice and (prior_draft_allowed or current_draft_commands):
+                        # A closed prior write may precede the failed step's observation boundary.
+                        # Read its exact current receipt; never demand a redundant mutation.
+                        with service.store.connection() as db:
+                            receipt = db.execute(
+                                "SELECT command_id,result_json FROM live_commands WHERE story_id=? AND tool_name='edit_text' ORDER BY rowid DESC LIMIT 1",
+                                (sid,),
+                            ).fetchone()
+                            value = json.loads(receipt["result_json"]) if receipt else {}
+                        if (
+                            not receipt
+                            or value.get("draft_text") != chosen["draft_text"]
+                            or (not prior_draft_allowed and receipt["command_id"] not in current_draft_commands)
+                        ):
+                            raise RuntimeError("Saved draft has no matching closed write receipt")
+                        report["draft_reused_closed_receipt"] = {
+                            "command_id": receipt["command_id"],
+                            "result_sha256": hashlib.sha256(receipt["result_json"].encode()).hexdigest(),
+                        }
+                        report["steps"].append({"name": "editable_draft_readback_only", "completed_at": time.time()})
+                        save()
+                        drafted = chosen
+                    else:
+                        drafted = await text_step(
+                            "editable_draft",
+                            (args.draft_instruction or "Перечитай точные выбранные утверждения и исправь текст: каждый фактический признак должен следовать из выбранных фактов. Не усиливай их сведениями из полного источника. Сохрани связный вечерний рассказ до 700 знаков, выбор, замысел и изображение; ничего не публикуй.")
+                            if args.refine_draft_only else "Напиши короткий ясный текст публикации на русском языке, до 700 знаков, только по выбранным проверенным фактам. Сохрани текст в этой истории, чтобы я мог его редактировать. Изображение пока не меняй.",
+                            "edit_text",
+                            lambda s: bool(s.get("draft_text")) and selected(s) == choice,
+                        )
+                    if args.refine_draft_only:
+                        prior = original["visual"]
+                        visual = drafted.get("visual") or {}
+                        if (
+                            drafted.get("publication_concept") != first.get("publication_concept")
+                            or visual.get("operation_id") != prior.get("operation_id")
+                            or visual.get("selected_asset_ref") != prior.get("selected_asset_ref")
+                        ):
+                            raise RuntimeError("Draft correction changed the saved concept or visual")
+                        response = await client.get("/v1/assets/" + sid + "/processed")
+                        response.raise_for_status()
+                        if hashlib.sha256(response.content).hexdigest() != prior.get("sha256"):
+                            raise RuntimeError("Draft correction changed the actual visual bytes")
+                        await host.stop(session_id=session["session_id"], resource_id=sid)
+                        report["stop_acknowledged"] = True
+                        session = None
+                        reopened = type(service)(service.settings)
+                        after = reopened.story(sid)
+                        if after["draft_text"] != drafted["draft_text"] or selected(after) != choice:
+                            raise RuntimeError("Reopen lost the corrected draft or selection")
+                        report.update(
+                            status="REVIEW_REQUIRED", mechanical_pass=True, reopen_preserved=True,
+                            final_draft=after["draft_text"], saved_concept=after.get("publication_concept"),
+                            visual=prior, voice_reused_closed_segment=original.get("voice"),
+                            semantic_review="Inspect corrected text against selected claims; prior closed voice/visual are reused",
+                        )
+                        print(json.dumps({"status": report["status"], "mechanical_pass": True,
+                                          "scope": "draft correction; closed voice/visual reused"}), flush=True)
+                        return 0
+                    before_concept = drafted.get("publication_concept")
+                    draft = drafted["draft_text"]
+                    pcm = subprocess.check_output(
+                        [
+                            "ffmpeg",
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-i",
+                            str(args.voice),
+                            "-ar",
+                            "16000",
+                            "-ac",
+                            "1",
+                            "-f",
+                            "s16le",
+                            "-",
+                        ]
+                    )
+                    report["voice_source_sha256"] = hashlib.sha256(args.voice.read_bytes()).hexdigest()
+                    checkpoint = len(events)
+                    tool_checkpoint = len(report["tool_trace"])
+                    await incoming.put(json.dumps({"type": "input", "message": {"activity_start": True}}))
+                    start = time.monotonic()
+                    for offset in range(0, len(pcm), 3200):
+                        target = start + offset / 32000
+                        await asyncio.sleep(max(0, target - time.monotonic()))
+                        while len(pending) >= 4:
+                            if time.monotonic() - min(pending.values()) > 2.5:
+                                raise RuntimeError("Audio ACK stalled")
+                            await asyncio.sleep(0.01)
+                        seq += 1
+                        pending[seq] = time.monotonic()
+                        await incoming.put(
+                            struct.pack("!III", 0x574C4131, seq, round(max(0, time.monotonic() - target) * 1000))
+                            + pcm[offset : offset + 3200]
+                        )
+                    await incoming.put(json.dumps({"type": "input", "message": {"activity_end": True}}))
+                    voiced = await wait_step(
+                        "voice_concept",
+                        "set_concept",
+                        lambda s: s.get("publication_concept") != before_concept and selected(s) == choice,
+                        checkpoint,
+                        tool_checkpoint,
+                    )
+                    report["voice"] = {
+                        "pcm_seconds": len(pcm) / 32000,
+                        "frames_sent": seq,
+                        "frames_ack": ack,
+                        "max_ack_seconds": max(latencies, default=0),
+                        "input_transcripts": [e.get("text") for e in events[checkpoint:] if e.get("type") == "input_transcript"],
+                        "saved_concept": voiced.get("publication_concept"),
+                        "selection_preserved": selected(voiced) == choice,
+                        "draft_preserved": voiced["draft_text"] == draft,
+                    }
+                    if ack != seq:
+                        raise RuntimeError("Incomplete audio ACK")
+                    await text_step(
+                        "draft_refinement",
+                        "Учти последний сохранённый замысел и уточни текст. Сохрани выбранные факты полностью; не добавляй неподтверждённые сведения.",
+                        "edit_text",
+                        lambda s: bool(s.get("draft_text")) and not s.get("draft_needs_refresh") and selected(s) == choice,
+                    )
+                    current = await read()
+                    draft = current["draft_text"]
+                    old_visual = (current.get("visual") or {}).get("operation_id")
+                    await text_step(
+                        "visual_request",
+                        "Теперь создай итоговый визуал для просмотра по исходному фото и сохранённому замыслу, с небольшим читаемым набором выбранных фактов. Текст и выбор фактов не меняй. Ничего не публикуй.",
+                        "generate_visual",
+                        lambda s: bool(s.get("visual")) or s.get("state") == "visual_processing",
+                    )
+                deadline = time.monotonic() + 300
+                while time.monotonic() < deadline:
+                    current = await read()
+                    visual = current.get("visual") or {}
+                    if visual.get("selected_asset_ref") and (args.observe_existing_visual or visual.get("operation_id") != old_visual):
+                        break
+                    if current.get("error"):
+                        raise RuntimeError("Visual failed: " + str(current["error"].get("code")))
+                    await asyncio.sleep(0.5)
+                else:
+                    raise RuntimeError("Visual generation outcome pending; observe original operation")
+                response = await client.get("/v1/assets/" + sid + "/processed")
+                response.raise_for_status()
+                if not response.content:
+                    raise RuntimeError("Generated visual has no reviewable bytes")
+                image = args.run / (Path(output_name).stem + "-visual.bin")
+                if image.exists():
+                    raise RuntimeError("Original visual evidence must not be overwritten")
+                image.write_bytes(response.content)
+                image.chmod(0o600)
+                report["visual"] = {
+                    k: visual.get(k) for k in ("operation_id", "selected_asset_ref", "source_asset_ref", "content_revision")
+                }
+                report["visual"].update(
+                    bytes=len(response.content),
+                    sha256=hashlib.sha256(response.content).hexdigest(),
+                    content_type=response.headers.get("content-type"),
+                )
+                if current["draft_text"] != draft or selected(current) != choice:
+                    raise RuntimeError("Visual changed owner editorial state")
+                await host.stop(session_id=session["session_id"], resource_id=sid)
+                report["stop_acknowledged"] = True
+                session = None
+                reopened = type(service)(service.settings)
+                after = reopened.story(sid)
+                if after["draft_text"] != draft or selected(after) != choice:
+                    raise RuntimeError("Reopen lost selection or text")
+                report.update(
+                    status="REVIEW_REQUIRED",
+                    mechanical_pass=True,
+                    reopen_preserved=True,
+                    semantic_review="Inspect actual voice transcript, concept, selected facts, draft and generated visual before PASS",
+                    final_draft=draft,
+                    saved_concept=after.get("publication_concept"),
+                )
+        except Exception as exc:
+            report.update(status="FAIL", error={"type": type(exc).__name__, "code": str(getattr(exc, "code", str(exc)))[:200]})
+        finally:
+            if ping_task:
+                ping_task.cancel()
+                await asyncio.gather(ping_task, return_exceptions=True)
+            if session:
+                try:
+                    await host.stop(session_id=session["session_id"], resource_id=sid)
+                    report["stop_acknowledged"] = True
+                except Exception as exc:
+                    report["stop_error"] = str(getattr(exc, "code", type(exc).__name__))
+            await incoming.put(None)
+            if socket_task:
+                try:
+                    await asyncio.wait_for(socket_task, 5)
+                except Exception:
+                    socket_task.cancel()
+                    await asyncio.gather(socket_task, return_exceptions=True)
+            save()
+    print(
+        json.dumps({k: report.get(k) for k in ("status", "story_id", "session_id", "mechanical_pass", "error")}, ensure_ascii=False),
+        flush=True,
+    )
+    return 0 if report.get("mechanical_pass") else 1
+
+
+def retained_story_main():
+    parser = argparse.ArgumentParser(
+        description="Continue a retained actual story through the ordinary shared Live editor, voice and visual APIs."
+    )
+    parser.add_argument("--retained-story", action="store_true", required=True)
+    parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--story-id", required=True)
+    parser.add_argument("--voice", type=Path, required=True)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--editorial-only", action="store_true")
+    parser.add_argument("--review-fact-ids", default="")
+    parser.add_argument("--resume-from", default="")
+    parser.add_argument("--output-name", default="")
+    parser.add_argument("--reuse-closed-review", action="store_true")
+    parser.add_argument("--observe-existing-visual", action="store_true")
+    parser.add_argument("--revise-atomic-selection", action="store_true")
+    parser.add_argument("--refine-draft-only", action="store_true")
+    parser.add_argument("--draft-instruction", default="")
+    return asyncio.run(run_retained_story(parser.parse_args()))
+
+
 if __name__ == "__main__":
-    raise SystemExit(run())
+    raise SystemExit(retained_story_main() if "--retained-story" in sys.argv else run())

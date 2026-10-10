@@ -52,7 +52,10 @@ async def test_model_owned_continuation_uses_existing_joined_job_and_exact_query
             db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (next_id,))
             next_job = dict(db.execute('SELECT * FROM jobs WHERE id=?', (next_id,)).fetchone())
             payload = json.loads(next_job['payload_json'])
-            assert payload == pending
+            assert {key: payload[key] for key in pending} == pending
+            budget = research['research_budget']
+            assert payload['research_started_at'] == budget['started_at']
+            assert payload['research_deadline_at'] == budget['deadline_at']
             begin_research_run(db, story_id=job['story_id'], poi_key='wiki:77', goal=GOAL, scope=payload['extraction_scope'],
                                expected_story_revision=row['revision'], identity_generation=0, run_id='next-scope', now=svc.store.now())
         queries = []

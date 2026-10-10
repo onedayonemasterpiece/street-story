@@ -210,6 +210,7 @@ async def test_native_unknown_original_readback_precedes_returning_google_route(
 
 @pytest.mark.asyncio
 async def test_direct_google_real_quota_denial_is_known_unsent(tmp_path):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from types import MethodType
     from street_story.providers import GeminiClient
     provider, verdict, context, google_calls, first, second = google_setup()
@@ -275,13 +276,13 @@ async def test_google_default_url_loader_uses_existing_bounded_public_fetch_in_r
     fetched = []
     async def fetch(client, url, limit):
         fetched.append((url, limit))
-        return url, 'image/jpeg', jpeg((32,64))
+        return url, 'image/jpeg', jpeg((240,320))
     monkeypatch.setattr(media, 'fetch_public', fetch)
     provider._load_public_reference = HeadlessVisionProvider._load_public_reference.__get__(provider)
     story, context = direct({'id': 'story'}, context)
     result = await provider.compare_visual(None, story, VERDICT_SCHEMA, context)
     assert fetched == [('https://example.org/ref-1.jpg', MAX_DOWNLOAD_BYTES)]
-    assert calls[0]['contents'][3].inline_data.data == normalize_reference(jpeg((32,64)))[1]
+    assert calls[0]['contents'][3].inline_data.data == normalize_reference(jpeg((240,320)))[1]
     assert calls[0]['contents'][3].inline_data.mime_type == 'image/jpeg'
     assert len(calls) == 1 and result['receipt']['image_attachments'] == 2
 

@@ -1,6 +1,8 @@
 """Scheduling uses real completion/timeout receipts, never new quota probes."""
 import json
 
+import pytest
+
 from test_verified_fact_pool import setup
 
 
@@ -67,3 +69,51 @@ def test_review_has_independent_measured_history(tmp_path):
     record(adapter, story, extra, 'completed', 15, role='facts_review_' + extra.model_id)
     assert adapter.order_fact_routes(routes(adapter), 0)[0]['client'] is adapter.client
     assert adapter.order_fact_routes(routes(adapter), 0, review=True)[0]['client'] is extra
+
+
+def timed_routes(adapter, extra):
+    pool = routes(adapter)
+    for route, elapsed in zip(pool, (91741, 34284)):
+        assert route['client'] in (adapter.client, extra)
+        route['review_latency_hint'] = {'operation': 'semantic_fact_review', 'phase': 'completed',
+            'elapsed_ms': elapsed, 'source_sha256': 'a' * 64,
+            **{k: route[k] for k in ('provider_id', 'model_id', 'endpoint')},
+            'directory': route['client'].directory}
+    return pool
+
+
+def test_cold_review_uses_measured_qualification_not_extraction_or_model_priority(tmp_path):
+    adapter, extra, _story, _ = setup(tmp_path)
+    pool = timed_routes(adapter, extra)
+    assert adapter.order_fact_routes(pool, review=True)[0]['client'] is extra
+    assert adapter.order_fact_routes(pool, review=False)[0]['client'] is adapter.client
+    # The scalar controls ordering, not a preference for a particular model.
+    pool[0]['review_latency_hint']['elapsed_ms'] = 12000
+    assert adapter.order_fact_routes(pool, review=True)[0]['client'] is adapter.client
+
+
+def test_actual_review_receipts_override_both_cold_timings(tmp_path):
+    adapter, extra, story, _ = setup(tmp_path)
+    pool = timed_routes(adapter, extra)
+    record(adapter, story, adapter.client, 'completed', 5, role='facts_review_' + adapter.client.model_id)
+    record(adapter, story, extra, 'completed', 60, role='facts_review_' + extra.model_id)
+    assert adapter.order_fact_routes(pool, review=True)[0]['client'] is adapter.client
+
+
+def test_acknowledged_timeout_overrides_an_optimistic_cold_hint(tmp_path):
+    adapter, extra, story, _ = setup(tmp_path)
+    pool = timed_routes(adapter, extra)
+    pool[0]['review_latency_hint']['elapsed_ms'] = 1000
+    record(adapter, story, adapter.client, 'aborted', 120, role='facts_review_' + adapter.client.model_id)
+    assert adapter.order_fact_routes(pool, review=True)[0]['client'] is extra
+
+
+@pytest.mark.parametrize('field,value', [('provider_id', 'other'), ('model_id', 'other'),
+    ('endpoint', 'http://other'), ('directory', '/other'), ('operation', 'extract_facts'),
+    ('phase', 'submitted'), ('elapsed_ms', True), ('elapsed_ms', 0), ('elapsed_ms', float('nan'))])
+def test_foreign_unclosed_or_invalid_cold_hint_preserves_unmeasured_rotation(tmp_path, field, value):
+    adapter, extra, _story, _ = setup(tmp_path)
+    pool = timed_routes(adapter, extra)
+    pool[0].pop('review_latency_hint')
+    pool[1]['review_latency_hint'][field] = value
+    assert adapter.order_fact_routes(pool, review=True)[0]['client'] is adapter.client

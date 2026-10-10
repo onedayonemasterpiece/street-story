@@ -89,11 +89,18 @@ def test_incomplete_pool_rejected_before_any_profile_or_cache_write(tmp_path, mo
 def test_one_existing_profile_attests_pool_without_inference_or_new_server(tmp_path, monkeypatch, pool):
     module, release, directory, _, caches = fixture(tmp_path, monkeypatch, pool=pool)
     from street_story.shared_devcoveer_research import SharedDevCoveerResearch
-    calls, commands = [], []
+    calls, commands, config_reads = [], [], []
+    async def existing_config(client, transport, method, path, **kwargs):
+        assert transport is None and (method, path) == ('GET', '/config')
+        config_reads.append(client.directory)
+        return {'mcp': {}}
     async def attest(client, transport, role):
         calls.append((client.directory, client.model_id, role))
         return {'guard_sha256': 'retained-guard', 'tool_boundary_enforced': True, 'search_call_limit': None}
     monkeypatch.setattr(SharedDevCoveerResearch, '_attest', attest)
+    # This installer unit fixture has no platform service or credentials. Mock
+    # its read-only configuration boundary as well as semantic attestation.
+    monkeypatch.setattr(SharedDevCoveerResearch, '_request', existing_config)
     def run(argv, **kwargs):
         commands.append(argv)
         with monkeypatch.context() as temporary:
@@ -103,6 +110,7 @@ def test_one_existing_profile_attests_pool_without_inference_or_new_server(tmp_p
     monkeypatch.setattr(module, 'run', run)
     result = module.install_research_runtime(release, tmp_path / 'existing-venv')
     assert result['new_inference'] is False and len(commands) == 1
+    assert config_reads == [str(directory)]
     expected = [(str(directory), 'mimo-v2.6-flash-free', 'search')]
     if pool:
         expected += [(str(directory), 'mimo-v2.6-flash-free', 'facts'),

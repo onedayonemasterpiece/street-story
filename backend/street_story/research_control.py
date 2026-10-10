@@ -150,6 +150,8 @@ def resume_research(service, story_id, *, purpose='all', expected_photo_sha256=N
             research['research_control_revision'] = epoch
             db.execute('UPDATE stories SET research_json=?,revision=revision+1,updated_at=? WHERE id=?',
                        (canonical(research), service.store.now(), story_id))
+            from .research_budget import ensure_budget
+            ensure_budget(service, story_id, db=db, explicit=True)
             scheduler = getattr(service, '_resume_joined_fact_request', None)
             if 'facts' in changed and callable(scheduler):
                 scheduler(db, story_id)

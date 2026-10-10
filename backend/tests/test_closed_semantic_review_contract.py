@@ -24,7 +24,7 @@ def test_closed_prompt_preserves_semantics_without_foreground_tool_instructions(
 
 
 @pytest.mark.asyncio
-async def test_old_unknown_scope_not_resent_after_contract_change_but_siblings_commit(tmp_path):
+async def test_old_unknown_scope_not_resent_after_contract_change_and_independent_candidates_continue(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=6)
     session = SimpleNamespace(id='legacy-review', resource_id=job['story_id'], actor=None, closed=False, state={})
     with svc.store.connection() as db:
@@ -40,6 +40,7 @@ async def test_old_unknown_scope_not_resent_after_contract_change_but_siblings_c
     with svc.store.connection() as db:
         eligible = {row[0] for row in db.execute("SELECT assertion_id FROM fact_assertions WHERE eligibility='eligible'")}
         assert eligible == set(pending[3:])
+        assert not eligible.intersection(pending[:3])
         assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 3
 
 

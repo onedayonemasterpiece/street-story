@@ -123,9 +123,10 @@ class MvpAcceptanceStreetStoryService(MvpResearchStreetStoryService):
                     ),
                 )
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
-        research = json.loads(row["research_json"] or "{}")
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         if research.get("image_notes") is not None:
             result["image_notes"] = str(research.get("image_notes") or "")
         ordered = research.get("ordered_voice_ids")

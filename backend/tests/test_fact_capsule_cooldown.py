@@ -143,3 +143,32 @@ async def test_all_failed_frozen_units_preserve_cooldown_not_ten_second_unvisite
             await HeadlessFacts(svc).run(job, RUN, 'History', 'history')
         assert replay.value.retry_at == due
         assert len(calls) == 3  # Durable deadline survives a new intake object.
+
+
+@pytest.mark.asyncio
+async def test_large_frozen_geometry_is_compact_in_actual_fact_prompt_but_preserves_scope(tmp_path):
+    from test_geometry_subject_articles import geometry_identity
+    adapter, _extra, story, entries = setup(tmp_path)
+    adapter.service.store.cache_put('research-text-verification-v1', {'extractors': entries[1:2]}, ttl_seconds=3600)
+    identity = geometry_identity(photo=story['photo_sha256'], generation=story.get('_identity_generation', 0), observed_buildings=120)
+    assert len(json.dumps(identity['geometry_proof'])) > 24000
+    context = {**large_context(), 'confirmed_identity': identity}
+    frozen = copy.deepcopy(context)
+    received = []
+    original = adapter.client.extract_facts
+    async def transport(role, prompt, binding, schema):
+        assert role == 'facts' and len(prompt) < 24000
+        capsule = json.loads(prompt.split('Capsule:\n', 1)[1])
+        confirmed = capsule['context']['confirmed_identity']
+        assert confirmed['proof_kind'] == 'geometry' and confirmed['physical_identity_accepted'] is True
+        assert confirmed['physical_scope'] == identity['geometry_proof']['decision']['scope']
+        assert confirmed['subject_alias_candidate_ids'] == [identity['candidate_id']]
+        assert confirmed['visual_reference_verified'] is False
+        assert 'geometry_proof' not in prompt and 'observed_features' not in prompt and 'map_image_sha256' not in prompt
+        assert capsule['sources'][0]['passages'] == PAGE['evidence_passages']
+        received.append(confirmed)
+        return await original(capsule, binding)
+    adapter.client._run = transport
+    adapter.client.extract_facts = lambda capsule, binding: OpenCodeResearch.extract_facts(adapter.client, capsule, binding)
+    await adapter.extract_fact_page({**PAGE, '_extractor_ordinal': 0}, story, context)
+    assert len(received) == 1 and context == frozen

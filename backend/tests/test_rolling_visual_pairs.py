@@ -201,6 +201,8 @@ async def test_unknown_child_holds_its_lane_but_fast_lane_refills_then_restart_o
 
     provider.visual_pair_route = observe
     provider.vision_available = False
+    now = svc.store.now()
+    svc.store.now = lambda: now+2
     with svc.store.tx() as db:
         db.execute("UPDATE jobs SET available_at=0 WHERE kind='identity_visual'")
     assert await svc.run_once(claim_kind='identity_visual')
@@ -360,7 +362,7 @@ async def test_restart_with_only_unknown_child_acquires_late_source_on_already_f
         db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
         db.execute("UPDATE jobs SET available_at=0 WHERE kind='identity_visual'")
     assert await svc.run_once(claim_kind='identity_visual')
-    assert ('opencode', 'gate:b', True) in calls
+    assert ('opencode', 'gate:b', True) not in calls  # Original readback cooldown remains authoritative.
     assert ('google', 'web:late', False) in calls
     _, latest = svc._identity_snapshot(story['id'])
     assert latest['visual_identity']['status'] == 'uncertain'

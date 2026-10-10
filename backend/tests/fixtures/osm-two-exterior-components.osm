@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="openstreetmap-cgimap 2.1.0 (3964726 spike-06.openstreetmap.org)" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">
+ <node id="8393257533" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7132659" lon="20.5171813"/>
+ <node id="8393257534" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7130303" lon="20.5174912"/>
+ <node id="8393257536" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7132298" lon="20.5171853"/>
+ <node id="8393257537" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7134889" lon="20.5167036"/>
+ <node id="8393257538" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7133621" lon="20.5173285"/>
+ <node id="8393257539" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7134998" lon="20.5173131"/>
+ <node id="8393257540" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7135374" lon="20.5170885"/>
+ <node id="8393257541" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7135748" lon="20.5168220"/>
+ <node id="8393257542" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7134916" lon="20.5170936"/>
+ <node id="8393257543" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7134804" lon="20.5167940"/>
+ <node id="8393257544" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7133404" lon="20.5167478"/>
+ <node id="8393257545" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7134803" lon="20.5167902"/>
+ <node id="8393257546" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7133489" lon="20.5166620"/>
+ <node id="8900951970" visible="true" version="2" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7127693" lon="20.5180506"/>
+ <node id="8900951971" visible="true" version="2" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7130406" lon="20.5185007"/>
+ <node id="8900951972" visible="true" version="2" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7130450" lon="20.5175107"/>
+ <node id="12144091395" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7135145" lon="20.5170911">
+  <tag k="addr:flats" v="1-20"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="1"/>
+ </node>
+ <node id="12144091396" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7134957" lon="20.5172034">
+  <tag k="addr:flats" v="21-66"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="2"/>
+ </node>
+ <node id="12144091397" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7132179" lon="20.5175601">
+  <tag k="addr:flats" v="67-106"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="3"/>
+ </node>
+ <node id="12144091398" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7130952" lon="20.5177484">
+  <tag k="addr:flats" v="107-138"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="4"/>
+ </node>
+ <node id="12144091399" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7129251" lon="20.5181057">
+  <tag k="addr:flats" v="139-170"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="5"/>
+ </node>
+ <node id="12144091400" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7128801" lon="20.5182885">
+  <tag k="addr:flats" v="171-210"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="6"/>
+ </node>
+ <node id="12144120001" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7129491" lon="20.5183797">
+  <tag k="addr:flats" v="211-234"/>
+  <tag k="entrance" v="staircase"/>
+  <tag k="ref" v="7"/>
+ </node>
+ <node id="12144120027" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7132418" lon="20.5175061"/>
+ <node id="12144120028" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7132779" lon="20.5175030"/>
+ <node id="12144120029" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7132418" lon="20.5175070"/>
+ <node id="12144120030" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7131396" lon="20.5173897"/>
+ <node id="12144120031" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7131630" lon="20.5176845"/>
+ <node id="12144120032" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7131136" lon="20.5173552"/>
+ <node id="12144120033" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7129817" lon="20.5180059"/>
+ <node id="12144120034" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7129737" lon="20.5179954"/>
+ <node id="12144120035" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7127782" lon="20.5180624"/>
+ <node id="12144120036" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7128576" lon="20.5182587"/>
+ <node id="12144120037" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7129578" lon="20.5186883"/>
+ <node id="12144120038" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7126610" lon="20.5182960"/>
+ <node id="12144120039" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7135837" lon="20.5171488"/>
+ <node id="12144120040" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7136712" lon="20.5169477"/>
+ <node id="12144120041" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812" lat="54.7131380" lon="20.5176515"/>
+ <way id="903713160" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812">
+  <nd ref="8900951971"/>
+  <nd ref="12144120037"/>
+  <nd ref="12144120038"/>
+  <nd ref="8900951970"/>
+  <nd ref="12144120035"/>
+  <nd ref="8393257534"/>
+  <nd ref="8900951972"/>
+  <nd ref="12144120032"/>
+  <nd ref="12144120030"/>
+  <nd ref="8393257536"/>
+  <nd ref="8393257533"/>
+  <nd ref="12144120028"/>
+  <nd ref="12144120029"/>
+  <nd ref="12144120027"/>
+  <nd ref="12144091397"/>
+  <nd ref="12144120031"/>
+  <nd ref="12144120041"/>
+  <nd ref="12144091398"/>
+  <nd ref="12144120033"/>
+  <nd ref="12144120034"/>
+  <nd ref="12144091399"/>
+  <nd ref="12144120036"/>
+  <nd ref="12144091400"/>
+  <nd ref="12144120001"/>
+  <nd ref="8900951971"/>
+ </way>
+ <way id="903713161" visible="true" version="3" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812">
+  <nd ref="8393257540"/>
+  <nd ref="12144091395"/>
+  <nd ref="8393257542"/>
+  <nd ref="12144091396"/>
+  <nd ref="8393257539"/>
+  <nd ref="8393257538"/>
+  <nd ref="8393257544"/>
+  <nd ref="8393257546"/>
+  <nd ref="8393257537"/>
+  <nd ref="8393257545"/>
+  <nd ref="8393257543"/>
+  <nd ref="8393257541"/>
+  <nd ref="12144120040"/>
+  <nd ref="12144120039"/>
+  <nd ref="8393257540"/>
+ </way>
+ <relation id="17986347" visible="true" version="1" changeset="155925132" timestamp="2024-08-29T12:01:53Z" user="anastasia_" uid="12947812">
+  <member type="way" ref="903713160" role="outer"/>
+  <member type="way" ref="903713161" role="outer"/>
+  <tag k="addr:city" v="Калининград"/>
+  <tag k="addr:housenumber" v="19А"/>
+  <tag k="addr:postcode" v="236016"/>
+  <tag k="addr:street" v="Клиническая улица"/>
+  <tag k="building" v="apartments"/>
+  <tag k="building:flats" v="234"/>
+  <tag k="building:levels" v="10"/>
+  <tag k="building:levels:underground" v="2"/>
+  <tag k="energy_class" v="A+"/>
+  <tag k="roof:shape" v="flat"/>
+  <tag k="start_date" v="2020-12-21"/>
+  <tag k="type" v="multipolygon"/>
+ </relation>
+</osm>

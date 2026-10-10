@@ -127,6 +127,8 @@ async def test_accepted_restart_observes_original_unknown_peer_without_source_or
         from street_story.service import ConflictError
         raise ConflictError('source_unavailable','SOURCE lost on restart')
     svc._source_photo_bytes=absent
+    now = svc.store.now()
+    svc.store.now = lambda: now+2  # Original observer cooldown has elapsed.
     with svc.store.tx() as db:
         db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='identity_visual'",(story['id'],))
     assert await svc.run_once(claim_kind='identity_visual')
@@ -197,6 +199,8 @@ async def test_missing_source_keeps_accepted_peer_pending_for_android_reupload(t
         from street_story.service import ConflictError
         raise ConflictError('source_unavailable','RAM unavailable')
     svc._source_photo_bytes=absent
+    now = svc.store.now()
+    svc.store.now = lambda: now+2
     with svc.store.tx() as db:
         db.execute("UPDATE jobs SET available_at=0 WHERE kind='identity_visual'")
     assert await svc.run_once(claim_kind='identity_visual')
@@ -207,6 +211,7 @@ async def test_missing_source_keeps_accepted_peer_pending_for_android_reupload(t
     assert r['visual_search_operation']['parallel_pairs'][1]['phase']=='submitted'
     assert calls[-1]==(peer_id,True,True)
     svc._source_photo_bytes=original_source
+    svc.store.now = lambda: now+4
     with svc.store.tx() as db:
         db.execute("UPDATE jobs SET available_at=0 WHERE kind='identity_visual'")
     assert await svc.run_once(claim_kind='identity_visual')
@@ -333,6 +338,83 @@ async def test_unknown_existing_parent_is_not_split_into_fresh_child_sends(tmp_p
     _,r=svc._identity_snapshot(story['id'])
     assert not r['visual_search_operation'].get('parallel_pairs')
     assert r['visual_search_operation']['pending_descriptor']['id']==pending['id']
+
+
+@pytest.mark.asyncio
+async def test_single_initial_unknown_keeps_original_lane_and_accepts_late_independent_pair(tmp_path):
+    from street_story.headless_identity import HeadlessIdentity
+    svc, story, _ = prepare(tmp_path, count=1)
+    now = svc.store.now()
+    clock = [now]
+    svc.store.now = lambda: clock[0]
+    calls = []
+    async def pair(route, snapshot, item, schema, context):
+        calls.append((route, json.loads(context)['comparison_id']))
+        if route == 'google':
+            assert not item['_visual_pair_resume_only']
+            raise RetryableProviderError('research_visual_pair_outcome_unknown', retry_at=clock[0]+300)
+        return response(item, 'independent-model', 'match')
+    svc.providers.research = SimpleNamespace(vision_available=True, vision_model='fixture',
+        parallel_visual_routes=lambda: ('google', 'opencode'), visual_pair_route=pair)
+    with svc.store.tx() as db:
+        discovery = svc._enqueue_job(db, story['id'], 'identity', 'late-discovery', {'identity_generation': 0})
+        db.execute("UPDATE jobs SET state='running',lease_until=? WHERE id=?", (now+180, discovery))
+    assert await svc.run_once(claim_kind='identity_visual')
+    _, research = svc._identity_snapshot(story['id'])
+    frozen = dict(research['visual_search_operation']['parallel_pairs'][0])
+    assert len(calls) == 1 and frozen['phase'] == 'submitted'
+    assert frozen['retry_at'] == now+300
+    assert 'automatic_research_outcome' not in research
+    # A later independent discovery supplies another exact facade. It never
+    # rewrites the original UNKNOWN comparison or its provider cooldown.
+    later = {'candidate_id': 'gate:b', 'name': 'Gate b', 'url': 'https://example.com/b',
+             'reference_image_urls': ['https://example.com/b.jpg'], 'distance_m': 10}
+    research['visual_identity']['candidates'].append(later)
+    research['visual_search_operation']['queue'].extend(HeadlessIdentity._image_entries(later))
+    with svc.store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story['id']))
+        db.execute("UPDATE jobs SET available_at=0 WHERE kind='identity_visual' AND story_id=?", (story['id'],))
+    clock[0] += 6
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert [route for route, _ in calls] == ['google', 'opencode']
+    assert svc.story(story['id'])['visual_identity']['candidate_id'] == 'gate:b'
+    _, research = svc._identity_snapshot(story['id'])
+    original = research['visual_search_operation']['parallel_pairs'][0]
+    assert original['id'] == frozen['id'] and original['reply'] == frozen['reply']
+    assert original['phase'] == 'submitted' and original['retry_at'] == frozen['retry_at']
+
+
+@pytest.mark.asyncio
+async def test_proven_unsent_admission_wait_retries_original_pair_as_first_send_after_due(tmp_path):
+    svc, story, _ = prepare(tmp_path, count=1)
+    clock = [svc.store.now()]
+    svc.store.now = lambda: clock[0]
+    receipts, calls = {}, []
+    async def pair(route, snapshot, item, schema, context):
+        identifier = json.loads(context)['comparison_id']
+        calls.append((identifier, item['_visual_pair_resume_only']))
+        if len(calls) == 1:
+            receipts['vision_native'] = {'phase': 'created', 'provider_send_state': 'not_sent',
+                'retry_safe': True, 'binding': {'attempt_id': 'same-native-attempt'}}
+            raise RetryableProviderError('research_vision_waiting', retry_at=clock[0]+3)
+        return response(item, 'native-model', 'match')
+    svc.providers.research = SimpleNamespace(vision_available=True, vision_model='fixture',
+        parallel_visual_routes=lambda: ('native', 'google'), visual_pair_route=pair,
+        visual_pair_receipts=lambda *_args: receipts)
+    assert await svc.run_once(claim_kind='identity_visual')
+    _, research = svc._identity_snapshot(story['id'])
+    original = research['visual_search_operation']['parallel_pairs'][0]
+    assert original['phase'] == 'ready' and original['retry_at'] == clock[0]+3
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='identity_visual'", (story['id'],))
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert len(calls) == 1  # Local queue polling cannot bypass authority due.
+    clock[0] += 4
+    with svc.store.tx() as db:
+        db.execute("UPDATE jobs SET available_at=0 WHERE story_id=? AND kind='identity_visual'", (story['id'],))
+    assert await svc.run_once(claim_kind='identity_visual')
+    assert calls == [(original['id'], False), (original['id'], False)]
+    assert svc.story(story['id'])['visual_identity']['candidate_id'] == 'gate:a'
 
 
 @pytest.mark.asyncio

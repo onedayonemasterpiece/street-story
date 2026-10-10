@@ -67,6 +67,17 @@ def test_qualified_web_route_is_available_without_duplicate_executor():
     assert provider._verified_routes() == routes
 
 
+def test_visual_reasoning_preference_preserves_qualification_and_registered_tuple():
+    provider, _verdict, _context, _calls, _first, _second = setup()
+    routes = provider.client.research_routes
+    provider.service.settings = SimpleNamespace(gemini_web_search_tertiary_model='gemini-fallback')
+    assert provider._verified_routes() == [routes[1], routes[0]]
+    provider.service.store.cache_get = lambda _key: {'models': [{
+        'model': 'gemini-primary', 'transport': 'gemini_generate_content',
+        'controls': {'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}}]}
+    assert provider._verified_routes() == [routes[0]]
+
+
 @pytest.mark.asyncio
 async def test_native_image_transport_schema_admission_full_shortlist_and_receipt():
     usage = SimpleNamespace(prompt_token_count=800, candidates_token_count=140,
@@ -206,3 +217,77 @@ async def test_nonfinite_confidence_or_blank_subject_resolution_is_not_valid(val
     verdict.update(values)
     with pytest.raises(MalformedProviderResponse):
         await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure, sent, expected_calls', [
+    ('quota', False, 2), ('timeout', False, 2), ('timeout', True, 1),
+    ('control', False, 1), ('all_quota', False, 2),
+])
+async def test_real_visual_executor_only_fails_over_before_send(tmp_path, failure, sent, expected_calls):
+    from pydantic import SecretStr
+    from street_story.db import Store
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool
+    from street_story.quota import SharedQuotaDenied
+    provider, verdict, context, _calls, _first, _second = setup()
+    store = Store(tmp_path / 'visual.sqlite3')
+    pool = GeminiKeyPool(store, (SecretStr('key-a'), SecretStr('key-b')), 'gemini-primary')
+    provider.client.research_routes = [('gemini-primary', pool, None, GeminiExecutor(pool))]
+    calls = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        calls.append(key)
+        if len(calls) == 1 or failure == 'all_quota':
+            if sent:
+                kwargs['before_provider_send']()
+            if failure in {'quota', 'all_quota'}:
+                raise SharedQuotaDenied(60)
+            if failure == 'control':
+                raise GeminiUnavailable(2000, 'shared_control_unavailable')
+            raise TimeoutError
+        kwargs['before_provider_send']()
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=None, response_id='closed')
+
+    provider.client._generate = generate
+    if expected_calls == 2 and failure != 'all_quota':
+        response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+        assert [a['provider_send_state'] for a in response['receipt']['model_attempts']] == [
+            'not_sent', 'response_closed']
+    else:
+        with pytest.raises(GeminiUnavailable) as failed:
+            await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+        if sent:
+            assert failed.value.receipt['category'] == 'visual_outcome_unknown'
+        assert all(a['provider_send_state'] == ('possibly_sent' if sent else 'not_sent')
+                   for a in failed.value.receipt['model_attempts'])
+    assert len(calls) == expected_calls
+    assert pool.snapshot()['in_flight'] == 0
+    if expected_calls == 1:
+        with store.connection() as db:
+            other = db.execute('SELECT consecutive_failures,minute_used FROM gemini_key_health '
+                               'WHERE key_id=? AND operation=?', (pool.ids[1], 'grounded_research')).fetchone()
+        assert tuple(other) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_visual_answer_uses_its_overall_budget_instead_of_short_key_timeout(tmp_path):
+    import asyncio
+    from pydantic import SecretStr
+    from street_story.db import Store
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
+    provider, verdict, context, _calls, _first, _second = setup()
+    pool = GeminiKeyPool(Store(tmp_path / 'slow-visual.sqlite3'), (SecretStr('key-a'), SecretStr('key-b')),
+        'gemini-primary', policy=GeminiPolicy(call_timeout=.01, attempt_timeout=.3))
+    provider.client.research_routes = [('gemini-primary', pool, None, GeminiExecutor(pool))]
+    sent = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        kwargs['before_provider_send']()
+        sent.append(key)
+        await asyncio.sleep(.04)
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=None, response_id='closed')
+
+    provider.client._generate = generate
+    response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert response['receipt']['model_attempts'][0]['provider_send_state'] == 'response_closed'
+    assert sent == ['key-a']

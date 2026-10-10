@@ -80,7 +80,7 @@ async def test_search_keeps_every_discovered_url_and_existing_completed_media(tm
 
 @pytest.mark.asyncio
 async def test_article_batch_has_deferred_receipt_for_every_unscheduled_url_and_bounded_parallelism(tmp_path, monkeypatch):
-    svc, _, _, _ = prepared(tmp_path)
+    svc, _, topic, _ = prepared(tmp_path)
     monkeypatch.setattr(article_media, 'MAX_PAGES', 6)
     active = peak = 0
     requested = []
@@ -97,7 +97,7 @@ async def test_article_batch_has_deferred_receipt_for_every_unscheduled_url_and_
     sources = [{'url': f'https://example.com/article-{i}'} for i in range(35)]
     receipts = []
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        result = await article_media.article_candidates(svc, {'id': 'unknown'}, sources, set(),
+        result = await article_media.article_candidates(svc, topic, sources, set(),
             http=http, resolver=resolver, receipts=receipts)
     assert len(requested) == len(result) == 6
     assert peak <= 4
@@ -260,8 +260,8 @@ async def test_recovery_reuses_completed_media_and_fetches_deferred_urls_with_ga
         {'url': urls[0], 'status': 'completed'},
         {'url': urls[1], 'status': 'partial', 'gallery_cursor': 12, 'gallery_slide_cursor': 3}],
         articles=[completed])
-    svc.providers.gemini._generate = object()
-    svc.providers.gemini.executor = object()
+    svc.providers.gemini._generate = lambda: None
+    svc.providers.gemini.executor = SimpleNamespace(execute=lambda *args: None)
     async def suggest(*args):
         return 'Gate', [], 'pointed arch', ''
     async def search(*args, **kwargs):
@@ -290,8 +290,8 @@ async def test_recovery_reuses_completed_media_and_fetches_deferred_urls_with_ga
 async def test_nonempty_search_without_images_continues_saved_alternative_plan(tmp_path, monkeypatch):
     svc, _, topic, _ = prepared(tmp_path)
     story, _ = svc._identity_snapshot(topic['id'])
-    svc.providers.gemini._generate = object()
-    svc.providers.gemini.executor = object()
+    svc.providers.gemini._generate = lambda: None
+    svc.providers.gemini.executor = SimpleNamespace(execute=lambda *args: None)
     queries, reads = [], []
     async def suggest(service, context, transcript, candidates):
         context['_identity_article_queries'] = ['address hypothesis A', 'address hypothesis B']

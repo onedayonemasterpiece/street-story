@@ -46,7 +46,14 @@ def direct_visual_parts(story, supplied):
                     or ref['reference_id'] in seen or not ref.get('candidate_id')):
                 raise PermanentProviderError('visual_direct_attachments_invalid')
             seen.add(ref['reference_id'])
-        output.append({'label': label, 'mime_type': mime, 'url': url, 'bytes': pixels})
+        prepared = {'label': label, 'mime_type': mime, 'url': url, 'bytes': pixels}
+        if index and pixels is None:
+            descriptors = [item for item in ref.get('context') or []
+                           if item.get('detail_page_url') and item.get('alt')]
+            if len(descriptors) == 1:
+                prepared['descriptor'] = {**descriptors[0], 'image_url': url,
+                    'article_url': ref.get('article_url')}
+        output.append(prepared)
     return output
 
 

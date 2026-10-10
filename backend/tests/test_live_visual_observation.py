@@ -18,6 +18,53 @@ def existing_operation(service, sid):
 
 
 @pytest.mark.asyncio
+async def test_explicit_live_observation_recovers_same_unknown_job_without_generation(tmp_path):
+    service, adapter, session, _ = make_service(tmp_path)
+    mark_identity_ready(service, session.resource_id)
+    previous = existing_operation(service, session.resource_id)
+    commands = []
+
+    async def status(operation):
+        if not commands:
+            return {'receipts': [{'operation_id': operation, 'state': 'outcome_unknown',
+                'operation_complete': True, 'visual_job_id': 'original-job', 'revision': 7,
+                'visual_revision': 3, 'retry_safe': False}]}
+        return {'receipts': [{'operation_id': operation, 'state': 'verified',
+            'visual_job_id': 'original-job', 'selected_asset_ref': 'processed-asset',
+            'selected_sha256': PROCESSED_SHA}]}
+
+    async def recover(payload, key):
+        assert payload == {'command': {'kind': 'reconcile_observation', 'operation_id': 'visual-op',
+            'job_id': 'original-job', 'expected_revision': 7, 'expected_visual_revision': 3}}
+        assert key.startswith('ss-vp-observe-')
+        commands.append((payload, key))
+        return {'operation_id': 'visual-op', 'state': 'accepted',
+            'observation_recovery': {'job_id': 'original-job', 'execution_ref': 'original-job'}}
+
+    async def read_asset(asset):
+        assert asset == 'processed-asset'
+        return PROCESSED, 'image/png'
+
+    async def forbidden(*args):
+        pytest.fail('Observation must not ingest another source')
+
+    service.providers.vibepublish.status = status
+    service.providers.vibepublish.visual = recover
+    service.providers.vibepublish.ingress_asset = forbidden
+    service.providers.vibepublish.read_asset = read_asset
+    call = {'name': 'generate_visual', 'id': 'recover-unknown-observation', 'args': {'observe_existing_visual': True}}
+    result = await adapter.execute_tool(session, call)
+    assert result['accepted']
+    assert (await adapter.execute_tool(session, call)) == result
+    snapshot = visual_snapshot(service, session.resource_id)
+    assert snapshot['context'] == previous and len(commands) == 1
+    await service._run_visual(snapshot['jobs'][-1])
+    after = visual_snapshot(service, session.resource_id)
+    assert after['state'] == 'ready_to_publish' and after['draft'] == 'Original draft'
+    assert after['context']['operation_id'] == previous['operation_id'] and len(commands) == 1
+
+
+@pytest.mark.asyncio
 async def test_normal_live_observation_requeues_same_context_and_imports_without_generation(tmp_path):
     service, adapter, session, _ = make_service(tmp_path)
     mark_identity_ready(service, session.resource_id)
@@ -83,7 +130,8 @@ async def test_unresolved_observation_keeps_original_context_and_jobs(tmp_path, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change', ['photo', 'concept', 'instruction'])
-async def test_observation_cannot_reuse_stale_or_new_visual_inputs(tmp_path, change):
+@pytest.mark.parametrize('remote_state', ['needs_selection', 'outcome_unknown'])
+async def test_observation_cannot_reuse_stale_or_new_visual_inputs(tmp_path, change, remote_state):
     service, adapter, session, _ = make_service(tmp_path)
     mark_identity_ready(service, session.resource_id)
     existing_operation(service, session.resource_id)
@@ -98,9 +146,14 @@ async def test_observation_cannot_reuse_stale_or_new_visual_inputs(tmp_path, cha
     before = visual_snapshot(service, session.resource_id)
 
     async def status(operation):
-        return {'receipts': [{'operation_id': operation, 'state': 'needs_selection'}]}
+        return {'receipts': [{'operation_id': operation, 'state': remote_state,
+            'operation_complete': True, 'visual_job_id': 'original-job', 'revision': 1, 'visual_revision': 1}]}
+
+    async def forbidden(*args):
+        pytest.fail('Stale input must not request external observation recovery')
 
     service.providers.vibepublish.status = status
+    service.providers.vibepublish.visual = forbidden
     args = {'observe_existing_visual': True}
     if change == 'instruction':
         args['visual_instruction'] = 'Make another visual'

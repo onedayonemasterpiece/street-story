@@ -6,6 +6,8 @@ import logging
 import uuid
 from typing import Any
 
+from .identity_proof import accepted_identity
+
 logger = logging.getLogger(__name__)
 
 
@@ -263,6 +265,14 @@ def acquire_chunk_lease(db, *, run_id, chunk_id, owner, now, ttl=180):
 def chunk_lease_owned(db, *, run_id, chunk_id, owner, fence, now):
     return fence is not None and db.execute('SELECT 1 FROM research_chunk_runs WHERE run_id=? AND chunk_id=? '
         'AND lease_owner=? AND lease_fence=? AND lease_until>?', (run_id,chunk_id,owner,fence,now)).fetchone() is not None
+
+
+def renew_chunk_lease(db, *, run_id, chunk_id, owner, fence, now, ttl=180):
+    """A live worker renews its own fence; it cannot revive a displaced lease."""
+    changed = db.execute('UPDATE research_chunk_runs SET lease_until=? WHERE run_id=? AND chunk_id=? '
+        'AND lease_owner=? AND lease_fence=? AND lease_until>?',
+        (now+ttl, run_id, chunk_id, owner, fence, now)).rowcount
+    return changed == 1
 
 
 def begin_research_run(
@@ -569,12 +579,14 @@ def record_chunk_batch(
 
 
 def _confirmed_run_keys(db, run) -> set[str]:
-    story = db.execute('SELECT research_json FROM stories WHERE id=?', (run['story_id'],)).fetchone()
+    story = db.execute('SELECT research_json,photo_sha256 FROM stories WHERE id=?', (run['story_id'],)).fetchone()
     if not story:
         return set()
     research = json.loads(story['research_json'] or '{}')
     identity = research.get('visual_identity') or {}
-    if (identity.get('status') not in {'match', 'owner_confirmed'}
+    if (not accepted_identity(identity, photo_sha256=story['photo_sha256'],
+            generation=int(research.get('identity_generation') or 0),
+            control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
             or int(research.get('identity_generation') or 0) != int(run['identity_generation'])
             or not identity.get('candidate_id')):
         return set()
@@ -893,3 +905,11 @@ def manifest_complete(manifest: dict[str, Any]) -> bool:
         and int(counts.get("terminal_chunks_payload_missing") or 0) == 0
         and int(counts.get("chunks_completed") or 0) == int(counts.get("chunks_planned") or 0)
     )
+
+
+def manifest_exhausted(manifest: dict[str, Any]) -> bool:
+    """Automatic work can end honestly even when source coverage is incomplete."""
+    if any(source['status'] in {'discovered', 'fetching', 'deferred'} for source in manifest.get('sources') or []):
+        return False
+    return all(chunk['status'] in {'extracted', 'no_claims', 'failed', 'cancelled'}
+               for chunk in manifest.get('chunks') or [])

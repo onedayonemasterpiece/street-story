@@ -5,6 +5,7 @@ credential hopping or new POI/job system is involved.
 """
 from __future__ import annotations
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -12,7 +13,7 @@ import math
 import re
 from statistics import median
 from weakref import WeakValueDictionary
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from .opencode_research import OpenCodeResearch, ResearchUnavailable
 from .errors import PermanentProviderError, RetryableProviderError, research_retry_at
@@ -25,9 +26,59 @@ LOG = logging.getLogger(__name__)
 LOCAL_IMAGE_FAILURES = {'research_image_reference_unavailable', 'research_image_source_unavailable'}
 
 
+def identity_text_discovery_schema(joint_schema):
+    """The text planner selects research leads; it cannot assert image proof.
+
+    Membership stays in the received context and the host validator, rather
+    than repeated ID enumerations in every output field. The caller must check
+    returned pointers against its frozen canonical inventory before use.
+    """
+    allowed = {'entity_name', 'wikipedia_queries', 'visual_query', 'commons_query',
+        'article_queries', 'observed_candidate_ids', 'selected_wikipedia_page_ids',
+        'subject_article_bindings', 'first_wave_hypotheses', 'regional_lookup',
+        'regional_article_selections', 'clarification_question', 'next_action'}
+    pointers = {'candidate_id', 'subject_id', 'address_entry_id', 'article_id',
+        'physical_candidate_id', 'candidate_ids', 'target_candidate_ids',
+        'observed_candidate_ids', 'selected_wikipedia_page_ids'}
+    properties = {key: copy.deepcopy(value) for key, value in joint_schema.get('properties', {}).items()
+                  if key in allowed}
+
+    def bounded(node, name=''):
+        if not isinstance(node, dict):
+            return
+        if name in pointers and node.get('type') == 'string':
+            node.pop('enum', None)
+            node.update(maxLength=100, description='Exact received ID; host validates frozen inventory membership.')
+        if node.get('type') == 'string' and 'maxLength' not in node:
+            node['maxLength'] = 240
+        if node.get('type') == 'array' and 'maxItems' not in node:
+            node['maxItems'] = 8 if name == 'article_queries' else 2
+        for key, child in node.get('properties', {}).items():
+            bounded(child, key)
+        bounded(node.get('items'), name)
+
+    for key, value in properties.items():
+        bounded(value, key)
+    return {'type': 'object', 'properties': properties,
+        'required': [key for key in joint_schema.get('required', []) if key in properties],
+        'additionalProperties': False}
+
+
 def _failure_code(exc):
     value = getattr(exc, 'code', None) or str(exc)
     return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', value) else type(exc).__name__
+
+
+def _fact_route_exhausted(receipt, digest):
+    status = receipt.get('provider_status')
+    code = str((receipt.get('route_failure') or {}).get('code') or receipt.get('error_code') or '')
+    if (status in {401, 403, 429} or isinstance(status, int) and status >= 500
+            or code.startswith('RESOURCE_') or code in {'research_provider_quota', 'research_provider_credential_or_eligibility'}):
+        return False  # A quota/transport rejection is not a completed semantic unit.
+    same_input = (receipt.get('binding') or {}).get('fact_input_sha256') in {None, digest}
+    return same_input and (receipt.get('phase') == 'aborted' and receipt.get('abort_acknowledged') is True
+        or receipt.get('phase') == 'failed' and (receipt.get('provider_send_state') == 'response_closed'
+                                                or receipt.get('error_type') == 'PermanentProviderError'))
 
 
 def _closed_malformed_visual(receipt):
@@ -48,20 +99,27 @@ def _closed_malformed_visual(receipt):
 
 
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
-    'research_sufficient':{'type':'boolean'},
+    'research_sufficient':{'description':'Optional boolean early-stop advice, independent of claim validity.'},
+    'research_sufficient_basis':{'description':
+        'Optional {candidate_indices:[integer,...], known_fact_ids:[string,...], reason:string}. '
+        'Reference own new candidates and known eligible claims supporting the coverage goal.'},
     'next_research_query':{'type':'string','maxLength':500},
     'next_research_goal':{'type':'string','maxLength':1000},
     'source_matches_poi':{'type':'boolean'},'source_content_valid':{'type':'boolean'},
     'continuation_needed':{'type':'boolean'},'facts':{'type':'array','maxItems':32,'items':{
         'type':'object','properties':{
-            'text':{'type':'string','minLength':1,'maxLength':1200},'claim_key':{'type':'string'},
+            'text':{'type':'string','minLength':1,'maxLength':1200},
+            # Headless extraction stores opaque candidates keyed by the frozen
+            # batch/index; semantic equivalence is decided by the reviewer.
+            # An advisory model key must not discard otherwise complete claims.
+            'claim_key':{'type':'string','description':'Optional advisory key; the backend assigns candidate IDs. Semantic equivalence requires review.'},
             'existing_fact_id':{'type':'string'},'confidence':{'type':'number','minimum':0,'maximum':1},
             'source_refs':{'type':'array','items':{'type':'string'}},
             'passage_ids':{'type':'array','minItems':1,'items':{'type':'integer'}},
             'verdict':{'enum':['supported','insufficient','contradicted','possible_conflict']},
             'atomic':{'type':'boolean'},'support_complete':{'type':'boolean'},'qualifiers_preserved':{'type':'boolean'},
             'review_reason':{'type':'string','minLength':1,'maxLength':500}},
-        'required':['text','claim_key','existing_fact_id','confidence','passage_ids','verdict','atomic','support_complete','qualifiers_preserved','review_reason']}}},
+        'required':['text','existing_fact_id','confidence','passage_ids','verdict','atomic','support_complete','qualifiers_preserved','review_reason']}}},
     'required':['facts','source_matches_poi','source_content_valid','continuation_needed']}
 
 
@@ -75,9 +133,8 @@ def fact_page_capsule(page, context):
               if key not in {'_known_fact_inventory', 'known_facts', 'prior_poi_facts'}}
     identity = public.get('confirmed_identity')
     if isinstance(identity, dict):
-        public['confirmed_identity'] = {key: identity[key] for key in (
-            'status', 'candidate_id', 'candidate_name', 'candidate_url', 'wikipedia_url', 'wikidata', 'osm_id')
-            if key in identity}
+        from .identity_model_context import compact_physical_identity
+        public['confirmed_identity'] = compact_physical_identity(identity)
     if isinstance(public.get('previously_processed_sources'), list):
         history = [{key: source[key] for key in ('url', 'title') if key in source}
                    for source in public['previously_processed_sources'] if isinstance(source, dict)]
@@ -131,6 +188,10 @@ class ProductResearchAdapter:
             self.control = Control(Config.from_env('street-story'))
             admission = WorkloadAdmission(self.control, 'opencode:street-story-research')
         self.client = None
+        self.live_facts = None
+        if service.settings.gemini_keys:
+            from .live_research import LiveSemanticClient
+            self.live_facts = LiveSemanticClient(self)
         if service.settings.research_endpoint:
             if client is not None:
                 self.client = OpenCodeResearch(service.settings.research_endpoint,
@@ -158,14 +219,91 @@ class ProductResearchAdapter:
 
     async def checkpoint(self, binding, receipt):
         with self.service.store.tx() as db:
+            previous = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                                  (binding['attempt_id'],)).fetchone()
+            accounting = json.loads(previous[0]).get('accounting_finalization') if previous else None
+            if accounting:
+                receipt = {**receipt, 'accounting_finalization': accounting}
             db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
                 (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+            if (receipt.get('phase') == 'completed' and receipt.get('result')
+                    and binding.get('story_id') and binding.get('photo_sha256')):
+                # Preserve technical receipts after supersession, but count
+                # progress only for evidence owned by this current wave.
+                try:
+                    self.guard_binding(binding, db=db)
+                except ConflictError:
+                    return
+                from .research_budget import note_evidence
+                note_evidence(self.service, db, binding['story_id'], binding['attempt_id'],
+                              generation=binding.get('generation'))
 
-    def guard_binding(self, binding):
+    def _accounting_record(self, binding, value=None):
+        """Private exact lease capsule in the existing attempt journal, never telemetry."""
+        if value is not None:
+            path = self.service.store.path
+            for private in (path, path.with_name(path.name+'-wal'), path.with_name(path.name+'-shm')):
+                if private.exists():
+                    private.chmod(0o600)
+        with self.service.store.tx() as db:
+            row = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE attempt_id=?',
+                             (binding.get('attempt_id'),)).fetchone()
+            if not row:
+                return None, {}
+            receipt = json.loads(row[0])
+            if value is not None:
+                receipt['accounting_finalization'] = value
+                db.execute('UPDATE research_provider_attempts SET receipt_json=?,updated_at=? WHERE attempt_id=?',
+                           (canonical(receipt), self.service.store.now(), binding['attempt_id']))
+            return receipt.get('accounting_finalization'), receipt
+
+    @staticmethod
+    def _accounting_authority(control):
+        config = control.config
+        return hashlib.sha256(canonical([getattr(config, 'url', None), config.consumer,
+            getattr(config, 'expected_ledger_id', None)]).encode()).hexdigest()
+
+    async def recover_accounting(self, *, limit=2):
+        """Reconcile only original finalizations; no reserve, send or product write."""
+        if getattr(self, 'control', None) is None:
+            return
+        from ai_resource_control.workload import WorkloadLease
+        with self.service.store.connection() as db:
+            rows = list(db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
+                "WHERE json_extract(receipt_json,'$.accounting_finalization.state')='pending' "
+                "ORDER BY updated_at LIMIT ?", (limit,)))
+        for row in rows:
+            record = json.loads(row['receipt_json'])['accounting_finalization']
+            if record.get('retry_at', 0) > self.service.store.now():
+                continue
+            if record['authority_sha256'] != self._accounting_authority(self.control):
+                LOG.warning('street_story_accounting attempt_id=%s stage=reconcile state=pending code=RESOURCE_BINDING_CHANGED',
+                            row['attempt_id'])
+                continue
+            identity = record['lease']
+            lease = WorkloadLease(self.control, {'request_id': identity['p_request_id'],
+                'fence': identity['p_fence'], 'ttl_ms': 0}, identity['p_owner_token'], self.control.clock())
+            lease.sent = record['sent']
+            try:
+                async with asyncio.timeout(3):
+                    await lease.finalize(record['metadata'], record['terminal_state'])
+            except Exception as exc:
+                if not getattr(exc, 'resource_failure', False) and not isinstance(exc, TimeoutError):
+                    raise
+                record.update(error_code=_failure_code(exc), retry_at=self.service.store.now()+30)
+                LOG.warning('street_story_accounting attempt_id=%s stage=reconcile state=pending code=%s',
+                            row['attempt_id'], record['error_code'])
+            else:
+                record.update(state='completed', completed_at=self.service.store.now())
+                record.pop('retry_at', None)
+                LOG.info('street_story_accounting attempt_id=%s stage=reconcile state=completed', row['attempt_id'])
+            self._accounting_record({'attempt_id': row['attempt_id']}, record)
+
+    def guard_binding(self, binding, *, db=None):
         if not binding or not binding.get('story_id'):
             return
         from .research_control import research_stopped
-        with self.service.store.connection() as db:
+        with self.service.store.connection() if db is None else nullcontext(db) as db:
             story = self.service._story_row(db, binding['story_id'])
             research = json.loads(story['research_json'] or '{}')
             generation = int(research.get('identity_generation') or 0)
@@ -176,7 +314,9 @@ class ProductResearchAdapter:
                         if control else bool(research.get('identity_research_cancelled')))
                        if visual else research_stopped(research, purpose,
                             photo_sha256=story['photo_sha256'], identity_generation=generation))
-            if ((not visual and binding.get('photo_sha256') != story['photo_sha256']) or binding.get('generation') != generation
+            if ((not visual and binding.get('photo_sha256') != story['photo_sha256'])
+                    or binding.get('source_map_photo_sha256', story['photo_sha256']) != story['photo_sha256']
+                    or binding.get('generation') != generation
                     or stopped
                     or binding.get('control_revision', 0) != int(control.get('revision') or 0)):
                 raise ConflictError('research_scope_superseded', 'Исследование остановлено или относится к предыдущему объекту.')
@@ -191,9 +331,50 @@ class ProductResearchAdapter:
         async def admitted(binding, workload):
             owned = binding if binding.get('story_id') else adapter._active_binding.get()
             async with admission(binding, workload) as lease:
+                raw_finalize = lease.finalize
+                # The installed WorkloadAdmission invokes lease.finalize again on
+                # exit when the first RPC fails. Make that cleanup retry the exact
+                # durable payload, not its generic unknown usage. finalized remains
+                # false until the SDK observes a real successful authority reply.
+                if callable(getattr(lease, 'payload', None)) and binding.get('attempt_id'):
+                    async def durable_finalize(metadata, state):
+                        record, receipt = adapter._accounting_record(binding)
+                        if record is None:
+                            record = {'state': 'pending', 'lease': lease.payload(), 'sent': lease.sent,
+                                'metadata': copy.deepcopy(metadata), 'terminal_state': state,
+                                'authority_sha256': adapter._accounting_authority(lease.control),
+                                'created_at': adapter.service.store.now()}
+                            saved, receipt = adapter._accounting_record(binding, record)
+                            if saved is None:
+                                raise ConflictError('research_accounting_attempt_missing', 'Original attempt receipt required.')
+                        try:
+                            async with asyncio.timeout(3):
+                                await raw_finalize(record['metadata'], record['terminal_state'])
+                        except Exception as exc:
+                            if not getattr(exc, 'resource_failure', False) and not isinstance(exc, TimeoutError):
+                                raise
+                            record.update(error_code=_failure_code(exc), retry_at=adapter.service.store.now()+30)
+                            adapter._accounting_record(binding, record)
+                            LOG.warning('street_story_accounting attempt_id=%s stage=finalize state=pending code=%s result_phase=%s',
+                                        binding['attempt_id'], record['error_code'], receipt.get('phase'))
+                            # Only a durably completed validated result may be
+                            # returned despite accounting unavailability. UNKNOWN,
+                            # unsent and admission failures remain failures.
+                            if receipt.get('phase') != 'completed' or not receipt.get('result') or not record['sent']:
+                                raise
+                        else:
+                            record.update(state='completed', completed_at=adapter.service.store.now())
+                            record.pop('retry_at', None)
+                            adapter._accounting_record(binding, record)
+                            LOG.info('street_story_accounting attempt_id=%s stage=finalize state=completed', binding['attempt_id'])
+                    lease.finalize = durable_finalize
                 class FencedLease:
                     async def before_send(self, metadata):
                         adapter.guard_binding(owned)
+                        if owned and owned.get('story_id'):
+                            from .research_budget import require_remaining
+                            require_remaining(adapter.service, owned['story_id'],
+                                              purpose=owned.get('purpose', 'facts'))
                         return await lease.before_send(metadata)
                     async def finalize(self, metadata, state):
                         return await lease.finalize(metadata, state)
@@ -210,6 +391,10 @@ class ProductResearchAdapter:
             await asyncio.gather(*pending, return_exceptions=True)
         if self.native_vision is not None:
             await self.native_vision.close()
+        if getattr(self, 'live_facts', None) is not None:
+            await self.live_facts.close()
+        if getattr(self, 'control', None) is not None:
+            await self.control.close()
 
     def retain_search_observer(self, task):
         observers = getattr(self, '_search_observers', None)
@@ -250,7 +435,8 @@ class ProductResearchAdapter:
             if rows and old.get('phase') == 'completed':
                 return None, old
             resumed = {**(old.get('binding') or {}), **{k: old[k] for k in
-                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission', 'image_transport', 'image_preparation') if k in old}}
+                ('session_id', 'message_id', 'thread_id', 'turn_id', 'profile_verified', 'phase', 'quota_permission',
+                 'image_transport', 'image_preparation', 'frozen_prompt', 'frozen_schema', 'frozen_source_map') if k in old}}
             if rows and old.get('phase') == 'created':
                 resumed.update(control_revision=story.get('_fact_research_control_revision', story.get('_identity_research_control_revision', 0)),
                                job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
@@ -435,6 +621,7 @@ class ProductResearchAdapter:
         return receipt.get('discovered_sources') or receipt.get('sources') or []
 
     async def search_articles(self, query, story):
+        from .identity_source_selection import regional_source_profile
         unit = canonical([query,story.get('_research_run_id')])
         history = self.search_history(story)
         capsule = canonical({'query': query, 'purpose': 'facts' if '_fact_research_control_revision' in story else 'identity',
@@ -442,10 +629,9 @@ class ProductResearchAdapter:
                                  'Find modern photos of the present-day physical object and its address. '
                                  'A historic building does not call for historic photographs. '
                                  'Do not use pre-war photo archives as visual references; historic material belongs to fact research.'),
-                             'regional_search_hint': 'Для исторических зданий Калининградской области '
-                                 'попробуй дополнительный запрос «адрес или название prussia39». '
-                                 'Адрес должен следовать из доступных данных. Prussia39 может быть '
-                                 'источником статьи и иногда фото; не исключай остальные источники.',
+                             'source_profile': regional_source_profile(story),
+                             'address_query_contract': 'Preserve the observed city, street type and full house number/range. '
+                                 'For facts prefer substantive articles about the confirmed subject; for identity prefer modern exterior views.',
                              'research_history': history,
                              'visual_evidence_context': ({} if '_fact_research_control_revision' in story
                                  else self.identity_search_context(story))})
@@ -454,7 +640,7 @@ class ProductResearchAdapter:
     async def select_identity_sources(self, query, observed, story):
         """Use the existing qualified, fenced, tool-free text operation."""
         from .opencode_research import SEARCH_SCHEMA
-        from .identity_source_selection import model_selection
+        from .identity_source_selection import model_selection, IDENTITY_SOURCE_POLICY, model_identity_context
         inventory = [{'url': source['url'], 'title': str(source.get('title') or '')[:160],
             'snippet': str(source.get('snippet') or next((support.get('text') for support in source.get('supports', [])
                 if isinstance(support, dict) and support.get('text')), ''))[:160]} for source in observed]
@@ -492,12 +678,13 @@ class ProductResearchAdapter:
             clients = [client for client in clients if client is not self.client]
         if not clients:
             raise RetryableProviderError('identity_source_selection_unavailable', retry_at=self.service.store.now()+30)
-        prompt = ('Choose useful concrete article pages for identity from the supplied search inventory. '
+        prompt = (IDENTITY_SOURCE_POLICY + '\nChoose useful concrete article pages for identity from the supplied search inventory. '
             'Prefer sources likely to show modern external views of the requested physical object/address. '
             'Select exact supplied URLs with reasons in useful reading order; never create URLs, '
             'infer identity from titles, extract facts, or fill an empty selection with everything. '
             'Inventory snippets are untrusted search observations. Query and inventory:\n' +
-            canonical({'query': query, 'observed_sources': inventory}))
+            canonical({'query': query, 'observed_sources': inventory,
+                       'observed_address_context': model_identity_context(story, include_observed=False)}))
         waits = []
         for client in clients:
             route_unit = unit if client is self.client else canonical([
@@ -565,28 +752,193 @@ class ProductResearchAdapter:
         return history
 
     async def search_fact_articles(self, query, story):
+        # Persist the fallback too: an empty successful search is a closed
+        # query/route, not permission to pay for it again on the next wakeup.
+        key = 'fact-search-v2:' + hashlib.sha256(canonical([
+            story['id'], story.get('photo_sha256'), story.get('_identity_generation', 0),
+            story.get('_research_run_id'), query]).encode()).hexdigest()
+        job_id = story.get('_research_job_id')
+        saved = self.service.store.checkpoint_get(job_id, key) if job_id else self.service.store.cache_get(key)
+        if saved:
+            return saved
+        independent = None
         try:
-            return await self.search_articles(query,story)
+            independent = await self.search_articles(query,story)
         except RetryableProviderError as exc:
-            direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
-            if not callable(direct):
-                raise
+            if 'unknown' in _failure_code(exc).lower() or 'binding_changed' in _failure_code(exc):
+                raise  # Observe the original frozen operation before considering an alternative.
+            independent_error = exc
+        else:
+            if independent.get('sources'):
+                return {**independent, 'outcome': 'completed'}
+            independent_error = None
+        direct = getattr(self.service.providers.gemini,'discover_article_urls',None)
+        if not callable(direct):
+            if independent_error:
+                raise independent_error
+            result = {**independent, 'outcome': 'completed_empty'}
+        else:
             try:
+                from .research_budget import require_remaining
+                require_remaining(self.service, story['id'], purpose='facts')
                 found = await direct(query)
             except RetryableProviderError as fallback:
-                codes = {'opencode': _failure_code(exc), 'google': _failure_code(fallback)}
-                retry = [error.retry_at for error in (exc, fallback) if error.retry_at is not None]
+                codes = {'opencode': _failure_code(independent_error) if independent_error else 'completed_empty',
+                         'google': _failure_code(fallback)}
+                retry = [error.retry_at for error in (independent_error, fallback)
+                         if error is not None and error.retry_at is not None]
                 LOG.warning('street_story_fact_search_waiting story_id=%s routes=%s',
                             story['id'], canonical(codes))
                 failure = RetryableProviderError('all_fact_search_routes_unavailable:' + ':'.join(codes.values()),
                     retry_at=min(retry) if retry else self.service.store.now()+30)
                 failure.route_failures = codes
                 raise failure from fallback
-            return {'sources':found.grounding_sources,'receipt':{
-                'provider':'gemini_google_search','backend':'google_search','independent_failure':_failure_code(exc)}}
+            result = {'sources': found.grounding_sources, 'outcome': 'completed' if found.grounding_sources else 'completed_empty',
+                'receipt': {'provider': 'gemini_google_search', 'backend': 'google_search',
+                    'independent_failure': _failure_code(independent_error) if independent_error else 'completed_empty',
+                    'outcome': 'completed' if found.grounding_sources else 'completed_empty'}}
+            if (getattr(found, 'payload', {}) or {}).get('status') == 'selection_unavailable':
+                result.update(outcome='selection_unavailable', discovered_sources=found.payload.get('discovered_sources', []),
+                              source_selection=found.payload.get('source_selection', {}))
+                result['receipt']['outcome'] = 'selection_unavailable'
+        if job_id:
+            self.service.store.checkpoint_put(job_id, key, result)
+        else:
+            self.service.store.cache_put(key, result, 14*86400)
+        LOG.info('street_story_fact_search_closed story_id=%s outcome=%s sources=%s',
+                 story['id'], result['outcome'], len(result.get('sources') or []))
+        return result
+
+    def _identity_plan_receipts(self, story):
+        with self.service.store.connection() as db:
+            rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                              'ORDER BY created_at DESC,rowid DESC', (story['id'], 'identity_search_plan'))
+            receipts = [json.loads(row[0]) for row in rows]
+        return [receipt for receipt in receipts if
+                (receipt.get('binding') or {}).get('photo_sha256') == story['photo_sha256']
+                and (receipt.get('binding') or {}).get('generation', 0) == story.get('_identity_generation', 0)
+                and (receipt.get('binding') or {}).get('control_revision', 0) ==
+                    story.get('_identity_research_control_revision', 0)]
+
+    def has_identity_search_plan_readback(self, story):
+        return any(self._fact_pool_unknown(receipt) or
+                   receipt.get('phase') == 'completed' and receipt.get('result')
+                   for receipt in self._identity_plan_receipts(story))
+
+    async def plan_identity_search(self, story, prompt, schema):
+        """One qualified tool-free planning operation on the existing text pool."""
+        role = 'identity_search_plan'
+        def dispatch(client, original_prompt, binding, original_schema):
+            planner = getattr(client, 'plan_identity_search', None)
+            return (planner(original_prompt, binding, original_schema) if callable(planner) else
+                    client._run('facts', original_prompt, binding, original_schema))
+        unit = canonical(['identity-search-plan-v1', prompt, schema])
+        scoped = self._identity_plan_receipts(story)
+        original = next((receipt for receipt in scoped if self._fact_pool_unknown(receipt)), None)
+        if original is None:
+            original = next((receipt for receipt in scoped
+                             if receipt.get('phase') == 'completed' and receipt.get('result')), None)
+        if original:
+            binding = original.get('binding') or {}
+            original_unit = binding.get('fact_unit_id')
+            original_schema = original.get('frozen_schema')
+            if original_schema is None:
+                try:
+                    original_schema = json.loads(original_unit)[2]
+                except (ValueError, TypeError, IndexError):
+                    raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30) from None
+            if not isinstance(original_schema, dict):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+            legacy = ('first_wave_hypotheses' not in original_schema.get('properties', {})
+                      or 'first_wave_hypotheses' not in original_schema.get('required', []))
+            if original.get('phase') == 'completed':
+                return {'result': original['result'], 'receipt': original,
+                        'original_schema': original_schema,
+                        **({'original_schema_readback': True} if legacy else {})}
+            matches = [route for route in self._fact_pool_routes() if route.get('client') is not None
+                       and route.get('endpoint') and (route['provider_id'], route['model_id']) ==
+                           (original.get('provider_id'), original.get('model_id'))
+                       and (not (original.get('isolation') or {}).get('directory') or
+                            (original.get('isolation') or {})['directory'] == getattr(route['client'], 'directory', None))]
+            if (not matches or not original_unit or not original.get('session_id')
+                    or not original.get('message_id')):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+            route = matches[0]
+            route_unit = canonical([original_unit, route['provider_id'], route['model_id'], route['endpoint']])
+            expected = hashlib.sha256(canonical([story['id'], story['photo_sha256'],
+                story.get('_identity_generation', 0), role, route_unit]).encode()).hexdigest()
+            if binding.get('request_id') != expected:
+                raise RetryableProviderError('identity_search_plan_binding_changed', retry_at=self.service.store.now()+30)
+            try:
+                original_input = json.loads(original_unit)
+                if (not isinstance(original_input, list) or len(original_input) != 3
+                        or original_input[0] != 'identity-search-plan-v1'
+                        or not isinstance(original_input[1], str) or not isinstance(original_input[2], dict)):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30) from None
+            owned = {**story, '_fact_pool_unit_id': original_unit,
+                     '_fact_pool_input_sha256': binding.get('fact_input_sha256')}
+            result = await self.run(owned, role, route_unit, lambda current:
+                dispatch(route['client'], original_input[1], current, original_schema), client=route['client'])
+            return {**result, 'original_schema': original_schema,
+                    **({'original_schema_readback': True} if legacy else {})}
+        routes = [route for route in self._fact_pool_routes() if route['qualified'] and route.get('endpoint')]
+        prior = {}
+        with self.service.store.connection() as db:
+            for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                                  'ORDER BY created_at DESC,rowid DESC', (story['id'], role)):
+                receipt = json.loads(row[0])
+                binding = receipt.get('binding') or {}
+                if binding.get('fact_unit_id') == unit:
+                    prior.setdefault((receipt.get('provider_id'), receipt.get('model_id')), receipt)
+        for receipt in prior.values():
+            if receipt.get('phase') == 'completed':
+                return {'result': receipt['result'], 'receipt': receipt}
+        unknown = next((receipt for receipt in prior.values() if self._fact_pool_unknown(receipt)), None)
+        if unknown:
+            routes = [route for route in routes if (route['provider_id'], route['model_id']) ==
+                      (unknown.get('provider_id'), unknown.get('model_id'))
+                      and (not (unknown.get('isolation') or {}).get('directory') or
+                           (unknown.get('isolation') or {})['directory'] == getattr(route['client'], 'directory', None))]
+            if not routes or not unknown.get('session_id') or not unknown.get('message_id'):
+                raise RetryableProviderError('identity_search_plan_outcome_unknown', retry_at=self.service.store.now()+30)
+        else:
+            routes = [route for route in routes if route['available']]
+        waits = []
+        for route in routes:
+            receipt = prior.get((route['provider_id'], route['model_id'])) or {}
+            if receipt.get('phase') in {'failed', 'aborted'} and not self._fact_pool_unknown(receipt):
+                removed_local_cap = receipt.get('provider_send_state') == 'not_sent' and receipt.get('error_code') in {
+                    'research_input_too_large', 'live_research_unit_oversize'}
+                if not removed_local_cap:
+                    continue
+                # That legacy refusal happened before inference. The removed
+                # local cap must not stay sticky; ordinary admission and a new
+                # recorded attempt are safe, while UNKNOWN still reads above.
+            owned = {**story, '_fact_pool_unit_id': unit,
+                     '_fact_pool_input_sha256': hashlib.sha256(unit.encode()).hexdigest()}
+            route_unit = canonical([unit, route['provider_id'], route['model_id'], route['endpoint']])
+            client = route['client']
+            try:
+                return await self.run(owned, role, route_unit,
+                    lambda binding: dispatch(client, prompt, binding, schema), client=client)
+            except RetryableProviderError as exc:
+                with self.service.store.connection() as db:
+                    rows = db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=? AND role=? '
+                                      'ORDER BY created_at DESC,rowid DESC', (story['id'], role))
+                    current = next((value for row in rows if (value := json.loads(row[0])).get('binding', {}).get('fact_unit_id') == unit), {})
+                if unknown or self._fact_pool_unknown(current):
+                    raise
+                if exc.retry_at is not None:
+                    waits.append(exc.retry_at)
+        raise RetryableProviderError('identity_search_plan_unavailable',
+                                     retry_at=min(waits) if waits else self.service.store.now()+30)
 
     @property
     def facts_available(self):
+        if getattr(self, 'live_facts', None) is not None:
+            return True
         proof = self.service.store.cache_get('research-text-verification-v1') or {}
         if isinstance(proof.get('extractors'), list):
             return any(route['qualified'] for route in self._fact_pool_routes())
@@ -616,7 +968,11 @@ class ProductResearchAdapter:
         Qualification belongs to the existing verification receipt, not catalog.
         """
         primary = getattr(self, 'client', None)
-        routes = [{'role': 'facts_gigachat', 'provider_id': 'gigachat',
+        live = getattr(self, 'live_facts', None)
+        routes = ([{'role': 'facts_live', 'provider_id': live.provider_id, 'model_id': live.model_id,
+                    'endpoint': live.endpoint, 'client': live, 'qualification_origin': 'existing_live_tool_contract'}]
+                  if live is not None else [])
+        routes += [{'role': 'facts_gigachat', 'provider_id': 'gigachat',
                    'model_id': 'GigaChat-2', 'client': getattr(self, 'giga', None)}]
         if primary is not None:
             routes.append({'role': 'facts', 'provider_id': getattr(primary, 'provider_id', 'opencode'),
@@ -643,6 +999,8 @@ class ProductResearchAdapter:
                     'planned_modality_verified', 'known_claim_reuse_verified'))
                 and (not entry.get('directory') or entry['directory'] == getattr(route['client'], 'directory', None))
                 for entry in entries)
+            if route['role'] == 'facts_live':
+                route['qualified'] = True  # The ordinary Live semantic tool contract, not a fabricated helper proof.
             route['available'] = route['qualified']
             if route.get('endpoint') and route['client'] is not None:
                 client = route['client']
@@ -662,10 +1020,14 @@ class ProductResearchAdapter:
 
         Receipts are scheduling evidence, never qualification or permission to
         resend. Original-operation recovery bypasses this ordering entirely.
-        With no measured history the existing rotation remains the tie-breaker.
+        A verified review qualification timing is a cold-start hint only; actual
+        same-stage dispatch history overrides it. Rotation breaks unmeasured ties.
         """
         if not routes:
             return routes
+        live = [route for route in routes if route['role'] == 'facts_live']
+        if live:
+            return live + self.order_fact_routes([route for route in routes if route['role'] != 'facts_live'], ordinal, review=review)
         offset = ordinal % len(routes)
         rotated = routes[offset:] + routes[:offset]
         now = self.service.store.now()
@@ -704,24 +1066,35 @@ class ProductResearchAdapter:
                 # Time spent on closed failures is part of the expected time
                 # to a useful completion, not a successful fast response.
                 expected = sum(durations) / successes if successes else math.inf if durations else None
+                if expected is None and review:
+                    hint = route.get('review_latency_hint') or {}
+                    elapsed = hint.get('elapsed_ms')
+                    if (hint.get('operation') == 'semantic_fact_review' and hint.get('phase') == 'completed'
+                            and all(hint.get(key) == route.get(key) for key in ('provider_id', 'model_id', 'endpoint'))
+                            and hint.get('directory') == getattr(route['client'], 'directory', None)
+                            and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool)
+                            and math.isfinite(elapsed) and elapsed > 0):
+                        expected = elapsed / 1000
                 observations.append((route, expected, outstanding, len(durations)))
         measured = [expected for _, expected, _, _ in observations if expected is not None and math.isfinite(expected)]
         if not measured:
             return rotated
         neutral = median(measured)
         ranked = sorted(observations, key=lambda item: (neutral if item[1] is None else item[1]) * (item[2] + 1))
-        LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s',
-                 'review' if review else 'extract', ranked[0][0]['model_id'], ranked[0][3], ranked[0][2], ranked[0][1])
+        basis = ('dispatch_receipts' if ranked[0][3] else
+                 'qualification_receipt' if ranked[0][1] is not None else 'unmeasured')
+        LOG.info('street_story_fact_route_assignment stage=%s model_id=%s measured_samples=%s outstanding=%s expected_seconds=%s latency_basis=%s',
+                 'review' if review else 'extract', ranked[0][0]['model_id'], ranked[0][3], ranked[0][2], ranked[0][1], basis)
         return [route for route, _, _, _ in ranked]
 
     def _fact_pool_receipts(self, story, unit):
-        roles = ('facts_gigachat', 'facts', 'facts_opencode_nemotron')
+        roles = ('facts_live', 'facts_gigachat', 'facts', 'facts_opencode_nemotron')
         logicals = {hashlib.sha256(canonical([story['id'], story['photo_sha256'],
             story.get('_identity_generation', 0), role, unit]).encode()).hexdigest() for role in roles}
         latest = {}
         with self.service.store.connection() as db:
             rows = db.execute("SELECT logical_id,role,receipt_json FROM research_provider_attempts "
-                              "WHERE story_id=? AND role IN ('facts_gigachat','facts','facts_opencode_nemotron') "
+                              "WHERE story_id=? AND role IN ('facts_live','facts_gigachat','facts','facts_opencode_nemotron') "
                               "ORDER BY created_at DESC,rowid DESC", (story['id'],))
             for row in rows:
                 receipt = json.loads(row['receipt_json'] or '{}')
@@ -784,7 +1157,7 @@ class ProductResearchAdapter:
                 raise RetryableProviderError('research_fact_unit_outcome_unknown', retry_at=self.service.store.now()+300)
             return await self._extract_fact_route(route, fact_page_capsule(page, context), page,
                 {**story, '_fact_pool_unit_id': unit}, context)
-        if not isinstance(proof.get('extractors'), list):
+        if not isinstance(proof.get('extractors'), list) and getattr(self, 'live_facts', None) is None:
             # Preserve legacy single-client installations until explicit rollout.
             return await self._extract_giga_page(page, story, context)
         for receipt in prior.values():
@@ -794,6 +1167,9 @@ class ProductResearchAdapter:
         digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
         owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest}
         all_routes = self._fact_pool_routes()
+        qualified = [route for route in all_routes if route['qualified']]
+        if qualified and all(_fact_route_exhausted(prior.get(route['role']) or {}, digest) for route in qualified):
+            raise PermanentProviderError('research_fact_routes_exhausted')
         routes = [route for route in all_routes if route['available']]
         if not routes:
             due = [route['retry_at'] for route in all_routes if route['qualified']
@@ -836,6 +1212,12 @@ class ProductResearchAdapter:
                 failures.append(_failure_code(exc))
                 LOG.warning('street_story_fact_pool_fallback story_id=%s unit_id=%s route=%s code=%s',
                             story['id'], unit, route['role'], failures[-1])
+        latest = self._fact_pool_receipts(story, unit)
+        if qualified and all(_fact_route_exhausted(latest.get(route['role']) or {}, digest) for route in qualified):
+            failure = PermanentProviderError('research_fact_routes_exhausted')
+            failure.route_failures = failures
+            LOG.info('street_story_fact_unit_exhausted story_id=%s unit_id=%s', story['id'], unit)
+            raise failure
         failure = RetryableProviderError('research_fact_pool_waiting',
                                      retry_at=min(deadlines) if deadlines else self.service.store.now()+300)
         failure.route_failures = failures
@@ -844,6 +1226,7 @@ class ProductResearchAdapter:
     async def _extract_giga_page(self, page, story, context, *, allow_fallback=True):
         from jsonschema import Draft202012Validator
         from .errors import MalformedProviderResponse
+        from .research_budget import ResearchTerminated, require_remaining
         capsule = fact_page_capsule(page, context)
         if self.giga is None:
             return await self._extract_opencode_page(capsule, page, story)
@@ -878,6 +1261,7 @@ class ProductResearchAdapter:
                  'provider_send_state':'not_sent'}
         async def before_inference(metadata):
             self.guard_binding(binding)
+            require_remaining(self.service, story['id'], 'facts')
             receipt.update(phase='submitted', provider_send_state='possibly_sent', retry_safe=False)
             receipt.setdefault('inference_sends', []).append({key:metadata[key] for key in
                 ('attempt_id','operation','purpose','estimated_input_tokens','output_allowance','images','request_body_sha256')
@@ -922,6 +1306,8 @@ class ProductResearchAdapter:
             await self.checkpoint(binding,receipt)
             LOG.warning('street_story_fact_provider_failure story_id=%s attempt_id=%s provider=gigachat phase=%s not_sent=%s code=%s error_type=%s',
                         story['id'],binding['attempt_id'],receipt['phase'],not_sent,receipt['error_code'],receipt['error_type'])
+            if isinstance(exc, ResearchTerminated):
+                raise
             if not_sent and isinstance(exc, ValueError):
                 raise PermanentProviderError(receipt['error_code']) from exc
             if allow_fallback and known_closed and self.opencode_facts_available:
@@ -935,8 +1321,17 @@ class ProductResearchAdapter:
         supplied = json.loads(context) if isinstance(context, str) else context
         direct_visual_parts(story, supplied)
         unit = canonical(visual_operation_unit(story, supplied))
-        return await self.run(story, 'vision', unit,
-            lambda binding: self.client.compare_image(story['_visual_image_parts'], binding, schema, context))
+        async def compare(binding):
+            if binding.get('phase', 'created') == 'created':
+                self._reserve_visual_work(story)
+            return await self.client.compare_image(story['_visual_image_parts'], binding, schema, context)
+        return await self.run(story, 'vision', unit, compare)
+
+    def _reserve_visual_work(self, story):
+        if story.get('_research_job_id'):
+            from .research_budget import reserve_work
+            reserve_work(self.service, story['id'], 'exact_pairs',
+                         [item['reference_id'] for item in story['_visual_reference_mapping']])
 
     @property
     def opencode_vision_available(self):
@@ -977,9 +1372,6 @@ class ProductResearchAdapter:
             google_slots -= 1
         if opencode:
             routes.append('opencode')
-        if google_slots:
-            routes.append('google')
-            google_slots -= 1
         if native:
             routes.append('native')
         routes.extend(['google'] * min(google_slots, 4-len(routes)))
@@ -1013,7 +1405,7 @@ class ProductResearchAdapter:
     @staticmethod
     def _visual_pair_unsent(receipt):
         if receipt.get('phase') in {'created', 'thread_created'}:
-            return True
+            return receipt.get('provider_send_state') != 'possibly_sent' and not receipt.get('turn_id')
         return (receipt.get('phase') == 'failed' and receipt.get('provider_send_state') == 'not_sent'
                 and receipt.get('retry_safe') is True and not (receipt.get('rpc_error') or {}).get('turn_rejected')
                 and receipt.get('error_type') != 'PermanentProviderError')
@@ -1022,6 +1414,22 @@ class ProductResearchAdapter:
     def _visual_pair_retry_at(receipt):
         value = (receipt.get('route_failure') or {}).get('retry_at', receipt.get('retry_at', 0))
         return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else 0
+
+    def _visual_pair_wait(self, story, receipts, waits):
+        failure = RetryableProviderError('research_vision_waiting',
+            retry_at=min(waits) if waits else self.service.store.now()+300)
+        # A host descriptor called "submitted" is not provider dispatch proof.
+        # Give the queue explicit no-send evidence and the original admission
+        # deadline without changing receipt phase, IDs or account binding.
+        failure.provider_send_state = 'not_sent' if receipts and all(
+            self._visual_pair_unsent(receipt) for receipt in receipts.values()) else 'unknown'
+        failure.retry_safe = failure.provider_send_state == 'not_sent'
+        if failure.retry_safe:
+            failure.route_failures = {role: (receipt.get('route_failure') or {}).get('code')
+                                     for role, receipt in receipts.items()}
+            LOG.info('street_story_visual_unsent_wait story_id=%s retry_at=%s roles=%s',
+                     story['id'], failure.retry_at, ','.join(sorted(receipts)))
+        return failure
 
     async def visual_pair_route(self, route, snapshot, story, schema, context):
         """One frozen SOURCE/REF child; never race its unknown send elsewhere.
@@ -1109,6 +1517,7 @@ class ProductResearchAdapter:
                                          retry_at=self.service.store.now()+300)
         if len(direct_visual_parts(story, json.loads(context) if isinstance(context, str) else context)) != 2:
             raise PermanentProviderError('research_visual_pair_route_invalid')
+        self._reserve_visual_work(story)
         base_role = {'google': 'vision_google_pair', 'opencode': 'vision', 'native': 'vision_native'}[route]
         prior = receipts.get(base_role)
         # Closed/admission-refused units go only to the existing Native reserve;
@@ -1155,10 +1564,9 @@ class ProductResearchAdapter:
             due = self._visual_pair_retry_at(native_receipt)
             if due > self.service.store.now():
                 waits.append(due)
-                raise RetryableProviderError('research_vision_waiting', retry_at=min(waits))
+                raise self._visual_pair_wait(story, receipts, waits)
         if self.native_vision is None or not self.native_vision.available:
-            raise RetryableProviderError('research_vision_waiting',
-                retry_at=min(waits) if waits else self.service.store.now()+300)
+            raise self._visual_pair_wait(story, receipts, waits)
         binding, saved = self.attempt(story, 'vision_native', unit)
         if saved:
             return {'result': saved['result'], 'receipt': saved}
@@ -1168,6 +1576,59 @@ class ProductResearchAdapter:
     def vision_available(self):
         return (self.primary_vision.available or self.opencode_vision_available
                 or self.native_vision is not None and self.native_vision.available)
+
+    def source_map_receipt(self, story, *, role='vision_native_spatial'):
+        with self.service.store.connection() as db:
+            rows = db.execute("SELECT receipt_json FROM research_provider_attempts WHERE story_id=? "
+                "AND role=? ORDER BY created_at DESC,rowid DESC", (story['id'], role)).fetchall()
+        for row in rows:
+            receipt = json.loads(row['receipt_json'] or '{}')
+            if ((receipt.get('binding') or {}).get('generation') == story.get('_identity_generation', 0)
+                    and (receipt.get('binding') or {}).get('source_map_photo_sha256') == story['photo_sha256']
+                    and (receipt.get('binding') or {}).get('control_revision', 0)
+                        == story.get('_identity_research_control_revision', 0)):
+                return receipt
+        return None
+
+    @property
+    def source_map_available(self):
+        return self.native_vision is not None and self.native_vision.available
+
+    def source_map_followup_receipt(self, story):
+        return self.source_map_receipt(story, role='vision_native_spatial_followup')
+
+    async def plan_source_map_followup(self, story, prompt, schema, images, host_context):
+        return await self.plan_source_map(story, prompt, schema, images, host_context,
+                                          role='vision_native_spatial_followup')
+
+    async def plan_source_map(self, story, prompt, schema, images, host_context, *, role='vision_native_spatial'):
+        """Optional Luna operation on the existing vision admission and receipt journal."""
+        original = self.source_map_receipt(story, role=role)
+        readback = original and (original.get('turn_id') or original.get('phase') not in {'created', 'failed', 'aborted'})
+        if readback:
+            binding = {**original['binding'], **{key: original[key] for key in
+                ('phase', 'thread_id', 'turn_id', 'profile_verified', 'quota_permission',
+                 'image_transport', 'image_preparation', 'frozen_source_map') if key in original}}
+            binding.update(job_id=story.get('_research_job_id'), job_attempt=story.get('_research_job_attempt'))
+            self.guard_binding(binding)
+            if original.get('phase') == 'failed':
+                raise PermanentProviderError('native_source_map_closed_failure')
+            if original.get('phase') == 'completed':
+                return {'result': original['result'], 'receipt': original,
+                        'host_context': original['frozen_source_map']['host_context']}
+        else:
+            if not self.source_map_available:
+                raise RetryableProviderError('native_source_map_unavailable')
+            unit = canonical(['source-map-spatial-v1' if role == 'vision_native_spatial' else role, prompt, schema,
+                [hashlib.sha256(data).hexdigest() for _label, _mime, data in images]])
+            binding, saved = self.attempt(story, role, unit)
+            if saved:
+                return {'result': saved['result'], 'receipt': saved,
+                        'host_context': saved['frozen_source_map']['host_context']}
+            binding = {**binding, 'source_map_photo_sha256': story['photo_sha256'], 'photo_sha256': story['photo_sha256']}
+        if self.native_vision is None:
+            raise RetryableProviderError('native_turn_outcome_unknown')
+        return await self.native_vision.compare_source_map(story, schema, prompt, images, binding, host_context)
 
     @property
     def vision_model(self):
@@ -1238,6 +1699,7 @@ class ProductResearchAdapter:
             binding, saved = self.attempt(story, 'vision_native', unit)
             if saved:
                 return {'result': saved['result'], 'receipt': saved}
+            self._reserve_visual_work(story)
             # Native reconciles its own submitted operation. A timeout never
             # authorizes another provider send.
             try:
@@ -1288,6 +1750,7 @@ class ProductResearchAdapter:
             if grouped:
                 raise PermanentProviderError('research_visual_group_pair_required')
             raise GeminiUnavailable(self.service.store.now()+300, 'visual_pair_known_failure')
+        self._reserve_visual_work(story)
         intent = {'binding': dict(binding), 'phase': 'submitted', 'provider': 'google',
                   'transport': 'gemini_generate_content', 'workload': 'identity_comparison',
                   'reference_mapping': story.get('_visual_reference_mapping'),

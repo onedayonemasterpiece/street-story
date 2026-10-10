@@ -170,6 +170,6 @@ async def test_terminal_native_schema_rejection_is_retained_without_request_refu
     assert saved['phase'] == 'failed' and 'turn_error' in saved
     assert 'Missing reference_subject_candidate_id' in saved['turn_error']['message']
     assert 'https://' not in saved['turn_error']['message']
-    assert not saved.get('retry_safe') and not saved.get('provider_send_state')
+    assert saved['retry_safe'] is False and saved['provider_send_state'] == 'possibly_sent'
     assert len(sends) == 1 and finalized[-1][1] == 'completed'
     assert finalized[-1][0]['actual_total_tokens'] == 321

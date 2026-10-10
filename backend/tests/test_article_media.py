@@ -28,6 +28,24 @@ def test_default_https_port_has_one_public_resource_identity():
     assert public_url('https://[2606:4700:4700::1111]:443/photo') == 'https://[2606:4700:4700::1111]/photo'
 
 
+def test_individual_photo_page_links_preserve_article_pixels_and_caption_before_layout_images():
+    title, media = extract_media('''<title>Actual building</title><div id="content">
+      <div id="popupContact"><h1>Login</h1></div><img src="/layout.gif">
+    </div><table><tr><td>
+      <a href="/photo/show.php?phid=17"><img src="/thumbnails/facade.jpg" alt="Facade in 1960"></a>
+      <a href="/other-place/"><img src="/unrelated.jpg"></a>
+      <a href="https://elsewhere.example/photo/show.php?phid=18"><img src="/foreign.jpg"></a>
+    </td></tr></table>
+    <nav><a href="/photo/show.php?phid=19"><img src="/navigation.jpg"></a></nav>
+    ''', 'https://example.org/article/?id=2')
+    assert title == 'Actual building'
+    assert media[0]['image_url'] == 'https://example.org/thumbnails/facade.jpg'
+    assert media[0]['detail_page_url'] == 'https://example.org/photo/show.php?phid=17'
+    assert media[0]['alt'] == 'Facade in 1960'
+    assert media[0]['article_url'] == 'https://example.org/article/?id=2'
+    assert len(media) == 2
+
+
 @pytest.mark.asyncio
 async def test_transient_http_error_and_empty_browser_does_not_exhaust_article(tmp_path):
     from street_story.article_media import article_candidates
@@ -150,6 +168,67 @@ async def test_reference_must_have_article_provenance_and_be_decodable():
         assert image[0] == 'image/jpeg' and receipt['article_url'] == 'https://example.com/gate'
         with pytest.raises(ValueError, match='not_extracted'):
             await load_article_reference(client, candidate, 'https://example.com/ad.jpg', resolver=resolver)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode, expected_resolution', [
+    ('unique', 'resolved'), ('ambiguous', 'ambiguous'),
+    ('page_failed', 'unavailable'), ('image_failed', 'image_unavailable'),
+])
+async def test_selected_photo_follows_received_detail_link_without_guessing_urls(mode, expected_resolution):
+    original = 'https://example.com/thumbnail.jpg'
+    caption = 'Фасад дома. 2013'
+    descriptor = {'image_url': original, 'article_url': 'https://example.com/article',
+                  'detail_page_url': 'https://example.com/photo/show.php?phid=17', 'alt': caption}
+    full = jpeg((900, 720))
+    thumbnail = jpeg((200, 160))
+    paths = []
+
+    async def resolver(_host):
+        return '93.184.216.34'
+
+    async def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == '/photo/show.php':
+            if mode == 'page_failed':
+                return httpx.Response(503)
+            extra = '<img src="/second.jpg" alt="' + caption + '">' if mode == 'ambiguous' else ''
+            html = '<meta charset="windows-1251"><main><img src="/actual-large.jpg" alt="' + caption + '">' + extra + '</main>'
+            return httpx.Response(200, headers={'content-type': 'text/html'}, content=html.encode('cp1251'))
+        if request.url.path == '/actual-large.jpg':
+            return httpx.Response(503) if mode == 'image_failed' else httpx.Response(
+                200, headers={'content-type': 'image/jpeg'}, content=full)
+        assert request.url.path == '/thumbnail.jpg'
+        return httpx.Response(200, headers={'content-type': 'image/jpeg'}, content=thumbnail)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        image, receipt = await load_article_reference(client, {'article_media': [descriptor]}, original, resolver=resolver)
+    assert image[1] == (full if mode == 'unique' else thumbnail)
+    assert receipt['image_url'] == original and receipt['article_url'] == descriptor['article_url']
+    assert receipt['detail_resolution'] == expected_resolution
+    assert receipt['resolved_image_url'] == ('https://example.com/actual-large.jpg' if mode == 'unique' else original)
+    assert paths == (['/photo/show.php', '/actual-large.jpg'] if mode == 'unique' else
+                     ['/photo/show.php', '/actual-large.jpg', '/thumbnail.jpg'] if mode == 'image_failed' else
+                     ['/photo/show.php', '/thumbnail.jpg'])
+
+
+def test_photo_detail_link_reaches_direct_provider_parts_without_changing_reference_identity():
+    from street_story.live_visual_comparison import LiveVisualComparisonMixin
+    from street_story.visual_attachments import direct_visual_parts
+    url = 'https://example.com/thumb.jpg'
+    candidate = {'candidate_id': 'web:article', 'name': 'Article', 'url': 'https://example.com/article',
+                 'reference_image_urls': [url], 'article_media': [{'image_url': url,
+                 'detail_page_url': 'https://example.com/photo/show.php?phid=17', 'alt': 'Facade'}]}
+    entry = next(LiveVisualComparisonMixin._image_entries(candidate))
+    reply = LiveVisualComparisonMixin._visual_reply('comparison', [entry], {}, 0)
+    story = {'_visual_reference_mapping': reply['references'], '_visual_image_parts': [
+        {'label': 'SOURCE', 'mime_type': 'image/jpeg', 'data': 'c291cmNl'},
+        {'label': 'REF 1', 'url': url}]}
+    part = direct_visual_parts(story, reply)[1]
+    assert part['descriptor']['detail_page_url'] == candidate['article_media'][0]['detail_page_url']
+    assert part['descriptor']['article_url'] == candidate['url']
+    assert reply['references'][0]['reference_id'] == entry['reference_id']
+    assert part['url'] == url
 
 
 def test_count_increases_after_comparison_including_nonmatches_and_survives_readback():

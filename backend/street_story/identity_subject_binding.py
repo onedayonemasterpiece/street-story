@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from .identity_candidate_policy import candidate_identity_eligible
+from .identity_candidate_policy import candidate_identity_eligible, promote_observed_candidates
 
 
 def article_candidate(candidate: dict[str, Any]) -> bool:
@@ -154,6 +154,7 @@ def reference_binding_valid(result: dict[str, Any], candidates: list[dict[str, A
 def bind_reference_subject(
     result: dict[str, Any], sent_candidates: list[dict[str, Any]], full_shortlist: list[dict[str, Any]],
     reference_evidence: list[dict[str, Any]],
+    *, observed_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve a matched article illustration to an existing eligible hypothesis.
 
@@ -187,6 +188,8 @@ def bind_reference_subject(
                 and (tags.get('place') in {'city', 'town', 'village', 'suburb', 'neighbourhood', 'quarter'}
                      or tags.get('landuse') in {'residential', 'industrial', 'commercial'}))
     if not article_candidate(selected):
+        if selected.get('identity_role') == 'multi_component_building_context':
+            return unresolved('mapped_multiple_building_components_require_member')
         if occupant_in_building(selected):
             return unresolved('mapped_occupant_is_not_building_subject')
         if container_in_building(selected):
@@ -194,7 +197,8 @@ def bind_reference_subject(
         return {'status': 'not_required', 'candidate': selected, 'result': raw,
                 'reference_evidence': reference_evidence}
     subject_id = raw.get('reference_subject_candidate_id')
-    candidate = next((item for item in full_shortlist if item.get('candidate_id') == subject_id), None)
+    promoted = promote_observed_candidates(full_shortlist, observed_candidates or [], [subject_id])
+    candidate = next((item for item in promoted if item.get('candidate_id') == subject_id), None)
     if not candidate or article_candidate(candidate) or not candidate_identity_eligible(candidate):
         return unresolved('subject_not_eligible_shortlist_candidate')
     # This is a typed entity-scope check, not a guess from a venue name. The
@@ -213,6 +217,9 @@ def bind_reference_subject(
                      and item.get('reference_id') in raw.get('_reference_ids_sent', [])), None)
     if not evidence:
         return unresolved('reference_provenance_missing')
+    # Publish the host-observed hypothesis only after binding/provenance checks.
+    # The unchanged visual gate still checks observations, alternatives and fences.
+    full_shortlist[:] = promoted
     binding = {'proof': 'model_reference_subject_resolution', 'reference_candidate_id': cid,
                'subject_candidate_id': subject_id, 'article_url': evidence['article_url'],
                'image_url': evidence['source_url'], 'reference_id': evidence['reference_id']}

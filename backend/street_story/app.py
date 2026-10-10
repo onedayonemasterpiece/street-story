@@ -194,6 +194,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             key=idem(idempotency_key), client_story_id=client_story_id, photo_sha256=photo_sha256,
             photo_mime_type=mime, photo_bytes=data,
             voice_protocol=voice_protocol, lat=lat, lon=lon,
+            **({'location_provenance': {'kind': form['camera_coordinate_source']}}
+                if form.get('camera_coordinate_source') else {}),
         )
         ensure_identity = getattr(service, "ensure_identity", None)
         return ensure_identity(created["id"]) if callable(ensure_identity) else created

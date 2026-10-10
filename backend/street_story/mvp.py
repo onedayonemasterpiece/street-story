@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,7 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
         notes: list[str] = []
         optional_notes: list[str] = []
         place = str(story.get("place_name") or context.get("place_name") or "").strip()
-        if place:
+        if place and place != 'Здание без названия в OSM':
             optional_notes.append(f"Место: {place}.")
         visual_instruction = str(context.get("visual_instruction") or "").strip()
         if visual_instruction:
@@ -110,8 +111,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
         return brief
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         context = json.loads(row["visual_context_json"] or "{}")
         visual = result.setdefault("visual", {})
         for key in ("prompt_version", "prompt_sha256", "content_revision"):
@@ -154,18 +157,11 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             revision = before['revision']
         if not operation:
             raise ConflictError('visual_observation_missing', 'There is no existing visual operation to observe.')
-        observed = _receipt(await self.providers.vibepublish.status(operation), operation)
-        if (observed.get('operation_id') != operation
-                or observed.get('state') not in {'verified', 'needs_selection'}):
-            raise ConflictError('visual_outcome_unresolved', 'The original operation is not ready for result import.')
         from .fact_ledger import eligibility_issues_for_ids, fact_revision_bundle
-        req_digest = digest({'story_id': story_id, **body})
-        with self.store.tx() as db:
-            row = self._story_row(db, story_id)
-            if self._idem(db, key, 'visual_observe', req_digest, 'story', story_id):
-                return self._story_repr(db, row)
+        ids = [str(value) for value in body.get('selected_fact_ids', [])]
+
+        def require_current_input(db, row):
             context = json.loads(row['visual_context_json'] or '{}')
-            ids = [str(value) for value in body.get('selected_fact_ids', [])]
             research = json.loads(row['research_json'] or '{}')
             if (row['revision'] != revision or context != previous
                     or context.get('source_photo_sha256') != row['photo_sha256']
@@ -175,6 +171,47 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
                     or context.get('publication_concept') != str(research.get('publication_concept') or '')[:1200]
                     or (body.get('visual_instruction') and body['visual_instruction'] != context.get('visual_instruction'))):
                 raise ConflictError('visual_observation_input_changed', 'The saved visual no longer matches the current story.')
+            return context
+
+        observed = _receipt(await self.providers.vibepublish.status(operation), operation)
+        recovery = observed.get('observation_recovery')
+        if (observed.get('operation_id') == operation and observed.get('state') == 'outcome_unknown'
+                and observed.get('operation_complete') is True
+                and observed.get('visual_job_id') == previous.get('visual_job_id')
+                and isinstance(observed.get('visual_job_id'), str)
+                and type(observed.get('revision')) is int
+                and type(observed.get('visual_revision')) is int):
+            # Explicit owner observation can reconcile the existing dispatched
+            # image task through VibePublish's saved-reference read operation.
+            # Validate the current story before requesting that bounded read;
+            # no tune, new source or generation is authorized here.
+            with self.store.connection() as db:
+                require_current_input(db, self._story_row(db, story_id))
+            command = {'command': {'kind': 'reconcile_observation', 'operation_id': operation,
+                'job_id': observed['visual_job_id'], 'expected_revision': observed['revision'],
+                'expected_visual_revision': observed['visual_revision']}}
+            recovery_key = 'ss-vp-observe-' + digest(command)[:48]
+            logging.getLogger('uvicorn.error').info('street_story_visual_observation_recovery %s',
+                canonical({'story_id': story_id, 'operation_id': operation,
+                    'visual_job_id': observed['visual_job_id'], 'state': 'requested',
+                    'generation_submitted': False}))
+            observed = _receipt(await self.providers.vibepublish.visual(command, recovery_key), operation)
+            logging.getLogger('uvicorn.error').info('street_story_visual_observation_recovery %s',
+                canonical({'story_id': story_id, 'operation_id': operation,
+                    'state': observed.get('state'), 'generation_submitted': False}))
+            recovery = observed.get('observation_recovery')
+        recovery_pending = (isinstance(recovery, dict) and recovery.get('job_id') == previous.get('visual_job_id')
+            and recovery.get('execution_ref') == previous.get('visual_job_id')
+            and observed.get('state') in {'accepted', 'running', 'queued', 'processing'})
+        if (observed.get('operation_id') != operation
+                or observed.get('state') not in {'verified', 'needs_selection'} and not recovery_pending):
+            raise ConflictError('visual_outcome_unresolved', 'The original operation is not ready for result import.')
+        req_digest = digest({'story_id': story_id, **body})
+        with self.store.tx() as db:
+            row = self._story_row(db, story_id)
+            if self._idem(db, key, 'visual_observe', req_digest, 'story', story_id):
+                return self._story_repr(db, row)
+            context = require_current_input(db, row)
             if row['state'] == 'ready_to_publish' and row['processed_image_url']:
                 return self._story_repr(db, row)
             self._enqueue_job(db, story_id, 'visual', f'visual-observe:{key}',

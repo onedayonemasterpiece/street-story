@@ -166,3 +166,43 @@ def test_equal_created_at_uses_stable_owner_id_independent_of_selected_alias(tmp
         db.execute('UPDATE pois SET created_at=1')
         assert ensure_poi_identity(db, identity, now=30) == min(older, newer)
         assert ensure_poi_identity(db, {**identity, 'candidate_id': WIKI}, now=31) == min(older, newer)
+
+
+@pytest.mark.parametrize('proof_kind', ['geometry', 'architectural_text'])
+def test_host_geometry_reconciles_exact_physical_aliases_without_reference_receipts(tmp_path, proof_kind):
+    from test_geometry_subject_articles import geometry_identity
+    service, sid, identity, older, newer = fixture(tmp_path)
+    with service.store.tx() as db:
+        row = service._story_row(db, sid)
+        if proof_kind == 'architectural_text':
+            from test_architectural_text_identity import architectural_identity
+            geometry = architectural_identity(candidate_id=OSM, photo=row['photo_sha256'], generation=0)
+        else:
+            geometry = geometry_identity(candidate_id=OSM, photo=row['photo_sha256'], generation=0)
+        geometry['candidates'] = identity['candidates']
+        before = immutable_snapshot(db)
+        assert ensure_poi_identity(db, geometry, now=30) == older
+        assert immutable_snapshot(db) == before
+        assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 2
+        assert set(memory_keys(db, geometry)) == {OSM, WIKI, COMMONS}
+        assert len(prior_facts(db, geometry, sid)) == 13
+        assert geometry['visual_reference_verified'] is False and geometry['reference_evidence'] == []
+        assert older != newer
+
+
+def test_geometry_does_not_alias_neighbor_with_same_name_or_unverified_complex_list(tmp_path):
+    from test_geometry_subject_articles import geometry_identity
+    service, sid, identity, older, newer = fixture(tmp_path)
+    with service.store.tx() as db:
+        row = service._story_row(db, sid)
+        geometry = geometry_identity(candidate_id=OSM, photo=row['photo_sha256'], generation=0)
+        candidates = copy.deepcopy(identity['candidates'])
+        candidates[0].pop('wikidata')
+        candidates[0].pop('wikipedia_url')
+        candidates[0]['alias_candidate_ids'] = [WIKI]
+        geometry['candidates'] = candidates
+        before = immutable_snapshot(db)
+        assert ensure_poi_identity(db, geometry, now=30) == newer
+        assert immutable_snapshot(db) == before
+        assert memory_keys(db, geometry) == [OSM]
+        assert older != newer

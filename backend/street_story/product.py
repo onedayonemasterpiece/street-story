@@ -251,8 +251,10 @@ class ProductStreetStoryService(StreetStoryService):
                     (normalize_display_text(row["transcript"]), row["session_id"]),
                 )
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         messages: list[dict[str, Any]] = []
         for voice in db.execute(
             "SELECT session_id,kind,metadata_json,recording_finished,transcript,display_text,created_at,updated_at "

@@ -1,6 +1,8 @@
 """Durable mechanical review addressing; every semantic verdict is model supplied."""
 import hashlib
 import json
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -8,8 +10,63 @@ from .research_budget import PAGE_UNITS, response_units
 from .service import ConflictError, canonical
 
 POLICY_VERSION = 'own-evidence-repair-v6'
+LOG = logging.getLogger(__name__)
 
-EXTRACTION_CHECKS = (
+
+def literal_basis_quote(quote, passages):
+    """Resolve presentation escapes only when the unchanged own passage proves them."""
+    if not isinstance(quote, str):
+        return quote
+    def contained(value):
+        normalized = ' '.join(value.split())
+        return bool(normalized) and any(normalized in ' '.join(text.split()) for text in passages)
+    if contained(quote):
+        return quote
+    # Nested JSON setup context can elicit a once- or twice-escaped whitespace
+    # character. Never decode words, dates, Unicode, or another fact's evidence.
+    decoded = re.sub(r'(?<!\\)\\{1,2}([nrt])',
+                     lambda match: {'n': '\n', 'r': '\r', 't': '\t'}[match[1]], quote)
+    return decoded if decoded != quote and contained(decoded) else quote
+
+ATOMIC_CLAIM_CHECKS = (
+    'Atomic means one independently selectable proposition, not one sentence. '
+    'Enumerate what the reader could independently include or omit BEFORE choosing a verdict; '
+    'copying an entire compound sentence as one claims entry is not decomposition. '
+    'A construction date, a building height, a tenant and a facade feature are separate '
+    'propositions even when a source puts them in one sentence. Distinct tenants, facade '
+    'features and successive events also remain separately selectable. An event date, '
+    'approximation, affected part or essential condition qualifies that SAME proposition '
+    'and must stay with it; do not split a qualifier into an unsupported standalone fact. '
+    'A known subject name identifies the subject, but additional descriptive assertions '
+    'must not be hidden in that name. For a compound ORIGINAL candidate enumerate all '
+    'its propositions, set atomic=false and use repair_needed before accepting any '
+    'narrowed replacement. The model decides this from meaning, never punctuation.'
+)
+
+SUFFICIENCY_BASIS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
+    'candidate_indices': {'type': 'array', 'maxItems': 32, 'uniqueItems': True,
+                          'items': {'type': 'integer', 'minimum': 0, 'maximum': 31}},
+    'known_fact_ids': {'type': 'array', 'maxItems': 32, 'uniqueItems': True,
+                       'items': {'type': 'string', 'minLength': 1}}},
+    'required': ['candidate_indices', 'known_fact_ids']}
+
+SUFFICIENCY_CHECKS = (
+    'Decide research_sufficient for coverage_goal from meaning, not a fact count. '
+    'When true, supply research_sufficient_basis: candidate_indices are the exact zero-based '
+    'positions in your returned facts array and known_fact_ids are exact supplied eligible '
+    'host IDs. Choose the compact substantive basis that would satisfy the goal IF each '
+    'new claim passes independent review; unnecessary enrichment is not part of that basis. '
+    'One claim passing review cannot stand in for the other claims you relied on. '
+    'Location metadata alone is not sufficient historical or architectural material. '
+    'Never use an unreviewed known claim or invent an ID. When false, use empty basis arrays.'
+)
+
+EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' ' + SUFFICIENCY_CHECKS + ' '
+    'Write each fact.text in Russian for publication, preserving supported scope and qualifiers. '
+    'For existing_fact_id copy only an exact host fact_id from the supplied known inventory; '
+    'otherwise use the empty string. Never invent IDs or use ordinal placeholders. '
+    'Choose independently selectable claims relevant to coverage_goal; location metadata alone '
+    'does not supply missing substantive history. '
     'Before saving, enumerate independently selectable assertions from the source '
     '(each depicted person, role or event separately). Form each candidate only after '
     'checking all its dates, numbers, parts, stages and qualifiers against its own '
@@ -19,6 +76,15 @@ EXTRACTION_CHECKS = (
     'future values must not be rewritten as completed, paid or actual outcomes. '
     'A dated article describes its own time: mutable states (registration, ownership, '
     'condition or use) need an explicit as-of date unless current evidence verifies them. '
+    'An undated source saying currently or these days does not establish a current as-of date. '
+    'Retrieval time is not publication or event time. Preserve unresolved temporal ambiguity '
+    'and conflicting source accounts rather than inventing a date or selecting one silently. '
+    'Keep the physical building, institution, individual part and larger complex distinct; '
+    'an institution\'s founding date is not automatically the building\'s construction date. '
+    'Resolve the explicitly named subject in each source sentence against confirmed_identity. '
+    'A page about the confirmed building may describe another building; never transfer that '
+    'other subject\'s architects, dates or roles to the confirmed subject. Name the actual '
+    'supported subject explicitly when a generic word such as building would be ambiguous. '
     'Do not merge a news event such as work starting with an adjacent planned budget '
     'into one fact merely because both appear in the same source paragraph. '
     'Preserve uncertainty and subset versus whole. If the source context is incomplete, '
@@ -35,6 +101,11 @@ REVIEW_CHECKS = (
     'another fact\'s spans. supported requires one claim and complete own support. '
     'A mutable state reported by an old article is not a current fact: repair it to '
     'retain the source date, or attach evidence verifying its present status. '
+    'An undated currently or these days statement does not establish present status; '
+    'the review or retrieval date is not the source\'s publication or event date. '
+    'Preserve temporal ambiguity and source-specific conflicting accounts. Check the exact '
+    'subject: building versus institution, individual part versus larger complex. Do not '
+    'transfer an institution\'s founding date to the physical building. '
     'Keep correct affirmative candidates; missing context is insufficient, not historically false.'
 )
 
@@ -112,6 +183,25 @@ def eligible_bundle(db, story_id):
         "WHERE story_id=? AND eligibility='eligible' ORDER BY assertion_id", (story_id,))}
 
 
+def canonical_review_fence(db, story, assertion_ids, *, include_projection=False):
+    """Versions of the shared claims actually used by this packet."""
+    from .poi_memory import memory_keys
+    research = json.loads(story['research_json'] or '{}')
+    keys = memory_keys(db, research.get('visual_identity') or {})
+    versions = {}
+    if include_projection:
+        for assertion_id in sorted(set(assertion_ids)):
+            row = db.execute('SELECT eligibility,review_status,revision_digest FROM fact_assertions '
+                'WHERE story_id=? AND assertion_id=?', (story['id'], assertion_id)).fetchone()
+            versions[canonical(['story_projection', assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
+    for key in keys:
+        for assertion_id in sorted(set(assertion_ids)):
+            row = db.execute('SELECT text,sources_json,eligibility,review_status,review_story_id,reviewed_at '
+                'FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?', (key, assertion_id)).fetchone()
+            versions[canonical([key, assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
+    return versions
+
+
 def load(adapter, session, db, ref):
     row = db.execute('SELECT * FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                      (ref, session.resource_id)).fetchone()
@@ -135,8 +225,16 @@ def load(adapter, session, db, ref):
     parallel = payload.get('parallel_candidate_review') is True
     revision_stale = int(story['revision']) != row['story_revision']
     if parallel:
-        revision_stale = (candidate_review_fence(db, story) != payload['owner_fence']
-                          or eligible_bundle(db, session.resource_id) != payload['eligible_bundle'])
+        revision_stale = candidate_review_fence(db, story) != payload['owner_fence']
+        if 'canonical_dependencies' in payload:
+            dependencies = [*payload['candidate_scope'],
+                            *[claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])]]
+            revision_stale |= canonical_review_fence(db, story, dependencies,
+                include_projection=payload.get('canonical_projection_dependencies') is True) != payload['canonical_dependencies']
+        else:
+            # Pending packets created before scoped shared dependencies retain
+            # their original stricter contract. Closed receipts above are immutable.
+            revision_stale |= eligible_bundle(db, session.resource_id) != payload['eligible_bundle']
     if revision_stale or int(research.get('identity_generation') or 0) != row['identity_generation'] or current != payload['bundle']:
         raise ConflictError('live_review_packet_stale', 'Revisions changed; request a new packet. No decision applied.')
     actual = {r['evidence_id']: dict(r) for r in db.execute(
@@ -279,7 +377,14 @@ def read(adapter, session, args):
                                 cached.pop('equivalent_to', None)
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
+            scope = sorted(affected & set(exact)) if supersedes else sorted(set(exact) - {items[int(n)]['id'] for n in reused})
+            for fact_id in scope:
+                db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
+            from .identity_model_context import fact_review_subject
+            research = json.loads(story['research_json'] or '{}')
             payload = {'bundle': exact, 'items': items,
+                       'confirmed_identity': fact_review_subject(research.get('visual_identity') or {},
+                           photo_sha256=story['photo_sha256'], generation=int(run['identity_generation'] or 0)),
                        'review_as_of_date_utc': datetime.fromtimestamp(adapter.service.store.now(), timezone.utc).date().isoformat()}
             if candidate_mode:
                 payload.update(candidate_scope=list(exact), nearby_existing_claims=nearby)
@@ -287,7 +392,9 @@ def read(adapter, session, args):
                     payload['requested_fact_scope'] = True
                 if args.get('_parallel_candidate_review') is True:
                     payload.update(parallel_candidate_review=True, owner_fence=candidate_review_fence(db, story),
-                                   eligible_bundle=eligible_bundle(db, session.resource_id))
+                                   canonical_dependencies=canonical_review_fence(db, story,
+                                       [*exact, *[claim['fact_id'] for claim in nearby]], include_projection=True),
+                                   canonical_projection_dependencies=True)
             for pending_packet in db.execute("SELECT p.packet_ref,p.payload_json FROM live_review_packets p "
                     "JOIN live_review_attempts a ON a.packet_ref=p.packet_ref WHERE p.story_id=? "
                     "AND p.binding=? AND a.state='pending'", (session.resource_id, binding(session))):
@@ -299,12 +406,9 @@ def read(adapter, session, args):
                                (pending_packet['packet_ref'],))
             db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
                        (ref, session.resource_id, run_id, binding(session), int(story['revision']), int(run['identity_generation']), canonical(payload), canonical(reused)))
-            scope = sorted(affected & set(exact)) if supersedes else sorted(set(exact) - {items[int(n)]['id'] for n in reused})
             db.execute('INSERT INTO live_review_attempts(packet_ref,policy_version,supersedes_ref,affected_json) VALUES(?,?,?,?)', (ref, POLICY_VERSION, supersedes or None, canonical(scope)))
             if supersedes:
                 db.execute("UPDATE live_review_attempts SET state='superseded' WHERE packet_ref=? AND state='pending'", (supersedes,))
-            for fact_id in scope:
-                db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
         row, payload = load(adapter, session, db, ref)
         attempt = db.execute('SELECT supersedes_ref FROM live_review_attempts WHERE packet_ref=?', (ref,)).fetchone()
         superseding = bool(attempt and attempt[0]) or payload.get('requested_fact_scope') is True
@@ -321,6 +425,8 @@ def read(adapter, session, args):
                                'saved_verdict': json.loads(row['decisions_json']).get(str(f), {}).get('verdict')})
     page = {'packet_ref': ref, 'run_id': row['run_id'], 'policy_version': POLICY_VERSION, 'review_as_of_date_utc': payload.get('review_as_of_date_utc'), 'review_checks': REVIEW_CHECKS, 'items': [], 'total_facts': len(payload['items']),
             'next_cursor': None, 'has_more': False, 'next_tool': 'finalize_fact_review'}
+    if 'confirmed_identity' in payload:
+        page['confirmed_identity'] = payload['confirmed_identity']
     if payload.get('candidate_scope') is not None:
         page['nearby_existing_claims'] = payload.get('nearby_existing_claims', [])
         page['review_checks'] += (' Compare against nearby_existing_claims without changing them: '
@@ -404,8 +510,16 @@ def prepare(adapter, session, args):
                     raise ConflictError('live_review_decisions_invalid', 'Your decomposition has multiple claims. Split the candidate before positive review.')
             quotes = decision.get('basis_quotes')
             if quotes is not None:
+                if isinstance(quotes, list) and isinstance(refs, list):
+                    own_passages = [evs[e]['text'] for e in refs]
+                    normalized_quotes = [literal_basis_quote(q, own_passages) for q in quotes]
+                    if normalized_quotes != quotes:
+                        LOG.info('street_story_review_quote_presentation_normalized packet_ref=%s fact=%s',
+                                 ref, decision['fact'])
+                        quotes = normalized_quotes
+                        decision['basis_quotes'] = quotes
                 # Presentation whitespace may vary; original snapshots/spans remain literal.
-                if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
+                if not isinstance(quotes, list) or len(quotes) > 8 or any(not isinstance(q, str) or not 1 <= len(q) <= 900 or not q.strip() or not any(' '.join(q.split()) in ' '.join(evs[e]['text'].split()) for e in refs) for q in quotes):
                     next_args = {'packet_ref': ref, 'cursor': fact_cursor(payload, decision['fact'])}
                     raise ConflictError('live_fact_review_evidence_invalid',
                         'next_tool=get_review_packet; next_args=' + canonical(next_args) +
@@ -417,8 +531,8 @@ def prepare(adapter, session, args):
                 raise ConflictError('live_review_decisions_invalid', 'Use a brief evidence-grounded reason.')
             if verdict == 'supported' and any(decision.get(k) is False for k in ('atomic', 'support_complete', 'qualifiers_preserved')):
                 raise ConflictError('live_review_decisions_invalid', 'supported conflicts with your explicit semantic checks. Repair the candidate or withhold it.')
-            if decision.get('equivalent_to') == decision['fact']:
-                decision.pop('equivalent_to')  # Identity addressing adds no relation or support.
+            if decision.get('equivalent_to') in (None, decision['fact']):
+                decision.pop('equivalent_to', None)  # Absence/self-addressing adds no relation or support.
             key = str(decision['fact'])
             if key in decisions and decisions[key] != decision:
                 raise ConflictError('live_review_decision_replay_mismatch',

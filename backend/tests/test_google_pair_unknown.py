@@ -126,6 +126,7 @@ async def test_known_google_failure_uses_native_without_repeating_inference(tmp_
 
 @pytest.mark.asyncio
 async def test_real_generate_quota_denial_never_crosses_provider_send_boundary_and_uses_native(tmp_path):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from types import MethodType
     from street_story.providers import GeminiClient
     primary, verdict, context, calls, first, second = setup()

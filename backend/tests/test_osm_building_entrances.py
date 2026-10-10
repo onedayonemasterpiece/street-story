@@ -33,7 +33,8 @@ async def test_map_topology_groups_two_entrances_without_tenant_or_adjacent_buil
     assert grouped['osm:way:10'] == {'osm:way:10', 'osm:node:1', 'osm:node:2'}
     assert grouped['osm:node:4'] == {'osm:node:4'}
     assert grouped['osm:node:5'] == {'osm:node:5'}
-    assert len([r for r in requests if r.method == 'POST']) == 1  # Landmark query only.
+    # A complete local map needs no additional landmark query.
+    assert not any(r.method == 'POST' for r in requests)
     from street_story.mvp_research import MvpResearchStreetStoryService
     catalog = MvpResearchStreetStoryService._candidate_catalog(found, [])
     assert subject_aliases(catalog)['osm:way:10'] == {'osm:way:10', 'osm:node:1', 'osm:node:2'}

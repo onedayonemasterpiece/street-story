@@ -307,3 +307,24 @@ def test_chunk_batch_manifest_tracks_continuation_and_deferred_terminal_state(tm
     assert manifest["chunk_batches"][0]["batch_index"] == 0
     assert manifest["chunk_batches"][1]["error_code"] == "continuation_limit"
     assert manifest_complete(manifest) is False
+
+
+def test_chunk_renewal_preserves_live_fence_and_cannot_revive_expired_or_displaced_owner(tmp_path):
+    from street_story.research_runs import acquire_chunk_lease, renew_chunk_lease
+    store = Store(tmp_path / 'lease.sqlite3')
+    story = create_story(store)
+    with store.tx() as db:
+        run = begin_research_run(db, story_id=story, poi_key='poi', goal='History',
+            expected_story_revision=0, identity_generation=0, run_id='lease-run', now=100)
+        doc = persist_source_version(db, run_id=run, requested_url='https://example.org/lease',
+            final_url='https://example.org/lease', title='Lease article', content_type='text/html',
+            http_status=200, redirect_chain=[], normalized_text='An intact frozen passage.', read_status='complete', now=100)
+        chunk = doc['chunks'][0]['chunk_id']
+        fence = acquire_chunk_lease(db, run_id=run, chunk_id=chunk, owner='alive', now=100, ttl=180)
+        assert renew_chunk_lease(db, run_id=run, chunk_id=chunk, owner='alive', fence=fence, now=200)
+        row = db.execute('SELECT lease_fence,lease_until FROM research_chunk_runs WHERE run_id=? AND chunk_id=?', (run, chunk)).fetchone()
+        assert row['lease_fence'] == fence and row['lease_until'] == 380
+        assert not renew_chunk_lease(db, run_id=run, chunk_id=chunk, owner='alive', fence=fence, now=381)
+        replacement = acquire_chunk_lease(db, run_id=run, chunk_id=chunk, owner='replacement', now=381)
+        assert replacement > fence
+        assert not renew_chunk_lease(db, run_id=run, chunk_id=chunk, owner='alive', fence=fence, now=382)

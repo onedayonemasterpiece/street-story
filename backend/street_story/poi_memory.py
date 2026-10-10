@@ -7,6 +7,7 @@ from typing import Any
 
 from .fact_ledger import _evidence_rows, merge_source_payloads
 from .model_facts import normalized_claim_key
+from .identity_proof import accepted_identity, verified_physical_identity
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ def ensure_poi_identity(
               if namespace in {'street_story_candidate', 'wikidata', 'wikipedia_url', 'osm_id'}} - {None}
     proved = {key}
     proved_raw_owners: set[str] = set()
-    if chosen and identity.get('status') == 'match' and identity.get('visual_reference_verified') is True:
+    if chosen and verified_physical_identity(identity):
         from .identity_subject_binding import subject_aliases
         proved = subject_aliases(identity.get('candidates') or []).get(key, {key})
         proved_raw_owners = {owner for alias in proved if (owner := alias_owner('street_story_candidate', alias))}
@@ -273,8 +274,7 @@ def ensure_poi_identity(
         )
     # Preserve historical owner rows and all external aliases/claims/evidence.
     # Only candidate keys whose exact equivalence was verified move ownership.
-    if (identity.get('status') == 'match' and identity.get('visual_reference_verified') is True
-            and chosen):
+    if verified_physical_identity(identity) and chosen:
         for owner in sorted(raw_owners):
             if owner == poi_id:
                 continue
@@ -998,13 +998,13 @@ def _public_regional_knowledge_facts(db, identity: dict[str, Any], limit: int | 
 
 def previous_editorial_context(db, identity: dict[str, Any], story_id: str) -> list[dict[str, Any]]:
     """Small exact-POI publication history, not recommendations or fact authority."""
-    if identity.get('status') not in {'match', 'owner_confirmed'}:
+    if not accepted_identity(identity):
         return []
     keys = memory_keys(db, identity)
     if not keys:
         return []
     rows = db.execute(
-        "SELECT id,research_json FROM stories WHERE id<>? AND "
+        "SELECT id,research_json,photo_sha256 FROM stories WHERE id<>? AND "
         "json_extract(research_json,'$.visual_identity.status') IN ('match','owner_confirmed') AND "
         "json_extract(research_json,'$.visual_identity.candidate_id') IN ("
         + ','.join('?' for _ in keys) + ") AND "
@@ -1013,6 +1013,11 @@ def previous_editorial_context(db, identity: dict[str, Any], story_id: str) -> l
     )
     result = []
     for row in rows:
+        research = json.loads(row['research_json']) or {}
+        if not accepted_identity(research.get('visual_identity') or {}, photo_sha256=row['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
+            continue
         selected = [str(item['assertion_id']) for item in db.execute(
             "SELECT assertion_id FROM fact_assertions WHERE story_id=? AND owner_selected=1 "
             "ORDER BY created_at,assertion_id LIMIT 20", (row['id'],))]

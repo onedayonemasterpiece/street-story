@@ -46,9 +46,52 @@ class EmptyFindings(Provider):
 
 
 @pytest.mark.asyncio
+async def test_large_giga_context_reaches_provider_with_complete_evidence(tmp_path):
+    provider, admission = EmptyFindings(), Admission()
+    adapter, story = setup(tmp_path, provider, admission)
+    context = {'coverage_goal': 'Check the source', 'architectural_context': 'ж'*70000}
+    try:
+        result = await adapter._extract_giga_page(PAGE, story, context, allow_fallback=False)
+        saved = receipts(adapter)[-1]
+        assert result['result']['facts'] == []
+        assert saved['phase'] == 'completed' and saved['provider_send_state'] == 'response_closed'
+        assert provider.chats == len(saved['inference_sends']) == 2
+        assert any(context['architectural_context'] in request.content.decode('utf-8')
+                   for request in provider.requests)
+    finally:
+        await adapter.giga.aclose()
+
+
+@pytest.mark.asyncio
+async def test_envelope_expires_during_admission_before_giga_chat_dispatch(tmp_path):
+    from street_story.research_budget import ResearchTerminated, ensure_budget
+    from contextlib import asynccontextmanager
+    provider, admission = EmptyFindings(), Admission()
+    adapter, story = setup(tmp_path, provider, admission)
+    clock = [adapter.service.store.now()]
+    adapter.service.store.now = lambda: clock[0]
+    budget = ensure_budget(adapter.service, story['id'], explicit=True)
+    @asynccontextmanager
+    async def expire_in_admission(binding, workload):
+        async with admission(binding, workload) as lease:
+            clock[0] = budget['deadline_at']
+            yield lease
+    adapter.giga.admission = expire_in_admission
+    try:
+        with pytest.raises(ResearchTerminated, match='research_deadline_exceeded'):
+            await adapter._extract_giga_page(PAGE, story, {'coverage_goal': 'Check the source'}, allow_fallback=False)
+        assert provider.chats == 0
+        saved = receipts(adapter)
+        assert len(saved) == 1 and saved[0]['provider_send_state'] == 'not_sent'
+        assert 'inference_sends' not in saved[0]
+        assert ensure_budget(adapter.service, story['id'])['deadline_at'] == budget['deadline_at']
+    finally:
+        await adapter.giga.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('invalid_context,code', [
     ({'coverage_goal': ''}, 'gigachat:bounded_request_required'),
-    ({'coverage_goal': 'Read', 'extra': 'x' * 70000}, 'gigachat:capsule_too_large'),
 ])
 async def test_local_validation_failure_creates_safe_new_attempt_after_input_fixed(tmp_path, invalid_context, code):
     provider, admission = EmptyFindings(), Admission()

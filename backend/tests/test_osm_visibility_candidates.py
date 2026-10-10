@@ -227,7 +227,10 @@ async def test_all_overpass_routes_fail_bounded_without_empty_success(tmp_path):
         osm = OSMClient(Store(tmp_path / "db.sqlite3"), "StreetStory tests", client)
         with pytest.raises(RetryableProviderError):
             await osm.lookup(54.7000, 20.5000)
-    assert len(calls) == 6  # reverse, two Overpass routes per bucket, one local map read
+    assert len([request for request in calls if request.method == 'POST']) == 4
+    assert len([request for request in calls if request.url.path.endswith('/map.json')]) == 1
+    # An optional parallel reverse may remain unsent when every map route fails synchronously.
+    assert len([request for request in calls if request.url.path.endswith('/reverse')]) <= 1
     assert sum(r.url.path == '/api/0.6/map.json' for r in calls) == 1
 
 

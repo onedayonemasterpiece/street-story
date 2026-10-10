@@ -74,6 +74,9 @@ class SharedDevCoveerResearch(OpenCodeResearch):
     deadline and receipt state in separate task contexts.
     """
 
+    # OpenCodeBackend.request uses the standard JSON ASCII escaping policy.
+    input_json_ensure_ascii = True
+
     def __init__(self, directory: str, *, backend=None, abort_timeout_seconds: float = 10,
                  require_guard: bool = True, **kwargs):
         path = Path(directory)
@@ -230,7 +233,9 @@ class SharedDevCoveerResearch(OpenCodeResearch):
                                           'attested_guard_and_session_readback') if guard_verified else 'session_readback'),
                 'guard_sha256': profile[1]['marker'].split(':')[-1] if guard_verified else None,
                 'max_output_tokens': output,
-                'max_tool_bytes': tool_bytes, 'worker_timeout_seconds': self.limits.timeout_seconds}
+                'max_tool_bytes': tool_bytes, 'worker_timeout_seconds': self.limits.timeout_seconds,
+                '_system_prompt': selected.get('prompt') or
+                    (config.get('agent', {}).get('plan') or {}).get('prompt') or ''}
 
     async def _checkpoint(self, binding, receipt):
         calls = {call.get('call_id') for call in receipt.get('search_calls', [])}
@@ -246,12 +251,13 @@ class SharedDevCoveerResearch(OpenCodeResearch):
             holder['value'] = copy.deepcopy(receipt)
         await super()._checkpoint(binding, receipt)
 
-    async def _run(self, role, prompt, binding, schema, *, snapshot=None):
+    async def _run(self, role, prompt, binding, schema, *, snapshot=None, max_input_chars=None):
         deadline_token = self._deadline.set(time.monotonic() + self.limits.timeout_seconds)
         receipt_token = self._receipt.set({'value': {'role': role, 'binding': binding, 'phase': 'attesting'}})
         try:
             async with asyncio.timeout(self.limits.timeout_seconds):
-                return await super()._run(role, prompt, binding, schema, snapshot=snapshot)
+                return await super()._run(role, prompt, binding, schema, snapshot=snapshot,
+                                         max_input_chars=max_input_chars)
         except TimeoutError as exc:
             receipt = (self._receipt.get() or {}).get('value') or {}
             receipt['error_code'] = 'research_worker_timeout'

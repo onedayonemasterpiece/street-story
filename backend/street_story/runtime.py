@@ -23,9 +23,10 @@ class RuntimeStreetStoryService(MvpLocationStreetStoryService):
         if providers is None:
             self.providers.vibepublish = ReplayCheckingVibePublishBoundary(settings)
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
-        research = json.loads(row["research_json"] or "{}")
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         if research:
             wikipedia = research.get("wikipedia") if isinstance(research.get("wikipedia"), list) else []
             grounding = (

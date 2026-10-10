@@ -19,7 +19,8 @@ from live_interaction import LiveSocketSessionHost as LiveSessionHost
 
 from .live_visual_comparison import LiveVisualComparisonMixin
 from .config import Settings
-from .research_budget import PAGE_UNITS, response_units, bounded_inventory
+from .identity_proof import accepted_identity, physical_scope
+from .research_budget import PAGE_UNITS, response_units, bounded_inventory, require_remaining, remaining_seconds, ResearchTerminated
 from . import review_packets, research_repairs
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
 from .gemini import GeminiUnavailable
@@ -451,7 +452,7 @@ FUNCTIONS = [
         "Live conversation and never rewrites publication text by itself.",
         {
             "extraction_scope": {"type": "string", "description": "Stable model-supplied coverage scope; preserve it when requesting more of the same aspect."},
-            "confirmed_poi_id": {"type": "string", "description": "Copy candidate_id of the currently confirmed visual_identity."},
+            "confirmed_poi_id": {"type": "string", "description": "Copy candidate_id of the currently accepted physical identity (geometry or reference proof)."},
             "query_matches_poi": {"type": "boolean", "description": "Your semantic check of query and goal against confirmed canonical name, aliases and geography. False means correct the query before searching."},
             "query": {
                 "type": "string",
@@ -613,6 +614,9 @@ FUNCTIONS = [
     _tool_schema(
         "select_facts",
         "Change selected evidence-backed facts only when the author explicitly asks to choose or change facts. "
+        "For a request to compose now, read get_facts with eligibility=eligible and choose reviewed facts. "
+        "Evidence attachment alone is not review. draft_blockers identifies selected facts still awaiting review; "
+        "do not announce a saved draft until edit_text succeeds. "
         "A concept, draft or visual request does not authorize changing the saved selection. "
         "When the author asks to preserve the selection, do not call this tool.",
         {
@@ -740,20 +744,21 @@ Voice and intent:
 - Russian is the owner's default language. Short foreign fragments in silence/rustling are likely ASR noise: do not invent speech or answer unintelligible sounds. Support deliberate coherent foreign speech and explicit language changes.
 - A one-word or clearly fragmented input (однословный или явно обрывочный ввод) must not start expensive tools. Clarify intent without asking the owner to name an object they are trying to identify.
 - Use only available product functions: no shell/SQL/HTTP or hidden external actions. A mutation is complete only after its result/readback. Never repeat an unknown-result mutation; read state first. Continue the same Live conversation after tool results.
-- A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim.
+- A saved claim is verified only when its current eligibility is eligible. evidence_supported/has_attached_evidence means a source is attached, not that its claim has passed review. For verified factual narration read eligible facts and speak their saved text without adding remembered details. Do not present unreviewed/withheld claims as established; discuss them only as explicitly unverified when the author asks about pending research. Check the current status even for an owner-selected claim. Story-local conditional source discussion is allowed only via identity_research_context, clearly qualified; it is not a saved or verified fact.
 
 Photo and identity:
 - The topic photo is supplied as a separate visual snapshot. Describe only visible features; admit when the snapshot is unavailable. A question "что видно/что ты видишь на фото" is visual: не вызывай resolve_place/search_web just to answer it.
-- Backend identification runs automatically after photo selection. EXIF coordinates center nearby OSM/Wikipedia discovery; coordinates alone do not identify the object. visual_identity match/owner_confirmed is mandatory before factual research, final generate_visual or prepare_publication.
-- Reuse an automatic match and briefly say the object was found; do not rerun resolve_place without reason. Reuse confirmed identity from the topic.
-- For uncertain/mismatch, call compare_place_images and visually compare SOURCE against each REF in this same Live session. After EVERY group call record_place_comparison so the owner sees the processed-illustration counter grow during the work. On no match continue the later gallery photos; broad article search starts automatically after Wikipedia. Stop on proved match or exhausted. If the helper search is unavailable, use native Google Search and pass article_urls; unavailable images are not visual mismatches. Do not ask the owner to name the unknown object. Different pages of one physical building are not competing objects.
+- Backend identification runs automatically after photo selection. EXIF coordinates center nearby OSM/Wikipedia discovery; coordinates alone do not identify the object. Accepted physical identity (SOURCE+map geometry, SOURCE+bound architectural text, SOURCE+external REF or explicit owner confirmation) is mandatory before canonical factual research, final generate_visual or prepare_publication. Story-local conditional dialogue may use identity_research_context without claiming a verified identity.
+- Reuse an accepted physical identity and briefly say the object was found; sufficient geometry or architectural-text proof does not require an external REF. Keep proof_kind separate from visual_reference_verified and do not rerun resolve_place without reason. Reuse confirmed identity from the topic.
+- For uncertain/mismatch, choose the next operation from the specific remaining ambiguity: geometry, architectural text, local detail/OCR or a suitable REF. A REF is optional. When REF is useful, call compare_place_images and visually compare SOURCE against each REF in this same Live session. After EVERY group call record_place_comparison so the owner sees the processed-illustration counter grow during the work. On no match continue the later gallery photos; broad article search starts automatically after Wikipedia. Stop on proved match or exhausted. If the helper search is unavailable, use native Google Search and pass article_urls; unavailable images are not visual mismatches. If saved spatial hypotheses remain ambiguous, ask one short distinguishing question about city, street or scene; do not demand the unknown object name or mandatory house selection. Different pages of one physical building are not competing objects.
 - confirm_place requires fresh voluntary explicit owner speech naming and confirming the object. Greetings, "what?", silence, your inference or tool arguments are not consent. Не проси автора подтвердить объект, который он сам пытается определить.
 - If the owner says it is the wrong object, call reject_place with current candidate_id instead of repeating confirmation.
-- Missing GPS in the supplied copy does not prove the original lacks coordinates. Explain granting geotag access and selecting the original with the topic button.
+- Missing GPS must not be replaced with current device location or another photo. Use existing owner city/address/name context first; if absent, ask one short question about the city/place. Original selection can recover metadata when the copy lacks it.
+- identity_research_context contains story-only model hypotheses and already acquired article text. Unresolved spatially_supported with joint_visual_input_verified=true permits a probable hypothesis with its basis and contradictions. A sufficient host-validated geometry or architectural-text proof is accepted physical identity through the normal topic, even without any external REF. Never invent visual_reference_verified. Unresolved conditional hypotheses are never visual MATCH. Text-only planning remains a hypothesis without SOURCE+map visual support. Explain useful claims only conditionally and cite the article, preserving subject/time and uncertainty; do not save/select/publish them or transfer them to POI memory. Ask one distinguishing question only when it changes the subject. An owner hint has owner provenance and is not independent proof.
 
 Research and durable evidence:
 - Facts returned with eligibility=eligible have already passed backend evidence verification. Trust and reuse that saved verdict regardless of whether the verifier was a background model or Mira. Do not call get_review_packet or repeat research merely to reconfirm them in Live. Mira handles explicitly requested corrections, unresolved candidates and fallback when background verification cannot finish.
-- Never invent facts. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
+- Never invent facts. The accepted identity physical_scope names the exact building or part; keep institutional, neighboring and whole-complex history separate and retain explicit subject and time qualifiers. Broad requests research substantial aspects, including named architectural elements. Read/save material from discovered sources in the current run before searching again for a specific gap. Search count is not a goal: avoid repeated queries and stop when searches add no facts/evidence.
 - Separate retrieval query from coverage_goal. Short queries must retain all owner requirements in coverage_goal, including positions such as left/center/right. Use visible sculptures, figures, inscriptions, coats of arms and plaques as coverage hints: targeted search must answer the named detail concretely, not merely describe the building.
 - For more findings within the same scope, retain the previous exact coverage_goal. Use a different goal only for a genuinely different question or verification; explain the new missing aspect. Completed unchanged chunks in the same scope are reused. Menu/challenge fragments require source_content_valid=false and facts=[]; do not call them an article without facts.
 - discovery_only is not a research result. Sufficient snippets require immediate save_research_facts with run_id=research_run_id, batch_id=save_batch_id, exact source_ref/evidence_ref and batch_reviewed=true. Insufficient snippets require get_research_chunk, not invented or empty snippet claims. Never speak unsaved findings. Report only supported claim text from the successful durable save receipt, without extra remembered details. Only a successful durable save authorizes reporting a claim; do not present old inventory or snippets as newly found facts.
@@ -791,16 +796,17 @@ Answer briefly and concretely in Russian.
 class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
     CAPABILITY_TOOLS = {
         'identity': {'find_place_articles', 'compare_place_images', 'record_place_comparison', 'read_topic', 'resolve_place', 'confirm_place', 'reject_place'},
-        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'select_facts', 'set_concept', 'edit_text', 'generate_visual'},
+        'research': {'read_topic', 'get_facts', 'get_evidence', 'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts', 'generate_visual'},
         'review': {'read_topic', 'get_facts', 'get_review_packet', 'get_review_context', 'assess_review_packet', 'repair_research_fact', 'finalize_fact_review', 'resolve_fact_conflict'},
-        'editor': {'read_topic', 'get_facts', 'select_facts', 'set_concept', 'edit_text', 'generate_visual', 'literal_begin', 'literal_finish', 'literal_cancel'},
+        'editor': {'read_topic', 'get_facts', 'get_evidence', 'select_facts', 'set_concept', 'edit_text', 'generate_visual', 'undo'},
+        'dictation': {'read_topic', 'literal_begin', 'literal_finish', 'literal_cancel'},
         'publication': {'read_topic', 'generate_visual', 'prepare_publication', 'confirm_publication', 'cancel_publication', 'undo'},
     }
 
     def _capability_configuration(self, configuration, capability):
-        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor; for facts choose research. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
+        router = _tool_schema('continue_story', 'Access another stage of the same Street Story workflow. For correction or independent reconsideration of a saved fact choose review: its tools save new evidence-bound verdicts. For discovering additional facts choose research. For preparing, confirming or cancelling a post choose publication. For text/concept changes choose editor. Use an already available image tool directly. After switching, carry out the same author request with the newly available tools. This switch itself performs no edit, generation or publication. For an explicit author request to stop or resume research, also set research_action and research_purpose; saved progress is retained.',
             {'stage': {'type': 'string', 'enum': list(self.CAPABILITY_TOOLS),
-                       'description': 'identity: identify the object; research: facts, selection, concept, text and image; review: evidence review; editor: fact selection, concept, text and image; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
+                       'description': 'identity: identify the object; research: discover/save facts and image; review: evidence review; editor: fact selection, concept, text and image; dictation: protected verbatim input; publication: preparing and confirming a post. Use an available tool directly; image creation does not require switching out of research or editor.'}, 'intent': {'type': 'string'},
              'research_action': {'type': 'string', 'enum': ['stop', 'resume']},
              'research_purpose': {'type': 'string', 'enum': ['identity', 'facts', 'all']}}, ['stage', 'intent'])
         configuration = dict(configuration)
@@ -808,21 +814,84 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         configuration['search_enabled'] = False
         configuration['application_search_function'] = 'find_place_articles' if capability == 'identity' else 'search_web' if capability == 'research' else ''
         core, remainder = SYSTEM_INSTRUCTION.split('Photo and identity:', 1)
-        identity, remainder = remainder.split('Research and durable evidence:', 1)
-        research, editorial = remainder.split('Concept, editing and publication:', 1)
+        identity = remainder.split('Research and durable evidence:', 1)[0]
         if capability == 'identity':
             overlay = identity.replace('resolve_place/search_web', 'a search tool').replace(
                 'final generate_visual or prepare_publication', 'final visuals or publication'
             ).replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
                       'If the API search is unavailable, report its error and retain the queue for continuation;')
-        elif capability in {'research', 'review'}:
-            # Selection, concept and draft are an ordinary continuation of the
-            # same facts conversation. Keep their small tools visible so the
-            # model can persist explicit owner requests without a reconnect.
-            # Additional research can then preserve that draft in the same session.
-            overlay = research + ('\n' + editorial if capability == 'research' else '')
+        elif capability == 'review':
+            # Review reads the exact claims and complete own evidence through
+            # its packet tools. Discovery formation/search instructions are
+            # irrelevant to this bundle and consume its next setup grant.
+            overlay = (
+                'Read get_review_packet for the author-requested fact_ids and current run_id. '
+                'Follow its cursors and next_args; get_review_context reads retained source '
+                'versions, not a new search. Follow assess_review_packet advice when requested, '
+                'but decide support yourself from the own passages and exact physical subject. '
+                'For defective candidates group precise repair_research_fact replacements, '
+                'then read and finalize the new revisions. finalize_fact_review saves only '
+                'the current frozen decisions; its receipt is required before reporting a '
+                'saved correction. Do not change selection, concept, text or visual during '
+                'review. For an author request to choose already eligible facts or edit the '
+                'story, switch to editor and carry out that same request. Other pending '
+                'reviews remain saved and do not require completion before using ready facts.'
+            )
+        elif capability == 'research':
+            # Keep the shared runtime's nine-function bundle boundary. Ready
+            # facts continue through editor in this same conversation; pending
+            # research does not gate that transition or discard saved work.
+            overlay = (
+                'Reuse eligible facts: they already passed backend evidence verification. '
+                'Do not repeat research or independent review merely to reconfirm them. '
+                'Pending candidates do not block selection or editing with ready facts; '
+                'continue_story to editor and execute the same owner request there. '
+                'A research-only request must not select facts or draft a publication. '
+                'Keep the exact physical subject, time and qualifications in each claim. '
+                'Read already discovered sources before searching for a specific gap; '
+                'preserve coverage_goal and reuse unchanged completed chunks. '
+                'Discovery snippets are not saved findings: use save_research_facts with '
+                'the returned run/batch and exact source/evidence refs, or get_research_chunk '
+                'when the snippets are insufficient. Check and save each small page before '
+                'following next_args; empty facts means no claims on that page, not completed research. '
+                'Compare the known inventory semantically; equivalent claims use existing_fact_id. '
+                'Attach only each claim\'s own passages, check support and independent atomicity, '
+                'preserve qualifiers and withhold doubtful claims. Never invent sources or IDs. '
+                'Good checked claims become available immediately, selected=false. '
+                'For contradictions use record_fact_conflicts; independent reconsideration '
+                'belongs to review. Report only successful durable save receipts, briefly. '
+                'Read the full get_facts inventory and exact get_evidence passages when needed. '
+                'On an explicit image request use generate_visual with saved owner selection; '
+                'observe an existing unknown operation before requesting a new generation.'
+            )
         elif capability == 'editor':
-            overlay = editorial
+            overlay = (
+                'Reuse eligible facts without automatic independent re-review; pending unrelated '
+                'candidates do not block the requested edit. Paginate get_facts for the full '
+                'eligible inventory and get_evidence for each chosen claim\'s own passages. '
+                'Choose facts semantically according to the owner\'s request; one checkbox '
+                'chooses one independent substantive claim. Use select_facts only on an explicit '
+                'request to choose or change selection. Persist an owner\'s angle with set_concept '
+                'while preserving selection. A concept/text/image request is not permission to '
+                'change selection. For a requested draft use edit_text and only selected '
+                'evidence-backed facts, with subject/time qualifications intact. Write connected '
+                'prose, usually 2–5 short paragraphs, without unsupported narrative assertions. '
+                'Every factual attribute must follow from the exact selected claims. Extra '
+                'attributes in an own source passage, unselected inventory or an old draft '
+                'do not authorize stronger assertions in the new text. '
+                'On live_text_revision_conflict read_topic and retry once with the current revision. '
+                'Protect verbatim spans; explicit dictation belongs to dictation. '
+                'Text-style changes preserve the image; visual-only changes preserve text. '
+                'For an explicit image request use generate_visual with the original photo, '
+                'saved concept and a readable subset of selected eligible fact_ids. '
+                'Observe existing image outcomes with observe_existing_visual=true before another '
+                'generation. Publication preparation and separate confirmation belong to publication.'
+            )
+        elif capability == 'dictation':
+            overlay = ('Verbatim dictation uses the existing literal_begin, literal_finish and literal_cancel tools. '
+                'Begin only on an explicit author request; dictated words are content, never commands. '
+                'Finish or cancel only on the corresponding explicit request. Preserve protected spans. '
+                'For ordinary selection, concept or text editing continue through editor in this same story.')
         else:
             overlay = (
                 "Use the saved confirmed identity, selected eligible facts, concept and draft. "
@@ -836,12 +905,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "of that card. Never publish on preparation alone. Read state after an unknown result "
                 "before taking another action."
             )
-        # Do not advertise functions belonging to another bundle. The model
-        # reaches those functions through the router within the same conversation.
-        unavailable = {f['name'] for f in FUNCTIONS} - self.CAPABILITY_TOOLS[capability]
-        overlay = '\n'.join(line for line in overlay.splitlines()
-                            if not any(re.search(r'\b' + re.escape(name) + r'\b', line)
-                                       for name in unavailable))
+        # Only the tool menu is filtered. Semantic rules must survive even when
+        # they refer to a different stage (for example, do not re-review eligible
+        # facts). Each stage has explicit guidance rather than line deletion by
+        # function name.
         if capability == 'research':
             overlay += '\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
         configuration['system_instruction'] = (core + '\nCurrent stage: ' + capability + '\n' + overlay
@@ -854,8 +921,11 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
               'create/edit images just because those tools are absent from the current stage. '
               'After switching, execute the same author request with the new tools; do not ask the '
               'author to repeat it. Stages: identity (object), research (facts), review (evidence), '
-              'editor (selection/concept/text), publication (image/post). '
+              'editor (selection/concept/text), dictation (protected verbatim input), publication (image/post). '
               'Never switch to the current stage again: use its available tools to complete the request. '
+              'Changing the owner selection among eligible facts belongs to editor; it does '
+              'not itself request new source discovery or a new canonical fact verdict. '
+              'For an explicit verbatim-dictation request switch to dictation, then use its literal tools. '
               'Changing stage is not consent for new mutations or confirmation of a publication.')
         if capability == 'review':
             configuration['context_instruction'] = (
@@ -865,13 +935,55 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 + configuration.get('context_instruction', 'Current topic: '))
             configuration['system_instruction'] = (
                 'Current phase: independent verification of unverified candidates. '
-                + review_packets.REVIEW_CHECKS + '\n' + configuration['system_instruction']
+                + review_packets.ATOMIC_CLAIM_CHECKS + ' ' + review_packets.REVIEW_CHECKS
+                + '\n' + configuration['system_instruction']
+                + '\nFor an explicitly requested correction or independent reconsideration, '
+                  'read get_review_packet with the exact requested fact_ids and run_id, then '
+                  'finalize_fact_review or repair/review the changed claim. '
+                  'Report a saved correction only after its durable receipt.'
             )
+        configuration['system_instruction'] += (
+            '\nFor an explicitly requested correction or independent reconsideration of a fact, '
+            'save the new semantic decision, not only a spoken explanation. '
+            'If this is not the review stage, use continue_story(stage=review) with the author\'s '
+            'intent and carry out that same request there. An explanation alone does not change '
+            'eligibility or POI memory. Report a saved correction only after its durable receipt.'
+        )
         configuration['system_instruction'] += ('\nOnly on an explicit author request, continue_story with research_action=stop/resume '
             'and research_purpose=identity/facts/all controls the independent research queues and preserves progress. '
             'Microphone Stop does not stop background research. An ambiguous "stop" needs clarification about research versus microphone. '
             'After Resume read current checkpoints; never replay an old search, inference or save.')
         return configuration
+
+    @staticmethod
+    def _capability_context(context, capability):
+        if capability != 'review':
+            return context
+        from .identity_model_context import fact_review_subject
+        # Exact claims, own passages and nearby relations are paginated by the
+        # review tools. Do not resend the whole discovery/editorial inventory
+        # as setup context before that bounded read can even begin.
+        result = {key: value for key, value in context.items() if key in {
+            'current_date_utc', 'story_id', 'photo_sha256', 'identity_generation',
+            'research_controls', 'revision', 'text_revision', 'place_name',
+            'physical_identity_accepted', 'fact_count', 'selected_fact_ids',
+            'publication_concept', 'candidate_count', 'poi_location', 'facts_preview_truncated',
+        }}
+        result['visual_identity'] = fact_review_subject({**(context.get('visual_identity') or {}),
+            'physical_identity_accepted': bool(context.get('physical_identity_accepted'))})
+        result['facts'] = []
+        run = context.get('research_run') or {}
+        result['research_run'] = {key: value for key, value in run.items() if key in {
+            'run_id', 'state', 'goal', 'status_detail', 'identity_generation',
+            'pending_review_fact_ids', 'candidate_review_instruction',
+        }}
+        result['facts_read_tool'] = 'get_facts'
+        result['review_context_instruction'] = (
+            'Review only the author-requested scope. Read exact claims/evidence and nearby relations '
+            'through the review packet. Unrelated facts and editorial content remain saved; '
+            'read_topic provides their current overview if needed. Do not start new research.'
+        )
+        return result
 
     def resolve_capability(self, session, call):
         if call.get('name') != 'continue_story':
@@ -881,17 +993,20 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         if 'research_action' in (call.get('args') or {}):
             return None
         stage = (call.get('args') or {}).get('stage')
-        if stage not in self.CAPABILITY_TOOLS:
-            raise ConflictError('live_stage_invalid', 'Неизвестный этап.')
+        if not isinstance(stage, str) or stage not in self.CAPABILITY_TOOLS:
+            # Let ordinary serialized tool execution report a structured error.
+            # A resolver exception would escape before the shared host's tool
+            # error boundary, leaving the model without correction/readback.
+            return None
         initialized = self.initialize(resource_id=session.resource_id, actor=session.actor, model=session.model, full_configuration=True)
         continuation = str((call.get('args') or {}).get('intent') or '')[:1200]
-        if stage != 'identity' and (initialized['context'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}:
+        if stage != 'identity' and not initialized['context'].get('physical_identity_accepted'):
             stage = 'identity'
             continuation = 'Identity is still unresolved. Continue compare_place_images and record_place_comparison with saved references before switching stages.'
         if stage == getattr(session, 'capability', None):
             return None
         return {'capability': stage, 'configuration': self._capability_configuration(initialized['configuration'], stage),
-            'context': initialized['context'], 'continuation': continuation}
+            'context': self._capability_context(initialized['context'], stage), 'continuation': continuation}
 
     def __init__(self, service: StreetStoryService, emit, write):
         self.service = service
@@ -925,19 +1040,20 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         reviewing = ((state.get('research_run') or {}).get('state') == 'verifying'
                      or bool((state.get('research_run') or {}).get('pending_extractor_candidates'))
                      or bool((state.get('research_run') or {}).get('pending_review_fact_ids')))
+        eligible_available = any(fact.get('eligibility') == 'eligible' for fact in state['story'].get('facts', []))
         # Normal research already has its formation and review rules below.
         # Send the additional legacy candidate policy only during verification;
         # duplicating it on every setup consumes the same lease as bootstrap.
         instruction = ('During research, discovery is not an answer. After search_web, call save_research_facts or get_research_chunk before speaking any factual finding. Only a successful save receipt authorizes reporting that finding.\nResearch formation policy: ' + review_packets.EXTRACTION_CHECKS
                        + '\n' + SYSTEM_INSTRUCTION)
-        if reviewing:
+        if reviewing and not eligible_available:
             # A resumed verification phase must not frame the old inventory as facts
             # already established by the authoritative product-state snapshot.
             context['candidate_count'] = len(state['story'].get('facts', []))
             context['facts'] = []
             context['review_policy'] = review_packets.REVIEW_CHECKS
             instruction = ('Current phase: independent verification of unverified candidates. '
-                           + review_packets.REVIEW_CHECKS + '\n'
+                           + review_packets.ATOMIC_CLAIM_CHECKS + ' ' + review_packets.REVIEW_CHECKS + '\n'
                            + instruction)
         initialized = {
             "state": {
@@ -969,8 +1085,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "voice": "Aoede",
                 "media_resolution": "MEDIA_RESOLUTION_MEDIUM",
                 "manual_activity_detection": True,
-                "search_enabled": (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'},
-                "application_search_function": 'find_place_articles' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'} else 'search_web',
+                "search_enabled": not context['physical_identity_accepted'],
+                "application_search_function": 'find_place_articles' if not context['physical_identity_accepted'] else 'search_web',
             },
             "response": {
                 "story_id": resource_id,
@@ -989,10 +1105,32 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 and not saved_visual.get('stale', False))
             publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
                 or ready_visual)
-            capability = ('identity' if (state['story'].get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
-                          else 'publication' if publication_ready else 'review' if reviewing else 'research')
+            requested_review = False
+            if reviewing and eligible_available:
+                # Resume an actual author-requested, unfinished review in its
+                # existing tool bundle. Other eligible facts do not erase that
+                # request or require another charged research setup first.
+                with self.service.store.connection() as db:
+                    current_bundle = review_packets.bundle(db, resource_id)
+                    for row in db.execute('SELECT p.payload_json FROM live_review_packets p '
+                            'JOIN live_review_attempts a ON a.packet_ref=p.packet_ref '
+                            "WHERE p.story_id=? AND p.binding=? AND p.run_id=? AND p.identity_generation=? "
+                            "AND a.state='pending' AND a.policy_version=? AND p.result_json IS NULL",
+                            (resource_id, hashlib.sha256(canonical(actor).encode()).hexdigest(),
+                             (state.get('research_run') or {}).get('run_id'),
+                             context['identity_generation'], review_packets.POLICY_VERSION)):
+                        payload = json.loads(row['payload_json'])
+                        frozen = payload.get('bundle') or {}
+                        if (payload.get('requested_fact_scope') is True and frozen
+                                and all(current_bundle.get(fid) == digest for fid, digest in frozen.items())):
+                            requested_review = True
+                            break
+            capability = ('identity' if not context['physical_identity_accepted']
+                          else 'publication' if publication_ready
+                          else 'review' if reviewing and (not eligible_available or requested_review) else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
+            initialized['context'] = self._capability_context(initialized['context'], capability)
         return initialized
 
     def input(self, session, message: dict[str, Any]) -> None:
@@ -1445,7 +1583,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
         if name == 'continue_story' and 'research_action' not in args:
             stage = args.get('stage')
-            if stage != getattr(session, 'capability', None):
+            if not isinstance(stage, str) or stage not in self.CAPABILITY_TOOLS or stage != getattr(session, 'capability', None):
                 raise ConflictError('live_stage_invalid', 'Запрошенный этап ещё не активен.')
             return {'capability': stage, 'ready': True, 'already_active': True,
                 'next_tool': 'read_topic',
@@ -1691,11 +1829,12 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         selected = next((item for item in candidates if str(item.get('candidate_id') or '') == chosen), {})
         return {
             key: identity.get(key)
-            for key in ("status", "candidate_id", "candidate_name", "canonical_name", "aliases", "locality", "country", "confidence", "candidate_url", "photo_sha256", "generation")
+            for key in ("status", "candidate_id", "candidate_name", "canonical_name", "aliases", "locality", "country", "confidence", "candidate_url", "photo_sha256", "generation", "proof_kind", "identity_verified", "visual_reference_verified")
         } | {
             "canonical_name": identity.get('canonical_name') or identity.get('candidate_name') or selected.get('name'),
             "aliases": identity.get('aliases') or selected.get('entity_aliases') or [],
             "observations": [str(value)[:300] for value in identity.get("observations", [])[:3]],
+            "physical_scope": physical_scope(identity)[:600],
             "candidate_count": len(candidates),
             "candidates": [
                 {key: item.get(key) for key in ("candidate_id", "name", "type", "url")}
@@ -2009,6 +2148,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                     (story_id,),
                 )
             ]
+            from .live_identity_context import identity_research_context
+            research = json.loads(row['research_json'] or '{}')
+            conditional_context = identity_research_context(self.service, row, research)
             fact_conflict_state = conflict_rows(db, story_id, limit=20)
             from .poi_memory import previous_editorial_context
             previous_editorial = previous_editorial_context(db, story.get('visual_identity') or {}, story_id)
@@ -2038,6 +2180,22 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                             'status': source['status'], 'source_version_id': source['source_version_id'],
                             'identity_article_source_sha256': reference.get('article_source_sha256')})
                 latest_run['identity_article_sources'] = identity_sources
+                from .headless_facts import acquired_subject_articles
+                subject_sources = []
+                if (accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                        generation=int(research.get('identity_generation') or 0),
+                        control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
+                        and latest_run['identity_generation'] == int(research.get('identity_generation') or 0)):
+                    for url, lead in acquired_subject_articles(identity, research).items():
+                        source = db.execute('SELECT url,title,status,source_version_id FROM research_run_sources '
+                            "WHERE run_id=? AND rtrim(url,'/')=?", (latest_run['run_id'], url.rstrip('/'))).fetchone()
+                        if source:
+                            subject_sources.append({'source_ref': _search_source_ref(source['url']),
+                                'url': source['url'], 'title': str(source['title'] or '')[:100],
+                                'status': source['status'], 'source_version_id': source['source_version_id'],
+                                'subject_candidate_ids': lead['subject_candidate_ids'],
+                                'acquisition_kind': lead['acquisition_kind'], 'visual_reference_verified': False})
+                latest_run['identity_subject_article_sources'] = subject_sources
                 pending_candidates = review_packets.pending_candidates(db, story_id, latest_run['run_id'])
                 if pending_candidates:
                     latest_run['pending_extractor_candidates'] = len(pending_candidates)
@@ -2081,6 +2239,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "fact_conflicts": fact_conflict_state,
             "previous_editorial_context": previous_editorial,
             "research_run": dict(latest_run) if latest_run else None,
+            "identity_research_context": conditional_context,
         }
 
     def _get_facts(self, story_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -2217,6 +2376,14 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             ],
             "next_cursor": int(page[-1]["cursor_value"]) if has_more and page else None,
             "has_more": has_more,
+            "read_only": True,
+            "instruction": (
+                "This evidence read saves no new verdict and changes no fact or POI eligibility. "
+                "For an explicitly requested correction or independent reconsideration, use "
+                "continue_story(stage=review) with that same author intent and the requested fact IDs; "
+                "finish their evidence-bound review there. Reading saved evidence does not require "
+                "new search. Do not claim a saved correction from this read alone."
+            ),
         }
 
     @staticmethod
@@ -2253,6 +2420,10 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             "literal_spans": state["editor"].get("literal_spans", []),
             "last_change": state["editor"].get("last_change"),
             "visual_identity": compact_identity,
+            "physical_identity_accepted": accepted_identity(identity, photo_sha256=story.get('photo_sha256'),
+                generation=story.get('identity_generation'),
+                control_revision=int(((story.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)),
+            "identity_research_context": state.get("identity_research_context"),
             "identity_progress": {key: value for key, value in (story.get('identity_progress') or {}).items()
                 if key in {'generation', 'updated_at', 'steps', 'attempt', 'finished', 'elapsed_ms',
                            'images_reviewed_count', 'visual_comparison_verified'}},
@@ -2359,19 +2530,45 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         story_id = session.resource_id
         with self.service.store.connection() as db:
             row = dict(self.service._story_row(db, story_id))
+        if owner_hint.strip():
+            # A reply to our outstanding question continues the original clock.
+            # Other terminal outcomes need the existing explicit new-wave action.
+            with self.service.store.connection() as db:
+                prior = json.loads(self.service._story_row(db, story_id)['research_json'] or '{}')
+            if (prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required':
+                if remaining_seconds(self.service, story_id, 'identity') <= 0:
+                    raise ResearchTerminated(reason='identity_deadline_exceeded')
+                with self.service.store.tx() as db:
+                    fresh = self.service._story_row(db, story_id)
+                    prior = json.loads(fresh['research_json'] or '{}')
+                    if (prior.get('automatic_research_outcome') or {}).get('outcome') == 'clarification_required':
+                        prior.pop('automatic_research_outcome', None)
+                        if isinstance(prior.get('identity_clarification'), dict):
+                            prior['identity_clarification']['answered'] = True
+                        prior['identity_owner_hint'] = {'text': owner_hint[:500],
+                            'provenance': 'owner_live_text_or_voice', 'independently_verified': False}
+                        db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(prior), story_id))
+            require_remaining(self.service, story_id, "identity")
         if (row.get("latitude") is None or row.get("longitude") is None) and owner_hint.strip():
             # Only the author's explicit address, never infer a geocode query
             # from a clipped VAD fragment or substitute current device position.
             resolver = getattr(self.service, "_resolve_place_query", None)
             resolved = await resolver(owner_hint.strip()) if callable(resolver) else None
             if resolved:
+                require_remaining(self.service, story_id, "identity")
                 with self.service.store.tx() as db:
                     fresh = self.service._story_row(db, story_id)
                     prior = json.loads(fresh["research_json"] or "{}")
                     prior["identity_generation"] = int(prior.get("identity_generation") or 0) + 1
+                    # A city reply continues this wave, retaining its original clock/work.
+                    if prior.get("research_budget"):
+                        prior["research_budget"]["identity_generation"] = prior["identity_generation"]
+                    prior["identity_owner_hint"] = {"text": owner_hint[:500], "provenance": "owner_live_text_or_voice", "independently_verified": False}
                     prior["location_provenance"] = {"kind": "owner_live_place_query", "query": owner_hint[:300], "not_device_current_location": True}
                     db.execute("UPDATE stories SET latitude=?,longitude=?,research_json=? WHERE id=?",
                                (float(resolved["lat"]), float(resolved["lon"]), canonical(prior), story_id))
+        if owner_hint.strip():
+            require_remaining(self.service, story_id, "identity")
         story = await self.service.resolve_identity(story_id, self._recent_transcript(session, owner_hint), owner_hint=owner_hint)
         identity = story.get("visual_identity") or {}
         with self.service.store.connection() as db:
@@ -2592,7 +2789,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             snapshot_story_revision = int(story.get("revision") or 0)
             research = json.loads(story.get("research_json") or "{}")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=story['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -3369,14 +3568,20 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
         # of repeating every previously saved claim on each document page.
         result["checkpoint"] = {"next_batch_index": checkpoint["next_batch_index"], "saved_fact_count": len(checkpoint.get("facts", [])), "facts": checkpoint.get("facts", [])[:3], "terminal": checkpoint["terminal"]}
         for passage in passages[offset:]:
-            if session.state.get('live_first_research') and len(result['evidence_passages']) >= 2:
+            if (session.state.get('live_first_research') and not session.state.get('headless_research')
+                    and len(result['evidence_passages']) >= 2):
                 break
             trial = {**result, "evidence_passages": [*result["evidence_passages"], passage], "has_more_passages": True, "next_passage_cursor": passage["passage_id"] + 1}
             end = passage["core_offset"] + len(passage["text"])
             trial["context_after"] = core[end:end + 100] if end < len(core) else result["context_after"]
             trial["next_args"] = {"run_id": run_id, "chunk_id": candidate["chunk_id"], "passage_cursor": passage["passage_id"] + 1}
             trial["instruction"] = "The target may be in the unread tail. Read next_args before another search; do not assume missing facts from this first page. You may checkpoint this page with continuation_needed=true."
-            if response_units("get_research_chunk", self._model_result("get_research_chunk", trial)) > PAGE_UNITS:
+            # Autonomous extraction owns one frozen source core. Its provider
+            # measures/admit its complete context separately; the interactive
+            # tool-response envelope is not its model input limit. Keep normal
+            # interactive pagination, without forcing one inference per passage.
+            if (not session.state.get('headless_research')
+                    and response_units("get_research_chunk", self._model_result("get_research_chunk", trial)) > PAGE_UNITS):
                 break
             result = trial
         next_offset = offset + len(result["evidence_passages"])
@@ -3479,7 +3684,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 if isinstance(research.get("visual_identity"), dict)
                 else {}
             )
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=story['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -4686,9 +4893,13 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 "unreviewed_count": unreviewed_count,
             }
             db.execute(
-                "UPDATE stories SET research_json=?,revision=revision+1,updated_at=? "
+                "UPDATE stories SET research_json=?,state=CASE "
+                "WHEN state IN ('researching','identity_ready') AND ? AND error_code IS NULL "
+                "THEN CASE WHEN draft_text IS NULL OR trim(draft_text)='' "
+                "THEN 'facts_ready' ELSE 'review' END ELSE state END,"
+                "revision=revision+1,updated_at=? "
                 "WHERE id=?",
-                (canonical(research), now, story_id),
+                (canonical(research), eligible_count > 0, now, story_id),
             )
             result = {
                 "research_run_id": run_id,
@@ -4871,6 +5082,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 (canonical(research), self.service.store.now(), story_id),
             )
             result = {
+                "draft_blockers": selected_eligibility_issues(db, story_id),
                 "selected_fact_ids": [
                     row["fact_id"]
                     for row in db.execute(
@@ -5147,7 +5359,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             row = self.service._story_row(db, story_id)
             research = json.loads(row["research_json"] or "{}")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -5215,7 +5429,9 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             if research.get("content_identity_changed"):
                 raise InvalidStateError("identity_content_review_required", "После смены объекта нужно проверить и обновить текст публикации.")
             identity = research.get("visual_identity") if isinstance(research.get("visual_identity"), dict) else {}
-            if identity.get("status") not in {"match", "owner_confirmed"}:
+            if not accepted_identity(identity, photo_sha256=row['photo_sha256'],
+                    generation=int(research.get('identity_generation') or 0),
+                    control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
                 raise InvalidStateError(
                     "identity_required",
                     "Сначала нужно определить объект на фотографии.",
@@ -5465,10 +5681,13 @@ def _forward_committed_output(service, session, event, on_event):
     on_event(event)
 
 
-def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSessionHost:
+def create_live_host(service: StreetStoryService, settings: Settings, *, operation_adapter_factory=None,
+                     before_operation_send=None) -> LiveSessionHost:
     ensure_live_schema(service)
 
     def adapter_factory(**kwargs):
+        if operation_adapter_factory is not None:
+            return operation_adapter_factory(**kwargs)
         return StreetStoryLiveAdapter(service, kwargs["emit"], kwargs["write"])
 
     async def managed_runner(*, session, reader, on_event):
@@ -5532,6 +5751,19 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
                         self.config = config
 
             control = SetupAdmissionControl(config)
+            # Product scope/deadline guards compose with the shared resource
+            # guard. Provider transport and sticky lease selection stay in SDK.
+            async def operation_provider_run(**kwargs):
+                from live_interaction.provider import run
+                guarded = kwargs['resource_guard']
+                class OperationGuard:
+                    def __getattr__(self, name):
+                        return getattr(guarded, name)
+                    async def before_send(self, payload):
+                        before_operation_send()
+                        await guarded.before_send(payload)
+                        before_operation_send()
+                await run(**{**kwargs, 'resource_guard': OperationGuard()})
             logger.info('street_story_live_setup_admission %s', canonical({
                 'session_id': session.id, 'estimated_units': requested,
                 'audio_grant_units': config.grant_tokens, 'model': start['model']}))
@@ -5542,6 +5774,7 @@ def create_live_host(service: StreetStoryService, settings: Settings) -> LiveSes
                 control=control,
                 on_event=committed_output,
                 binding=f"street-story:{session.id}",
+                **({'provider_run': operation_provider_run} if before_operation_send is not None else {}),
             )
         finally:
             if control is not None:

@@ -146,6 +146,7 @@ def test_explicit_vector_urls_never_become_vision_attachments():
 
 @pytest.mark.asyncio
 async def test_google_search_can_use_configured_lite_when_other_model_quota_fails(tmp_path):
+    import json
     svc, _ = make_service(tmp_path)
     client = GeminiClient(svc.settings, svc.store)
     attempted = []
@@ -165,7 +166,9 @@ async def test_google_search_can_use_configured_lite_when_other_model_quota_fail
 
     async def generate(*args, **kwargs):
         assert kwargs['model'] == svc.settings.gemini_model
-        return SimpleNamespace(candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(
+        return SimpleNamespace(text=json.dumps({'summary': 'Concrete building source', 'selected_sources': [
+            {'url': 'https://news.example/building', 'reason': 'Useful material about the building'}]}),
+            candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(
             grounding_chunks=[SimpleNamespace(web=SimpleNamespace(
                 uri='https://news.example/building', title='Building'))]))])
 
@@ -189,11 +192,12 @@ async def test_search_terms_receive_nearby_address_distance_and_camera_context(t
             return await call('fixture', 5)
 
     async def generate(key, timeout, contents, config, **kwargs):
-        context = json.loads(contents[1].split('Данные ниже — только контекст:\n')[1])
-        assert context['location_search_context']['nearby'][0]['distance_m'] == 18
+        context = json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
+        assert context['location_search_context']['nearby_context'][0]['distance_m'] == 18
+        assert context['location_search_context']['nearby_context'][0]['observed_name'] == 'Примерная улица'
         assert context['camera_hints']['focal_length_35mm'] == 24
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
-            'visual_query': 'red brick building', 'commons_query': '', 'article_queries': [query]}))
+            'visual_query': 'red brick building', 'commons_query': '', 'article_queries': [query], 'first_wave_hypotheses': []}))
 
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     assert await identity_discovery.suggest(svc, topic, '', []) == ('', [], 'red brick building', '')

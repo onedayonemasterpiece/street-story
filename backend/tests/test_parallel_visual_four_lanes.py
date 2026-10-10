@@ -18,11 +18,11 @@ def slots(adapter, healthy):
 
 
 @pytest.mark.parametrize('healthy,opencode,native,expected', [
-    (6, True, True, ('google', 'opencode', 'google', 'native')),
+    (6, True, True, ('google', 'opencode', 'native', 'google')),
     (6, True, False, ('google', 'opencode', 'google', 'google')),
     (1, True, True, ('google', 'opencode', 'native')),
     (0, True, True, ('opencode', 'native')),
-    (4, False, True, ('google', 'google', 'native', 'google')),
+    (4, False, True, ('google', 'native', 'google', 'google')),
     (0, False, True, ('native',)),
     (0, False, False, ()),
 ])

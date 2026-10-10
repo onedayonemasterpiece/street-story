@@ -92,7 +92,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         try:
             started = time.monotonic()
             for _ in range(4):
-                if await self._run_owned_unit(job, provider, story, session, scope):
+                unit_result = await self._run_owned_unit(job, provider, story, session, scope)
+                if isinstance(unit_result, dict) and unit_result.get('outcome'):
+                    return unit_result
+                if unit_result:
                     return
                 # A completed negative is progress. Yield between units so Stop
                 # and other stories can run; each next send gets fresh admission.
@@ -184,6 +187,14 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             record_identity_event(self.service,story['id'],'identity_background_waiting',{
                 'generation':generation,'reason':'insufficient_evidence' if unit.get('exhausted') else 'resource_or_source_wait'})
             if unit.get('exhausted'):
+                if unit.get('reference_triage_exhausted'):
+                    return {'outcome': 'search_exhausted', 'reason': 'reference_triage_exhausted',
+                            'coverage_complete': False}
+                with self.service.store.connection() as db:
+                    discovery_active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind='identity' "
+                        "AND state IN ('ready','retry','running')", (story['id'],)).fetchone() is not None
+                if discovery_active:
+                    raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+5)
                 return True  # Known finite no-evidence outcome; fresh owner leads may resume it.
             raise RetryableProviderError('identity_background_waiting', retry_at=self.service.store.now()+30)
         current,latest = self.service._identity_snapshot(story['id'])
@@ -192,7 +203,7 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
         except ConflictError:
             return True
         routes = getattr(provider, 'parallel_visual_routes', lambda: ())()
-        if (len(routes) > 1 and len(pending['candidates']) > 1
+        if (len(routes) > 1 and pending['candidates']
                 and not self._parallel_parent_attempted(story, pending, generation)):
             self._freeze_parallel_pairs(session, pending, routes[:4])
             return await self._run_parallel_pairs(job, provider, story, session, scope)
@@ -321,6 +332,10 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                 or current.get('error_code') == 'visual_identity_conflict')
             if pair['phase'] == 'result':
                 return pair, {'result': pair['result'], 'receipt': pair['receipt']}, None
+            if pair.get('retry_at', 0) > self.service.store.now():
+                return pair, None, RetryableProviderError(
+                    pair.get('last_error') or 'research_visual_pair_outcome_unknown',
+                    retry_at=pair['retry_at'])
             if pair['phase'] == 'ready':
                 frozen = pair['candidates'][0]
                 catalog = {c.get('candidate_id'): c for c in (latest.get('visual_identity') or {}).get('candidates', [])}
@@ -446,6 +461,24 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
                             pair['phase'] = 'failed'
                             freed_routes.append(pair['route'])
                         else:
+                            observe = getattr(provider, 'visual_pair_receipts', None)
+                            receipts = observe({**story, '_identity_generation': scope['generation'],
+                                '_visual_reference_mapping': pair['reply']['references']},
+                                canonical(pair['reply'])) if callable(observe) else {}
+                            unsent = bool(receipts) and all(
+                                receipt.get('provider_send_state') == 'not_sent'
+                                and not receipt.get('turn_id') and not receipt.get('message_id')
+                                and (receipt.get('phase') in {'created', 'thread_created'}
+                                     or receipt.get('phase') == 'failed' and receipt.get('retry_safe') is True)
+                                for receipt in receipts.values())
+                            if unsent:
+                                # A dispatch descriptor is not evidence of a
+                                # send. Keep the exact ID/route but permit its
+                                # first prompt after authoritative admission
+                                # cooldown, rather than a resume-only read of
+                                # a turn which never existed.
+                                pair['phase'] = 'ready'
+                            pair['retry_at'] = error.retry_at or self.service.store.now() + 30
                             waits.append(error)
                         self._save_visual_queue(session, state)
                         LOG.warning('street_story_identity component=parallel_vision stage=waiting story_id=%s comparison_id=%s route=%s phase=%s error_type=%s reason=%s',
@@ -514,6 +547,19 @@ class HeadlessIdentity(LiveVisualComparisonMixin):
             if not all(task.done() for task in all_tasks):
                 await asyncio.gather(*all_tasks, return_exceptions=True)
         if waits:
+            current, latest = self.service._identity_snapshot(story['id'])
+            unresolved = (latest.get('visual_identity') or {}).get('status') not in {'match', 'owner_confirmed'}
+            slots = Counter(getattr(provider, 'parallel_visual_routes', lambda: ())())
+            for child in state.get('parallel_pairs', []):
+                if child.get('phase') not in {'completed', 'failed', 'skipped'}:
+                    slots[child['route']] -= 1
+            with self.service.store.connection() as db:
+                discovery_active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND kind='identity' "
+                    "AND state IN ('ready','retry','running')", (story['id'],)).fetchone() is not None
+            if unresolved and discovery_active and any(count > 0 for count in slots.values()):
+                # Poll the local queue for late independent sources. Each
+                # unknown child retains its own provider readback cooldown.
+                raise RetryableProviderError('identity_parallel_waiting', retry_at=self.service.store.now()+5)
             raise waits[0]
         current, latest = self.service._identity_snapshot(story['id'])
         return ((latest.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}

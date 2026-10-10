@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -8,10 +9,30 @@ import pytest
 from pydantic import SecretStr
 
 from test_backend import config
-from test_gemini_reliability import KEYS, ProviderError
+from test_gemini_reliability import KEYS, ProviderError, Clock
 from street_story.gemini import GeminiUnavailable
 from street_story.providers import GeminiClient
-from street_story.quota import SharedQuotaGate
+from street_story.quota import SharedQuotaGate, denial_delay
+
+
+@pytest.mark.parametrize('instant,expected', [
+    ('2026-10-09T02:36:00+00:00', 15840),
+    ('2026-10-09T08:41:00+00:00', 80340),
+    ('2026-11-01T07:00:00+00:00', 90000),
+    ('2027-03-14T08:00:00+00:00', 82800),
+])
+def test_rpd_wait_uses_controller_pacific_day_including_dst(instant, expected):
+    now = datetime.fromisoformat(instant).timestamp()
+    assert denial_delay({'blocked_reason': 'rpd', 'retry_after_ms': None,
+                         'bucket_strategy': 'rolling_60s_pacific_day_v2'}, now) == expected
+
+
+def test_controller_retry_is_not_extended_to_a_guessed_daily_boundary():
+    now = datetime.fromisoformat('2026-10-09T02:36:00+00:00').timestamp()
+    assert denial_delay({'blocked_reason': 'rpd', 'retry_after_ms': 120000,
+                         'bucket_strategy': 'rolling_60s_pacific_day_v2'}, now) == 120
+    assert denial_delay({'blocked_reason': 'rpd', 'retry_after_ms': None}, now) == 60
+    assert denial_delay({'blocked_reason': 'rpm', 'retry_after_ms': True}, now) == 60
 
 
 class Controller:
@@ -49,6 +70,7 @@ class Controller:
 
 @pytest.fixture
 def rig(tmp_path,monkeypatch):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: full suite runs on the devserver; public CI cannot install the private wheel')
     for i,key in enumerate(KEYS):
         monkeypatch.setenv(f'GOOGLE_API_KEY{i+1}',key)
     cfg = replace(config(tmp_path),gemini_api_keys=tuple(SecretStr(k) for k in KEYS),
@@ -62,6 +84,30 @@ def rig(tmp_path,monkeypatch):
 
 def response():
     return SimpleNamespace(text='transcript',usage_metadata=SimpleNamespace(prompt_token_count=10,candidates_token_count=5,total_token_count=15))
+
+
+@pytest.mark.asyncio
+async def test_final_request_admission_includes_system_schema_media_and_output(rig):
+    from google.genai import types
+    from ai_resource_control.client import estimate_input_tokens
+    g, controller = rig
+    cfg = types.GenerateContentConfig(system_instruction='Проверить собственное свидетельство. ' * 20,
+        response_mime_type='application/json', response_schema={'type': 'object', 'properties': {
+            'verdict': {'type': 'string', 'enum': ['supported', 'uncertain']}}}, max_output_tokens=512)
+    source = types.Part.from_bytes(data=b'actual-source-placeholder', mime_type='image/jpeg')
+    text = 'Источник содержит дату и оговорку.'
+    async def provider(*args, **kwargs):
+        return response()
+    g._provider_request = provider
+    try:
+        await g._generate(KEYS[0], 20, [source, text], cfg)
+        reserved = next(value['p_reserved_tpm'] for name, value in controller.events if name == 'google_ai_reserve')
+        envelope = {'contents': [{'inline_data': {'mime_type': 'image/jpeg', 'data': ''}}, {'text': text}],
+                    'config': cfg.model_dump(mode='json', exclude_none=True)}
+        assert reserved == estimate_input_tokens(envelope) + 8192 + 512 + 1000
+        assert reserved > len(text.encode()) + 8192 + 512 + 1000
+    finally:
+        await g.quota.http.aclose()
 
 
 @pytest.mark.asyncio
@@ -97,6 +143,38 @@ async def test_shared_denial_rotates_before_any_provider_call(rig):
     payload = next(p for name,p in c.events if name == 'google_ai_finalize')
     assert payload['p_usage_total_tokens'] == 15
     assert all(key not in json.dumps(c.events) for key in KEYS)
+
+
+@pytest.mark.asyncio
+async def test_rpd_local_wait_expires_at_controller_reset_then_requires_new_admission(rig):
+    g, controller = rig
+    clock = Clock()
+    clock.value = datetime.fromisoformat('2026-10-09T02:36:00+00:00').timestamp()
+    g.pool.clock = clock
+    denied = True
+    async def handle(request):
+        if denied and request.url.path.endswith('/google_ai_reserve'):
+            return httpx.Response(200, json={'ok': False, 'blocked_reason': 'rpd',
+                'retry_after_ms': None, 'bucket_strategy': 'rolling_60s_pacific_day_v2'})
+        return await controller.handle(request)
+    g.quota.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    sent = []
+    async def provider(key, *args, **kwargs):
+        sent.append(key)
+        return response()
+    g._provider_request = provider
+    try:
+        with pytest.raises(GeminiUnavailable) as unavailable:
+            await g.executor.execute('grounded_research', lambda key, timeout: g._generate(key, timeout, ['fixture']))
+        assert not sent
+        assert unavailable.value.retry_at == clock.value + 15840
+        denied = False
+        clock.value += 15841
+        result = await g.executor.execute('grounded_research', lambda key, timeout: g._generate(key, timeout, ['fixture']))
+        assert result.text == 'transcript' and len(sent) == 1
+        assert any(name == 'google_ai_mark_sent' for name, _ in controller.events)
+    finally:
+        await g.quota.http.aclose()
 
 
 @pytest.mark.asyncio
@@ -260,6 +338,7 @@ async def test_malformed_reserve_is_fail_closed(rig):
 
 @pytest.mark.asyncio
 async def test_full_durable_pipeline_uses_shared_gate_without_repeating_stages(tmp_path,monkeypatch):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from test_gemini_reliability import pipeline, admit
     svc,g,osm,wiki,clock = pipeline(tmp_path,{KEYS[0]:429})
     for i,key in enumerate(KEYS):
@@ -291,3 +370,54 @@ async def test_full_durable_pipeline_uses_shared_gate_without_repeating_stages(t
     with svc.store.connection() as db:
         job = db.execute('SELECT state,attempts FROM jobs').fetchone()
         assert job['state'] == 'done' and job['attempts'] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('controller_failure', [False, True])
+async def test_owned_control_connection_survives_requests_and_service_shutdown(tmp_path, monkeypatch, controller_failure):
+    from test_identity_lifecycle import make_service
+    for i, key in enumerate(KEYS):
+        monkeypatch.setenv(f'GOOGLE_API_KEY{i+1}', key)
+    cfg = replace(config(tmp_path), gemini_api_keys=tuple(SecretStr(k) for k in KEYS),
+        gemini_quota_supabase_url='https://quota.test', gemini_quota_supabase_key='quota-secret')
+    controller, created = Controller(), []
+    original = httpx.AsyncClient
+    def create(**kwargs):
+        client = original(transport=httpx.MockTransport(controller.handle), **kwargs)
+        created.append(client)
+        return client
+    monkeypatch.setattr('street_story.quota.httpx.AsyncClient', create)
+    gemini = GeminiClient(cfg)
+    gate = gemini.quota
+    if controller_failure:
+        controller.fail = 'google_ai_api_keys'
+        with pytest.raises(GeminiUnavailable):
+            await gate.registered_id(KEYS[0])
+        assert controller.rows == {}  # No reservation or provider dispatch.
+        controller.fail = None
+    sends = []
+    async def provider():
+        sends.append('sent')
+        return response()
+    await gate.run(KEYS[0], 20, 1024, provider)
+    await gate.recover()
+    assert sends == ['sent'] and len(created) == 1 and not created[0].is_closed
+    assert all(row['sent_at'] and row['finalized_at'] for row in controller.rows.values())
+    svc, _ = make_service(tmp_path / 'service')
+    svc.providers.gemini = gemini
+    await svc.close()
+    assert created[0].is_closed
+    with gemini.store.connection() as db:
+        assert not db.execute('SELECT 1 FROM gemini_quota_journal').fetchone()
+
+
+@pytest.mark.asyncio
+async def test_injected_controller_connection_is_closed_by_its_owner(tmp_path):
+    cfg = replace(config(tmp_path), gemini_quota_supabase_url='https://quota.test',
+                  gemini_quota_supabase_key='quota-secret')
+    controller = Controller()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(controller.handle)) as external:
+        gate = SharedQuotaGate(cfg, GeminiClient(cfg).pool, http=external)
+        assert isinstance(await gate.request('GET', 'google_ai_api_keys'), list)
+        await gate.close()
+        assert not external.is_closed

@@ -330,6 +330,20 @@ async def test_real_timeout_budget_cancels_and_rotates_without_orphan_calls(tmp_
 
 
 @pytest.mark.asyncio
+async def test_joint_uses_existing_attempt_budget_without_short_call_cancellation(tmp_path):
+    p, executor, _ = pool(tmp_path, keys=KEYS[:1],
+                          policy=GeminiPolicy(call_timeout=.005, attempt_timeout=.5))
+    calls = []
+    async def call(key, timeout):
+        calls.append(timeout)
+        await asyncio.sleep(.02)
+        return 'closed joint response'
+    assert await executor.execute_joint('grounded_research', call) == 'closed joint response'
+    assert len(calls) == 1 and .005 < calls[0] <= .5
+    assert p.snapshot()['in_flight'] == 0
+
+
+@pytest.mark.asyncio
 async def test_internal_attempt_count_bound(tmp_path):
     p, executor, _ = pool(tmp_path, policy=GeminiPolicy(max_failover_keys=2))
     calls = []
@@ -503,19 +517,29 @@ async def test_pipeline_checkpoints_survive_process_restart_and_expired_provider
     svc, gemini, osm, wiki, clock = pipeline(tmp_path, dict.fromkeys(KEYS,429))
     sid = admit(svc)
     await svc.run_once()
+    with svc.store.connection() as db:
+        original_checkpoints = {row['stage']: row['value_json'] for row in db.execute('SELECT stage,value_json FROM research_checkpoints')}
+        original_budget = json.loads(svc._story_row(db, sid)['research_json'])['research_budget']
     fresh_gemini = PipelineGemini.build(svc.settings, svc.store, {})
     for _model, model_pool, _quota, _executor in (*fresh_gemini.transcription_routes, *fresh_gemini.research_routes):
         model_pool.clock = clock
     fresh = StreetStoryService(svc.settings, ProviderBundle(osm, wiki, fresh_gemini, svc.providers.vibepublish))
     fresh.store.now = clock
     clock.value += 8*86400
-    # The original belongs to the topic now; neither cache expiry nor restart
-    # requires the closed client to re-upload it before provider recovery.
+    # Source bytes/checkpoints survive cache expiry; a restart eight days later
+    # cannot silently grant another automatic research envelope.
     assert fresh.story(sid)['source_available'] is True
     assert await fresh.run_once()
-    assert fresh.story(sid)['state'] == 'review'
+    story = fresh.story(sid)
+    assert story['state'] == 'needs_review'
     assert osm.calls == wiki.calls == 1
-    assert all(op == 'grounded_research' for op, _ in fresh_gemini.calls)
+    assert fresh_gemini.calls == []
+    with fresh.store.connection() as db:
+        research = json.loads(fresh._story_row(db, sid)['research_json'])
+        assert research['research_budget'] == original_budget
+        assert research['automatic_research_outcome']['outcome'] == 'deadline_exceeded'
+        assert {row['stage']: row['value_json'] for row in db.execute('SELECT stage,value_json FROM research_checkpoints')} == original_checkpoints
+        assert db.execute('SELECT state FROM jobs').fetchone()[0] == 'done'
 
 
 @pytest.mark.asyncio

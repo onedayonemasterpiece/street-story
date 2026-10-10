@@ -3,6 +3,7 @@ import base64
 import copy
 import io
 import json
+import hashlib
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -100,6 +101,136 @@ def setup(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['unavailable', 'lost_response'])
+async def test_completed_native_result_survives_accounting_and_reconciles_exact_original_lease(tmp_path, failure):
+    pytest.importorskip('ai_resource_control', reason='Requires the actual runtime ARC SDK; checked separately with installed devserver integration')
+    import time
+    from contextvars import ContextVar
+    from ai_resource_control.client import ResourceError
+    from ai_resource_control.workload import WorkloadAdmission
+    from street_story.research_adapter import ProductResearchAdapter
+    from street_story.service import canonical
+    from test_research_control import fixture
+
+    service, sid, photo = fixture(tmp_path)
+    adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter._active_binding = ContextVar('test_accounting_binding', default=None)
+
+    class Authority:
+        config = SimpleNamespace(consumer='street-story')
+        clock = staticmethod(time.monotonic)
+        unavailable = True
+        def __init__(self):
+            self.calls, self.applied = [], {}
+        async def rpc(self, name, payload):
+            self.calls.append((name, copy.deepcopy(payload)))
+            if name == 'workload_reserve':
+                return {'request_id': payload['p_request_id'], 'fence': 3, 'ttl_ms': 60000}, self.clock()
+            if name == 'workload_finalize':
+                if self.unavailable and not (failure == 'lost_response' and not self.applied):
+                    raise ResourceError('RESOURCE_CONTROL_UNAVAILABLE')
+                prior = self.applied.setdefault(payload['p_request_id'], copy.deepcopy(payload))
+                assert prior == payload  # Real authority rejects a changed terminal payload.
+                if self.unavailable:
+                    raise ResourceError('RESOURCE_CONTROL_UNAVAILABLE')
+            return {}, self.clock()
+
+    authority = Authority()
+    adapter.control = authority
+    provider, client, snapshot, story, context, *_ = setup(tmp_path)
+    provider.service = service
+    provider.checkpoint = adapter.checkpoint
+    provider.admission = adapter.fenced_admission(WorkloadAdmission(authority, 'codex-native:owner-reserve'))
+    story.update(id=sid, photo_sha256=photo)
+    binding, _ = adapter.attempt(story, 'vision_native', 'accounting-result')
+    result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+    assert result['receipt']['phase'] == 'completed' and result['result']['status'] == 'mismatch'
+    record, receipt = adapter._accounting_record(binding)
+    assert record['state'] == 'pending' and receipt['phase'] == 'completed'
+    assert record['metadata']['actual_total_tokens'] == 321 and record['terminal_state'] == 'completed'
+    requests = [p for n, p in authority.calls if n == 'workload_finalize']
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0]['p_actual_tokens'] == 321 and requests[0]['p_status'] == 'completed'
+    assert sum(n == 'workload_send' for n, _ in authority.calls) == 1
+    assert sum(n == 'turn/start' for n, _ in client.calls) == 1
+
+    # Another provider checkpoint must not discard the private pending capsule.
+    await adapter.checkpoint(binding, {k: v for k, v in receipt.items() if k != 'accounting_finalization'})
+    reopened = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    reopened.service, reopened.control = type(service)(service.settings), authority
+    assert service.store.path.stat().st_mode & 0o777 == 0o600
+    changed = Authority()
+    changed.config = SimpleNamespace(consumer='another-ledger-binding')
+    reopened.control = changed
+    record['retry_at'] = 0
+    adapter._accounting_record(binding, record)
+    await reopened.recover_accounting()
+    assert not changed.calls and reopened._accounting_record(binding)[0]['state'] == 'pending'
+    reopened.control = authority
+    authority.unavailable = False
+    with service.store.tx() as db:
+        record['retry_at'] = 0
+        receipt['accounting_finalization'] = record
+        db.execute('UPDATE research_provider_attempts SET receipt_json=? WHERE attempt_id=?',
+                   (canonical(receipt), binding['attempt_id']))
+    await reopened.recover_accounting()
+    await reopened.recover_accounting()
+    restored, saved = reopened._accounting_record(binding)
+    assert restored['state'] == 'completed' and saved['result'] == result['result']
+    assert len(authority.applied) == 1
+    requests = [p for n, p in authority.calls if n == 'workload_finalize']
+    assert len(requests) == 3 and all(p == requests[0] for p in requests)
+    assert sum(n == 'workload_reserve' for n, _ in authority.calls) == 1
+    assert sum(n == 'turn/start' for n, _ in client.calls) == 1
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['unknown', 'created'])
+async def test_accounting_failure_never_promotes_unknown_or_unsent_to_success(tmp_path, phase):
+    pytest.importorskip('ai_resource_control', reason='Requires the actual runtime ARC SDK; checked separately with installed devserver integration')
+    import time
+    from contextvars import ContextVar
+    from ai_resource_control.client import ResourceError
+    from ai_resource_control.workload import WorkloadAdmission
+    from street_story.research_adapter import ProductResearchAdapter
+    from test_research_control import fixture
+
+    service, sid, photo = fixture(tmp_path)
+    adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    adapter.service = service
+    adapter._active_binding = ContextVar('test_accounting_negative', default=None)
+    class Authority:
+        config = SimpleNamespace(consumer='street-story')
+        clock = staticmethod(time.monotonic)
+        def __init__(self):
+            self.calls = []
+        async def rpc(self, name, payload):
+            self.calls.append((name, copy.deepcopy(payload)))
+            if name == 'workload_reserve':
+                return {'request_id': payload['p_request_id'], 'fence': 2, 'ttl_ms': 60000}, self.clock()
+            if name == 'workload_finalize':
+                raise ResourceError('RESOURCE_CONTROL_UNAVAILABLE')
+            return {}, self.clock()
+    authority = Authority()
+    binding, _ = adapter.attempt({'id': sid, 'photo_sha256': photo}, 'vision_native', 'negative-accounting')
+    admitted = adapter.fenced_admission(WorkloadAdmission(authority, 'codex-native:owner-reserve'))
+    with pytest.raises(ResourceError):
+        async with admitted(binding, {'estimated_tokens': 100}) as lease:
+            if phase == 'unknown':
+                await lease.before_send({})
+            await adapter.checkpoint(binding, {'binding': binding, 'phase': phase})
+            await lease.finalize({'usage': 'unknown'}, 'unknown' if phase == 'unknown' else 'aborted')
+    record, receipt = adapter._accounting_record(binding)
+    assert record['state'] == 'pending' and receipt['phase'] == phase and not receipt.get('result')
+    requests = [p for n, p in authority.calls if n == 'workload_finalize']
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0]['p_actual_tokens'] is None
+    assert requests[0]['p_status'] == ('unknown' if phase == 'unknown' else 'aborted')
+
+
+@pytest.mark.asyncio
 async def test_pipeline_comparisons_share_fifteen_minute_permission_and_owned_transport(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     for attempt in ('first', 'second'):
@@ -120,6 +251,42 @@ async def test_pipeline_comparisons_share_fifteen_minute_permission_and_owned_tr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['config/read', 'account/rateLimits/read'])
+@pytest.mark.parametrize('external_stop', [False, True])
+async def test_unsent_setup_deadline_is_local_but_external_cancellation_propagates(tmp_path, stage, external_stop):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    entered = asyncio.Event()
+    async def blocked(method, params, timeout=30):
+        if method == stage:
+            entered.set()
+            await asyncio.Event().wait()
+        return await original(method, params, timeout)
+    client.request = blocked
+    provider.setup_timeout = 1 if external_stop else .01
+    task = asyncio.create_task(provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context,
+        {'attempt_id': 'setup'}))
+    await entered.wait()
+    if external_stop:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(RetryableProviderError, match='native_setup_timeout'):
+            await task
+    assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    assert receipts[-1].get('error_code') == (None if external_stop else 'native_setup_timeout')
+    assert finalized[-1][1] == 'aborted' and finalized[-1][0]['actual_total_tokens'] == 0
+    # The same independently authorized provider can still perform healthy
+    # work. No shared account cooldown or inferred negative model verdict.
+    client.request = original
+    result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context,
+        {'attempt_id': 'healthy'})
+    assert result['receipt']['phase'] == 'completed' and len(sends) == 1
+
+
+@pytest.mark.asyncio
 async def test_below_reserve_never_sends_model_turn(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     client.used = 98
@@ -127,6 +294,262 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
         await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, {'attempt_id': 'first'})
     assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
     assert receipts[-1]['phase'] == 'created'
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    assert finalized[-1][1] == 'aborted'
+    assert finalized[-1][0]['actual_total_tokens'] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_article_reference', [False, True])
+async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path, with_article_reference):
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    map_file = io.BytesIO()
+    Image.new('RGB', (67, 13), 'blue').save(map_file, format='PNG')
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/png', map_file.getvalue())]
+    host = {'source_map_receipt': {'manifest': {'image_sha256': 'frozen-map'},
+        'model_source_sha256': hashlib.sha256(source).hexdigest(),
+        'map_image_sha256': hashlib.sha256(map_file.getvalue()).hexdigest()}, 'schema': VERDICT_SCHEMA}
+    if with_article_reference:
+        images.append(('ARTICLE REF 1', 'image/jpeg', source))
+        host['source_text_receipt'] = {'article_reference_receipt': [{
+            'label': 'ARTICLE REF 1', 'article_id': 'received-article',
+            'mime_type': 'image/jpeg', 'model_image_sha256': hashlib.sha256(source).hexdigest()}]}
+    client.turn_status = 'inProgress'
+    provider.timeout = .03
+    with pytest.raises(RetryableProviderError, match='native_turn_outcome_unknown'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'SOURCE and MAP geometry', images,
+                                          {'attempt_id': 'spatial'}, host)
+    first = next(params for method, params in client.calls if method == 'turn/start')
+    assert [part['text'] for part in first['input'] if part['type'] == 'text'][1:] == [i[0] for i in images]
+    pixels = [base64.b64decode(part['url'].split(',', 1)[1]) for part in first['input'] if part['type'] == 'image']
+    assert pixels == [i[2] for i in images]
+    receipt = receipts[-1]
+    assert receipt['phase'] == 'unknown'
+    binding = {**receipt['binding'], **{key: receipt[key] for key in (
+        'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+    client.used = 99
+    client.turn_status = 'completed'
+    provider.timeout = 1
+    readback = await provider.compare_source_map(story, {}, 'different incoming request', [], binding, {})
+    assert readback['host_context'] == host
+    assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert len(sends) == 1
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_source_map_quota_denial_is_unsent_and_large_input_reaches_native(tmp_path):
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    client.used = 99
+    with pytest.raises(RetryableProviderError, match='below_reserve'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'bounded geometry', images,
+                                         {'attempt_id': 'spatial'}, host)
+    assert not sends and receipts[-1]['provider_send_state'] == 'not_sent'
+    client.used = 0
+    large_prompt = 'x' * 70000
+    result = await provider.compare_source_map(story, VERDICT_SCHEMA, large_prompt, images,
+                                              {'attempt_id': 'large-input'}, host)
+    assert result['receipt']['input_utf8_bytes'] > 65536
+    assert result['receipt']['phase'] == 'completed' and len(sends) == 1
+    turn = next(params for method, params in client.calls if method == 'turn/start')
+    assert turn['input'][0]['text'] == large_prompt
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad_reference', ['unissued', 'changed_bytes'])
+async def test_source_map_optional_article_photo_must_match_issued_receipt_before_any_send(tmp_path, bad_reference):
+    from street_story.providers import PermanentProviderError
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    if bad_reference == 'changed_bytes':
+        host['source_text_receipt'] = {'article_reference_receipt': [{
+            'label': 'ARTICLE REF 1', 'article_id': 'received-article',
+            'mime_type': 'image/jpeg', 'model_image_sha256': '0' * 64}]}
+    with pytest.raises(PermanentProviderError, match='image_binding_invalid'):
+        await provider.compare_source_map(story, VERDICT_SCHEMA, 'Compare actual acquired media',
+            [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source),
+             ('ARTICLE REF 1', 'image/jpeg', source)], {'attempt_id': 'unbound-ref'}, host)
+    assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('violation', [None, 'uniqueItems', 'allOf'])
+async def test_source_map_native_subset_preserves_frozen_host_constraints(tmp_path, violation):
+    from jsonschema import ValidationError
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema['properties']['observations']['uniqueItems'] = True
+    schema['allOf'] = [{'if': {'properties': {'status': {'const': 'mismatch'}}},
+        'then': {'properties': {'confidence': {'maximum': 1 if violation != 'allOf' else .5}}}}]
+    original_schema = copy.deepcopy(schema)
+    original_request = client.request
+    async def request(method, params, timeout=30):
+        if method == 'turn/start':
+            def check(node):
+                if isinstance(node, dict):
+                    assert not {'uniqueItems', 'allOf', 'if', 'then'} & node.keys()
+                    for value in node.values():
+                        check(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        check(value)
+            check(params['outputSchema'])
+        response = await original_request(method, params, timeout)
+        if method == 'thread/read' and violation == 'uniqueItems':
+            message = response['thread']['turns'][0]['items'][-1]
+            payload = json.loads(message['text'])
+            payload['observations'] *= 2
+            message['text'] = json.dumps(payload)
+        return response
+    client.request = request
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    try:
+        if violation:
+            with pytest.raises(RetryableProviderError, match='native_visual_waiting') as caught:
+                await provider.compare_source_map(story, schema, 'Geometry operation', images,
+                                                  {'attempt_id': 'native-subset'}, host)
+            assert isinstance(caught.value.__cause__, ValidationError)
+            assert receipts[-1]['phase'] == 'failed'
+        else:
+            result = await provider.compare_source_map(story, schema, 'Geometry operation', images,
+                                                      {'attempt_id': 'native-subset'}, host)
+            assert result['receipt']['phase'] == 'completed'
+            receipt = result['receipt']
+            binding = {**receipt['binding'], **{key: receipt[key] for key in (
+                'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+            await provider.compare_source_map(story, {}, 'Changed input', [], binding, {})
+            assert sum(method == 'turn/start' for method, _ in client.calls) == 1
+        frozen = receipts[-1]['frozen_source_map']
+        assert frozen['host_contract']['properties']['observations']['uniqueItems'] is True
+        assert frozen['host_contract']['allOf'] == original_schema['allOf']
+        assert frozen['host_only_constraint_paths']
+        assert schema == original_schema and len(sends) == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_new_identity_plan_reaches_component_admission_without_transport_discard(tmp_path):
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema['properties']['observations']['uniqueItems'] = True
+    request = client.request
+
+    async def duplicate(method, params, timeout=30):
+        response = await request(method, params, timeout)
+        if method == 'thread/read':
+            message = response['thread']['turns'][0]['items'][-1]
+            payload = json.loads(message['text'])
+            payload['observations'] *= 2
+            message['text'] = json.dumps(payload)
+        return response
+
+    client.request = duplicate
+    host = {'independent_plan_components': True, 'schema': schema,
+        'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                              'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    images = [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)]
+    try:
+        result = await provider.compare_source_map(story, schema, 'Identity plan', images,
+                                                  {'attempt_id': 'components'}, host)
+        assert result['result']['observations'] == ['Distinct facade', 'Distinct facade']
+        assert result['receipt']['phase'] == 'completed'
+        frozen = result['receipt']['frozen_source_map']
+        assert frozen['host_contract'] == schema and result['host_context'] == host
+        binding = {**result['receipt']['binding'], **{key: result['receipt'][key] for key in (
+            'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+        readback = await provider.compare_source_map(story, {}, 'Changed input', [], binding, {})
+        assert readback['result'] == result['result'] and readback['host_context'] == host
+        assert len(sends) == sum(method == 'turn/start' for method, _ in client.calls) == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_source_map_native_citation_choice_is_satisfiable_and_host_proof_unchanged(tmp_path):
+    from jsonschema import Draft202012Validator, ValidationError
+    from street_story.identity_proof import architectural_text_decision_schema
+    provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
+    correspondence = architectural_text_decision_schema(
+        ['osm:way:1'], ['article:1'], source_span_refs=['article:1:span:0'],
+        structural=True)['properties']['correspondences']
+    schema = {'type': 'object', 'properties': {'correspondences': correspondence},
+              'required': ['correspondences'], 'additionalProperties': False}
+    original_schema = copy.deepcopy(schema)
+    answer = {'correspondences': [{'article_id': 'article:1',
+        'source_span_ref': 'article:1:span:0', 'source_observation': 'Observed facade',
+        'status': 'stable_match', 'reason': 'Model comparison', 'feature_kind': 'roof_form'}]}
+    # Use an actually issued structural feature, without changing the proof schema.
+    answer['correspondences'][0]['feature_kind'] = correspondence['items']['properties']['feature_kind']['enum'][0]
+    original_request = client.request
+    async def request(method, params, timeout=30):
+        if method == 'turn/start':
+            issued = params['outputSchema']['properties']['correspondences']['items']
+            assert set(issued['required']) == set(issued['properties'])
+            assert 'source_quote' not in issued['properties'] and 'oneOf' not in issued
+            Draft202012Validator(params['outputSchema']).validate(answer)
+            both = copy.deepcopy(answer)
+            both['correspondences'][0]['source_quote'] = 'Another form'
+            with pytest.raises(ValidationError):
+                Draft202012Validator(params['outputSchema']).validate(both)
+            with pytest.raises(ValidationError):
+                Draft202012Validator(schema).validate(both)
+        response = await original_request(method, params, timeout)
+        if method == 'thread/read':
+            response['thread']['turns'][0]['items'][-1]['text'] = json.dumps(answer)
+        return response
+    client.request = request
+    host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                 'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+    result = await provider.compare_source_map(story, schema, 'Compare received evidence',
+        [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)],
+        {'attempt_id': 'citation-choice'}, host)
+    assert result['result'] == answer
+    frozen = result['receipt']['frozen_source_map']
+    assert frozen['host_contract'] == original_schema and schema == original_schema
+    assert frozen['citation_transport'] == 'unchanged'  # Issued host schema already requires pointers.
+    binding = {**result['receipt']['binding'], **{key: result['receipt'][key] for key in (
+        'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
+    await provider.compare_source_map(story, {}, 'Changed input', [], binding, {})
+    assert receipts[-1]['frozen_source_map'] == frozen
+    assert len(sends) == 1 and sum(method == 'turn/start' for method, _ in client.calls) == 1
+    await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('lost', ['turn_start', 'read_timeout'])
+async def test_recovered_unsent_admission_cannot_keep_not_sent_after_actual_turn(tmp_path, lost):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    async def request(method, params, timeout=30):
+        value = await original(method, params, timeout)
+        if lost == 'turn_start' and method == 'turn/start':
+            raise TimeoutError('Lost reply after the actual addressed send')
+        return value
+    client.request = request
+    if lost == 'read_timeout':
+        client.block_read = True
+        provider.timeout = .03
+    binding = {'attempt_id': 'recovered-admission', 'phase': 'created',
+               'provider_send_state': 'not_sent', 'retry_safe': True}
+    with pytest.raises(RetryableProviderError):
+        await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+    saved = receipts[-1]
+    assert saved['provider_send_state'] == 'possibly_sent' and saved['retry_safe'] is False
+    assert saved['phase'] in {'prompt_intent', 'submitted', 'unknown'}
+    assert len(sends) == 1 and sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert finalized[-1][1] == 'unknown'
+    assert finalized[-1][0]['actual_total_tokens'] is None
+    await provider.close()
 
 
 @pytest.mark.asyncio
@@ -149,6 +572,8 @@ async def test_resource_denial_preserves_dispatch_phase_and_authority_retry(tmp_
     assert exc.value.retry_at == provider.service.store.now() + 120
     assert receipts[-1]['phase'] == 'created'
     assert receipts[-1]['route_failure']['code'] == 'RESOURCE_DAILY_BUDGET'
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    assert receipts[-1]['retry_safe'] is True
     assert receipts[-1]['thread_id'] == binding.get('thread_id')
     assert receipts[-1]['turn_id'] == binding.get('turn_id')
     assert not client.calls and not sends and not finalized
@@ -256,3 +681,45 @@ async def test_worker_cancellation_interrupts_owned_turn_and_keeps_unknown_recei
         await task
     assert sum(method == 'turn/interrupt' for method, _ in client.calls) == 1
     assert receipts[-1]['phase'] == 'unknown' and finalized[-1][1] == 'unknown'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_map', [False, True])
+async def test_admission_counts_actual_schema_instructions_labels_and_unicode_separately(tmp_path, source_map):
+    provider, client, source, story, context, _, _, _ = setup(tmp_path)
+    workloads = []
+    original = provider.admission
+    @asynccontextmanager
+    async def observed(binding, workload):
+        workloads.append(dict(workload))
+        async with original(binding, workload) as lease:
+            yield lease
+    provider.admission = observed
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema['description'] = 'Архитектурное описание. ' * 300
+    context['observation'] = 'Кириллица остаётся Unicode'
+    if source_map:
+        host = {'source_map_receipt': {'model_source_sha256': hashlib.sha256(source).hexdigest(),
+                                     'map_image_sha256': hashlib.sha256(source).hexdigest()}}
+        result = await provider.compare_source_map(story, schema, 'Описание SOURCE и MAP',
+            [('SOURCE', 'image/jpeg', source), ('MAP', 'image/jpeg', source)], {'attempt_id': 'full-envelope'}, host)
+    else:
+        result = await provider.compare_visual(None, story, schema, context, {'attempt_id': 'full-envelope'})
+    thread = next(params for method, params in client.calls if method == 'thread/start')
+    turn = next(params for method, params in client.calls if method == 'turn/start')
+    # Compare admission with the actual two emitted RPCs, excluding inline
+    # image data which the same installed estimator accounts separately.
+    actual = {'input': [part for part in turn['input'] if part['type'] == 'text'],
+              'outputSchema': turn['outputSchema'], 'baseInstructions': thread['baseInstructions'],
+              'developerInstructions': thread['developerInstructions']}
+    serialized = json.dumps(actual, ensure_ascii=False, separators=(',', ':'))
+    assert workloads[0]['input_chars'] == len(serialized) > len(turn['input'][0]['text'])
+    assert workloads[0]['max_output_tokens'] == 8192
+    metadata = result['receipt']['request_input']
+    assert metadata['text_chars'] == len(serialized)
+    assert metadata['text_utf8_bytes'] == len(serialized.encode()) > metadata['text_chars']
+    assert metadata['image_count'] == 2
+    assert metadata['image_bytes'] == sum(len(base64.b64decode(part['url'].split(',', 1)[1]))
+        for part in turn['input'] if part['type'] == 'image')
+    assert metadata['unexposed_provider_context'] == 'unknown'
+    await provider.close()

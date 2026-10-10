@@ -18,6 +18,7 @@ from live_interaction import with_live_tool_parts
 
 from .identity_lifecycle import PROTECTED, confidence, distance, visual_match
 from .identity_telemetry import record_identity_event
+from .identity_proof import accepted_identity
 from .service import ConflictError, canonical, digest
 
 
@@ -93,7 +94,7 @@ class LiveVisualComparisonMixin:
             if not url or unsupported_reference_url(url):
                 continue
             reference_id = 'ref_' + uuid.uuid5(uuid.NAMESPACE_URL, str(candidate['candidate_id']) + '\n' + url).hex
-            allowed = ('image_url', 'article_url', 'kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title')
+            allowed = ('image_url', 'article_url', 'kind', 'alt', 'figcaption', 'section_heading', 'context_text', 'article_title', 'detail_page_url')
             media = [{key: m[key] for key in allowed if key in m} for m in candidate.get('article_media', []) if m.get('image_url') == supplied]
             copied = {key: value for key, value in candidate.items() if key not in
                 {'reference_evidence', 'model_image_sha256', 'image_sha256', 'source_sha256'}}
@@ -199,7 +200,9 @@ class LiveVisualComparisonMixin:
         if (_story.get('error_code') == 'visual_identity_conflict'
                 and int(identity.get('generation') or 0) == int(research.get('identity_generation') or 0)):
             return
-        if identity.get('status') in {'match', 'owner_confirmed'}:
+        if accepted_identity(identity, photo_sha256=_story['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
             return
         now = self.service.store.now()
         pages = state.get('sources') or {}
@@ -353,25 +356,48 @@ class LiveVisualComparisonMixin:
 
     @staticmethod
     def _visual_reply(comparison_id, candidates, identity, remaining):
+        from .identity_source_selection import compact_candidate_catalog
+        from .identity_candidate_policy import order_research_candidates
+        priority = identity.get('research_priority') or {}
+        physical = [c for c in order_research_candidates(identity.get('candidates', []), priority) if c.get('identity_eligible') is not False
+                    and not str(c.get('candidate_id', '')).startswith('web:')][:32]
+        compact = compact_candidate_catalog(physical)
+        physical_packet = []
+        for original, values in zip(physical, compact['rows']):
+            row = {key: value for key, value in zip(compact['columns'], values) if value is not None}
+            component = original.get('physical_component') or {}
+            if component:
+                row['physical_component'] = {key: component[key] for key in
+                    ('proof', 'parent_candidate_id', 'parent_source_url', 'member_candidate_id', 'role') if key in component}
+                context = original.get('parent_relation_context') or {}
+                row['parent_relation_context'] = {'candidate_id': context.get('candidate_id'),
+                    'scope': 'parent_relation_only', 'tags': {key: str(value)[:120]
+                        for key, value in (context.get('tags') or {}).items()
+                        if key in {'name', 'building', 'addr:street', 'addr:housenumber'}}}
+            physical_packet.append(row)
         return {'comparison_id': comparison_id, 'snapshot_kind': 'source_and_references',
+            'camera_hints': identity.get('camera_hints') or {},
+            'camera_position_verified': identity.get('camera_position_verified') is True,
             'references': [{'label': f'REF {i}', 'candidate_id': c['candidate_id'], 'name': c['name'],
                 'source_url': c['reference_image_urls'][0],
                 **({'reference_id': c['reference_id'], 'article_url': c.get('url'),
-                    'context': [{key: media[key] for key in ('alt','figcaption','section_heading','context_text') if key in media}
+                    'context': [{key: media[key] for key in ('alt','figcaption','section_heading','context_text','detail_page_url') if key in media}
                                 for media in c.get('article_media') or []]})}
                 for i, c in enumerate(candidates, 1)],
-            'physical_candidates': [{'candidate_id': c['candidate_id'], 'name': c.get('name', ''),
-                'url': c.get('url'), 'distance_m': c.get('distance_m'),
-                **{key: c[key] for key in ('map_address', 'map_coordinates', 'road_name', 'map_object') if key in c},
-                'alias_candidate_ids': c.get('alias_candidate_ids', [])}
-                for c in identity.get('candidates', []) if c.get('identity_eligible') is not False
-                and not str(c.get('candidate_id', '')).startswith('web:')][:32],
+            'physical_candidates': physical_packet,
+            'research_priority': {key: priority[key] for key in ('active_candidate_ids',
+                'reason', 'next_question', 'next_step', 'contradictions') if key in priority},
+            'reserve_candidate_count': len(priority.get('reserve_candidate_ids') or []),
+            'physical_geometry_policy': compact['geometry_policy'],
             'remaining_illustrations': remaining,
             'search_feedback_instruction': (
                 'Сначала явно укажи source_subject_scope: building, occupant, other_physical_object или unclear '
                 'по главному предмету всего SOURCE. Крупный фасад целого дома — building, даже если видна '
                 'вывеска арендатора или удалось сопоставить только его вход. Для building выбери ID самого '
                 'здания либо его адресной точки; mapped amenity/shop/office без building — организация, '
+                'Если multipolygon содержит раздельные корпуса, parent_relation_context — контекст всей '
+                'relation, а identity должна указывать точный physical_component; адрес или имя relation '
+                'не становятся собственными данными каждого корпуса. '
                 'не идентификатор здания. Не подменяй дом организацией даже при доказанном совпадении входа. '
                 'Верни search_feedback: тип REF (modern_exterior/interior/historical/diagram/unclear), '
                 'modern_exterior означает реальную фотографию внешнего вида. Архитектурный рендер, '
@@ -399,7 +425,7 @@ class LiveVisualComparisonMixin:
                 'за счёт придуманного зума или иной точки съёмки при близкой визуально подходящей '
                 'альтернативе. При неразрешённом противоречии верни uncertain. '
                 'Оценка не является точным измерением или самостоятельным доказательством identity.'),
-            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. Map_object описывает именно mapped_entry: парковка, вход, учреждение, улица и здание не становятся одним объектом от близости точек. Если SOURCE показывает целый дом, выбери физическое здание либо документированную адресную точку дома; ресторан, магазин и другое учреждение внутри дома — отдельные сущности. Название арендатора может помочь поиску, но не переименовывает дом и не доказывает связь с ним. Reverse display_name — контекст ближайшего объекта, а не имя здания на SOURCE. Связывай REF с подходящим типом объекта и реальным адресом; при неразрешённой привязке верни uncertain. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Разделяй устойчивую геометрию и изменяемую отделку: цвет стен, вывески и цветочные ящики сами по себе не устанавливают ни match, ни mismatch. Положительный вывод требует видимых общих отличительных положений и пропорций окон, выступов, арок и карниза. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
+            'instruction': 'Сравни SOURCE и REF по отличительным деталям; запиши вердикт через record_place_comparison. Для определения объекта используй современные фотографии; архивный исторический снимок не является подходящим REF и не даёт match. Для web REF candidate_id — показанный REF; reference_subject_candidate_id — доказанный физический кандидат из physical_candidates. object_tags описывает тип точного mapped candidate: парковка, вход, учреждение, улица и здание не становятся одним объектом от близости точек. Если SOURCE показывает целый дом, выбери физическое здание либо документированную адресную точку дома; ресторан, магазин и другое учреждение внутри дома — отдельные сущности. Название арендатора может помочь поиску, но не переименовывает дом и не доказывает связь с ним. Reverse display_name — контекст ближайшего объекта, а не имя здания на SOURCE. Связывай REF с подходящим типом объекта и реальным адресом; при неразрешённой привязке верни uncertain. Проверяй альтернативы всего shortlist. Расстояния — контекст съёмки, а не доказательство identity. Разделяй устойчивую геометрию и изменяемую отделку: цвет стен, вывески и цветочные ящики сами по себе не устанавливают ни match, ни mismatch. Положительный вывод требует видимых общих отличительных положений и пропорций окон, выступов, арок и карниза. Не объясняй различия геометрии или композиции предположениями о ремонте, реконструкции, переносе или добавлении элементов: если без этих недоказанных изменений match не получается, верни uncertain. Название статьи, реклама и другие объекты не доказательство.'}
 
     async def _compare_place_images(self, session, args, *, page_budget=4, expected_scope=None, search_budget=1, parallel_refill=False):
         story, research = self.service._identity_snapshot(session.resource_id)
@@ -424,7 +450,8 @@ class LiveVisualComparisonMixin:
         if (story.get('error_code') == 'visual_identity_conflict'
                 and int(identity.get('generation') or 0) == generation):
             return {'identity_conflict': True, 'exhausted': True, 'visual_identity': identity}
-        if identity.get('status') in {'match', 'owner_confirmed'}:
+        if accepted_identity(identity, photo_sha256=story['photo_sha256'], generation=generation,
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0)):
             return {'already_resolved': True, 'visual_identity': identity}
         try:
             source_bytes = self.service._source_photo_bytes(story['id'])
@@ -451,7 +478,8 @@ class LiveVisualComparisonMixin:
                               and 'queue' in lease) else None
         if state is None:
             initial_selection = None
-            selector = getattr(self.service.providers.gemini, 'select_identity_sources', None)
+            providers = getattr(self.service, 'providers', None)
+            selector = getattr(getattr(providers, 'gemini', None), 'select_identity_sources', None)
             observed = [{'url': c['url'], 'title': c.get('name', '')}
                         for c in identity.get('candidates', [])
                         if reference_eligible(c) and c.get('url') and c.get('reference_image_urls')
@@ -465,7 +493,7 @@ class LiveVisualComparisonMixin:
                 try:
                     selected = await selector(selection_query, observed, {**story, '_identity_selection_image': image})
                 except (GeminiUnavailable, RetryableProviderError, PermanentProviderError):
-                    fallback = getattr(getattr(self.service.providers, 'research', None), 'select_identity_sources', None)
+                    fallback = getattr(getattr(providers, 'research', None), 'select_identity_sources', None)
                     if not callable(fallback):
                         raise
                     selected = await fallback(selection_query, observed, story)
@@ -474,7 +502,8 @@ class LiveVisualComparisonMixin:
                 initial_selection = {**initial_selection, 'observed_sources': observed,
                                      'selected_urls': sorted(allowed_urls)}
             queue = []
-            for candidate in identity.get('candidates', []):
+            from .identity_candidate_policy import order_research_candidates
+            for candidate in order_research_candidates(identity.get('candidates', []), identity.get('research_priority')):
                 if (reference_eligible(candidate) and candidate.get('reference_image_urls')
                         and candidate.get('discovery') != 'web_article_media'
                         and (initial_selection is None or candidate.get('url') in allowed_urls)):
@@ -666,6 +695,15 @@ class LiveVisualComparisonMixin:
                 or (url and url in {str(c.get('url') or '').rstrip('/'),
                                    str(c.get('wikipedia_url') or '').rstrip('/')})), default=float('inf'))
 
+        def reference_alignment(candidate):
+            subject = (candidate.get('reference_reuse') or {}).get('subject_candidate_id')
+            ids = {candidate.get('candidate_id'), subject}
+            url = str(candidate.get('url') or '').rstrip('/')
+            return min(({'ahead': 0, 'off_axis': 2}.get(c.get('camera_alignment'), 1)
+                for c in physical if ids.intersection({c.get('candidate_id'), *(c.get('alias_candidate_ids') or [])})
+                or (url and url in {str(c.get('url') or '').rstrip('/'),
+                                   str(c.get('wikipedia_url') or '').rstrip('/')})), default=1)
+
         def page_distance(page):
             source = page.get('source') or {}
             ids = set(source.get('memory_candidate_ids') or [])
@@ -676,6 +714,10 @@ class LiveVisualComparisonMixin:
                 or (url and url in {str(c.get('url') or '').rstrip('/'),
                                    str(c.get('wikipedia_url') or '').rstrip('/')})), default=float('inf'))
 
+        if not unsettled:
+            from .reference_triage import triage_queue
+            await triage_queue(self, session, state, story, source_bytes, identity,
+                               generation=generation, control_revision=expected['control_revision'])
         if state['queue'] and not unsettled:
             previous_head = state['queue'][0].get('reference_id')
             # Cover distinct source pages before repeatedly consuming one
@@ -686,8 +728,16 @@ class LiveVisualComparisonMixin:
                 for pair in state.get('parallel_pairs', [])
                 if pair.get('phase') not in {'completed', 'failed', 'skipped'})
             state['source_comparison_coverage'] = dict(coverage)
-            state['queue'].sort(key=lambda c: (coverage[c.get('url')],
-                reference_distance(c), 0 if c.get('reference_reuse') else 1))
+            def geometry_priority(candidate):
+                metres = reference_distance(candidate)
+                # Direction is a soft tie-break within a local distance band.
+                # Missing heading contributes no preference or exclusion.
+                band = int(metres // 100) if metres != float('inf') else float('inf')
+                return (coverage[candidate.get('url')], band, reference_alignment(candidate),
+                        {'promising': 0, 'unclear': 1, 'unlikely': 2}.get(
+                            (candidate.get('reference_triage') or {}).get('priority'), 1),
+                        metres, 0 if candidate.get('reference_reuse') else 1)
+            state['queue'].sort(key=geometry_priority)
             if state['queue'][0].get('reference_id') != previous_head:
                 record_identity_event(self.service, story['id'], 'identity_reference_priority', {
                     'generation': generation, 'reason': 'current_shortlist_proximity',
@@ -892,6 +942,10 @@ class LiveVisualComparisonMixin:
                 await acquire_page(page)
             state['web_searched'] = state['searches'].get(query, {}).get('status') == 'completed'
         self._save_visual_queue(session, state)
+        if state['queue'] and not unsettled:
+            from .reference_triage import triage_queue
+            await triage_queue(self, session, state, story, source_bytes, identity,
+                               generation=generation, control_revision=expected['control_revision'])
         references, evidence, candidates = [], [], []
         from .identity_references import unsupported_reference_url
         reference_limit = min(4, max(1, int(getattr(session, 'visual_reference_limit', 1))))
@@ -901,6 +955,13 @@ class LiveVisualComparisonMixin:
                     if item.get('url') not in {c.get('url') for c in candidates}), None)
                 if other is not None:
                     state['queue'].insert(0, state['queue'].pop(other))
+            if not unsettled:
+                # A later lane may address a newly acquired page outside the
+                # preceding nine-frame atlas. Check it before creating a pair.
+                await triage_queue(self, session, state, story, source_bytes, identity,
+                    generation=generation, control_revision=expected['control_revision'])
+                if not state['queue']:
+                    break
             candidate = state['queue'].pop(0)
             if not reference_eligible(candidate):
                 continue  # Context articles remain URL sources, never physical POI candidates.
@@ -970,16 +1031,28 @@ class LiveVisualComparisonMixin:
         binding = research.get('photo_camera_hints') or {}
         hints = (binding.get('metadata') if binding.get('photo_sha256') == story['photo_sha256']
                  and isinstance(binding.get('metadata'), dict) else read_camera_hints(source_bytes))
-        reply['camera_hints'] = model_camera_hints(hints)
+        reply['camera_hints'] = {**model_camera_hints(hints),
+            'direction_status': hints.get('direction_status', 'missing'),
+            **{key: hints[key] for key in ('pixel_orientation', 'horizontal_error_m') if key in hints},
+            **({key: hints[key] for key in ('direction_degrees', 'direction_ref') if key in hints}
+               if identity.get('camera_position_verified') is True
+               and hints.get('direction_status') == 'true_north' and hints.get('direction_ref') == 'T' else {})}
         reply['camera_hints_instruction'] = (
             'focal_length_35mm уже является эквивалентным фокусным расстоянием. '
             'Не умножай его автоматически на digital_zoom_ratio: поля могут описывать один и тот же зум. '
-            'distance_m — расстояние до координаты POI, которая может обозначать центр здания или территории, '
-            'а не точную дистанцию до видимого фасада.')
+            'distance_provenance указывает, измерено ли distance_m до наблюдаемой границы здания '
+            'или representative point; representative_distance_m может обозначать центр территории. '
+            'Это пространственные подсказки, а не доказательство identity или точная дистанция до видимого фасада.')
         image_parts = [{'label': 'SOURCE', 'mime_type': story.get('photo_mime_type') or 'image/jpeg',
-            'data': base64.b64encode(source_bytes).decode('ascii')}] + [
-            {'label': f'REF {i}', 'mime_type': mime, 'url': url}
-            for i, (_cid, mime, url) in enumerate(references, 1)]
+            'data': base64.b64encode(source_bytes).decode('ascii')}]
+        for i, ((_cid, mime, url), candidate) in enumerate(zip(references, candidates), 1):
+            cached = (session.state.get('_reference_triage_images') or {}).get(candidate['reference_id']) or {}
+            # Reuse downloaded originals only in this RAM session. Atlas tiles
+            # never become final pair images or durable image payloads.
+            image_parts.append({'label': f'REF {i}', 'mime_type': cached.get('mime_type', mime),
+                **({'data': base64.b64encode(cached['bytes']).decode('ascii')}
+                   if cached.get('url') == url and isinstance(cached.get('bytes'), bytes)
+                   else {'url': url})})
         state['pending'] = {'id': comparison_id, 'candidates': candidates,
             'evidence': evidence, 'reply': reply, 'image_parts': image_parts}
         self._save_visual_queue(session, state)
@@ -1021,15 +1094,21 @@ class LiveVisualComparisonMixin:
             self._assert_visual_current(row, research, state, session=session)
             pair = next((item for item in state.get('parallel_pairs', [])
                          if item['id'] == pending['id'] and item.get('phase') == 'result'), None)
-            accepted_before = (research.get('visual_identity') or {}).get('status') in {'match', 'owner_confirmed'}
+            accepted_before = accepted_identity(research.get('visual_identity') or {}, photo_sha256=row['photo_sha256'],
+                generation=int(research.get('identity_generation') or 0),
+                control_revision=int(((research.get('research_controls') or {}).get('identity') or {}).get('revision') or 0))
             conflict_before = row['error_code'] == 'visual_identity_conflict'
             if (int(research.get('identity_generation') or 0) != state['generation']
                     or row['photo_sha256'] != state['photo_sha256']
                     or ((row['state'] in PROTECTED or accepted_before or conflict_before) and pair is None)):
                 raise ConflictError('visual_comparison_changed', 'Фото или подтверждение объекта изменилось.')
             from .identity_subject_binding import bind_reference_subject
-            shortlist = (research.get('visual_identity') or {}).get('candidates', [])
-            bound = bind_reference_subject(raw, pending['candidates'], shortlist, pending['evidence'])
+            received_identity = research.get('visual_identity') or {}
+            shortlist = list({c['candidate_id']: c for c in [
+                *(received_identity.get('observed_candidates') or []),
+                *(received_identity.get('candidates') or [])]}.values())
+            bound = bind_reference_subject(raw, pending['candidates'], shortlist, pending['evidence'],
+                observed_candidates=(research.get('visual_identity') or {}).get('observed_candidates') or [])
             raw = bound['result']
             aliases = {r['normalized_value']: r['poi_id'] for r in db.execute(
                 "SELECT normalized_value,poi_id FROM poi_aliases WHERE namespace='street_story_candidate'")}
@@ -1074,6 +1153,24 @@ class LiveVisualComparisonMixin:
                     saved_feedback = {**feedback, 'candidate_ids': valid_ids,
                         'reason': feedback['reason'][:500], 'next_query': feedback['next_query'].strip()[:240]}
                     verdict_summary['search_feedback'] = saved_feedback
+                    if valid_ids and not matched and not accepted_before and not conflict_before:
+                        from .identity_candidate_policy import order_research_candidates
+                        from .identity_architectural_context import _physical_subject
+                        body_ids = [c['candidate_id'] for c in shortlist if _physical_subject(c)]
+                        active_ids = [cid for cid in valid_ids if cid in body_ids]
+                        if active_ids:
+                            priority = {**(received_identity.get('research_priority') or {}),
+                                'photo_sha256': state['photo_sha256'], 'generation': state['generation'],
+                                'control_revision': state.get('control_revision', 0),
+                                'active_candidate_ids': active_ids,
+                                'reserve_candidate_ids': [cid for cid in body_ids if cid not in active_ids],
+                                'reason': saved_feedback['reason'], 'next_question': saved_feedback['reason'],
+                                'next_step': 'existing_images' if not saved_feedback['next_query'] else 'targeted_search',
+                                'last_comparison_id': pending['id'], 'identity_established': False}
+                            research['visual_identity'] = {**received_identity, 'research_priority': priority}
+                            # Reorder unsent work only. Pending pairs/receipts
+                            # retain their immutable operation IDs and outcomes.
+                            state['queue'] = order_research_candidates(state.get('queue') or [], priority)
                     # An unusable reference is not a rejection of its building.
                     # Retain the gallery, but immediately give unread pages a
                     # turn instead of consuming more interiors from this page.
@@ -1126,7 +1223,7 @@ class LiveVisualComparisonMixin:
                 identity = {**(research.get('visual_identity') or {}), 'status': 'match',
                     'candidate_id': selected['candidate_id'], 'candidate_name': selected['name'][:180],
                     'candidate_url': selected.get('url'), 'source_links': selected.get('source_urls') or [selected.get('url')],
-                    'visual_reference_verified': True, 'confidence': confidence(raw),
+                    'visual_reference_verified': True, 'identity_verified': True, 'proof_kind': 'visual_reference', 'confidence': confidence(raw),
                     'observations': [str(v)[:300] for v in raw['observations'][:6]],
                     'reference_evidence': [e for e in evidence if e.get('subject_candidate_id', e['candidate_id']) == raw['candidate_id']],
                     'reference_subject_binding': bound.get('binding'),
@@ -1186,6 +1283,14 @@ class LiveVisualComparisonMixin:
                 observable_correspondences={'type':'array','items':{'type':'object'}})
             item_schema['required'] += ['shared_distinctive_geometry','observable_correspondences']
         validator = Draft202012Validator(item_schema)
+        # Planning feedback enriches the next search but does not determine
+        # whether an addressed negative comparison was completed. Keep the
+        # provider request strict, and retain the complete gate for MATCH.
+        from copy import deepcopy
+        negative_schema = deepcopy(item_schema)
+        negative_schema['required'] = [key for key in negative_schema['required']
+            if key not in {'search_feedback', 'source_subject_scope'}]
+        negative_validator = Draft202012Validator(negative_schema)
         items, duplicates = {}, set()
         returned = args.get('reference_verdicts')
         if not isinstance(returned, list):
@@ -1196,7 +1301,9 @@ class LiveVisualComparisonMixin:
             ref = item.get('reference_id')
             if ref in items:
                 duplicates.add(ref)
-            elif ref in catalog and validator.is_valid(item) and item.get('candidate_id') in {'', catalog[ref][0]['candidate_id']}:
+            elif (ref in catalog
+                    and (negative_validator if item.get('status') in {'mismatch', 'uncertain'} else validator).is_valid(item)
+                    and item.get('candidate_id') in {'', catalog[ref][0]['candidate_id']}):
                 items[ref] = item
         for ref in duplicates:
             items.pop(ref, None)

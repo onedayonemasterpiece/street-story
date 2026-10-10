@@ -412,3 +412,79 @@ async def test_platform_transport_reuses_existing_service_without_http_client():
     adapter.shared_backend = backend
     assert await adapter._request(None, "GET", "/session/sesExisting/message", params={"limit": 100}) == {"id": "sesExisting"}
     assert backend.calls == [("GET", "/session/sesExisting/message?limit=100", {"payload": None})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy', [False, True])
+async def test_unknown_search_observes_exact_original_prompt_after_policy_capsule_changes(legacy):
+    h = Harness()
+    adapter = h.adapter()
+    first = await adapter.search_articles('Original observed address context', {'request_id': 'frozen-search'})
+    saved = first['receipt']
+    binding = {**saved['binding'], 'phase': 'unknown', 'session_id': saved['session_id'],
+               'message_id': saved['message_id']}
+    if not legacy:
+        binding.update(frozen_prompt=saved['frozen_prompt'], frozen_schema=saved['frozen_schema'])
+    sends = len(h.sends)
+    result = await adapter.search_articles('New source profile and changed prompt context', binding)
+    assert result['receipt']['message_id'] == saved['message_id']
+    assert result['receipt']['frozen_prompt'] == saved['frozen_prompt']
+    assert len(h.sends) == sends
+    assert len([call for call in h.requests if call[0] == 'POST' and call[1].endswith('/prompt_async')]) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_planner_large_inputs_reach_transport_with_real_input_accounting():
+    h = Harness()
+    client = h.adapter()
+    original_limits = client.limits
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}
+    try:
+        requests = [
+            ('large-plan', 'x'*65537, schema),
+            ('schema-envelope', 'x'*30000, {'type': 'object', 'description': 'y'*40000}),
+            ('utf8-envelope', 'ж'*33000, schema),
+        ]
+        for request_id, prompt, output_schema in requests:
+            result = await client.plan_identity_search(prompt, {'request_id': request_id}, output_schema)
+            assert result['receipt']['phase'] == 'completed'
+            assert result['receipt']['input_utf8_bytes'] > 65536
+            assert result['receipt']['input_limit_bytes'] is None
+        result = await client._run('facts', 'x'*30000, {'request_id': 'large-facts'}, schema)
+        assert result['receipt']['phase'] == 'completed'
+        assert client.limits is original_limits and len(h.sends) == 4
+        assert all(event[1]['input_bytes'] > 24000 for event in h.admissions)
+    finally:
+        await h.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_large_planner_unknown_readback_uses_original_ids_prompt_and_schema():
+    h = Harness()
+    h.prompt_timeout = True
+    client = h.adapter()
+    schema = {'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary']}
+    try:
+        with pytest.raises(ResearchUnavailable):
+            # Model a historically accepted input under the old base-only
+            # policy. The new full-input preflight applies only to new sends.
+            await client._run('facts', 'Original SOURCE/map ' + 'x'*70000,
+                {'request_id': 'original-large-plan'}, schema, max_input_chars=100000)
+        receipt = h.checkpoints[-1][1]
+        assert receipt['session_id'] == 'sesBounded' and receipt['message_id'] == h.message_id
+        h.prompt_timeout = False
+        # An already addressed UNKNOWN remains observable even when its frozen
+        # input exceeds a newly enforced bound. No replacement is dispatched.
+        binding = {**receipt['binding'], **{key: receipt[key] for key in
+            ('session_id', 'message_id', 'phase', 'frozen_prompt', 'frozen_schema')}}
+        result = await client.plan_identity_search('Changed packet', binding,
+            {'type': 'object', 'required': ['new-unavailable-field']})
+        assert result['receipt']['message_id'] == receipt['message_id']
+        assert result['receipt']['frozen_schema'] == schema
+        assert result['receipt']['frozen_prompt'] == receipt['frozen_prompt']
+        assert result['receipt']['input_utf8_bytes'] > 65536
+        assert len([1 for method, path, _ in h.requests if method == 'POST' and path == '/session']) == 1
+        assert len([1 for method, path, _ in h.requests if path.endswith('prompt_async')]) == 1
+        assert len(h.sends) == 1
+    finally:
+        await h.client.aclose()

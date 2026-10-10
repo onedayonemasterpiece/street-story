@@ -72,13 +72,17 @@ class HeadlessVisionProvider:
         for route in configured:
             if route[0] in verified and route not in routes:
                 routes.append(route)
-        return routes
+        # Architecture requires visual reasoning. Reuse the configured reasoning
+        # tuple when its pixel controls passed; other admitted routes remain
+        # independent fallbacks. Qualification is never granted by this ordering.
+        preferred = getattr(getattr(self.service, 'settings', None), 'gemini_web_search_tertiary_model', None)
+        return sorted(routes, key=lambda route: route[0] != preferred) if preferred else routes
 
     @property
     def available(self):
         return bool(self._verified_routes())
 
-    async def _load_public_reference(self, url):
+    async def _load_public_reference(self, url, *, descriptor=None):
         # Reuse the existing validated public HTTP reader. Raw bytes live only
         # for this operation; GenerateContent receives separate inline parts.
         import httpx
@@ -86,7 +90,12 @@ class HeadlessVisionProvider:
         from .reference_image_codec import MAX_DOWNLOAD_BYTES, validate_reference_resolution
         async with httpx.AsyncClient(timeout=8, follow_redirects=False,
                 headers={'User-Agent': 'StreetStory/0.1 visual-reference'}) as client:
-            _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
+            if descriptor is not None:
+                from .article_media import load_article_reference
+                (mime, data), resolved = await load_article_reference(client, {'article_media': [descriptor]}, url)
+                descriptor.update(resolved)
+            else:
+                _target, mime, data = await fetch_public(client, url, MAX_DOWNLOAD_BYTES)
         if mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'} or not data:
             raise PermanentProviderError('headless_vision:reference_not_image')
         try:
@@ -221,7 +230,8 @@ class HeadlessVisionProvider:
                     if resolved_parts is None:
                         materialized = []
                         for part in image_parts:
-                            mime, data = (part['mime_type'], part['bytes']) if part['bytes'] is not None else await self._load_public_reference(part['url'])
+                            details = {'descriptor': part['descriptor']} if 'descriptor' in part else {}
+                            mime, data = (part['mime_type'], part['bytes']) if part['bytes'] is not None else await self._load_public_reference(part['url'], **details)
                             from .reference_image_codec import normalize_reference
                             mime, data = await asyncio.to_thread(normalize_reference, data)
                             materialized.append({**part, 'mime_type': mime, 'bytes': data})
@@ -230,11 +240,25 @@ class HeadlessVisionProvider:
                     for part in resolved_parts:
                         contents.extend([part['label'], types.Part.from_bytes(data=part['bytes'], mime_type=part['mime_type'])])
                     contents.append(prompt)
+                    def before_send():
+                        if story.get('_research_job_id') and verification_probe is not True:
+                            from .research_budget import require_remaining, reserve_work
+                            require_remaining(self.service, story['id'], 'identity')
+                            provider = getattr(self.service.providers, 'research', None)
+                            guard = getattr(provider, 'guard_binding', None)
+                            if callable(guard):
+                                guard({'story_id': story['id'], 'photo_sha256': story['photo_sha256'],
+                                    'generation': story.get('_identity_generation', 0), 'purpose': 'identity',
+                                    'control_revision': story.get('_identity_research_control_revision', 0),
+                                    'job_id': story['_research_job_id'], 'job_attempt': story.get('_research_job_attempt')})
+                            reserve_work(self.service, story['id'], 'exact_pairs',
+                                         [item['reference_id'] for item in story['_visual_reference_mapping']])
+                        attempt.update(provider_send_state='possibly_sent')
                     response = await self.client._generate(key, timeout,
                         contents,
                         types.GenerateContentConfig(response_mime_type='application/json', response_json_schema=contract),
                         operation='grounded_research', model=_model, quota=_quota,
-                        before_provider_send=lambda: attempt.update(provider_send_state='possibly_sent'))
+                        before_provider_send=before_send)
                     attempt.update(usage=_usage(response), provider_request_id=getattr(response, 'response_id', None),
                                    provider_send_state='response_closed')
                     result = json.loads(response.text or '')
@@ -283,21 +307,14 @@ class HeadlessVisionProvider:
 
             logger.info('headless_vision_attempt_started %s', json.dumps(fields, sort_keys=True))
             try:
-                effective_executor = executor
-                if getattr(executor, 'pool', None) is not None:
-                    # Reuse the same pool, health/admission and executor. A view
-                    # limits each visual unit to one send per route, without
-                    # changing shared policy for concurrent pair requests.
-                    from dataclasses import replace
-                    from .gemini import GeminiExecutor
-                    class PoolView:
-                        policy = replace(executor.pool.policy, max_failover_keys=1)
-                        def __getattr__(self, name):
-                            return getattr(executor.pool, name)
-                    effective_executor = GeminiExecutor(PoolView())
-                result, response = await effective_executor.execute('grounded_research', call)
+                failover = ({'call_timeout': executor.pool.policy.attempt_timeout,
+                    'can_failover': lambda: not any(
+                    attempt['model'] == model and attempt['provider_send_state'] != 'not_sent'
+                    for attempt in model_attempts)} if getattr(executor, 'pool', None) is not None else {})
+                result, response = await executor.execute('grounded_research', call, **failover)
             except GeminiUnavailable as exc:
-                if any(attempt.get('category') in {
+                if any(attempt.get('provider_send_state') == 'possibly_sent'
+                       and attempt.get('category') in {
                         'timeout', 'network', 'sdk_transient', 'cancelled'} for attempt in model_attempts):
                     exc.receipt = {'provider': 'google', 'transport': TRANSPORT,
                                    'workload': 'identity_comparison', 'category': 'visual_outcome_unknown',
@@ -338,6 +355,7 @@ class HeadlessVisionProvider:
                 image_parts=[{'label': part['label'], 'mime_type': part['mime_type'],
                               'transport': 'inline_data'} for part in resolved_parts],
                 reference_mapping=visual_context_without_image_hashes(deepcopy(story['_visual_reference_mapping'])))
+            receipt['reference_acquisitions'] = [part['descriptor'] for part in resolved_parts if 'descriptor' in part]
             logger.info('headless_vision_attempt_finished %s', json.dumps({**fields, 'status': result['status'],
                 'duration_ms': receipt['duration_ms']}, sort_keys=True))
             return {'result': result, 'receipt': receipt}
