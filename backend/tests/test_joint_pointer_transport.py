@@ -84,6 +84,11 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
             'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
             'architectural_scope_explanation': 'Fixture article identifies this bay and return.',
             'postal_interpretation': 'Literal received body records identify the fixture scope.'}]
+        for relation in text_decision['correspondences']:
+            own = next(row['passages'] for row in packet['literal_source_passages']
+                if row['article_id'] == relation['article_id'])
+            literal = relation.pop('source_quote')
+            relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
         return SimpleNamespace(text=json.dumps(text_decision))
 
     async def forbidden(*args, **kwargs):

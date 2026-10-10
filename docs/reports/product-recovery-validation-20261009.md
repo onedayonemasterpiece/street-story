@@ -2177,19 +2177,19 @@ Affected installed-SDK tests: v63 had81 pass/1 test failure because its added-ci
 
 ## Versioned corpus ledger (latest recorded run per photo)
 
-Versioned observations, not one combined cold PASS. Latest102 has a scoped useful partial PASS on4566ef6. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures. The older120/96057156 identity remains withdrawn; the newer120/133035135 is REVIEW_REQUIRED, not a semantic PASS.
+Versioned observations, not one combined cold PASS. Latest102 on1170ced has the correct identity but FAIL minimum with one eligible claim; the earlier4566ef6 scoped useful partial PASS remains historical. Latest130 confidently selected the wrong neighboring body and is a release blocker. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures. The older120/96057156 identity remains withdrawn; the newer120/133035135 is REVIEW_REQUIRED, not a semantic PASS.
 
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
-| 102 | 4566ef6 | PASS useful partial; osm:way:133035113 | — | — | yes | 4 | 202.930 |
-| 104 | 4566ef6 | FAIL host T proof; — | — | — | yes | 0 | 89.245 |
+| 102 | 1170ced | FAIL minimum; osm:way:133035113 | — | — | yes | 1 | 125.426 |
+| 104 | 1170ced | FAIL minimum; osm:relation:3665416 | — | — | yes | 1 | 122.686 |
 | 105 | 4566ef6 | FAIL deadline; — | — | 2 | unfixed/unknown | 0 | 183.826 |
 | 106 | 4566ef6 | FAIL deadline / T UNKNOWN; — | — | 3 | yes | 0 | 181.119 |
 | 107 | 4566ef6 | BLOCKED / NotSent; — | — | — | unfixed/unknown | 0 | 108.277 |
 | 108 | 5119d9a | FAIL page envelope exhausted; — | — | 2 | yes | 0 | 101.045 |
 | 109 | 77d4222 | FAIL; — | 293 | 3 | yes | 0 | 180.316 |
 | 110 | 77d4222 | FAIL; — | 182 | 0 | unfixed/unknown | 0 | 113.773 |
-| 111 | 5119d9a | FAIL page envelope exhausted; — | — | — | yes | 0 | 135.361 |
+| 111 | 1170ced | FAIL closed-plan validation; — | — | — | yes | 0 | 54.116 |
 | 112 | 77d4222 | FAIL; — | 414 | 0 | unfixed/unknown | 0 | 168.804 |
 | 118 | 77d4222 | BLOCKED; — | 478 | 1 | unfixed/unknown | 0 | 143.572 |
 | 119 | 5119d9a | FAIL deadline / unresolved body; — | — | 2 | unfixed/unknown | 0 | 181.585 |
@@ -2203,9 +2203,9 @@ Versioned observations, not one combined cold PASS. Latest102 has a scoped usefu
 | 127 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 46.148 |
 | 128 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 54.928 |
 | 129 | 62fb7ad | FAIL; — | 347 | 2 | unfixed/unknown | 0 | 181.239 |
-| 130 | 7623da2 | FAIL; — | 219 | — | yes | 0 | 192.084 |
+| 130 | 1170ced | OPERATOR_STOPPED wrong body; osm:way:193106140 | — | — | yes | 0 | 113.691 |
 | 131 | 77d4222 | BLOCKED; — | 192 | 0 | unfixed/unknown | 0 | 104.739 |
-| 132 | 7623da2 | FAIL; — | 299 | — | yes | 0 | 195.180 |
+| 132 | 1170ced | FAIL provider/plan; — | — | — | yes | 0 | 99.431 |
 | 133 | 77d4222 | BLOCKED; — | 245 | 0 | unfixed/unknown | 0 | 97.482 |
 
 Inputs are the byte-verified frozen26-photo manifest. Unfixed target is not a correct-answer claim. Per-case source/evidence/SDK usage and camera status remain in retained case reports; provider-cost allocation not reported by a provider remains unknown. T counts and reductions are not inferred where no closed T verdict exists. Actual7623da2 closed distinct SOURCE count:1 (104); repetitions do not add N.
@@ -2239,3 +2239,15 @@ Frozen f23fad5 actual104/130/102 completed in job_535e471d54df28fadcabe11f with 
 A confirmed compact T closes identity independently of search. The existing combiner now projects an empty *unused new search wave* when the model returns accepted T, rather than carrying rejected search pointers from the initial answer. The original closed initial response, T answer, receipts and diagnostics are unchanged. The actual T proof and original SOURCE/hash/alternative/physical-binding fences still run; an uncertain T keeps its original planning requirements. No missing hypothesis is invented or semantically selected by code. Installed-SDK native/architectural suite v91:63 passed37.55s, including two real-worker fake-provider schedules with an invalid initial search pointer and accepted independent T, original-contract recovery and negative/UNKNOWN cases. Joint continuity v92:14 passed9.25s; its two positive wire fixtures now select the issued article pointers, and unresolved alternatives still fail.
 
 Full installed-SDK f23fad5 v90 was cancelled before changing source after its partial output showed two failures around joint-continuity tests. It has no completed full-suite verdict and is not release evidence. Final fresh-candidate suite will use pytest's installed `tmp_path_retention_policy=failed`: new successful fixture databases are removed by their normal fixture teardown, with result XML and failed fixtures retained; old retained incident/corpus artifacts are untouched. This prevents another approximately1.3GiB set of redundant successful fake databases on a disk with1.8GiB free. `independent-T102-assembled-v93.json` is a limited offline projection check over the saved closed answer; reconstruction did not have the original OSM snapshot, so its proof-valid=false is not promoted to a runtime proof finding or a new SOURCE decision. The original102 cold FAIL is unchanged.
+
+## Real semantic boundary remains a release blocker (2026-10-10, v94–v99)
+
+Mandatory1170ced group job_a7f2b4842b69813f1dfdc6fd completed with unchanged tracked source.102 accepted correct way133035113 by early T in48.112s, first eligible123.039s, natural terminal125.426s; only one reviewed own sid3875 claim (the building housed Nordstern, a grocery and other shops) => unchanged minimum3 fails.104 accepted correct relation3665416 in66.765s, first119.429s, terminal122.686s; one reviewed own claim => minimum3 fails. These results confirm the fresh pointer transport and preserve formal failure, without declaring ordinary product acceptance.
+
+130 selected wrong way193106140 rather than expected193106188 at113.159s. The harness stopped this new story at113.691s before any facts were committed. Its model T matched sid1384's architectural description but left the boundary between attached physical bodies unresolved. The actual frozen request contained both SOURCE and MAP, and the reserve and alternative ID contracts already include other received physical bodies. The actual MAP was extracted and viewed (`actual-T130-map-v97.png`); missing MAP or an excluded-alternative enum are therefore rejected hypotheses. Correct provenance/reference validation did not make the physical interpretation true. This known confident wrong-body decision blocks release. No control answer is sent to runtime.
+
+132 failed in99.431s with no accepted ID; its Native initial receipt remains created, with no completed Native SOURCE reply credited.111 failed in54.116s after completed uncertain Native initial and detail, with no accepted body. Verified completed Native SOURCE observations exist for102/104/130/111;132 is not added on the basis of a created receipt. This is not final fixed15 acceptance and not simultaneous failure of every provider.
+
+Exact-source installed-SDK suite v95 completed:2976 passed,4 failed,2 skipped,2 warnings in1210.88s. All200 cases in `tests.test_product_failure_scopes` passed with no skip/failure; these are fake-provider worker schedules, not200 recognition images. Remaining failures were two uncertain-T priority wire fixtures, one MAP-alias T fixture still returning retyped quotations, and a Native test expecting `issued_span_ref` transformation even though the issued host contract already requires pointers (`unchanged` is correct). Corrected affected suite v98:133 passed47.22s. Automatic identity/facts tests v99:2 passed0.93s. Successful new fixtures were removed by normal pytest teardown; the full run's basetemp remained approximately2MiB during its early hundreds of cases, avoiding another redundant1.3GiB set. Original retained incident/corpus files are unchanged.
+
+The next change clarifies the existing model task, rather than adding a host semantic classifier. T first identifies the main SOURCE body among the received MAP labels, then assesses the article's individual-body scope. The decision description explicitly distinguishes matching a complex article from resolving its pictured OSM footprint; a limitation that leaves that footprint unresolved requires the model to choose uncertain and preserve useful hypotheses. The automatic research goal now asks for material from which the author can choose independent substantive aspects already supported by rich own sources; sufficiency is still assessed in the existing model response, without a host fact-count threshold or an extra judge. Original addressed schemas/prompts stay frozen. Fresh130 and102 must measure this question before another final corpus or release claim.

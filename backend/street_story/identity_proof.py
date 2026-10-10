@@ -193,7 +193,12 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
     aid = {'type': 'string', 'enum': list(dict.fromkeys(article_ids))}
     schema = {'type': 'object', 'properties': {
-        'decision': {'type': 'string', 'enum': ['accepted_architectural_text', 'uncertain']},
+        'decision': {'type': 'string', 'enum': ['accepted_architectural_text', 'uncertain'],
+            'description': 'Resolve both the SOURCE/article architectural match and the exact main photographed '
+                'OSM body using its received MAP label, contours and adjacency. An article/address can cover a '
+                'complex containing several attached bodies. If a limitation leaves which individual footprint '
+                'is pictured unresolved, choose uncertain; a matching article or generic feature combination '
+                'does not resolve that physical scope. Preserve the alternative bodies as useful hypotheses.'},
         'candidate_id': cid, 'scope': text, 'discriminating_combination': text,
         'article_bindings': {'type': 'array', 'maxItems': 2, 'items': {'type': 'object', 'properties': {
             'article_id': aid, 'candidate_id': cid, 'scope': text, 'binding_basis': text,

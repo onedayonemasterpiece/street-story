@@ -453,7 +453,7 @@ async def test_source_map_native_citation_choice_is_satisfiable_and_host_proof_u
     assert result['result'] == answer
     frozen = result['receipt']['frozen_source_map']
     assert frozen['host_contract'] == original_schema and schema == original_schema
-    assert frozen['citation_transport'] == 'issued_span_ref'
+    assert frozen['citation_transport'] == 'unchanged'  # Issued host schema already requires pointers.
     binding = {**result['receipt']['binding'], **{key: result['receipt'][key] for key in (
         'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
     await provider.compare_source_map(story, {}, 'Changed input', [], binding, {})
