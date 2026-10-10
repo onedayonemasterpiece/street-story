@@ -43,6 +43,7 @@ LEGACY_VERIFIER_PROMPT = (
 )
 LEGACY_VERIFIER_CONTRACT_ID = 'closed-packet-json-v1:' + hashlib.sha256(LEGACY_VERIFIER_PROMPT.encode()).hexdigest()
 VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
+    + review_packets.ATOMIC_CLAIM_CHECKS + ' '
     + 'Omit absent equivalent_to_existing. For optional equivalent_to, omit or use JSON null '
       'when no within-packet equivalence exists; never use -1 or invent a duplicate relation. '
       'A supported verdict must assess the ORIGINAL item.text claim, not a corrected claim '
@@ -79,7 +80,7 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'sentence names the confirmed building. Preserve the sentence\'s actual subject; use '
       'insufficient or repair_needed for a transferred or ambiguous attribution. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v8-subject-context:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v9-independent-propositions:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:
@@ -559,6 +560,12 @@ class HeadlessFactReview:
             if saved.get('phase') == 'result' and saved.get('frozen_packet'):
                 packet = saved['frozen_packet']
             elif saved.get('phase') != 'result':
+                # Interactive tool instructions are already expressed by the
+                # closed verifier prompt. They include tools this operation
+                # cannot call and repeat the same atomicity policy. Keep the
+                # complete factual packet and the public retained packet; only
+                # omit this duplicate instruction field from a fresh request.
+                packet = {key: value for key, value in packet.items() if key != 'review_checks'}
                 packet = headless_review_quotes.with_quote_catalog(packet)
         except ConflictError:
             self._put(job, unit, {'phase': 'stale'})

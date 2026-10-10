@@ -238,12 +238,10 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
         actor=None, closed=False, state={})
     with svc.store.connection() as db:
         ids = review_packets.pending_candidates(db, job['story_id'], RUN)
-    first = review_packets.read(harness.adapter, session, {'run_id': RUN, '_candidate_ids': ids})
-    items = list(first['items'])
-    while first.get('has_more'):
-        first = review_packets.read(harness.adapter, session, first['next_args'])
-        items.extend(first['items'])
-    budget = len(VERIFIER_PROMPT + canonical({**first, 'items': items})) - 300
+    # Measure the actual closed request, including its quote labels, rather
+    # than the public interactive packet's duplicate instruction field.
+    first, _, _ = HeadlessFactReview(harness)._prepare_packet(job, RUN, session, ids)
+    budget = len(VERIFIER_PROMPT + canonical(first)) - 300
     calls = []
     class BoundedReview(ControlledReview):
         MAX_PACKET_FACTS = 12

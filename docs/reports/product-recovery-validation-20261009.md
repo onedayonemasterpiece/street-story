@@ -3,6 +3,77 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 4b0c7bc normal102 and same-story continuation
+
+Frozen job_e2c159375096b3087e9a7b9f completed with the original technical
+PASS_CANDIDATE: correct way133035113, identity83.687s, first eligible136.760s,
+useful selection API205.887s and natural useful_partial terminal469.680s.
+Eight assertions and their canonical POI evidence were available. Native's
+SOURCE/MAP/article answer closed with measured47826 input/2100 output/49926
+total tokens and directly supplied a valid architectural-text proof. No new
+Google joint comparison was needed. This proves the smaller actual Native
+input and initial link-schema instruction; the bounded T-repair branch remains
+fixture-verified, not exercised by this successful initial answer.
+
+Semantic acceptance remains separate: the actual v8 Live reviewer incorrectly
+marked several sentences containing separate tenants, facade features or events
+atomic. Eight eligible rows do not establish eight clean publication facts.
+The same-story continuation job_1a1b7e556ac4b7c77e57f5b5 requested reconsideration
+of three such candidates through the ordinary Mira tools. get_evidence closed,
+but review setup23587 conservative resource units was repeatedly denied BEFORE
+that setup send. Original FAIL127.260s, Stop acknowledged; no new review write,
+selection, draft or visual occurred. Original cold receipts/times stay unchanged.
+
+The review bundle now carries only review instructions rather than the research
+formation overlay. Actual retained102 offline DTO inspection: configuration
+20515 ->17012 UTF-8 bytes, context2401 unchanged, all nine review/control tools
+unchanged. No passage or physical subject is removed. The shared semantic policy
+requires enumeration of independently selectable propositions before a verdict;
+one source sentence is not automatically one claim. Essential event qualifiers
+stay attached. Fresh headless packets omit their duplicate interactive
+review_checks field, which is already expressed by the closed verifier prompt;
+the public saved packet and all addressed old frozen inputs remain intact.
+The new closed contract is v9-independent-propositions. Real continuation is
+still required to demonstrate admission and semantic quality.
+
+113 existing review/control/extraction/checkpoint/quote fixtures passed59.19s,
+Ruff/diff checks passed. Original intermediate failures are retained: the added
+policy was initially duplicated in the private packet, and the capacity fixture
+measured the public packet rather than the final closed request. The fixture now
+uses that actual final input to enforce a deliberately smaller route capacity,
+still asserting multiple bounded calls and completely unchanged own passages.
+One intervening shell test run ended SIGTERM without JUnit completion; the
+successful complete run is durable job_fc68638fffcac33f1bb2d250.
+
+Independent same4b cold130 job_f9a3b41aae70bd134412c884 retained original
+FAIL180.334s, no accepted identity/facts. Native ended with RetryableProviderError,
+turn error other/empty; process exit alone does not establish an OOM cause.
+Google3.8 remained UNKNOWN. Independent Google3.5 closed a SOURCE/MAP answer
+claiming the old wrong-neighbor way193106140; its geometry contract was rejected
+and no T finished before the deadline. This is not a demonstrated semantic130
+repair. Current4b distinct CLOSED visual decisions N=2 (102 and130), including
+the wrong hypothesis; not measured universality or an accepted product release.
+
+Android run38022039758 passed build/checks but failed1/27 instrumentation:
+original-photo picker was obscured by a Pixel Launcher ANR. Its retained
+hierarchy explicitly shows the external launcher dialog. The run remains FAIL;
+the unchanged application's prior signed owner1223 successful instrumentation
+is compatible evidence, not a relabeling of this failure.
+
+## Standalone T diagnostic mistake retained as negative evidence
+
+Comparator job_a3d34274dd09d1c313bc79f5 used the unchanged CLOSED30095cd
+Native answer and its two acquired articles, without new G or identity/fact
+writes. The diagnostic helper mistakenly used execute (search timeout20s)
+instead of the product's execute_joint (60s), and lacked the product's permanent
+failure fence after UNKNOWN. Three SDK calls therefore ended UNKNOWN on three
+keys; original FAIL60.040s, no CLOSED answer. They remain unresolved, excluded
+from PASS/N and are not resubmitted. The helper was corrected for future distinct
+operations, its existing-output guard preserved. The actual product already
+used execute_joint and the UNKNOWN fence; no transport fix is claimed for this
+helper error. Incident123 and durable work preserve both this negative and the
+subsequent normal4b result, without converting either into comparator success.
+
 ## 30095cd actual102: admitted closed SOURCE answer, skipped existing T repair
 
 Actual job_dccb05fcb34fccdb207da966 completed with original FAIL74.258s.

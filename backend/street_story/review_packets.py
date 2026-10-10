@@ -28,7 +28,22 @@ def literal_basis_quote(quote, passages):
                      lambda match: {'n': '\n', 'r': '\r', 't': '\t'}[match[1]], quote)
     return decoded if decoded != quote and contained(decoded) else quote
 
-EXTRACTION_CHECKS = (
+ATOMIC_CLAIM_CHECKS = (
+    'Atomic means one independently selectable proposition, not one sentence. '
+    'Enumerate what the reader could independently include or omit BEFORE choosing a verdict; '
+    'copying an entire compound sentence as one claims entry is not decomposition. '
+    'A construction date, a building height, a tenant and a facade feature are separate '
+    'propositions even when a source puts them in one sentence. Distinct tenants, facade '
+    'features and successive events also remain separately selectable. An event date, '
+    'approximation, affected part or essential condition qualifies that SAME proposition '
+    'and must stay with it; do not split a qualifier into an unsupported standalone fact. '
+    'A known subject name identifies the subject, but additional descriptive assertions '
+    'must not be hidden in that name. For a compound ORIGINAL candidate enumerate all '
+    'its propositions, set atomic=false and use repair_needed before accepting any '
+    'narrowed replacement. The model decides this from meaning, never punctuation.'
+)
+
+EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' '
     'Write each fact.text in Russian for publication, preserving supported scope and qualifiers. '
     'For existing_fact_id copy only an exact host fact_id from the supplied known inventory; '
     'otherwise use the empty string. Never invent IDs or use ordinal placeholders. '
@@ -59,7 +74,7 @@ EXTRACTION_CHECKS = (
     'for a later correction. Save the supported atomic assertions directly.'
 )
 
-REVIEW_CHECKS = (
+REVIEW_CHECKS = (ATOMIC_CLAIM_CHECKS + ' '
     'These are unverified candidates, not established facts. First enumerate independent claims '
     '(each person/role/event separately), then compare EVERY date, number, part, stage and qualifier '
     'to ONLY this candidate\'s attached evidence. Missing date antecedent or outcome: read '

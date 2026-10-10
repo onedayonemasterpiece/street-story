@@ -820,12 +820,27 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 'final generate_visual or prepare_publication', 'final visuals or publication'
             ).replace('If the helper search is unavailable, use native Google Search and pass article_urls;',
                       'If the API search is unavailable, report its error and retain the queue for continuation;')
-        elif capability in {'research', 'review'}:
+        elif capability == 'review':
+            # Review reads the exact claims and complete own evidence through
+            # its packet tools. Discovery formation/search instructions are
+            # irrelevant to this bundle and consume its next setup grant.
+            overlay = (
+                'Read get_review_packet for the author-requested fact_ids and current run_id. '
+                'Follow its cursors and next_args; get_review_context reads retained source '
+                'versions, not a new search. Follow assess_review_packet advice when requested, '
+                'but decide support yourself from the own passages and exact physical subject. '
+                'For defective candidates group precise repair_research_fact replacements, '
+                'then read and finalize the new revisions. finalize_fact_review saves only '
+                'the current frozen decisions; its receipt is required before reporting a '
+                'saved correction. Do not change selection, concept, text or visual during '
+                'review. Continue through the editor stage when the author next asks for them.'
+            )
+        elif capability == 'research':
             # Selection, concept and draft are an ordinary continuation of the
             # same facts conversation. Keep their small tools visible so the
             # model can persist explicit owner requests without a reconnect.
             # Additional research can then preserve that draft in the same session.
-            overlay = research + ('\n' + editorial if capability == 'research' else '')
+            overlay = research + '\n' + editorial
         elif capability == 'editor':
             overlay = editorial
         else:
