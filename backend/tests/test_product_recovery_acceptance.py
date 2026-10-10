@@ -278,6 +278,38 @@ def readback_fixture(tmp_path):
     return svc, now, case
 
 
+def test_readback_validates_immutable_own_and_canonical_basis_without_scan(tmp_path):
+    from test_fact_ledger import fact
+    from street_story.fact_ledger import accept_fact_basis, persist_fact_candidates, refresh_review_status
+    from street_story.poi_memory import persist_research_memory, sync_poi_review_from_story
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    sid = case['story_id']
+    identity = {'candidate_id': 'osm:way:building', 'status': 'match'}
+    claim = fact('own', 'The building opened in 1900.', 'https://own.example', 'The building opened in 1900.')
+    with svc.store.tx() as db:
+        db.execute("DELETE FROM fact_assertions WHERE story_id=?", (sid,))
+        db.execute("DELETE FROM facts WHERE story_id=?", (sid,))
+        db.execute("DELETE FROM poi_research_assertions")
+        fid = persist_fact_candidates(db, story_id=sid, poi_key=identity['candidate_id'], facts=[claim],
+            run_id='own-run', batch_id='own-batch', model_name='controlled', prompt_version='v2', now=390)[0]
+        ids = [r[0] for r in db.execute('SELECT e.evidence_id FROM fact_evidence_spans e JOIN fact_observations o '
+            'ON e.observation_id=o.observation_id WHERE o.story_id=? AND o.assertion_id=?', (sid, fid))]
+        accept_fact_basis(db, sid, fid, ids, operation={'receipt_id': 'own-assessment'}, now=380)
+        refresh_review_status(db, sid, 390)
+        claim['fact_id'] = fid
+        persist_research_memory(db, identity, [claim], claim['sources'], 'own', 390, research_run_id='own-run')
+        sync_poi_review_from_story(db, sid, 390)
+    result = harness.read_case(svc, case, item())
+    assert result['eligible_proved_count'] == 1
+    assert result['first_eligible_elapsed_s'] == 280
+    with svc.store.tx() as db:
+        proof = json.loads(db.execute('SELECT review_proof_json FROM poi_research_assertions WHERE assertion_id=?', (fid,)).fetchone()[0])
+        proof['subject'] = 'osm:way:foreign'
+        db.execute('UPDATE poi_research_assertions SET review_proof_json=? WHERE assertion_id=?', (canonical(proof), fid))
+    assert harness.read_case(svc, case, item())['eligible_proved_count'] == 0
+
+
 def test_first_fact_does_not_end_wait_and_caps_use_original_upload(tmp_path):
     svc, now, case = readback_fixture(tmp_path)
     now[0] = 390

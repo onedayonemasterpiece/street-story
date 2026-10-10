@@ -414,7 +414,8 @@ def summarize_receipts(attempts):
 
 def read_case(service, case, item):
     from street_story.identity_proof import verified_physical_identity
-    from street_story.poi_memory import memory_keys, _review_snapshot
+    from street_story.poi_memory import memory_keys, _review_snapshot, _canonical_admission_valid
+    from street_story.fact_ledger import accepted_basis_valid
     from street_story.live_identity_context import identity_research_context
     from street_story.research_control import research_stopped
     with service.store.connection() as db:
@@ -424,7 +425,7 @@ def read_case(service, case, item):
         jobs = [dict(job) for job in db.execute('SELECT id,kind,state,attempts,last_error,created_at,updated_at '
             'FROM jobs WHERE story_id=? ORDER BY created_at', (row['id'],))]
         story_facts = [dict(fact) for fact in db.execute('SELECT a.assertion_id,a.display_text,a.revision_digest,'
-            'a.review_status,a.eligibility,a.updated_at,f.sources_json FROM fact_assertions a '
+            'a.review_status,a.eligibility,a.updated_at,a.accepted_basis_json,f.sources_json FROM fact_assertions a '
             'JOIN facts f ON f.story_id=a.story_id AND f.fact_id=a.assertion_id '
             'WHERE a.story_id=? AND a.eligibility=\'eligible\'', (row['id'],))]
         keys = memory_keys(db, identity)
@@ -442,20 +443,30 @@ def read_case(service, case, item):
         # the state being measured. Ordinary API mutation/restart is tested separately.
         visible = service._story_repr(db, row)
     proved = []
-    for fact in story_facts:
-        snapshot = list(_review_snapshot(fact['display_text'], fact['sources_json']))
-        matches = []
-        for persisted in canonical:
-            proof = json.loads(persisted.get('review_proof_json') or '{}')
-            if (persisted['assertion_id'] == fact['assertion_id'] and proof.get('detector') == 'backend_semantic_review'
-                    and proof.get('scan_id') and proof.get('source_story_id')
-                    and proof.get('snapshot') == snapshot and persisted['review_status'] == 'eligible'):
-                matches.append({**persisted, 'review_proof': proof})
-        if matches:
-            proved.append({**fact, 'sources': json.loads(fact['sources_json']), 'canonical_evidence': matches})
+    with service.store.connection() as db:
+        for fact in story_facts:
+            assertion = db.execute('SELECT * FROM fact_assertions WHERE story_id=? AND assertion_id=?',
+                                   (row['id'], fact['assertion_id'])).fetchone()
+            own_basis_valid = accepted_basis_valid(db, row['id'], assertion)
+            snapshot = list(_review_snapshot(fact['display_text'], fact['sources_json']))
+            matches = []
+            for persisted in canonical:
+                if persisted['assertion_id'] != fact['assertion_id'] or persisted['review_status'] != 'eligible':
+                    continue
+                proof = json.loads(persisted.get('review_proof_json') or '{}')
+                accepted = (own_basis_valid and proof.get('detector') == 'accepted_basis'
+                    and _canonical_admission_valid(db, proof, fact['display_text'], persisted['poi_key']))
+                legacy = (proof.get('detector') == 'backend_semantic_review'
+                    and proof.get('scan_id') and proof.get('source_story_id') and proof.get('snapshot') == snapshot)
+                if accepted or legacy:
+                    matches.append({**persisted, 'review_proof': proof})
+            if matches:
+                accepted_at = json.loads(fact['accepted_basis_json'])['accepted_at'] if own_basis_valid else fact['updated_at']
+                proved.append({**fact, 'admitted_at': accepted_at,
+                               'sources': json.loads(fact['sources_json']), 'canonical_evidence': matches})
     now, started = service.store.now(), float(row['created_at'])
     identity_at = float(identity.get('resolved_at') or now) if identity.get('status') == 'match' else None
-    first_at = min((float(fact['updated_at']) for fact in proved), default=None)
+    first_at = min((float(fact['admitted_at']) for fact in proved), default=None)
     if identity_at is not None:
         case['identity_elapsed_s'] = min(case.get('identity_elapsed_s', float('inf')), max(0, identity_at - started))
     if first_at is not None:
