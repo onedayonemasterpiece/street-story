@@ -3,6 +3,34 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 736641c review continuation and pending packet/reconnect correction
+
+Actual same-story102 job_e6d07dd70d3bcba8bf4d7c78 retained original FAIL130.109s.
+Review setup20084 estimated resource units was eventually admitted after the
+rolling admission window; this was not an all-provider outage. Two CLOSED
+get_review_packet calls failed live_review_item_oversize. The duplicated atomic
+policy in each tool reply caused our packet failure; no final verdict, draft or
+visual was written. Three explicitly reconsidered assertions became unreviewed;
+the later single-claim packet superseded the first packet. Stop was acknowledged.
+
+The correction keeps the same atomic model instructions in the review stage,
+removes their duplicate from the packet reply, and resumes an actual pending
+owner-requested review on reconnect. Actor, run, identity generation, policy,
+current evidence digests and pending state must match. Independent eligible
+facts remain available. Actual saved single-claim evidence now reads as two
+5192/4998-byte pages; its full1139-character passage reconstructs unchanged.
+126 review/control/extraction/checkpoint/quote fixtures passed69.39s in durable
+job_9a2b8c58f046112121ee02be. Real changed-segment continuation remains pending.
+
+Independent736 cold132 job_702534196ca9f5b8b26a9c6b retained FAIL110.384s,
+no identity/facts. Native was NotSent RESOURCE_TOKEN_BUDGET under the registered
+60000 local minute ceiling; its owned envelope was167106 UTF-8 bytes, which is
+not a measured token count. Google3.8 was UNKNOWN. Independent Google3.5 CLOSED
+with malformed5778-byte JSON (line28,col7); no valid recognition decision is
+counted toward N. The existing bounded-repair boundary needs investigation.
+Hosted736 backend and Android checks/emulator passed; this does not establish
+semantic132 acceptance, a physical-phone test or an accepted deployment.
+
 ## 4b0c7bc normal102 and same-story continuation
 
 Frozen job_e2c159375096b3087e9a7b9f completed with the original technical

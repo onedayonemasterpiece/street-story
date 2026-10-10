@@ -23,6 +23,13 @@ async def test_scoped_reconsideration_keeps_unrelated_review_and_requires_new_ow
     packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id, 'fact_ids': [ids[1]]}})
     assert packet['total_facts'] == 1 and packet['items'][0]['saved_verdict'] is None
     assert all(c['fact_id'] != ids[1] for c in packet['nearby_existing_claims'])
+    # Reopen the actual requested review while two independent eligible facts
+    # remain available. Its owner gets review tools immediately, without a
+    # redundant research setup or an inherited request from another actor.
+    reopened = adapter.initialize(resource_id=session.resource_id, actor=getattr(session, 'actor', None), model='controlled')
+    assert reopened['capability'] == 'review'
+    foreign = adapter.initialize(resource_id=session.resource_id, actor={'owner': 'different'}, model='controlled')
+    assert foreign['capability'] == 'research'
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'narrow-review', 'args': {
         'packet_ref': packet['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0],
             'verdict': 'insufficient', 'claims': [packet['items'][0]['text']]}],
@@ -32,6 +39,7 @@ async def test_scoped_reconsideration_keeps_unrelated_review_and_requires_new_ow
         statuses = dict(db.execute('SELECT assertion_id,eligibility FROM fact_assertions'))
         assert statuses == {ids[0]: 'eligible', ids[1]: 'withheld', ids[2]: 'eligible'}
         assert db.execute('SELECT result_json FROM live_review_packets WHERE packet_ref=?', (full['packet_ref'],)).fetchone()[0] == old_receipt
+    assert adapter.initialize(resource_id=session.resource_id, actor=getattr(session, 'actor', None), model='controlled')['capability'] == 'research'
     await reader.search_http.aclose()
 
 
@@ -93,9 +101,10 @@ async def test_repair_withholds_shared_parent_before_replacement_review_and_resu
     with svc.store.tx() as db:
         db.execute("UPDATE research_runs SET state='partial' WHERE run_id=?", (run_id,))
     initialized = adapter.initialize(resource_id=session.resource_id, actor=None, model='gemini-3.8-live')
-    assert initialized['capability'] == 'research'
+    assert initialized['capability'] == 'review'
     assert initialized['context']['research_run']['pending_review_fact_ids'] == [child]
-    assert {'select_facts', 'set_concept', 'edit_text'} <= {t['name'] for t in initialized['configuration']['functions']}
+    assert {'get_review_packet', 'repair_research_fact', 'finalize_fact_review', 'continue_story'} <= {
+        t['name'] for t in initialized['configuration']['functions']}
     await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-replacement', 'args': {
         'packet_ref': replacement['packet_ref'], 'decisions': [{'fact': 0, 'evidence': [0], 'verdict': 'supported',
             'claims': ['Уточнённый первый тезис.'], 'basis_quotes': [QUOTES[0]],

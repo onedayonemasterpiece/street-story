@@ -74,7 +74,7 @@ EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' '
     'for a later correction. Save the supported atomic assertions directly.'
 )
 
-REVIEW_CHECKS = (ATOMIC_CLAIM_CHECKS + ' '
+REVIEW_CHECKS = (
     'These are unverified candidates, not established facts. First enumerate independent claims '
     '(each person/role/event separately), then compare EVERY date, number, part, stage and qualifier '
     'to ONLY this candidate\'s attached evidence. Missing date antecedent or outcome: read '

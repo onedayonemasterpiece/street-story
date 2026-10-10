@@ -885,7 +885,8 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 + configuration.get('context_instruction', 'Current topic: '))
             configuration['system_instruction'] = (
                 'Current phase: independent verification of unverified candidates. '
-                + review_packets.REVIEW_CHECKS + '\n' + configuration['system_instruction']
+                + review_packets.ATOMIC_CLAIM_CHECKS + ' ' + review_packets.REVIEW_CHECKS
+                + '\n' + configuration['system_instruction']
                 + '\nFor an explicitly requested correction or independent reconsideration, '
                   'read get_review_packet with the exact requested fact_ids and run_id, then '
                   'finalize_fact_review or repair/review the changed claim. '
@@ -1005,7 +1006,7 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
             context['facts'] = []
             context['review_policy'] = review_packets.REVIEW_CHECKS
             instruction = ('Current phase: independent verification of unverified candidates. '
-                           + review_packets.REVIEW_CHECKS + '\n'
+                           + review_packets.ATOMIC_CLAIM_CHECKS + ' ' + review_packets.REVIEW_CHECKS + '\n'
                            + instruction)
         initialized = {
             "state": {
@@ -1057,8 +1058,29 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
                 and not saved_visual.get('stale', False))
             publication_ready = ((state.get('confirmation') or {}).get('state') in {'prepared', 'confirmed'}
                 or ready_visual)
+            requested_review = False
+            if reviewing and eligible_available:
+                # Resume an actual author-requested, unfinished review in its
+                # existing tool bundle. Other eligible facts do not erase that
+                # request or require another charged research setup first.
+                with self.service.store.connection() as db:
+                    current_bundle = review_packets.bundle(db, resource_id)
+                    for row in db.execute('SELECT p.payload_json FROM live_review_packets p '
+                            'JOIN live_review_attempts a ON a.packet_ref=p.packet_ref '
+                            "WHERE p.story_id=? AND p.binding=? AND p.run_id=? AND p.identity_generation=? "
+                            "AND a.state='pending' AND a.policy_version=? AND p.result_json IS NULL",
+                            (resource_id, hashlib.sha256(canonical(actor).encode()).hexdigest(),
+                             (state.get('research_run') or {}).get('run_id'),
+                             context['identity_generation'], review_packets.POLICY_VERSION)):
+                        payload = json.loads(row['payload_json'])
+                        frozen = payload.get('bundle') or {}
+                        if (payload.get('requested_fact_scope') is True and frozen
+                                and all(current_bundle.get(fid) == digest for fid, digest in frozen.items())):
+                            requested_review = True
+                            break
             capability = ('identity' if not context['physical_identity_accepted']
-                          else 'publication' if publication_ready else 'review' if reviewing and not eligible_available else 'research')
+                          else 'publication' if publication_ready
+                          else 'review' if reviewing and (not eligible_available or requested_review) else 'research')
             initialized['capability'] = capability
             initialized['configuration'] = self._capability_configuration(initialized['configuration'], capability)
             initialized['context'] = self._capability_context(initialized['context'], capability)
