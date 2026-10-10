@@ -55,6 +55,10 @@ class SourceRecoveryInstrumentedTest {
                     if (request.path.orEmpty().contains("voice-sessions")) {
                         return MockResponse().setResponseCode(503).setBody("{\"error\":{\"code\":\"archive_unavailable\",\"message\":\"Archive temporarily unavailable\"}}")
                     }
+                    if (request.path.orEmpty().endsWith("/research-control")) {
+                        return MockResponse().setHeader("Content-Type", "application/json")
+                            .setBody(Gson().toJson(mapOf("action" to "stop", "purposes" to listOf("facts"), "story" to wire)))
+                    }
                     return MockResponse().setHeader("Content-Type", "application/json").setBody(Gson().toJson(wire))
                 }
             }
