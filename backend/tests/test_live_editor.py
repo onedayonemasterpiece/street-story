@@ -94,6 +94,30 @@ def test_live_initialization_declares_application_search_function(tmp_path) -> N
     assert len(function_names) <= 9
 
 
+@pytest.mark.parametrize('stage', sorted(StreetStoryLiveAdapter.CAPABILITY_TOOLS))
+def test_product_stage_bundle_passes_installed_shared_transition_contract(tmp_path, stage):
+    from live_interaction.session_host import _validate_capability_spec
+    _svc, adapter, session, _events = make_service(tmp_path)
+    initialized = adapter.initialize(resource_id=session.resource_id, actor=None,
+        model=session.model, full_configuration=True)
+    config = adapter._capability_configuration(initialized['configuration'], stage)
+    # Use the actual installed transition validator, the boundary which rejected
+    # real publication -> editor and allowed oversized initial research setup.
+    validated = _validate_capability_spec({'capability': stage, 'configuration': config,
+        'context': adapter._capability_context(initialized['context'], stage),
+        'continuation': 'Continue the same author request.'})
+    assert validated['capability'] == stage
+    names = {tool['name'] for tool in config['functions']}
+    if stage == 'editor':
+        assert {'get_facts', 'get_evidence', 'select_facts', 'set_concept', 'edit_text', 'generate_visual'} <= names
+    elif stage == 'dictation':
+        assert {'literal_begin', 'literal_finish', 'literal_cancel'} <= names
+    elif stage == 'research':
+        assert {'search_web', 'get_research_chunk', 'save_research_facts', 'record_fact_conflicts'} <= names
+    if stage != 'publication':
+        assert 'confirm_publication' not in names
+
+
 def test_live_functions_expose_place_and_search_tools_not_async_research_job() -> None:
     names = [item["name"] for item in FUNCTIONS]
     assert "resolve_place" in names

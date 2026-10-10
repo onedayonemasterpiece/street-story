@@ -3,6 +3,36 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Reboot checkpoint: bounded capability bundles
+
+Owner requested a graceful stop for adding host RAM/reboot and explicitly
+declined stopping regional-knowledge-base. No unrelated service was stopped.
+
+Actual96a916f editorial continuation job_85116b99f7207986bc1801da FAILED at
+the unchanged120s selection-step cap; Stop acknowledged. No new choice, draft,
+voice or visual. Real Live events show two publication -> editor transitions
+rejected with LIVE_CAPABILITY_LIMIT. Installed shared host permits at most nine
+functions per transition. Street Story supplied ten editor and twelve research
+functions including its router. This is a product bundle defect distinct from
+host pressure/provider availability. Initial setup accepted larger bundles, so
+initial handshakes and direct adapter fixtures had not exposed the transition.
+
+Existing functions are now grouped within the unchanged shared bound: research
+discovery/persistence continues to editor for selection/concept/text; editor also
+has own-evidence reads; protected literal tools remain in a small dictation
+capability in the same story/session. No transport copy, raised limit, new queue,
+semantic parser, publication consent change or implicit completion of reviews.
+The new parametrized fixture sends every real product bundle through the actual
+installed shared transition validator, preserving literal controls and keeping
+publication confirmation separate. 103 focused editor/review/socket/autonomous
+research/projection fixtures passed49.09s in job_0a627a85296c262348c4618e.
+The changed bundle has not yet been exercised with real Mira; resume there.
+
+Production remainsdb0c0d0; no merge/deploy/accepted product release. Original
+UNKNOWN operations and failed clocks remain saved. Full current-version corpus,
+mandatory correct identity controls, clean semantic E2E and warm POI reuse remain
+open. Resume from retained artifacts and existing work checkpoint after reboot.
+
 ## Ready-fact editorial continuation after actual5353f2f failure
 
 Hosted5353f2f backend38027083135 and Android38027083101 succeeded; these are
