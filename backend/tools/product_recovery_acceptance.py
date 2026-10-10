@@ -514,6 +514,9 @@ def read_case(service, case, item):
         gates['geometry_without_reference'] = (identity.get('proof_kind') == 'geometry'
             and identity.get('visual_reference_verified') is False
             and not identity.get('reference_evidence'))
+    if item.get('acceptance_mode') == 'physical_identity_G_or_T':
+        gates['physical_identity_G_or_T'] = (identity.get('proof_kind') in {'geometry', 'architectural_text'}
+            and not identity.get('reference_evidence'))
     live_receipts = [json.loads(attempt['receipt_json'] or '{}') for attempt in attempts]
     live_receipts = [receipt for receipt in live_receipts if receipt.get('provider_id') == 'google-live']
     case.update(status='RUNNING', operator_stopped=bool(stopped), uploaded_at=started, elapsed_from_upload_s=max(0, now-started),

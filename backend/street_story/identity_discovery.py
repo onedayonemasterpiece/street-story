@@ -2979,8 +2979,36 @@ async def prepare_search_plan(service, story, transcript, candidates):
         if hasattr(service, 'settings'):
             from .research_budget import require_remaining
             require_remaining(service, story['id'], 'identity')
-        entity_name, wiki_queries, visual_query, commons_query = await suggest(
-            service, story, transcript, candidates)
+        try:
+            entity_name, wiki_queries, visual_query, commons_query = await suggest(
+                service, story, transcript, candidates)
+        except PermanentProviderError as exc:
+            if str(exc) not in {'identity_architectural_comparison_invalid', 'identity_architectural_text_uncertain'}:
+                raise
+            # A known closed T answer cannot authorize joint3 or become proof.
+            # It also does not invalidate already acquired sources: hand those
+            # to the existing REF queue within the same generation and budget.
+            from .identity_plan_diagnostics import joint_followup_marker, _scope
+            current = json.loads(service._identity_snapshot(story['id'])[0]['research_json'] or '{}')
+            diagnostic = current.get('identity_closed_invalid_followup_plan') or {}
+            marker = joint_followup_marker(service, story) or {}
+            if (diagnostic.get('scope') != _scope(story)
+                    or diagnostic.get('phase') != 'closed_invalid'
+                    or diagnostic.get('code') != str(exc)
+                    or marker.get('phase') != 'response_closed'
+                    or marker.get('code') != str(exc)):
+                raise
+            entity_name, wiki_queries, visual_query, commons_query = '', [], '', ''
+            history = current.get('identity_article_discovery') or history
+            story['_identity_search_plan_payload'] = {
+                'closed_comparison_unusable': str(exc),
+                'diagnostic_sha256': diagnostic['raw_json_sha256']}
+            story['_identity_article_queries'] = []
+            story['_identity_search_plan_route'] = 'closed_text_reference_continuation'
+            record_identity_event(service, story['id'], 'identity_closed_text_reference_continuation', {
+                'generation': diagnostic['scope']['generation'], 'code': str(exc),
+                'source_count': len(history.get('sources') or []),
+                'identity_accepted': False, 'new_joint_inference': False})
         payload = story.get('_identity_search_plan_payload') or {
             'entity_name': entity_name, 'wikipedia_queries': wiki_queries,
             'visual_query': visual_query, 'commons_query': commons_query,
@@ -3005,11 +3033,13 @@ async def prepare_search_plan(service, story, transcript, candidates):
     geometry_result = _geometry_plan_result(story, payload, candidates)
     if geometry_result is not None:
         story['_identity_geometry_result'] = geometry_result
-    elif priority.get('active_candidate_ids') and (payload.get('accepted_architectural_text') or {}).get('decision') == 'uncertain':
+    elif payload.get('closed_comparison_unusable') or (
+            priority.get('active_candidate_ids') and (payload.get('accepted_architectural_text') or {}).get('decision') == 'uncertain'):
         # The useful T shortlist enters the existing visual worker immediately;
         # no unprepared second image decision is needed to establish uncertainty.
         story['_identity_accepted_result'] = {'status': 'uncertain', 'candidate_id': '',
-            'observations': [priority['reason']], '_comparison_deferred': True}
+            'observations': [priority.get('reason') or 'Архитектурное сравнение не подтвердило объект; проверяю полученные иллюстрации.'],
+            '_comparison_deferred': True}
     return history, (entity_name, wiki_queries, visual_query, commons_query)
 
 
@@ -3061,6 +3091,10 @@ async def recover(service, story, transcript, candidates, excluded):
             planned_queries=story.get('_identity_article_queries') or [])
         sources, search_failures = [], []
         payload = (history.get('search_plan') or {}).get('payload') or {}
+        if payload.get('closed_comparison_unusable'):
+            return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+                'observations': ['Продолжаю проверку уже полученных иллюстраций.'],
+                '_comparison_deferred': True, '_references_sent': []}, candidates
         if (str(payload.get('clarification_question') or '').strip()
                 and (story.get('latitude') is None or story.get('longitude') is None)):
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,

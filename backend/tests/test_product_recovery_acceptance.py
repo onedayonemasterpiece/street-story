@@ -350,6 +350,13 @@ def test_report_only_equivalent_identifiers_do_not_accept_neighbor_or_complex(tm
     assert harness.read_case(svc, case, entry)['gates']['correct_physical_object'] is True
     entry['expected_physical_ids'] = ['wiki:neighbor', 'osm:relation:multi-building-complex']
     assert harness.read_case(svc, case, entry)['gates']['correct_physical_object'] is False
+
+
+def test_directed_G_or_T_does_not_count_reference_identity(tmp_path):
+    svc, now, case = readback_fixture(tmp_path)
+    now[0] = 390
+    entry = {**item(), 'acceptance_mode': 'physical_identity_G_or_T'}
+    assert harness.read_case(svc, case, entry)['gates']['physical_identity_G_or_T'] is False
     assert 'expected_physical_ids' not in harness.upload_story(
         type('Service', (), {'create_story': lambda self, **kwargs: kwargs})(),
         entry, b'original-source', 'frozen-manifest')
