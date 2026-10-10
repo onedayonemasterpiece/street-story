@@ -3,6 +3,60 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Current 3369cde product proof and measured orchestration repair
+
+The current mandatory-five live batch completed with four actual closed Native
+SOURCE/MAP turns (19.394–24.014s), not five successful recognitions.104 correctly
+accepted relation3665416 at99.187s; first eligible fact144.537s, eight proved
+canonical claims and useful availability315.388s.130/111 ended without identity
+at180.406/180.879s;102 ended without identity at144.953s;132 was blocked before
+inference at78.376s. No confident false130 was accepted in this version, but its
+expected body was not identified. Current-version completed visual N=4; there is
+no measured universality claim. Natural worker terminal and early product
+availability remain separately recorded.
+
+Actual current104 editorial continuation passed through ordinary API and the
+shared Live WSS host: three selected eligible claims, concept, editable text,
+30.077s prepared PCM with301/301 acknowledgements (max0.616s), voice concept
+change preserving selection/draft, explicit subsequent draft edit, real
+1,902,250-byte PNG, Stop and reopen. Selected evidence, full actual input
+transcript, saved concept, draft and PNG were manually inspected. This is
+PASS_EDITORIAL_SEGMENT, with snapshot research workers unstarted to protect
+original UNKNOWN receipts. It is not handset microphone or public TLS evidence.
+The next ordinary story failed the reuse check; that check incorrectly stopped
+at intermediate uncertain before visual continuation, then explicitly stopped
+its fixture. The failed receipt is retained; reuse is not claimed.
+
+Actual editorial CPU profiling found136M calls,120s JSON decoding and65.5s
+cumulative FastAPI encoding. Same large immutable research row was decoded by
+six projection layers;679KB of discovery candidates was copied into every API
+response. Projection now shares one decoded row for that read only; complete
+research/reserve/proof stays in durable storage and model snapshots. On the same
+read-only retained104 data, wire size683,730→84,493 bytes and preparation/encoding
+0.27–0.38→0.07–0.12s. Already queued visual generations and ended scopes are
+filtered before Python decoding. Terminal observation filters expired/not-due
+receipts before its bounded selection, so a backlog cannot hide an eligible
+original readback. Owned resource-controller connections close on shutdown.
+Stop/photo/generation fences and semantic model authority are unchanged.
+
+Hosted3369cde backend was cancelled at25min after22 actual failed assertions;
+Android build/checks and emulator passed. CI has no private admission SDK,
+whereas the production installer pins private ai-resource-control0.1.14 with its
+wheel digest. Missing estimator code had been treated as a transient provider
+failure and triggered key rotation/waits. It now fails before reservation/send
+with typed resource_sdk_unavailable; independent routes retain their own fences.
+SDK-dependent controlled tests follow the established explicit public-CI skip
+contract; the full suite with the real pinned SDK remains required on the
+trusted devserver. No private wheel or substitute estimator is published.
+New missing-SDK negative control proves no reservation/provider call. Local
+153 affected checks,2 shutdown/backlog controls,22 admission/lifetime checks and
+74 shared-adapter/quota checks passed before the final full verification.
+
+Retained evidence: current cold-3369cde, editorial-104-current-3369cde,
+editorial-profile.pstats, projection-benchmark-before/after.json and targeted-v17
+under `/home/dev/artifacts/street-story/20261009T214809Z-overnight-product-finish-20261009`.
+Release acceptance remains pending; production is stilldb0c0d0.
+
 Exact `db453f0` verification completed: 2687 backend tests passed, 2 skipped
 in 519.37s. The changed real REF transport resolved the article's received
 photo-detail link to its full JPEG and sent the actual pixels to the qualified

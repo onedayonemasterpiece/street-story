@@ -85,6 +85,26 @@ async def test_original_id_readback_after_job_done_validates_schema_without_prod
 
 
 @pytest.mark.asyncio
+async def test_due_original_readback_is_not_hidden_by_expired_observer_backlog(tmp_path):
+    svc, story, now, receipt = pending(tmp_path)
+    with svc.store.tx() as db:
+        for index in range(65):
+            stale = {**receipt, 'terminal_reconciliation': {'status': 'expired'}}
+            db.execute('INSERT INTO research_provider_attempts VALUES(?,?,?,?,?,?,?)',
+                (f'expired-{index}', f'expired-logical-{index}', story['id'], 'facts_opencode',
+                 canonical(stale), now[0] - 10, now[0] - 10))
+    calls = []
+    async def request(client, method, path, **kwargs):
+        calls.append((method, path))
+        return original_messages(completed=True)
+    adapter(svc, request)
+    assert await reconcile_terminal_attempts(svc) == {'observed': 1, 'closed': 1}
+    assert calls == [('GET', '/session/ses_original/message')]
+    with svc.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM research_provider_attempts').fetchone()[0] == 66
+
+
+@pytest.mark.asyncio
 async def test_unknown_original_remains_bounded_and_never_resends(tmp_path):
     svc, story, now, original = pending(tmp_path)
     calls = []

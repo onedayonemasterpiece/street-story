@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import httpx
 import pytest
@@ -84,3 +85,32 @@ def test_runtime_story_exposes_bounded_research_provenance(tmp_path):
         "wikipedia_page_count": 1,
         "grounded_source_count": 1,
     }
+
+
+def test_projection_decodes_one_snapshot_and_keeps_proof_without_duplicate_inventory(tmp_path, monkeypatch):
+    service = RuntimeStreetStoryService(settings(tmp_path), ProviderBundle(Dummy(), Dummy(), Dummy(), Dummy()))
+    story = service.create_story(key="projection-snapshot", client_story_id="projection-snapshot",
+        photo_sha256=PHOTO_SHA, photo_mime_type="image/jpeg", photo_bytes=PHOTO,
+        voice_protocol="voice-chunks-v2", lat=54.7, lon=20.5)
+    identity = {"status": "uncertain", "candidate_id": "osm:1", "proof_kind": "geometry",
+        "geometry_proof": {"source_sha256": PHOTO_SHA, "accepted": False},
+        "candidates": [{"candidate_id": "osm:1", "name": "Visible alternative"}],
+        "observed_candidates": [{"candidate_id": "osm:2", "received_geometry": "coordinates " * 10000}]}
+    research = json.dumps({"visual_identity": identity, "publication_concept": "Owner angle"})
+    with service.store.tx() as db:
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (research, story["id"]))
+        row = service._story_row(db, story["id"])
+        decode, snapshots = json.loads, []
+        def record(value, *args, **kwargs):
+            if value == research:
+                snapshots.append(value)
+            return decode(value, *args, **kwargs)
+        monkeypatch.setattr(json, "loads", record)
+        result = service._story_repr(db, row)
+        assert len(snapshots) == 1
+        assert result["visual_identity"] == {key: value for key, value in identity.items()
+                                           if key != "observed_candidates"}
+        assert result["publication_concept"] == "Owner angle"
+        # The original candidate reserve and proof remain complete for model work.
+        assert decode(service._story_row(db, story["id"])["research_json"])["visual_identity"] == identity
+        assert len(json.dumps(result)) < len(research) / 10

@@ -210,6 +210,7 @@ async def test_native_unknown_original_readback_precedes_returning_google_route(
 
 @pytest.mark.asyncio
 async def test_direct_google_real_quota_denial_is_known_unsent(tmp_path):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from types import MethodType
     from street_story.providers import GeminiClient
     provider, verdict, context, google_calls, first, second = google_setup()

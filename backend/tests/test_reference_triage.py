@@ -149,6 +149,7 @@ async def test_unknown_triage_retains_original_operation_without_new_send_on_wak
 @pytest.mark.asyncio
 @pytest.mark.parametrize('requested,expected', [(None, 8192), (1024, 1024), (8192, 8192), (8193, 8192), (0, 8192)])
 async def test_explicit_small_output_cap_reduces_shared_reservation_and_keeps_provider_admission(requested, expected):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from google.genai import types
     from street_story.providers import GeminiClient
     calls = []

@@ -11,6 +11,22 @@ from test_research_control import fixture
 
 
 @pytest.mark.asyncio
+async def test_adapter_shutdown_closes_owned_resource_controller_after_clients():
+    from types import SimpleNamespace
+    calls = []
+    def client(name):
+        async def close():
+            calls.append(name)
+        return SimpleNamespace(close=close)
+    adapter = ProductResearchAdapter.__new__(ProductResearchAdapter)
+    adapter.native_vision = client('native')
+    adapter.live_facts = client('live')
+    adapter.control = client('controller')
+    await adapter.close()
+    assert calls == ['native', 'live', 'controller']
+
+
+@pytest.mark.asyncio
 async def test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path):
     from street_story.errors import RetryableProviderError
     service, sid, photo = fixture(tmp_path)

@@ -1003,7 +1003,16 @@ class GeminiClient:
         # Account for the complete final request, including system/schema/tools.
         # Reuse the shared conservative estimator; its units are an admission
         # estimate, never a tokenizer result or measured billed usage.
-        from ai_resource_control.client import estimate_input_tokens, MEDIA_RESOLUTION_IMAGE_UNITS
+        try:
+            from ai_resource_control.client import estimate_input_tokens, MEDIA_RESOLUTION_IMAGE_UNITS
+        except ImportError:
+            # Missing local admission code cannot be repaired by rotating keys.
+            # The runtime installer owns this private, digest-pinned dependency.
+            from .gemini import GeminiUnavailable
+            error = GeminiUnavailable(time.time() + 300, 'resource_sdk_unavailable')
+            error.provider_send_state = 'not_sent'
+            logging.getLogger(__name__).error('street_story_request_input_unavailable component=admission error_type=ImportError provider_send_state=not_sent')
+            raise error from None
         envelope_parts, media_units, media_bytes = [], 0, 0
         for part in contents:
             if isinstance(part, str):

@@ -171,6 +171,7 @@ def test_terminal_attempt_forbids_new_send_even_with_positive_remaining_time(tmp
 @pytest.mark.asyncio
 @pytest.mark.parametrize('superseded', [False, True])
 async def test_google_admission_cannot_send_after_its_research_scope_expires(tmp_path, monkeypatch, superseded):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from types import SimpleNamespace
     from pydantic import SecretStr
     from street_story.gemini import GeminiExecutor, GeminiKeyPool

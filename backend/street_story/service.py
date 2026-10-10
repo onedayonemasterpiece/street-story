@@ -345,10 +345,11 @@ class StreetStoryService:
                 pass
         return {"ok": True, "story_id": story_id}
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
         from .fact_ledger import assertion_state, backfill_legacy_fact_ledger
         from .research_control import KINDS, PURPOSES, research_stopped
-        research = json.loads(row['research_json'] or '{}')
+        if research is None:
+            research = json.loads(row['research_json'] or '{}')
         generation = int(research.get('identity_generation') or 0)
         controls = research.get('research_controls') or {}
         pending_research = {purpose: False for purpose in PURPOSES}
@@ -975,6 +976,10 @@ class StreetStoryService:
                 "coalesce(json_extract(stories.research_json,'$.identity_generation'),0) "
                 "AND json_extract(origin.payload_json,'$.queue_priority')='interactive') AS interactive_identity "
                 "FROM stories WHERE state IN ('needs_review','identifying','photo_ready') "
+                "AND json_extract(stories.research_json,'$.automatic_research_outcome') IS NULL "
+                "AND NOT EXISTS(SELECT 1 FROM jobs queued WHERE queued.semantic_key="
+                "'identity-visual:'||stories.id||':'||coalesce(json_extract(stories.research_json,'$.identity_generation'),0)"
+                "||':'||stories.photo_sha256) "
                 "ORDER BY interactive_identity DESC,created_at,id"):
                 research = json.loads(row['research_json'] or '{}')
                 identity = research.get('visual_identity') or {}
@@ -985,8 +990,6 @@ class StreetStoryService:
                         or research_stopped(research, 'identity', photo_sha256=row['photo_sha256'], identity_generation=generation)):
                     continue
                 semantic = f"identity-visual:{row['id']}:{generation}:{row['photo_sha256']}"
-                if db.execute('SELECT 1 FROM jobs WHERE semantic_key=?', (semantic,)).fetchone():
-                    continue
                 self._enqueue_job(db,row['id'],'identity_visual',semantic,
                     {'identity_generation':generation,
                      'queue_priority': 'interactive' if row['interactive_identity'] else 'background'})

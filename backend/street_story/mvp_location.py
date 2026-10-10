@@ -166,9 +166,10 @@ class MvpLocationStreetStoryService(MvpAcceptanceStreetStoryService):
                     (canonical(research), self.store.now(), job["story_id"]),
                 )
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
-        research = json.loads(row["research_json"] or "{}")
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         provenance = research.get("location_provenance")
         if isinstance(provenance, dict):
             result["location_provenance"] = provenance

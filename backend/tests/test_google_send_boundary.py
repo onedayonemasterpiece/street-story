@@ -10,6 +10,26 @@ from test_shared_quota import rig as rig
 
 
 @pytest.mark.asyncio
+async def test_missing_local_admission_sdk_stops_without_key_rotation_or_provider_send(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    from street_story.providers import GeminiClient
+    from test_backend import config
+    monkeypatch.setitem(sys.modules, 'ai_resource_control.client', None)
+    client = GeminiClient(config(tmp_path))
+    calls = []
+    async def unexpected(*args, **kwargs):
+        calls.append('provider_or_reservation')
+        pytest.fail('Missing admission SDK must stop before reservation or inference')
+    client._provider_request = unexpected
+    client.quota = SimpleNamespace(run=unexpected)
+    with pytest.raises(GeminiUnavailable, match='resource_sdk_unavailable') as caught:
+        await client.executor.execute('grounded_research', lambda key, timeout: client._generate(key, timeout, ['fixture']))
+    assert calls == []
+    assert provider_outcome(caught.value) == ('not_sent', None)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('controller_step', ['google_ai_api_keys', 'google_ai_reserve',
     'google_ai_mark_sent', 'google_ai_requests'])
 async def test_pre_provider_controller_failure_proves_unsent_without_refunding_journal(rig, controller_step):

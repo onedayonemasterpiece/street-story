@@ -110,8 +110,10 @@ class MvpProductStreetStoryService(ProductStreetStoryService):
             )
         return brief
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         context = json.loads(row["visual_context_json"] or "{}")
         visual = result.setdefault("visual", {})
         for key in ("prompt_version", "prompt_sha256", "content_revision"):

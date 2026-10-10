@@ -189,3 +189,29 @@ def test_active_initial_identity_passes_backfill_budget_and_keeps_priority_in_vi
     assert len(scheduled_jobs(service, 'identity')) == 40
     service._schedule_identity_visual()
     assert len(scheduled_jobs(service, 'identity')) == 46
+
+
+def test_scheduler_does_not_redecode_finished_visual_jobs_and_keeps_new_generation(tmp_path, monkeypatch):
+    service, _ = make_service(tmp_path)
+    service.providers.research = SimpleNamespace(vision_available=True)
+    sid = add_topic(service, 'large-ended-topic', 'identity')
+    schedule(service, 'identity')
+    with service.store.tx() as db:
+        original = json.loads(service._story_row(db, sid)['research_json'])
+        original['received_map'] = 'coordinates ' * 100000
+        raw = json.dumps(original)
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (raw, sid))
+        db.execute("UPDATE jobs SET state='done' WHERE kind='identity_visual'")
+    decode = json.loads
+    def guard(value, *args, **kwargs):
+        assert value != raw, 'An already scheduled generation must not reparse its full map'
+        return decode(value, *args, **kwargs)
+    monkeypatch.setattr(json, 'loads', guard)
+    schedule(service, 'identity')
+    with service.store.tx() as db:
+        original['identity_generation'] = 1
+        db.execute("UPDATE stories SET research_json=? WHERE id=?", (json.dumps(original), sid))
+    schedule(service, 'identity')
+    jobs = scheduled_jobs(service, 'identity')
+    assert len(jobs) == 2
+    assert {json.loads(job['payload_json'])['identity_generation'] for job in jobs} == {0, 1}

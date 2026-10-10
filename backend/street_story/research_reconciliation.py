@@ -256,10 +256,15 @@ async def reconcile_terminal_attempts(service, *, story_id=None, max_attempts=3,
     deadline = time.monotonic() + max(0, min(6, float(timeout_seconds)))
     with service.store.connection() as db:
         rows = list(db.execute('SELECT a.attempt_id FROM research_provider_attempts a JOIN stories s ON s.id=a.story_id '
-            'WHERE json_extract(s.research_json,\'$.automatic_research_outcome\') IS NOT NULL '
-            'AND json_extract(a.receipt_json,\'$.phase\') NOT IN (\'created\',\'completed\',\'response_completed\',\'failed\') '
+            'WHERE json_extract(a.receipt_json,\'$.phase\') NOT IN (\'created\',\'completed\',\'response_completed\',\'failed\') '
+            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.status\'),\'\') '
+            'NOT IN (\'completed\',\'failed\',\'unaddressable\',\'expired\',\'exhausted\') '
+            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.next_read_at\'),0)<=? '
+            'AND coalesce(json_extract(a.receipt_json,\'$.terminal_reconciliation.lease_until\'),0)<=? '
+            'AND json_extract(s.research_json,\'$.automatic_research_outcome\') IS NOT NULL '
             + ('AND a.story_id=? ' if story_id else '') + 'ORDER BY a.updated_at LIMIT 60',
-            (story_id,) if story_id else ()))
+            (service.store.now(),service.store.now(),story_id) if story_id else
+            (service.store.now(),service.store.now())))
     observed, closed = 0, 0
     for candidate in rows:
         if observed >= limit or time.monotonic() >= deadline:

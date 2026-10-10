@@ -70,6 +70,7 @@ class Controller:
 
 @pytest.fixture
 def rig(tmp_path,monkeypatch):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: full suite runs on the devserver; public CI cannot install the private wheel')
     for i,key in enumerate(KEYS):
         monkeypatch.setenv(f'GOOGLE_API_KEY{i+1}',key)
     cfg = replace(config(tmp_path),gemini_api_keys=tuple(SecretStr(k) for k in KEYS),
@@ -337,6 +338,7 @@ async def test_malformed_reserve_is_fail_closed(rig):
 
 @pytest.mark.asyncio
 async def test_full_durable_pipeline_uses_shared_gate_without_repeating_stages(tmp_path,monkeypatch):
+    pytest.importorskip('ai_resource_control.client', reason='Private pinned admission SDK: verified by the full devserver suite')
     from test_gemini_reliability import pipeline, admit
     svc,g,osm,wiki,clock = pipeline(tmp_path,{KEYS[0]:429})
     for i,key in enumerate(KEYS):

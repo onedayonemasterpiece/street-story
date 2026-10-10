@@ -600,9 +600,9 @@ class NativeVisionProvider:
                 receipt['route_failure'] = {'code': code, 'retry_at': retry_at,
                                             'observed_at': self.service.store.now()}
                 await self._save(binding, receipt)
-                logger.warning('native_visual_resource_wait story_id=%s attempt_id=%s phase=%s code=%s retry_at=%s provider_send_state=%s',
+                logger.warning('native_visual_resource_wait story_id=%s attempt_id=%s phase=%s code=%s retry_at=%s provider_send_state=%s elapsed_ms=%s',
                                story['id'], binding['attempt_id'], receipt['phase'], code, retry_at,
-                               receipt.get('provider_send_state', 'unknown'))
+                               receipt.get('provider_send_state', 'unknown'), round((time.monotonic() - started) * 1000))
                 raise RetryableProviderError(code, retry_at=retry_at) from exc
             await self._save(binding, receipt)
             if isinstance(exc, (RetryableProviderError, asyncio.CancelledError)):

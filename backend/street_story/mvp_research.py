@@ -1710,16 +1710,20 @@ class MvpResearchMixin(IdentityLifecycleMixin):
                 completed=True,
             )
 
-    def _story_repr(self, db, row) -> dict[str, Any]:
-        result = super()._story_repr(db, row)
-        research = json.loads(row["research_json"] or "{}")
+    def _story_repr(self, db, row, *, research=None) -> dict[str, Any]:
+        if research is None:
+            research = json.loads(row["research_json"] or "{}")
+        result = super()._story_repr(db, row, research=research)
         identity = research.get("visual_identity")
         from .identity_progress import from_history, current_projection
         result["identity_progress"] = current_projection(
             research.get("identity_progress") or from_history(db, row["id"], int(research.get("identity_generation") or 0)),
             identity if isinstance(identity, dict) else None)
         if isinstance(identity, dict):
-            result["visual_identity"] = identity
+            # Discovery inventory stays in durable research and model snapshots.
+            # The product projection does not need a second full OSM copy.
+            result["visual_identity"] = {key: value for key, value in identity.items()
+                                         if key != "observed_candidates"}
         if research.get("input_revision"):
             result["research_revision"] = research["input_revision"]
         result["publication_concept"] = str(research.get("publication_concept") or "")[:1200] or None

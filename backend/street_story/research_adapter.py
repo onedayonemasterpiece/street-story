@@ -287,6 +287,8 @@ class ProductResearchAdapter:
             await self.native_vision.close()
         if getattr(self, 'live_facts', None) is not None:
             await self.live_facts.close()
+        if getattr(self, 'control', None) is not None:
+            await self.control.close()
 
     def retain_search_observer(self, task):
         observers = getattr(self, '_search_observers', None)
