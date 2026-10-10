@@ -37,26 +37,17 @@ def test_malformed_shapes_remain_original_validator_responsibility(plan):
 
 
 @pytest.mark.asyncio
-async def test_one_role_aware_repair_retains_road_as_actual_feature_and_source_map_bytes(tmp_path):
+async def test_invalid_nomination_does_not_block_valid_geometry_with_road_context(tmp_path):
     service, story, active = geometry_setup(tmp_path)
     initial = payload(geometry_decision())
     initial['observed_candidate_ids'] = ['osm:way:9']
-    repaired = payload(geometry_decision())
-    repaired['observed_candidate_ids'] = ['osm:way:2']
     calls = []
 
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
         assert 'received MAP context ID' in contents[-1]
-        if len(calls) == 1:
-            return SimpleNamespace(text=json.dumps(initial))
-        assert len(calls) == 2
-        assert 'nomination_roles' in contents[-1]
-        assert 'received_map_context' in contents[-1] and 'osm:way:9' in contents[-1]
-        assert 'does not authorize physical nomination' in contents[-1]
-        assert contents[0].inline_data.data == calls[0][0].inline_data.data
-        assert contents[1].inline_data.data == calls[0][1].inline_data.data
-        return SimpleNamespace(text=json.dumps(repaired))
+        assert len(calls) == 1
+        return SimpleNamespace(text=json.dumps(initial))
 
     async def forbidden(*args, **kwargs):
         pytest.fail('Corrected joint2 must not require a third planner or REF')
@@ -64,12 +55,12 @@ async def test_one_role_aware_repair_retains_road_as_actual_feature_and_source_m
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert len(calls) == 2
+    assert len(calls) == 1
     proof = story['_identity_geometry_result']['geometry_proof']
     assert proof['decision']['candidate_id'] == 'osm:way:2'
     assert proof['decision']['decisive_relations'][0]['map_features'][1] == {
         'candidate_id': 'osm:way:9', 'kind': 'road_axis'}
-    assert history['search_plan']['payload']['observed_candidate_ids'] == ['osm:way:2']
+    assert history['search_plan']['payload']['observed_candidate_ids'] == []
     diagnostic = service._identity_snapshot(story['id'])[1]['identity_closed_invalid_plan']
     assert json.loads(diagnostic['raw_json'])['observed_candidate_ids'] == ['osm:way:9']
 
@@ -78,6 +69,7 @@ async def test_one_role_aware_repair_retains_road_as_actual_feature_and_source_m
 async def test_repeated_context_nomination_stays_rejected_without_third_send_or_restart_resend(tmp_path):
     service, story, active = geometry_setup(tmp_path)
     invalid = payload(geometry_decision())
+    invalid.pop('accepted_geometry')
     invalid['observed_candidate_ids'] = ['osm:way:9']
     calls = []
 

@@ -3,6 +3,389 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## Current verification and audit disposition, 2026-10-10
+
+This table supersedes older candidate summaries; the historical failures below
+remain evidence. Production remains db0c0d0. The independent audit was based on
+conversation excerpts, so its causal statements were checked against source and
+retained runtime inputs rather than treated as established root causes.
+
+| Scope | Verified result | Remaining work |
+| --- | --- | --- |
+| Frozen 2aacca1 installed SDK | 2986 passed, 2 skipped; unchanged source before/after | Final patched candidate full suite |
+| Frozen 2aacca1 actual SOURCE 102 | Correct way133035113; identity72.836s, first242.200s, terminal401.049s; 5 eligible, PASS_CANDIDATE | Ordinary editorial continuation; compound claims are not automatically clean selections |
+| Frozen 2aacca1 actual SOURCE 130 | Uncertain,138.961s; compact article-photo T was not reached | Actual cold compact T path; earlier wrong-neighbor blocker remains open |
+| Frozen 2aacca1 actual SOURCE 104 /111 | Uncertain at180.139s /129.970s | Patched-input cold contrasts |
+| Frozen 2aacca1 actual SOURCE 132 /105 /106 | Deadline at180.159s /180.452s /180.284s | Distinguish closed semantic responses, NotSent and UNKNOWN individually |
+| Initial critical-path patch16a0393 | 237 affected checks passed161.35s; Native/MAP/adapter64 passed15.14s; Android38053334077 passed; backend CI28 failed,2745 passed,49 skipped | Followup fixes below;16a0393 is not an accepted release |
+| Frozen979175d continuation | 200 affected checks passed157.41s;115 independent-boundary checks passed53.91s; Android38054725132 checks/emulator passed; backend2772 passed,49 skipped,1 failed | Image-preparation test returned a wholly empty no-action plan; fixture corrected while retaining its image assertion |
+| Frozen979175d mandatory5 |104 correct58.426s, first105.487s,3 independent own-source facts177.696s; substantive PASS.102/111/130 deadline FAIL182.082/180.565/180.517s;132 resource BLOCKED165.790s. Five distinct initial SOURCE answers closed; no UNKNOWN; no wrong ID accepted | Only1/5 delivered useful facts; not release acceptance or a completed fixed15 |
+| Current102 authenticated API | Ordinary history/reopen on979175d preserves the compatible closed v42 editor result:3 selected eligible facts, corrected draft, evening concept and visual;301/301 voice ACK reused | No new inference, Android microphone or publication claim |
+| Positive-evidence boundary correction |78 affected tests passed10.71s; exact unmodified closed102 T now yields its own133035113 proof, preserving the declined plaque comparison; foreign positive pointer and declined-only match remain rejected | Frozen full suite and next actual corpus; offline replay is not a new cold PASS |
+| Disk cleanup | 4.2GiB plus752.5MiB of successful synthetic fixtures deleted through managed dry-run/apply; pip download cache purged;5.8GiB free | Successful new pytest fixtures use failed-only retention |
+
+The actual compact T caller now supplies the manifest and label→candidate ID
+table from its frozen MAP; active bodies receive detailed contours and reserve
+bodies retain the same labels. The production104 input omitted that table.
+This is not evidence that the same defect caused every other refusal. The
+assembled caller test now covers active/reserve labels and rejects reuse of a
+closed proof after a foreign or permuted MAP table is attached.
+
+Useful G narrowing remains input to T. Failed G does not veto T; uncertain T
+retains usable searches for REF. Explicit readable names are model-interpreted
+search phrases, with tenant/advertisement/background scope distinguished by
+the model. Optional publisher photographs are acquired independently within
+the existing shared bound, so a stalled first photograph does not block a
+ready second photograph. No additional semantic classifier or model judge is
+introduced.
+
+Fresh identity plans admit each field/item under its issued contract and retain
+independently valid work. Duplicate searches are deduplicated; coverage advice
+does not reject a plan. Conflicting G/T proofs establish no identity while
+valid searches continue. New Native initial plans deliver the closed raw object
+to this same combiner instead of rejecting the full schema in transport first.
+Original addressed operations keep their frozen validation policy. Local work
+caps defer only new units of that category; cached pages and independent work
+remain usable. Real quota, overall deadline, SOURCE/generation/Stop fences and
+UNKNOWN observation rules remain enforced.
+
+Ready fact-review packets now have an owned timer wake while extraction is
+pending; Stop cancels it. Malformed auxiliary sufficiency advice cannot discard
+independently eligible verdicts and cannot authorize early completion. Existing
+structured rejection diagnostics identify the validator and schema path without
+logging private values; component-preservation and local-cap events distinguish
+partial admission from whole-response rejection. Exact source/hash/pointer,
+individual-subject proof, own-evidence, persistence and Stop checks remain
+fail-closed; plan completeness and auxiliary sufficiency are advisory.
+
+Audit corrections: the saved sid550 article explicitly says1853–1859, so the
+qualified104 period is source-backed rather than inferred from two conflicting
+years. The corrected retained102 draft describes neighborhood destruction
+without claiming it was the sole surviving building. The failure matrix has
+26 distinct driver/argument combinations; earlier200 PASS counted repeated
+fixtures rather than200 distinct schedules. The new matrix runs each once.
+The two frozen2aacca1 jobs completed before this patch began; their seven cases
+are not a completed fixed15 acceptance.130 and120 remain semantic review risks.
+
+Android2aacca1 instrumentation confirms expected1/actual0 at the running-control
+assertion. Logs do not establish a product root cause. The local projection
+fixture now isolates backend configuration using the previously verified test
+practice while preserving all three UI assertions; its emulator verification
+passed in16a0393 run38053334077 (checks and emulator). This supports fixture
+isolation; it does not claim the app was fixed by editing a test.
+
+Actual16a0393 contrasts completed with unchanged tracked source:
+
+| SOURCE | Result | Observed boundary |
+| --- | --- | --- |
+|104|FAIL deadline180.419s; no accepted ID|T received667 MAP-label rows and two actual publisher photographs. It named correct relation3665416 but declared historical-complex-only scope, so no individual-body proof was admitted. REF continued; identity deadline expired.|
+|130|FAIL deadline181.121s; no accepted ID|The actual compact T received two publisher photographs and returned uncertain, explicitly identifying differences and unresolved individual-body scope. No neighboring ID was accepted. Native NotSent token admission first consumed59.623s; T later closed and REF continued.|
+
+Backend CI exposed a real continuation defect: removing rejected G from the
+admitted plan also removed its useful model hypotheses before T preparation.
+The correction carries rejected G/T through the existing conditional-hypothesis
+receipt, never as proof. Independent usable fields continue; a wholly empty
+answer uses existing bounded recovery. An omitted Wikipedia selection becomes
+explicitly empty, so it cannot trigger nearest-page legacy selection. Independent
+query fields no longer depend on a Wikipedia-query array being present. Tests
+now separately cover invalid nominations alongside valid G, empty unusable
+answers, and independent REF continuation without resending UNKNOWN T.
+
+When a qualified alternate T route exists, authoritative Native NotSent admission
+uses it before waiting for that Native minute budget. With no alternate route,
+the existing bounded same-request wait remains. UNKNOWN never permits that
+reassignment. The model instruction also distinguishes a single mapped object
+with several contours from several separately mapped neighboring bodies; a
+cropped view does not require an unprovided member footprint. This is a general
+scope instruction, without a scene-specific host classifier or acceptance rule.
+The16a0393 full installed-SDK run was cancelled at40% after CI failures were
+known and before source changed; it has no completed acceptance verdict.
+
+The979175d group finished before further edits. Its full installed-SDK run was
+cancelled after the next concrete defect was established, so it has no final
+verdict. The102 compact T correctly accepted way133035113 and explicitly
+declined an unrelated plaque article with `physical_binding_resolved=false`.
+The host nevertheless counted that declined article as a positive binding and
+required a confirming link for it. Offline replay of the exact closed answer
+located rejection at the positive-link count and the blanket correspondence
+membership check. Its own supported evidence passes unchanged. This is a
+confirmed overbroad host veto, not a semantic uncertainty; the original cold
+FAIL remains FAIL. The correction credits only explicitly positive bindings
+and their matches, while retaining negative comparisons in the proof and
+checking actual source pointers. A declined source cannot prove the selected
+body. The remaining10 cases were not spent on this known defect.
+
+Evidence: retained task `20261009T214809Z-overnight-product-finish-20261009`:
+`full-installed-sdk-2aacca1-v106.xml`, `critical-path-patch.xml`,
+`cold-2aacca1-corpus`, `cold-f23fad5-corpus/case-104.json`,
+`fixture-cleanup-20261010.json`, `android-emulator-2aacca1`.
+Current evidence: `cold-979175d-corpus`, `semantic-104-979175d.json`,
+`retained102-current-api-reopen-979175d.json`,
+`closed102-negative-binding-rejection-979175d.json`,
+`closed102-negative-binding-proof-replay-979175d.json`.
+
+## Reliability finish after reboot, 2026-10-10
+
+Current candidate uses model-selected source-span references for fresh T, without model-retyped quotations or a quotation-delimiter repair. Semantic SOURCE/article comparison remains the model's responsibility; the host checks issued references, source versions and persistence fences. Original addressed requests retain their original schemas. Fixed-candidate corpus and final installed-SDK acceptance remain pending.
+
+Current evidence milestone (not a release acceptance):
+
+- d3effe2 actual104 in job_7f32d536abac8d31240a4903 remains FAIL:
+  correct osm:relation:3665416 identity68.561s, first eligible136.582s,
+  terminal511.397s, seven proved eligible. The existing480s gate is unchanged;
+  runner-forced useful_partial/acceptance_upload_deadline_exceeded is not
+  natural completion. The unqualified1859 claim was again wrongly supported
+  despite both own competing dates and the v11 instruction. One earlier closed
+  answer also confused slice ordinals with assertion numbers and was rejected.
+  No corpus/release acceptance follows from these seven rows.
+- Fresh v12 closed review presents one assertion with all its own slices,
+  keeping original public packets/quote journals immutable. Exact fact-number
+  enums prevent inventing assertion numbers. The same reviewer response now
+  explicitly inventories relevant own evidence values/conflicts and may name
+  a useful-goal basis from newly supported and already eligible assertions;
+  no separate mandatory sufficiency judge or inference is added. Declared
+  unresolved conflicts cannot be submitted as supported. Fresh requests retain
+  their exact model presentation/schema for original UNKNOWN observation.
+  Scoped backend reconsideration reuses the public own-fact review fences and
+  shared commit path; it protects unchanged UNKNOWN scopes across this story's
+  jobs and leaves independent assertions untouched. The existing versioned
+  acceptance tool can measure this segment in the retained DB with no SOURCE
+  upload/identity replay, keeping old cold reports and vision receipts intact.
+  grouped-scoped-live-v59.xml:104 passed74.21s, including actual installed
+  Live adapter/setup sizing and explicit reconsideration/UNKNOWN negatives.
+  Earlier v58:150 passed5 failed from fixtures reading the prior flat model
+  packet; those wire fixtures now read the actual grouped format. The old
+  90bd hosted failure was one obsolete absent-send-state assertion (2876
+  passed85 skipped); the fixture now asserts possibly_sent/retry_safe=false
+  for a failed Native turn, retaining actual usage and no request refund.
+- Actual90bd05e104/132 in job_1dbb03c417bc2cfe13a5c129 both FAIL; original
+  case records remain in cold-90bd05e-corpus.104 accepted the correct
+  osm:relation:3665416 by architectural text in53.221s, first eligible96.686s,
+  terminal97.619s, but only one eligible against the report-only minimum3.
+  The extractor's sufficiency decision prematurely stopped review after the
+  first accepted candidate. Its unqualified1859 claim also requires semantic
+  reconsideration: its own Wiki slices contain a competing construction date.
+ 132 Native initial and same Native T followup both completed; the latter was
+  admitted after its recorded59.659s NotSent wait. T explicitly rejected the
+  acquired plaque article as proof of the photographed physical body. Subsequent
+  REF work exceeded the original180s identity envelope (terminal180.376s,
+  no accepted physical ID). This is not simultaneous provider unavailability
+  or a new memory-pressure diagnosis; Google triage completed, some search
+  requests received429 and subsequent visual requests timed out.
+- The sufficiency decision now names its own compact basis: exact new candidate
+  indices and supplied eligible known IDs. Only unchanged independently eligible
+  members fulfill it. Historical closed results without a basis conservatively
+  require all their new claims. An invalid/empty basis cannot authorize early
+  completion; no count-based semantic judge or mandatory extra inference is
+  added. Ready review continues while an independent source tail waits. Giga
+  structural filtering preserves the selected indices instead of shifting them.
+  The coherent closed verifier now explicitly checks competing own infobox/prose
+  values and requests qualified repair or insufficiency, rather than silently
+  choosing a matching sentence. Unknown original contracts remain immutable.
+  sufficiency-basis-v55.xml:6 passed; sufficiency-and-own-conflict-v56.xml:
+  176 passed70.06s with the installed runtime SDK. These are orchestration and
+  contract tests, not actual semantic acceptance of the disputed104 claim.
+- Retained102 ordinary draft correction on aaf366a completed in
+  job_802552f2d782203c3d00fece, e2e-selected-draft-fidelity-v42.json,
+  edit_text call2618913. The final Russian prose now says the building survived
+  the almost complete WWII destruction of its neighborhood, without adding
+  exclusivity. Nordstern tenant and east cornice/consoles match the other two
+  selected claims. Semantic review of this compatible editorial chain passes:
+  the exact original identity/own evidence, three independent selections,
+  concept/draft, actual prepared voice, inspected visual and reopen are proved.
+  The v42 segment reuses closed v40 voice/visual with unchanged bytes, not a
+  new cold identity run or physical-microphone acceptance. Old failed clocks
+  and REVIEW_REQUIRED runner records are preserved; full corpus/release pending.
+- Finalization now journals its exact original lease capsule, state and usage
+  before RPC in the existing attempt receipt. SDK fallback cleanup retries the
+  same payload, never generic unknown in place of completed usage. A durable
+  validated completed result survives authority unavailability; lease.finalized
+  stays false until actual authority confirmation. Idle recovery reuses the
+  original lease/fence and authority binding with bounded RPC, no reserve or
+  inference. The private capsule contains the necessary original owner token;
+  DB/WAL/SHM permissions are restricted0600 and it is excluded from telemetry.
+  Tests cover unavailable/lost reply, restart, exact idempotent completion,
+  changed authority and UNKNOWN/unsent negatives. Live closed semantic receipts
+  also survive SDK release-error telemetry while resource finalization remains
+  explicitly unconfirmed. OpenCode uses the same admission wrapper.
+- Initial G now presents all received bodies once with overview primitives;
+  full contours/sides/morphology remain frozen and are exposed for requested
+  active groups. Initial T source passages occur once, with exact publisher/OSM
+  refs; repeated physical/address projections and nested provenance stay in the
+  owned capsule. No nearest-K or far/unnamed-body exclusion. Stored presentation
+  shapes are preserved for original-operation reconstruction. Fresh Native
+  detail/T followup uses its own visual route and original frozen observer;
+  a successful Native initial no longer requires Google followup.
+- Offline actual132 frozen-envelope reconstruction through existing versioned
+  product_recovery_acceptance --inspect-initial-db:167106→110338 UTF-8 bytes,
+  reservation estimate65175→46374 (local60000,22.7% headroom); output8192 and
+  image allowance included. All212 body IDs and SOURCE960x1280/MAP2560x1350
+  hashes retained; schema and lossless pointer roundtrip verified. This is
+  envelope evidence, not inference/provider-token usage. v45 intermediate
+  measurement55842 is retained, not presented as the final compact result.
+- Backend verifier instructions are one coherent compact v10 policy, with
+  original-claim scope, independent propositions, precise subject/time and only
+  own quote labels. Older addressed requests keep frozen prompt/schema. Closed
+  refusals depend on touched canonical/projection versions, not the whole
+  unrelated eligible ledger. Two initial failures exposed the needed own
+  projection fence; two T fixture assertions expected repeated whole text and
+  now verify complete transmitted literal passages and actual accepted proof.
+  251 affected checks passed157.83s in job_4b8f90d17b25c3c19afb838d;
+  autonomous Live14 passed3.76s. Original failing v44/v45/v46 evidence retained.
+  Historical failure matrix ran200 fixture instances, representing26 distinct
+  driver/argument combinations rather than ten actual execution schedules;
+  all200 instances passed168.64s on46e3e63 (job_6f76c940b36990f0b7bb5bec,
+  matrix-200-46e3e63.xml). It is fake-provider orchestration, not200 images.
+
+- Native send-state followup29 passed2.86s (native-send-state-v54.xml);
+  lost turn/start reply and cancelled read keep possibly_sent/retry_safe=false,
+  unknown accounting and no fabricated zero usage. a4a88bb hosted backend
+  38036783346 and Android38036783308 are green; their evidence predates the
+  current remaining-budget patch and is not final-candidate acceptance.
+- Remaining-role/admission contract suite135 passed113.88s,
+  remaining-role-budget-v52.xml; includes Native admission recovery and repeat
+  refusal followed by exact visual reserve, UNKNOWN negative, original input
+  fences and Live/OpenCode prompt transport. Native send-state suite initially
+  67 passed/1 fixture expectation failure44.36s: timeout correctly journaled
+  unknown rather than submitted; the fixture now accepts that preserved state.
+  Native marks possibly_sent before turn/start and response_closed only after
+  validated response; turn IDs preclude treating an old NotSent label as unsent.
+- Actual a4a88bb distinct132/111 job_69f4d196073ba6a02ea85085 completed;
+  both remain FAIL at the original180s identity gate (180.935s/181.857s), no
+  accepted physical IDs or eligible facts.132 Native initial measured41585
+  input+1850 output=43435 tokens; its new T was NotSent with a60s authority
+  retry time. Exact unsent visual reserve assignment occurred, but Gemini3.8
+  followup remained UNKNOWN; independent discovery continued.111 Native initial
+  completed19595+1735=21330 tokens, with real subsequent OpenCode search replies,
+  separate Google triage UNKNOWN and additional closed/refused operations.
+  These are scoped outcomes, not universal provider unavailability or PASS.
+- Current correction uses one authoritative Native NotSent admission wait only
+  when delay<=60s and remaining identity budget can support the operation and
+  independent reserve. The same prepared request/model may then send once;
+  UNKNOWN never retries. Native and Google followups are bounded by remaining
+  identity time while reserving30s for independent REF. Original route/admission
+  retry capsules stay immutable when an unsent visual reserve is assigned.
+  Live/OpenCode extract prompts explicitly request the existing sufficiency
+  field for useful coverage; independent review remains mandatory.
+
+- Reliability continuation addresses the actual130 unsent seam: the same
+  frozen joint2 can be assigned once from refused Native admission to the
+  registered visual executor. Original Native NotSent envelope is preserved;
+  prompt/schema/images/config/binding stay equal, only model changes. UNKNOWN
+  cannot take this path. Native followups retain their semantic system guidance;
+  provider provenance reflects the actual selected executor.55 seam checks
+  passed66.02s;42 Native/fence checks passed38.14s.
+- A received extraction research_sufficient=true now ends useful_partial after
+  independently eligible facts, before optional pending extraction and later
+  review packets. Existing jobs/checkpoints preserve cancelled UNKNOWN tails;
+  reopen never resends them. No new sufficiency judge or count-derived semantic
+  decision. Negative fixtures keep waiting without model sufficiency or review.
+  First tail suite140 passed/1 failed92.22s: the negative fixture had incorrectly
+  expected normal return rather than the preserved review retry; corrected.
+- Current affected seam suite:201 passed132.18s, final-seams-v51.xml;
+  includes normal source transport, admission retry, closed semantics, actual
+  installed ARC result/cleanup, tail scope and POI review behavior. Ruff on
+  all tracked backend Python and diff checks pass. Pre-existing untracked
+  diagnostic helper is preserved and excluded from source lint/commit.
+- Hosted46e3e63 backend38035740213:2865 passed/47 failed/41 skipped.44 failures
+  were actual ARC SDK imports absent from standalone CI; three were stale
+  expectations for compact pointer/text presentation and the verifier phrase.
+  Runtime ARC contract tests now explicitly require the installed SDK; standalone
+  CI reports their absence as skips, while full devserver SDK acceptance remains
+  required. No SDK stub replaces those tests. Three ordinary tests are updated
+  to verify expanded pointers, complete literal source passages and coherent
+  closed-operation instructions. Hosted Android38035740145 passed, release
+  skipped; it does not prove a new physical-phone product path.
+
+- Actual130 on46e3e63 (job_f349b22ece379fa01317d2b4,
+  cold-46e3e63-control130) remains FAIL: terminal181.348s, no accepted
+  physical ID or eligible facts. Initial Native SOURCE/MAP completed with
+  measured27217 input+1950 output=29167 tokens; its architectural followup
+  was authoritatively NotSent RESOURCE_TOKEN_BUDGET. Google REF returned
+  uncertain, a distinct Native REF returned mismatch; OpenCode remained
+  original submitted/UNKNOWN. This is not all providers unavailable and not
+  acceptance of the nearby193106140. Control reserve/send/finalize RPCs in
+  observed boundaries completed roughly0.2–2.3s, not the historical49–60s.
+  The definitely-unsent Native followup skipped the registered visual reserve;
+  a bounded same-question executor assignment is under affected verification.
+  Old timing and original operation IDs are retained.
+
+- Actual1fac retained102 narrow review job_935fed6cc50bea9b34d52da1 remains
+  FAIL at the original readback deadline. The final tail subsequently proved
+  pa9624195f595 closed with durable request/result and repair claim817ae4;
+  this replacement still combines construction date and building height.
+  Review transition eventually admitted after repeated setup20790 token-budget
+  refusals; this was not permanent failure of every provider. No identity repeat.
+- Actual1fac job_373ee76053d59d4dc3665d3a completed the ready-fact path,
+  e2e-ready-choice-v40.json: selectedbc0eec (Nordstern tenant),d8abdc (east
+  facade cornice on consoles),e322ad (WWII survival) are three independent,
+  eligible claims with their own prussia39 sid3875 evidence. Real Live writes
+  saved selection, draft and concept. Prepared30.077s voice delivered301/301
+  ACK (max0.217s), preserving selection/draft at the voice boundary. This proves
+  prepared PCM through real Live, not a physical microphone.
+- Closed visualop_bbf42bb4f3674935a68adfa0b3b6de0a, asset866914, PNG2494823B,
+  SHA2564cec30589032730d82756d6284dd50c3c48ff623f8a00f37f80e49b9d369496d:
+  inspected actual pixels, correct recognizable building, three readable
+  selected-fact annotations, no technical OSM name. Stop acknowledged and
+  reopen preserved state. Mechanical pass stays REVIEW_REQUIRED because final
+  draft adds 'only surviving building', which is in the source passage but not
+  the selected survival claim. A draft-only ordinary Mira continuation preserves
+  this closed voice/visual; it must not be described as a new cold full pass.
+- POI review lock now covers snapshot/preparation and each final commit, never
+  provider waiting. New packets fence exact touched canonical assertions,
+  own evidence and owner controls; unrelated eligible additions do not stale
+  an independent packet. Old pending packets retain their stricter saved fence;
+  closed receipts stay immutable. Waiting-provider fixtures exercise another
+  story's progress plus intersecting assertion changes, Stop and new SOURCE.
+  Initial failures exposed a removed recovery callback and wrong overlap fixture;
+  both corrected.109 affected checks passed68.33s in
+  job_332a3364d3c39f588487c8b7; six focused recovery/supersession checks passed.
+  Original poi-concurrency-v41.xml failures are retained. No semantic verdict
+  is supplied by deterministic code.
+
+Authoritative instructions: dbf6e220 product-reliability-finish prompt. Host now
+has7423MiB RAM/3439MiB available; registered backend health200 in3ms, running
+db0c0d0. Prior memory pressure is not assumed to be the current blocker.
+
+The16b459b hosted backend merge-check38028490803 failed three assertions in
+two tests (one repeated in the failure matrix), expecting editorial functions
+inside research. Stage instructions now preserve semantic rules explicitly:
+only the menu is filtered, never a whole sentence mentioning another tool.
+Ready eligible facts do not require automatic re-review. Research and editor
+guidance are compact explicit overlays. Shared function limits remain unchanged.
+
+Both behavior tests exercise the installed shared host research -> editor
+transition, preserving the same author intent and saving selection, concept and
+draft through product tools before reopening. The pending-review case uses
+actual extraction/review persistence with a controlled provider and a waiting
+original operation. Its repeated matrix case also passes. Initial fixture
+mistakes (legacy claim incorrectly assumed eligible, then counting the initial
+review as a new review) were corrected; no product eligibility guard was relaxed.
+
+Retained-story continuation is moved into existing backend/tools/live_e2e.py
+as an explicit CLI mode, preserving receipt checks, Stop and disabled publication.
+No new engine/transport/harness. Its selection revision requires the exact saved
+source, draft, selection and imported visual; generation UNKNOWN is observed
+through its original operation. A revised pass also saves the requested concept.
+Real Mira verification follows; these tests do not prove actual model behavior.
+Focused editor/control/visual/E2E/failure-matrix checks:86 passed in22.32s,
+job_8af00bc8ef1ad5b11a7f3fed; Ruff and diff checks passed.
+
+Development uses permitted chatgpt/street-story-reliability-20261010 integration
+branch based on16b459b, retaining PR246 work; no denied branch write is bypassed.
+
+Actualfd4c12d retained102 job_d4c4bcf4f3dfd2b3a1cb0d9a: publication -> editor
+transition accepted with9 functions; selection/concept/draft were saved. The
+draft revision conflict was read back and corrected by Mira. Original FAIL
+editable_draft_readback_timeout is preserved: the runner advanced on the first
+three selected IDs even though one was withheld; Mira corrected the selection
+0.2s after that step. The runner then waited against the stale selection. No
+voice/new visual was sent; Stop acknowledged. Selection readiness now requires
+every chosen claim to be eligible, and turn completion must follow the latest
+tool-response boundary. The corrected model choice still includes a compound
+construction claim; independent narrow reconsideration of that own-source claim
+precedes the next editorial segment. Old cold identity is not repeated.
+
 ## Reboot checkpoint: bounded capability bundles
 
 Owner requested a graceful stop for adding host RAM/reboot and explicitly
@@ -1725,9 +2108,9 @@ Android emulator. Its mandatory cold acceptance did **not** pass:
 
 | SOURCE | Identity / facts | Terminal time | Actual blocker |
 | --- | --- | ---: | --- |
-| 104 | none / 0 | 34.152 s | Five broad prefetched publisher bodies plus catalogue used all six page units before the correctly nominated Wiki article could be read. |
+| 104 | 4566ef6 | FAIL host T proof; — | — | — | yes | 0 | 89.245 |
 | 132 | none / 0 | 180.050 s | No accepted identity response; repeated real Google admission refusals, native attempt remained created/not_sent. |
-| 102 | none / 0 | 180.063 s | No accepted identity response; real quota/admission failures and terminated text fallback attempts. |
+| 102 | 4566ef6 | PASS useful partial; osm:way:133035113 | — | — | yes | 4 | 202.930 |
 | 111 | none / 0 | 169.078 s | Closed native G was inconclusive; source search progressed, with one original source-selection request UNKNOWN; page envelope then exhausted. |
 | 130 | none / 0 | 180.431 s | Closed native model nominated a received physical body; sparse reverse entry had erased that same ID's real building tags/contour, so T packet preparation raised ValueError before a T send. |
 
@@ -1802,10 +2185,10 @@ with the unchanged manifest and 180/300/480-second limits.
 
 | SOURCE | Identity / eligible facts | Time from upload | Result |
 | --- | --- | --- | --- |
-| 104 | Correct osm:relation:3665416 / 6 | identity102.063s; first381.359s; terminal480.116s | FAIL: late first fact / research deadline |
+| 104 | 4566ef6 | FAIL host T proof; — | — | — | yes | 0 | 89.245 |
 | 130 | none / 0 | terminal181.013s | FAIL: original Google SOURCE/MAP UNKNOWN after transport timeout |
 | 132 | none / 0 | terminal180.524s | FAIL: original Google SOURCE/MAP UNKNOWN after transport timeout |
-| 102 | none / 0 | terminal104.768s | FAIL: malformed closed proof; no physical identity accepted |
+| 102 | 4566ef6 | PASS useful partial; osm:way:133035113 | — | — | yes | 4 | 202.930 |
 | 111 | none / 0 | terminal180.697s | CONDITIONAL_CONTEXT_AVAILABLE; not release PASS |
 
 104's actual compact T response now completes without HTTP400 and accepts the
@@ -1894,37 +2277,110 @@ failures still require product verification before deployment.
 Retained evidence: `/home/dev/artifacts/street-story/20261009T183816Z-streaming-funnel-pr246-20261009/cold-0b792c2`
 and `/home/dev/artifacts/street-story/20261009T204748Z-provider-failure-isolation-20261009`.
 
+## Grouped review and actual corpus boundary (2026-10-10, v60–v64)
+
+The real retained104 scoped backend review on4566ef6 completed in26.371s, with one committed Live packet. The model listed both1853 (infobox) and1859 (prose), identified their conflict and withheld the unqualified1859 claim. Three separately scoped claims were supported: the Wrangel namesake,34m diameter and loss of defensive function at the beginning of the twentieth century. Original SOURCE/identity/vision receipts remained unchanged. Its proposed sufficiency basis included the withheld date and is mechanically ineligible; no host inference silently removes that date from the basis. This is segment evidence, not a new SOURCE or a cold PASS. Retained evidence: `scoped104-backend-own-values-v60.json`. Goal-basis tests v61:9 passed.
+
+Actual4566ef6 group1 used normal quotas, no imported availability history:
+
+| SOURCE | Outcome | Identity / first eligible / terminal seconds | Semantic or transport finding |
+| --- | --- | --- | --- |
+|104|FAIL|— / — /89.245|Both Native operations closed; T selected the correct relation3665416, but host literal validation rejected quotation punctuation.|
+|102|PASS, scoped useful partial|84.925 /123.351 /202.930|Correct way133035113. Four own-source atomic claims: five storeys with attic; built about1910; historical construction address Steindamm99,100; originally gabled roof. Each reviewed against the actual Prussia39sid3875 body; no foreign subject or invented precision. No coverage-complete claim.|
+|105|FAIL deadline|— / — /183.826|Native initial closed; actual search/selection work degraded by Google429 and intermittent shared-Control connection/timeouts. No accepted ID.|
+|106|FAIL deadline|— / — /181.119|Native initial closed; sent Native T remained UNKNOWN. No new executor or fresh resend credited.|
+|107|BLOCKED|— / — /108.277|Native initial NotSent/no capacity; Google3.8 returned503; other routes NotSent and shared-Control unavailable. No closed SOURCE decision.|
+
+The above is one frozen4566ef6 group, not final release acceptance. Actual closed SOURCE responses exist for104/102/105/106;107 does not increase that number. An initial model response alone is not recognition success. The later SDK full-suite job was still running when the next narrow identity patch was applied; it is not evidence for a final clean source snapshot. Hosted backend38039974101 and Android38039974162 both passed on4566ef6; the prior Android picker failure did not recur.
+
+Historical v63/v64 experiment, superseded by the pointer-only change below: the actual104 assembled closed receipt identified two mechanical defects without a new model send. All four exact quotations had matched outer guillemets absent from their own article; stripping only that presentation pair restored the exact received substring. A literal OSM address also acquired a city field when the raw snapshot was persisted. Receipt revalidation now requires every received field and provenance to remain identical while permitting additional fields from that same observed record. Neither change judges address equivalence, architecture, dates or semantic sufficiency. Original model decision, article and receipt remain immutable; historical proof digest stays unchanged for unchanged inputs. Span references retain their strict original offset/text checks. Wrong article, paraphrase, unmatched quotes, changed street/number and forged provenance remain rejected.
+
+Affected installed-SDK tests: v63 had81 pass/1 test failure because its added-city fixture mutated the physical candidate rather than modeling raw-snapshot restoration; corrected v64 has82 pass in8.91s. Ruff passed. `literal104-assembled-v63.json` verifies the original actual answer freezes and survives durable replay with unchanged model decision and source receipt. This is offline assembled-input proof, not a new cold PASS or an additional SOURCE. The old89.245s FAIL remains FAIL.
+
 ## Versioned corpus ledger (latest recorded run per photo)
 
-Versioned observations, not one combined cold PASS. No latest mandatory case passed. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures.120 identity evidence is withdrawn.
+Versioned observations, not one combined cold PASS. Latest102 on1170ced has the correct identity but FAIL minimum with one eligible claim; the earlier4566ef6 scoped useful partial PASS remains historical. Latest130 confidently selected the wrong neighboring body and is a release blocker. Warm104 reuse and compatible editorial evidence are separate. Zero/unknown nominations do not imply a lost or rejected physical reserve. Reported timing failures remain failures. The older120/96057156 identity remains withdrawn; the newer120/133035135 is REVIEW_REQUIRED, not a semantic PASS.
 
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
-| 102 | 0c9502a | FAIL; — | 393 | — | yes | 0 | 181.383 |
-| 104 | a11129e | FAIL timing + semantic subject; osm:relation:3665416 | 414 | — | yes | 17 mechanical, semantic failure | 481.395 |
-| 105 | 83d73c8 | FAIL; — | 534 | 1 | unfixed/unknown | 0 | 181.129 |
-| 106 | 83d73c8 | FAIL; — | 573 | 0 | yes | 0 | 71.946 |
-| 107 | 83d73c8 | BLOCKED; — | 672 | 0 | unfixed/unknown | 0 | 95.832 |
-| 108 | 83d73c8 | BLOCKED; — | 437 | 0 | yes | 0 | 86.735 |
+| 102 | 1170ced | FAIL minimum; osm:way:133035113 | — | — | yes | 1 | 125.426 |
+| 104 | 1170ced | FAIL minimum; osm:relation:3665416 | — | — | yes | 1 | 122.686 |
+| 105 | 4566ef6 | FAIL deadline; — | — | 2 | unfixed/unknown | 0 | 183.826 |
+| 106 | 4566ef6 | FAIL deadline / T UNKNOWN; — | — | 3 | yes | 0 | 181.119 |
+| 107 | 4566ef6 | BLOCKED / NotSent; — | — | — | unfixed/unknown | 0 | 108.277 |
+| 108 | 5119d9a | FAIL page envelope exhausted; — | — | 2 | yes | 0 | 101.045 |
 | 109 | 77d4222 | FAIL; — | 293 | 3 | yes | 0 | 180.316 |
 | 110 | 77d4222 | FAIL; — | 182 | 0 | unfixed/unknown | 0 | 113.773 |
-| 111 | 7623da2 | FAIL; — | 139 | — | yes | 0 | 386.817 |
+| 111 | 1170ced | FAIL closed-plan validation; — | — | — | yes | 0 | 54.116 |
 | 112 | 77d4222 | FAIL; — | 414 | 0 | unfixed/unknown | 0 | 168.804 |
 | 118 | 77d4222 | BLOCKED; — | 478 | 1 | unfixed/unknown | 0 | 143.572 |
-| 119 | 62fb7ad | FAIL; — | 404 | 2 | unfixed/unknown | 0 | 181.209 |
-| 120 | 62fb7ad | IDENTITY_UNCONFIRMED; osm:way:96057156 (unconfirmed) | 362 | 0 | unfixed/unknown | 8 mechanical, identity unconfirmed | 401.346 |
+| 119 | 5119d9a | FAIL deadline / unresolved body; — | — | 2 | unfixed/unknown | 0 | 181.585 |
+| 120 | 5119d9a | REVIEW_REQUIRED; osm:way:133035135 | — | — | unfixed/unknown | 1, identity review pending | 120.957 |
 | 121 | 77d4222 | BLOCKED; — | 400 | 0 | unfixed/unknown | 0 | 119.284 |
 | 122 | 77d4222 | FAIL; — | 400 | 0 | yes | 0 | 92.125 |
 | 123 | 77d4222 | BLOCKED; — | 75 | 0 | unfixed/unknown | 0 | 66.625 |
-| 124 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 17.686 |
+| 124 | 5119d9a | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 15.708 |
 | 125 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 11.704 |
 | 126 | 62fb7ad | CLARIFICATION_REQUIRED; — | 0 | 0 | unfixed/unknown | 0 | 17.334 |
 | 127 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 46.148 |
 | 128 | 77d4222 | FAIL; — | 0 | 0 | unfixed/unknown | 0 | 54.928 |
 | 129 | 62fb7ad | FAIL; — | 347 | 2 | unfixed/unknown | 0 | 181.239 |
-| 130 | 7623da2 | FAIL; — | 219 | — | yes | 0 | 192.084 |
+| 130 | 1170ced | OPERATOR_STOPPED wrong body; osm:way:193106140 | — | — | yes | 0 | 113.691 |
 | 131 | 77d4222 | BLOCKED; — | 192 | 0 | unfixed/unknown | 0 | 104.739 |
-| 132 | 7623da2 | FAIL; — | 299 | — | yes | 0 | 195.180 |
+| 132 | 1170ced | FAIL provider/plan; — | — | — | yes | 0 | 99.431 |
 | 133 | 77d4222 | BLOCKED; — | 245 | 0 | unfixed/unknown | 0 | 97.482 |
 
 Inputs are the byte-verified frozen26-photo manifest. Unfixed target is not a correct-answer claim. Per-case source/evidence/SDK usage and camera status remain in retained case reports; provider-cost allocation not reported by a provider remains unknown. T counts and reductions are not inferred where no closed T verdict exists. Actual7623da2 closed distinct SOURCE count:1 (104); repetitions do not add N.
+
+## Fresh pointer-only T and original Native recovery (2026-10-10, v67–v86)
+
+The owner correctly challenged the quotation repair as preserving a brittle request format. The new fresh T contract therefore removes `source_quote` from the issued model schema and requires selection of an existing `source_span_ref`. The acquired article is transmitted completely through lossless contiguous passages, including short lines and original punctuation; no semantic sentence selector removes text. The model still decides the architectural meaning, physical scope, alternatives and sufficiency. The existing proof resolver materializes the selected original bytes and checks article identity, offsets and source hash. No new judge, parser, provider, admission registry or transport is added. The matched-delimiter helper from5119d9a is removed. Historical104/v63 offline acceptance is consequently superseded; neither its old model answer nor its89.245s cold FAIL is relabeled as a fresh pointer result. The same-record hydration check remains a literal received-field/provenance check.
+
+The actual104 acquired article was assembled into the new final T packet offline: all eight issued passages cover the exact original text and validate against offsets/hashes; the issued schema has no `source_quote`. Prompt30516 UTF-8 bytes, schema10962 bytes. This did not send a model request, convert the old decision or increase SOURCE count. Evidence: `t-pointer104-assembled-v67.json`.
+
+A full-planner recovery test also exposed an independent Native seam: observing an addressed UNKNOWN T tried to mark a new send and reserve a new planner unit. Observation now reads the same original prepared request, schema, SOURCE/text context and unit binding, skips new admission/work-unit reservation and preserves original SOURCE/Stop fences. The test switches the fresh contract from legacy quotations to pointers between send and observation; the old answer is validated only under its original schema and receipt. Isolated v85 passed. Earlier fixture failures remain recorded; public saved-search-plan reuse legitimately skips the planner, so the recovery test invokes the existing planner observer directly.
+
+Actual frozen5119d9a group2 completed before these source changes, with normal quotas and no availability import:
+
+| SOURCE | Outcome | Identity / first eligible / terminal seconds | Finding |
+| --- | --- | --- | --- |
+|108|FAIL|— / — /101.045|Native closed with two Händel building hypotheses; subsequent page envelope exhausted, no confirmed body.|
+|111|FAIL|— / — /135.361|Native SOURCE/MAP and detail closed; domed cylindrical body and adjacent volumes remained ambiguous. No correct recognition is credited.|
+|119|FAIL|— / — /181.585|Native T compared own Prussia39sid2538; discriminating facade match remained ambiguous between6 and6A bodies. Later REF stayed uncertain.|
+|120|REVIEW_REQUIRED|45.911 /119.109 /120.957|Proposed way133035135, one own sid2540 clinic/construction claim. Actual SOURCE was viewed; generic multi-volume/brick/address evidence does not yet establish independent semantic identity PASS. Older wrong/unconfirmed way96057156 evidence stays withdrawn.|
+|124|CLARIFICATION_REQUIRED|— / — /15.708|No GPS was invented; ordinary source-only model path requested geographic context.|
+
+Evidence: `cold-5119d9a-corpus`, durable job_bfedfaacdbd320fd53cf6248. This group and4566ef6 group1 are different source snapshots and cannot be combined as final fixed15 acceptance. Hosted5119d9a backend38041132786 and Android38041133010 both passed; neither is a physical-phone or fresh user E2E proof.
+
+Installed-SDK full suite v62 completed with2972 passed,2 skipped,2 warnings in1168.99s. Its XML includes all200 fake-worker history cases, with no failure or skip among those cases. Source changed4566ef6 to5119d9a while that suite was running, so it is explicitly not final exact-candidate acceptance. Evidence: `full-installed-sdk-4566ef6-v62.xml`. Affected installed-SDK suite v86:190 passed,3 failed in139.79s. All three failures were legacy fake-model wire expectations in geometry tests (retyped quotations and old sentence spans); updated fixtures choose actual issued pointers and reconstruct the lossless article. The three affected cases pass in isolated v87 (6.12s); v85 original-schema recovery passes. Ruff and diff whitespace checks pass. These are fixture/contract checks, not fresh recognition evidence. Final fixed-candidate corpus and exact-source full suite remain required before deployment.
+
+## Accepted T does not depend on a new search wave (2026-10-10, v89–v93)
+
+Frozen f23fad5 actual104/130/102 completed in job_535e471d54df28fadcabe11f with normal quotas and unchanged tracked source.104 accepted correct relation3665416 in71.157s, first eligible122.696s, natural terminal152.035s. Its two own sid550 claims give a qualified1853–1859 construction period and the project architects; both retain actual source evidence. The case remains FAIL against the unchanged minimum3; no quotation rejection recurred.130 remains FAIL/uncertain at180.032s, no accepted body.102 remains FAIL at130.595s: two Native SOURCE replies closed, the compact T selected correct way133035113, but merging the old malformed first-wave pointer blocked whole-plan acceptance. These are three actual closed SOURCE observations on f23fad5, not final15 or recognition PASS.
+
+A confirmed compact T closes identity independently of search. The existing combiner now projects an empty *unused new search wave* when the model returns accepted T, rather than carrying rejected search pointers from the initial answer. The original closed initial response, T answer, receipts and diagnostics are unchanged. The actual T proof and original SOURCE/hash/alternative/physical-binding fences still run; an uncertain T keeps its original planning requirements. No missing hypothesis is invented or semantically selected by code. Installed-SDK native/architectural suite v91:63 passed37.55s, including two real-worker fake-provider schedules with an invalid initial search pointer and accepted independent T, original-contract recovery and negative/UNKNOWN cases. Joint continuity v92:14 passed9.25s; its two positive wire fixtures now select the issued article pointers, and unresolved alternatives still fail.
+
+Full installed-SDK f23fad5 v90 was cancelled before changing source after its partial output showed two failures around joint-continuity tests. It has no completed full-suite verdict and is not release evidence. Final fresh-candidate suite will use pytest's installed `tmp_path_retention_policy=failed`: new successful fixture databases are removed by their normal fixture teardown, with result XML and failed fixtures retained; old retained incident/corpus artifacts are untouched. This prevents another approximately1.3GiB set of redundant successful fake databases on a disk with1.8GiB free. `independent-T102-assembled-v93.json` is a limited offline projection check over the saved closed answer; reconstruction did not have the original OSM snapshot, so its proof-valid=false is not promoted to a runtime proof finding or a new SOURCE decision. The original102 cold FAIL is unchanged.
+
+## Real semantic boundary remains a release blocker (2026-10-10, v94–v99)
+
+Mandatory1170ced group job_a7f2b4842b69813f1dfdc6fd completed with unchanged tracked source.102 accepted correct way133035113 by early T in48.112s, first eligible123.039s, natural terminal125.426s; only one reviewed own sid3875 claim (the building housed Nordstern, a grocery and other shops) => unchanged minimum3 fails.104 accepted correct relation3665416 in66.765s, first119.429s, terminal122.686s; one reviewed own claim => minimum3 fails. These results confirm the fresh pointer transport and preserve formal failure, without declaring ordinary product acceptance.
+
+130 selected wrong way193106140 rather than expected193106188 at113.159s. The harness stopped this new story at113.691s before any facts were committed. Its model T matched sid1384's architectural description but left the boundary between attached physical bodies unresolved. The actual frozen request contained both SOURCE and MAP, and the reserve and alternative ID contracts already include other received physical bodies. The actual MAP was extracted and viewed (`actual-T130-map-v97.png`); missing MAP or an excluded-alternative enum are therefore rejected hypotheses. Correct provenance/reference validation did not make the physical interpretation true. This known confident wrong-body decision blocks release. No control answer is sent to runtime.
+
+132 failed in99.431s with no accepted ID; its Native initial receipt remains created, with no completed Native SOURCE reply credited.111 failed in54.116s after completed uncertain Native initial and detail, with no accepted body. Verified completed Native SOURCE observations exist for102/104/130/111;132 is not added on the basis of a created receipt. This is not final fixed15 acceptance and not simultaneous failure of every provider.
+
+Exact-source installed-SDK suite v95 completed:2976 passed,4 failed,2 skipped,2 warnings in1210.88s. All200 cases in `tests.test_product_failure_scopes` passed with no skip/failure; these are fake-provider worker schedules, not200 recognition images. Remaining failures were two uncertain-T priority wire fixtures, one MAP-alias T fixture still returning retyped quotations, and a Native test expecting `issued_span_ref` transformation even though the issued host contract already requires pointers (`unchanged` is correct). Corrected affected suite v98:133 passed47.22s. Automatic identity/facts tests v99:2 passed0.93s. Successful new fixtures were removed by normal pytest teardown; the full run's basetemp remained approximately2MiB during its early hundreds of cases, avoiding another redundant1.3GiB set. Original retained incident/corpus files are unchanged.
+
+The next change clarifies the existing model task, rather than adding a host semantic classifier. T first identifies the main SOURCE body among the received MAP labels, then assesses the article's individual-body scope. The decision description explicitly distinguishes matching a complex article from resolving its pictured OSM footprint; a limitation that leaves that footprint unresolved requires the model to choose uncertain and preserve useful hypotheses. The automatic research goal now asks for material from which the author can choose independent substantive aspects already supported by rich own sources; sufficiency is still assessed in the existing model response, without a host fact-count threshold or an extra judge. Original addressed schemas/prompts stay frozen. Fresh130 and102 must measure this question before another final corpus or release claim.
+
+
+## Actual body interpretation remains unresolved (2026-10-10, v100–v102)
+
+Frozen bb3ebc2 actual changed130 plus different102 completed under ordinary admission, without qualification or availability-history changes. 130 again selected way193106140 instead of evaluation-only193106188 (identity136.523s, operator Stop137.146s, zero committed facts). Both original SOURCE turns closed; this does not resolve the known wrong-body release blocker. 102 correctly identified way133035113 at32.757s, first eligible83.519s and terminal103.651s, but only two eligible claims: FAIL minimum. Earlier failures remain immutable.
+
+The T model claimed a specific bent-body/article correspondence. The actual article's publisher photographs were only consumed by the later REF route, which an accepted T decision bypassed. The next correction gives the existing compact T call an optional actual photograph from its already-acquired, raw-hash-verified publisher HTML. The existing public reference loader follows the publisher's received photo-detail link and prepares actual pixels. A shared four-second acquisition bound, missing media or one failed photo preserves text work. This adds no model call or semantic host classifier; the model sees possible corroboration or contradiction and still owns individual-body interpretation. SOURCE/MAP pixels remain unchanged. Optional photos are frozen with article/URL/raw/model hashes and read back with the same original Native turn; new sends remain subject to ordinary admission and Stop.
+
+The automatic rich-source goal now explicitly asks the model for at least three substantively different claims when its sources support them, and forbids inflating the choice by splitting an address/date/event. This implements the requested author-choice intent in model instructions, without a host fact-count completion threshold or extra judge.
+
+Installed-SDK affected checks v101:100 passed; assembled joint/T pointer paths v102:71 passed. Ruff and diff checks passed. The actual saved130 article cache/body hashes were verified, and optional public photo preparation produced a62,385-byte JPEG from a received detail link (model SHA ee70827fac5c41f75e1b1dcf95ee91436e482031513e551f05e60bda245ab251). The image was viewed. This preparation is not paid inference or new SOURCE recognition credit. Fresh normal changed130 and different102 must verify the correction before corpus expansion or release.

@@ -357,6 +357,150 @@ async def review_candidates(svc, sid, run_id):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('sufficient,verified', [(True, True), (False, True), (True, False)])
+@pytest.mark.parametrize('decision_origin', ['extractor', 'reviewer'])
+async def test_model_sufficient_reviewed_result_finishes_before_independent_unknown_tail(tmp_path, monkeypatch, sufficient, verified, decision_origin):
+    from test_headless_fact_review_parallel import ControlledReview
+    svc, job, researcher, reader, _ = await fixture(tmp_path)
+    harness = HeadlessFacts(svc)
+    tail_started, tail_release, reviewed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = researcher.extract_fact_page
+    calls = []
+    async def search(query, story):
+        return {'sources': [{'url': URL, 'title': 'Own history'},
+                            {'url': URL + '-tail', 'title': 'Optional further history'}],
+                'receipt': {'backend': 'controlled-search'}}
+    async def extract(page, story, context):
+        calls.append(page['_unit_id'])
+        if page['_extractor_ordinal'] == 1:
+            tail_started.set()
+            await tail_release.wait()
+        else:
+            await tail_started.wait()
+        value = await original(page, story, context)
+        value['result']['research_sufficient'] = sufficient if decision_origin == 'extractor' else False
+        value['result']['research_sufficient_basis'] = {'candidate_indices': [0], 'known_fact_ids': []}
+        return value
+    researcher.search_articles, researcher.extract_fact_page = search, extract
+    ControlledReview.mode = 'positive'
+    class Review(ControlledReview):
+        async def _infer(self, packet, job, unit, saved, ordinal=0):
+            args = await super()._infer(packet, job, unit, saved, ordinal)
+            if decision_origin == 'reviewer':
+                args.update(research_sufficient=sufficient,
+                    research_sufficient_basis={'candidate_indices': [0], 'known_fact_ids': []})
+            return args
+    engine = Review(harness)
+    async def review(job, run_id, revision, **kwargs):
+        count = await engine.run(job, run_id, revision, **kwargs) if verified else 0
+        reviewed.set()
+        return count
+    monkeypatch.setattr(harness, '_review_candidates', review)
+    task = asyncio.create_task(harness.run(job, 'headless-run', 'Find historical facts', 'history'))
+    try:
+        await asyncio.wait_for(reviewed.wait(), 10)
+        if sufficient and verified:
+            outcome = await asyncio.wait_for(task, 10)
+            assert not tail_release.is_set()
+            assert outcome['outcome'] == 'useful_partial' and outcome['reason'] == 'model_goal_sufficient'
+            assert outcome['coverage_complete'] is False and outcome['eligible_count'] == 1
+            with svc.store.connection() as db:
+                phases = [json.loads(r[0])['phase'] for r in db.execute(
+                    "SELECT value_json FROM research_checkpoints WHERE stage LIKE 'headless_fact_unit:%'")]
+            assert 'unknown' in phases
+            assert await harness.run(job, 'headless-run', 'Find historical facts', 'history') == outcome
+            assert len(calls) == 2  # Reopening never resends the cancelled original tail.
+        else:
+            assert not task.done()
+            tail_release.set()
+            if verified:
+                await asyncio.wait_for(task, 10)
+            else:
+                with pytest.raises(RetryableProviderError, match='research_fact_review_partial'):
+                    await asyncio.wait_for(task, 10)
+            with svc.store.connection() as db:
+                detail = db.execute('SELECT status_detail FROM research_runs WHERE run_id=?', ('headless-run',)).fetchone()[0]
+            assert detail != 'model_goal_sufficient'
+    finally:
+        tail_release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('basis', ['explicit', 'legacy', 'invalid'])
+async def test_sufficiency_waits_for_exact_model_basis_after_first_review(tmp_path, monkeypatch, basis):
+    from test_headless_fact_review_parallel import ControlledReview
+    texts = [CLAIM, 'The gate has an independently documented stone arch.',
+             'The gate housed a documented local exhibition in 2010.']
+    svc, job, researcher, reader, _ = await fixture(tmp_path, text=' '.join(texts))
+    harness = HeadlessFacts(svc)
+    tail_started, tail_release = asyncio.Event(), asyncio.Event()
+    first_checked, later_review = asyncio.Event(), asyncio.Event()
+    original = researcher.extract_fact_page
+    async def search(query, story):
+        return {'sources': [{'url': URL, 'title': 'Own history'},
+                            {'url': URL + '-tail', 'title': 'Independent optional history'}]}
+    async def extract(page, story, context):
+        if page['_extractor_ordinal'] == 1:
+            tail_started.set()
+            await tail_release.wait()
+        else:
+            await tail_started.wait()
+        value = await original(page, story, context)
+        seed = value['result']['facts'][0]
+        value['result']['facts'] = [{**seed, 'text': text} for text in texts]
+        value['result']['research_sufficient'] = True
+        if basis != 'legacy':
+            value['result']['research_sufficient_basis'] = {
+                'candidate_indices': [0, 1, 2] if basis == 'explicit' else [31], 'known_fact_ids': []}
+        return value
+    researcher.search_articles, researcher.extract_fact_page = search, extract
+    class Review(ControlledReview):
+        MAX_PACKET_FACTS = 1
+        calls_here = 0
+        async def _infer(self, *args, **kwargs):
+            self.calls_here += 1
+            if self.calls_here > 1:
+                await later_review.wait()
+            return await super()._infer(*args, **kwargs)
+    engine = Review(harness)
+    monkeypatch.setattr(harness, '_review_candidates', engine.run)
+    check = harness._model_sufficient
+    def observed(*args):
+        answer = check(*args)
+        with svc.store.connection() as db:
+            count = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]
+        if count == 1:
+            assert answer is False  # One closed packet is not the model's three-claim basis.
+            first_checked.set()
+        return answer
+    monkeypatch.setattr(harness, '_model_sufficient', observed)
+    task = asyncio.create_task(harness.run(job, 'headless-run', 'Find historical facts', 'history'))
+    try:
+        await asyncio.wait_for(first_checked.wait(), 10)
+        assert not task.done() and not tail_release.is_set()
+        later_review.set()
+        if basis == 'invalid':
+            tail_release.set()
+        outcome = await asyncio.wait_for(task, 10)
+        if basis != 'invalid':
+            assert outcome['reason'] == 'model_goal_sufficient' and outcome['eligible_count'] == 3
+            assert not tail_release.is_set()
+        else:
+            assert outcome['reason'] != 'model_goal_sufficient'
+    finally:
+        tail_release.set()
+        later_review.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await reader.search_http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_no_audio_headless_page_requires_live_review_in_story_and_poi_ledger(tmp_path):
     svc, job, researcher, reader, fetches = await fixture(tmp_path)
     await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')

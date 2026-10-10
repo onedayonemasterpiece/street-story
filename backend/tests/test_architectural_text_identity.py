@@ -18,6 +18,7 @@ TEXT = 'The facade has a central bay with three vertical window axes and a semic
 def with_received_physical_links(decision, contents):
     """Fixture model links the literal records in the actual issued T packet."""
     inventory = None
+    passages = []
     for line in contents[-1].splitlines():
         try:
             packet = json.loads(line)
@@ -25,6 +26,8 @@ def with_received_physical_links(decision, contents):
             continue
         if not isinstance(packet, dict):
             continue
+        context = packet.get('acquired_architectural_text') or packet
+        passages.extend(context.get('literal_source_passages') or [])
         found = (packet if packet.get('contract') == 'llm-first-literal-evidence-v1' else
             packet.get('publisher_and_OSM_literal_records_NOT_prejoined') or
             (packet.get('acquired_architectural_text') or {}).get('publisher_and_OSM_literal_records_NOT_prejoined'))
@@ -32,6 +35,12 @@ def with_received_physical_links(decision, contents):
             inventory = found
     assert inventory, 'The actual issued model packet must include literal evidence.'
     answer = copy.deepcopy(decision)
+    if passages:
+        for relation in answer['correspondences']:
+            relation['source_span_ref'] = next(span['span_ref'] for article in passages
+                if article['article_id'] == relation['article_id'] for span in article['passages']
+                if relation['source_quote'] in span['literal_text'])
+            relation.pop('source_quote')
     answer['physical_link_evidence'] = [{
         'article_id': binding['article_id'], 'candidate_id': binding['candidate_id'],
         'publisher_ref': next(ref for ref, row in inventory['publisher_refs'].items()
@@ -98,6 +107,30 @@ def test_text_identity_has_actual_source_hash_and_exact_lead_without_fake_ref():
     assert 'Main physical building' in compact['physical_scope']
 
 
+def test_fresh_span_transport_preserves_all_text_and_never_requests_retyped_quotes():
+    from street_story.identity_architectural_pool import joint_source_spans
+    from street_story.identity_proof import architectural_text_decision_schema
+    story, candidates, decision, receipt = text_inputs()
+    text = '1853\n«A source’s own punctuation.»\n' + TEXT * 12
+    article = receipt['articles'][0]
+    article.update(text=text, text_sha256=hashlib.sha256(text.encode()).hexdigest())
+    passages, refs = joint_source_spans(receipt['articles'])
+    assert ''.join(span['literal_text'] for span in passages[0]['passages']) == text
+    schema = architectural_text_decision_schema([candidates[0]['candidate_id']],
+        [article['article_id']], structural=True, source_span_refs=refs)
+    item = schema['properties']['correspondences']['items']
+    assert 'source_quote' not in item['properties'] and 'source_span_ref' in item['required']
+    decision['correspondences'][0].pop('source_quote')
+    decision['correspondences'][0]['source_span_ref'] = next(iter(refs))
+    receipt['source_span_refs'] = refs
+    original = copy.deepcopy(decision)
+    proof = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert proof and decision == original
+    identity = architectural_identity()
+    identity['architectural_text_proof'] = json.loads(json.dumps(proof))
+    assert architectural_text_result_valid(identity, candidates, story)
+
+
 def test_joint_model_selected_span_freezes_same_literal_proof_without_rewriting_claims():
     from street_story.identity_architectural_pool import joint_source_spans
     from street_story.identity_proof import architectural_text_decision_schema
@@ -106,7 +139,8 @@ def test_joint_model_selected_span_freezes_same_literal_proof_without_rewriting_
     passages, refs = joint_source_spans(receipt['articles'])
     assert passages[0]['all_passages_displayed']
     chosen = next(ref for ref, span in refs.items()
-        if span['source_quote'] == decision['correspondences'][0]['source_quote'])
+        if decision['correspondences'][0]['source_quote'] in span['source_quote'])
+    decision['correspondences'][0]['source_quote'] = refs[chosen]['source_quote']
     expected = freeze_architectural_text_proof(story, decision, receipt, candidates)
     requested = copy.deepcopy(decision)
     relation = requested['correspondences'][0]

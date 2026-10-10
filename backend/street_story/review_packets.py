@@ -43,7 +43,25 @@ ATOMIC_CLAIM_CHECKS = (
     'narrowed replacement. The model decides this from meaning, never punctuation.'
 )
 
-EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' '
+SUFFICIENCY_BASIS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {
+    'candidate_indices': {'type': 'array', 'maxItems': 32, 'uniqueItems': True,
+                          'items': {'type': 'integer', 'minimum': 0, 'maximum': 31}},
+    'known_fact_ids': {'type': 'array', 'maxItems': 32, 'uniqueItems': True,
+                       'items': {'type': 'string', 'minLength': 1}}},
+    'required': ['candidate_indices', 'known_fact_ids']}
+
+SUFFICIENCY_CHECKS = (
+    'Decide research_sufficient for coverage_goal from meaning, not a fact count. '
+    'When true, supply research_sufficient_basis: candidate_indices are the exact zero-based '
+    'positions in your returned facts array and known_fact_ids are exact supplied eligible '
+    'host IDs. Choose the compact substantive basis that would satisfy the goal IF each '
+    'new claim passes independent review; unnecessary enrichment is not part of that basis. '
+    'One claim passing review cannot stand in for the other claims you relied on. '
+    'Location metadata alone is not sufficient historical or architectural material. '
+    'Never use an unreviewed known claim or invent an ID. When false, use empty basis arrays.'
+)
+
+EXTRACTION_CHECKS = (ATOMIC_CLAIM_CHECKS + ' ' + SUFFICIENCY_CHECKS + ' '
     'Write each fact.text in Russian for publication, preserving supported scope and qualifiers. '
     'For existing_fact_id copy only an exact host fact_id from the supplied known inventory; '
     'otherwise use the empty string. Never invent IDs or use ordinal placeholders. '
@@ -165,6 +183,25 @@ def eligible_bundle(db, story_id):
         "WHERE story_id=? AND eligibility='eligible' ORDER BY assertion_id", (story_id,))}
 
 
+def canonical_review_fence(db, story, assertion_ids, *, include_projection=False):
+    """Versions of the shared claims actually used by this packet."""
+    from .poi_memory import memory_keys
+    research = json.loads(story['research_json'] or '{}')
+    keys = memory_keys(db, research.get('visual_identity') or {})
+    versions = {}
+    if include_projection:
+        for assertion_id in sorted(set(assertion_ids)):
+            row = db.execute('SELECT eligibility,review_status,revision_digest FROM fact_assertions '
+                'WHERE story_id=? AND assertion_id=?', (story['id'], assertion_id)).fetchone()
+            versions[canonical(['story_projection', assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
+    for key in keys:
+        for assertion_id in sorted(set(assertion_ids)):
+            row = db.execute('SELECT text,sources_json,eligibility,review_status,review_story_id,reviewed_at '
+                'FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?', (key, assertion_id)).fetchone()
+            versions[canonical([key, assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
+    return versions
+
+
 def load(adapter, session, db, ref):
     row = db.execute('SELECT * FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                      (ref, session.resource_id)).fetchone()
@@ -188,8 +225,16 @@ def load(adapter, session, db, ref):
     parallel = payload.get('parallel_candidate_review') is True
     revision_stale = int(story['revision']) != row['story_revision']
     if parallel:
-        revision_stale = (candidate_review_fence(db, story) != payload['owner_fence']
-                          or eligible_bundle(db, session.resource_id) != payload['eligible_bundle'])
+        revision_stale = candidate_review_fence(db, story) != payload['owner_fence']
+        if 'canonical_dependencies' in payload:
+            dependencies = [*payload['candidate_scope'],
+                            *[claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])]]
+            revision_stale |= canonical_review_fence(db, story, dependencies,
+                include_projection=payload.get('canonical_projection_dependencies') is True) != payload['canonical_dependencies']
+        else:
+            # Pending packets created before scoped shared dependencies retain
+            # their original stricter contract. Closed receipts above are immutable.
+            revision_stale |= eligible_bundle(db, session.resource_id) != payload['eligible_bundle']
     if revision_stale or int(research.get('identity_generation') or 0) != row['identity_generation'] or current != payload['bundle']:
         raise ConflictError('live_review_packet_stale', 'Revisions changed; request a new packet. No decision applied.')
     actual = {r['evidence_id']: dict(r) for r in db.execute(
@@ -332,6 +377,9 @@ def read(adapter, session, args):
                                 cached.pop('equivalent_to', None)
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
+            scope = sorted(affected & set(exact)) if supersedes else sorted(set(exact) - {items[int(n)]['id'] for n in reused})
+            for fact_id in scope:
+                db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
             from .identity_model_context import fact_review_subject
             research = json.loads(story['research_json'] or '{}')
             payload = {'bundle': exact, 'items': items,
@@ -344,7 +392,9 @@ def read(adapter, session, args):
                     payload['requested_fact_scope'] = True
                 if args.get('_parallel_candidate_review') is True:
                     payload.update(parallel_candidate_review=True, owner_fence=candidate_review_fence(db, story),
-                                   eligible_bundle=eligible_bundle(db, session.resource_id))
+                                   canonical_dependencies=canonical_review_fence(db, story,
+                                       [*exact, *[claim['fact_id'] for claim in nearby]], include_projection=True),
+                                   canonical_projection_dependencies=True)
             for pending_packet in db.execute("SELECT p.packet_ref,p.payload_json FROM live_review_packets p "
                     "JOIN live_review_attempts a ON a.packet_ref=p.packet_ref WHERE p.story_id=? "
                     "AND p.binding=? AND a.state='pending'", (session.resource_id, binding(session))):
@@ -356,12 +406,9 @@ def read(adapter, session, args):
                                (pending_packet['packet_ref'],))
             db.execute('INSERT INTO live_review_packets(packet_ref,story_id,run_id,binding,story_revision,identity_generation,payload_json,decisions_json) VALUES(?,?,?,?,?,?,?,?)',
                        (ref, session.resource_id, run_id, binding(session), int(story['revision']), int(run['identity_generation']), canonical(payload), canonical(reused)))
-            scope = sorted(affected & set(exact)) if supersedes else sorted(set(exact) - {items[int(n)]['id'] for n in reused})
             db.execute('INSERT INTO live_review_attempts(packet_ref,policy_version,supersedes_ref,affected_json) VALUES(?,?,?,?)', (ref, POLICY_VERSION, supersedes or None, canonical(scope)))
             if supersedes:
                 db.execute("UPDATE live_review_attempts SET state='superseded' WHERE packet_ref=? AND state='pending'", (supersedes,))
-            for fact_id in scope:
-                db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
         row, payload = load(adapter, session, db, ref)
         attempt = db.execute('SELECT supersedes_ref FROM live_review_attempts WHERE packet_ref=?', (ref,)).fetchone()
         superseding = bool(attempt and attempt[0]) or payload.get('requested_fact_scope') is True

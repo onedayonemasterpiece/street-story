@@ -191,6 +191,11 @@ async def test_uncertain_g_group_reaches_same_t_call_and_keeps_t_reduction_witho
         assert receipt['articles'][0]['text'] in contents[-1]
         packet = json.loads(contents[-1].rsplit('\n', 1)[-1])
         assert any(row[0] == 'osm:way:4' for row in packet['physical_reserve']['rows'])
+        for relation in answer['correspondences']:
+            own = next(row['passages'] for row in packet['literal_source_passages']
+                if row['article_id'] == relation['article_id'])
+            literal = relation.pop('source_quote')
+            relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
         return SimpleNamespace(text=json.dumps(answer))
 
     monkeypatch.setattr(context, 'acquire_regional_text', acquire)

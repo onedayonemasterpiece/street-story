@@ -148,6 +148,127 @@ def test_explicit_far_detail_exposes_short_setback_sides_without_dropping_near_b
     assert render_scene(story, [], detail_candidate_ids=['osm:way:unreceived']) is None
 
 
+def test_first_overview_keeps_far_unnamed_pool_and_model_requested_details():
+    from test_identity_scene import building
+    story = {'latitude': 54.7, 'longitude': 20.5,
+        '_identity_map_snapshot': {'observed_pool': [building(i, i*25) for i in range(1, 27)]}}
+    frozen = copy.deepcopy(story)
+    initial = render_scene(story, [])
+    overview = physical_decision_context(story, [], initial['manifest'], overview_only=True)
+    assert len(overview['rows']) == overview['received_body_count'] == 26
+    assert 'observed_side_segments' not in overview['columns']
+    assert 'plan_morphology' not in overview['columns']
+    expanded = render_scene(story, [], detail_candidate_ids=['osm:way:26'])
+    detail = physical_decision_context(story, [], expanded['manifest'])
+    assert [row[1] for row in detail['rows']] == [row[1] for row in overview['rows']]
+    far = dict(zip(detail['columns'], next(row for row in detail['rows'] if row[1] == 'osm:way:26')))
+    assert far['omitted_side_count'] == 0 and len(far['observed_side_segments']) == 4
+    assert expanded['manifest']['objects'] == initial['manifest']['objects']
+    assert story == frozen
+
+
+@pytest.mark.asyncio
+async def test_closed_native_initial_uses_native_for_new_visual_detail_without_google(tmp_path):
+    service, story, active = geometry_setup(tmp_path)
+    initial = geometry_decision()
+    initial.update(decision='uncertain', next_action={'kind': 'map_detail',
+        'reason': 'Inspect the short return against the other received body.',
+        'target_candidate_ids': ['osm:way:2']})
+    initial['bounded_coverage']['material_alternatives_resolved'] = False
+    calls = []
+    async def native(s, prompt, schema, images, host_context):
+        calls.append((prompt, images))
+        assert len(images) == 2 and images[0][0] == 'SOURCE' and images[1][0] == 'MAP'
+        return {'result': payload(initial), 'receipt': {'turn_id': 'closed-initial'}, 'host_context': host_context}
+    async def followup(s, prompt, schema, images, host_context):
+        calls.append((prompt, images))
+        assert 'Explicit requested MAP expansion' in prompt
+        assert images[0][2] == calls[0][1][0][2] and images[1][2] != calls[0][1][1][2]
+        return {'result': payload(geometry_decision()), 'receipt': {'turn_id': 'closed-detail'}, 'host_context': host_context}
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Successful Native visual work must not require Google or a text-only planner')
+    service.providers.gemini = SimpleNamespace(_generate=forbidden, executor=Executor(), research_routes=[])
+    service.providers.research = SimpleNamespace(native_vision=SimpleNamespace(available=True),
+        source_map_available=True, source_map_receipt=lambda s: None,
+        source_map_followup_receipt=lambda s: None, plan_source_map=native,
+        plan_source_map_followup=followup, plan_identity_search=forbidden)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert story['_identity_search_plan_payload']['geometry_proof']
+    assert len(calls) == 2
+    marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
+    assert marker['phase'] == 'response_closed' and marker['prepared_request']['model'] == 'gpt-6-luna'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['not_sent', 'unknown', 'retry_admission', 'retry_then_reserve'])
+async def test_native_followup_admission_uses_visual_reserve_only_when_definitely_unsent(tmp_path, monkeypatch, phase):
+    from street_story.providers import RetryableProviderError
+    service, story, active = geometry_setup(tmp_path)
+    initial = geometry_decision()
+    initial.update(decision='uncertain', next_action={'kind': 'map_detail',
+        'reason': 'Inspect the actual return, without accepting a hypothesis.',
+        'target_candidate_ids': ['osm:way:2']})
+    initial['bounded_coverage']['material_alternatives_resolved'] = False
+    calls, saved = [], {}
+    clock = [service.store.now()]
+    if phase.startswith('retry_'):
+        monkeypatch.setattr(service.store, 'now', lambda: clock[0])
+        old_sleep = asyncio.sleep
+        async def admission_wait(delay):
+            marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
+            assert marker['phase'] == 'not_sent' and marker['admission_retry']['retry_count'] == 0
+            assert delay == 17 and calls == ['initial', 'native-admission']
+            clock[0] += delay
+            await old_sleep(0)
+        monkeypatch.setattr(identity_discovery.asyncio, 'sleep', admission_wait)
+    async def native(s, prompt, schema, images, host_context):
+        calls.append('initial')
+        return {'result': payload(initial), 'receipt': {'turn_id': 'initial-closed'}, 'host_context': host_context}
+    async def followup(s, prompt, schema, images, host_context):
+        calls.append('native-admission')
+        if phase == 'retry_admission' and calls.count('native-admission') == 2:
+            return {'result': payload(geometry_decision()), 'receipt': {'turn_id': 'native-after-admission'}, 'host_context': host_context}
+        saved.update(phase='submitted' if phase == 'unknown' else 'created',
+                     provider_send_state='unknown' if phase == 'unknown' else 'not_sent')
+        if phase.startswith('retry_'):
+            saved['route_failure'] = {'retry_at': service.store.now() + 17, 'code': 'RESOURCE_TOKEN_BUDGET'}
+        raise RetryableProviderError('fixture_native_budget')
+    async def google(key, timeout, contents, config, **kwargs):
+        calls.append('google')
+        assert phase in {'not_sent', 'retry_then_reserve'}
+        assert timeout <= 133  # Remaining clock after the authoritative wait, minus REF reserve.
+        assert len(contents) == 3 and 'Explicit requested MAP expansion' in contents[-1]
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())), response_id='reserve-closed')
+    async def forbidden(*args, **kwargs):
+        pytest.fail('No text planner or third semantic turn may replace the visual followup')
+    executor = Executor()
+    service.providers.gemini = SimpleNamespace(_generate=google, executor=executor,
+        research_routes=[] if phase == 'retry_admission' else [('fixture-visual', None, None, executor)])
+    service.providers.research = SimpleNamespace(native_vision=SimpleNamespace(available=True),
+        source_map_available=True, source_map_receipt=lambda s: None,
+        source_map_followup_receipt=lambda s: saved or None, plan_source_map=native,
+        plan_source_map_followup=followup, plan_identity_search=forbidden)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
+    if phase in {'not_sent', 'retry_then_reserve'}:
+        assert calls == ['initial', 'native-admission', 'google']
+        assert story['_identity_search_plan_payload']['geometry_proof']
+        old = marker['route_operations']['gpt-6-luna']
+        assert old['phase'] == 'not_sent' and marker['phase'] == 'response_closed'
+        assert old['binding'] == marker['binding']
+        assert old['prepared_request']['prompt'] == marker['prepared_request']['prompt']
+        assert marker['prepared_request']['model'] == 'fixture-visual'
+    elif phase == 'retry_admission':
+        assert calls == ['initial', 'native-admission', 'native-admission']
+        assert story['_identity_search_plan_payload']['geometry_proof']
+        assert marker['admission_retry']['retry_count'] == 1
+        assert marker['phase'] == 'response_closed' and marker['prepared_request']['model'] == 'gpt-6-luna'
+    else:
+        assert calls == ['initial', 'native-admission']
+        assert marker['phase'] == 'unknown' and 'route_operations' not in marker
+        assert not story['_identity_search_plan_payload'].get('geometry_proof')
+
+
 @pytest.mark.asyncio
 async def test_map_detail_uses_existing_single_followup_and_freezes_the_new_map(tmp_path):
     service, story, active = geometry_setup(tmp_path)

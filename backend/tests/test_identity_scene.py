@@ -243,7 +243,8 @@ async def test_real_planner_transports_separate_source_and_map_then_retains_orig
         assert len(contents)==3
         assert contents[0].inline_data.mime_type=='image/jpeg'
         assert contents[1].inline_data.mime_type=='image/png'
-        context=json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1])
+        from street_story.identity_source_selection import expand_planner_packet
+        context=expand_planner_packet(json.loads(contents[-1].split('Данные ниже — только контекст:\n')[1]))
         packet=context['map_scene']
         assert packet['camera']['position_verified']
         assert packet['detail_view']['panel_pixels'] == [1280, 0, 2560, 1350]

@@ -5,10 +5,24 @@ from types import SimpleNamespace
 import pytest
 
 from street_story import review_packets
+from street_story.headless_review_quotes import model_packet
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.headless_facts import HeadlessFacts
 from street_story.service import ConflictError
 from test_headless_fact_pool import fixture, result, RUN
+
+
+def model_decisions(packet):
+    """Controlled model answer over the actual fresh grouped wire format."""
+    decisions = []
+    for fact in packet['facts']:
+        evidence = fact['evidence']
+        quotes = [s['quote_ref'] for e in evidence for s in e['slices'] if s.get('quote_ref')]
+        decisions.append({'fact': fact['fact'], 'evidence': [e['evidence'] for e in evidence],
+            'verdict': 'supported', 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
+            'claims': [fact['text']], 'basis_quotes': quotes or [fact['text']], 'reason': 'Own unchanged frozen passage.',
+            **({'own_evidence_values': [], 'own_value_conflicts': []} if packet.get('verifier_presentation') else {})})
+    return decisions
 
 
 @pytest.mark.parametrize('quote,expected', [
@@ -188,6 +202,44 @@ def reset_host():
 
 
 @pytest.mark.asyncio
+async def test_explicit_backend_reconsideration_changes_only_requested_eligible_claim(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=3)
+    engine = ControlledReview(harness)
+    assert await engine.run(job, RUN, 0) == 1
+    with svc.store.connection() as db:
+        ids = [row[0] for row in db.execute('SELECT assertion_id FROM fact_assertions ORDER BY assertion_id')]
+        other = [list(row) for row in db.execute('SELECT assertion_id,revision_digest,eligibility FROM fact_assertions '
+            'WHERE assertion_id<>? ORDER BY assertion_id', (ids[0],))]
+    assert await engine.run(job, RUN, 0, fact_ids=[ids[0]]) == 1
+    with svc.store.connection() as db:
+        assert [list(row) for row in db.execute('SELECT assertion_id,revision_digest,eligibility FROM fact_assertions '
+            'WHERE assertion_id<>? ORDER BY assertion_id', (ids[0],))] == other
+        assert db.execute('SELECT eligibility FROM fact_assertions WHERE assertion_id=?', (ids[0],)).fetchone()[0] == 'eligible'
+
+
+@pytest.mark.asyncio
+async def test_explicit_scope_never_repeats_unknown_but_independent_claim_can_progress(tmp_path):
+    svc, job, harness = await candidates(tmp_path, count=6)
+    engine = ControlledReview(harness)
+    ControlledReview.mode = 'unknown'
+    assert await engine.run(job, RUN, 0) == 0
+    with svc.store.connection() as db:
+        current = review_packets.bundle(db, job['story_id'])
+    blocked = engine._unknown_candidates(job, current)
+    assert len(blocked) == 3
+    original_calls = ControlledReview.calls
+    ControlledReview.mode = 'positive'
+    with pytest.raises(ConflictError, match='UNKNOWN scope'):
+        await engine.run(job, RUN, 0, fact_ids=[next(iter(blocked))])
+    assert ControlledReview.calls == original_calls
+    independent = next(fid for fid in current if fid not in blocked)
+    assert await engine.run(job, RUN, 0, fact_ids=[independent]) == 1
+    with svc.store.connection() as db:
+        current = review_packets.bundle(db, job['story_id'])
+    assert engine._unknown_candidates(job, current) == blocked
+
+
+@pytest.mark.asyncio
 async def test_one_bounded_packet_reviews_twelve_candidates_without_stale_sibling_rework(tmp_path):
     svc, job, harness = await candidates(tmp_path, count=12)
     class GroupedReview(ControlledReview):
@@ -241,12 +293,12 @@ async def test_packet_capacity_reduces_whole_candidates_without_clipping_evidenc
     # Measure the actual closed request, including its quote labels, rather
     # than the public interactive packet's duplicate instruction field.
     first, _, _ = HeadlessFactReview(harness)._prepare_packet(job, RUN, session, ids)
-    budget = len(VERIFIER_PROMPT + canonical(first)) - 300
+    budget = len(VERIFIER_PROMPT + canonical(model_packet(first))) - 300
     calls = []
     class BoundedReview(ControlledReview):
         MAX_PACKET_FACTS = 12
         async def _infer(self, packet, *args, **kwargs):
-            assert len(VERIFIER_PROMPT + canonical(packet)) <= budget or len(packet['items']) == 1
+            assert len(VERIFIER_PROMPT + canonical(model_packet(packet))) <= budget or len(packet['items']) == 1
             for item in packet['items']:
                 assert item['passage'] == item['text'] and item['passage_complete'] is True
             calls.append(packet['total_facts'])
@@ -289,10 +341,12 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
             size = provider.live_facts.input_size(prompt, schema)
             assert size['input_limit_bytes'] is None
             bound = size['packet_target_bytes']
-            assert size['input_utf8_bytes'] <= bound or len(self.packet['items']) == 1
-            for item in self.packet['items']:
-                assert item['passage'] == item['text'] and item['passage'] in texts
-                assert item['passage_complete'] is True
+            assert size['input_utf8_bytes'] <= bound or len(self.packet['facts']) == 1
+            for fact in self.packet['facts']:
+                for evidence in fact['evidence']:
+                    for slice in evidence['slices']:
+                        assert slice['passage'] == fact['text'] and slice['passage'] in texts
+                        assert slice['passage_complete'] is True
             starts.append(prompt)
             self.adapter.on_event(self.session, {'type': 'ready'})
             return {'session_id': self.session.id}
@@ -300,11 +354,8 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
             self.guard()
             sends.append(self.packet['total_facts'])
             self.adapter.on_event(self.session, {'type': 'input_timing', 'text_sent_at': 1})
-            args = {'packet_ref': self.packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
-                 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
-                 'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own unchanged passage.'}
-                for item in self.packet['items']], 'relations_complete': True, 'conflicts': [],
+            args = {'packet_ref': self.packet['packet_ref'], 'decisions': model_decisions(self.packet),
+                'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             await self.adapter.execute_tool(self.session, {'name': RESULT_TOOL, 'id': 'bounded', 'args': args})
         async def stop_all(self):
@@ -326,7 +377,7 @@ async def test_cyrillic_packets_respect_actual_live_context_and_finish_remaining
     with svc.store.connection() as db:
         ids = review_packets.pending_candidates(db, job['story_id'], RUN)
     full, _, _ = engine._prepare_packet(job, RUN, session, ids)
-    prompt = VERIFIER_PROMPT + canonical(full)
+    prompt = VERIFIER_PROMPT + canonical(model_packet(full))
     assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
     assert await engine._run_one(job, RUN, 0) == 1
     with svc.store.connection() as db:
@@ -378,7 +429,7 @@ async def test_fresh_large_live_packet_keeps_live_route_and_complete_evidence(tm
     # An indivisible frozen unit can contain a large conflict ledger. Its own
     # assertion and passage remain intact; an unavailable route cannot clip it.
     packet['nearby_existing_claims'] = [{'fact_id': f'existing-{i}', 'text': 'Ж' * 450} for i in range(23)]
-    prompt = VERIFIER_PROMPT + canonical(packet)
+    prompt = VERIFIER_PROMPT + canonical(model_packet(packet))
     assert len(prompt) < 24000 < len(prompt.encode('utf-8'))
     calls = []
     class Client:
@@ -502,7 +553,7 @@ async def test_review_progress_schedules_ready_assertions_outside_exact_waiting_
 
 
 @pytest.mark.asyncio
-async def test_independent_packets_stay_pending_but_new_eligible_claim_stales_sibling(tmp_path):
+async def test_independent_packet_keeps_scope_when_unrelated_claim_becomes_eligible(tmp_path):
     svc, job, harness=await candidates(tmp_path)
     session=SimpleNamespace(id='review',resource_id=job['story_id'],model='gemini-3.8-live',actor=None,closed=False,state={})
     with svc.store.connection() as db:
@@ -521,8 +572,7 @@ async def test_independent_packets_stay_pending_but_new_eligible_claim_stales_si
     with svc.store.tx() as db:
         db.execute("UPDATE fact_assertions SET eligibility='eligible' WHERE story_id=? AND assertion_id=?",(job['story_id'],ids[0]))
     with svc.store.connection() as db:
-        with pytest.raises(ConflictError,match='Revisions changed'):
-            review_packets.load(harness.adapter,session,db,packets[1]['packet_ref'])
+        review_packets.load(harness.adapter,session,db,packets[1]['packet_ref'])
 
 
 @pytest.mark.asyncio
@@ -551,6 +601,87 @@ async def test_two_reviews_prepare_serially_with_current_ledger_and_preserve_own
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]==6
         assert json.loads(svc._story_row(db,sid)['research_json'])['publication_concept']=='Owner concept'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['independent', 'overlap', 'stop', 'new_source'])
+async def test_same_poi_waiting_reviewer_does_not_block_other_story_or_commit_stale_result(tmp_path, case):
+    from street_story.errors import RetryableProviderError
+    from street_story.research_runs import begin_research_run, persist_source_version
+    from street_story.research_control import stop_research
+    from test_live_editor import PHOTO, PHOTO_SHA, mark_identity_ready
+
+    svc, first, harness = await candidates(tmp_path, count=1)
+    second_story = svc.create_story(key='independent-review-story', client_story_id='second',
+        photo_sha256=PHOTO_SHA, photo_mime_type='image/jpeg', photo_bytes=PHOTO,
+        voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
+    sid = second_story['id']
+    mark_identity_ready(svc, sid)
+    second_run = RUN + '-second'
+    with svc.store.tx() as db:
+        row = svc._story_row(db, sid)
+        jid = svc._enqueue_job(db, sid, 'research', 'independent-review',
+            {'identity_generation': 0, 'photo_sha256': row['photo_sha256']})
+        db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (jid,))
+        second = dict(db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+        begin_research_run(db, story_id=sid, poi_key='wiki:77', goal='History', scope='history',
+            expected_story_revision=row['revision'], identity_generation=0, run_id=second_run, now=svc.store.now())
+        url = 'https://archive.example/independent'
+        text = 'The gate housed documented exhibit number 98 in 2005.'
+        persist_source_version(db, run_id=second_run, requested_url=url, final_url=url, title='Independent history',
+            content_type='text/html', http_status=200, redirect_chain=[], normalized_text=text,
+            read_status='complete', now=svc.store.now())
+    other_harness = HeadlessFacts(svc)
+    while True:
+        try:
+            await other_harness.run(second, second_run, 'History', 'history')
+            break
+        except RetryableProviderError:
+            pass
+    entered, release = asyncio.Event(), asyncio.Event()
+    with svc.store.connection() as db:
+        first_ids = set(review_packets.pending_candidates(db, first['story_id'], RUN))
+        second_ids = set(review_packets.pending_candidates(db, sid, second_run))
+        assert first_ids and second_ids and not first_ids & second_ids
+
+    class WaitingReview(ControlledReview):
+        async def _infer(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super()._infer(*args, **kwargs)
+
+    waiting = asyncio.create_task(WaitingReview(harness).run(first, RUN, 0))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        if case == 'stop':
+            stop_research(svc, first['story_id'], purpose='facts')
+        elif case == 'new_source':
+            with svc.store.tx() as db:
+                db.execute("UPDATE stories SET photo_sha256=? WHERE id=?", ('b' * 64, first['story_id']))
+        # Completion before releasing the first reviewer is the assertion;
+        # elapsed sleeps are not evidence of independent progress.
+        assert await asyncio.wait_for(ControlledReview(other_harness).run(second, second_run, 0), 3) == 1
+        assert not waiting.done()
+        assert any(f['eligibility'] == 'eligible' for f in svc.story(sid)['facts'])
+        if case == 'overlap':
+            # A competing review of this exact shared assertion changed its
+            # canonical version while the first result was on the network.
+            with svc.store.tx() as db:
+                assert db.execute("UPDATE poi_research_assertions SET eligibility='withheld',review_status='withheld',"
+                    "review_story_id=?,reviewed_at=? WHERE assertion_id=?",
+                    (sid, svc.store.now(), next(iter(first_ids)))).rowcount == 1
+        release.set()
+        count = await asyncio.wait_for(waiting, 3)
+        assert count == (1 if case == 'independent' else 0)
+        with svc.store.connection() as db:
+            units = [json.loads(row[0]) for row in db.execute(
+                "SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'",
+                (first['id'],))]
+        assert units and units[-1]['phase'] == ('committed' if case == 'independent' else 'stale' if case == 'overlap' else 'result')
+    finally:
+        release.set()
+        if not waiting.done():
+            await waiting
 
 
 @pytest.mark.asyncio
@@ -694,6 +825,7 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
     from street_story.app import create_app
     from street_story.config import reveal
     from street_story.live import StreetStoryLiveAdapter
+    from test_live_research_control import shared_editor_session
 
     svc, job, harness = await candidates(tmp_path, count=6)
     ControlledReview.mode = 'unknown'
@@ -732,24 +864,30 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
             assert shown['state'] == 'facts_ready'
             selected = [f['fact_id'] for f in shown['facts'] if f['eligibility'] == 'eligible']
             assert len(selected) == 3
-            response = await client.post('/v1/stories/' + job['story_id'] + '/facts',
-                headers={'Idempotency-Key': 'partial-value-selection'}, json={'selected_fact_ids': selected})
-            assert response.status_code == 200, response.text
         draft = '\n'.join(f['text'] for f in shown['facts'] if f['fact_id'] in selected)
-        await harness.adapter.execute_tool(session, {'name': 'edit_text', 'id': 'partial-value-draft',
-            'args': {'expected_text_revision': 0, 'new_text': draft, 'change_summary': 'Use selected reviewed claims.'}})
+        host, session = await shared_editor_session(harness.adapter, session,
+            'Выбери три готовых факта и сохрани замысел с текстом, пока остальные проверяются.')
+        await host._handle_tool_calls(session, [{'name': 'select_facts', 'id': 'partial-value-selection',
+            'args': {'fact_ids': selected}}])
+        await host._handle_tool_calls(session, [{'name': 'set_concept', 'id': 'partial-value-concept',
+            'args': {'concept': 'Уже проверенная история'}}])
+        await host._handle_tool_calls(session, [{'name': 'edit_text', 'id': 'partial-value-draft',
+            'args': {'expected_text_revision': 0, 'new_text': draft, 'change_summary': 'Use selected reviewed claims.'}}])
         assert not task.done()
         reopened = type(svc)(svc.settings, providers=svc.providers)
         restored = reopened.story(job['story_id'])
         assert restored['draft_text'] == draft
+        assert restored['publication_concept'] == 'Уже проверенная история'
         assert {f['fact_id'] for f in restored['facts'] if f['selected']} == set(selected)
         assert any(f['eligibility'] == 'unreviewed' for f in restored['facts'])
         assert StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None)._topic_state(job['story_id'])['story']['draft_text'] == draft
         initialized = StreetStoryLiveAdapter(reopened, lambda *_: None, lambda *_: None).initialize(
             resource_id=job['story_id'], actor=None, model='gemini-3.8-live')
         assert initialized['capability'] == 'research'
-        assert {'select_facts', 'set_concept', 'edit_text'} <= {
-            tool['name'] for tool in initialized['configuration']['functions']}
+        tools = {tool['name'] for tool in initialized['configuration']['functions']}
+        assert 'continue_story' in tools
+        assert not {'select_facts', 'set_concept', 'edit_text'} & tools
+        assert not any(event.get('name') == 'finalize_fact_review' for event in session.events)
     finally:
         release.set()
         await task
@@ -807,6 +945,63 @@ async def test_good_fact_enters_poi_while_slow_extraction_siblings_still_run(tmp
         release.set()
         if not task.done():
             await task
+
+
+@pytest.mark.parametrize('stop', [False, True])
+@pytest.mark.asyncio
+async def test_second_ready_review_finishes_before_slow_extraction_and_stop_fences_send(tmp_path, monkeypatch, stop):
+    from street_story.research_control import stop_research
+    svc, job = fixture(tmp_path, count=3)
+    release, first_reviewed = asyncio.Event(), asyncio.Event()
+    async def extract(page, story, context):
+        if page['_extractor_ordinal'] == 2:
+            await release.wait()
+        return result(page)
+    svc.providers.research = SimpleNamespace(client=None, extract_fact_page=extract)
+    harness = HeadlessFacts(svc)
+    class OnePacket(ControlledReview):
+        MAX_PACKET_FACTS = 1
+    calls = []
+    async def review(job, run_id, revision, **kwargs):
+        calls.append(run_id)
+        if len(calls) == 1:
+            # Freeze two ready candidates before the first packet finishes;
+            # the only remaining extraction will never wake this loop.
+            for _ in range(40):
+                with svc.store.connection() as db:
+                    if len(review_packets.pending_candidates(db, job['story_id'], RUN)) == 2:
+                        break
+                await asyncio.sleep(.01)
+            else:
+                pytest.fail('Two independent candidates never became ready')
+        committed = await OnePacket(harness)._run_one(job, run_id, revision)
+        if len(calls) == 1:
+            if stop:
+                stop_research(svc, job['story_id'], purpose='facts')
+            first_reviewed.set()
+        return committed
+    monkeypatch.setattr(harness, '_review_candidates', review)
+    task = asyncio.create_task(harness.run(job, RUN, 'History', 'history'))
+    try:
+        await asyncio.wait_for(first_reviewed.wait(), 2)
+        if stop:
+            await asyncio.sleep(1.2)
+        else:
+            for _ in range(60):
+                with svc.store.connection() as db:
+                    eligible = db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0]
+                if eligible == 2:
+                    break
+                await asyncio.sleep(.025)
+            assert eligible == 2 and len(calls) == 2
+        assert not task.done() and not release.is_set()
+        if stop:
+            assert len(calls) == 1
+            with svc.store.connection() as db:
+                assert db.execute("SELECT COUNT(*) FROM poi_research_assertions WHERE eligibility='eligible'").fetchone()[0] == 1
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 3)
 
 
 @pytest.mark.asyncio
@@ -912,11 +1107,8 @@ async def test_existing_live_tool_contract_reviews_only_with_matching_semantic_q
         async def _run(self, role, prompt, binding, schema):
             calls.append(binding['attempt_id'])
             packet = json.loads(prompt.split('Frozen packet: ', 1)[1])
-            args = {'packet_ref': packet['packet_ref'], 'decisions': [
-                {'fact': item['fact'], 'evidence': [item['evidence']], 'verdict': 'supported',
-                 'atomic': True, 'support_complete': True, 'qualifiers_preserved': True,
-                 'claims': [item['text']], 'basis_quotes': [item['quote_ref']], 'reason': 'Own literal frozen passage.'}
-                for item in packet['items']], 'relations_complete': True, 'conflicts': [],
+            args = {'packet_ref': packet['packet_ref'], 'decisions': model_decisions(packet),
+                'relations_complete': True, 'conflicts': [],
                 'coverage_complete': False, 'missing_aspects': []}
             receipt = {'binding': binding, 'phase': 'completed', 'model_id': self.model_id,
                        'provider_id': self.provider_id, 'result': args}

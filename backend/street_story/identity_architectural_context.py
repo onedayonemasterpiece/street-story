@@ -116,7 +116,7 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
     preparation envelope. It never cascades through a street's page tree.
     """
     from .prussia39 import Prussia39Adapter, READ_TIMEOUT_SECONDS, cached_get_available
-    from .research_budget import ResearchTerminated
+    from .research_budget import ResearchTerminated, ResearchWorkExhausted
     query = regional_preparation_query(story, candidates)
     # A camera point is an inventory anchor, never the photographed address.
     # It remains useful when nearby footprints have several streets/no names.
@@ -201,7 +201,7 @@ async def prepare_regional_catalogue(service, story, candidates, *, allow_networ
         receipt.update(status='completed' if receipt.get('results') else 'transport_failed',
             error_code='regional_preparation_wait_expired', inventory_complete=False,
             limitation='Preparation wait ended; no extra selector/judge is added for late inventory.')
-    except ResearchTerminated as exc:
+    except (ResearchTerminated, ResearchWorkExhausted) as exc:
         receipt.update(status='completed' if receipt.get('results') else 'not_sent',
             error_code=exc.reason, inventory_complete=False)
     receipt['preparation_started'] = started
@@ -367,9 +367,10 @@ async def acquire_selected_regional_text(service, story, candidates, selections,
         choices.append((cards[aid][0]['canonical_url'], selection, cards[aid]))
     timeout = 20.0
     if hasattr(service, 'settings'):
-        from .research_budget import require_remaining, reserve_work
+        from .research_budget import require_remaining, reserve_available_work
         timeout = min(timeout, require_remaining(service, story['id'], 'identity'))
-        reserve_work(service, story['id'], 'pages', [url for url, _, _ in choices])
+        allowed = reserve_available_work(service, story['id'], 'pages', [url for url, _, _ in choices])
+        choices = [choice for choice in choices if choice[0] in allowed]
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         adapter = Prussia39Adapter(service.store, client)
         pages = await asyncio.gather(*(adapter.article(url) for url, _, _ in choices))
@@ -406,7 +407,7 @@ async def acquire_architectural_pool_text(service, story, publisher_catalogue,
     Never silently drop overflow articles or pick first two catalog rows.
     """
     from .prussia39 import Prussia39Adapter
-    from .research_budget import require_remaining, reserve_work
+    from .research_budget import require_remaining, reserve_available_work
     if (not isinstance(selected_article_ids,list) or not selected_article_ids
             or len(selected_article_ids)>max_articles
             or len(set(selected_article_ids))!=len(selected_article_ids)):
@@ -424,7 +425,9 @@ async def acquire_architectural_pool_text(service, story, publisher_catalogue,
     timeout=22.0
     if hasattr(service,'settings'):
         timeout=min(timeout,require_remaining(service,story['id'],'identity'))
-        reserve_work(service,story['id'],'pages',list(dict.fromkeys(urls)))
+        allowed = reserve_available_work(service, story['id'], 'pages', urls)
+        selected_article_ids = [aid for aid, url in zip(selected_article_ids, urls) if url in allowed]
+        urls = [url for url in urls if url in allowed]
     async with httpx.AsyncClient(timeout=timeout,follow_redirects=False) as client:
         adapter=Prussia39Adapter(service.store,client)
         gate=asyncio.Semaphore(4)
@@ -517,9 +520,10 @@ async def acquire_selected_wikipedia_text(service, story, candidates, payload, w
     urls = list(dict.fromkeys(url for _, url, _ in choices))
     timeout = 20.0
     if hasattr(service, 'settings'):
-        from .research_budget import require_remaining, reserve_work
+        from .research_budget import require_remaining, reserve_available_work
         timeout = min(timeout, require_remaining(service, story['id'], 'identity'))
-        reserve_work(service, story['id'], 'pages', urls)
+        urls = reserve_available_work(service, story['id'], 'pages', urls)
+        choices = [choice for choice in choices if choice[1] in urls]
     context = {'research_sources': [{'url': url, 'title': pages[pid].get('title') or ''}
         for pid, url, _ in choices]}
     try:
@@ -810,8 +814,9 @@ async def acquire_regional_text(service, story, candidates, request):
                     'This inventory requires model source selection before body reading.')
             return [], lookup
         if hasattr(service, 'settings'):
-            from .research_budget import reserve_work
-            reserve_work(service, story['id'], 'pages', [item['canonical_url'] for item in chosen])
+            from .research_budget import reserve_available_work
+            allowed = reserve_available_work(service, story['id'], 'pages', [item['canonical_url'] for item in chosen])
+            chosen = [item for item in chosen if item['canonical_url'] in allowed]
         urls = list(dict.fromkeys(item['canonical_url'] for item in chosen))
         pages = await asyncio.gather(*(adapter.article(url) for url in urls))
     # Retain the publisher's *actual displayed modern addresses*. The article

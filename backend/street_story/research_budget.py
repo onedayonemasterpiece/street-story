@@ -6,6 +6,8 @@ import logging
 from contextlib import nullcontext
 from contextvars import ContextVar
 
+from .errors import RetryableProviderError
+
 LOG = logging.getLogger(__name__)
 RESEARCH_KINDS = {'identity', 'identity_visual', 'research', 'refinement'}
 RESEARCH_SEND_GUARD = ContextVar('street_story_research_send_guard', default=None)
@@ -23,6 +25,32 @@ class ResearchTerminated(Exception):
         super().__init__(reason)
         self.outcome = outcome
         self.reason = reason
+
+
+class ResearchWorkExhausted(RetryableProviderError):
+    """A category cannot start more work; independent work remains valid."""
+    def __init__(self, kind, reason):
+        super().__init__(reason)
+        self.kind = kind
+        self.reason = reason
+        self.not_sent = True
+
+
+def reserve_available_work(service, story_id, kind, unit_ids, *, purpose='identity'):
+    """Keep each admitted unit, skipping only new units outside this cap."""
+    admitted = []
+    for unit in dict.fromkeys(unit_ids):
+        if kind == 'pages':
+            from .prussia39 import cached_get_available
+            if cached_get_available(service.store, unit):
+                admitted.append(unit)
+                continue
+        try:
+            reserve_work(service, story_id, kind, [unit], purpose=purpose)
+            admitted.append(unit)
+        except ResearchWorkExhausted:
+            continue
+    return admitted
 
 
 def _envelope(service, row, research, *, start=None):
@@ -107,7 +135,9 @@ def reserve_work(service, story_id, kind, unit_ids, *, purpose='identity'):
         if len(combined) > limit:
             scope = {'exact_pairs': 'exact_pair', 'query_hypotheses': 'query_hypothesis',
                      'pages': 'page', 'planner_calls': 'planner_call'}[kind]
-            raise ResearchTerminated('search_exhausted', 'identity_' + scope + '_envelope_exhausted')
+            LOG.info('street_story_research_work_deferred story_id=%s kind=%s used=%s limit=%s',
+                     story_id, kind, len(previous), limit)
+            raise ResearchWorkExhausted(kind, 'identity_' + scope + '_envelope_exhausted')
         if combined != previous:
             work[kind] = combined
             row = service._story_row(db, story_id)

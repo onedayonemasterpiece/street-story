@@ -193,7 +193,12 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
     cid = {'type': 'string', 'enum': list(dict.fromkeys([*candidate_ids, '']))}
     aid = {'type': 'string', 'enum': list(dict.fromkeys(article_ids))}
     schema = {'type': 'object', 'properties': {
-        'decision': {'type': 'string', 'enum': ['accepted_architectural_text', 'uncertain']},
+        'decision': {'type': 'string', 'enum': ['accepted_architectural_text', 'uncertain'],
+            'description': 'Resolve both the SOURCE/article architectural match and the exact main photographed '
+                'OSM body using its received MAP label, contours and adjacency. An article/address can cover a '
+                'complex containing several attached bodies. If a limitation leaves which individual footprint '
+                'is pictured unresolved, choose uncertain; a matching article or generic feature combination '
+                'does not resolve that physical scope. Preserve the alternative bodies as useful hypotheses.'},
         'candidate_id': cid, 'scope': text, 'discriminating_combination': text,
         'article_bindings': {'type': 'array', 'maxItems': 2, 'items': {'type': 'object', 'properties': {
             'article_id': aid, 'candidate_id': cid, 'scope': text, 'binding_basis': text,
@@ -227,9 +232,10 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         correspondence['required'].append('feature_kind')
     if source_span_refs:
         correspondence = schema['properties']['correspondences']['items']
+        correspondence['properties'].pop('source_quote')
         correspondence['properties']['source_span_ref'] = {'type': 'string', 'enum': list(source_span_refs)}
         correspondence['required'].remove('source_quote')
-        correspondence['oneOf'] = [{'required': ['source_quote']}, {'required': ['source_span_ref']}]
+        correspondence['required'].append('source_span_ref')
     from .identity_candidate_policy import research_priority_schema
     schema['properties']['research_priority'] = research_priority_schema(candidate_ids)
     return schema
@@ -243,6 +249,20 @@ def _text_candidate_context(candidate):
         'physical_subject_evidence', 'map_object', 'map_geometry', 'map_address',
         'map_coordinates', 'physical_component', 'physical_components', 'wikidata',
         'wikipedia_url') if key in candidate}
+
+
+def _received_literal_record_matches(received, observed):
+    # Compact DTOs can omit fields restored later from the same OSM record.
+    # Every received value must still match literally; new fields are not
+    # credited to the model's original evidence or interpreted by the host.
+    left = {key: value for key, value in received.items() if key != 'ref'}
+    right = {key: value for key, value in observed.items() if key != 'ref'}
+    literal = left.get('literal_value')
+    if isinstance(literal, dict) and isinstance(right.get('literal_value'), dict):
+        if not literal or any(right['literal_value'].get(key) != value for key, value in literal.items()):
+            return False
+        right = {**right, 'literal_value': literal}
+    return left == right
 
 
 def freeze_architectural_text_proof(story, decision, source_text_receipt, candidates):
@@ -297,12 +317,10 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
         try:
             expected = literal_evidence_inventory(story, list(catalog.values()), list(table.values()),
                 candidate_ids=inventory['candidate_ids'])
-            def without_ref(row):
-                return {key: value for key, value in row.items() if key != 'ref'}
             for link in links or []:
                 for kind, field in [('publisher_refs', 'publisher_ref'), ('osm_refs', 'osm_ref')]:
                     received = inventory[kind].get(link.get(field))
-                    if not received or not any(without_ref(received) == without_ref(row)
+                    if not received or not any(_received_literal_record_matches(received, row)
                             for row in expected[kind].values()):
                         return None
             link_proof = validate_model_physical_links(inventory, links, decision)
@@ -332,17 +350,19 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
         return None
     bound = set()
     for binding in decision['article_bindings']:
+        if binding['physical_binding_resolved'] is False:
+            continue  # Keep the model's negative comparison without crediting it.
         if (binding['candidate_id'] != cid or binding['physical_binding_resolved'] is not True
                 or not binding['scope'].strip() or not binding['binding_basis'].strip()):
             return None
         bound.add(binding['article_id'])
     stable = False
     for relation in decision['correspondences']:
-        if (relation['article_id'] not in bound or not relation['source_quote'].strip()
+        if (not relation['source_quote'].strip()
                 or relation['source_quote'] not in table[relation['article_id']]['text']
                 or not relation['source_observation'].strip() or not relation['reason'].strip()):
             return None
-        stable |= relation['status'] == 'stable_match' and (not structural
+        stable |= relation['article_id'] in bound and relation['status'] == 'stable_match' and (not structural
             or relation.get('feature_kind') in STRUCTURAL_FEATURES)
     if not stable or any(item['candidate_id'] in {'', cid} or not item['reason'].strip()
             for item in decision['material_alternatives']):

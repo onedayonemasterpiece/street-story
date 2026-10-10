@@ -33,6 +33,9 @@ def response_schema(packet, public_schema):
     """Constrain fresh private answers without changing the interactive tool."""
     schema = deepcopy(public_schema)
     decisions = schema['properties']['decisions']['items']['properties']
+    if packet.get('items'):
+        numbers = sorted({item['fact'] for item in packet['items']})
+        decisions['fact'] = {'type': 'integer', 'enum': numbers}
     if 'equivalent_to' in decisions and 'items' in packet:
         decisions['equivalent_to'] = {
             'type': ['integer', 'null'],
@@ -44,7 +47,70 @@ def response_schema(packet, public_schema):
         quotes['description'] = ('Exact frozen quote_ref labels only. Choose this fact\'s selected '
                                  'evidence; empty only for unsupported decisions. Labels establish '
                                  'literal addressing, not semantic support.')
+    if packet.get('verifier_presentation') == 'one_assertion_all_own_slices_v1':
+        decisions['own_evidence_values'] = {'type': 'array', 'maxItems': 32, 'items': {
+            'type': 'object', 'properties': {'property': {'type': 'string'}, 'value': {'type': 'string'},
+                'quote_refs': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}},
+            'required': ['property', 'value', 'quote_refs'], 'additionalProperties': False}}
+        decisions['own_value_conflicts'] = {'type': 'array', 'maxItems': 12, 'items': {'type': 'string', 'maxLength': 500}}
+        schema['properties']['decisions']['items'].setdefault('required', []).extend(
+            ['own_evidence_values', 'own_value_conflicts'])
+        # Advisory early stopping cannot discard independent own-source
+        # verdicts. sufficient_basis validates addressing before any stop.
+        schema['properties']['research_sufficient'] = {'description': 'Optional boolean early-stop advice.'}
+        schema['properties']['research_sufficient_basis'] = {'description':
+            'Optional {candidate_indices:[integer,...], known_fact_ids:[string,...], reason:string}. '
+            'Use exact packet candidates and eligible known facts supporting the coverage goal.'}
     return schema
+
+
+def model_packet(packet):
+    """Present each assertion once, retaining every own immutable literal slice.
+
+    Original public packets/quote journals stay unchanged. Grouping only copies
+    already addressed numbers; it never discovers equivalence or splits claims.
+    """
+    groups = {}
+    for item in packet['items']:
+        group = groups.setdefault(item['fact'], {'fact': item['fact'], 'text': item.get('text', ''), 'evidence': {}})
+        evidence = group['evidence'].setdefault(item['evidence'], {
+            'evidence': item['evidence'], 'source_url': item.get('source_url'), 'slices': []})
+        evidence['slices'].append({key: item[key] for key in
+            ('offset', 'passage', 'passage_complete', 'quote_ref') if key in item})
+    facts = [{**group, 'evidence': list(group['evidence'].values())} for group in groups.values()]
+    return {**{key: value for key, value in packet.items() if key not in {'items', 'quote_catalog'}},
+            'facts': facts, 'presentation': 'one_assertion_all_own_slices_v1'}
+
+
+def public_result(packet, args):
+    """Keep private model reasoning durable; public commit uses its original schema."""
+    if packet.get('verifier_presentation') != 'one_assertion_all_own_slices_v1':
+        return args
+    value = deepcopy(args)
+    value.pop('research_sufficient', None)
+    value.pop('research_sufficient_basis', None)
+    for decision in value.get('decisions', []):
+        if decision.get('own_value_conflicts') and decision.get('verdict') == 'supported':
+            raise ConflictError('live_fact_review_evidence_invalid',
+                                'The model declared unresolved own-value conflicts; supported is inconsistent.')
+        decision.pop('own_evidence_values', None)
+        decision.pop('own_value_conflicts', None)
+    return value
+
+
+def sufficient_basis(packet, args, original_items):
+    """Resolve the same review operation's goal decision, without deciding meaning."""
+    basis = args.get('research_sufficient_basis')
+    if args.get('research_sufficient') is not True or not isinstance(basis, dict):
+        return []
+    indices, known_ids = basis.get('candidate_indices'), basis.get('known_fact_ids')
+    known = {row['fact_id']: row['text'] for row in packet.get('eligible_facts', [])}
+    if (not isinstance(indices, list) or not isinstance(known_ids, list)
+            or any(type(i) is not int or not 0 <= i < len(original_items) for i in indices)
+            or any(not isinstance(fid, str) or fid not in known for fid in known_ids)):
+        return []
+    return ([(original_items[i]['id'], original_items[i]['text']) for i in indices]
+            + [(fid, known[fid]) for fid in known_ids])
 
 
 def resolve_quotes(packet, args):

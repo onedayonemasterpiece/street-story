@@ -7,6 +7,8 @@ existing architectural_text_decision_schema / freeze_architectural_text_proof.
 from __future__ import annotations
 
 import copy
+import asyncio
+import base64
 import hashlib
 import json
 from itertools import permutations
@@ -16,6 +18,68 @@ from .identity_candidate_policy import candidate_identity_eligible
 from .identity_proof import architectural_text_decision_schema
 from .identity_source_selection import observed_address_context
 from .identity_subject_binding import article_candidate
+
+
+async def ready_article_references(service, story, articles, *, timeout=4):
+    """Attach an available publisher photo to the existing T call, never judge it.
+
+    Read only HTML already acquired for T. Reuse the public reference loader;
+    missing/slow media does not require another page search or block text work.
+    """
+    from .article_media import extract_media
+    from .native_vision import native_public_image
+    from .reference_image_codec import normalize_reference
+    from .identity_telemetry import record_identity_event
+    images, receipt = [], []
+    cache_get = getattr(service.store, 'cache_get', None)
+    if not callable(cache_get):
+        return images, receipt
+    async def load(article, descriptor):
+        try:
+            _, raw = await native_public_image(descriptor['image_url'], descriptor=descriptor)
+            mime, data = await asyncio.to_thread(normalize_reference, raw)
+        except Exception as exc:
+            record_identity_event(service, story['id'], 'identity_t_article_reference_unavailable',
+                {'article_id': article['article_id'], 'error_type': type(exc).__name__})
+            return
+        label = f'ARTICLE REF {len(images)+1}'
+        images.append((label, mime, data))
+        receipt.append({'label': label, 'article_id': article['article_id'],
+            'article_url': article['url'], 'image_url': descriptor['image_url'],
+            'resolved_image_url': descriptor.get('resolved_image_url', descriptor['image_url']),
+            'raw_image_sha256': hashlib.sha256(raw).hexdigest(),
+            'model_image_sha256': hashlib.sha256(data).hexdigest(), 'mime_type': mime})
+
+    tasks = []
+    try:
+        async with asyncio.timeout(timeout):
+            for article in articles:
+                cached = cache_get('public-article-acquisition-v1:'
+                    + hashlib.sha256(article['url'].encode()).hexdigest())
+                if not cached or cached.get('sha256') != article.get('source_sha256'):
+                    continue
+                try:
+                    body = base64.b64decode(cached['body'], validate=True)
+                except (ValueError, TypeError, KeyError):
+                    continue
+                if hashlib.sha256(body).hexdigest() != cached['sha256']:
+                    continue
+                _, media = extract_media(body, cached['final_url'])
+                # Two independent ready views per selected article. Page order
+                # is no verdict, and failure of one view cannot block the other.
+                distinct = {row['image_url']: row for row in media}
+                for descriptor in list(distinct.values())[:2]:
+                    tasks.append(asyncio.create_task(load(article, dict(descriptor))))
+            await asyncio.gather(*tasks)
+    except TimeoutError:
+        record_identity_event(service, story['id'], 'identity_t_article_reference_wait_ended',
+            {'ready_count': len(images), 'text_work_preserved': True})
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return images, receipt
 
 
 def publisher_address_relation(articles, physical_candidates):
@@ -402,6 +466,11 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
 
     # Only existing, verified footprint/entrance membership is surfaced.
     address_context = observed_address_context(story, observed)
+    label_table = (receipt.get('manifest') or {}).get('objects') or {}
+    label_columns = label_table.get('columns') or []
+    labels = ({row[label_columns.index('candidate_id')]: row[label_columns.index('label')]
+        for row in label_table.get('rows') or []}
+        if 'candidate_id' in label_columns and 'label' in label_columns else {})
     physical = []
     for cid in ids:
         candidate = catalog[cid]
@@ -409,6 +478,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         entries = _subject_addresses(address_context, candidate)
         physical.append({
             'candidate_id': cid,
+            'map_label': labels.get(cid),
             'name': str(candidate.get('name') or tags.get('name') or '')[:160],
             'literal_address_entries': [
                 {'entry_id': anchor.get('mapped_entry_id'),
@@ -419,6 +489,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
                 for anchor in entries],
             'height_levels': tags.get('building:levels'),
             'geometry_available': bool(candidate.get('map_geometry')),
+            'map_geometry': copy.deepcopy(candidate.get('map_geometry')),
             'osm_physical_type': tags.get('building') or tags.get('building:part')})
 
     # Preserve the publisher's own contemporary address spellings and the
@@ -426,11 +497,6 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     from .identity_architectural_evidence import literal_evidence_inventory, _physical
     inventory = literal_evidence_inventory(story, observed, articles, candidate_ids=ids)
     physical_catalog = {cid: candidate for cid, candidate in catalog.items() if _physical(candidate)}
-    label_table = (receipt.get('manifest') or {}).get('objects') or {}
-    label_columns = label_table.get('columns') or []
-    labels = ({row[label_columns.index('candidate_id')]: row[label_columns.index('label')]
-        for row in label_table.get('rows') or []}
-        if 'candidate_id' in label_columns and 'label' in label_columns else {})
 
     initial = {}
     if prior:
@@ -452,11 +518,15 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
                      'prior_reason_not_evidence': str(row.get('prior_reason_not_evidence') or row.get('reason') or '')[:300]}
                     for row in alternatives if isinstance(row, dict)]}
     query = (receipt.get('lookup') or {}).get('query_scope')
+    from .identity_architectural_pool import joint_source_spans
+    source_passages, source_span_refs = joint_source_spans(articles)
     packet = {
         'contract': 'source-architectural-comparison-input-v1',
         'original_photo_sha256': receipt.get('original_source_sha256'),
         'source_photo_sha256': receipt.get('source_photo_sha256'),
-        'articles': acquired,
+        'map_image_sha256': receipt.get('map_image_sha256'),
+        'articles': [{key: value for key, value in article.items() if key != 'text'} for article in acquired],
+        'literal_source_passages': source_passages,
         'publisher_query_scope_not_identity': query,
         'physical_candidates': physical,
         'physical_reserve': {
@@ -475,7 +545,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         'source_image': 'Original SOURCE image is a separate model input; observed details must come from its pixels.'}
     schema = architectural_text_decision_schema(ids, article_ids,
         material_alternative_limit=max(8, len(ids)), structural=True,
-        physical_link_inventory=inventory)
+        physical_link_inventory=inventory, source_span_refs=source_span_refs)
     # A compact comparison can confirm only its issued article/body bindings,
     # but its next investigation may nominate any received physical reserve.
     from .identity_candidate_policy import research_priority_schema
@@ -509,12 +579,28 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
     instruction = (
         'Compare the actual SOURCE pixels with the acquired article text and MAP. '
         'Return only the supplied architectural text decision JSON. '
-        'First identify the photographed main physical body independently: separate its '
-        'facade, roof and visible boundaries from attached wings and background neighbors. '
+        'First determine which received MAP label denotes the main physical body in SOURCE, '
+        'using visible adjacency, facade orientation and the supplied contours. Separate its '
+        'facade, roof and boundaries from attached wings and background neighbors. Then assess '
+        'whether the article describes that individual body. A match to an article about the '
+        'whole complex does not decide which OSM footprint is pictured. If that label/body '
+        'cannot be resolved, use uncertain and retain useful hypotheses in research_priority. '
+        'Resolve the identity at the granularity of the received mapped object: a multipolygon '
+        'may represent one physical object, with several contours or visible parts. '
+        'Cropping or not seeing every contour does not require identifying an unprovided member '
+        'footprint when the visible identifying structure and its attachment establish this mapped '
+        'object. Explain that photographed scope in the binding. Conversely, an article about a '
+        'complex does not identify one of several separately mapped neighboring bodies; shared '
+        'address/history cannot resolve that choice. Judge this from the actual geometry and images. '
         'Do not infer what SOURCE shows from a prior nomination, article address or title. '
+        'Use useful G hypotheses to narrow comparison, but a failed G is not a veto of T. '
+        'An actually readable name or inscription is a strong search and identification clue; '
+        'distinguish a sign naming this body from a tenant, advertisement or background sign. '
         'Previous model observations and geometry conclusions are unconfirmed hypotheses. '
         'Compare a discriminating combination of actually visible structure with verbatim '
-        'article spans. Account for cropping, perspective, another wing/view and historical changes; '
+        'article spans. For each correspondence select source_span_ref from literal_source_passages '
+        'of that article_id; do not copy or rewrite the text. You decide what it supports. '
+        'Account for cropping, perspective, another wing/view and historical changes; '
         'do not invent unobservable axes, exact pose or dimensions. Generic style, floor count, '
         'roof material and a postal match alone do not identify an individual physical body. '
         'Bind positive articles to the individual body using the supplied literal publisher_ref '
@@ -537,6 +623,7 @@ def prepare_architectural_comparison(story, candidates, source_text_receipt):
         + json.dumps(packet, ensure_ascii=False, separators=(',', ':')))
     return {'prompt': instruction, 'schema': schema, 'candidate_ids': ids,
         'physical_link_inventory': inventory,
+        'source_span_refs': source_span_refs,
         'article_ids': article_ids, 'utf8_bytes': len(instruction.encode()),
         'input_contract': packet['contract']}
 
@@ -554,10 +641,10 @@ def combine_architectural_decision(original_plan, answer, schema):
     result = copy.deepcopy(original_plan)
     result['accepted_architectural_text'] = normalized
     if normalized.get('decision') == 'accepted_architectural_text':
-        # A closed T decision needs no new search wave. The original rejected
-        # planner response remains in diagnostics; an absent search-only array
-        # must not invalidate this independent proof component.
-        result.setdefault('first_wave_hypotheses', [])
+        # A closed T decision needs no new search wave. Keep the original
+        # planner response in diagnostics, including rejected search pointers;
+        # search-only hypotheses do not govern this independent T component.
+        result['first_wave_hypotheses'] = []
     return result
 
 

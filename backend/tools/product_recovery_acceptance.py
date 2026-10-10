@@ -33,6 +33,91 @@ CAPS = {'identity_seconds': 180, 'first_eligible_seconds': 300, 'total_seconds':
 ACTIVE = {'ready', 'retry', 'running'}
 
 
+def instrument_control_boundary():
+    """Read-only timings around the installed authority, without payloads/URLs."""
+    from ai_resource_control.client import Control
+    original = Control.request
+    async def observed(self, method, path, payload=None, params=None):
+        started = time.monotonic()
+        record = {'method': method, 'operation': path if re.fullmatch(r'rpc/[a-z0-9_]+', path) else 'registry'}
+        try:
+            result = await original(self, method, path, payload, params)
+        except BaseException as exc:
+            record.update(outcome='error', error_type=type(exc).__name__, code=getattr(exc, 'code', None))
+            raise
+        else:
+            record.update(outcome='response', ok=result.get('ok') if isinstance(result, dict) else None)
+            return result
+        finally:
+            record['duration_ms'] = round((time.monotonic()-started)*1000)
+            logging.getLogger('street_story.control_boundary').info('resource_control_boundary %s', json.dumps(record))
+    Control.request = observed
+    return lambda: setattr(Control, 'request', original)
+
+
+def inspect_retained_initial(path, output):
+    """Offline assembled-envelope check from real frozen inputs; never infer identity."""
+    import base64
+    import io
+    from PIL import Image
+    from jsonschema import Draft202012Validator
+    from street_story.identity_model_context import physical_overview_context
+    from street_story.identity_architectural_evidence import literal_overview_inventory
+    from street_story.identity_source_selection import compact_planner_packet, expand_planner_packet
+    from street_story.native_vision import native_text_envelope
+    path, output = managed(path), managed(output)
+    if output.exists():
+        raise ValueError('Original request-inspection evidence must not be overwritten')
+    with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as db:
+        frozen = next(json.loads(row[0])['frozen_source_map'] for row in db.execute(
+            'SELECT receipt_json FROM research_provider_attempts ORDER BY created_at')
+            if json.loads(row[0]).get('frozen_source_map'))
+    prefix, tail = frozen['prompt'].split('Данные ниже — только контекст:\n', 1)
+    encoded, end = json.JSONDecoder().raw_decode(tail)
+    packet = expand_planner_packet(encoded)
+    bodies = packet['map_scene']['physical_bodies']
+    original_ids = [row[1] for row in bodies['rows']]
+    packet['map_scene']['physical_bodies'] = physical_overview_context(bodies)
+    text = packet.get('acquired_architectural_text')
+    if text:
+        text['articles'] = [{key: value for key, value in article.items() if key != 'text'}
+                            for article in text['articles']]
+        text['retrieval_receipt'] = {'article_count': len(text['articles']), 'status': 'acquired'}
+        text['publisher_and_OSM_literal_records_NOT_prejoined'] = literal_overview_inventory(
+            text['publisher_and_OSM_literal_records_NOT_prejoined'])
+    encoded = compact_planner_packet(packet)
+    if expand_planner_packet(encoded) != packet:
+        raise ValueError('Planner packet roundtrip changed received references')
+    prompt = prefix + 'Данные ниже — только контекст:\n' + json.dumps(encoded, ensure_ascii=False, separators=(',', ':')) + tail[end:]
+    Draft202012Validator.check_schema(frozen['contract'])
+    def envelope(value):
+        raw = json.dumps(native_text_envelope([{'type': 'text', 'text': value},
+            *[{'type': 'text', 'text': part['label']} for part in frozen['images']]], frozen['contract']),
+            ensure_ascii=False, separators=(',', ':'))
+        return {'text_chars': len(raw), 'text_utf8_bytes': len(raw.encode()),
+                'estimated_reservation_tokens': (len(raw)+2)//3+8192+4096,
+                'envelope_sha256': hashlib.sha256(raw.encode()).hexdigest()}
+    images = []
+    for part in frozen['images']:
+        data = base64.b64decode(part['data'], validate=True)
+        if hashlib.sha256(data).hexdigest() != part['sha256']:
+            raise ValueError('Frozen image changed')
+        with Image.open(io.BytesIO(data)) as image:
+            images.append({'label': part['label'], 'bytes': len(data), 'sha256': part['sha256'],
+                           'width': image.width, 'height': image.height})
+    if [row[1] for row in packet['map_scene']['physical_bodies']['rows']] != original_ids:
+        raise ValueError('Received physical pool changed')
+    report = {'scope': 'Offline assembled Native envelope, not inference or measured provider usage',
+              'before': envelope(frozen['prompt']), 'after': envelope(prompt), 'images': images,
+              'body_count': len(original_ids), 'all_body_ids_retained': True, 'lossless_packet_roundtrip': True,
+              'output_allowance': 8192, 'schema_valid': True, 'source_database': str(path),
+              'deferred_fields': packet['map_scene']['physical_bodies']['deferred_fields'],
+              'articles_full_text_retained_in_original_receipt': True}
+    save(output, report)
+    print(json.dumps(report), flush=True)
+    return report
+
+
 def instrument_google_sdk(client_type, path):
     """Journal the real SDK invocation boundary, independent of product receipts."""
     from street_story.headless_vision import _usage
@@ -576,6 +661,7 @@ async def run(args):
         service.store.cache_put(key, value, 3600)
     journal_path = output/'google-sdk-calls.jsonl'
     restore_sdk = instrument_google_sdk(GeminiClient, journal_path)
+    restore_control = instrument_control_boundary()
     restore_references = block_directed_reference_inference(service, selected)
     try:
         async with app.router.lifespan_context(app):
@@ -621,20 +707,131 @@ async def run(args):
     finally:
         restore_references()
         restore_sdk()
+        restore_control()
         report['sdk_accounting'] = summarize_sdk_journal(journal_path)
         save(report_path, report)
     return report
 
 
+async def retained_review(args):
+    """One explicitly scoped normal backend review, without photo/identity replay.
+
+    This is a segment measurement, never a replacement cold corpus outcome.
+    Original run reports and provider receipts are retained unchanged.
+    """
+    sha = require_frozen_checkout(args.expected_sha)
+    source_run, output = managed(args.retained_review_run), managed(args.output)
+    if not (source_run/'data'/'street-story.sqlite3').is_file() or output.exists():
+        raise ValueError('Use an existing retained database and a fresh segment report')
+    fact_ids = args.fact_ids.split(',')
+    if not args.story_id or not 1 <= len(fact_ids) <= 12 or any(not fid for fid in fact_ids):
+        raise ValueError('Explicit review requires this story and 1–12 own fact IDs')
+    installer = load_installer()
+    for config in (installer.PROVIDERS_ENV, installer.SERVICE_ENV):
+        installer.require_mode(config, 0o600)
+        os.environ.update(installer.parse_dotenv(config))
+    os.environ.update(DATA_DIR=str(source_run/'data'), VIBEPUBLISH_BASE_URL='', VIBEPUBLISH_BEARER_TOKEN='',
+                      STREET_STORY_DEPLOY_SHA=sha)
+    logging.basicConfig(filename=output.with_suffix('.log'), level=logging.INFO)
+    from street_story.app import app
+    from street_story.headless_facts import HeadlessFacts
+    from street_story.headless_fact_review import HeadlessFactReview
+    from street_story.poi_memory import memory_keys
+    from street_story.research_runs import begin_research_run
+    service = app.state.service
+    service.providers.vibepublish = NoPublication()
+    qualification = json.loads(installer.RESEARCH_QUALIFICATION.read_text())
+    installer.require_mode(installer.RESEARCH_QUALIFICATION, 0o600)
+    for evidence in qualification['evidence']:
+        path = Path(evidence['path'])
+        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence['sha256']:
+            raise ValueError('Provider qualification evidence changed')
+    for key, value in runtime_qualification_caches(qualification, installer).items():
+        service.store.cache_put(key, value, 3600)
+    sid = args.story_id
+    with service.store.connection() as db:
+        before = dict(service._story_row(db, sid))
+        research = json.loads(before['research_json'])
+        active = db.execute("SELECT 1 FROM jobs WHERE story_id=? AND state IN ('running','ready','retry')", (sid,)).fetchone()
+        if active:
+            raise ValueError('Finish the existing operation before explicit scoped review')
+        vision_before = [list(row) for row in db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
+            "WHERE story_id=? AND role LIKE 'vision%' ORDER BY attempt_id", (sid,))]
+        poi_key = memory_keys(db, research['visual_identity'])[0]
+    key = 'retained-review:' + digest([sha, sid, fact_ids, str(output)])
+    goal = 'Проверь эти утверждения по всем их собственным источникам, сохрани субъект, даты, модальность и противоречия.'
+    service._research_request(sid, key, {'coverage_goal': goal, 'extraction_scope': key})
+    job = service._claim(claim_kind='research', claim_story_id=sid)
+    if not job:
+        raise ValueError('The scoped ordinary research request was not claimed')
+    with service.store.tx() as db:
+        story = service._story_row(db, sid)
+        run_id = begin_research_run(db, story_id=sid, poi_key=poi_key, goal=goal, scope=key,
+            expected_story_revision=story['revision'], identity_generation=int(research.get('identity_generation') or 0),
+            run_id=None, now=service.store.now())
+    harness = HeadlessFacts(service)
+    revision = int(((research.get('research_controls') or {}).get('facts') or {}).get('revision') or 0)
+    report = {'status': 'RUNNING', 'mode': 'retained_backend_review_segment', 'source_sha': sha,
+              'story_id': sid, 'source_run': str(source_run), 'fact_ids': fact_ids, 'job_id': job['id'],
+              'run_id': run_id, 'publication_dispatches': 0, 'cold_acceptance': False}
+    save(output, report)
+    started = time.monotonic()
+    restore = instrument_control_boundary()
+    try:
+        async with asyncio.timeout(75):
+            count = await HeadlessFactReview(harness).run(job, run_id, revision, fact_ids=fact_ids)
+        if count:
+            report['product_outcome'] = harness._finish(job, run_id, revision, 'explicit_review_packet_completed')
+        report.update(status='REVIEW_REQUIRED' if count else 'NO_CLOSED_REVIEW', committed_packets=count,
+            facts=harness.adapter._get_facts(sid, {'eligibility': 'all', 'limit': 50})['facts'])
+        with service.store.tx() as db:
+            db.execute("UPDATE jobs SET state=?,lease_until=0,available_at=?,updated_at=? WHERE id=? AND attempts=? AND state='running'",
+                ('done' if count else 'retry', service.store.now()+300, service.store.now(), job['id'], job['attempts']))
+    except BaseException as exc:
+        report.update(status='FAILED_SEGMENT', error_type=type(exc).__name__, error_code=getattr(exc, 'code', None))
+        raise
+    finally:
+        restore()
+        report['elapsed_s'] = time.monotonic()-started
+        with service.store.connection() as db:
+            after = dict(service._story_row(db, sid))
+            vision_after = [list(row) for row in db.execute("SELECT attempt_id,receipt_json FROM research_provider_attempts "
+                "WHERE story_id=? AND role LIKE 'vision%' ORDER BY attempt_id", (sid,))]
+            report['reviews'] = [json.loads(row[0]) for row in db.execute('SELECT value_json FROM research_checkpoints '
+                "WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],))]
+        report['source_identity_unchanged'] = (before['photo_sha256'] == after['photo_sha256']
+            and research['visual_identity'] == json.loads(after['research_json'])['visual_identity'])
+        report['original_vision_receipts_unchanged'] = vision_before == vision_after
+        save(output, report)
+        await service.close()
+    print(json.dumps({key: report.get(key) for key in ('status', 'mode', 'elapsed_s',
+        'committed_packets', 'source_identity_unchanged', 'original_vision_receipts_unchanged')}), flush=True)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--manifest', type=Path, required=True)
+    parser.add_argument('--manifest', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--expected-sha', required=True)
+    parser.add_argument('--expected-sha')
+    parser.add_argument('--inspect-initial-db', type=Path, help='Offline assembled-input check; no model/network operations')
+    parser.add_argument('--retained-review-run', type=Path, help='Explicit backend review segment over an existing retained DB; no identity replay')
+    parser.add_argument('--story-id')
+    parser.add_argument('--fact-ids', default='')
     parser.add_argument('--availability-from', type=Path, action='append', default=[],
                         help='Prior frozen run: import only same-config observed provider429 history')
     parser.add_argument('--messages', default='104', help='Ordered IDs; default is the simple canary')
     args = parser.parse_args()
+    if args.inspect_initial_db:
+        inspect_retained_initial(args.inspect_initial_db, args.output)
+        return
+    if args.retained_review_run:
+        if not args.expected_sha:
+            parser.error('Retained review requires --expected-sha')
+        asyncio.run(retained_review(args))
+        return
+    if not args.manifest or not args.expected_sha:
+        parser.error('Actual acceptance requires --manifest and --expected-sha')
     if args.messages and not re.fullmatch(r'[0-9]+(?:,[0-9]+)*', args.messages):
         parser.error('Invalid --messages selection')
     asyncio.run(run(args))

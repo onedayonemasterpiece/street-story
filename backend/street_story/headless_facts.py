@@ -537,12 +537,42 @@ class HeadlessFacts:
                  job['story_id'], run_id, job['id'], streak, delay)
         return retry_at
 
-    async def _review_candidates(self, job, run_id, control_revision):
+    async def _review_candidates(self, job, run_id, control_revision, *, stop_when=None):
         from .headless_fact_review import HeadlessFactReview
         engine = HeadlessFactReview(self)
         if not engine._qualified_routes(available=False):
             return 0
-        return await engine.run(job, run_id, control_revision)
+        return await engine.run(job, run_id, control_revision, stop_when=stop_when)
+
+    def _model_sufficient(self, job, run_id, control_revision, results):
+        """Honor a received model decision only after independently eligible facts.
+
+        This does not infer sufficiency from a count, promote pending claims or
+        close resource accounting. The original completed extraction remains
+        in its journal; optional cancelled sends keep their original receipts.
+        """
+        if self._snapshot(job, run_id, control_revision) is None:
+            return False
+        with self.service.store.connection() as db:
+            reviews = [json.loads(row[0]) for row in db.execute('SELECT value_json FROM research_checkpoints '
+                "WHERE job_id=? AND stage LIKE 'headless_fact_review:%'", (job['id'],))]
+            decisions = [*results, *({'research_sufficient': r.get('research_sufficient'),
+                'source_content_valid': True, 'source_matches_poi': True,
+                '_committed_sufficiency_basis': r.get('sufficiency_basis')}
+                for r in reviews if r.get('phase') == 'committed')]
+            for result in decisions:
+                basis = result.get('_committed_sufficiency_basis')
+                if (result.get('research_sufficient') is not True
+                        or result.get('source_content_valid') is not True
+                        or result.get('source_matches_poi') is not True or not basis):
+                    continue
+                if all(db.execute("SELECT 1 FROM fact_assertions a JOIN facts f "
+                    "ON f.story_id=a.story_id AND f.fact_id=a.assertion_id "
+                    "WHERE a.story_id=? AND a.assertion_id=? AND a.eligibility='eligible' "
+                    "AND f.evidence_supported=1 AND f.text=?", (job['story_id'], fid, text)).fetchone()
+                       for fid, text in basis):
+                    return True
+        return False
 
     def _review_retry_at(self, job, run_id, committed):
         """Continue ready packets promptly after progress, retaining blocked waits."""
@@ -757,37 +787,75 @@ class HeadlessFacts:
                 'previously_processed_sources_omitted_count': len(source_urls - {source['url'] for source in source_window}),
             }
         suggestions, failures = [], []
+        for unit in units:
+            unit['sufficiency_known_facts'] = {fact['fact_id']: fact['text'] for fact in complete_inventory
+                                             if fact.get('eligibility') == 'eligible'}
         ready_continuation = False
         review_task = None
+        review_wake = None
         reviewed = 0
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
+        pending_tasks = set(tasks)
         try:
-            for ready in asyncio.as_completed(tasks):
-                unit, extracted, error = await ready
-                if self._snapshot(job, run_id, control_revision) is None:
-                    continue
-                if error is not None:
-                    failures.append(error)
-                    LOG.warning('street_story_headless_fact_unit_partial story_id=%s run_id=%s chunk_id=%s reason=%s',
-                                story['id'], run_id, unit['page']['chunk_id'], type(error).__name__)
-                    continue
-                try:
-                    committed = await self._commit_unit(unit, extracted, job, run_id, goal, scope, control_revision)
-                    if committed:
-                        suggestions.append(extracted['result'])
-                        # The frozen reader, not a model's search suggestion,
-                        # proves that this closed core has unread passages.
-                        ready_continuation |= (unit['page'].get('has_more_passages') is True
-                            and extracted['result']['source_content_valid']
-                            and extracted['result']['source_matches_poi'])
-                        if review_task is None or review_task.done():
-                            if review_task is not None:
-                                reviewed += await review_task
-                            review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision))
-                except (ConflictError, MalformedProviderResponse) as exc:
-                    LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
-                             story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
+            while pending_tasks or review_task is not None:
+                waiting = pending_tasks | ({review_task} if review_task is not None else set())
+                if review_wake is not None:
+                    waiting.add(review_wake)
+                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if review_wake in done:
+                    review_wake = None
+                    if (pending_tasks and review_task is None
+                            and self._snapshot(job, run_id, control_revision) is not None):
+                        review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision,
+                            stop_when=lambda: self._model_sufficient(job, run_id, control_revision, suggestions)))
+                if review_task in done:
+                    just_reviewed = await review_task
+                    reviewed += just_reviewed
+                    review_task = None
+                    if self._model_sufficient(job, run_id, control_revision, suggestions):
+                        return self._finish(job, run_id, control_revision, 'model_goal_sufficient')
+                    if pending_tasks and just_reviewed and self._unreviewed_actionable(job, run_id):
+                        due = self._review_retry_at(job, run_id, just_reviewed)
+                        review_wake = asyncio.create_task(asyncio.sleep(max(0, due - self.service.store.now())))
+                for ready in done & pending_tasks:
+                    pending_tasks.remove(ready)
+                    unit, extracted, error = await ready
+                    if self._snapshot(job, run_id, control_revision) is None:
+                        continue
+                    if error is not None:
+                        failures.append(error)
+                        LOG.warning('street_story_headless_fact_unit_partial story_id=%s run_id=%s chunk_id=%s reason=%s',
+                                    story['id'], run_id, unit['page']['chunk_id'], type(error).__name__)
+                        continue
+                    try:
+                        committed = await self._commit_unit(unit, extracted, job, run_id, goal, scope, control_revision)
+                        if committed:
+                            suggestions.append({**extracted['result'],
+                                '_committed_sufficiency_basis': committed.get('sufficiency_basis')})
+                            # The frozen reader, not a model's search suggestion,
+                            # proves that this closed core has unread passages.
+                            ready_continuation |= (unit['page'].get('has_more_passages') is True
+                                and extracted['result']['source_content_valid']
+                                and extracted['result']['source_matches_poi'])
+                            if review_task is None or review_task.done():
+                                if review_wake is not None:
+                                    review_wake.cancel()
+                                    await asyncio.gather(review_wake, return_exceptions=True)
+                                    review_wake = None
+                                if review_task is not None:
+                                    reviewed += await review_task
+                                if any(result.get('research_sufficient') is True for result in suggestions):
+                                    review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision,
+                                        stop_when=lambda: self._model_sufficient(job, run_id, control_revision, suggestions)))
+                                else:
+                                    review_task = asyncio.create_task(self._review_candidates(job, run_id, control_revision))
+                    except (ConflictError, MalformedProviderResponse) as exc:
+                        LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
+                                 story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
         finally:
+            if review_wake is not None:
+                review_wake.cancel()
+                await asyncio.gather(review_wake, return_exceptions=True)
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -1066,7 +1134,21 @@ class HeadlessFacts:
             'source_matches_poi': result['source_matches_poi'], 'source_content_valid': result['source_content_valid'],
             'continuation_needed': result['continuation_needed'],
         })
-        self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'])
+        # Bind the model's sufficiency decision to the exact saved candidates.
+        # Old frozen results without explicit basis conservatively rely on ALL
+        # their new claims; a single reviewed claim never represents that set.
+        basis = result.get('research_sufficient_basis')
+        indices = basis.get('candidate_indices', []) if isinstance(basis, dict) else list(range(len(claims)))
+        known_ids = basis.get('known_fact_ids', []) if isinstance(basis, dict) else []
+        saved_facts = committed.get('facts') or []
+        known = unit.get('sufficiency_known_facts') or {}
+        valid = (len(saved_facts) == len(claims) and isinstance(indices, list) and isinstance(known_ids, list)
+                 and all(type(index) is int and 0 <= index < len(saved_facts) for index in indices)
+                 and all(isinstance(fid, str) and fid in known for fid in known_ids))
+        bound_basis = ([(saved_facts[index]['fact_id'], saved_facts[index]['text']) for index in indices]
+                       + [(fid, known[fid]) for fid in known_ids]) if valid else []
+        self._unit_phase(job, page['_unit_id'], 'committed', chunk_id=page['chunk_id'],
+                         sufficiency_basis=bound_basis)
         record_identity_event(self.service, story['id'], 'fact_background_batch', {
             'generation': story['_identity_generation'], 'run_id': run_id, 'source_version_id': page['source_version_id'],
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],
@@ -1076,4 +1158,4 @@ class HeadlessFacts:
         }, source='fact_research')
         LOG.info('street_story_headless_fact_candidate_saved story_id=%s run_id=%s chunk_id=%s batch=%s',
                  story['id'], run_id, page['chunk_id'], page['batch_index'])
-        return committed
+        return {**committed, 'sufficiency_basis': bound_basis}

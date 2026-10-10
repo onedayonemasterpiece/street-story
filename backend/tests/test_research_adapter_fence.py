@@ -27,7 +27,7 @@ async def test_adapter_shutdown_closes_owned_resource_controller_after_clients()
 
 
 @pytest.mark.asyncio
-async def test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path):
+async def test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path, followup=False):
     from street_story.errors import RetryableProviderError
     service, sid, photo = fixture(tmp_path)
     adapter = object.__new__(ProductResearchAdapter)
@@ -49,15 +49,22 @@ async def test_spatial_native_reads_original_turn_without_fresh_availability_and
             await adapter.checkpoint(binding, receipt)
             return {'result': receipt['result'], 'receipt': receipt, 'host_context': frozen}
     adapter.native_vision = Native()
+    plan = adapter.plan_source_map_followup if followup else adapter.plan_source_map
+    read_receipt = adapter.source_map_followup_receipt if followup else adapter.source_map_receipt
     story = {'id': sid, 'photo_sha256': photo, '_identity_generation': 0}
     host = {'source_map_receipt': {'manifest': 'original-map'}}
     with pytest.raises(RetryableProviderError, match='native_turn_outcome_unknown'):
-        await adapter.plan_source_map(story, 'original', {}, [('SOURCE', 'image/jpeg', b'pixels')], host)
+        await plan(story, 'original', {}, [('SOURCE', 'image/jpeg', b'pixels')], host)
     adapter.native_vision.available = False
-    result = await adapter.plan_source_map(story, 'different', {}, [], {})
+    result = await plan(story, 'different', {}, [], {})
     assert result['host_context'] == host and adapter.native_vision.sends == 1
-    assert adapter.source_map_receipt({**story, 'photo_sha256': 'new-source'}) is None
-    assert adapter.source_map_receipt({**story, '_identity_research_control_revision': 1}) is None
+    assert read_receipt({**story, 'photo_sha256': 'new-source'}) is None
+    assert read_receipt({**story, '_identity_research_control_revision': 1}) is None
+
+
+@pytest.mark.asyncio
+async def test_native_followup_observes_original_frozen_turn_without_fresh_admission(tmp_path):
+    await test_spatial_native_reads_original_turn_without_fresh_availability_and_fences_source_scope(tmp_path, followup=True)
 
 
 @pytest.mark.asyncio
@@ -409,7 +416,7 @@ async def test_completed_receipt_records_only_novel_current_owned_evidence(tmp_p
 @pytest.mark.asyncio
 async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readback(tmp_path):
     from types import SimpleNamespace
-    from street_story.research_budget import ResearchTerminated, ensure_budget, reserve_work
+    from street_story.research_budget import ResearchWorkExhausted, ensure_budget, reserve_work
     service, sid, photo = fixture(tmp_path)
     ensure_budget(service, sid, explicit=True)
     adapter = object.__new__(ProductResearchAdapter)
@@ -422,7 +429,7 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
     _, story, schema, context = args
     reserve_work(service, sid, 'exact_pairs', [f'old-ref-{n}' for n in range(service.settings.identity_max_exact_pairs)])
     adapter.visual_pair_receipts = lambda *_: {}
-    with pytest.raises(ResearchTerminated, match='identity_exact_pair_envelope_exhausted'):
+    with pytest.raises(ResearchWorkExhausted, match='identity_exact_pair_envelope_exhausted'):
         await adapter._visual_pair_route_owned('native', story, schema, context, 'unit')
     result = {'status': 'mismatch'}
     completed = {'phase': 'completed', 'result': result}
@@ -445,7 +452,7 @@ async def test_exact_pair_cap_does_not_block_completed_or_original_unknown_readb
 async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, route):
     import json
     from types import SimpleNamespace
-    from street_story.research_budget import ResearchTerminated, ensure_budget, reserve_work
+    from street_story.research_budget import ResearchWorkExhausted, ensure_budget, reserve_work
     service, sid, photo = fixture(tmp_path)
     ensure_budget(service, sid, explicit=True)
     adapter = object.__new__(ProductResearchAdapter)
@@ -467,7 +474,7 @@ async def test_standalone_visual_cap_rejects_before_provider_dispatch(tmp_path, 
     service.store.cache_put('research-vision-verification-v1', {
         'model_id': adapter.client.model_id, 'endpoint': adapter.client.endpoint,
         'positive': 'match', 'negative': 'mismatch', 'pixel_transport_verified': True}, ttl_seconds=3600)
-    with pytest.raises(ResearchTerminated, match='identity_exact_pair_envelope_exhausted'):
+    with pytest.raises(ResearchWorkExhausted, match='identity_exact_pair_envelope_exhausted'):
         await adapter.visual_verdict(*args)
     with service.store.connection() as db:
         receipts = [json.loads(row[0]) for row in db.execute('SELECT receipt_json FROM research_provider_attempts WHERE story_id=?', (sid,))]

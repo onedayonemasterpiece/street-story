@@ -6,7 +6,6 @@ import pytest
 
 from street_story import article_media, identity_discovery
 from street_story.identity_source_selection import first_wave_catalog, render_first_wave
-from street_story.providers import RetryableProviderError, PermanentProviderError
 from street_story.research_budget import reserve_work
 from test_observed_address_search_context import observed
 from test_visual_search_continuation import prepared
@@ -41,8 +40,8 @@ def test_exact_membership_and_name_alias_do_not_count_one_building_twice(second)
     pool[0]['map_object']['tags']['name'] = 'Observed municipal hall'
     catalog = first_wave_catalog({'_identity_observed_candidates': pool})
     assert catalog['required_grounded_count'] == 2
-    with pytest.raises(RetryableProviderError, match='identity_first_wave_duplicate_group'):
-        render_first_wave(catalog, [choice('address', 'osm:node:1'), second])
+    rendered = render_first_wave(catalog, [choice('address', 'osm:node:1'), second])
+    assert len(rendered) == 1 and rendered[0]['subject_id'] == 'osm:node:1'
 
 
 def test_ambiguous_membership_does_not_choose_a_building_or_invent_binding():
@@ -79,11 +78,10 @@ def test_no_gps_or_mapped_subject_retains_unmapped_named_and_appearance_without_
 
 def test_unmapped_alternatives_cannot_replace_available_distinct_grounded_coverage():
     catalog = first_wave_catalog({'_identity_observed_candidates': observed()})
-    with pytest.raises(RetryableProviderError, match='identity_first_wave_coverage_incomplete'):
-        render_first_wave(catalog, [choice('appearance', query='Generic facade'),
-            choice('unmapped_named', query='Another named guess')])
-    with pytest.raises(RetryableProviderError, match='identity_first_wave_unobserved_subject'):
-        render_first_wave(catalog, [choice('address', 'osm:node:999')])
+    rendered = render_first_wave(catalog, [choice('appearance', query='Generic facade'),
+        choice('unmapped_named', query='Another named guess')])
+    assert len(rendered) == 2 and all(item['group_key'] == '' for item in rendered)
+    assert render_first_wave(catalog, [choice('address', 'osm:node:999')]) == []
 
 
 def test_locality_query_context_does_not_rewrite_an_address_record():
@@ -110,8 +108,7 @@ def test_literal_occupant_names_are_useful_leads_without_building_coverage():
     assert all(item['literal_subject']['coverage_scope'] == 'mapped_occupant_context' for item in rendered)
     # They remain selectable, but cannot replace available physical/address coverage.
     mixed = first_wave_catalog({'_identity_observed_candidates': [*observed(), *occupants]})
-    with pytest.raises(RetryableProviderError, match='identity_first_wave_coverage_incomplete'):
-        render_first_wave(mixed, selected)
+    assert render_first_wave(mixed, selected) == rendered
 
 
 def test_context_first_model_selection_does_not_occupy_required_grounded_transport_slots():
@@ -182,7 +179,7 @@ async def test_original_planner_readback_precedes_google_and_planner_work_admiss
 
 
 @pytest.mark.asyncio
-async def test_new_unbound_legacy_response_cannot_bypass_first_wave_contract(tmp_path):
+async def test_missing_first_wave_preserves_valid_query_without_inventing_identity(tmp_path):
     svc, _adapter, story, _sessions = prepared(tmp_path)
     class Executor:
         async def execute(self, operation, call):
@@ -191,12 +188,14 @@ async def test_new_unbound_legacy_response_cannot_bypass_first_wave_contract(tmp
         return SimpleNamespace(text=json.dumps({'entity_name': '', 'wikipedia_queries': [],
             'visual_query': '', 'commons_query': '', 'article_queries': ['Six paraphrases remain unbound']}))
     svc.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
-    with pytest.raises(PermanentProviderError, match='identity_search_plan_malformed'):
-        await identity_discovery.suggest(svc, svc._identity_snapshot(story['id'])[0], '', [])
+    snapshot = svc._identity_snapshot(story['id'])[0]
+    await identity_discovery.suggest(svc, snapshot, '', [])
+    assert snapshot['_identity_article_queries'] == ['Six paraphrases remain unbound']
+    assert '_identity_geometry_result' not in snapshot
 
 
 @pytest.mark.asyncio
-async def test_closed_invalid_google_plan_uses_one_key_then_existing_qualified_fallback(tmp_path):
+async def test_good_query_and_duplicate_preserve_one_real_operation_without_paid_repair(tmp_path, monkeypatch):
     from pydantic import SecretStr
     from street_story.gemini import GeminiExecutor, GeminiKeyPool
     svc, _adapter, story, _sessions = prepared(tmp_path)
@@ -212,10 +211,25 @@ async def test_closed_invalid_google_plan_uses_one_key_then_existing_qualified_f
     svc.providers.gemini = SimpleNamespace(executor=GeminiExecutor(pool), _generate=generate, research_routes=[])
     svc.providers.research = SimpleNamespace(plan_identity_search=qualified)
     snapshot = {**svc._identity_snapshot(story['id'])[0], '_identity_observed_candidates': observed()}
-    await identity_discovery.suggest(svc, snapshot, '', [])
-    assert calls == ['google', 'qualified']
-    assert snapshot['_identity_article_queries'] == ['Observed City Exact avenue 7A', 'Observed City Exact avenue 13']
-    with svc.store.connection() as db:
-        event = db.execute("SELECT payload_json FROM live_diagnostics WHERE story_id=? AND event_type='identity_search_plan_rejected'",
-            (story['id'],)).fetchone()
-    assert json.loads(event[0])['code'] == 'identity_first_wave_duplicate_group'
+    await identity_discovery.prepare_search_plan(svc, snapshot, '', [])
+    assert calls == ['google']
+    assert snapshot['_identity_article_queries'] == ['Observed City Exact avenue 7A']
+    import httpx
+    fetched, searches = [], []
+    def respond(request):
+        fetched.append(request.url.path)
+        return httpx.Response(200, text='<article>Own public description<img src="https://example.org/body.jpg"></article>')
+    async def resolver(host):
+        return '93.184.216.34'
+    async def search(*args, **kwargs):
+        searches.append(kwargs['story']['_identity_search_query'])
+        return [{'url': 'https://example.org/body', 'title': 'Own source'}]
+    original = article_media.article_candidates
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        async def acquire(*args, **kwargs):
+            return await original(*args, **kwargs, http=client, resolver=resolver)
+        monkeypatch.setattr(identity_discovery, 'web_image_sources', search)
+        monkeypatch.setattr(article_media, 'article_candidates', acquire)
+        await identity_discovery.recover(svc, snapshot, '', [], set())
+    assert calls == ['google'] and searches == ['Observed City Exact avenue 7A']
+    assert fetched == ['/body']

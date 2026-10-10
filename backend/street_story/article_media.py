@@ -618,8 +618,8 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
         # Unstarted/cancelled URLs remain deferred in the caller's source history.
         batch = list(unique.values())[:4 if first_ready else MAX_PAGES]
         if hasattr(service, 'settings'):
-            from .research_budget import reserve_work, ResearchTerminated
-            admitted, exhausted = [], None
+            from .research_budget import reserve_work, ResearchWorkExhausted
+            admitted = []
             for source in batch:
                 host = (urlsplit(source['url']).hostname or '')
                 source_id = (str(source.get('candidate_id') or '') if host.endswith('.wikipedia.org')
@@ -630,16 +630,11 @@ async def article_candidates(service, story, sources, excluded, *, http=None, re
                 try:
                     reserve_work(service, story['id'], 'pages', [source['url']])
                     admitted.append(source)
-                except ResearchTerminated as exc:
-                    if exc.outcome != 'search_exhausted':
-                        raise
-                    exhausted = exc
+                except ResearchWorkExhausted as exc:
                     if receipts is not None:
                         receipts.append({'url': source['url'], 'status': 'deferred',
                             'reason': exc.reason})
             batch = admitted
-            if exhausted is not None and not batch:
-                raise exhausted
         if receipts is not None:
             batch_urls = {source['url'] for source in batch}
             receipts.extend({'url': str(source.get('url') or ''), 'status': 'deferred'}

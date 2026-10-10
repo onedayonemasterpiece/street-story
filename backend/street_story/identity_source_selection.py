@@ -662,37 +662,34 @@ def grounded_wave_catalog(catalog, payload, *, ready_wikipedia=False, joint_geom
 
 
 def render_first_wave(catalog, hypotheses):
-    """Dereference model choices; enforce coverage without interpreting prose."""
-    from .providers import RetryableProviderError
+    """Execute valid choices; duplicates and incomplete coverage are local limits."""
     rendered, groups, queries = [], set(), set()
     for hypothesis in hypotheses:
         kind, subject = hypothesis['kind'], hypothesis['subject_id']
         option = catalog['options'].get((kind, subject))
         if kind in {'address', 'observed_named'}:
             if not option:
-                raise RetryableProviderError('identity_first_wave_unobserved_subject')
+                continue
             group = option['group_key']
             if group and group in groups:
-                raise RetryableProviderError('identity_first_wave_duplicate_group')
-            if group:
-                groups.add(group)
+                continue
             query = option['literal_query']
             if not query or len(query) > 240:
-                raise RetryableProviderError('identity_first_wave_literal_too_long')
+                continue
         else:
             if subject or not hypothesis['query'].strip():
-                raise RetryableProviderError('identity_first_wave_unmapped_subject_invalid')
+                continue
             query = ' '.join(hypothesis['query'].split())
             group = ''  # Unmapped names/appearance cannot inflate mapped coverage.
         normalized = ' '.join(query.split()).casefold()
         if normalized in queries:
-            raise RetryableProviderError('identity_first_wave_duplicate_query')
+            continue
         queries.add(normalized)
+        if group:
+            groups.add(group)
         rendered.append({**hypothesis, 'query': query, 'group_key': group,
             **({'literal_subject': {key: value for key, value in option.items()
                 if key in {'address', 'locality_context', 'scope', 'coverage_scope'}}} if option else {})})
-    if len(groups) < catalog['required_grounded_count']:
-        raise RetryableProviderError('identity_first_wave_coverage_incomplete')
     # Put the required coverage into the earliest transport slots. This is a
     # stable partition of model selections, not a ranking of candidate truth.
     return [item for item in rendered if item['group_key']] + [item for item in rendered if not item['group_key']]

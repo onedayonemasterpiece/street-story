@@ -1035,6 +1035,13 @@ class StreetStoryService:
                 payload = {'input_revision': revision, 'photo_sha256': row['photo_sha256'], 'queue_priority': 'background',
                     'identity_generation': generation, 'voice_session_ids': [], 'mode': 'initial',
                     'coverage_goal': 'Найди проверенные сведения о подтверждённом объекте для будущей публикации. '
+                                     'Подготовь содержательный материал, из которого автор сможет выбрать самостоятельные '
+                                     'утверждения о разных сторонах объекта: истории, устройстве или использовании, '
+                                     'если собственные источники их подтверждают. Когда уже доступный богатый источник '
+                                     'подтверждает хотя бы три содержательно разных утверждения, предоставь автору '
+                                     'такой выбор. Не увеличивай число дроблением адреса, даты или одного события. '
+                                     'Оцени достаточность по этому замыслу, сохраняя полезные частичные результаты '
+                                     'без ожидания необязательного обогащения. '
                                      'Переиспользуй известные факты; исследуй недостающие полезные аспекты. '
                                      'Сохрани источники, не выбирай факты и не изменяй концепцию или текст автора.',
                     'extraction_scope': 'initial-confirmed-poi-v1'}
@@ -1059,6 +1066,9 @@ class StreetStoryService:
             if claim_kind in {'identity', 'identity_visual'}:
                 return False  # Accounting recovery stays with the original worker.
             self._observe_terminal_attempts()
+            recover_accounting = getattr(self.providers.research, 'recover_accounting', None)
+            if callable(recover_accounting):
+                await recover_accounting()
             quota = getattr(self.providers.gemini, 'quota', None)
             if quota is not None:
                 try:

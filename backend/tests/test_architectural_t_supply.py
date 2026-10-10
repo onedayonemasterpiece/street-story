@@ -1,10 +1,13 @@
 """T-only regression: retrieve physical evidence, not a neighboring name."""
 import copy
+import base64
+import io
 import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from street_story import prussia39
 from street_story.identity_architectural_comparison import (
@@ -22,6 +25,60 @@ def catalogue_card(sid, address):
     return {'article_id': f'prussia39:sid:{sid}',
             'canonical_url': f'https://www.prussia39.ru/sight/index.php?sid={sid}',
             'address_text': address}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('acquisition', ['ready', 'unavailable', 'changed_cached_body'])
+async def test_t_uses_verified_cached_article_photo_without_extra_model_or_required_acquisition(monkeypatch, acquisition):
+    from street_story.identity_architectural_comparison import ready_article_references
+    from street_story import native_vision, identity_telemetry
+    body = b'<article><img src="https://example.org/facade.jpg" alt="Actual photo"></article>'
+    article = {'article_id': 'article:1', 'url': 'https://example.org/article',
+               'source_sha256': hashlib.sha256(body).hexdigest()}
+    cached = {'sha256': article['source_sha256'], 'final_url': article['url'],
+              'body': base64.b64encode(body if acquisition != 'changed_cached_body' else b'changed').decode()}
+    service = SimpleNamespace(store=SimpleNamespace(cache_get=lambda _: cached))
+    events, loads = [], []
+    monkeypatch.setattr(identity_telemetry, 'record_identity_event', lambda *args: events.append(args))
+    raw = io.BytesIO()
+    Image.new('RGB', (1600, 900), 'green').save(raw, format='JPEG')
+    async def load(url, *, descriptor):
+        loads.append(url)
+        if acquisition == 'unavailable':
+            raise ValueError('unavailable_public_image')
+        descriptor['resolved_image_url'] = url
+        return 'image/jpeg', raw.getvalue()
+    monkeypatch.setattr(native_vision, 'native_public_image', load)
+    images, receipt = await ready_article_references(service, {'id': 'story'}, [article])
+    if acquisition == 'ready':
+        assert len(images) == 1 and receipt[0]['article_id'] == article['article_id']
+        assert receipt[0]['model_image_sha256'] == hashlib.sha256(images[0][2]).hexdigest()
+    else:
+        assert images == receipt == []
+    assert loads == ([] if acquisition == 'changed_cached_body' else ['https://example.org/facade.jpg'])
+
+
+@pytest.mark.asyncio
+async def test_second_article_photo_is_available_while_first_photo_is_stalled(monkeypatch):
+    from street_story.identity_architectural_comparison import ready_article_references
+    from street_story import native_vision, identity_telemetry
+    body = b'<article><img src="https://example.org/slow.jpg"><img src="https://example.org/ready.jpg"></article>'
+    article = {'article_id': 'article:1', 'url': 'https://example.org/article',
+               'source_sha256': hashlib.sha256(body).hexdigest()}
+    cached = {'sha256': article['source_sha256'], 'final_url': article['url'], 'body': base64.b64encode(body).decode()}
+    service = SimpleNamespace(store=SimpleNamespace(cache_get=lambda _: cached))
+    monkeypatch.setattr(identity_telemetry, 'record_identity_event', lambda *args: None)
+    raw = io.BytesIO()
+    Image.new('RGB', (30, 30), 'green').save(raw, format='JPEG')
+    async def load(url, *, descriptor):
+        if url.endswith('/slow.jpg'):
+            import asyncio
+            await asyncio.Event().wait()
+        return 'image/jpeg', raw.getvalue()
+    monkeypatch.setattr(native_vision, 'native_public_image', load)
+    images, receipt = await ready_article_references(service, {'id': 'story'}, [article], timeout=.2)
+    assert len(images) == len(receipt) == 1
+    assert receipt[0]['image_url'] == 'https://example.org/ready.jpg'
 
 
 @pytest.mark.asyncio
@@ -140,6 +197,59 @@ def _comparison_fixture():
     return story, candidates, decision, receipt
 
 
+def _issued_span_decision(decision, packet, receipt):
+    import copy
+    result = copy.deepcopy(decision)
+    for relation in result['correspondences']:
+        relation['source_span_ref'] = next(ref for ref, span in packet['source_span_refs'].items()
+            if span['article_id'] == relation['article_id'] and relation['source_quote'] in span['source_quote'])
+        relation.pop('source_quote')
+    receipt['source_span_refs'] = packet['source_span_refs']
+    return result
+
+
+@pytest.mark.parametrize('damage', [None, 'foreign_positive_pointer', 'only_declined_match'])
+def test_declined_article_is_context_without_vetoing_or_proving_the_supported_body(damage):
+    from street_story.identity_architectural_evidence import literal_evidence_inventory
+    story, candidates, decision, receipt = _comparison_fixture()
+    unrelated = {**receipt['articles'][0], 'article_id': 'catalog:other-plaque',
+        'url': 'https://archive.example/other-plaque',
+        'text': 'A memorial plaque belongs to a different building.'}
+    unrelated['source_sha256'] = hashlib.sha256(unrelated['text'].encode()).hexdigest()
+    unrelated['text_sha256'] = unrelated['source_sha256']
+    receipt['articles'].append(unrelated)
+    receipt['physical_link_inventory'] = literal_evidence_inventory(
+        story, candidates, receipt['articles'], candidate_ids=[c['candidate_id'] for c in candidates])
+    decision['article_bindings'].append({'article_id': unrelated['article_id'], 'candidate_id': '',
+        'physical_binding_resolved': False, 'scope': 'A different plaque subject.',
+        'binding_basis': 'This article does not identify the photographed body.'})
+    decision['correspondences'].append({'article_id': unrelated['article_id'],
+        'source_quote': unrelated['text'], 'source_observation': 'No plaque is visible in SOURCE.',
+        'status': 'not_observable', 'feature_kind': 'historical_fact',
+        'reason': 'The unrelated plaque cannot establish this body.'})
+    decision['material_alternatives'] = [{'candidate_id': candidates[1]['candidate_id'],
+        'reason': 'Its facade differs from the source-described central bay.'}]
+    if damage == 'foreign_positive_pointer':
+        inventory = receipt['physical_link_inventory']
+        decision['physical_link_evidence'][0]['publisher_ref'] = next(ref for ref, row
+            in inventory['publisher_refs'].items() if row['article_id'] == unrelated['article_id'])
+    elif damage == 'only_declined_match':
+        decision['correspondences'][0]['status'] = 'not_observable'
+        decision['correspondences'][1]['status'] = 'stable_match'
+    packet = prepare_architectural_comparison(story, candidates, receipt)
+    issued = _issued_span_decision(decision, packet, receipt)
+    proof = freeze_architectural_text_proof(story, issued, receipt, candidates)
+    if damage is not None:
+        assert proof is None
+    else:
+        assert proof is not None
+        assert proof['decision']['article_bindings'][1]['physical_binding_resolved'] is False
+        assert len(proof['decision']['correspondences']) == 2
+        assert [source['article_id'] for source in proof['article_sources']] == [
+            receipt['articles'][0]['article_id']]
+        assert len(proof['physical_link_validation']['verified_bindings']) == 1
+
+
 def test_compact_source_article_packet_reuses_original_text_and_keeps_alternatives():
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)
@@ -160,12 +270,15 @@ def test_compact_source_article_packet_reuses_original_text_and_keeps_alternativ
     assert packet['schema']['properties']['correspondences']['items']['properties']['feature_kind']
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
         'reason': 'SOURCE shows a different arrangement of bay and gable.'}]
-    plan = {'entity_name': '', 'first_wave_hypotheses': [],
+    decision = _issued_span_decision(decision, packet, receipt)
+    plan = {'entity_name': '', 'first_wave_hypotheses': [{'subject_id': 'unreceived-search-pointer'}],
         'accepted_geometry': {'decision': 'uncertain'}}
     adopted = combine_architectural_decision(plan, decision, packet['schema'])
     assert adopted['accepted_geometry'] == plan['accepted_geometry']
     assert adopted['accepted_architectural_text'] == decision
     assert 'accepted_architectural_text' not in plan
+    assert plan['first_wave_hypotheses'] == [{'subject_id': 'unreceived-search-pointer'}]
+    assert adopted['first_wave_hypotheses'] == []
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is not None
 
 
@@ -176,6 +289,7 @@ def test_unresolved_complex_and_mutable_facade_cannot_be_host_promoted():
     decision['material_alternatives_resolved'] = False
     packet = prepare_architectural_comparison(story, candidates, receipt)
     decision['decision'] = 'uncertain'
+    decision = _issued_span_decision(decision, packet, receipt)
     result = combine_architectural_decision({}, decision, packet['schema'])
     assert result['accepted_architectural_text']['decision'] == 'uncertain'
     assert freeze_architectural_text_proof(story, decision, receipt, candidates) is None
@@ -186,6 +300,7 @@ def test_compact_positive_contract_requires_each_prior_alternative_but_uncertain
     story, candidates, decision, receipt = _comparison_fixture()
     packet = prepare_architectural_comparison(story, candidates, receipt)
     validator = Draft202012Validator(packet['schema'])
+    decision = _issued_span_decision(decision, packet, receipt)
     decision['material_alternatives'] = []
     assert list(validator.iter_errors(decision))
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
@@ -224,6 +339,38 @@ def test_no_gps_requirement_for_architectural_semantics_when_article_already_exi
     assert prepare_architectural_comparison(story, candidates, receipt)['article_ids']
 
 
+@pytest.mark.parametrize('change', ['added_city', 'changed_street', 'changed_number', 'changed_origin'])
+def test_received_postal_record_replay_allows_only_additional_literal_fields(change):
+    import copy
+    from street_story.identity_architectural_evidence import literal_evidence_inventory
+    story, candidates, decision, receipt = _comparison_fixture()
+    main = candidates[0]
+    main['map_address'] = {'street': 'Literal street', 'house_number': '7'}
+    inventory = literal_evidence_inventory(story, candidates, receipt['articles'])
+    receipt['physical_link_inventory'] = inventory
+    ref = next(ref for ref, row in inventory['osm_refs'].items()
+        if row['candidate_id'] == main['candidate_id'] and row['kind'] == 'observed_OSM_postal_entry')
+    decision['physical_link_evidence'][0]['osm_ref'] = ref
+    decision['material_alternatives'] = [{'candidate_id': 'osm:way:88', 'reason': 'Different physical configuration.'}]
+    original = copy.deepcopy(receipt)
+    before = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert before
+    if change == 'added_city':
+        story['research_json'] = json.dumps({'osm': {'observed_pool': [{
+            'type': 'way', 'id': 7, 'tags': {'addr:city': 'Literal observed city',
+                'addr:street': 'Literal street', 'addr:housenumber': '7'}}]}})
+    elif change == 'changed_street':
+        main['map_address']['street'] = 'Another street'
+    elif change == 'changed_number':
+        main['map_address']['house_number'] = '8'
+    else:
+        inventory['osm_refs'][ref]['provenance'] = 'invented_origin'
+    after = freeze_architectural_text_proof(story, decision, receipt, candidates)
+    assert (after is not None) == (change == 'added_city')
+    if after:
+        assert after['proof_sha256'] == before['proof_sha256'] and receipt == original
+
+
 def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_input_gate():
     story, candidates, _, receipt = _comparison_fixture()
     extra = [{'candidate_id': f'osm:way:{i}', 'map_object': {'tags': {'building': 'yes'}}}
@@ -235,7 +382,9 @@ def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_in
     article['text_sha256'] = hashlib.sha256(article['text'].encode()).hexdigest()
     prepared = prepare_architectural_comparison(story, candidates, receipt)
     assert len(prepared['candidate_ids']) == 12
-    assert article['text'] in prepared['prompt']
+    packet = json.loads(prepared['prompt'].split('\n', 1)[1])
+    assert ''.join(span['literal_text'] for span in packet['literal_source_passages'][0]['passages']) == article['text']
+    assert 'text' not in packet['articles'][0]
     assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 12
 
 
@@ -497,6 +646,7 @@ def test_only_inert_schema_type_echo_is_normalized_without_changing_llm_semantic
     decision['material_alternatives'] = [{'candidate_id': 'osm:way:88',
         'reason': 'SOURCE has a distinct bay layout from this received neighbor.'}]
     packet = prepare_architectural_comparison(story, candidates, receipt)
+    decision = _issued_span_decision(decision, packet, receipt)
     raw = {'type':'object', **decision}
     result = combine_architectural_decision({}, raw, packet['schema'])
     assert result['accepted_architectural_text']==decision
@@ -634,6 +784,7 @@ def test_T_can_compare_received_reserve_but_cannot_invent_a_body():
     candidates.append({'candidate_id': 'osm:way:89', 'identity_eligible': True,
         'map_object': {'tags': {'building': 'yes'}}})
     packet = prepare_architectural_comparison(story, candidates, receipt)
+    decision = _issued_span_decision(decision, packet, receipt)
     decision['material_alternatives'] = [
         {'candidate_id': 'osm:way:88', 'reason': 'Earlier nominated neighboring wing differs.'},
         {'candidate_id': 'osm:way:89', 'reason': 'Another received body is material despite no acquired article.'}]

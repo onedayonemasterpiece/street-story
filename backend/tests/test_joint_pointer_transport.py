@@ -38,6 +38,11 @@ def test_reported_label_mismatch_feedback_preserves_invalid_id_without_assigning
 @pytest.mark.asyncio
 async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_same_source_followup(tmp_path, monkeypatch):
     service, story, active = geometry_setup(tmp_path)
+    from test_identity_scene import building
+    reserve_body = building(4, 80)
+    story['_identity_map_snapshot']['observed_pool'].append(reserve_body)
+    story['_identity_observed_candidates'] = service._candidate_catalog(
+        story['_identity_map_snapshot'], [], observed_pool=True)
     uncertain = geometry_decision()
     uncertain.update(decision='uncertain', candidate_id='@1')
     uncertain['rejected_alternatives'][0]['candidate_id'] = '@2'
@@ -84,6 +89,11 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
             'relationship': 'same_individual_physical_body', 'subject_scope': 'specific_photographed_OSM_body',
             'architectural_scope_explanation': 'Fixture article identifies this bay and return.',
             'postal_interpretation': 'Literal received body records identify the fixture scope.'}]
+        for relation in text_decision['correspondences']:
+            own = next(row['passages'] for row in packet['literal_source_passages']
+                if row['article_id'] == relation['article_id'])
+            literal = relation.pop('source_quote')
+            relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
         return SimpleNamespace(text=json.dumps(text_decision))
 
     async def forbidden(*args, **kwargs):
@@ -93,8 +103,34 @@ async def test_plain_map_aliases_nominate_selected_text_and_freeze_after_one_sam
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(calls) == 2 and len(acquired) == 1
+    packet = json.loads(calls[-1][-1].rsplit('\n', 1)[-1])
+    labels = {item['candidate_id']: item['map_label'] for item in packet['physical_candidates']}
+    assert labels == {'osm:way:2': 1, 'osm:way:3': 2}
+    reserve = packet['physical_reserve']
+    remaining_labels = {row[0]: row[1] for row in reserve['rows']}
+    assert remaining_labels['osm:way:4'] is not None
+    manifest = history['search_plan']['payload']['source_map_receipt']['manifest']['objects']
+    ci, li = manifest['columns'].index('candidate_id'), manifest['columns'].index('label')
+    assert remaining_labels['osm:way:4'] == next(row[li] for row in manifest['rows'] if row[ci] == 'osm:way:4')
+    assert 'osm:way:9' not in remaining_labels  # Road is context, never a physical candidate.
+    assert packet['map_image_sha256']
     proof = story['_identity_geometry_result']['architectural_text_proof']
     assert proof['candidate_id'] == 'osm:way:2'
     assert proof['decision']['material_alternatives'][0]['candidate_id'] == 'osm:way:3'
     assert history['search_plan']['payload']['spatial_hypotheses'][0]['candidate_id'] == 'osm:way:2'
     assert history['search_plan']['payload']['observed_candidate_ids'] == ['osm:way:2']
+    # The actual T proof freezes this MAP's table too. A foreign or permuted
+    # table cannot be attached to the closed answer under its original proof.
+    from street_story.identity_proof import architectural_text_result_valid
+    identity = story['_identity_geometry_result']
+    assert architectural_text_result_valid(identity, [*active, reserve_body], story)
+    for foreign in (False, True):
+        changed = copy.deepcopy(identity)
+        table = changed['architectural_text_proof']['source_text_receipt']['manifest']['objects']
+        label_index = table['columns'].index('label')
+        if foreign:
+            table['rows'][0][label_index] = 99999
+        else:
+            table['rows'][0][label_index], table['rows'][1][label_index] = (
+                table['rows'][1][label_index], table['rows'][0][label_index])
+        assert not architectural_text_result_valid(changed, [*active, reserve_body], story)

@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from .errors import MalformedProviderResponse, PermanentProviderError, RetryableProviderError
+from .review_packets import SUFFICIENCY_BASIS_SCHEMA, SUFFICIENCY_CHECKS
 
 
 MODEL = 'GigaChat-2'
@@ -56,7 +57,8 @@ SYSTEM = (
     'existing_fact_id, source_version_id, passage_ids, evidence_quotes (verbatim), verdict, atomic, '
     'support_complete, qualifiers_preserved and review_reason. Verdict is supported/unsupported/uncertain. '
     'No images, generated illustrations, new tools or URLs. Never select facts or edit the owner draft. '
-    'A copied quote does not establish entailment: assess the exact claim against its supporting passage.'
+    'A copied quote does not establish entailment: assess the exact claim against its supporting passage. '
+    + SUFFICIENCY_CHECKS +
     '\nRequired output example (replace all example values using the evidence): '
     '{"facts":[{"text":"В 2027 году планируют открыть выставку.","claim_key":"exhibition-plan","confidence":0.95,'
     '"existing_fact_id":"","source_version_id":"COPY_SOURCE_ID","passage_ids":[0],'
@@ -81,6 +83,7 @@ FINDINGS_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties'
         'required': ['text', 'claim_key', 'confidence', 'existing_fact_id', 'source_version_id', 'passage_ids',
                      'evidence_quotes', 'verdict', 'atomic', 'support_complete', 'qualifiers_preserved', 'review_reason']}},
     'research_sufficient': {'type': 'boolean'}, 'next_research_query': {'type': 'string', 'maxLength': 500},
+    'research_sufficient_basis': SUFFICIENCY_BASIS_SCHEMA,
     'next_research_goal': {'type': 'string', 'maxLength': 1000},
     'continuation_needed': {'type': 'boolean'}, 'source_matches_poi': {'type': 'boolean'}, 'source_content_valid': {'type': 'boolean'}},
     'required': ['facts', 'continuation_needed', 'source_matches_poi', 'source_content_valid']}
@@ -369,7 +372,7 @@ class GigaChatResearchClient:
                         'text_present': isinstance(fact.get('text'), str) and bool(fact.get('text')),
                         'review_reason_present': isinstance(fact.get('review_reason'), str) and bool(fact.get('review_reason'))}
                         for fact in result['facts'] if isinstance(fact, dict)]
-                    facts, rejected = [], []
+                    facts, rejected, retained_indices = [], [], []
                     for index, fact in enumerate(result['facts']):
                         if (not isinstance(fact, dict) or not isinstance(fact.get('text'), str)
                                 or not 1 <= len(fact['text'].strip()) <= 1200
@@ -387,6 +390,17 @@ class GigaChatResearchClient:
                             rejected.append({'incoming_index': index, 'reason': 'literal_passage_binding_invalid'})
                             continue
                         facts.append({**fact, 'selected': False})
+                        retained_indices.append(index)
+                    basis = result.get('research_sufficient_basis')
+                    if rejected and isinstance(basis, dict):
+                        chosen = basis.get('candidate_indices', [])
+                        # Filtering structural findings must not shift the model's
+                        # chosen basis onto different propositions.
+                        if isinstance(chosen, list) and all(type(i) is int and i in retained_indices for i in chosen):
+                            result = {**result, 'research_sufficient_basis': {**basis,
+                                'candidate_indices': [retained_indices.index(i) for i in chosen]}}
+                        else:
+                            result = {**result, 'research_sufficient_basis': {'candidate_indices': [], 'known_fact_ids': []}}
                     if result['facts'] and not facts and any(r['reason']=='semantic_contract_invalid' for r in rejected):
                         receipts[-1]['rejection_reason'] = 'all_findings_contract_invalid'
                         receipts[-1]['binding_rejections'] = rejected

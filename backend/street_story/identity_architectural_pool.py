@@ -143,8 +143,20 @@ def _source_span_options(checked, *, max_spans_per_article=14):
 
 
 def joint_source_spans(articles):
-    """Expose every literal passage of the already acquired joint input."""
-    return _source_span_options(articles, max_spans_per_article=None)
+    """Expose the entire acquired text by pointers, without parsing its meaning."""
+    passages, refs = [], {}
+    for article in articles:
+        text = article['text']
+        selected = []
+        for start in range(0, len(text), 420):
+            end = min(start + 420, len(text))
+            ref = f'p{len(refs):04d}'
+            refs[ref] = {'article_id': article['article_id'], 'start': start, 'end': end,
+                'source_quote': text[start:end], 'source_text_sha256': article['text_sha256']}
+            selected.append({'span_ref': ref, 'literal_text': text[start:end]})
+        passages.append({'article_id': article['article_id'], 'passages': selected,
+            'all_passages_displayed': True})
+    return passages, refs
 
 
 def normalize_joint_citation_fields(payload, receipt):

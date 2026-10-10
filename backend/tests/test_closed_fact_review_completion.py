@@ -8,8 +8,8 @@ from street_story import headless_fact_review, review_packets
 from street_story.errors import RetryableProviderError
 from street_story.headless_fact_review import HeadlessFactReview
 from street_story.research_runs import manifest_exhausted, run_manifest
-from street_story.service import ConflictError
 from test_headless_fact_review_parallel import ControlledReview, candidates, controlled_review_route, qualify_controlled_review
+from test_headless_fact_review_parallel import reset_host as reset_host
 from test_headless_fact_pool import RUN
 
 
@@ -160,8 +160,9 @@ async def test_unknown_review_scope_allows_other_candidates_without_resending_or
         eligible = {row[0] for row in db.execute("SELECT assertion_id FROM fact_assertions WHERE eligibility='eligible'")}
         assert eligible == set(ids[1:])
         assert engine._unknown_candidates(job, review_packets.bundle(db, job['story_id'])) == {ids[0]}
-        with pytest.raises(ConflictError, match='Revisions changed'):
-            review_packets.load(harness.adapter, session(job), db, packet['packet_ref'])
+        # Unrelated eligible claims are not dependencies of the original
+        # unknown operation. Its exact candidate/evidence scope remains valid.
+        review_packets.load(harness.adapter, session(job), db, packet['packet_ref'])
     assert svc.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) == original
     assert IndependentReview.calls == 1
 

@@ -40,7 +40,7 @@ def _outline_angular_scale(bearing_interval, diagonal_degrees):
     return round(span / diagonal_degrees, 3)
 
 
-def physical_decision_context(story, candidates, manifest, *, include_plan_morphology=True):
+def physical_decision_context(story, candidates, manifest, *, include_plan_morphology=True, overview_only=False):
     """One literal row per received body; entrance addresses stay beside it.
 
     This is presentation of the received pool, never a nearest shortlist or a
@@ -138,6 +138,31 @@ def physical_decision_context(story, candidates, manifest, *, include_plan_morph
         context.update(plan_morphology_columns=SHAPE_COLUMNS, plan_morphology_policy=SHAPE_POLICY)
     else:
         context['expansion'] += ' Derived plan morphology is supplied with map_detail; the initial view keeps observed outlines and sides.'
+    return physical_overview_context(context) if overview_only else context
+
+
+def physical_overview_context(context):
+    """Present all received bodies; keep detailed frozen evidence out of initial input."""
+    from copy import deepcopy
+    context = deepcopy(context)
+    # Every body is represented. Detailed walls and morphology belong to
+    # the model's requested group, not hundreds of initial rows. SOURCE and
+    # the full readable MAP remain the actual visual inputs.
+    overview_columns = ['label', 'candidate_id', 'contour_status', 'boundary_distance_m',
+        'bearing_start_end_span_degrees', 'extent_east_north_m', 'height_levels',
+        'literal_address_entries', 'observed_name', 'outline_span_over_exif_diagonal']
+    indexes = [context['columns'].index(key) for key in overview_columns]
+    context['rows'] = [[row[index] for index in indexes] for row in context['rows']]
+    context['deferred_fields'] = [key for key in context['columns'] if key not in overview_columns]
+    context['columns'] = overview_columns
+    for key in ('segment_columns', 'primitive_excerpt_extent_east_north_m',
+                'plan_morphology_columns', 'plan_morphology_policy'):
+        context.pop(key, None)
+    context['expansion'] = ('Initial overview: all received bodies and their measured extents, '
+        'bearings, supplied levels and literal addresses. Detailed contour roles, all side '
+        'segments and plan morphology remain in the frozen OSM pool. Request map_detail '
+        'with exact target_candidate_ids for the active group and specific uncertainty. '
+        'No nearby-K, unnamed-body or far-body exclusion; overview rows alone are not proof.')
     return context
 
 

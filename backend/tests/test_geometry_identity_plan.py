@@ -103,11 +103,15 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
     async def generate(key, timeout, contents, config, **kwargs):
         calls.append(contents)
         assert len(calls) == 1
-        assert all(a['text'] in contents[-1] for a in articles)
         from street_story.identity_source_selection import expand_planner_packet
         raw_packet = contents[-1].split('Данные ниже — только контекст:\n', 1)[1]
         packet, _ = json.JSONDecoder().raw_decode(raw_packet)
         packet = expand_planner_packet(packet)
+        passages = packet['acquired_architectural_text']['literal_source_passages']
+        for article in articles:
+            own = next(row for row in passages if row['article_id'] == article['article_id'])
+            assert own['all_passages_displayed'] is True
+            assert ''.join(p['literal_text'] for p in own['passages']) == article['text']
         inventory = packet['acquired_architectural_text']['publisher_and_OSM_literal_records_NOT_prejoined']
         osm_records = [dict(zip(table['columns'], row))
             for table in inventory['osm_refs']['tables'] for row in table['rows']]
@@ -123,14 +127,14 @@ async def test_acquired_three_article_text_can_accept_in_first_joint_without_wai
         g['decision'] = 'uncertain'
         if invalid_geometry:
             g['candidate_id'] = 'osm:way:unreceived'
-            from street_story.identity_architectural_pool import joint_source_spans
-            _, refs = joint_source_spans(articles)
-            for relation in decision['correspondences']:
-                literal = relation.pop('source_quote')
-                chosen = next(ref for ref, span in refs.items()
-                    if span['article_id'] == relation['article_id'] and literal == span['source_quote'])
-                assert chosen in contents[-1]
-                relation['source_span_ref'] = chosen
+        from street_story.identity_architectural_pool import joint_source_spans
+        _, refs = joint_source_spans(articles)
+        for relation in decision['correspondences']:
+            literal = relation.pop('source_quote')
+            chosen = next(ref for ref, span in refs.items()
+                if span['article_id'] == relation['article_id'] and literal in span['source_quote'])
+            assert chosen in contents[-1]
+            relation['source_span_ref'] = chosen
         return SimpleNamespace(text=json.dumps({**payload(g),'accepted_architectural_text':decision}))
 
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
@@ -242,8 +246,12 @@ async def test_nominated_architectural_lookup_closes_identity_without_ref_or_ext
         if len(calls) == 1:
             return SimpleNamespace(text=json.dumps(initial))
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
-        assert articles[0]['text'] in contents[-1]
         packet, _ = json.JSONDecoder().raw_decode(contents[-1].rsplit('\n', 1)[-1])
+        own = packet['literal_source_passages'][0]['passages']
+        assert ''.join(row['literal_text'] for row in own) == articles[0]['text']
+        for relation in text_decision['correspondences']:
+            literal = relation.pop('source_quote')
+            relation['source_span_ref'] = next(row['span_ref'] for row in own if literal in row['literal_text'])
         inventory = packet['publisher_and_OSM_literal_records_NOT_prejoined']
         text_decision['physical_link_evidence'] = [{
             'article_id': articles[0]['article_id'], 'candidate_id': 'osm:way:2',
@@ -284,7 +292,7 @@ async def test_invalid_geometry_preserves_explicit_ready_wiki_choice_without_ano
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = SimpleNamespace(plan_identity_search=forbidden)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert calls == ['joint', 'joint']  # One bounded exact-pointer repair.
+    assert calls == ['joint']  # Useful explicit REF survives without a G repair.
     saved = history['search_plan']['payload']
     assert saved['selected_wikipedia_page_ids'] == ['99']
     assert 'accepted_geometry' not in saved and 'geometry_proof' not in saved
@@ -355,7 +363,8 @@ async def test_equal_pose_or_incomplete_coverage_remains_uncertain_without_fake_
     decision['bounded_coverage']['material_alternatives_resolved'] = False
     decision['bounded_coverage']['limitations'] = ['Two poses still explain the repeated facade equally well.']
     async def generate(*args, **kwargs):
-        return SimpleNamespace(text=json.dumps(payload(decision)))
+        return SimpleNamespace(text=json.dumps({**payload(decision),
+            'visual_query': 'Observed facade with repeated openings'}))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     assert '_identity_geometry_result' not in story
@@ -393,8 +402,12 @@ async def test_schema_valid_unproved_geometry_gets_one_evidence_repair_before_id
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     service.providers.research = None
     await identity_discovery.prepare_search_plan(service, story, '', active)
-    assert len(calls) == 2
-    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    if failure == 'coverage':
+        assert len(calls) == 1
+        assert story['_identity_article_queries'] and '_identity_geometry_result' not in story
+    else:
+        assert len(calls) == 2
+        assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
 
 
 @pytest.mark.asyncio
