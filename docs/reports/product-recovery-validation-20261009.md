@@ -5,6 +5,41 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 ## Reliability finish after reboot, 2026-10-10
 
+Current evidence milestone (not a release acceptance):
+
+- Actual1fac retained102 narrow review job_935fed6cc50bea9b34d52da1 remains
+  FAIL at the original readback deadline. The final tail subsequently proved
+  pa9624195f595 closed with durable request/result and repair claim817ae4;
+  this replacement still combines construction date and building height.
+  Review transition eventually admitted after repeated setup20790 token-budget
+  refusals; this was not permanent failure of every provider. No identity repeat.
+- Actual1fac job_373ee76053d59d4dc3665d3a completed the ready-fact path,
+  e2e-ready-choice-v40.json: selectedbc0eec (Nordstern tenant),d8abdc (east
+  facade cornice on consoles),e322ad (WWII survival) are three independent,
+  eligible claims with their own prussia39 sid3875 evidence. Real Live writes
+  saved selection, draft and concept. Prepared30.077s voice delivered301/301
+  ACK (max0.217s), preserving selection/draft at the voice boundary. This proves
+  prepared PCM through real Live, not a physical microphone.
+- Closed visualop_bbf42bb4f3674935a68adfa0b3b6de0a, asset866914, PNG2494823B,
+  SHA2564cec30589032730d82756d6284dd50c3c48ff623f8a00f37f80e49b9d369496d:
+  inspected actual pixels, correct recognizable building, three readable
+  selected-fact annotations, no technical OSM name. Stop acknowledged and
+  reopen preserved state. Mechanical pass stays REVIEW_REQUIRED because final
+  draft adds 'only surviving building', which is in the source passage but not
+  the selected survival claim. A draft-only ordinary Mira continuation preserves
+  this closed voice/visual; it must not be described as a new cold full pass.
+- POI review lock now covers snapshot/preparation and each final commit, never
+  provider waiting. New packets fence exact touched canonical assertions,
+  own evidence and owner controls; unrelated eligible additions do not stale
+  an independent packet. Old pending packets retain their stricter saved fence;
+  closed receipts stay immutable. Waiting-provider fixtures exercise another
+  story's progress plus intersecting assertion changes, Stop and new SOURCE.
+  Initial failures exposed a removed recovery callback and wrong overlap fixture;
+  both corrected.109 affected checks passed68.33s in
+  job_332a3364d3c39f588487c8b7; six focused recovery/supersession checks passed.
+  Original poi-concurrency-v41.xml failures are retained. No semantic verdict
+  is supplied by deterministic code.
+
 Authoritative instructions: dbf6e220 product-reliability-finish prompt. Host now
 has7423MiB RAM/3439MiB available; registered backend health200 in3ms, running
 db0c0d0. Prior memory pressure is not assumed to be the current blocker.

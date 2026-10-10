@@ -165,6 +165,20 @@ def eligible_bundle(db, story_id):
         "WHERE story_id=? AND eligibility='eligible' ORDER BY assertion_id", (story_id,))}
 
 
+def canonical_review_fence(db, story, assertion_ids):
+    """Versions of the shared claims actually used by this packet."""
+    from .poi_memory import memory_keys
+    research = json.loads(story['research_json'] or '{}')
+    keys = memory_keys(db, research.get('visual_identity') or {})
+    versions = {}
+    for key in keys:
+        for assertion_id in sorted(set(assertion_ids)):
+            row = db.execute('SELECT text,sources_json,eligibility,review_status,review_story_id,reviewed_at '
+                'FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?', (key, assertion_id)).fetchone()
+            versions[canonical([key, assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
+    return versions
+
+
 def load(adapter, session, db, ref):
     row = db.execute('SELECT * FROM live_review_packets WHERE packet_ref=? AND story_id=?',
                      (ref, session.resource_id)).fetchone()
@@ -188,8 +202,15 @@ def load(adapter, session, db, ref):
     parallel = payload.get('parallel_candidate_review') is True
     revision_stale = int(story['revision']) != row['story_revision']
     if parallel:
-        revision_stale = (candidate_review_fence(db, story) != payload['owner_fence']
-                          or eligible_bundle(db, session.resource_id) != payload['eligible_bundle'])
+        revision_stale = candidate_review_fence(db, story) != payload['owner_fence']
+        if 'canonical_dependencies' in payload:
+            dependencies = [*payload['candidate_scope'],
+                            *[claim['fact_id'] for claim in payload.get('nearby_existing_claims', [])]]
+            revision_stale |= canonical_review_fence(db, story, dependencies) != payload['canonical_dependencies']
+        else:
+            # Pending packets created before scoped shared dependencies retain
+            # their original stricter contract. Closed receipts above are immutable.
+            revision_stale |= eligible_bundle(db, session.resource_id) != payload['eligible_bundle']
     if revision_stale or int(research.get('identity_generation') or 0) != row['identity_generation'] or current != payload['bundle']:
         raise ConflictError('live_review_packet_stale', 'Revisions changed; request a new packet. No decision applied.')
     actual = {r['evidence_id']: dict(r) for r in db.execute(
@@ -344,7 +365,8 @@ def read(adapter, session, args):
                     payload['requested_fact_scope'] = True
                 if args.get('_parallel_candidate_review') is True:
                     payload.update(parallel_candidate_review=True, owner_fence=candidate_review_fence(db, story),
-                                   eligible_bundle=eligible_bundle(db, session.resource_id))
+                                   canonical_dependencies=canonical_review_fence(db, story,
+                                       [*exact, *[claim['fact_id'] for claim in nearby]]))
             for pending_packet in db.execute("SELECT p.packet_ref,p.payload_json FROM live_review_packets p "
                     "JOIN live_review_attempts a ON a.packet_ref=p.packet_ref WHERE p.story_id=? "
                     "AND p.binding=? AND a.state='pending'", (session.resource_id, binding(session))):

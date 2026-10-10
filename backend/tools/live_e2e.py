@@ -1066,6 +1066,11 @@ async def run_retained_story(args):
     if Path(output_name).name != output_name or not output_name.endswith(".json"):
         raise RuntimeError("Output must be a fresh local JSON filename")
     out = args.run / output_name
+    if args.refine_draft_only and (
+        not args.resume or not args.editorial_only or args.revise_atomic_selection
+        or args.observe_existing_visual or args.review_fact_ids
+    ):
+        raise RuntimeError("Draft-only correction requires an editorial continuation without research or image actions")
     if args.resume:
         predecessor = args.run / (args.resume_from or "e2e.json")
         if predecessor.parent != args.run:
@@ -1095,10 +1100,12 @@ async def run_retained_story(args):
             )
 
         allowed_predecessor = original.get("status") == "FAIL" or (
-            args.revise_atomic_selection and original.get("status") == "REVIEW_REQUIRED" and original.get("mechanical_pass") is True
+            (args.revise_atomic_selection or args.refine_draft_only)
+            and original.get("status") == "REVIEW_REQUIRED" and original.get("mechanical_pass") is True
         )
         if not allowed_predecessor or any(
-            (t["name"] == "generate_visual" and not (args.observe_existing_visual or args.revise_atomic_selection)) or not known_closed(t)
+            (t["name"] == "generate_visual" and not (args.observe_existing_visual or args.revise_atomic_selection or args.refine_draft_only))
+            or not known_closed(t)
             for t in original.get("tool_trace", [])
         ):
             raise RuntimeError("Resume requires a known pre-visual failure; unknown visual cannot be replayed")
@@ -1300,13 +1307,14 @@ async def run_retained_story(args):
                     raise RuntimeError("Actual automatic identity proof required")
                 if not any(f.get("eligibility") == "eligible" for f in first.get("facts", [])):
                     raise RuntimeError("Actual verified facts required")
-                if args.revise_atomic_selection:
+                if args.revise_atomic_selection or args.refine_draft_only:
                     prior = original.get("visual") or {}
                     visual = first.get("visual") or {}
                     if (
                         not args.resume
                         or args.observe_existing_visual
                         or args.review_fact_ids
+                        or (args.refine_draft_only and not ready_selection(first))
                         or first["photo_sha256"] != original.get("photo_sha256")
                         or first.get("draft_text") != original.get("final_draft")
                         or selected(first) != set(original.get("selected_fact_ids") or [])
@@ -1478,7 +1486,8 @@ async def run_retained_story(args):
                         )
                     chosen = await read()
                     prior_draft_allowed = (
-                        args.resume and not args.revise_atomic_selection and choice == set(original.get("selected_fact_ids") or [])
+                        args.resume and not args.revise_atomic_selection and not args.refine_draft_only
+                        and choice == set(original.get("selected_fact_ids") or [])
                     )
                     current_draft_commands = {
                         t["id"] for t in report["tool_trace"] if t["name"] == "edit_text" and t["state"] == "completed"
@@ -1508,10 +1517,40 @@ async def run_retained_story(args):
                     else:
                         drafted = await text_step(
                             "editable_draft",
-                            "Напиши короткий ясный текст публикации на русском языке, до 700 знаков, только по выбранным проверенным фактам. Сохрани текст в этой истории, чтобы я мог его редактировать. Изображение пока не меняй.",
+                            (args.draft_instruction or "Перечитай точные выбранные утверждения и исправь текст: каждый фактический признак должен следовать из выбранных фактов. Не усиливай их сведениями из полного источника. Сохрани связный вечерний рассказ до 700 знаков, выбор, замысел и изображение; ничего не публикуй.")
+                            if args.refine_draft_only else "Напиши короткий ясный текст публикации на русском языке, до 700 знаков, только по выбранным проверенным фактам. Сохрани текст в этой истории, чтобы я мог его редактировать. Изображение пока не меняй.",
                             "edit_text",
                             lambda s: bool(s.get("draft_text")) and selected(s) == choice,
                         )
+                    if args.refine_draft_only:
+                        prior = original["visual"]
+                        visual = drafted.get("visual") or {}
+                        if (
+                            drafted.get("publication_concept") != first.get("publication_concept")
+                            or visual.get("operation_id") != prior.get("operation_id")
+                            or visual.get("selected_asset_ref") != prior.get("selected_asset_ref")
+                        ):
+                            raise RuntimeError("Draft correction changed the saved concept or visual")
+                        response = await client.get("/v1/assets/" + sid + "/processed")
+                        response.raise_for_status()
+                        if hashlib.sha256(response.content).hexdigest() != prior.get("sha256"):
+                            raise RuntimeError("Draft correction changed the actual visual bytes")
+                        await host.stop(session_id=session["session_id"], resource_id=sid)
+                        report["stop_acknowledged"] = True
+                        session = None
+                        reopened = type(service)(service.settings)
+                        after = reopened.story(sid)
+                        if after["draft_text"] != drafted["draft_text"] or selected(after) != choice:
+                            raise RuntimeError("Reopen lost the corrected draft or selection")
+                        report.update(
+                            status="REVIEW_REQUIRED", mechanical_pass=True, reopen_preserved=True,
+                            final_draft=after["draft_text"], saved_concept=after.get("publication_concept"),
+                            visual=prior, voice_reused_closed_segment=original.get("voice"),
+                            semantic_review="Inspect corrected text against selected claims; prior closed voice/visual are reused",
+                        )
+                        print(json.dumps({"status": report["status"], "mechanical_pass": True,
+                                          "scope": "draft correction; closed voice/visual reused"}), flush=True)
+                        return 0
                     before_concept = drafted.get("publication_concept")
                     draft = drafted["draft_text"]
                     pcm = subprocess.check_output(
@@ -1672,6 +1711,8 @@ def retained_story_main():
     parser.add_argument("--reuse-closed-review", action="store_true")
     parser.add_argument("--observe-existing-visual", action="store_true")
     parser.add_argument("--revise-atomic-selection", action="store_true")
+    parser.add_argument("--refine-draft-only", action="store_true")
+    parser.add_argument("--draft-instruction", default="")
     return asyncio.run(run_retained_story(parser.parse_args()))
 
 

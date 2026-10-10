@@ -419,11 +419,7 @@ class HeadlessFactReview:
                         exhausted.update(frozen)
         return exhausted
 
-    async def run(self, job, run_id, control_revision):
-        snapshot = self.harness._snapshot(job, run_id, control_revision)
-        if snapshot is None:
-            return 0
-        # Serialize packet preparation, inference and commit at the shared POI.
+    def _commit_lock(self, job, snapshot):
         from .poi_memory import memory_keys
         with self.service.store.connection() as db:
             keys = memory_keys(db, snapshot[1]['visual_identity'])
@@ -432,23 +428,18 @@ class HeadlessFactReview:
         if lock is None:
             lock = asyncio.Lock()
             _COMMIT_LOCKS[lock_key] = lock
+        return lock
+
+    async def run(self, job, run_id, control_revision):
         committed = 0
-        async with lock:
-            for _ in range(4):
-                if self.harness._snapshot(job, run_id, control_revision) is None:
-                    break
-                with self.service.store.tx() as db:
-                    self.service._hydrate_poi_memory(db, self.service._story_row(db, job['story_id']))
-                count = await self._run_one(job, run_id, control_revision)
-                committed += count
-                if not count:
-                    break
+        for _ in range(4):
+            count = await self._run_one(job, run_id, control_revision)
+            committed += count
+            if not count:
+                break
         return committed
 
-    async def _run_one(self, job, run_id, control_revision):
-        snapshot = self.harness._snapshot(job, run_id, control_revision)
-        if snapshot is None:
-            return 0
+    def _prepare_review(self, job, run_id, control_revision):
         self._recover_closed_reviews(job)
         original_reviews = self._original_reviews(job, control_revision)
         with self.service.store.connection() as db:
@@ -463,7 +454,7 @@ class HeadlessFactReview:
             # packet guards reject stale commits if either review changes it.
             pending = [fid for fid in pending if fid not in blocked]
         if not pending and not original_reviews:
-            return 0
+            return []
         prepared = list(original_reviews[:1])
         new_prepared = 0
         routes = self._qualified_routes() or self._qualified_routes(available=False)
@@ -495,6 +486,20 @@ class HeadlessFactReview:
                          len((VERIFIER_PROMPT + canonical(packet)).encode('utf-8')))
             prepared.append((session, packet, unit, saved))
             new_prepared += 1
+        return prepared
+
+    async def _run_one(self, job, run_id, control_revision):
+        snapshot = self.harness._snapshot(job, run_id, control_revision)
+        if snapshot is None:
+            return 0
+        lock = self._commit_lock(job, snapshot)
+        async with lock:
+            if self.harness._snapshot(job, run_id, control_revision) is None:
+                return 0
+            with self.service.store.tx() as db:
+                self.service._hydrate_poi_memory(db, self.service._story_row(db, job['story_id']))
+            prepared = self._prepare_review(job, run_id, control_revision)
+        # Network inference never holds the shared POI commit lock.
         async def review(item, ordinal):
             _session, packet, unit, saved = item
             return item, await self._infer(packet, job, unit, saved, ordinal)
@@ -508,25 +513,26 @@ class HeadlessFactReview:
                 session, packet, unit, _ = item
                 outcome = self.service.store.checkpoint_get(job['id'], 'headless_fact_review:' + unit) or {}
                 session.model = outcome.get('model_id') or session.model
-                if self.harness._snapshot(job, run_id, control_revision) is None:
-                    continue
-                if not self._result_route_qualified(outcome):
-                    self._close_unqualified_result(job, unit, outcome)
-                    continue
-                try:
-                    resolved_args = headless_review_quotes.resolve_quotes(packet, args)
-                    value = await self.harness.adapter.execute_tool(session, {
-                        'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': resolved_args})
-                    if value.get('eligible_count') is not None:
-                        committed += 1
-                        self._put(job, unit, {**outcome, 'phase': 'committed', 'packet_ref': packet['packet_ref']})
-                        LOG.info('street_story_background_fact_review_committed story_id=%s run_id=%s unit_id=%s eligible=%s',
-                                 job['story_id'], run_id, unit, value['eligible_count'])
-                except ConflictError as exc:
-                    self._put(job, unit, {**outcome, 'phase': 'stale' if exc.code.endswith('stale') else 'rejected',
-                                         'packet_ref': packet['packet_ref'], 'error_code': exc.code})
-                    LOG.info('street_story_background_fact_review_deferred story_id=%s run_id=%s unit_id=%s reason=%s',
-                             job['story_id'], run_id, unit, exc.code)
+                async with lock:
+                    if self.harness._snapshot(job, run_id, control_revision) is None:
+                        continue
+                    if not self._result_route_qualified(outcome):
+                        self._close_unqualified_result(job, unit, outcome)
+                        continue
+                    try:
+                        resolved_args = headless_review_quotes.resolve_quotes(packet, args)
+                        value = await self.harness.adapter.execute_tool(session, {
+                            'name': 'finalize_fact_review', 'id': 'background-review-' + unit, 'args': resolved_args})
+                        if value.get('eligible_count') is not None:
+                            committed += 1
+                            self._put(job, unit, {**outcome, 'phase': 'committed', 'packet_ref': packet['packet_ref']})
+                            LOG.info('street_story_background_fact_review_committed story_id=%s run_id=%s unit_id=%s eligible=%s',
+                                     job['story_id'], run_id, unit, value['eligible_count'])
+                    except ConflictError as exc:
+                        self._put(job, unit, {**outcome, 'phase': 'stale' if exc.code.endswith('stale') else 'rejected',
+                                             'packet_ref': packet['packet_ref'], 'error_code': exc.code})
+                        LOG.info('street_story_background_fact_review_deferred story_id=%s run_id=%s unit_id=%s reason=%s',
+                                 job['story_id'], run_id, unit, exc.code)
         finally:
             for task in tasks:
                 if not task.done():

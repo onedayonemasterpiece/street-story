@@ -502,7 +502,7 @@ async def test_review_progress_schedules_ready_assertions_outside_exact_waiting_
 
 
 @pytest.mark.asyncio
-async def test_independent_packets_stay_pending_but_new_eligible_claim_stales_sibling(tmp_path):
+async def test_independent_packet_keeps_scope_when_unrelated_claim_becomes_eligible(tmp_path):
     svc, job, harness=await candidates(tmp_path)
     session=SimpleNamespace(id='review',resource_id=job['story_id'],model='gemini-3.8-live',actor=None,closed=False,state={})
     with svc.store.connection() as db:
@@ -521,8 +521,7 @@ async def test_independent_packets_stay_pending_but_new_eligible_claim_stales_si
     with svc.store.tx() as db:
         db.execute("UPDATE fact_assertions SET eligibility='eligible' WHERE story_id=? AND assertion_id=?",(job['story_id'],ids[0]))
     with svc.store.connection() as db:
-        with pytest.raises(ConflictError,match='Revisions changed'):
-            review_packets.load(harness.adapter,session,db,packets[1]['packet_ref'])
+        review_packets.load(harness.adapter,session,db,packets[1]['packet_ref'])
 
 
 @pytest.mark.asyncio
@@ -551,6 +550,87 @@ async def test_two_reviews_prepare_serially_with_current_ledger_and_preserve_own
     with svc.store.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]==6
         assert json.loads(svc._story_row(db,sid)['research_json'])['publication_concept']=='Owner concept'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case', ['independent', 'overlap', 'stop', 'new_source'])
+async def test_same_poi_waiting_reviewer_does_not_block_other_story_or_commit_stale_result(tmp_path, case):
+    from street_story.errors import RetryableProviderError
+    from street_story.research_runs import begin_research_run, persist_source_version
+    from street_story.research_control import stop_research
+    from test_live_editor import PHOTO, PHOTO_SHA, mark_identity_ready
+
+    svc, first, harness = await candidates(tmp_path, count=1)
+    second_story = svc.create_story(key='independent-review-story', client_story_id='second',
+        photo_sha256=PHOTO_SHA, photo_mime_type='image/jpeg', photo_bytes=PHOTO,
+        voice_protocol='voice-chunks-v2', lat=54.7, lon=20.5)
+    sid = second_story['id']
+    mark_identity_ready(svc, sid)
+    second_run = RUN + '-second'
+    with svc.store.tx() as db:
+        row = svc._story_row(db, sid)
+        jid = svc._enqueue_job(db, sid, 'research', 'independent-review',
+            {'identity_generation': 0, 'photo_sha256': row['photo_sha256']})
+        db.execute("UPDATE jobs SET state='running',attempts=1 WHERE id=?", (jid,))
+        second = dict(db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone())
+        begin_research_run(db, story_id=sid, poi_key='wiki:77', goal='History', scope='history',
+            expected_story_revision=row['revision'], identity_generation=0, run_id=second_run, now=svc.store.now())
+        url = 'https://archive.example/independent'
+        text = 'The gate housed documented exhibit number 98 in 2005.'
+        persist_source_version(db, run_id=second_run, requested_url=url, final_url=url, title='Independent history',
+            content_type='text/html', http_status=200, redirect_chain=[], normalized_text=text,
+            read_status='complete', now=svc.store.now())
+    other_harness = HeadlessFacts(svc)
+    while True:
+        try:
+            await other_harness.run(second, second_run, 'History', 'history')
+            break
+        except RetryableProviderError:
+            pass
+    entered, release = asyncio.Event(), asyncio.Event()
+    with svc.store.connection() as db:
+        first_ids = set(review_packets.pending_candidates(db, first['story_id'], RUN))
+        second_ids = set(review_packets.pending_candidates(db, sid, second_run))
+        assert first_ids and second_ids and not first_ids & second_ids
+
+    class WaitingReview(ControlledReview):
+        async def _infer(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super()._infer(*args, **kwargs)
+
+    waiting = asyncio.create_task(WaitingReview(harness).run(first, RUN, 0))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        if case == 'stop':
+            stop_research(svc, first['story_id'], purpose='facts')
+        elif case == 'new_source':
+            with svc.store.tx() as db:
+                db.execute("UPDATE stories SET photo_sha256=? WHERE id=?", ('b' * 64, first['story_id']))
+        # Completion before releasing the first reviewer is the assertion;
+        # elapsed sleeps are not evidence of independent progress.
+        assert await asyncio.wait_for(ControlledReview(other_harness).run(second, second_run, 0), 3) == 1
+        assert not waiting.done()
+        assert any(f['eligibility'] == 'eligible' for f in svc.story(sid)['facts'])
+        if case == 'overlap':
+            # A competing review of this exact shared assertion changed its
+            # canonical version while the first result was on the network.
+            with svc.store.tx() as db:
+                assert db.execute("UPDATE poi_research_assertions SET eligibility='withheld',review_status='withheld',"
+                    "review_story_id=?,reviewed_at=? WHERE assertion_id=?",
+                    (sid, svc.store.now(), next(iter(first_ids)))).rowcount == 1
+        release.set()
+        count = await asyncio.wait_for(waiting, 3)
+        assert count == (1 if case == 'independent' else 0)
+        with svc.store.connection() as db:
+            units = [json.loads(row[0]) for row in db.execute(
+                "SELECT value_json FROM research_checkpoints WHERE job_id=? AND stage LIKE 'headless_fact_review:%'",
+                (first['id'],))]
+        assert units and units[-1]['phase'] == ('committed' if case == 'independent' else 'stale' if case == 'overlap' else 'result')
+    finally:
+        release.set()
+        if not waiting.done():
+            await waiting
 
 
 @pytest.mark.asyncio
