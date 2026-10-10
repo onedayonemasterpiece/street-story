@@ -19,6 +19,8 @@ is the concrete to-be contract for the next bounded implementation: accepted pho
 autonomous backend work, exact identity/hint recovery, usable facts and reopen.
 It combines the necessary dependencies of the first two stages; it is not implemented yet.
 The [product acceptance procedure](testing/street-story-product-acceptance-20261010.md) defines the unchanged image corpus, execution protocol and per-input evidence.
+The [G/T method evidence audit](reports/street-story-identity-methods-audit-20261010.md) records historical requirements, current working paths, new limits and targeted changes; it does not rewrite the earlier measured day report.
+The owner-approved [G method vision](design/street-story-spatial-geometry-vision-20261010.md) preserves the complete spatial/EXIF/morphology intent and maps historical requirements to existing, partial and target behavior.
 The recovery brief remains the full-task entrypoint; completing this core slice is a checkpoint, not a substitute for final product verification.
 Its [measured day audit](reports/street-story-measured-day-audit-20261010.md)
 records observations and limitations; it is not proof that proposed repairs shipped.
