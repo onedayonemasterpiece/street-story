@@ -2477,3 +2477,36 @@ Affected headless/review/automatic-request tests:118 passed.017c713 full SDK
 verification had2845 pass/2 skips and two stale editor-capability expectations
 of the same shared pending-review scenario, now corrected. This next candidate
 needs new frozen measurements; earlier reports are not repainted.
+
+The7265246 first-ten frozen cases remain archived.102 reached three eligible
+claims through the ordinary API at188.7s and ended at212.5s;106 accepted the
+expected photographed body through real REF and ended with three claims at
+237.9s.119 accepted a specific photographed clinic component through real T
+with publisher photographs and three claims at147.9s; SOURCE, MAP and the
+publisher facade were inspected separately.107 remains evaluation-unresolved
+until its individual footprint is inspected.104 failed in this corpus, while a
+separate NEW ordinary API104 story reached three claims at213.1s and completed
+selection, concept, draft,30.077s prepared-PCM voice and a generated visual.
+The original visual wait failure is preserved; observation of the same
+VibePublish operation closed without another generation. Its inspected SOURCE
+and visual show the same tower with readable source-backed annotations.
+
+The new story's draft correction twice stopped before a tool mutation with
+RESOURCE_TOKEN_BUDGET after the publication-to-editor transition. The actual
+setup was26,134bytes. A read-only counterfactual measured26.3→17.1KB when
+unselected discovery inventory and research-job context were omitted. Editorial,
+dictation and publication setup now use that smaller projection while keeping
+selected facts, subject, author controls, concept and draft. Research retains
+its complete inventory; ordinary read tools still expose saved material. No
+provider limits, semantic classifier, SOURCE transport or shared framework were
+changed. This is a measured mitigation, not yet a proved complete runtime fix.
+
+Canonical93a0878 (PR255, the independent RKB POI bridge) was deployed during the
+series and has been merged into this branch without conflicts. Rewriting its
+service.env changed the raw-file digest, although the effective frozen settings,
+credentials and qualification still matched. The final-five resume stopped at
+that guard before uploads/provider sends. Original run.json and cases remain
+unchanged. A final coherent candidate will run the fixed15 in one process;
+older recognitions will not be credited as new cold results.726's installed-SDK
+full test command timed out at1,800s with no printed failure near85%; hosted CI
+passed. The remaining research-control subset passed134 tests in28.7s.

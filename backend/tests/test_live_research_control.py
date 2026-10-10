@@ -169,7 +169,36 @@ def test_review_setup_keeps_subject_and_run_without_resending_whole_inventory():
     assert result['publication_concept'] == 'Saved author angle'
     assert 'known_fact_inventory' not in result and 'draft_text' not in result
     assert 'observations' not in result['visual_identity']
-    assert StreetStoryLiveAdapter._capability_context(context, 'editor') == original
+    assert StreetStoryLiveAdapter._capability_context(context, 'research') == original
+
+
+@pytest.mark.parametrize('capability', ['editor', 'dictation', 'publication'])
+def test_editorial_setup_preserves_selected_content_without_discovery_inventory(capability):
+    import copy
+
+    context = {
+        'story_id': 'same-story', 'photo_sha256': 'a' * 64,
+        'physical_identity_accepted': True,
+        'visual_identity': {'candidate_id': 'osm:way:91'},
+        'selected_fact_ids': ['selected'],
+        'facts': [{'id': 'selected', 'text': 'Verified claim', 'eligible': True}],
+        'publication_concept': 'Saved evening angle', 'draft_text': 'Saved draft',
+        'research_controls': {'facts': {'state': 'stopped', 'revision': 3}},
+        'known_fact_inventory': [['unselected', 'Unverified claim' * 1000]],
+        'known_fact_inventory_fields': ['id', 'text'],
+        'known_fact_inventory_truncated': False, 'facts_instruction': 'Research policy',
+        'research_run': {'run_id': 'old-run'}, 'jobs': [{'state': 'completed'}],
+        'identity_research_context': {'candidates': ['old-candidate']},
+    }
+    original = copy.deepcopy(context)
+    result = StreetStoryLiveAdapter._capability_context(context, capability)
+    assert context == original
+    assert result == {key: value for key, value in original.items() if key in {
+        'story_id', 'photo_sha256', 'physical_identity_accepted', 'visual_identity',
+        'selected_fact_ids', 'facts', 'publication_concept', 'draft_text', 'research_controls',
+    }}
+    assert StreetStoryLiveAdapter._capability_context(context, 'research') == original
+    assert StreetStoryLiveAdapter._capability_context(context, 'identity') == original
 
 
 async def shared_editor_session(adapter, previous, intent):

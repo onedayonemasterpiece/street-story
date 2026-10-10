@@ -959,6 +959,16 @@ class StreetStoryLiveAdapter(LiveVisualComparisonMixin):
 
     @staticmethod
     def _capability_context(context, capability):
+        if capability in {'editor', 'dictation', 'publication'}:
+            # These stages work on the author's selection and saved draft.
+            # Discovery inventories stay durable and accessible through the
+            # ordinary read tools; resending them spends admission budget before
+            # even a small text correction can execute.
+            return {key: value for key, value in context.items() if key not in {
+                'known_fact_inventory', 'known_fact_inventory_fields',
+                'known_fact_inventory_truncated', 'facts_instruction',
+                'research_run', 'jobs', 'identity_research_context',
+            }}
         if capability != 'review':
             return context
         from .identity_model_context import fact_review_subject
