@@ -43,8 +43,8 @@ def response_schema(packet, public_schema):
             'description': 'Optional canonical fact number from THIS packet. Omit or use null for no equivalence; never -1. A canonical may reference itself.'}
     if 'quote_catalog' in packet:
         quotes = decisions['basis_quotes']
-        quotes['items'] = {'type': 'string', 'enum': list(packet['quote_catalog'])}
-        quotes['description'] = ('Exact frozen quote_ref labels only. Choose this fact\'s selected '
+        quotes['items'] = {'type': 'string', 'minLength': 1, 'maxLength': 900}
+        quotes['description'] = ('Exact frozen quote_ref labels or short literal own-evidence quotations. Choose this fact\'s selected '
                                  'evidence; empty only for unsupported decisions. Labels establish '
                                  'literal addressing, not semantic support.')
     if packet.get('verifier_presentation') == 'one_assertion_all_own_slices_v1':
@@ -53,8 +53,6 @@ def response_schema(packet, public_schema):
                 'quote_refs': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'enum': list(packet['quote_catalog'])}}},
             'required': ['property', 'value', 'quote_refs'], 'additionalProperties': False}}
         decisions['own_value_conflicts'] = {'type': 'array', 'maxItems': 12, 'items': {'type': 'string', 'maxLength': 500}}
-        schema['properties']['decisions']['items'].setdefault('required', []).extend(
-            ['own_evidence_values', 'own_value_conflicts'])
         # Advisory early stopping cannot discard independent own-source
         # verdicts. sufficient_basis validates addressing before any stop.
         schema['properties']['research_sufficient'] = {'description': 'Optional boolean early-stop advice.'}

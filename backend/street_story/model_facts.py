@@ -9,6 +9,7 @@ identities/sources.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from typing import Any
 
@@ -52,14 +53,72 @@ def model_fact_key(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _source_canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _source_key(source: dict[str, Any]) -> str:
     url = str(source.get("url") or "").rstrip("/")
     if url:
         return "url:" + url
     ref = str(source.get("ref") or source.get("evidence_ref") or "").strip()
-    if ref:
-        return "ref:" + ref
-    return ""
+    return "ref:" + ref if ref else ""
+
+
+def _support_key(source_url: str, support: dict[str, Any]) -> str:
+    return _source_canonical(
+        {
+            "kind": str(support.get("kind") or "support"),
+            "source_url": str(support.get("source_url") or source_url).rstrip("/"),
+            "text": str(support.get("text") or "").strip(),
+            "source_version_id": support.get("source_version_id"),
+            "span_sha256": support.get("span_sha256"),
+            "span_start": support.get("span_start"),
+            "span_end": support.get("span_end"),
+        }
+    )
+
+
+def merge_source_payloads(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Mechanical union that never replaces passages merely because URL matches."""
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for group in groups:
+        for raw in group or []:
+            if not isinstance(raw, dict):
+                continue
+            key = _source_key(raw)
+            if not key:
+                continue
+            current = merged.get(key)
+            if current is None:
+                current = {**raw}
+                current["supports"] = []
+                merged[key] = current
+                order.append(key)
+            else:
+                for field in ("title", "type", "ref", "evidence_ref"):
+                    if not current.get(field) and raw.get(field):
+                        current[field] = raw.get(field)
+            source_url = str(raw.get("url") or "").rstrip("/")
+            supports: dict[str, dict[str, Any]] = {
+                _support_key(source_url, item): item
+                for item in current.get("supports") or []
+                if isinstance(item, dict) and str(item.get("text") or "").strip()
+            }
+            for support in raw.get("supports") or []:
+                if not isinstance(support, dict):
+                    continue
+                text = str(support.get("text") or "").strip()
+                if not text:
+                    continue
+                supports[_support_key(source_url, support)] = {
+                    **support,
+                    "source_url": str(support.get("source_url") or source_url).rstrip("/"),
+                    "text": text,
+                }
+            current["supports"] = list(supports.values())
+    return [merged[key] for key in order]
 
 
 def merge_model_fact_inventory(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -102,12 +161,5 @@ def merge_model_fact_inventory(items: list[dict[str, Any]]) -> list[dict[str, An
                 item.get("evidence_supported", bool(sources))
             )
             current["selected"] = bool(current.get("selected")) or bool(item.get("selected"))
-        by_source = {
-            _source_key(source): source
-            for source in current["sources"]
-            if _source_key(source)
-        }
-        for source in sources:
-            by_source[_source_key(source)] = source
-        current["sources"] = list(by_source.values())
+        current["sources"] = merge_source_payloads(current["sources"], sources)
     return [merged[key] for key in order]

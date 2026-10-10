@@ -92,6 +92,25 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         validateStoryIdentity(story, remote)
         if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
         applyRemote(store, feed, research, story.clientStoryId, remote)
+        val serverId = remote.id
+        // Durable research controls precede archive uploads and unrelated edits.
+        // A failed voice chunk cannot prevent Stop reaching the accepted job.
+        for (operation in store.pendingOperations(story.clientStoryId).filter { it.kind == "research-control" }) {
+            try {
+                remote = api.mutate(serverId, operation.kind, operation.payloadJson, operation.requestKey)
+                validateStoryIdentity(story, remote)
+                applyRemote(store, feed, research, story.clientStoryId, remote)
+                store.markOperationDone(operation.id)
+            } catch (exc: ApiException) {
+                if (exc.retryable) {
+                    store.markOperationRetry(operation.id, exc.message)
+                    return true
+                }
+                store.markOperationDone(operation.id)
+                store.setStage(story.clientStoryId, StoryStage.NEEDS_REVIEW, exc.message)
+            }
+        }
+
         var sourceUnavailable = false
         val needsSource = remote.state in setOf(StoryStage.PHOTO_READY, StoryStage.IDENTIFYING, StoryStage.VISUAL_PROCESSING) ||
             remote.researchPending["identity"] == true ||
@@ -121,7 +140,6 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
         if (story.serverStoryId.isNullOrBlank()) store.setServerIdentity(story.clientStoryId, remote.id)
         applyRemote(store, feed, research, story.clientStoryId, remote)
         story = requireNotNull(store.story(story.clientStoryId))
-        val serverId = requireNotNull(story.serverStoryId)
         PhotoImportTelemetry.pending(applicationContext, story.clientStoryId)?.let { payload ->
             runCatching { api.photoDiagnostic(serverId, payload) }.onSuccess {
                 PhotoImportTelemetry.acknowledge(applicationContext, story.clientStoryId, payload)
@@ -132,7 +150,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
             syncVoice(store, api, serverId, session)
         }
 
-        for (operation in store.pendingOperations(story.clientStoryId)) {
+        for (operation in store.pendingOperations(story.clientStoryId).filter { it.kind != "research-control" }) {
             // Only an unsent visual depends on SOURCE. Preserve its request ID
             // and continue selection/text/voice sync while access is restored.
             if (sourceUnavailable && operation.kind == "visual") continue
@@ -154,16 +172,14 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
 
         remote = api.getStory(serverId)
         validateStoryIdentity(story, remote)
-        val previousUrl = store.story(story.clientStoryId)?.processedImageUrl
         applyRemote(store, feed, research, story.clientStoryId, remote)
         if (remote.destinations.isEmpty() && capabilities != null && capabilities.destinations.isNotEmpty()) {
             store.replaceDestinations(story.clientStoryId, capabilities.destinations.map { it.local() })
         }
         val current = requireNotNull(store.story(story.clientStoryId))
         val assetUrl = current.processedImageUrl
-        if (!assetUrl.isNullOrBlank() && (current.processedImagePath.isNullOrBlank() || previousUrl != assetUrl || !PhotoAssets.available(current.processedImagePath))) {
-            current.processedImagePath?.let(PhotoAssets::releaseTemporary)
-            store.setProcessedImagePath(story.clientStoryId, PhotoAssets.retainTemporary(api.readAsset(assetUrl)))
+        if (!assetUrl.isNullOrBlank() && (current.processedImagePath.isNullOrBlank() || current.processedImageBytesUrl != assetUrl || !PhotoAssets.available(current.processedImagePath))) {
+            store.setProcessedImagePath(story.clientStoryId, PhotoAssets.retainTemporary(api.readAsset(assetUrl)), assetUrl)
         }
         // The visual queue can remain active in needs_review after an uncertain
         // first result. Its authoritative job projection, not a microphone, keeps
@@ -256,6 +272,7 @@ class SyncWorker(appContext: Context, params: WorkerParameters) : CoroutineWorke
                     it.eligibleForSelection,
                     it.selected && it.eligibleForSelection,
                     gson.toJson(it.sources),
+                    it.reviewStatus,
                 )
             },
         )

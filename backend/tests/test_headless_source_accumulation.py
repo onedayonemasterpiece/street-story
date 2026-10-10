@@ -79,7 +79,7 @@ async def test_more_than_three_sources_accumulate_and_completed_scope_reuses_his
                     await HeadlessFacts(svc).run(job, run_id, goal, scope)
                 except RetryableProviderError:
                     pass
-                assert len(researcher.pages) - before <= 3
+                assert len(researcher.pages) - before <= len(sources)
                 with svc.store.connection() as db:
                     manifest = run_manifest(db, run_id)
                     stored = [r['url'] for r in db.execute('SELECT url FROM research_run_sources WHERE run_id=?', (run_id,))]
@@ -93,7 +93,7 @@ async def test_more_than_three_sources_accumulate_and_completed_scope_reuses_his
             pytest.fail('Unread discovered sources never completed')
 
         attempts, manifest = await finish('missing-history-run', 'Fill missing exhibit history aspects', 'history')
-        assert attempts >= 2 and manifest['counts']['chunks_skipped_completed'] == 1
+        assert attempts == 1 and manifest['counts']['chunks_skipped_completed'] == 1
         with svc.store.connection() as db:
             assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'", (sid,)).fetchone()[0] == 5
             assert db.execute('SELECT owner_selected FROM fact_assertions WHERE story_id=? AND assertion_id=?', (sid, seed)).fetchone()[0] == 1

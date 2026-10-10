@@ -81,10 +81,17 @@ class LiveSemanticClient:
                   'An irrelevant or insufficient page may yield no facts and a specific next query. '
                   'Set research_sufficient=true only when the supplied known eligible facts plus the '
                   'independently supportable new claims give useful material for coverage_goal; '
-                  'optional enrichment need not be exhaustive. This never bypasses semantic review. '
+                  'optional enrichment need not be exhaustive. '
                   'If coverage_goal remains unsupported, set research_sufficient=false and propose '
                   'next_research_query and next_research_goal without inventing missing claims. '
-                  + EXTRACTION_CHECKS + '\nFrozen source unit:\n' + canonical(supplied))
+                  + EXTRACTION_CHECKS + ' In this SAME pass assess own support, atomicity, physical subject, '
+                  'temporal scope and qualifiers; normalize independently selectable claims and compare '
+                  'them with supplied known claims. Evaluate ALL competing values in own frozen passages, '
+                  'including infobox versus prose. Never support an unresolved contradiction: preserve '
+                  'it as possible_conflict with actual host IDs in conflicts_with_existing. Use '
+                  'existing_fact_id for a supported equivalent only when its literal claim stays unchanged; '
+                  'a changed claim needs a new identity. A valid assessed result needs no mandatory second '
+                  'reviewer.\nFrozen source unit:\n' + canonical(supplied))
         return await self._run('facts', prompt, binding, schema)
 
     def _prepared_input(self, role, prompt, schema):
@@ -160,17 +167,21 @@ class LiveSemanticClient:
                 guard()
                 if done.done():
                     raise ConflictError('live_research_result_closed', 'Frozen research operation already closed.')
-                args = call.get('args')
+                from .research_result_normalization import normalize_result
+                raw_args = call.get('args')
+                args = normalize_result(raw_args, schema)
+                receipt['raw_result'] = raw_args
                 errors = list(islice(Draft202012Validator(schema).iter_errors(args), VALIDATION_ERRORS + 1))
                 if call.get('name') != RESULT_TOOL or errors:
                     details = [_validation_error(error) for error in errors[:VALIDATION_ERRORS]]
                     call_id = call.get('id') if isinstance(call.get('id'), str) else None
+                    receipt.pop('raw_result', None)
                     receipt.update(phase='failed', provider_send_state='response_closed',
                         error_code='live_research_result_malformed', provider_call_id=call_id[:160] if call_id else None,
                         provider_call_id_truncated=bool(call_id and len(call_id) > 160),
                         rejection_reason='unexpected_tool' if call.get('name') != RESULT_TOOL else 'schema_validation',
                         validation_errors=details, validation_errors_truncated=len(errors) > VALIDATION_ERRORS,
-                        **_malformed_args(args))
+                        **_malformed_args(raw_args))
                     persist()  # Preserve the paid closed answer even if executor teardown is interrupted.
                     # Schema locations are contract metadata. Instance values,
                     # arbitrary instance keys and validator messages stay out of logs.

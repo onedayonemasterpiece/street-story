@@ -524,3 +524,52 @@ def test_poi_review_sync_ignores_transient_unreviewed_and_propagates_withheld(tm
             "different-story",
         )
         assert all(item["fact_id"] != "claim-review" for item in reused)
+
+
+def test_canonical_basis_survives_growth_story_deletion_and_warm_reuse(tmp_path):
+    from test_fact_ledger import create_story, fact, persist
+    from street_story.fact_ledger import accept_fact_basis, refresh_review_status
+    from street_story.poi_memory import hydrate_story_facts
+    store = Store(tmp_path / 'warm.sqlite3')
+    identity = {'candidate_id': 'wiki:403645', 'status': 'match'}
+    first = create_story(store, 'first')
+    with store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({'visual_identity': identity}), first))
+    item = fact('figures', 'Три фигуры.', 'https://own.example', 'Три фигуры.')
+    fid = persist(store, first, [item], 'r', 'b')[0]
+    item = {**item, 'fact_id': fid}
+    with store.tx() as db:
+        ids = [r[0] for r in db.execute('SELECT evidence_id FROM fact_evidence_spans')]
+        accept_fact_basis(db, first, fid, ids, operation={'receipt_id': 'original-assessment'}, now=10)
+        refresh_review_status(db, first, 10)
+        persist_research_memory(db, identity, [item], item['sources'], 'first', 10, research_run_id='r')
+        assert sync_poi_review_from_story(db, first, 10) == 1
+        original = db.execute('SELECT review_proof_json FROM poi_research_assertions').fetchone()[0]
+        enriched = fact('figures', 'Три фигуры.', 'https://another.example', 'Установлены три фигуры.')
+        enriched['fact_id'] = fid
+        persist_research_memory(db, identity, [enriched], enriched['sources'], 'growth', 11, research_run_id='r2')
+        assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'eligible'
+        db.execute('DELETE FROM stories WHERE id=?', (first,))
+    second = create_story(store, 'second')
+    with store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({'visual_identity': identity}), second))
+        assert hydrate_story_facts(db, identity, second) == 1
+        refresh_review_status(db, second, 12)
+        row = db.execute('SELECT eligibility,owner_selected FROM fact_assertions WHERE story_id=?', (second,)).fetchone()
+        assert tuple(row) == ('eligible', 0)
+        assert db.execute('SELECT count(*) FROM fact_conflict_scans').fetchone()[0] == 0
+        sync_poi_review_from_story(db, second, 12)
+        assert json.loads(db.execute('SELECT review_proof_json FROM poi_research_assertions').fetchone()[0]) == json.loads(original)
+        db.execute("UPDATE fact_assertions SET eligibility='withheld',review_status='disputed',updated_at=20 WHERE story_id=?", (second,))
+        sync_poi_review_from_story(db, second, 20)
+        assert db.execute('SELECT reviewed_at,eligibility FROM poi_research_assertions').fetchone()[:] == (20, 'withheld')
+        db.execute("UPDATE fact_assertions SET updated_at=30 WHERE story_id=?", (second,))
+        sync_poi_review_from_story(db, second, 30)
+        assert db.execute('SELECT reviewed_at FROM poi_research_assertions').fetchone()[0] == 20
+        db.execute("UPDATE fact_assertions SET eligibility='eligible',review_status='eligible',updated_at=40 WHERE story_id=?", (second,))
+        sync_poi_review_from_story(db, second, 40)
+        assert db.execute('SELECT eligibility FROM poi_research_assertions').fetchone()[0] == 'withheld'
+        proof = json.loads(original)
+        db.execute('DELETE FROM poi_research_observations WHERE observation_id=?', (proof['supports'][0]['observation_id'],))
+        from street_story.poi_memory import _research_memory_facts
+        assert _research_memory_facts(db, identity, None, include_unreviewed=False) == []

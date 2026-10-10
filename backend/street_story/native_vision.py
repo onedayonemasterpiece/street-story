@@ -265,6 +265,11 @@ class NativeVisionProvider:
                         if keyword in node:
                             node.pop(keyword)
                             transport_constraints.append('/'.join((*path, keyword)))
+                    if 'oneOf' in node:
+                        node['anyOf'] = node.pop('oneOf')
+                        transport_constraints.append('/'.join((*path, 'oneOf')))
+                    if 'const' in node:
+                        node['enum'] = [node.pop('const')]
                     for keyword, value in node.items():
                         if keyword in {'properties', '$defs', 'definitions'} and isinstance(value, dict):
                             for name, child in value.items():

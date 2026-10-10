@@ -148,10 +148,11 @@ async def test_larger_partial_catalogue_preserves_all_records_for_model_selectio
     monkeypatch.setattr(prussia39, 'Prussia39Adapter', Adapter)
     articles, lookup = await acquire_regional_text(
         SimpleNamespace(store=object()), story, [body], query)
-    assert calls == [] and articles == []
+    assert set(calls) == {card['canonical_url'] for card in received}
+    assert len(articles) == len(received)
     assert lookup['results'] == received
     assert lookup['inventory_complete'] is False
-    assert 'requires model source selection' in lookup['limitation']
+    assert lookup['source_acquisition_selection']['identity_inferred'] is False
 
 
 def test_compound_address_and_suffixes_remain_distinct():
@@ -394,7 +395,10 @@ def test_received_material_candidates_and_verified_text_have_no_new_arbitrary_in
     prepared = prepare_architectural_comparison(story, candidates, receipt)
     assert len(prepared['candidate_ids']) == 12
     packet = json.loads(prepared['prompt'].split('\n', 1)[1])
-    assert ''.join(span['literal_text'] for span in packet['literal_source_passages'][0]['passages']) == article['text']
+    portion = packet['literal_source_passages'][0]
+    assert article['text'].startswith(''.join(span['literal_text'] for span in portion['passages']))
+    assert portion['full_text_sha256'] == article['text_sha256']
+    assert portion['next_cursor'] is not None
     assert 'text' not in packet['articles'][0]
     assert prepared['schema']['properties']['material_alternatives']['maxItems'] == 12
 

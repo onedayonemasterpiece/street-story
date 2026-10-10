@@ -6,6 +6,13 @@ import java.util.Locale
 internal object FactPresentation {
     private const val MAX_FACT_CHARS = 160
 
+    fun statusLabel(fact: FactSnapshot): String = when {
+        fact.evidenceSupported -> "Готов к выбору"
+        fact.reviewStatus == "disputed" -> "Есть противоречие"
+        fact.reviewStatus in setOf("withheld", "quarantined") -> "Недостаточная опора"
+        else -> "Ожидает проверки"
+    }
+
     fun concise(raw: String): String {
         val text = raw.replace(Regex("\\s+"), " ").trim()
         if (text.length <= MAX_FACT_CHARS) return text

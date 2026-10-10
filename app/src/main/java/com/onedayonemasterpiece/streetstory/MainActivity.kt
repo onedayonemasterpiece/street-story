@@ -586,7 +586,7 @@ class MainActivity : Activity() {
             StoryStage.PUBLISHED,
             StoryStage.NEEDS_REVIEW,
             StoryStage.VISUAL_BLOCKED,
-        ) || !story.lastError.isNullOrBlank()
+        ) || story.previewOutdated || !story.lastError.isNullOrBlank()
         topicStatusView?.apply {
             val ownerError = ownerVisibleStoryError(story.lastError)
             text = ownerError ?: topicStatus(story)
@@ -1264,6 +1264,7 @@ class MainActivity : Activity() {
     }
 
     private fun topicStatus(story: StorySnapshot): String {
+        if (story.previewOutdated) return "Показан прежний визуал"
         val controls = research.get(story.clientStoryId)?.researchControls.orEmpty()
         if (story.stage == StoryStage.IDENTIFYING && controls["identity"]?.stopped == true) return "Поиск объекта приостановлен"
         if (story.stage == StoryStage.RESEARCHING && controls["facts"]?.stopped == true) return "Поиск фактов приостановлен"
@@ -1667,6 +1668,9 @@ class MainActivity : Activity() {
                 }
             }
             item.addView(box)
+            item.addView(label(FactPresentation.statusLabel(fact), 11, MUTED, Typeface.DEFAULT).apply {
+                setPadding(dp(48), 0, dp(4), dp(2))
+            })
             val sources = runCatching {
                 gson.fromJson(fact.sourcesJson, Array<SourceWire>::class.java).toList()
             }.getOrDefault(emptyList())
@@ -1721,11 +1725,10 @@ class MainActivity : Activity() {
         val selected = store.facts(storyId)
             .filter { it.selected && it.evidenceSupported }
             .map { it.factId }
-        val stable = selected.sorted().joinToString("|").hashCode().toUInt().toString(16)
         store.enqueueOperation(
             storyId,
             "facts",
-            newRequestKey("facts-ui", "$storyId-$stable"),
+            newRequestKey("facts-ui", "$storyId-${java.util.UUID.randomUUID()}"),
             gson.toJson(mapOf("selected_fact_ids" to selected, "preserve_draft" to true)),
         )
         SyncScheduler.enqueue(this)

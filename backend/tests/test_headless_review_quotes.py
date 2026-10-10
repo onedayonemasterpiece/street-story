@@ -73,7 +73,7 @@ def test_grouped_model_view_retains_all_competing_own_slices_once_per_assertion(
     assert {s['quote_ref'] for fact in view['facts'] for e in fact['evidence'] for s in e['slices']} == set(packet['quote_catalog'])
 
 
-def test_fresh_private_value_assessment_is_required_and_cannot_support_declared_conflict():
+def test_optional_value_assessment_cannot_support_declared_conflict():
     from jsonschema import Draft202012Validator
     packet = packet_fixture()
     packet['verifier_presentation'] = 'one_assertion_all_own_slices_v1'
@@ -82,7 +82,7 @@ def test_fresh_private_value_assessment_is_required_and_cannot_support_declared_
     for decision in args['decisions']:
         decision.pop('own_evidence_values', None)
         decision.pop('own_value_conflicts', None)
-    assert not Draft202012Validator(schema).is_valid(args)
+    assert Draft202012Validator(schema).is_valid(args)
     for decision in args['decisions']:
         decision.update(own_evidence_values=[], own_value_conflicts=[])
     assert Draft202012Validator(schema).is_valid(args)
@@ -154,7 +154,7 @@ def test_private_equivalence_schema_matches_host_optional_pointer_scope():
     assert original == public_schema()
 
 
-def test_private_schema_rejects_candidate_prose_without_changing_public_contract():
+def test_private_schema_accepts_literal_quote_while_own_evidence_guard_remains():
     from jsonschema import Draft202012Validator
     packet = packet_fixture()
     original = deepcopy(public_schema())
@@ -164,8 +164,8 @@ def test_private_schema_rejects_candidate_prose_without_changing_public_contract
     args['decisions'][0]['basis_quotes'] = ['Башня была построена в 1859 году.']
     assert Draft202012Validator(public_schema()).is_valid(args)
     errors = list(Draft202012Validator(private).iter_errors(args))
-    assert len(errors) == 1 and errors[0].validator == 'enum'
-    assert list(errors[0].path) == ['decisions', 0, 'basis_quotes', 0]
+    assert errors == []
+    assert headless_review_quotes.resolve_quotes(packet, args)['decisions'][0]['basis_quotes'] == ['Башня была построена в 1859 году.']
     assert public_schema() == original
     assert headless_review_quotes.response_schema({'packet_ref': 'legacy'}, public_schema()) == original
 
@@ -216,7 +216,7 @@ async def test_private_original_readback_and_recovery_use_exact_saved_schema(tmp
 
     engine._put(job, unit, saved)
     paraphrase = deepcopy(args)
-    paraphrase['decisions'][0]['basis_quotes'] = ['Candidate prose is not a quote label.']
+    paraphrase['decisions'][0]['atomic'] = 'Invalid changed semantic flag'
     receipt.update(phase='completed', result=paraphrase)
     with svc.store.tx() as db:
         db.execute('UPDATE research_provider_attempts SET receipt_json=?', (json.dumps(receipt),))

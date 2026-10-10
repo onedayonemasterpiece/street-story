@@ -120,11 +120,21 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
                 task.cancel()
             await asyncio.gather(*active.values(), return_exceptions=True)
 
+    async def maintenance_loop():
+        while True:
+            try:
+                await service.maintenance_tick()
+            except Exception as exc:
+                logging.getLogger('uvicorn.error').warning(
+                    'street_story_maintenance_deferred error_type=%s', type(exc).__name__)
+            await asyncio.sleep(max(1, settings.worker_poll_seconds))
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         task = asyncio.create_task(worker_loop(), name="street-story-worker")
         visual_task = asyncio.create_task(worker_loop(visual_only=True), name="street-story-identity-visual-worker")
         identity_task = asyncio.create_task(worker_loop(identity_only=True), name="street-story-identity-discovery-worker")
+        maintenance_task = asyncio.create_task(maintenance_loop(), name="street-story-maintenance")
         try:
             yield
         finally:
@@ -132,7 +142,8 @@ def create_app(settings: Settings | None = None, service: StreetStoryService | N
             task.cancel()
             visual_task.cancel()
             identity_task.cancel()
-            await asyncio.gather(task, visual_task, identity_task, return_exceptions=True)
+            maintenance_task.cancel()
+            await asyncio.gather(task, visual_task, identity_task, maintenance_task, return_exceptions=True)
             await service.close()
 
     app = FastAPI(title="Street Story", version="0.2.0", lifespan=lifespan)

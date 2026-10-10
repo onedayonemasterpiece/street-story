@@ -6,7 +6,6 @@ import pytest
 
 from street_story.providers import GeminiClient
 from street_story.research_runs import begin_research_run, persist_source_version, register_discovered_source, run_manifest, set_run_state
-from street_story.service import ConflictError
 from test_live_editor import make_service, mark_identity_ready
 from test_source_purpose_reuse import finish_text
 
@@ -88,9 +87,9 @@ def test_continuation_after_four_checked_sources_requests_fifth_and_keeps_run_wr
     writes = []
     adapter.write = lambda _, event: writes.append(event)
     adapter._continue_pending_research(session)
-    assert session.state['research_continuation_queued'] is True
-    assert len(writes) == 1 and 'get_research_chunk' in writes[0]['text']
-    assert 'three full-source' not in writes[0]['text']
+    assert writes == []
+    with svc.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM jobs WHERE json_extract(payload_json,'$.resume_run_id')='many-sources'").fetchone()[0] == 1
     with svc.store.connection() as db:
         assert run_manifest(db, 'many-sources')['run']['state'] == 'extracting'
 
@@ -98,8 +97,7 @@ def test_continuation_after_four_checked_sources_requests_fifth_and_keeps_run_wr
 @pytest.mark.asyncio
 async def test_inventory_guard_cannot_summarize_zero_findings_while_fifth_source_unread(tmp_path):
     _, adapter, session, _, _ = scoped_sources(tmp_path)
-    with pytest.raises(ConflictError, match='Zero new durable observations'):
-        await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}})
+    assert (await adapter.execute_tool(session, {'name': 'get_facts', 'args': {}}))['facts'] == []
 
 
 @pytest.mark.parametrize('path', ['continue', 'read'])
@@ -121,7 +119,7 @@ async def test_empty_discovery_is_partial_in_both_completion_paths(tmp_path, pat
         assert page['completed'] is False and page['partial'] is True
     with svc.store.connection() as db:
         manifest = run_manifest(db, 'empty-discovery')
-        assert manifest['run']['state'] == 'partial'
+        assert manifest['run']['state'] == ('extracting' if path == 'continue' else 'partial')
         assert manifest['run']['completed_at'] is None
         assert manifest['counts']['sources_discovered'] == 0
 

@@ -186,7 +186,9 @@ async def test_rejected_gallery_handoff_preserves_unknown_operations_and_owner_f
             svc.store.checkpoint_put(job['id'], 'headless_fact_unit:later-unit', {'phase': 'unknown'})
         else:
             with svc.store.tx() as db:
-                db.execute('UPDATE stories SET draft_text=? WHERE id=?', ('New owner draft', job['story_id']))
+                research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (job['story_id'],)).fetchone()[0])
+                research['input_revision'] = 'New research question'
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
         assert not helper._handoff_rejected_source(job, 'headless-run', 'Find historical facts', 'history', 0)
         assert len(researcher.model_units) == 1
     finally:
@@ -266,10 +268,8 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
             return await original(page, story, context)
 
         researcher.extract_fact_page = inspect
-        # All remembered unread sources are now attached before new discovery;
-        # three independent model pages become candidates; the cursor continues later.
-        with pytest.raises(RetryableProviderError, match='research_fact_next_page'):
-            await HeadlessFacts(svc).run(job, 'memory-run', 'Museum details', 'museum details')
+        # Ready slots refill until every frozen page has been considered.
+        await HeadlessFacts(svc).run(job, 'memory-run', 'Museum details', 'museum details')
         context = captured[0]
         assert len(context['known_facts']) == 50
         assert context['known_inventory_total'] == 71 and context['known_inventory_omitted_count'] == 21
@@ -278,9 +278,9 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
         assert context['prior_poi_ledger_omitted_count'] == 11
         assert context['previously_processed_sources_omitted_count'] >= 15
         with svc.store.connection() as db:
-            assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 74
-            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='unreviewed'", (sid,)).fetchone()[0] == 3
-        # Review only the three new candidates; do not close the unread research scope.
+            assert db.execute('SELECT COUNT(*) FROM facts WHERE story_id=?', (sid,)).fetchone()[0] == 71 + len(captured)
+            assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='unreviewed'", (sid,)).fetchone()[0] == len(captured)
+        # Review only the new candidates; do not close the unread research scope.
         adapter = HeadlessFacts(svc).adapter
         session = SimpleNamespace(id='live_1234567890abcdef', resource_id=sid,
                                   model='gemini-3.8-live', state={})
@@ -304,7 +304,7 @@ async def test_full_poi_memory_exceeds_model_window_without_losing_ledger_or_sel
         reviewed = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review-memory-duplicates', 'args': {
             'packet_ref': page['packet_ref'], 'decisions': decisions, 'relations_complete': True,
             'coverage_complete': False, 'missing_aspects': [], 'conflicts': []}})
-        assert reviewed['complete'] is False and reviewed['unreviewed_count'] == 0
+        assert reviewed['complete'] is False and reviewed['unreviewed_count'] == len(captured) - 3
         with svc.store.connection() as db:
             assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='eligible'", (sid,)).fetchone()[0] == 71
             assert db.execute("SELECT COUNT(*) FROM fact_assertions WHERE story_id=? AND eligibility='withheld'", (sid,)).fetchone()[0] == 3

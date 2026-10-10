@@ -54,9 +54,9 @@ SUFFICIENCY_CHECKS = (
     'Decide research_sufficient for coverage_goal from meaning, not a fact count. '
     'When true, supply research_sufficient_basis: candidate_indices are the exact zero-based '
     'positions in your returned facts array and known_fact_ids are exact supplied eligible '
-    'host IDs. Choose the compact substantive basis that would satisfy the goal IF each '
-    'new claim passes independent review; unnecessary enrichment is not part of that basis. '
-    'One claim passing review cannot stand in for the other claims you relied on. '
+    'host IDs. Choose the compact substantive basis that satisfies the goal when each '
+    'new claim passes your own assessment in this pass; enrichment is not part of that basis. '
+    'One accepted claim cannot stand in for the other claims you relied on. '
     'Location metadata alone is not sufficient historical or architectural material. '
     'Never use an unreviewed known claim or invent an ID. When false, use empty basis arrays.'
 )
@@ -145,7 +145,7 @@ def binding(session):
 
 def bundle(db, story_id):
     return {str(r['assertion_id']): str(r['revision_digest']) for r in db.execute(
-        'SELECT a.assertion_id,a.revision_digest FROM fact_assertions a JOIN facts f '
+        'SELECT a.assertion_id,COALESCE(a.accepted_revision_digest,a.revision_digest) AS revision_digest FROM fact_assertions a JOIN facts f '
         'ON f.story_id=a.story_id AND f.fact_id=a.assertion_id WHERE a.story_id=? '
         'AND f.evidence_supported=1 AND NOT EXISTS(SELECT 1 FROM live_fact_repairs r '
         'WHERE r.story_id=a.story_id AND r.parent_id=a.assertion_id AND r.child_id<>r.parent_id) '
@@ -168,18 +168,15 @@ def candidate_review_fence(db, story):
     research = json.loads(story['research_json'] or '{}')
     return {'photo': story['photo_sha256'], 'identity_generation': research.get('identity_generation'),
             'controls': research.get('research_controls'), 'input_revision': research.get('input_revision'),
-            'fact_request_revision': research.get('fact_request_revision'),
-            'transcript': research.get('transcript'), 'draft': story['draft_text'],
+            'transcript': research.get('transcript'),
             'latitude': story['latitude'], 'longitude': story['longitude'],
             'voices': [list(r) for r in db.execute('SELECT session_id,recording_finished,transcript '
                 'FROM voice_sessions WHERE story_id=? ORDER BY session_id', (story['id'],))],
-            'concept': research.get('publication_concept'),
-            'selected': [r[0] for r in db.execute('SELECT assertion_id FROM fact_assertions '
-                'WHERE story_id=? AND owner_selected=1 ORDER BY assertion_id', (story['id'],))]}
+            'subject': (research.get('visual_identity') or {}).get('candidate_id')}
 
 
 def eligible_bundle(db, story_id):
-    return {r[0]: r[1] for r in db.execute('SELECT assertion_id,revision_digest FROM fact_assertions '
+    return {r[0]: r[1] for r in db.execute('SELECT assertion_id,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions '
         "WHERE story_id=? AND eligibility='eligible' ORDER BY assertion_id", (story_id,))}
 
 
@@ -191,14 +188,21 @@ def canonical_review_fence(db, story, assertion_ids, *, include_projection=False
     versions = {}
     if include_projection:
         for assertion_id in sorted(set(assertion_ids)):
-            row = db.execute('SELECT eligibility,review_status,revision_digest FROM fact_assertions '
+            row = db.execute('SELECT eligibility,review_status,COALESCE(accepted_revision_digest,revision_digest) AS revision_digest FROM fact_assertions '
                 'WHERE story_id=? AND assertion_id=?', (story['id'], assertion_id)).fetchone()
             versions[canonical(['story_projection', assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
     for key in keys:
         for assertion_id in sorted(set(assertion_ids)):
-            row = db.execute('SELECT text,sources_json,eligibility,review_status,review_story_id,reviewed_at '
+            row = db.execute('SELECT text,sources_json,eligibility,review_status,review_story_id,reviewed_at,review_proof_json '
                 'FROM poi_research_assertions WHERE poi_key=? AND assertion_id=?', (key, assertion_id)).fetchone()
-            versions[canonical([key, assertion_id])] = hashlib.sha256(canonical(dict(row)).encode()).hexdigest() if row else None
+            record = dict(row) if row else None
+            if record:
+                from .poi_memory import _canonical_admission_valid
+                proof = json.loads(record.pop('review_proof_json') or '{}')
+                if _canonical_admission_valid(db, proof, record['text'], key):
+                    record.pop('sources_json')
+                    record['accepted_basis'] = proof
+            versions[canonical([key, assertion_id])] = hashlib.sha256(canonical(record).encode()).hexdigest() if record else None
     return versions
 
 
@@ -219,7 +223,7 @@ def load(adapter, session, db, ref):
     if payload.get('candidate_scope') is not None:
         current = {fid: current[fid] for fid in payload['candidate_scope'] if fid in current}
         for claim in payload.get('nearby_existing_claims', []):
-            existing = db.execute("SELECT revision_digest,eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?", (session.resource_id, claim['fact_id'])).fetchone()
+            existing = db.execute("SELECT COALESCE(accepted_revision_digest,revision_digest) AS revision_digest,eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=?", (session.resource_id, claim['fact_id'])).fetchone()
             if not existing or existing['eligibility'] != 'eligible' or existing['revision_digest'] != claim['revision_digest']:
                 raise ConflictError('live_review_packet_stale', 'Nearby existing claim changed; request a fresh packet.')
     parallel = payload.get('parallel_candidate_review') is True
@@ -332,7 +336,7 @@ def read(adapter, session, args):
                 hint_slots = ','.join('?' for _ in hints) or "''"
                 scope_slots = ','.join('?' for _ in candidate_ids)
                 nearby = [dict(row) for row in db.execute(
-                    "SELECT f.fact_id,f.text,a.revision_digest FROM facts f JOIN fact_assertions a "
+                    "SELECT f.fact_id,f.text,COALESCE(a.accepted_revision_digest,a.revision_digest) AS revision_digest FROM facts f JOIN fact_assertions a "
                     "ON a.story_id=f.story_id AND a.assertion_id=f.fact_id "
                     "WHERE f.story_id=? AND f.evidence_supported=1 AND a.eligibility='eligible' "
                     f"AND a.assertion_id NOT IN ({scope_slots}) "
@@ -378,8 +382,6 @@ def read(adapter, session, args):
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
             scope = sorted(affected & set(exact)) if supersedes else sorted(set(exact) - {items[int(n)]['id'] for n in reused})
-            for fact_id in scope:
-                db.execute("UPDATE fact_assertions SET review_status='unreviewed',eligibility='unreviewed' WHERE story_id=? AND assertion_id=? AND review_status<>'quarantined'", (session.resource_id, fact_id))
             from .identity_model_context import fact_review_subject
             research = json.loads(story['research_json'] or '{}')
             payload = {'bundle': exact, 'items': items,

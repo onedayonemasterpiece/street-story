@@ -289,3 +289,57 @@ async def test_normal_identity_worker_commits_text_and_stops_before_reference_se
     assert gemini.identity_calls == [] and current['facts'] == []
     with service.store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM pois').fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_requested_T_tail_uses_retained_full_body_and_existing_bounded_transport(monkeypatch):
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from street_story.identity_architectural_comparison import continue_requested_text
+    import street_story.identity_scene as scene_module
+    import street_story.identity_discovery as discovery
+    import street_story.research_budget as budget
+    import street_story.identity_telemetry as telemetry
+    stream = io.BytesIO()
+    Image.new('RGB', (16, 16)).save(stream, format='PNG')
+    source = stream.getvalue()
+    story, candidates, decision, receipt = text_inputs(photo=hashlib.sha256(source).hexdigest())
+    story['id'] = 'tail-story'
+    body = 'Unrelated historical context. ' * 800 + TEXT
+    start = body.index(TEXT)
+    article = receipt['articles'][0]
+    article.update(text=body, text_sha256=hashlib.sha256(body.encode()).hexdigest())
+    initial = copy.deepcopy(decision)
+    initial.update(decision='uncertain', source_text_requests=[{
+        'article_id': article['article_id'], 'start_char': start, 'reason': 'Need visible facade description.'}])
+    payload = {'accepted_architectural_text': initial, 'source_text_receipt': receipt}
+    calls, reservations = [], []
+    manifest = geometry_identity(photo=story['photo_sha256'])['geometry_proof']['source_map_receipt']['manifest']
+
+    async def scene(*args):
+        return {'manifest': manifest, 'bytes': source}
+
+    async def operation(story, prompt, schema, images, host_context, role):
+        current = host_context['source_text_receipt']
+        assert TEXT in prompt
+        assert body not in prompt
+        assert current['articles'][0]['text'] == body
+        assert current['articles'][0]['text_cursor'] == start
+        assert [label for label, _, _ in images] == ['SOURCE', 'MAP']
+        calls.append(role)
+        answer = with_received_physical_links(decision, [prompt])
+        return {'result': answer, 'host_context': host_context}
+
+    monkeypatch.setattr(scene_module, 'planner_scene', scene)
+    monkeypatch.setattr(budget, 'reserve_work', lambda *args: reservations.append(args[2:]))
+    monkeypatch.setattr(telemetry, 'record_identity_event', lambda *args: None)
+    monkeypatch.setattr(discovery, '_retain_article_discovery', lambda *args, **kwargs: {
+        'search_plan': kwargs['search_plan'], 'acquired_text_articles': kwargs['acquired_text_articles']})
+    service = SimpleNamespace(_source_photo_bytes=lambda sid: source,
+        providers=SimpleNamespace(research=SimpleNamespace(plan_source_map=operation)))
+    result, history = await continue_requested_text(service, story, candidates, payload, {})
+    assert len(calls) == 1 and calls[0].startswith('vision_native_text_portion:')
+    assert reservations[0][0] == 'planner_calls'
+    assert result['architectural_text_proof']['decision']['decision'] == 'accepted_architectural_text'
+    assert history['acquired_text_articles'][0]['text'] == body

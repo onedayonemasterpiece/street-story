@@ -2146,7 +2146,7 @@ async def test_successful_owner_editing_releases_stale_research_focus(tmp_path, 
     monkeypatch.setattr(adapter, '_execute_tool', edit)
     result = await adapter.execute_tool(session, {'name': 'edit_text'})
     assert result['text_revision'] == 2
-    assert paused == ['live_owner_switched_to_editing']
+    assert paused == []
     assert session.state['research_author_interrupted'] is True
     assert session.state['research_output_pending'] is False
     assert events[-1]['type'] == 'research_progress'
@@ -2158,4 +2158,4 @@ async def test_successful_owner_editing_releases_stale_research_focus(tmp_path, 
     with pytest.raises(ConflictError):
         await adapter.execute_tool(session, {'name': 'edit_text'})
     assert session.state['research_output_pending'] is True
-    assert len(paused) == 1
+    assert len(paused) == 0

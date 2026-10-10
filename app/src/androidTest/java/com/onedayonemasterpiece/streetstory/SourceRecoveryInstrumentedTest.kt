@@ -33,6 +33,59 @@ class SourceRecoveryInstrumentedTest {
         } finally { PhotoAssets.releaseTemporary(revoked) }
     }
 
+    @Test fun durableStopReachesServerBeforeFailedVoiceArchive() {
+        val store = AppGraph.store(context)
+        val feed = FeedProjectionStore(context)
+        val research = ResearchProjectionStore(context)
+        val imported = PhotoImporter.import(context, Uri.parse("content://com.onedayonemasterpiece.streetstory.test.photo-intake/original"))
+        val id = imported.clientStoryId
+        val calls = CopyOnWriteArrayList<RecordedRequest>()
+        val wire = StoryWire().apply {
+            this.id = "server-$id"
+            clientStoryId = id
+            photoSha256 = imported.sha256
+            state = StoryStage.REVIEW
+            sourceAvailable = true
+            visualIdentity = VisualIdentityWire().apply { status = "match"; candidateId = "fixture-poi" }
+        }
+        val server = MockWebServer().apply {
+            dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    calls.add(request)
+                    if (request.path.orEmpty().contains("voice-sessions")) {
+                        return MockResponse().setResponseCode(503).setBody("{\"error\":{\"code\":\"archive_unavailable\",\"message\":\"Archive temporarily unavailable\"}}")
+                    }
+                    return MockResponse().setHeader("Content-Type", "application/json").setBody(Gson().toJson(wire))
+                }
+            }
+            start()
+        }
+        try {
+            store.createStory(imported)
+            store.setServerIdentity(id, wire.id)
+            val voice = store.createVoiceSession(id, RecordingKind.LIVE_ARCHIVE, "controlled-emulator")
+            store.finishVoiceSession(voice.sessionId, "2026-10-10T22:00:00Z", 0, 0)
+            val stop = store.enqueueOperation(id, "research-control", "stop-$id", "{\"purpose\":\"facts\",\"action\":\"stop\"}")
+            val api = ApiClient(server.url("/").toString().trimEnd('/'), "instrumentation-only") { PhotoAssets.open(context, it) }
+            val worker = TestListenableWorkerBuilder<SyncWorker>(context).build()
+            assertThrows(ApiException::class.java) {
+                worker.syncStory(store, feed, research, api, requireNotNull(store.story(id)), null)
+            }
+            val stopIndex = calls.indexOfFirst { it.path.orEmpty().endsWith("/research-control") }
+            val archiveIndex = calls.indexOfFirst { it.path.orEmpty().contains("voice-sessions") }
+            assertTrue(stopIndex >= 0 && archiveIndex > stopIndex)
+            assertEquals(stop.requestKey, calls[stopIndex].getHeader("Idempotency-Key"))
+            assertFalse(store.pendingOperations(id).any { it.id == stop.id })
+            assertTrue(store.finishedVoiceSessions().any { it.sessionId == voice.sessionId })
+        } finally {
+            feed.close()
+            store.deleteStory(id)
+            research.clear(id)
+            PhotoAssets.releaseTemporary(imported.path)
+            server.shutdown()
+        }
+    }
+
     @Test fun missingSharedSourcePreservesProductStateAndSyncsSelectionUntilSameStoryReopensOriginal() {
         val store = AppGraph.store(context)
         val feed = FeedProjectionStore(context)

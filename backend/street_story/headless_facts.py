@@ -708,7 +708,7 @@ class HeadlessFacts:
             return
         story, research, _ = snapshot
         configured_model = getattr(getattr(provider, 'client', None), 'model_id', None) or 'unknown'
-        units = await self._prepare_units(job, run_id, configured_model, control_revision)
+        units = await self._prepare_units(job, run_id, configured_model, control_revision, limit=1)
         snapshot = self._snapshot(job, run_id, control_revision)
         if snapshot is None:
             return
@@ -802,12 +802,36 @@ class HeadlessFacts:
         reviewed = 0
         tasks = [asyncio.create_task(self._extract_unit(unit, provider, story, context, job)) for unit in units]
         pending_tasks = set(tasks)
+        prepared_chunks = {unit['page']['chunk_id'] for unit in units}
+        prepare_task = None
+        preparation_drained = False
         try:
-            while pending_tasks or review_task is not None:
+            while pending_tasks or review_task is not None or prepare_task is not None or not preparation_drained:
+                if (prepare_task is None and not preparation_drained and len(pending_tasks) < 3
+                        and self._snapshot(job, run_id, control_revision) is not None):
+                    prepare_task = asyncio.create_task(self._prepare_units(job, run_id, configured_model,
+                        control_revision, limit=1, exclude=prepared_chunks))
+                if not pending_tasks and review_task is None and prepare_task is None:
+                    break
                 waiting = pending_tasks | ({review_task} if review_task is not None else set())
                 if review_wake is not None:
                     waiting.add(review_wake)
+                if prepare_task is not None:
+                    waiting.add(prepare_task)
                 done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if prepare_task in done:
+                    next_units = await prepare_task
+                    prepare_task = None
+                    if not next_units:
+                        preparation_drained = True
+                    for unit in next_units:
+                        prepared_chunks.add(unit['page']['chunk_id'])
+                        units.append(unit)
+                        unit['sufficiency_known_facts'] = {fact['fact_id']: fact['text'] for fact in complete_inventory
+                                                          if fact.get('eligibility') == 'eligible'}
+                        task = asyncio.create_task(self._extract_unit(unit, provider, story, context, job))
+                        tasks.append(task)
+                        pending_tasks.add(task)
                 if review_wake in done:
                     review_wake = None
                     if (pending_tasks and review_task is None
@@ -859,6 +883,9 @@ class HeadlessFacts:
                         LOG.info('street_story_headless_fact_commit_deferred story_id=%s run_id=%s chunk_id=%s reason=%s',
                                  story['id'], run_id, unit['page']['chunk_id'], getattr(exc, 'code', None) or type(exc).__name__)
         finally:
+            if prepare_task is not None:
+                prepare_task.cancel()
+                await asyncio.gather(prepare_task, return_exceptions=True)
             if review_wake is not None:
                 review_wake.cancel()
                 await asyncio.gather(review_wake, return_exceptions=True)
@@ -908,16 +935,13 @@ class HeadlessFacts:
 
     def _owner_fence(self, db, story, research):
         """Candidate additions may change revision, never these author inputs."""
-        selected = [row[0] for row in db.execute(
-            'SELECT assertion_id FROM fact_assertions WHERE story_id=? AND owner_selected=1 ORDER BY assertion_id',
-            (story['id'],))]
         voices = [list(row) for row in db.execute('SELECT session_id,recording_finished,transcript FROM voice_sessions '
                                                 'WHERE story_id=? ORDER BY session_id', (story['id'],))]
         return {'photo': story['photo_sha256'], 'generation': story['_identity_generation'],
                 'controls': research.get('research_controls'), 'input_revision': research.get('input_revision'),
-                'fact_request_revision': research.get('fact_request_revision'), 'transcript': research.get('transcript'),
-                'latitude': story['latitude'], 'longitude': story['longitude'], 'draft': story['draft_text'],
-                'concept': research.get('publication_concept'), 'selected': selected, 'voices': voices}
+                'transcript': research.get('transcript'),
+                'latitude': story['latitude'], 'longitude': story['longitude'],
+                'subject': (research.get('visual_identity') or {}).get('candidate_id'), 'voices': voices}
 
     def _unit_phase(self, job, unit_id, phase, **detail):
         with self.service.store.tx() as db:
@@ -950,9 +974,9 @@ class HeadlessFacts:
             or receipt.get('phase') == 'aborted' and receipt.get('abort_acknowledged') is True
             for receipt in latest.values())
 
-    async def _prepare_units(self, job, run_id, model, control_revision):
-        units, visited, prepared = [], set(), set()
-        while len(units) < 3:
+    async def _prepare_units(self, job, run_id, model, control_revision, *, limit=3, exclude=()):
+        units, visited, prepared = [], set(exclude), set(exclude)
+        while len(units) < limit:
             # Frozen reads can complete without an async suspension. A backlog
             # of fenced pages must still let Live sockets receive/ACK speech
             # between page preparations, even when no model route is ready.
@@ -967,7 +991,8 @@ class HeadlessFacts:
                     "AND r.status NOT IN ('extracted','no_claims','failed','cancelled') ORDER BY c.ordinal,c.source_version_id", (run_id,)))
                 candidate = next((row for row in rows if row['chunk_id'] not in visited), None)
                 source = db.execute("SELECT url FROM research_run_sources WHERE run_id=? "
-                    "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url LIMIT 1", (run_id,)).fetchone()
+                    "AND source_version_id IS NULL AND status!='failed' ORDER BY discovered_at,url", (run_id,)).fetchall()
+                source = next((row for row in source if row['url'] not in visited), None)
                 if candidate and (candidate['ordinal'] == 0 or not source):
                     source = None
                 elif source:
@@ -995,7 +1020,7 @@ class HeadlessFacts:
                 continue
             prepared.add(page['chunk_id'])
             visited.add(page['chunk_id'])
-            # The source is fetched serially, then its actual frozen core owns the task.
+            # The ready frozen core owns its task; other reads do not delay its dispatch.
             chunk_owner = f"headless-facts:{job['id']}:{page['chunk_id']}"
             if session.id != chunk_owner:
                 with self.service.store.tx() as db:
@@ -1136,9 +1161,12 @@ class HeadlessFacts:
         actual_models = [usage.get('model_id') for usage in receipt.get('assistants') or []
                          if isinstance(usage, dict) and usage.get('model_id')]
         session.model = str(actual_models[-1] if actual_models else receipt.get('model_id') or session.model)
+        session.state['semantic_reading_contract'] = (receipt.get('binding') or {}).get('semantic_contract')
         committed = await self.adapter._save_research_facts(session, page['_unit_id'], {
-            'facts': [{**fact, 'selected': False} for fact in claims], 'batch_reviewed': False,
-            'extractor_candidates': True, 'inventory_reviewed': False,
+            'facts': [{**fact, 'selected': False} for fact in claims],
+            'batch_reviewed': (receipt.get('binding') or {}).get('semantic_contract') == 'source-reading-assessment-v2',
+            'extractor_candidates': (receipt.get('binding') or {}).get('semantic_contract') != 'source-reading-assessment-v2',
+            'inventory_reviewed': (receipt.get('binding') or {}).get('semantic_contract') == 'source-reading-assessment-v2',
             'source_matches_poi': result['source_matches_poi'], 'source_content_valid': result['source_content_valid'],
             'continuation_needed': result['continuation_needed'],
         })
@@ -1162,7 +1190,7 @@ class HeadlessFacts:
             'chunk_id': page['chunk_id'], 'batch_index': page['batch_index'], 'unit_id': page['_unit_id'],
             'model_id': session.model, 'provider_id': receipt.get('provider_id', 'unknown'),
             'backend': receipt.get('backend', 'unknown'), 'audit': committed.get('save_research_audit') or {},
-            'candidate_only': True,
+            'candidate_only': session.state.get('semantic_reading_contract') != 'source-reading-assessment-v2',
         }, source='fact_research')
         LOG.info('street_story_headless_fact_candidate_saved story_id=%s run_id=%s chunk_id=%s batch=%s',
                  story['id'], run_id, page['chunk_id'], page['batch_index'])

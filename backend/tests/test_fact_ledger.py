@@ -1192,3 +1192,54 @@ def test_conflict_observed_after_review_is_not_erased_by_older_scan(tmp_path):
         }
         assert rows[a] == "withheld"
         assert rows[b] == "withheld"
+
+
+def test_one_batch_merge_persists_all_own_passages(tmp_path):
+    from street_story.model_facts import merge_model_fact_inventory
+    store = Store(tmp_path / 'db.sqlite3')
+    story = create_story(store)
+    items = [dict(fact('same', 'На фасаде три фигуры.', 'https://same.example/page', passage), fact_id='same')
+             for passage in ['Три фигуры на фасаде.', 'Установлены три фигуры.']]
+    merged = merge_model_fact_inventory(items)
+    ids = persist(store, story, merged, 'run', 'batch')
+    assert len(ids) == 1
+    with store.connection() as db:
+        source_rows = json.loads(db.execute('SELECT sources_json FROM facts WHERE story_id=?', (story,)).fetchone()[0])
+        assert len(source_rows) == 1
+        assert {span['text'] for span in source_rows[0]['supports']} == {'Три фигуры на фасаде.', 'Установлены три фигуры.'}
+        assert db.execute('SELECT count(*) FROM fact_evidence_spans').fetchone()[0] == 2
+
+
+def test_accepted_basis_survives_support_growth_but_not_changed_claim_or_body(tmp_path):
+    from street_story.fact_ledger import accept_fact_basis, accepted_basis_valid
+    store = Store(tmp_path / 'db.sqlite3')
+    story = create_story(store)
+    with store.tx() as db:
+        db.execute('UPDATE stories SET research_json=? WHERE id=?',
+                   (json.dumps({'visual_identity': {'candidate_id': 'wiki:403645'}, 'identity_generation': 1}), story))
+    fid = persist(store, story, [fact('figures', 'Три фигуры.', 'https://own.example', 'Три фигуры.')], 'r', 'b')[0]
+    with store.tx() as db:
+        own = [row[0] for row in db.execute('SELECT evidence_id FROM fact_evidence_spans')]
+        accept_fact_basis(db, story, fid, own, operation={'contract': 'source-reading-assessment-v2'}, now=store.now())
+        refresh_review_status(db, story, store.now())
+        set_owner_selection(db, story, [fid], store.now())
+        original = dict(db.execute('SELECT * FROM fact_assertions').fetchone())
+        original_bundle = fact_revision_bundle(db, story, [fid])
+    persist(store, story, [fact('figures', 'Три фигуры.', 'https://another.example', 'На фасаде три фигуры.', existing_fact_id=fid)], 'r2', 'b2')
+    with store.tx() as db:
+        refresh_review_status(db, story, store.now())
+        assertion = dict(db.execute('SELECT * FROM fact_assertions').fetchone())
+        assert assertion['eligibility'] == 'eligible' and assertion['owner_selected'] == 1
+        assert assertion['revision_digest'] != original['revision_digest']
+        assert assertion['accepted_basis_json'] == original['accepted_basis_json']
+        assert fact_revision_bundle(db, story, [fid]) == original_bundle
+        accept_fact_basis(db, story, fid, own, operation={'new': True}, now=store.now())
+        assert db.execute('SELECT accepted_basis_json FROM fact_assertions').fetchone()[0] == original['accepted_basis_json']
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps({'visual_identity': {'candidate_id': 'wiki:another'}}), story))
+        assert not accepted_basis_valid(db, story, assertion)
+        refresh_review_status(db, story, store.now())
+        assert db.execute('SELECT eligibility FROM fact_assertions').fetchone()[0] == 'withheld'
+    persist(store, story, [fact('figures', 'Четыре фигуры.', 'https://own.example', 'Четыре фигуры.', existing_fact_id=fid)], 'r3', 'b3')
+    with store.connection() as db:
+        changed = db.execute('SELECT * FROM fact_assertions').fetchone()
+        assert changed['accepted_basis_json'] is None and changed['eligibility'] != 'eligible'

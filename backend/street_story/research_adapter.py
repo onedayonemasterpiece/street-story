@@ -98,6 +98,8 @@ def _closed_malformed_visual(receipt):
     return True
 
 
+FACT_READING_CONTRACT = 'source-reading-assessment-v2'
+
 FACT_PAGE_SCHEMA = {'type':'object','properties':{
     'research_sufficient':{'description':'Optional boolean early-stop advice, independent of claim validity.'},
     'research_sufficient_basis':{'description':
@@ -113,7 +115,9 @@ FACT_PAGE_SCHEMA = {'type':'object','properties':{
             # batch/index; semantic equivalence is decided by the reviewer.
             # An advisory model key must not discard otherwise complete claims.
             'claim_key':{'type':'string','description':'Optional advisory key; the backend assigns candidate IDs. Semantic equivalence requires review.'},
-            'existing_fact_id':{'type':'string'},'confidence':{'type':'number','minimum':0,'maximum':1},
+            'existing_fact_id':{'type':'string'},
+            'conflicts_with_existing':{'type':'array','items':{'type':'string'}},
+            'confidence':{'type':'number','minimum':0,'maximum':1},
             'source_refs':{'type':'array','items':{'type':'string'}},
             'passage_ids':{'type':'array','minItems':1,'items':{'type':'integer'}},
             'verdict':{'enum':['supported','insufficient','contradicted','possible_conflict']},
@@ -172,6 +176,7 @@ def fact_page_capsule(page, context):
                   known_inventory_total=total, known_inventory_next_offset=len(first),
                   known_inventory_omitted_count=total - len(first))
     return {'context': public, '_known_fact_inventory': complete, 'known_fact_inventory': first,
+            'semantic_contract': FACT_READING_CONTRACT,
             'sources': [{'source_version_id': page['source_version_id'], 'url': page['source_url'],
                          'title': page.get('source_title', ''), 'passages': [
                              {'passage_id': p['passage_id'], 'text': p['text']} for p in page['evidence_passages']]}]}
@@ -457,7 +462,9 @@ class ProductResearchAdapter:
                 'job_id': story.get('_research_job_id'), 'job_attempt': story.get('_research_job_attempt')}
             if story.get('_fact_pool_unit_id'):
                 binding.update(fact_unit_id=story['_fact_pool_unit_id'],
-                               fact_input_sha256=story.get('_fact_pool_input_sha256'))
+                               fact_input_sha256=story.get('_fact_pool_input_sha256'),
+                               **({'semantic_contract': story['_fact_semantic_contract']}
+                                  if story.get('_fact_semantic_contract') else {}))
             now = self.service.store.now()
             db.execute('INSERT OR IGNORE INTO research_provider_attempts(attempt_id,logical_id,story_id,role,receipt_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)',
                 (attempt, logical, story['id'], role, canonical({'binding': binding, 'phase': 'created'}), now, now))
@@ -1165,7 +1172,8 @@ class ProductResearchAdapter:
                 return {'result': receipt['result'], 'receipt': receipt}
         capsule = fact_page_capsule(page, context)
         digest = hashlib.sha256(canonical(capsule).encode()).hexdigest()
-        owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest}
+        owned = {**story, '_fact_pool_unit_id': unit, '_fact_pool_input_sha256': digest,
+                 '_fact_semantic_contract': FACT_READING_CONTRACT}
         all_routes = self._fact_pool_routes()
         qualified = [route for route in all_routes if route['qualified']]
         if qualified and all(_fact_route_exhausted(prior.get(route['role']) or {}, digest) for route in qualified):

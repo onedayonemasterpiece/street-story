@@ -901,15 +901,14 @@ async def test_original_readback_allows_selection_draft_and_restart_before_last_
 
 
 @pytest.mark.asyncio
-async def test_owner_selection_change_stales_private_background_packet(tmp_path):
+async def test_owner_selection_change_preserves_private_background_packet(tmp_path):
     svc,job,harness=await candidates(tmp_path)
     session=SimpleNamespace(id='review',resource_id=job['story_id'],actor=None,closed=False,state={})
     packet=review_packets.read(harness.adapter,session,{'run_id':RUN,'_parallel_candidate_review':True})
     with svc.store.tx() as db:
         db.execute('UPDATE fact_assertions SET owner_selected=1 WHERE story_id=?',(job['story_id'],))
     with svc.store.connection() as db:
-        with pytest.raises(ConflictError):
-            review_packets.load(harness.adapter,session,db,packet['packet_ref'])
+        review_packets.load(harness.adapter,session,db,packet['packet_ref'])
 
 
 @pytest.mark.asyncio

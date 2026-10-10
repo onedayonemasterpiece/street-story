@@ -237,15 +237,10 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         """
         story = self._story_row(db, story_id)
         research = json.loads(story["research_json"] or "{}")
+        if research.get('automatic_research_outcome'):
+            return False  # Retain joined intent; only a later explicit wave renews a closed envelope.
         pending = research.pop("pending_fact_request", None)
         if not isinstance(pending, dict):
-            return False
-        if research.get('automatic_research_outcome'):
-            # Recovery cannot grant another envelope to a previously queued
-            # request. A fresh explicit owner action must reset the outcome.
-            if pending.get('owner_research_wave'):
-                research['pending_fact_request'] = pending
-            db.execute('UPDATE stories SET research_json=? WHERE id=?', (canonical(research), story_id))
             return False
         queued = pending.pop("queued_requests", [])
         current_generation = int(research.get("identity_generation") or 0)
@@ -1080,6 +1075,29 @@ class MvpResearchMixin(IdentityLifecycleMixin):
         request_goal = str(payload.get("coverage_goal") or "").strip()
         if request_goal and request_goal != transcript:
             transcript += "\n\nТекущий запрос исследования: " + request_goal
+
+        resume_run_id = payload.get('resume_run_id')
+        if resume_run_id:
+            with self.store.connection() as db:
+                run = db.execute('SELECT * FROM research_runs WHERE run_id=? AND story_id=?',
+                                 (resume_run_id, story_id)).fetchone()
+                if (not run or run['state'] in {'completed', 'cancelled', 'failed'}
+                        or int(run['identity_generation']) != int(prior.get('identity_generation') or 0)):
+                    return
+                # An inherited wrapper cannot rebind an outstanding send to its
+                # own job. Maintenance observes the original operation instead.
+                original_pending = db.execute(
+                    "SELECT 1 FROM research_provider_attempts WHERE story_id=? "
+                    "AND json_extract(receipt_json,'$.binding.job_id') IS NOT ? "
+                    "AND json_extract(receipt_json,'$.binding.generation')=? "
+                    "AND (json_extract(receipt_json,'$.phase') NOT IN ('created','completed','failed','aborted') "
+                    "OR (json_extract(receipt_json,'$.phase')='aborted' AND COALESCE(json_extract(receipt_json,'$.abort_acknowledged'),0)=0)) LIMIT 1",
+                    (story_id, job['id'], int(prior.get('identity_generation') or 0))).fetchone()
+            if original_pending:
+                from .errors import RetryableProviderError
+                raise RetryableProviderError('research_original_operation_pending', retry_at=self.store.now()+30)
+            from .headless_facts import HeadlessFacts
+            return await HeadlessFacts(self).run(job, resume_run_id, run['goal'], run['extraction_scope'])
 
         lat, lon = story["latitude"], story["longitude"]
         osm: dict[str, Any] = {"reverse": {}, "nearby": []}

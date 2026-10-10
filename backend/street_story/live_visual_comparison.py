@@ -1113,6 +1113,11 @@ class LiveVisualComparisonMixin:
             aliases = {r['normalized_value']: r['poi_id'] for r in db.execute(
                 "SELECT normalized_value,poi_id FROM poi_aliases WHERE namespace='street_story_candidate'")}
             proved = visual_match(raw, pending['candidates'], shortlist, poi_aliases=aliases)
+            # A facade match can nominate a complex without resolving its body.
+            # The same model's outstanding binding question cannot authorize
+            # an identity commit to an arbitrary member of that complex.
+            if (raw.get('search_feedback') or {}).get('next_action') == 'verify_binding':
+                proved = False
             from .identity_subject_binding import subject_aliases
             accepted_id = (research.get('visual_identity') or {}).get('candidate_id')
             pair_aliases = subject_aliases(shortlist, poi_aliases=aliases).get(raw.get('candidate_id'), {raw.get('candidate_id')})

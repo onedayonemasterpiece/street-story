@@ -249,7 +249,8 @@ class HeadlessFactReview:
                 response = await provider.run(story, role, unit,
                     lambda binding, client=client: client._run('facts', prompt, binding, schema), client=client)
                 from jsonschema import Draft202012Validator
-                args = response.get('result')
+                from .research_result_normalization import normalize_result
+                args = normalize_result(response.get('result'), schema)
                 result = {**frozen, 'phase': 'result', 'args': args, 'model_id': client.model_id}
                 if not self._result_route_qualified(result):
                     self._close_unqualified_result(job, unit, result)
@@ -380,7 +381,9 @@ class HeadlessFactReview:
                           and (receipt.get('binding') or {}).get('fact_unit_id') == unit), None)
             if not prior or prior.get('phase') != 'completed':
                 continue
-            args = prior.get('result')
+            from .research_result_normalization import normalize_result
+            schema = saved.get('verifier_schema', public_schema)
+            args = normalize_result(prior.get('result'), schema)
             result = {**saved, 'phase': 'result', 'args': args,
                       'model_id': prior.get('model_id') or prior.get('model')}
             if not self._result_route_qualified(result):

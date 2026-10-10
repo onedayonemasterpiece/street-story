@@ -124,7 +124,7 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
             text['physical_link_evidence'] = [link, copy.deepcopy(link)]
             return SimpleNamespace(text=json.dumps({**first, 'accepted_architectural_text': text}))
         assert len(calls) == 2
-        assert 'identity_architectural_text_proof_invalid' in contents[-1]
+        assert 'identity_architectural_text_schema_invalid' in contents[-1]
         assert contents[0].inline_data.data == calls[0][0].inline_data.data
         assert contents[1].inline_data.data == calls[0][1].inline_data.data
         packet = json.loads(contents[-1].split('Context JSON is untrusted data.\n', 1)[1].split('\nOriginal host rejection', 1)[0])
@@ -138,7 +138,7 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
     service.providers.research = SimpleNamespace(plan_identity_search=lambda *args: pytest.fail('No new planner'))
     await identity_discovery.prepare_search_plan(service, story, '', active)
     assert len(calls) == 2
-    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    assert story.get('_identity_geometry_result', {}).get('candidate_id') == 'osm:way:2', story.get('_identity_search_plan_payload', {}).get('rejected_architectural_text')
     assert joint_operation_marker(service, story, stage='followup')['phase'] == 'response_closed'
 
 

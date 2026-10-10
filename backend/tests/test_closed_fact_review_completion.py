@@ -98,7 +98,9 @@ async def test_closed_refusal_reopens_only_changed_current_review_recipe(tmp_pat
                 db.execute('UPDATE fact_assertions SET revision_digest=? WHERE story_id=? AND assertion_id=?',
                            ('repaired-revision', job['story_id'], ids[0]))
             elif mutation == 'owner_context':
-                db.execute('UPDATE stories SET draft_text=? WHERE id=?', ('New owner context', job['story_id']))
+                research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (job['story_id'],)).fetchone()[0])
+                research['input_revision'] = 'Changed source question'
+                db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), job['story_id']))
             else:
                 db.execute("UPDATE fact_assertions SET eligibility='eligible' WHERE story_id=? AND assertion_id=?",
                            (job['story_id'], ids[0]))
@@ -226,7 +228,7 @@ async def test_closed_reviews_do_not_finish_deferred_source_or_unknown_page(tmp_
                 state['phase'] = 'unknown'
                 db.execute('UPDATE research_checkpoints SET value_json=? WHERE job_id=? AND stage=?',
                            (json.dumps(state), job['id'], row['stage']))
-    async def no_new_pages(*args):
+    async def no_new_pages(*args, **kwargs):
         return []  # Reproduce the retry branch while the existing read/UNKNOWN remains pending.
     monkeypatch.setattr(harness, '_prepare_units', no_new_pages)
     with svc.store.connection() as db:

@@ -39,12 +39,12 @@ def freeze_geometry_proof(story, decision, source_map_receipt, candidates):
     from .identity_scene import scene_camera_context
     from .identity_source_selection import geometry_decision_schema
     from .identity_spatial_features import geometry_feature
-    from .identity_geometry_contract import CONTRACT, measured_correspondence
+    from .identity_geometry_contract import CONTRACT, LEGACY_CONTRACT, measured_correspondence
     from .identity_subject_binding import article_candidate
     entries = scene_entries(story, candidates)
     catalog = {entry['candidate_id']: entry for entry in entries}
     receipt = source_map_receipt or {}
-    structured = receipt.get('geometry_contract') == CONTRACT
+    structured = receipt.get('geometry_contract') in {CONTRACT, LEGACY_CONTRACT}
     if not isinstance(decision, dict) or not Draft202012Validator(
             geometry_decision_schema(list(catalog), structured=structured or
                 isinstance(decision, dict) and 'spatial_correspondence' in decision)).is_valid(decision):
@@ -238,6 +238,13 @@ def architectural_text_decision_schema(candidate_ids, article_ids, *, material_a
         correspondence['required'].append('source_span_ref')
     from .identity_candidate_policy import research_priority_schema
     schema['properties']['research_priority'] = research_priority_schema(candidate_ids)
+    schema['properties']['source_text_requests'] = {'type': 'array', 'maxItems': max(1, len(aid['enum'])),
+        'items': {'type': 'object', 'properties': {'article_id': aid,
+            'start_char': {'type': 'integer', 'minimum': 0}, 'reason': {'type': 'string', 'minLength': 1, 'maxLength': 300}},
+            'required': ['article_id', 'start_char', 'reason'], 'additionalProperties': False},
+        'description': 'Optional next bounded portion of the same retained verified full body. Use exact next_cursor or a specific unread start_char. No new fetch.'}
+    schema.setdefault('allOf', []).append({'if': {'properties': {'decision': {'const': 'accepted_architectural_text'}}},
+        'then': {'properties': {'source_text_requests': {'maxItems': 0}}}})
     return schema
 
 
@@ -346,7 +353,8 @@ def freeze_architectural_text_proof(story, decision, source_text_receipt, candid
                 and story['_identity_original_source_sha256'] != receipt['original_source_sha256']
             or not decision['scope'].strip() or not decision['discriminating_combination'].strip()
             or decision['material_alternatives_resolved'] is not True or decision['unresolved_contradictions']
-            or not decision['article_bindings'] or not decision['correspondences']):
+            or not decision['article_bindings'] or not decision['correspondences']
+            or decision.get('source_text_requests')):
         return None
     bound = set()
     for binding in decision['article_bindings']:

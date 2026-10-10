@@ -142,7 +142,7 @@ async def test_repair_withholds_shared_parent_before_replacement_review_and_resu
     with svc.store.connection() as db:
         canonical = db.execute('SELECT * FROM poi_research_assertions WHERE assertion_id=?', (child,)).fetchone()
         assert canonical['eligibility'] == 'eligible'
-        assert __import__('json').loads(canonical['review_proof_json'])['detector'] == 'mira_live_review'
+        assert __import__('json').loads(canonical['review_proof_json'])['detector'] == 'accepted_basis'
         reused = prior_facts(db, {'candidate_id': canonical['poi_key']}, 'next-story')
         assert child in {f['fact_id'] for f in reused} and fid not in {f['fact_id'] for f in reused}
     await reader.search_http.aclose()
@@ -269,7 +269,7 @@ async def test_new_policy_supersedes_wrong_completed_review_without_rewriting_re
     with svc.store.tx() as db:
         refresh_review_status(db, session.resource_id, svc.store.now())
         pending = db.execute('SELECT eligibility FROM fact_assertions WHERE story_id=? AND assertion_id=(SELECT assertion_id FROM fact_assertions WHERE story_id=? ORDER BY assertion_id LIMIT 1 OFFSET 1)', (session.resource_id, session.resource_id)).fetchone()[0]
-        assert pending == 'unreviewed'
+        assert pending == 'eligible'
     new = {**args, 'packet_ref': fresh['packet_ref'], 'decisions': [{'fact': n, 'evidence': [0], 'verdict': 'insufficient' if n == 1 else 'supported'} for n in range(3)]}
     result = await adapter.execute_tool(session, {'name': 'finalize_fact_review', 'id': 'review2', 'args': new})
     assert result['eligible_count'] == 2 and result['withheld_count'] == 1

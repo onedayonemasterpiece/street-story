@@ -176,6 +176,14 @@ a failed test; it can never make acceptance green.
 The long-lived async voice endpoints remain available for compatibility and possible future development, but a Live
 failure is surfaced as a Live/resource error. There is no automatic route switch to those endpoints.
 
+## Original-operation maintenance — recovery candidate 2026-10-10
+
+The lifespan runs a bounded maintenance loop independently of claimable jobs.
+It serializes terminal observations, original provider accounting/readback and
+quota reconciliation with idle-worker maintenance. A temporary failure leaves
+receipts durable and defers the next tick; maintenance never creates a substitute
+send. Release health and product acceptance remain separate from these source changes.
+
 ## Headless queue fairness and explicit visual retries — 2026-10-05
 
 Identity and confirmed-fact schedulers stream stories in stable creation/id order.

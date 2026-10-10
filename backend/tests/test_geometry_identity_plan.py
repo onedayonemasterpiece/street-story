@@ -540,3 +540,34 @@ def test_uncertain_geometry_does_not_invent_pose_but_positive_still_requires_it(
     assert not list(validator.iter_errors(decision))
     decision.update(decision='accepted_geometry', candidate_id='osm:way:2')
     assert list(validator.iter_errors(decision))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('foreign', [False, True])
+async def test_general_geometry_uses_received_relations_without_numerical_pose(tmp_path, foreign):
+    from street_story.identity_geometry_contract import CONTRACT
+    from street_story.identity_proof import freeze_geometry_proof
+    from street_story.identity_scene import planner_scene
+    service, story, active = geometry_setup(tmp_path)
+    scene = await planner_scene(service, story, active)
+    decision = geometry_decision()
+    decision['spatial_correspondence'] = {'pattern_kind': 'general_relations',
+        'source_pattern': 'Individual body bounds the photographed approach, with a distinct neighboring return.',
+        'coverage_basis': 'Received body and approach primitives; material neighbor addressed.',
+        'candidate_ids': ['osm:way:2'], 'assumption_limits': ['Heading and pitch are unknown.'],
+        'decisive_relation_indices': [0]}
+    if foreign:
+        decision['decisive_relations'][0]['map_features'][0]['candidate_id'] = 'osm:way:999999'
+    digest = hashlib.sha256(service._source_photo_bytes(story['id'])).hexdigest()
+    receipt = {'joint_image_input': True, 'geometry_contract': CONTRACT,
+        'source_photo_sha256': story['photo_sha256'], 'original_source_sha256': digest, 'model_source_sha256': digest,
+        'map_image_sha256': scene['manifest']['image_sha256'], 'manifest': scene['manifest'],
+        'physical_body_candidate_ids': ['osm:way:2', 'osm:way:3'], 'material_alternative_candidate_ids': ['osm:way:3']}
+    proof = freeze_geometry_proof(story, decision, receipt, active)
+    if foreign:
+        assert proof is None
+    else:
+        assert proof['spatial_correspondence']['kind'] == 'general_relations'
+        assert 'pose' not in proof['decision']['spatial_correspondence']
+        receipt['geometry_contract'] = 'source-map-spatial-correspondence-v2'
+        assert freeze_geometry_proof(story, decision, receipt, active) is None

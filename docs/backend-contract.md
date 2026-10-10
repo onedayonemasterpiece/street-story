@@ -115,6 +115,27 @@ Canonical states remain `photo_ready`, `queued`, `researching`, `review`, `visua
 
 ## Research / facts
 
+Accepted upload and durable research work survive client close/minimize, microphone
+Stop, reconnect, fact selection and editorial changes. Scoped research Stop,
+SOURCE/identity generation and materially changed owner inputs remain authoritative.
+Reopen reads saved results and useful partials. A joined owner request does not
+renew an existing wave or resend its UNKNOWN operation; an explicit later hint
+may open a bounded new wave after the old product outcome has closed.
+
+Fresh `source-reading-assessment-v2` pages perform extraction, normalization and
+scoped assessment in one semantic pass, then enter the existing ledger once.
+Legacy extractor-only receipts still require their original review. Model support,
+atomicity and qualifiers plus exact own evidence determine admission; host code
+never supplies missing semantic verdicts. A declared contradiction enters the
+existing pair ledger and withholds the affected claim pending arbitration.
+
+An accepted unchanged claim retains its own accepted evidence basis when compatible
+support grows or a recheck opens. Changed meaning/physical subject, missing own basis
+or a material contradiction blocks that claim locally. Shared POI observations retain
+the canonical admission independently of the publication story; warm hydration binds
+its own evidence IDs without a new synthetic model verdict. These source contracts
+require candidate acceptance evidence before being treated as deployed behavior.
+
 The worker claims durable SQLite jobs by lease and recovers expired `running`
 work after restart. The current target is the adaptive [photo-search contract](photo-search-methods.md):
 

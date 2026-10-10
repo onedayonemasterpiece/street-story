@@ -21,10 +21,10 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("""CREATE TABLE stories(client_story_id TEXT PRIMARY KEY,server_story_id TEXT UNIQUE,created_at INTEGER NOT NULL,photo_path TEXT NOT NULL,photo_sha256 TEXT NOT NULL,photo_mime_type TEXT NOT NULL,latitude REAL,longitude REAL,stage TEXT NOT NULL,place_name TEXT,summary TEXT,draft_text TEXT,processed_image_path TEXT,processed_image_url TEXT,scheduled_for TEXT,published_at TEXT,last_error TEXT,backend_revision INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL)""")
+        db.execSQL("""CREATE TABLE stories(client_story_id TEXT PRIMARY KEY,server_story_id TEXT UNIQUE,created_at INTEGER NOT NULL,photo_path TEXT NOT NULL,photo_sha256 TEXT NOT NULL,photo_mime_type TEXT NOT NULL,latitude REAL,longitude REAL,stage TEXT NOT NULL,place_name TEXT,summary TEXT,draft_text TEXT,processed_image_path TEXT,processed_image_url TEXT,processed_image_bytes_url TEXT,scheduled_for TEXT,published_at TEXT,last_error TEXT,backend_revision INTEGER NOT NULL DEFAULT 0,updated_at INTEGER NOT NULL)""")
         db.execSQL("""CREATE TABLE voice_sessions(session_id TEXT PRIMARY KEY,story_id TEXT NOT NULL,kind TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT,timezone TEXT NOT NULL,device_label TEXT NOT NULL,duration_ms INTEGER NOT NULL DEFAULT 0,wall_elapsed_ms INTEGER NOT NULL DEFAULT 0,manual_pause_ms INTEGER NOT NULL DEFAULT 0,auto_silence_skipped_ms INTEGER NOT NULL DEFAULT 0,chunk_count INTEGER NOT NULL DEFAULT 0,capture_state TEXT NOT NULL,capture_activity TEXT NOT NULL,capture_policy TEXT NOT NULL,vad_engine TEXT,remote_state TEXT NOT NULL DEFAULT 'local_only',server_initialized INTEGER NOT NULL DEFAULT 0,complete_sent INTEGER NOT NULL DEFAULT 0,last_error TEXT,manual_pause_started_epoch_ms INTEGER,created_at INTEGER NOT NULL,FOREIGN KEY(story_id) REFERENCES stories(client_story_id) ON DELETE CASCADE)""")
         db.execSQL("""CREATE TABLE chunks(session_id TEXT NOT NULL,chunk_index INTEGER NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,wall_start_ms INTEGER NOT NULL,wall_end_ms INTEGER NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,mime_type TEXT NOT NULL,uploaded INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,chunk_index),FOREIGN KEY(session_id) REFERENCES voice_sessions(session_id) ON DELETE CASCADE)""")
-        db.execSQL("""CREATE TABLE facts(story_id TEXT NOT NULL,fact_id TEXT NOT NULL,text TEXT NOT NULL,confidence REAL NOT NULL,evidence_supported INTEGER NOT NULL,selected INTEGER NOT NULL,sources_json TEXT NOT NULL,PRIMARY KEY(story_id,fact_id),FOREIGN KEY(story_id) REFERENCES stories(client_story_id) ON DELETE CASCADE)""")
+        db.execSQL("""CREATE TABLE facts(story_id TEXT NOT NULL,fact_id TEXT NOT NULL,text TEXT NOT NULL,confidence REAL NOT NULL,evidence_supported INTEGER NOT NULL,selected INTEGER NOT NULL,sources_json TEXT NOT NULL,review_status TEXT NOT NULL DEFAULT 'unreviewed',PRIMARY KEY(story_id,fact_id),FOREIGN KEY(story_id) REFERENCES stories(client_story_id) ON DELETE CASCADE)""")
         db.execSQL("""CREATE TABLE destinations(story_id TEXT NOT NULL,alias TEXT NOT NULL,label TEXT NOT NULL,provider TEXT NOT NULL,status TEXT NOT NULL,selected INTEGER NOT NULL,PRIMARY KEY(story_id,alias),FOREIGN KEY(story_id) REFERENCES stories(client_story_id) ON DELETE CASCADE)""")
         db.execSQL("""CREATE TABLE outbox(id TEXT PRIMARY KEY,story_id TEXT NOT NULL,kind TEXT NOT NULL,request_key TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL,state TEXT NOT NULL,last_error TEXT,created_at INTEGER NOT NULL,FOREIGN KEY(story_id) REFERENCES stories(client_story_id) ON DELETE CASCADE)""")
         db.execSQL("CREATE INDEX idx_voice_sync ON voice_sessions(remote_state,capture_state,created_at)")
@@ -33,7 +33,11 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("No migration required before v1 release")
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE facts ADD COLUMN review_status TEXT NOT NULL DEFAULT 'unreviewed'")
+            db.execSQL("UPDATE facts SET review_status='eligible' WHERE evidence_supported=1")
+            db.execSQL("ALTER TABLE stories ADD COLUMN processed_image_bytes_url TEXT")
+        }
     }
 
     @Synchronized
@@ -378,9 +382,15 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     }
 
     @Synchronized
-    fun setProcessedImagePath(id: String, path: String) {
+    fun setProcessedImagePath(id: String, path: String, expectedUrl: String? = null) {
+        if (expectedUrl != null && story(id)?.processedImageUrl != expectedUrl) {
+            PhotoAssets.releaseTemporary(path)
+            return
+        }
+        story(id)?.processedImagePath?.takeIf { it != path }?.let(PhotoAssets::releaseTemporary)
         writableDatabase.update("stories", ContentValues().apply {
             put("processed_image_path", path)
+            put("processed_image_bytes_url", expectedUrl ?: story(id)?.processedImageUrl)
             put("updated_at", System.currentTimeMillis())
         }, "client_story_id=?", arrayOf(id))
     }
@@ -415,6 +425,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
                     put("evidence_supported", if (fact.evidenceSupported) 1 else 0)
                     put("selected", if (selected) 1 else 0)
                     put("sources_json", fact.sourcesJson)
+                    put("review_status", fact.reviewStatus)
                 })
             }
             val selectedCount = facts(storyId).count { it.selected }
@@ -430,12 +441,12 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     @Synchronized
     fun facts(storyId: String): List<FactSnapshot> = readableDatabase.query(
-        "facts", arrayOf("fact_id", "text", "confidence", "evidence_supported", "selected", "sources_json"),
+        "facts", arrayOf("fact_id", "text", "confidence", "evidence_supported", "selected", "sources_json", "review_status"),
         "story_id=?", arrayOf(storyId), null, null, "rowid",
     ).use { cursor ->
         buildList {
             while (cursor.moveToNext()) {
-                add(FactSnapshot(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getInt(3) != 0, cursor.getInt(4) != 0, cursor.getString(5)))
+                add(FactSnapshot(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getInt(3) != 0, cursor.getInt(4) != 0, cursor.getString(5), cursor.getString(6)))
             }
         }
     }
@@ -542,7 +553,7 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
     private fun Cursor.story() = StorySnapshot(
         getString(0), stringOrNull(1), getLong(2), getString(3), getString(4), getString(5),
         doubleOrNull(6), doubleOrNull(7), getString(8), stringOrNull(9), stringOrNull(10), stringOrNull(11),
-        stringOrNull(12), stringOrNull(13), stringOrNull(14), stringOrNull(15), stringOrNull(16), getInt(17),
+        stringOrNull(12), stringOrNull(13), stringOrNull(14), stringOrNull(15), stringOrNull(16), getInt(17), stringOrNull(18),
     )
 
     private fun Cursor.voice() = VoiceSessionSnapshot(
@@ -564,11 +575,11 @@ class StoryStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB
 
     companion object {
         private const val DB_NAME = "street-story.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
         private val STORY_COLUMNS = arrayOf(
             "client_story_id", "server_story_id", "created_at", "photo_path", "photo_sha256", "photo_mime_type",
             "latitude", "longitude", "stage", "place_name", "summary", "draft_text", "processed_image_path",
-            "processed_image_url", "scheduled_for", "published_at", "last_error", "backend_revision",
+            "processed_image_url", "scheduled_for", "published_at", "last_error", "backend_revision", "processed_image_bytes_url",
         )
         private val VOICE_COLUMNS = arrayOf(
             "session_id", "story_id", "kind", "started_at", "ended_at", "timezone", "device_label", "duration_ms",

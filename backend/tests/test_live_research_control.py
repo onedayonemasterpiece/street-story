@@ -62,7 +62,7 @@ async def test_explicit_controls_preserve_queues_and_resume_current_epoch(tmp_pa
         assert after[key] == before[key]
     if purpose in {'facts', 'all'}:
         assert session.state['fact_research_control_revision'] == resumed['research_controls']['facts']['revision'] > 0
-        assert not session.state['research_cancelled']
+        assert not session.state.get('research_cancelled')
         assert 'research_chunk_receipts' not in session.state
         assert 'research_pending_page' not in session.state
         with svc.store.connection() as db:
@@ -122,7 +122,11 @@ def test_microphone_stop_does_not_cancel_background_research(tmp_path):
     svc, adapter, session, _ = prepared(tmp_path)
     before = rows(svc, session.resource_id)
     adapter.on_stopped(session)
-    assert rows(svc, session.resource_id) == before
+    after = rows(svc, session.resource_id)
+    assert all(after[key] == value for key, value in before.items())
+    assert after['research-resume:partial-run']['state'] == 'ready'
+    adapter.on_stopped(session)
+    assert rows(svc, session.resource_id) == after
     current = svc.story(session.resource_id)
     assert not any(v['stopped'] for v in current['research_controls'].values())
 
@@ -291,19 +295,18 @@ async def test_more_after_editing_reads_saved_document_and_preserves_draft(tmp_p
     begin_turn(session, 'Сохрани концепцию', origin='text')
     await adapter.execute_tool(session, {'name': 'set_concept', 'id': 'concept-before-more',
                                        'args': {'concept': 'История ворот'}})
-    with pytest.raises(ConflictError, match='paused'):
-        await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    page = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    assert page['evidence_passages']
 
     begin_turn(session, 'Найди ещё факты, сохрани текущий текст', origin='text')
-    page = await adapter.execute_tool(session, {'name': 'get_research_chunk', 'args': {'run_id': 'partial-run'}})
+    adapter._enter_requested_research(session)
     assert page['research_run_id'] == 'partial-run'
-    assert page['evidence_passages']
     assert service.story(session.resource_id)['draft_text'] == 'Owner draft'
     assert service.story(session.resource_id)['publication_concept'] == 'История ворот'
-    assert not session.state['research_cancelled']
+    assert not session.state.get('research_cancelled')
     assert not session.state['research_author_interrupted']
     with service.store.connection() as db:
-        assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'extracting'
+        assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'planned'
 
 
 @pytest.mark.asyncio
@@ -335,7 +338,7 @@ def test_more_keeps_completed_run_immutable(tmp_path):
     adapter._pause_research(session, 'live_owner_switched_to_editing')
     begin_turn(session, 'Найди ещё факты', origin='text')
     adapter._enter_requested_research(session)
-    assert not session.state['research_cancelled']
+    assert not session.state.get('research_cancelled')
     assert 'research_run_id' not in session.state
     with service.store.connection() as db:
         assert db.execute("SELECT state FROM research_runs WHERE run_id='partial-run'").fetchone()[0] == 'completed'

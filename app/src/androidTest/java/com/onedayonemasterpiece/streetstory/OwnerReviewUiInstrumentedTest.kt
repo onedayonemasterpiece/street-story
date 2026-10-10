@@ -62,6 +62,16 @@ class OwnerReviewUiInstrumentedTest {
                 assertTrue(boxes.all { it.isEnabled })
                 boxes[0].performClick()
                 assertEquals("Факты · выбрано 4 из 16", (root as ViewGroup).getChildAt(0).let { (it as TextView).text.toString() })
+                // Three owner actions returning to the same selection must
+                // remain three durable mutations, including after reopen.
+                boxes[0].performClick()
+                boxes[0].performClick()
+                StoryStore(context).use { store ->
+                    val edits = store.pendingOperations(storyId).filter { it.kind == "facts" }
+                    assertEquals(3, edits.size)
+                    assertEquals(3, edits.map { it.requestKey }.distinct().size)
+                    assertEquals(edits.first().payloadJson, edits.last().payloadJson)
+                }
                 selectedId = facts[0].factId
                 val sources = descendants(root).filterIsInstance<TextView>().filter { it.contentDescription?.toString()?.startsWith("Источники факта:") == true }
                 assertEquals(facts.size, sources.size)

@@ -629,6 +629,9 @@ class OpenCodeResearch:
                                     receipt['assistant_text_sha256'] = hashlib.sha256(content.encode()).hexdigest()
                                     result = {'summary': ''}
                             from jsonschema import Draft202012Validator
+                            from .research_result_normalization import normalize_result
+                            receipt['raw_result'] = result
+                            result = normalize_result(result, schema)
                             if not Draft202012Validator(schema).is_valid(result):
                                 if role != 'search':
                                     raise ResearchUnavailable('research_schema_invalid', receipt)
@@ -790,7 +793,13 @@ class OpenCodeResearch:
                   'Do not invent missing history: return no facts when passages provide none. '
                   'Set research_sufficient=true when known eligible facts plus supportable new claims give '
                   'useful material for coverage_goal; optional enrichment need not be exhaustive. '
-                  'This does not bypass independent semantic review. '
+                  'For semantic_contract=source-reading-assessment-v2 this SAME pass assesses own '
+                  'support, atomicity, physical subject, temporal scope, qualifiers and ALL competing '
+                  'values in own frozen passages, including infobox versus prose. Never support an '
+                  'unresolved contradiction: preserve it as possible_conflict with actual host IDs in '
+                  'conflicts_with_existing. Use existing_fact_id for a supported equivalent only when '
+                  'its literal claim stays unchanged; a changed claim needs a new identity. A valid '
+                  'assessed result needs no mandatory second reviewer. '
                   'Set research_sufficient=false and propose next_research_query and next_research_goal '
                   'when this page does not satisfy coverage_goal; a readable gallery caption may establish '
                   'subject binding while still requiring a substantive article. '

@@ -137,7 +137,7 @@ def test_corrupt_acquired_page_is_not_reportable_conditional_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_expired_clarification_cannot_renew_deadline_or_clear_terminal(tmp_path):
+async def test_expired_clarification_reply_persists_hint_and_opens_bounded_wave(tmp_path):
     svc, adapter, session, _ = fixtures.make_service(tmp_path)
     budget = ensure_budget(svc, session.resource_id)
     budget['identity_deadline_at'] = svc.store.now() - 1
@@ -147,12 +147,18 @@ async def test_expired_clarification_cannot_renew_deadline_or_clear_terminal(tmp
         research.update(research_budget=budget, automatic_research_outcome={'outcome': 'clarification_required'})
         db.execute('UPDATE stories SET latitude=NULL,longitude=NULL,research_json=? WHERE id=?',
             (json.dumps(research), session.resource_id))
-    with pytest.raises(ResearchTerminated):
-        await adapter._resolve_place_state(session, 'Owner city')
+    async def geocode(text):
+        return None
+    async def resolve(*args, **kwargs):
+        return svc.story(session.resource_id)
+    svc._resolve_place_query = geocode
+    svc.resolve_identity = resolve
+    await adapter._resolve_place_state(session, 'Owner city')
     with svc.store.connection() as db:
         research = json.loads(svc._story_row(db, session.resource_id)['research_json'])
-        assert research['research_budget'] == budget
-        assert research['automatic_research_outcome']['outcome'] == 'clarification_required'
+        assert research['research_budget']['identity_deadline_at'] > svc.store.now()
+        assert 'automatic_research_outcome' not in research
+        assert research['identity_owner_hint']['text'] == 'Owner city'
 
 
 @pytest.mark.asyncio

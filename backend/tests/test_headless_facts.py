@@ -670,7 +670,7 @@ async def test_stale_or_stopped_model_result_cannot_commit(tmp_path, guard, proo
 
 
 @pytest.mark.asyncio
-async def test_late_owner_edit_defers_durable_result_without_resending(tmp_path):
+async def test_late_owner_edit_preserves_durable_result_without_resending(tmp_path):
     svc, job, researcher, reader, _ = await fixture(tmp_path)
 
     def edit(story):
@@ -682,14 +682,12 @@ async def test_late_owner_edit_defers_durable_result_without_resending(tmp_path)
 
     researcher.after_extract = edit
     try:
-        with pytest.raises(RetryableProviderError, match='research_fact_source_coverage_partial'):
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
-        assert svc.story(job['story_id'])['facts'] == []
+        assert len(svc.story(job['story_id'])['facts']) == 1
         researcher.after_extract = None
-        with pytest.raises(RetryableProviderError, match='research_fact_source_coverage_partial'):
-            await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
-        assert svc.story(job['story_id'])['facts'] == []
+        await HeadlessFacts(svc).run(job, 'headless-run', 'Find historical facts', 'history')
+        assert len(svc.story(job['story_id'])['facts']) == 1
         assert svc.story(job['story_id'])['draft_text'] == 'Owner draft'
         assert len(researcher.pages) == len(researcher.model_units) == 1
     finally:
@@ -880,10 +878,15 @@ async def test_result_checkpoint_crash_retains_original_owner_fence_before_repla
             await harness.run(job, 'headless-run', 'Find historical facts', 'history')
         monkeypatch.setattr(svc.store, 'checkpoint_put', original_put)
         researcher.after_extract = None
-        with pytest.raises(RetryableProviderError):
-            await harness.run(job, 'headless-run', 'Find historical facts', 'history')
-        assert len(researcher.pages) == 1
-        assert svc.story(job['story_id'])['facts'] == []
+        outcome = await harness.run(job, 'headless-run', 'Find historical facts', 'history')
+        assert outcome is None
+        # Re-enter the adapter to read the original unit; no second model result.
+        assert len(researcher.pages) == 2
+        assert researcher.pages[0]['_unit_id'] == researcher.pages[1]['_unit_id']
+        assert len(researcher.model_units) == 1
+        facts = svc.story(job['story_id'])['facts']
+        assert len(facts) == 1
+        assert facts[0]['review_status'] == 'unreviewed'
         assert svc.story(job['story_id'])['draft_text'] == 'Changed owner draft'
     finally:
         await reader.search_http.aclose()

@@ -170,9 +170,11 @@ async def test_foreign_or_stale_packet_never_commits_candidate_decisions(tmp_pat
         else:
             with svc.store.tx() as db:
                 if defect == 'stale_story':
-                    db.execute('UPDATE stories SET revision=revision+1 WHERE id=?', (session.resource_id,))
+                    research = json.loads(db.execute('SELECT research_json FROM stories WHERE id=?', (session.resource_id,)).fetchone()[0])
+                    research['input_revision'] = 'Changed owner research input'
+                    db.execute('UPDATE stories SET research_json=?,revision=revision+1 WHERE id=?', (json.dumps(research), session.resource_id))
                 else:
-                    db.execute('UPDATE fact_assertions SET revision_digest=? WHERE story_id=? AND assertion_id=?',
+                    db.execute("UPDATE fact_assertions SET revision_digest=?,display_text='A materially changed claim',accepted_revision_digest=NULL,accepted_basis_json=NULL WHERE story_id=? AND assertion_id=?",
                                ('changed-nearby-revision', session.resource_id, existing))
         with pytest.raises(ConflictError):
             await call(adapter, actor, 'finalize_fact_review', final_args(packet, [positive(item) for item in packet['items']]), 'stale-final')

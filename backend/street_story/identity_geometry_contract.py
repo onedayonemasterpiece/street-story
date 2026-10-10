@@ -6,10 +6,11 @@ new inference or independent semantic judge is introduced.
 """
 from __future__ import annotations
 
-CONTRACT = 'source-map-spatial-correspondence-v2'
+LEGACY_CONTRACT = 'source-map-spatial-correspondence-v2'
+CONTRACT = 'source-map-spatial-correspondence-v3'
 
 
-def correspondence_schema(feature):
+def _measured_schema(feature):
     text = {'type': 'string', 'minLength': 1, 'maxLength': 300}
     pose = {'type': 'object', 'properties': {
         'east_m': {'type': 'number'}, 'north_m': {'type': 'number'},
@@ -34,9 +35,63 @@ def correspondence_schema(feature):
         'additionalProperties': False}
 
 
+def correspondence_schema(feature):
+    """General observed relations, plus conditional quantitative scenarios."""
+    text = {'type': 'string', 'minLength': 1, 'maxLength': 300}
+    general = {'type': 'object', 'properties': {
+        'pattern_kind': {'const': 'general_relations'},
+        'source_pattern': text, 'coverage_basis': text,
+        'assumption_limits': {'type': 'array', 'maxItems': 8, 'items': text},
+        'candidate_ids': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+                          'uniqueItems': True, 'items': {'type': 'string', 'maxLength': 100}},
+        'decisive_relation_indices': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+                                     'uniqueItems': True, 'items': {'type': 'integer', 'minimum': 0, 'maximum': 7}}},
+        'required': ['pattern_kind', 'source_pattern', 'coverage_basis', 'assumption_limits',
+                     'candidate_ids', 'decisive_relation_indices'], 'additionalProperties': False}
+    return {'oneOf': [general, _measured_schema(feature)]}
+
+
+def _general_correspondence(story, candidates, decision, receipt, value):
+    from .identity_spatial_features import geometry_feature
+    cid = decision['candidate_id']
+    ids = value.get('candidate_ids') or []
+    table = (receipt.get('manifest') or {}).get('objects') or {}
+    received = {dict(zip(table.get('columns') or [], row)).get('candidate_id')
+                for row in table.get('rows') or []}
+    allowed = set(receipt.get('physical_body_candidate_ids') or received)
+    required = set(receipt.get('material_alternative_candidate_ids') or []) - {cid}
+    addressed = {item['candidate_id'] for item in decision['rejected_alternatives']}
+    relations = decision['decisive_relations']
+    indices = value.get('decisive_relation_indices') or []
+    if (cid not in ids or not set(ids).issubset(allowed & received)
+            or not required.issubset(addressed)
+            or set(indices) != set(range(len(relations)))
+            or not value['source_pattern'].strip() or not value['coverage_basis'].strip()):
+        return None
+    resolved = []
+    for index in indices:
+        relation = relations[index]
+        features = []
+        for ref in relation['map_features']:
+            feature = geometry_feature(story, candidates, ref)
+            if ref['candidate_id'] not in received or not feature:
+                return None
+            features.append({'reference': ref, 'observed_feature': feature})
+        if not features:
+            return None
+        resolved.append({'relation_index': index, 'features': features})
+    return {'contract': CONTRACT, 'kind': 'general_relations', 'resolved_relations': resolved,
+            'assumption_limits': value['assumption_limits'],
+            'scope': 'Same joint SOURCE/MAP semantic decision, bound to received primitives; no numerical pose claimed.'}
+
+
 def measured_correspondence(story, candidates, decision, receipt):
     from .identity_spatial_features import geometry_feature, measure_spatial_relations
     value = decision.get('spatial_correspondence') or {}
+    if value.get('pattern_kind') == 'general_relations':
+        if receipt.get('geometry_contract') != CONTRACT:
+            return None  # Frozen v2 operations retain their original measured contract.
+        return _general_correspondence(story, candidates, decision, receipt, value)
     cid = decision['candidate_id']
     ids = value.get('candidate_ids') or []
     if cid not in ids or any(not value.get(key, '').strip() for key in

@@ -444,10 +444,10 @@ async def _suggest(service, story, transcript, candidates):
             # pre-proving its physical binding or silently taking first rows.
             prefetched_ids = list(dict.fromkeys(row['article_id'] for row in regional_catalogue['results']))
         early_page_capacity = min(8, max(0, int(service.settings.identity_max_pages) - 3))
-        if prefetched_ids and len(catalogue_article_ids) <= early_page_capacity:
+        if prefetched_ids and early_page_capacity:
             from .identity_architectural_context import acquire_architectural_pool_text
             early_text_articles, early_text_lookup = await acquire_architectural_pool_text(
-                service, story, regional_catalogue, prefetched_ids)
+                service, story, regional_catalogue, prefetched_ids[:early_page_capacity])
         elif prefetched_ids:
             record_identity_event(service, story['id'], 'identity_early_text_reserved_for_selection', {
                 'received_article_count': len(catalogue_article_ids),
@@ -608,8 +608,12 @@ async def _suggest(service, story, transcript, candidates):
         'В одном решении можно принять physical identity по достаточной '
         'SOURCE+MAP geometry без внешнего REF/второго judge либо оставить uncertain. '
         'Принятая geometry требует реальных различающих SOURCE/MAP связей и проверяемого '
-        'spatial_correspondence по полученным примитивам. Pose — сценарий, не точное восстановление '
-        'камеры; host вычисляет указанные отношения. Если связи, поза или существенные альтернативы '
+        'spatial_correspondence по полученным примитивам. Для общих различающих отношений используй '
+        'general_relations с точными индексами decisive_relations, границами наблюдаемой сцены '
+        'и неопределённостью. Не требуется числовая поза или один из трёх шаблонов. '
+        'Если решающий вывод зависит от угла, порядка фасадов или направления улицы, используй '
+        'соответствующий расчётный шаблон и сценарии неопределённости; host проверяет примитивы '
+        'и вычисляет отношения. Если различающие связи или существенные альтернативы '
         'не установлены, верни uncertain, spatial_correspondence=null и полезную активную группу '
         'для TEXT/REF. Не выдумывай heading, смещения и индексы ради заполнения сертификата. '
         'research_priority — необязательное сужение в ЭТОМ ответе: candidate_ids активных физических '
@@ -2987,6 +2991,9 @@ async def prepare_search_plan(service, story, transcript, candidates):
                 else 'bounded-search-plan-v2'), 'payload': payload,
                 'route': story.get('_identity_search_plan_route', 'google'),
                 'created_at': service.store.now()})
+    if (payload.get('accepted_architectural_text') or {}).get('source_text_requests'):
+        from .identity_architectural_comparison import continue_requested_text
+        payload, history = await continue_requested_text(service, story, candidates, payload, history)
     from .identity_wikipedia_metadata import selected_candidates
     pages = story.get('_identity_wikipedia_metadata') or captured.get('wikipedia') or []
     observed = story.get('_identity_observed_candidates') or (captured.get('visual_identity') or {}).get('observed_candidates') or []

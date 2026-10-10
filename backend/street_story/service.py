@@ -98,6 +98,7 @@ class StreetStoryService:
         self.settings = settings
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(settings.data_dir / "street-story.sqlite3")
+        self._maintenance_lock = asyncio.Lock()
         from .temporary_photos import TemporaryPhotos
         self._temporary_photos = TemporaryPhotos()
         self.providers = providers or ProviderBundle(
@@ -1058,14 +1059,9 @@ class StreetStoryService:
             logging.getLogger(__name__).info('research_scheduler %s', canonical({
                 'component': 'research_scheduler', 'stage': 'confirmed_facts', 'scheduled': scheduled}))
 
-    async def run_once(self, *, claim_kind=None, exclude_kind=None, claim_story_id=None) -> bool:
-        self._schedule_identity_visual()
-        if claim_kind not in {'identity', 'identity_visual'}:
-            self._schedule_confirmed_facts()
-        job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind, claim_story_id=claim_story_id)
-        if not job:
-            if claim_kind in {'identity', 'identity_visual'}:
-                return False  # Accounting recovery stays with the original worker.
+    async def maintenance_tick(self):
+        """Bounded accounting/original readback, independent of queue claims."""
+        async with self._maintenance_lock:
             self._observe_terminal_attempts()
             recover_accounting = getattr(self.providers.research, 'recover_accounting', None)
             if callable(recover_accounting):
@@ -1076,6 +1072,16 @@ class StreetStoryService:
                     await quota.recover()
                 except RetryableProviderError:
                     pass  # No provider work; pending accounting remains durable.
+
+    async def run_once(self, *, claim_kind=None, exclude_kind=None, claim_story_id=None) -> bool:
+        self._schedule_identity_visual()
+        if claim_kind not in {'identity', 'identity_visual'}:
+            self._schedule_confirmed_facts()
+        job = self._claim(claim_kind=claim_kind, exclude_kind=exclude_kind, claim_story_id=claim_story_id)
+        if not job:
+            if claim_kind in {'identity', 'identity_visual'}:
+                return False  # Accounting recovery stays with the original worker.
+            await self.maintenance_tick()
             return False
         async def heartbeat():
             while True:

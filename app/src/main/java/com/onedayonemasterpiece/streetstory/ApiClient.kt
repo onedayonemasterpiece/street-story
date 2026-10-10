@@ -117,6 +117,7 @@ class FactWire {
     var text: String = ""
     var confidence: Double = 0.0
     @SerializedName("evidence_supported") var evidenceSupported: Boolean = false
+    @SerializedName("review_status") var reviewStatus: String = "unreviewed"
     var eligibility: String = "unreviewed"
     val eligibleForSelection: Boolean get() = evidenceSupported && eligibility == "eligible"
     var selected: Boolean = false
