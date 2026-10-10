@@ -325,8 +325,8 @@ async def test_exact_frozen_map_id_joins_precede_validation_and_do_not_add_seman
     result = current['_identity_geometry_result']
     assert result['proof_kind'] == 'geometry' and result['candidate_id'] == 'osm:way:2'
     assert result['geometry_proof']['decision']['assumptions'] == ['Prose @1/$1 is kept exactly, not interpreted as an ID.']
-    assert len(calls) == (2 if malformed_first else 1)
+    assert len(calls) == 1  # An unused missing search wave cannot block valid G.
     receipts = current['_identity_search_plan_payload']['identity_response_id_resolutions']
-    assert [item['joint_stage'] for item in receipts] == (['initial', 'followup'] if malformed_first else ['initial'])
+    assert [item['joint_stage'] for item in receipts] == ['initial']
     assert [item['raw_json_sha256'] for item in receipts] == [hashlib.sha256(raw.encode()).hexdigest() for raw in raw_outputs]
     assert all(item['policy'] == 'exact-context-id-references-v1' and item['resolved_count'] == 4 for item in receipts)

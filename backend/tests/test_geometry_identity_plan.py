@@ -363,7 +363,8 @@ async def test_equal_pose_or_incomplete_coverage_remains_uncertain_without_fake_
     decision['bounded_coverage']['material_alternatives_resolved'] = False
     decision['bounded_coverage']['limitations'] = ['Two poses still explain the repeated facade equally well.']
     async def generate(*args, **kwargs):
-        return SimpleNamespace(text=json.dumps(payload(decision)))
+        return SimpleNamespace(text=json.dumps({**payload(decision),
+            'visual_query': 'Observed facade with repeated openings'}))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     history, _ = await identity_discovery.prepare_search_plan(service, story, '', active)
     assert '_identity_geometry_result' not in story

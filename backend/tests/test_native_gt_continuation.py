@@ -164,7 +164,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     if outcome == 'uncertain':
         decision.update(decision='uncertain', material_alternatives_resolved=False,
             unresolved_contradictions=['The visible return does not resolve the physical wing.'])
-    calls, native_receipts, addressed_images = [], [], []
+    calls, native_receipts, addressed_images, ref_calls = [], [], [], []
     google_prefix = [] if native_primary else ['google_not_sent']
     address_reads = []
     if address_route:
@@ -276,7 +276,11 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         native_vision=SimpleNamespace(available=native_primary),
         source_map_receipt=lambda story: native_receipts[-1] if native_receipts else None,
         plan_identity_search=forbidden)
-    svc._identify_photo = forbidden
+    async def independent_ref(*args, **kwargs):
+        ref_calls.append('REF')
+        return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
+            'observations': [], 'alternative_candidate_ids': []}
+    svc._identify_photo = independent_ref if outcome == 'unknown' else forbidden
     try:
         svc.ensure_identity(sid)
         await svc.run_once()
@@ -301,9 +305,12 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
                 history, _ = await identity_discovery.prepare_search_plan(svc, fresh, '', active)
                 assert history['search_plan']['payload']['physical_research_priority']['active_candidate_ids']
                 assert fresh['_identity_accepted_result']['_comparison_deferred'] is True
+            elif outcome == 'unknown':
+                await identity_discovery.prepare_search_plan(svc, fresh, '', active)
+                assert joint_followup_marker(svc, fresh)['phase'] == 'unknown'
+                assert ref_calls == ['REF']  # Independent work; the unknown T is never resent.
             else:
-                expected = RetryableProviderError if outcome == 'unknown' else PermanentProviderError
-                with pytest.raises(expected, match='identity_joint_followup_outcome_unknown|identity_architectural_comparison_invalid'):
+                with pytest.raises(PermanentProviderError, match='identity_architectural_comparison_invalid'):
                     await identity_discovery.prepare_search_plan(svc, fresh, '', active)
             assert calls == expected_calls
             return

@@ -272,8 +272,8 @@ async def test_all_unsent_visual_routes_preserve_independent_text_search(tmp_pat
         calls.append('independent_text')
         assert 'SOURCE and MAP images are unavailable' in prompt
         assert 'osm:way:2' in prompt and 'osm:way:3' in prompt
-        return {'result': {key: value for key, value in payload(geometry_decision()).items()
-            if key != 'accepted_geometry'}}
+        return {'result': {**{key: value for key, value in payload(geometry_decision()).items()
+            if key != 'accepted_geometry'}, 'article_queries': ['Observed building exterior']}}
 
     service.providers.gemini = SimpleNamespace(executor=Unavailable(), _generate=generate,
         web_search_routes=[('initial', object(), object(), Unavailable()),

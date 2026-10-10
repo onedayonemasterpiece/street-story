@@ -243,7 +243,7 @@ async def test_native_followup_admission_uses_visual_reserve_only_when_definitel
         pytest.fail('No text planner or third semantic turn may replace the visual followup')
     executor = Executor()
     service.providers.gemini = SimpleNamespace(_generate=google, executor=executor,
-        research_routes=[('fixture-visual', None, None, executor)])
+        research_routes=[] if phase == 'retry_admission' else [('fixture-visual', None, None, executor)])
     service.providers.research = SimpleNamespace(native_vision=SimpleNamespace(available=True),
         source_map_available=True, source_map_receipt=lambda s: None,
         source_map_followup_receipt=lambda s: saved or None, plan_source_map=native,
@@ -251,7 +251,7 @@ async def test_native_followup_admission_uses_visual_reserve_only_when_definitel
     await identity_discovery.prepare_search_plan(service, story, '', active)
     marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
     if phase in {'not_sent', 'retry_then_reserve'}:
-        assert calls == ['initial', 'native-admission', *(['native-admission'] if phase == 'retry_then_reserve' else []), 'google']
+        assert calls == ['initial', 'native-admission', 'google']
         assert story['_identity_search_plan_payload']['geometry_proof']
         old = marker['route_operations']['gpt-6-luna']
         assert old['phase'] == 'not_sent' and marker['phase'] == 'response_closed'

@@ -17,7 +17,8 @@ retained runtime inputs rather than treated as established root causes.
 | Frozen 2aacca1 actual SOURCE 130 | Uncertain,138.961s; compact article-photo T was not reached | Actual cold compact T path; earlier wrong-neighbor blocker remains open |
 | Frozen 2aacca1 actual SOURCE 104 /111 | Uncertain at180.139s /129.970s | Patched-input cold contrasts |
 | Frozen 2aacca1 actual SOURCE 132 /105 /106 | Deadline at180.159s /180.452s /180.284s | Distinguish closed semantic responses, NotSent and UNKNOWN individually |
-| Coherent critical-path patch | 237 affected checks passed161.35s; Native component admission and MAP negative controls64 passed15.14s | Frozen full suite, Android and actual SOURCE acceptance |
+| Initial critical-path patch16a0393 | 237 affected checks passed161.35s; Native/MAP/adapter64 passed15.14s; Android38053334077 passed; backend CI28 failed,2745 passed,49 skipped | Followup fixes below;16a0393 is not an accepted release |
+| Current continuation correction | 200 affected checks passed157.41s;115 independent-boundary checks passed53.91s; ruff and whitespace checks passed | Commit, frozen corpus and final installed-SDK acceptance |
 | Disk cleanup | 4.2GiB plus752.5MiB of successful synthetic fixtures deleted through managed dry-run/apply; pip download cache purged;5.8GiB free | Successful new pytest fixtures use failed-only retention |
 
 The actual compact T caller now supplies the manifest and label→candidate ID
@@ -67,7 +68,35 @@ Android2aacca1 instrumentation confirms expected1/actual0 at the running-control
 assertion. Logs do not establish a product root cause. The local projection
 fixture now isolates backend configuration using the previously verified test
 practice while preserving all three UI assertions; its emulator verification
-is pending. This does not claim the app was fixed by editing a test.
+passed in16a0393 run38053334077 (checks and emulator). This supports fixture
+isolation; it does not claim the app was fixed by editing a test.
+
+Actual16a0393 contrasts completed with unchanged tracked source:
+
+| SOURCE | Result | Observed boundary |
+| --- | --- | --- |
+|104|FAIL deadline180.419s; no accepted ID|T received667 MAP-label rows and two actual publisher photographs. It named correct relation3665416 but declared historical-complex-only scope, so no individual-body proof was admitted. REF continued; identity deadline expired.|
+|130|FAIL deadline181.121s; no accepted ID|The actual compact T received two publisher photographs and returned uncertain, explicitly identifying differences and unresolved individual-body scope. No neighboring ID was accepted. Native NotSent token admission first consumed59.623s; T later closed and REF continued.|
+
+Backend CI exposed a real continuation defect: removing rejected G from the
+admitted plan also removed its useful model hypotheses before T preparation.
+The correction carries rejected G/T through the existing conditional-hypothesis
+receipt, never as proof. Independent usable fields continue; a wholly empty
+answer uses existing bounded recovery. An omitted Wikipedia selection becomes
+explicitly empty, so it cannot trigger nearest-page legacy selection. Independent
+query fields no longer depend on a Wikipedia-query array being present. Tests
+now separately cover invalid nominations alongside valid G, empty unusable
+answers, and independent REF continuation without resending UNKNOWN T.
+
+When a qualified alternate T route exists, authoritative Native NotSent admission
+uses it before waiting for that Native minute budget. With no alternate route,
+the existing bounded same-request wait remains. UNKNOWN never permits that
+reassignment. The model instruction also distinguishes a single mapped object
+with several contours from several separately mapped neighboring bodies; a
+cropped view does not require an unprovided member footprint. This is a general
+scope instruction, without a scene-specific host classifier or acceptance rule.
+The16a0393 full installed-SDK run was cancelled at40% after CI failures were
+known and before source changed; it has no completed acceptance verdict.
 
 Evidence: retained task `20261009T214809Z-overnight-product-finish-20261009`:
 `full-installed-sdk-2aacca1-v106.xml`, `critical-path-patch.xml`,

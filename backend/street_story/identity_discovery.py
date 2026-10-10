@@ -37,7 +37,7 @@ def queries_from(payload):
         return '', [], '', ''
     queries = payload.get('wikipedia_queries')
     if not isinstance(queries, list):
-        return '', [], '', ''
+        queries = []
     entity = plain(payload.get('entity_name', ''), 180)
     queries = list(dict.fromkeys(plain(q, 180) for q in queries if isinstance(q, str) and q.strip()))[:2]
     visual_query = plain(payload.get('visual_query', ''), 180)
@@ -139,16 +139,17 @@ def _conditional_text_prior(payload, nomination_ids):
     prior = {key: copy.deepcopy(payload[key]) for key in (
         'source_scene_observations', 'observed_candidate_ids', 'spatial_hypotheses',
         'first_wave_hypotheses', 'research_priority') if key in payload}
-    if not prior and not isinstance(payload.get('accepted_geometry'), dict):
+    geometry = payload.get('accepted_geometry') or (payload.get('rejected_geometry') or {}).get('decision')
+    geometry = geometry if isinstance(geometry, dict) else {}
+    if not prior and not geometry:
         return None
-    geometry = payload.get('accepted_geometry') if isinstance(payload.get('accepted_geometry'), dict) else {}
     spatial = payload.get('spatial_hypotheses') if isinstance(payload.get('spatial_hypotheses'), list) else []
     nominated = payload.get('observed_candidate_ids') if isinstance(payload.get('observed_candidate_ids'), list) else []
     rejected = geometry.get('rejected_alternatives') if isinstance(geometry.get('rejected_alternatives'), list) else []
     wave = payload.get('first_wave_hypotheses') if isinstance(payload.get('first_wave_hypotheses'), list) else []
     action = geometry.get('next_action') if isinstance(geometry.get('next_action'), dict) else {}
     targets = action.get('target_candidate_ids') if isinstance(action.get('target_candidate_ids'), list) else []
-    text = payload.get('accepted_architectural_text')
+    text = payload.get('accepted_architectural_text') or (payload.get('rejected_architectural_text') or {}).get('decision')
     text = text if isinstance(text, dict) else {}
     text_alternatives = text.get('material_alternatives') or []
     text_bindings = text.get('article_bindings') or []
@@ -823,12 +824,15 @@ async def _suggest(service, story, transcript, candidates):
                         rejected_text = {'reason': 'identity_architectural_text_schema_invalid', 'decision': value}
                     elif name == 'accepted_geometry':
                         rejected_geometry_schema = {'reason': 'identity_geometry_schema_invalid', 'decision': value}
-            retain_closed_invalid(service, story, payload, validation_schema,
-                code='identity_plan_components_rejected', raw_json=raw_json,
-                route=story.get('_identity_search_plan_route', 'google'),
-                raw_json_available=raw_json_available, provider_response_id=provider_response_id,
-                errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
+            if errors or rejected:
+                retain_closed_invalid(service, story, payload, validation_schema,
+                    code='identity_plan_components_rejected', raw_json=raw_json,
+                    route=story.get('_identity_search_plan_route', 'google'),
+                    raw_json_available=raw_json_available, provider_response_id=provider_response_id,
+                    errors=errors, errors_truncated=errors_truncated, **diagnostic_stage(raw_json))
             payload = {'first_wave_hypotheses': [], **usable}
+            if 'selected_wikipedia_page_ids' in validation_schema.get('properties', {}):
+                payload.setdefault('selected_wikipedia_page_ids', [])
             errors = []
             record_identity_event(service, story['id'], 'identity_plan_components_preserved',
                 {'rejected_fields': rejected, 'preserved_fields': list(usable)})
@@ -988,6 +992,15 @@ async def _suggest(service, story, transcript, candidates):
         if rendered and not ready_wiki and not single_geometry_action and len(queries) < 3 and result[2]:
             queries.append(result[2])
         queries.extend(payload.get('article_queries') or [])
+        # With no proof, source choice, query or received physical hypothesis,
+        # there is no continuation to execute. Use the existing bounded repair;
+        # this does not turn completeness of a useful plan into a global gate.
+        prior = _conditional_text_prior(payload, observed_ids)
+        if not (geometry_proof or text_proof or queries or any(result)
+                or selected_wiki or payload.get('regional_article_selections')
+                or (payload.get('regional_lookup') or {}).get('route') in {'address', 'coordinate'}
+                or actionable_priority or (prior or {}).get('candidate_ids')):
+            reject('identity_search_plan_malformed')
         if validate_only:
             return payload
         story['_identity_article_queries'] = list(dict.fromkeys(plain(q, 240) for q in queries
@@ -1231,7 +1244,8 @@ async def _suggest(service, story, transcript, candidates):
             # bounded repair, rather than starting a separate oversized planner.
             issues['host_evidence_contract'] = {'code': initial_validation_error,
                 'previous_claim_is_not_confirmation': True}
-        geometry_claim = payload.get('accepted_geometry') if isinstance(payload, dict) else None
+        geometry_claim = (payload.get('accepted_geometry') or (payload.get('rejected_geometry') or {}).get('decision')
+            if isinstance(payload, dict) else None)
         geometry_rejection = {}
         nomination_id = geometry_claim.get('candidate_id') if isinstance(geometry_claim, dict) else None
         requested_targets = ((geometry_claim.get('next_action') or {}).get('target_candidate_ids') or []
@@ -1265,10 +1279,19 @@ async def _suggest(service, story, transcript, candidates):
                 raw_json=response.text or '', provider_response_id=getattr(response, 'response_id', None))
             if 'host_evidence_contract' in issues and geometry_claim['decision'] == 'accepted_geometry':
                 issues['host_evidence_contract'].update(geometry_rejection)
+            if (geometry_claim['decision'] == 'accepted_geometry'
+                    and not any(queries_from(payload)) and not payload.get('article_queries')
+                    and not payload.get('first_wave_hypotheses')
+                    and not payload.get('selected_wikipedia_page_ids')
+                    and not payload.get('regional_article_selections')
+                    and (payload.get('regional_lookup') or {}).get('route') in {None, 'none'}):
+                issues['host_evidence_contract'] = geometry_rejection
         lookup = {}
-        new_text_acquired = False
+        new_text_acquired = bool(text_articles and isinstance(payload, dict)
+                                 and payload.get('rejected_architectural_text'))
         early_text_evaluated = (bool(source_text_receipt) and isinstance(payload, dict)
-            and isinstance(payload.get('accepted_architectural_text'), dict))
+            and isinstance(payload.get('accepted_architectural_text')
+                or (payload.get('rejected_architectural_text') or {}).get('decision'), dict))
         if isinstance(payload, dict) and initial_geometry is None and initial_text is None and not early_text_evaluated:
             from jsonschema import Draft202012Validator
             from .identity_architectural_context import (acquire_regional_text, acquire_selected_wikipedia_text,
@@ -1342,6 +1365,15 @@ async def _suggest(service, story, transcript, candidates):
             if lookup:
                 story['_identity_regional_lookup_receipt'] = lookup
             new_text_acquired = bool(text_articles)
+        if new_text_acquired:
+            # The existing T turn may inspect the rejected G/T claim as a
+            # hypothesis. Its defects never create a separate repair barrier.
+            if isinstance(geometry_claim, dict):
+                issues.update(_geometry_binding_issues(geometry_claim, scene_manifest))
+            rejected_text = (payload.get('rejected_architectural_text') or {}) if isinstance(payload, dict) else {}
+            if rejected_text:
+                issues['host_evidence_contract'] = {'code': rejected_text['reason'],
+                    'previous_claim_is_not_confirmation': True}
         detail_request = None
         geometry = payload.get('accepted_geometry') if isinstance(payload, dict) else None
         action = geometry.get('next_action') if isinstance(geometry, dict) else None
@@ -1734,6 +1766,7 @@ async def _suggest(service, story, transcript, candidates):
                             delay = retry_at - now if isinstance(retry_at, (int, float)) and not isinstance(retry_at, bool) else None
                             remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 0
                             if (phase == 'not_sent' and admission_attempt == 0 and not native_readback_only
+                                    and not unsent_google_route[0]
                                     and delay is not None and 0 < delay <= 60 and remaining > delay + 45):
                                 # Wait outside an executor/lease for the SAME
                                 # authoritative unsent request. The second turn

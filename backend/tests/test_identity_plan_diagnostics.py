@@ -186,7 +186,7 @@ async def test_invalid_joint2_fail_closed_without_third_google_or_fresh_fallback
 @pytest.mark.asyncio
 async def test_distinct_closed_followup_json_survives_without_overwriting_original_or_resend(tmp_path):
     service, _, story, _ = prepared(tmp_path)
-    raw = ['{}', '{"entity_name":"Second rejected response"}']
+    raw = ['{}', '{"entity_name":777}']
     calls = []
     async def generate(*args, **kwargs):
         calls.append('joint')
@@ -336,8 +336,9 @@ async def test_invalid_selected_regional_field_cannot_fetch_body_during_contract
         return SimpleNamespace(text=json.dumps(invalid if len(calls) == 1 else valid))
     service.providers.gemini = SimpleNamespace(executor=Executor(), _generate=generate)
     await identity_discovery.suggest(service, snapshot, '', active)
-    assert calls == ['joint', 'joint']
-    assert snapshot['_identity_geometry_result']['proof_kind'] == 'geometry'
+    assert calls == ['joint']
+    assert '_identity_geometry_result' not in snapshot
+    assert snapshot['_identity_search_plan_payload'].get('regional_article_selections') == []
 
 
 @pytest.mark.asyncio
