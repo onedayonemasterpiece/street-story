@@ -121,6 +121,42 @@ async def test_pipeline_comparisons_share_fifteen_minute_permission_and_owned_tr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stage', ['config/read', 'account/rateLimits/read'])
+@pytest.mark.parametrize('external_stop', [False, True])
+async def test_unsent_setup_deadline_is_local_but_external_cancellation_propagates(tmp_path, stage, external_stop):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    entered = asyncio.Event()
+    async def blocked(method, params, timeout=30):
+        if method == stage:
+            entered.set()
+            await asyncio.Event().wait()
+        return await original(method, params, timeout)
+    client.request = blocked
+    provider.setup_timeout = 1 if external_stop else .01
+    task = asyncio.create_task(provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context,
+        {'attempt_id': 'setup'}))
+    await entered.wait()
+    if external_stop:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(RetryableProviderError, match='native_setup_timeout'):
+            await task
+    assert not sends and not any(method == 'turn/start' for method, _ in client.calls)
+    assert receipts[-1]['provider_send_state'] == 'not_sent'
+    assert receipts[-1].get('error_code') == (None if external_stop else 'native_setup_timeout')
+    assert finalized[-1][1] == 'aborted' and finalized[-1][0]['actual_total_tokens'] == 0
+    # The same independently authorized provider can still perform healthy
+    # work. No shared account cooldown or inferred negative model verdict.
+    client.request = original
+    result = await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context,
+        {'attempt_id': 'healthy'})
+    assert result['receipt']['phase'] == 'completed' and len(sends) == 1
+
+
+@pytest.mark.asyncio
 async def test_below_reserve_never_sends_model_turn(tmp_path):
     provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
     client.used = 98

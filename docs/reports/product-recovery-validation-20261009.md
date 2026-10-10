@@ -5,6 +5,24 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 ## Compact initial physical context and actual warm102 failure
 
+Actual compact-input132 on fcec6c1 still FAILED at188.654s, no identity/facts;
+job_33b16eb63d136805ab792cc4. The registered resource authority admitted Native
+in1.419s. Its transport then exited with rc=-9 (SIGKILL) before config_read
+completed, after61.769s; no thread or model turn. SIGKILL is observed, its cause
+is not established. Google3.8 had unsent shared-RPD refusals and one subsequent
+UNKNOWN call; independent3.5 was reached but remained NotSent at the unchanged
+identity deadline. Original markers, usage uncertainty and failure are preserved.
+
+Native config startup and quota read now have a separate15s pre-send bound.
+Timeout is request-local/NotSent and can leave independent routes eligible;
+external cancellation remains CancelledError, never local failover. No account
+cooldown, zero provider usage inference, or attempt-budget reset is introduced.
+99 focused Native/G-T/route/independent-plan fixtures passed210.53s under observed
+host memory pressure, job_5340b906527eaed036b9f1a7. The new parametrized controls
+exercise both setup boundaries, actual cancellation, zero-send lease closure and
+a subsequent healthy authorized comparison. This is fixture evidence; the15s
+bound has not yet been exercised through the installed real Native transport.
+
 The first SOURCE/MAP view now defers derived plan-morphology summaries to the
 existing map_detail path. Every received physical body, observed outline/side,
 address membership, map label, source passage and article remains available.

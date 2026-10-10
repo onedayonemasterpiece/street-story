@@ -190,6 +190,7 @@ class NativeVisionProvider:
         self.public_image_loader = public_image_loader
         self.permission = permission or NativeQuotaPermission(service.store)
         self.timeout, self.poll_seconds = 120, 1
+        self.setup_timeout = 15
 
     @property
     def available(self):
@@ -428,7 +429,14 @@ class NativeVisionProvider:
                         await self._save(binding, receipt)
                         logger.info('native_visual_boundary story_id=%s attempt_id=%s stage=config_read state=start',
                                     story['id'], binding['attempt_id'])
-                        config = await client.request('config/read', {'includeLayers': False, 'cwd': cwd})
+                        try:
+                            async with asyncio.timeout(self.setup_timeout):
+                                config = await client.request('config/read', {'includeLayers': False, 'cwd': cwd},
+                                                              timeout=self.setup_timeout)
+                        except TimeoutError as exc:
+                            receipt['error_code'] = 'native_setup_timeout'
+                            raise RetryableProviderError('native_setup_timeout',
+                                retry_at=self.service.store.now() + 60) from exc
                         flags = ('shell_tool', 'unified_exec', 'view_image', 'multi_agent', 'multi_agent_v2', 'apps', 'plugins',
                                  'hooks', 'browser_use', 'computer_use', 'image_generation', 'code_mode_host',
                                  'sleep_tool', 'skill_search', 'goals', 'workspace_dependencies')
@@ -463,7 +471,13 @@ class NativeVisionProvider:
                         await self._save(binding, receipt)
                         logger.info('native_visual_boundary story_id=%s attempt_id=%s stage=quota_read state=start',
                                     story['id'], binding['attempt_id'])
-                        grant = await self.permission.ensure(client)
+                        try:
+                            async with asyncio.timeout(self.setup_timeout):
+                                grant = await self.permission.ensure(client)
+                        except TimeoutError as exc:
+                            receipt['error_code'] = 'native_setup_timeout'
+                            raise RetryableProviderError('native_setup_timeout',
+                                retry_at=self.service.store.now() + 60) from exc
                         receipt['quota_permission'] = {k: grant[k] for k in ('account_hash', 'issued_at', 'expires_at', 'remaining_percent')}
                         await lease.before_send({'thread_id': receipt['thread_id'], 'quota_expires_at': grant['expires_at']})
                         receipt['phase'] = 'prompt_intent'
