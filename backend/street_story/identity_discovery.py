@@ -1584,6 +1584,9 @@ async def _suggest(service, story, transcript, candidates):
                     if unsent_key_retry:
                         record_identity_event(service, story['id'], 'identity_joint_followup_unsent_key_failover',
                             {'model': model, 'same_prepared_request': True, 'provider_send_state': 'not_sent'})
+                    if hasattr(service, 'settings'):
+                        from .research_budget import require_remaining
+                        timeout = min(timeout, max(1, require_remaining(service, story['id'], 'identity') - 30))
                     return await gemini._generate(key, timeout, [
                         types.Part.from_bytes(data=source_bytes, mime_type=source_mime),
                         *([types.Part.from_bytes(data=scene['bytes'], mime_type=scene['mime_type'])] if scene else []),
@@ -1610,26 +1613,52 @@ async def _suggest(service, story, transcript, candidates):
                     if native_followup:
                         from types import SimpleNamespace
                         joint_followup_marker(service, story, binding=joint_followup_binding, phase='send_intent',
-                                              prepared_request=prepared_request, model_id=model)
+                                              prepared_request=prepared_request, model_id=model,
+                                              retry_not_sent=retry_claim)
                         try:
                             native_followup_prompt = (followup_config.system_instruction.replace(
                                 json.dumps(followup_contract, ensure_ascii=False, separators=(',', ':')), '', 1)
                                 + '\n' + followup_prompt)
-                            answer = await researcher.plan_source_map_followup(story, native_followup_prompt, issued_followup_schema,
-                                [('SOURCE', source_mime, source_bytes),
-                                 *([('MAP', scene['mime_type'], scene['bytes'])] if scene else [])],
-                                {'source_map_receipt': joint_source_map_receipt(), 'schema': issued_followup_schema,
-                                 'source_text_receipt': source_text_receipt})
-                        except RetryableProviderError as exc:
+                            from .research_budget import require_remaining
+                            remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 150
+                            role_timeout = min(120, max(1, remaining - 30))
+                            async with asyncio.timeout(role_timeout):
+                                answer = await researcher.plan_source_map_followup(story, native_followup_prompt, issued_followup_schema,
+                                    [('SOURCE', source_mime, source_bytes),
+                                     *([('MAP', scene['mime_type'], scene['bytes'])] if scene else [])],
+                                    {'source_map_receipt': joint_source_map_receipt(), 'schema': issued_followup_schema,
+                                     'source_text_receipt': source_text_receipt})
+                        except (RetryableProviderError, TimeoutError) as exc:
                             saved = researcher.source_map_followup_receipt(story) or {}
                             exc.receipt = saved
                             joint_followup_failure = exc
-                            phase = ('not_sent' if saved.get('provider_send_state') == 'not_sent' else
+                            phase = ('not_sent' if saved.get('provider_send_state') == 'not_sent' and not saved.get('turn_id') else
                                      'closed_failure' if saved.get('phase') == 'failed' else 'unknown')
                             joint_followup_marker(service, story, binding=joint_followup_binding, phase=phase,
                                                   code='identity_native_followup_' + phase)
-                            reserve_model, reserve_quota, reserve_executor = unsent_google_route
+                            retry_at = (saved.get('route_failure') or {}).get('retry_at')
+                            now = service.store.now()
+                            delay = retry_at - now if isinstance(retry_at, (int, float)) and not isinstance(retry_at, bool) else None
+                            remaining = require_remaining(service, story['id'], 'identity') if hasattr(service, 'settings') else 0
                             if (phase == 'not_sent' and admission_attempt == 0 and not native_readback_only
+                                    and delay is not None and 0 < delay <= 60 and remaining > delay + 45):
+                                # Wait outside an executor/lease for the SAME
+                                # authoritative unsent request. The second turn
+                                # is bounded by the remaining identity clock,
+                                # reserving30s for independent REF if unresolved.
+                                joint_followup_marker(service, story, binding=joint_followup_binding, phase='not_sent',
+                                    admission_retry={'retry_at': retry_at, 'wait_seconds': delay, 'retry_count': 0,
+                                        'prepared_request_sha256': prepared_request['sha256']})
+                                record_identity_event(service, story['id'], 'identity_native_followup_admission_wait',
+                                    {'provider_send_state': 'not_sent', 'wait_seconds': round(delay, 3),
+                                     'retry_at': retry_at, 'remaining_seconds': round(remaining, 3),
+                                     'independent_ref_reserve_seconds': 30, 'same_binding': True})
+                                await asyncio.sleep(delay)
+                                check_prepared_request()
+                                retry_claim, joint_followup_failure = True, None
+                                continue
+                            reserve_model, reserve_quota, reserve_executor = unsent_google_route
+                            if (phase == 'not_sent' and not native_readback_only
                                     and reserve_model and reserve_executor is not None
                                     and callable(getattr(gemini, '_generate', None))):
                                 from .research_budget import require_remaining
@@ -1652,7 +1681,9 @@ async def _suggest(service, story, transcript, candidates):
                                     record_identity_event(service, story['id'], 'identity_joint_followup_unsent_route_assigned',
                                         {'from_model': 'gpt-6-luna', 'model': model, 'provider_send_state': 'not_sent',
                                          'same_binding': True, 'remaining_seconds': round(remaining, 3)})
-                                    continue
+                                    execute = getattr(executor, 'execute_joint', executor.execute) if scene else executor.execute
+                                    response = await execute('grounded_research', send_followup)
+                                    break
                             if (joint_operation_marker(service, story, stage='initial') or {}).get('closed_plan'):
                                 source_text_receipt.update(source_image_input=False, provider_send_state=phase)
                                 return reuse_initial_plan()
@@ -1861,7 +1892,7 @@ async def _suggest(service, story, transcript, candidates):
                  **({'source_text_receipt': source_text_receipt} if early_text_articles else {})})
         except (Exception, asyncio.CancelledError) as exc:
             saved = native_reader(story) if callable(native_reader) else None
-            phase = ('not_sent' if (saved or {}).get('provider_send_state') == 'not_sent' else
+            phase = ('not_sent' if (saved or {}).get('provider_send_state') == 'not_sent' and not (saved or {}).get('turn_id') else
                      'closed_failure' if (saved or {}).get('phase') == 'failed' and (saved or {}).get('turn_id') else 'unknown')
             initial_outcome = phase
             joint_operation_marker(service, story, stage='initial', binding=initial_binding, phase=phase,

@@ -200,8 +200,8 @@ async def test_closed_native_initial_uses_native_for_new_visual_detail_without_g
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('phase', ['not_sent', 'unknown'])
-async def test_native_followup_admission_uses_visual_reserve_only_when_definitely_unsent(tmp_path, phase):
+@pytest.mark.parametrize('phase', ['not_sent', 'unknown', 'retry_admission', 'retry_then_reserve'])
+async def test_native_followup_admission_uses_visual_reserve_only_when_definitely_unsent(tmp_path, monkeypatch, phase):
     from street_story.providers import RetryableProviderError
     service, story, active = geometry_setup(tmp_path)
     initial = geometry_decision()
@@ -210,16 +210,33 @@ async def test_native_followup_admission_uses_visual_reserve_only_when_definitel
         'target_candidate_ids': ['osm:way:2']})
     initial['bounded_coverage']['material_alternatives_resolved'] = False
     calls, saved = [], {}
+    clock = [service.store.now()]
+    if phase.startswith('retry_'):
+        monkeypatch.setattr(service.store, 'now', lambda: clock[0])
+        old_sleep = asyncio.sleep
+        async def admission_wait(delay):
+            marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
+            assert marker['phase'] == 'not_sent' and marker['admission_retry']['retry_count'] == 0
+            assert delay == 17 and calls == ['initial', 'native-admission']
+            clock[0] += delay
+            await old_sleep(0)
+        monkeypatch.setattr(identity_discovery.asyncio, 'sleep', admission_wait)
     async def native(s, prompt, schema, images, host_context):
         calls.append('initial')
         return {'result': payload(initial), 'receipt': {'turn_id': 'initial-closed'}, 'host_context': host_context}
     async def followup(s, prompt, schema, images, host_context):
         calls.append('native-admission')
-        saved.update(phase='created' if phase == 'not_sent' else 'submitted', provider_send_state=phase)
+        if phase == 'retry_admission' and calls.count('native-admission') == 2:
+            return {'result': payload(geometry_decision()), 'receipt': {'turn_id': 'native-after-admission'}, 'host_context': host_context}
+        saved.update(phase='submitted' if phase == 'unknown' else 'created',
+                     provider_send_state='unknown' if phase == 'unknown' else 'not_sent')
+        if phase.startswith('retry_'):
+            saved['route_failure'] = {'retry_at': service.store.now() + 17, 'code': 'RESOURCE_TOKEN_BUDGET'}
         raise RetryableProviderError('fixture_native_budget')
     async def google(key, timeout, contents, config, **kwargs):
         calls.append('google')
-        assert phase == 'not_sent'
+        assert phase in {'not_sent', 'retry_then_reserve'}
+        assert timeout <= 133  # Remaining clock after the authoritative wait, minus REF reserve.
         assert len(contents) == 3 and 'Explicit requested MAP expansion' in contents[-1]
         return SimpleNamespace(text=json.dumps(payload(geometry_decision())), response_id='reserve-closed')
     async def forbidden(*args, **kwargs):
@@ -233,14 +250,19 @@ async def test_native_followup_admission_uses_visual_reserve_only_when_definitel
         plan_source_map_followup=followup, plan_identity_search=forbidden)
     await identity_discovery.prepare_search_plan(service, story, '', active)
     marker = service._identity_snapshot(story['id'])[1]['identity_joint_followup']
-    if phase == 'not_sent':
-        assert calls == ['initial', 'native-admission', 'google']
+    if phase in {'not_sent', 'retry_then_reserve'}:
+        assert calls == ['initial', 'native-admission', *(['native-admission'] if phase == 'retry_then_reserve' else []), 'google']
         assert story['_identity_search_plan_payload']['geometry_proof']
         old = marker['route_operations']['gpt-6-luna']
         assert old['phase'] == 'not_sent' and marker['phase'] == 'response_closed'
         assert old['binding'] == marker['binding']
         assert old['prepared_request']['prompt'] == marker['prepared_request']['prompt']
         assert marker['prepared_request']['model'] == 'fixture-visual'
+    elif phase == 'retry_admission':
+        assert calls == ['initial', 'native-admission', 'native-admission']
+        assert story['_identity_search_plan_payload']['geometry_proof']
+        assert marker['admission_retry']['retry_count'] == 1
+        assert marker['phase'] == 'response_closed' and marker['prepared_request']['model'] == 'gpt-6-luna'
     else:
         assert calls == ['initial', 'native-admission']
         assert marker['phase'] == 'unknown' and 'route_operations' not in marker

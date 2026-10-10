@@ -144,6 +144,8 @@ def joint_operation_marker(service, story, *, stage, binding=None, phase=None, c
             marker['prepared_request'] = prepared_request
         if stage == 'followup' and route_operations:
             marker['route_operations'] = route_operations
+        if route_retry:
+            marker.pop('admission_retry', None)  # Native retry stays in its original route capsule.
         if admission_retry is not None:
             if (stage != 'followup' or phase != 'not_sent' or retry
                     or admission_retry.get('retry_count') != 0

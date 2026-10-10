@@ -480,7 +480,7 @@ class NativeVisionProvider:
                                 retry_at=self.service.store.now() + 60) from exc
                         receipt['quota_permission'] = {k: grant[k] for k in ('account_hash', 'issued_at', 'expires_at', 'remaining_percent')}
                         await lease.before_send({'thread_id': receipt['thread_id'], 'quota_expires_at': grant['expires_at']})
-                        receipt['phase'] = 'prompt_intent'
+                        receipt.update(phase='prompt_intent', provider_send_state='possibly_sent', retry_safe=False)
                         receipt['transport_stage'] = 'turn_start'
                         await self._save(binding, receipt)
                         try:
@@ -584,7 +584,8 @@ class NativeVisionProvider:
                             result = json.loads(text[-1])
                             Draft202012Validator(source_map.get('host_contract', contract)
                                 if source_map else contract).validate(result)
-                            receipt.update(phase='completed', result=result, elapsed_ms=round((time.monotonic() - started) * 1000))
+                            receipt.update(phase='completed', result=result, provider_send_state='response_closed',
+                                           retry_safe=False, elapsed_ms=round((time.monotonic() - started) * 1000))
                             await self._save(binding, receipt)
                             logger.info('native_visual_completed %s', json.dumps({'story_id': story['id'], 'model': MODEL,
                                 'thread_id': receipt['thread_id'], 'turn_id': receipt['turn_id'], 'status': result.get('status', 'source_map_closed'),

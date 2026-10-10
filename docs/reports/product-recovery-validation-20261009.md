@@ -58,6 +58,37 @@ Current evidence milestone (not a release acceptance):
   all200 passed168.64s on46e3e63 (job_6f76c940b36990f0b7bb5bec,
   matrix-200-46e3e63.xml). It is fake-provider orchestration, not200 images.
 
+- Native send-state followup29 passed2.86s (native-send-state-v54.xml);
+  lost turn/start reply and cancelled read keep possibly_sent/retry_safe=false,
+  unknown accounting and no fabricated zero usage. a4a88bb hosted backend
+  38036783346 and Android38036783308 are green; their evidence predates the
+  current remaining-budget patch and is not final-candidate acceptance.
+- Remaining-role/admission contract suite135 passed113.88s,
+  remaining-role-budget-v52.xml; includes Native admission recovery and repeat
+  refusal followed by exact visual reserve, UNKNOWN negative, original input
+  fences and Live/OpenCode prompt transport. Native send-state suite initially
+  67 passed/1 fixture expectation failure44.36s: timeout correctly journaled
+  unknown rather than submitted; the fixture now accepts that preserved state.
+  Native marks possibly_sent before turn/start and response_closed only after
+  validated response; turn IDs preclude treating an old NotSent label as unsent.
+- Actual a4a88bb distinct132/111 job_69f4d196073ba6a02ea85085 completed;
+  both remain FAIL at the original180s identity gate (180.935s/181.857s), no
+  accepted physical IDs or eligible facts.132 Native initial measured41585
+  input+1850 output=43435 tokens; its new T was NotSent with a60s authority
+  retry time. Exact unsent visual reserve assignment occurred, but Gemini3.8
+  followup remained UNKNOWN; independent discovery continued.111 Native initial
+  completed19595+1735=21330 tokens, with real subsequent OpenCode search replies,
+  separate Google triage UNKNOWN and additional closed/refused operations.
+  These are scoped outcomes, not universal provider unavailability or PASS.
+- Current correction uses one authoritative Native NotSent admission wait only
+  when delay<=60s and remaining identity budget can support the operation and
+  independent reserve. The same prepared request/model may then send once;
+  UNKNOWN never retries. Native and Google followups are bounded by remaining
+  identity time while reserving30s for independent REF. Original route/admission
+  retry capsules stay immutable when an unsent visual reserve is assigned.
+  Live/OpenCode extract prompts explicitly request the existing sufficiency
+  field for useful coverage; independent review remains mandatory.
+
 - Reliability continuation addresses the actual130 unsent seam: the same
   frozen joint2 can be assigned once from refused Native admission to the
   registered visual executor. Original Native NotSent envelope is preserved;

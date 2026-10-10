@@ -463,6 +463,33 @@ async def test_source_map_native_citation_choice_is_satisfiable_and_host_proof_u
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('lost', ['turn_start', 'read_timeout'])
+async def test_recovered_unsent_admission_cannot_keep_not_sent_after_actual_turn(tmp_path, lost):
+    provider, client, snapshot, story, context, receipts, sends, finalized = setup(tmp_path)
+    original = client.request
+    async def request(method, params, timeout=30):
+        value = await original(method, params, timeout)
+        if lost == 'turn_start' and method == 'turn/start':
+            raise TimeoutError('Lost reply after the actual addressed send')
+        return value
+    client.request = request
+    if lost == 'read_timeout':
+        client.block_read = True
+        provider.timeout = .03
+    binding = {'attempt_id': 'recovered-admission', 'phase': 'created',
+               'provider_send_state': 'not_sent', 'retry_safe': True}
+    with pytest.raises(RetryableProviderError):
+        await provider.compare_visual(snapshot, story, VERDICT_SCHEMA, context, binding)
+    saved = receipts[-1]
+    assert saved['provider_send_state'] == 'possibly_sent' and saved['retry_safe'] is False
+    assert saved['phase'] in {'prompt_intent', 'submitted', 'unknown'}
+    assert len(sends) == 1 and sum(method == 'turn/start' for method, _ in client.calls) == 1
+    assert finalized[-1][1] == 'unknown'
+    assert finalized[-1][0]['actual_total_tokens'] is None
+    await provider.close()
+
+
+@pytest.mark.asyncio
 async def test_resource_denial_preserves_dispatch_phase_and_authority_retry(tmp_path, caplog):
     # The public consumer CI does not install the private resource SDK. Exercise
     # its documented exception contract without making the suite depend on it.
