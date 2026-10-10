@@ -127,6 +127,32 @@ Candidate persistence→review-attempt start у102:9,682;45,988;71,334;97,624;11
 
 Дополнительная сверка требований: все11 critical имеют 30 письменных acceptance clauses; positive fixture не покрывает новый same-session get_facts разрыв с inherited run. Сводка 133 загрузок может связывать run/SHA/upload/status/jobs/fact attempts, но незаполненные SOURCE/stage timestamps и truth остаются неизвестными, а не нулями. Исправления и границы поддержки типов изложены в основной постановке.
 
+## Экология хранения, передачи и постоянная память: разные контуры
+
+Срез 19:50–19:54; код развитияe40, installed health19:53 сообщает 93a0878. Это не один runtime и не один набор данных.
+
+| Контур | Измерение | Чего число не означает |
+|---|---|---|
+| Retained overnight artifact root |914 files,2 174 223 706 bytes; SQLite1 151 037 440, исходные фото 624 000 661, JSON290 695 138, APK65 200 060|Не production growth и не вся история хоста|
+| e40 cold DB,11 uploads |95 461 376 bytes; provider-attempt pages40 439 808, stories22 126 592, cache9 060 352, commands8 564 736, review packets7 192 576|Файл/allocated pages не равно logical JSON или wire bytes|
+|15 из 75 provider receipts e40|Точное JSON-равенство top-level frozen_source_map и binding.frozen_source_map; одна копия 19 767 473 UTF-8 bytes|Не гарантированное уменьшение SQLite-файла на эту величину, не model tokens|
+|26 finalized review results e40|5 894 909 logical UTF-8 bytes; nested identity5 044 638 (85,6%)|Не оплаченный prompt и не измеренный HTTP-трафик|
+|Installed POI research memory|723 rows/717 assertion IDs;249eligible/396unreviewed/11disputed/67withheld;239nonnull proofs|Не 723 независимо проверенных исторических факта и не 249 безусловно warm-admissible|
+
+Installed память также содержит 1522 observations,170 POI–URL associations/135 URLs,6 candidate/alias keys,14registry POI rows; один physical subject может иметь несколько keys. `poi_claims=0` — другая, typed-RKB-intake поверхность, а не отсутствие накопленных Street Story фактов. Cold473 assertions/140eligible принадлежат 36 изолированным DB и не суммируются с installed памятью. Sample warm proof сохраняет точный source revision/passage hash и `poi_memory_reuse` scan; новый warm запуск не выполнялся. Total warm reuse count не получен: отменённый запрос не повторялся.
+
+PR255/93a0878 даёт ID-link и authenticated RKB context read-through, не автоматический fact ingest. Будущая admission книжных фактов использует существующий POI/evidence/commit, а не второй реестр. Никакие test DB автоматически не импортируются.
+
+На хосте однократно наблюдалось 3 385 331 712 bytes free. Production DB size, тренд роста и время до заполнения не установлены. Такой снимок не доказывает текущую угрозу потери данных. Доминируют execution proofs/snapshots; безопасно мёртвые schemas/adapters не установлены. Compatibility readers и UNKNOWN guards активно используются; cache9,06 MB не измеряет expired-only данные. Аудит ничего не удалял и не мигрировал.
+
+### Передача и материализация
+
+У e40/107 одна identity395 305 bytes, source_text_receipt370 589; story snapshot около 412 KB, при одном review item3031–4162 bytes. Android DTO не читает весь proof. Компактная UI projection со стабильной server-side proof ссылкой и один immutable snapshot для receipt уменьшают явные дубли; readback/idempotency и source provenance сохраняются. Модельный finalize_fact_review reply уже компактен, context trim e40 уже сделан.
+
+Статически чистый SyncWorker проход для N существующих локальных stories выполняет capabilities+2N GET и 3N applyRemote, без extra recovery/commands/assets; повторный apply одного snapshot можно убрать, необходимый post-mutation read оставить. Для 107 две несжатые copies дали бы около 824 KB сериализации за проход; реальный compressed wire traffic, parse time, local write amplification и батарея не измерены. SOURCE start/resume имеет верхнюю границу JPEG220 KiB/base64 около 300 376 bytes, но фактический размер каждого сеанса не измерен; успешная текстовая коррекция уже прошла при неизменённом SOURCE-пути.
+
+Приоритет этих оптимизаций ниже неверной identity, недоступных пригодных фактов, потери принятой работы и подтверждённой задержки полезного результата. Не создавать платформу кеширования/событий и не повышать их приоритет только из-за больших чисел bytes. Поднять конкретную проблему можно при доказанном влиянии на commit/recovery/доступную ёмкость.
+
 ## Что не установлено о простое
 
 Production journal за15:11–19:11 содержит главным образом startup/access и не даёт claim/admission/queue telemetry. CPU/RAM production процесса не измеряют изолированную acceptance-нагрузку. Нет достаточных рядов readyqueue age, реальных grant/permit, lock wait, строк глобального sweep или event-loop delay. Поэтому O(N²) scan и незаполнение свободного слота остаются доказанными кодовыми механизмами, но секунды простоя доступных провайдеров неизвестны. Нужны короткие метки существующих границ ready/admission/send/result/commit/cleanup, а не новая система наблюдения или запуск всего корпуса ради графика.
