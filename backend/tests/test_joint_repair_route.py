@@ -137,12 +137,29 @@ async def test_closed_invalid_early_text_uses_one_compact_repair_and_preserves_a
 
 
 @pytest.mark.asyncio
-async def test_closed_independent_source_route_owns_new_repair_without_replaying_unknown(tmp_path):
+@pytest.mark.parametrize('initial_result', ['foreign_pointer', 'malformed_with_unbound_early_article'])
+async def test_closed_independent_source_route_owns_new_repair_without_replaying_unknown(tmp_path, monkeypatch, initial_result):
     from street_story.identity_plan_diagnostics import joint_operation_marker
     service, story, active = geometry_setup(tmp_path)
     service.settings = replace(service.settings, gemini_web_search_model='healthy',
                                gemini_web_search_tertiary_model='preferred')
     calls, original_unknown = [], []
+    if initial_result == 'malformed_with_unbound_early_article':
+        from street_story import identity_architectural_context
+        from test_architectural_text_identity import text_inputs
+        _, _, _, receipt = text_inputs(candidate_id='osm:way:2')
+        articles = receipt['articles']
+        assert not articles[0].get('lookup_candidate_ids')
+
+        async def catalogue(*args, **kwargs):
+            return {'results': [{'article_id': articles[0]['article_id'], 'canonical_url': articles[0]['url']}],
+                'physical_prefetch_plan': {'prefetch_article_ids': [articles[0]['article_id']]}, 'status': 'completed'}
+
+        async def acquire(*args, **kwargs):
+            return articles, {'status': 'completed'}
+
+        monkeypatch.setattr(identity_architectural_context, 'prepare_regional_catalogue', catalogue)
+        monkeypatch.setattr(identity_architectural_context, 'acquire_architectural_pool_text', acquire)
 
     class Allowed:
         async def execute(self, operation, call):
@@ -157,7 +174,13 @@ async def test_closed_independent_source_route_owns_new_repair_without_replaying
         original_unknown.append(copy.deepcopy(marker['route_operations']['preferred']))
         decision = geometry_decision()
         if len(calls) == 2:
+            if initial_result == 'malformed_with_unbound_early_article':
+                return SimpleNamespace(text='{ "entity_name": "Unclosed JSON",')
             decision['candidate_id'] = 'outside-received-catalogue'
+        elif initial_result == 'malformed_with_unbound_early_article':
+            assert 'json_syntax' in contents[-1]
+            assert articles[0]['text'] in contents[-1]
+            assert 'osm:way:3' in contents[-1]  # Full alternative reserve still supplied.
         return SimpleNamespace(text=json.dumps(payload(decision)))
 
     service.providers.gemini = SimpleNamespace(executor=Allowed(), _generate=generate,

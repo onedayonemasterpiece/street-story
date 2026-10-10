@@ -1403,7 +1403,10 @@ async def _suggest(service, story, transcript, candidates):
             # Acquired, verified articles and received physical nominations
             # have their own binding checks. Unrelated malformed G fields do
             # not require resending the full planner/map catalogue to T.
-            if text_articles:
+            compact_nominations = [cid for article in text_articles
+                for cid in article.get('lookup_candidate_ids') or []]
+            compact_nominations.extend((source_text_receipt.get('conditional_initial_decision') or {}).get('candidate_ids') or [])
+            if text_articles and compact_nominations:
                 from .identity_architectural_comparison import prepare_architectural_comparison
                 compact_t = prepare_architectural_comparison(story, [*observed, *candidates], source_text_receipt)
                 source_text_receipt['physical_link_inventory'] = compact_t['physical_link_inventory']
@@ -1425,6 +1428,14 @@ async def _suggest(service, story, transcript, candidates):
                     'output_mode': 'json_with_host_validation',
                     'schema_sha256': hashlib.sha256(json.dumps(followup_contract, sort_keys=True,
                         separators=(',', ':')).encode()).hexdigest()})
+            elif text_articles:
+                # Early articles may have no physical nomination, especially
+                # after a closed malformed response. Compact T requires one;
+                # preserve the existing full SOURCE/MAP repair and its articles
+                # instead of inventing nominations or failing its preparation.
+                record_identity_event(service, story['id'], 'identity_architectural_comparison_compact_inapplicable', {
+                    'reason': 'no_received_physical_nomination', 'article_count': len(text_articles),
+                    'existing_joint_followup_preserved': True, 'identity_accepted': False})
             if hasattr(service, 'settings'):
                 from .research_budget import reserve_work
                 from .service import digest

@@ -3,6 +3,46 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## 2b8708b actual102: closed repair, editorial/voice and original visual recovery
+
+Changed review job_4873025fe77b8586b6bb0683 retained FAIL at the120s step
+observation cap. The actual model read all pages, split tenants and facade
+features through repair_research_fact, and CLOSED finalize_fact_review
+call_1442934 for six claims. Packet p6af3c6ca2522 request SHA
+35f705b3bb094a97b812924c51f962dfd2425c19d711620f104cf36296f85441,
+result SHA ed45cc44b9ed27385a73e011756820a3250e6a26323f8d40c854781612c1acc9.
+The original compound tenants/facade parents are withheld; replacements have
+their own original source evidence. The model still accepted the multi-attribute
+construction claim as atomic; this remains a semantic limitation. Resource
+waiting for a tool reply consumed about70s; no oversize failure recurred.
+
+Subsequent same-story job_e7695b5a834789053f93b29d actually CLOSED selection,
+concept, editable draft,30.077s prepared-PCM concept change and draft refinement.
+Three selected claims include that questionable construction claim, so this
+is not yet three-clean-claim acceptance. A single actual generate_visual closed;
+the original run retained FAIL167.660s after VibePublish outcome_unknown.
+Stop acknowledged; no social dispatch. Prepared PCM is not handset microphone
+acceptance. No failed run is reclassified as PASS.
+
+Readback of exact op_cd6e1c0302d44e41b583504336cd4cab identified a saved submitted
+thread/turn and transient thread/read timeouts. The existing VibePublish
+reconcile_observation operation queued only a bounded read of that same
+visual_a4b66a1f3ca34fb995dd335583343718 execution, preserving generation deadline,
+input digest and dispatch marker. It recovered a succeeded native image and
+needs_selection; no generation was resubmitted. PNG1024x1536,2899898 bytes,
+SHA7ae0d9cd6e67593069098339b8b3ace94432b88301421b458db6c8597c9c8cdb.
+Actual ordinary Mira observation/import/reopen is the next verification.
+
+Independent132's compact T preparation failed because the early article had no
+received physical nomination after malformed JSON. Compact T now applies only
+when those nominations exist; otherwise the same bounded SOURCE/MAP repair keeps
+its complete pool and acquired article. No physical candidate is invented,
+filtered or ranked, and malformed JSON remains diagnostic evidence. The actual
+adapter regression includes original preferred-route UNKNOWN, independent
+malformed reply with unbound early text, one healthy-route repair, unchanged
+SOURCE/MAP and preserved alternative.111 fixtures passed104.59s in durable
+job_28bd1d57ba73fc55c2a1fc8a; real changed identity segment remains pending.
+
 ## 736641c review continuation and pending packet/reconnect correction
 
 Actual same-story102 job_e6d07dd70d3bcba8bf4d7c78 retained original FAIL130.109s.
