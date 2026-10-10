@@ -54,6 +54,43 @@ def test_joint_visual_role_prefers_configured_registered_model_without_changing_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('native_phase', ['not_sent', 'unknown'])
+async def test_native_primary_failure_preserves_original_and_runs_independent_google(tmp_path, native_phase):
+    from street_story.identity_plan_diagnostics import joint_operation_marker
+    service, story, active = geometry_setup(tmp_path)
+    service.settings = replace(service.settings, gemini_web_search_model='initial',
+                               gemini_web_search_tertiary_model='initial')
+    calls, receipts = [], []
+
+    class Allowed:
+        async def execute(self, role, call):
+            return await call('fixture', 60)
+
+    async def native(snapshot, prompt, schema, images, host_context):
+        calls.append('native')
+        receipts.append({'phase': 'failed' if native_phase == 'not_sent' else 'unknown',
+                         'provider_send_state': 'not_sent' if native_phase == 'not_sent' else 'possibly_sent'})
+        raise RetryableProviderError('native_quota_below_reserve' if native_phase == 'not_sent' else 'native_turn_outcome_unknown')
+
+    async def google(key, timeout, contents, config, **kwargs):
+        calls.append('google')
+        return SimpleNamespace(text=json.dumps(payload(geometry_decision())))
+
+    executor = Allowed()
+    service.providers.gemini = SimpleNamespace(executor=executor, _generate=google,
+        web_search_routes=[('initial', object(), object(), executor)])
+    service.providers.research = SimpleNamespace(source_map_available=True,
+        native_vision=SimpleNamespace(available=True), plan_source_map=native,
+        source_map_receipt=lambda snapshot: receipts[-1] if receipts else None)
+    await identity_discovery.prepare_search_plan(service, story, '', active)
+    assert calls == ['native', 'google']
+    assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
+    marker = joint_operation_marker(service, story, stage='initial')
+    assert marker['route_operations']['gpt-6-luna']['phase'] == native_phase
+    assert marker['route_operations']['initial']['phase'] == 'response_closed'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('registered', [False, True])
 async def test_all_unsent_visual_routes_preserve_independent_text_search(tmp_path, registered):
     service, story, active = geometry_setup(tmp_path)

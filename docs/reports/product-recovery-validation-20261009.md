@@ -3,6 +3,24 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+Exact `db453f0` verification completed: 2687 backend tests passed, 2 skipped
+in 519.37s. The changed real REF transport resolved the article's received
+photo-detail link to its full JPEG and sent the actual pixels to the qualified
+Google comparator. It returned CLOSED uncertain in 6.44s, instead of the prior
+incorrect match on a thumbnail. This is a safety improvement in a controlled
+comparison, not corrected automatic identity130.
+
+The first-key RPD denial no longer prevents independently admitted keys: the
+registered reasoning control passed admission on a second project, then became
+UNKNOWN at the former 20s per-key timeout. Its original receipt is retained and
+the question is not repeated. REF now uses the executor's existing overall
+attempt budget, while the send fence still prevents an unknown request from
+moving to another key. SOURCE/MAP prefers the already qualified Native lane,
+whose four actual corpus turns closed in 23–31s; independent registered Google
+routes remain available after Native refusal/UNKNOWN, and original readback
+still takes precedence. 134 affected tests plus 2 additional refusal/UNKNOWN
+failover controls passed. The new main-path latency/quality is not yet measured.
+
 The `62fb7ad` cold batch produced an actual architectural-text identity for
 120 at111.640s and its first eligible claim at163.438s; eight canonical eligible
 claims and natural terminal at401.3s meet the time/minimum gates. Its object has

@@ -21,13 +21,15 @@ from test_headless_facts import CLAIM, Researcher, controlled_public_dns, review
 
 
 @pytest.mark.asyncio
-async def test_sufficient_original_native_readback_needs_no_google_executor_or_t(tmp_path):
+@pytest.mark.parametrize('original_closed', [True, False])
+async def test_sufficient_native_primary_or_original_readback_needs_no_google_executor_or_t(tmp_path, original_closed):
     svc, story, active = geometry_setup(tmp_path)
     closed = {'phase': 'completed', 'turn_id': 'already-addressed-original'}
     async def readback(snapshot, prompt, schema, images, host_context):
         return {'result': payload(geometry_decision()), 'receipt': closed, 'host_context': host_context}
     svc.providers.gemini = SimpleNamespace()
-    svc.providers.research = SimpleNamespace(source_map_receipt=lambda snapshot: closed, plan_source_map=readback)
+    svc.providers.research = SimpleNamespace(source_map_receipt=lambda snapshot: closed if original_closed else None,
+        source_map_available=True, native_vision=SimpleNamespace(available=True), plan_source_map=readback)
     await identity_discovery.prepare_search_plan(svc, story, '', active)
     assert story['_identity_geometry_result']['proof_kind'] == 'geometry'
     assert story['_identity_geometry_result']['candidate_id'] == 'osm:way:2'
@@ -35,8 +37,9 @@ async def test_sufficient_original_native_readback_needs_no_google_executor_or_t
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('native_primary', [False, True])
 @pytest.mark.parametrize('outcome', ['geometry', 'text', 'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing', 'uncertain', 'unknown', 'malformed_json', 'malformed_object'])
-async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_one_joint2(tmp_path, monkeypatch, outcome):
+async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_one_joint2(tmp_path, monkeypatch, outcome, native_primary):
     svc, snapshot, active = geometry_setup(tmp_path)
     sid = snapshot['id']
     address_route = outcome in {'address_text', 'wiki_address_text', 'map_detail_text', 'address_missing'}
@@ -79,6 +82,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         decision.update(decision='uncertain', material_alternatives_resolved=False,
             unresolved_contradictions=['The visible return does not resolve the physical wing.'])
     calls, native_receipts, addressed_images = [], [], []
+    google_prefix = [] if native_primary else ['google_not_sent']
     address_reads = []
     if address_route:
         from street_story import prussia39
@@ -126,7 +130,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
     reader.search_http = httpx.AsyncClient(transport=httpx.MockTransport(forbidden_http))
 
     async def native(story, prompt, schema, images, host_context):
-        assert calls == ['google_not_sent'] and executor.leases == 0
+        assert calls == google_prefix and executor.leases == 0
         assert [label for label, _mime, _bytes in images] == ['SOURCE', 'MAP']
         addressed_images.extend(images)
         calls.append('native_original')
@@ -135,7 +139,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         return {'result': copy.deepcopy(initial), 'receipt': receipt, 'host_context': host_context}
 
     async def generate(key, timeout, contents, config, **kwargs):
-        assert calls == ['google_not_sent', 'native_original']
+        assert calls == [*google_prefix, 'native_original']
         assert contents[0].inline_data.data == addressed_images[0][2]
         if outcome != 'map_detail_text':
             assert contents[1].inline_data.data == addressed_images[1][2]
@@ -186,6 +190,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         web_search_routes=[('fixture-model', object(), object(), executor)],
         _fetch_page_documents=reader._fetch_page_documents)
     svc.providers.research = SimpleNamespace(source_map_available=True, vision_available=False, plan_source_map=native,
+        native_vision=SimpleNamespace(available=native_primary),
         source_map_receipt=lambda story: native_receipts[-1] if native_receipts else None,
         plan_identity_search=forbidden)
     svc._identify_photo = forbidden
@@ -193,7 +198,9 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
         svc.ensure_identity(sid)
         await svc.run_once()
         current = svc.story(sid)
-        assert calls == ['google_not_sent', 'native_original', 'joint2'] and executor.leases == 0
+        expected_calls = (['native_original', 'joint2'] if native_primary else
+                          ['google_not_sent', 'native_original', 'joint2'])
+        assert calls == expected_calls and executor.leases == 0
         if outcome in {'uncertain', 'unknown', 'malformed_json', 'malformed_object'}:
             assert not accepted_identity(current['visual_identity']) and current['facts'] == []
             if outcome.startswith('malformed_'):
@@ -215,7 +222,7 @@ async def test_native_closed_insufficient_proof_preserves_hypothesis_and_uses_on
                 expected = RetryableProviderError if outcome == 'unknown' else PermanentProviderError
                 with pytest.raises(expected, match='identity_joint_followup_outcome_unknown|identity_architectural_comparison_invalid'):
                     await identity_discovery.prepare_search_plan(svc, fresh, '', active)
-            assert len(calls) == 3
+            assert calls == expected_calls
             return
         identity = current['visual_identity']
         assert current['state'] == 'identity_ready' and accepted_identity(identity)

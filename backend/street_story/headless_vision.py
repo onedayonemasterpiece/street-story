@@ -307,7 +307,8 @@ class HeadlessVisionProvider:
 
             logger.info('headless_vision_attempt_started %s', json.dumps(fields, sort_keys=True))
             try:
-                failover = ({'can_failover': lambda: not any(
+                failover = ({'call_timeout': executor.pool.policy.attempt_timeout,
+                    'can_failover': lambda: not any(
                     attempt['model'] == model and attempt['provider_send_state'] != 'not_sent'
                     for attempt in model_attempts)} if getattr(executor, 'pool', None) is not None else {})
                 result, response = await executor.execute('grounded_research', call, **failover)

@@ -267,3 +267,27 @@ async def test_real_visual_executor_only_fails_over_before_send(tmp_path, failur
             other = db.execute('SELECT consecutive_failures,minute_used FROM gemini_key_health '
                                'WHERE key_id=? AND operation=?', (pool.ids[1], 'grounded_research')).fetchone()
         assert tuple(other) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_visual_answer_uses_its_overall_budget_instead_of_short_key_timeout(tmp_path):
+    import asyncio
+    from pydantic import SecretStr
+    from street_story.db import Store
+    from street_story.gemini import GeminiExecutor, GeminiKeyPool, GeminiPolicy
+    provider, verdict, context, _calls, _first, _second = setup()
+    pool = GeminiKeyPool(Store(tmp_path / 'slow-visual.sqlite3'), (SecretStr('key-a'), SecretStr('key-b')),
+        'gemini-primary', policy=GeminiPolicy(call_timeout=.01, attempt_timeout=.3))
+    provider.client.research_routes = [('gemini-primary', pool, None, GeminiExecutor(pool))]
+    sent = []
+
+    async def generate(key, timeout, contents, config, **kwargs):
+        kwargs['before_provider_send']()
+        sent.append(key)
+        await asyncio.sleep(.04)
+        return SimpleNamespace(text=json.dumps(verdict), usage_metadata=None, response_id='closed')
+
+    provider.client._generate = generate
+    response = await provider.compare_visual(*visual_args(jpeg(), {}, VERDICT_SCHEMA, context))
+    assert response['receipt']['model_attempts'][0]['provider_send_state'] == 'response_closed'
+    assert sent == ['key-a']

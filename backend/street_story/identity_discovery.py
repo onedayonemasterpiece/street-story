@@ -1655,7 +1655,7 @@ async def _suggest(service, story, transcript, candidates):
             provider_response_id=(result.get('receipt') or {}).get('provider_response_id'))
     researcher = getattr(service.providers, 'research', None)
     native_tried = False
-    async def native_joint():
+    async def native_joint(*, preferred=False):
         nonlocal native_tried, native_source_map_receipt, joint_model_id, initial_binding, initial_outcome
         nonlocal scene_manifest, resolution_packet, schema
         nonlocal text_articles, source_text_receipt
@@ -1676,7 +1676,8 @@ async def _suggest(service, story, transcript, candidates):
         native_prompt = (config.system_instruction.replace(json.dumps(response_contract, ensure_ascii=False, separators=(',', ':')), '', 1)
                          + '\n' + prompt)
         record_identity_event(service, story['id'], 'identity_joint_route_selected',
-            {'role': 'source_map', 'model': joint_model_id, 'selection': 'native_readback' if native_original else 'unsent_reserve'})
+            {'role': 'source_map', 'model': joint_model_id, 'selection': 'native_readback' if native_original
+             else 'preferred' if preferred else 'unsent_reserve'})
         try:
             result = await planner(story, native_prompt, response_contract,
                 [('SOURCE', source_mime, source_bytes), ('MAP', scene['mime_type'], scene['bytes'])],
@@ -1735,6 +1736,13 @@ async def _suggest(service, story, transcript, candidates):
         from .service import digest
         reserve_work(service, story['id'], 'planner_calls',
             [digest([story['photo_sha256'], prompt, schema])])
+    if scene and getattr(getattr(researcher, 'native_vision', None), 'available', False):
+        # The qualified Native SOURCE/MAP lane has closed actual corpus turns;
+        # use it without first consuming a Google timeout. Original addressed
+        # operations/readback above still precede every fresh route choice.
+        result = await native_joint(preferred=True)
+        if result is not None:
+            return result
     routes = _joint_initial_routes(getattr(service, 'settings', None), gemini, scene_available=bool(scene))
     from .identity_plan_diagnostics import joint_route_reassignable, addressed_joint_models
     failed_marker = joint_operation_marker(service, story, stage='initial') or {}
