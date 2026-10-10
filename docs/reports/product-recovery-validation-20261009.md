@@ -5,24 +5,26 @@ visual-model RPD denial is historical evidence, not a permanent product blocker.
 
 ## Current verification and audit disposition, 2026-10-10
 
-This table supersedes older candidate summaries; the historical failures below
-remain evidence. Production remains db0c0d0. The independent audit was based on
-conversation excerpts, so its causal statements were checked against source and
-retained runtime inputs rather than treated as established root causes.
+This table supersedes older candidate summaries; historical failures below
+remain evidence. The independent excerpt-based audit was checked against actual
+source and retained responses. The PR251→246 chain is merged as canonical0ca1d3;
+its Git tree equals the frozen tested7a453fb. Deployment remains pending the
+concrete three-article correction found during the final corpus.
 
 | Scope | Verified result | Remaining work |
 | --- | --- | --- |
-| Frozen 2aacca1 installed SDK | 2986 passed, 2 skipped; unchanged source before/after | Final patched candidate full suite |
-| Frozen 2aacca1 actual SOURCE 102 | Correct way133035113; identity72.836s, first242.200s, terminal401.049s; 5 eligible, PASS_CANDIDATE | Ordinary editorial continuation; compound claims are not automatically clean selections |
-| Frozen 2aacca1 actual SOURCE 130 | Uncertain,138.961s; compact article-photo T was not reached | Actual cold compact T path; earlier wrong-neighbor blocker remains open |
-| Frozen 2aacca1 actual SOURCE 104 /111 | Uncertain at180.139s /129.970s | Patched-input cold contrasts |
-| Frozen 2aacca1 actual SOURCE 132 /105 /106 | Deadline at180.159s /180.452s /180.284s | Distinguish closed semantic responses, NotSent and UNKNOWN individually |
-| Initial critical-path patch16a0393 | 237 affected checks passed161.35s; Native/MAP/adapter64 passed15.14s; Android38053334077 passed; backend CI28 failed,2745 passed,49 skipped | Followup fixes below;16a0393 is not an accepted release |
-| Frozen979175d continuation | 200 affected checks passed157.41s;115 independent-boundary checks passed53.91s; Android38054725132 checks/emulator passed; backend2772 passed,49 skipped,1 failed | Image-preparation test returned a wholly empty no-action plan; fixture corrected while retaining its image assertion |
-| Frozen979175d mandatory5 |104 correct58.426s, first105.487s,3 independent own-source facts177.696s; substantive PASS.102/111/130 deadline FAIL182.082/180.565/180.517s;132 resource BLOCKED165.790s. Five distinct initial SOURCE answers closed; no UNKNOWN; no wrong ID accepted | Only1/5 delivered useful facts; not release acceptance or a completed fixed15 |
-| Current102 authenticated API | Ordinary history/reopen on979175d preserves the compatible closed v42 editor result:3 selected eligible facts, corrected draft, evening concept and visual;301/301 voice ACK reused | No new inference, Android microphone or publication claim |
-| Positive-evidence boundary correction |78 affected tests passed10.71s; exact unmodified closed102 T now yields its own133035113 proof, preserving the declined plaque comparison; foreign positive pointer and declined-only match remain rejected | Frozen full suite and next actual corpus; offline replay is not a new cold PASS |
-| Disk cleanup | 4.2GiB plus752.5MiB of successful synthetic fixtures deleted through managed dry-run/apply; pip download cache purged;5.8GiB free | Successful new pytest fixtures use failed-only retention |
+| Frozen7a453fb installed SDK | 2823 passed,2 skipped,1091.69s; tracked source unchanged | Full suite on the small article-bound correction |
+| Canonical0ca1d3 checks | Backend38057984587 and Android38057984599 passed;27 instrumentation tests, signed1007→1259 upgrade and canonical certificate verified | Deploy corrected backend; unchanged Android result is reusable |
+| Owner Android build | Signed0.1.1259, source0ca1d3; APK SHA256 c604118a7e83f31d4d0c50caca4429f9624c9eaa97bd317e25b9fee6000d79ed | Actual owner-phone acceptance remains separate |
+| Frozen7a453fb corpus |15 different photos processed;12 have closed actual SOURCE model answers;4 substantively supported identities;0 observed wrong acceptances;7 unresolved with completed SOURCE answers;107 technical interruption before T;125 technical before SOURCE;124/126 request missing geographic context |4/15 recognition is insufficient for a general reliability claim |
+|102 /104 useful material | Correct own subjects;9/6 model-eligible facts, with3 substantive independently supported selections reviewed for each; useful sets at264.845/284.981s | Original terminal480.074/480.449s remain FAIL; not every candidate claim is independently atomic |
+|120 | Correct Barnaulskaya8 body133035135, reviewed against actual SOURCE and own publisher2540;3 own-source facts; identity48.499s, first315.315s, terminal384.201s | Original first300s gate remains FAIL |
+|132 | REF recognized the same photographed Gymnasium1 as wiki5137364; SOURCE/public REF independently reviewed | Evaluator stopped on exact-ID mismatch with expected OSM192217077; original OPERATOR_STOPPED, no fact PASS |
+|130 | Current cold result uncertain; earlier actual compact T received two publisher photos and declined neighboring-body acceptance | Original false acceptances remain retained; no correct130 recognition claim |
+| Retained102 editor | Ordinary authenticated candidate history/reopen preserved3 eligible selected facts, corrected draft, evening concept and closed visual; prepared-PCM301/301 ACK reused | Isolated retained story is absent from production history; no seeding, physical microphone or publication claim |
+| Three-article failure | Actual107 caller supplied acquired articles614/740/2519, but compact preparation and proof freeze allowed only1–2; repeated ValueError before T send | Remove arbitrary total-input bound; output bindings follow received article count; original FAIL remains |
+| Article-bound correction |103 focused tests passed26.67s, including real caller with three articles, accepted own proof plus declined comparisons, foreign pointer and declined-only negatives; exact retained107 input now prepares all3 without inference | Frozen final full suite and affected actual segment |
+| Disk cleanup |4.2GiB+752.5MiB successful synthetic fixtures removed through managed dry-run/apply; approximately5GiB free | New successful fixtures use failed-only retention; failures and UNKNOWN remain retained |
 
 The actual compact T caller now supplies the manifest and label→candidate ID
 table from its frozen MAP; active bodies receive detailed contours and reserve
@@ -65,7 +67,8 @@ without claiming it was the sole surviving building. The failure matrix has
 26 distinct driver/argument combinations; earlier200 PASS counted repeated
 fixtures rather than200 distinct schedules. The new matrix runs each once.
 The two frozen2aacca1 jobs completed before this patch began; their seven cases
-are not a completed fixed15 acceptance.130 and120 remain semantic review risks.
+are not a completed fixed15 acceptance. The later frozen15 above supersedes
+that count.120 has substantive same-body review;130 remains unresolved.
 
 Android2aacca1 instrumentation confirms expected1/actual0 at the running-control
 assertion. Logs do not establish a product root cause. The local projection
