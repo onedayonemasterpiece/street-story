@@ -48,6 +48,10 @@ EXTRACTION_CHECKS = (
     'and conflicting source accounts rather than inventing a date or selecting one silently. '
     'Keep the physical building, institution, individual part and larger complex distinct; '
     'an institution\'s founding date is not automatically the building\'s construction date. '
+    'Resolve the explicitly named subject in each source sentence against confirmed_identity. '
+    'A page about the confirmed building may describe another building; never transfer that '
+    'other subject\'s architects, dates or roles to the confirmed subject. Name the actual '
+    'supported subject explicitly when a generic word such as building would be ambiguous. '
     'Do not merge a news event such as work starting with an adjacent planned budget '
     'into one fact merely because both appear in the same source paragraph. '
     'Preserve uncertainty and subset versus whole. If the source context is incomplete, '
@@ -313,7 +317,11 @@ def read(adapter, session, args):
                                 cached.pop('equivalent_to', None)
                         reused[str(f)] = cached
             ref = 'p' + uuid.uuid4().hex[:12]
+            from .identity_model_context import compact_physical_identity
+            research = json.loads(story['research_json'] or '{}')
             payload = {'bundle': exact, 'items': items,
+                       'confirmed_identity': compact_physical_identity(research.get('visual_identity') or {},
+                           photo_sha256=story['photo_sha256'], generation=int(run['identity_generation'] or 0)),
                        'review_as_of_date_utc': datetime.fromtimestamp(adapter.service.store.now(), timezone.utc).date().isoformat()}
             if candidate_mode:
                 payload.update(candidate_scope=list(exact), nearby_existing_claims=nearby)
@@ -355,6 +363,8 @@ def read(adapter, session, args):
                                'saved_verdict': json.loads(row['decisions_json']).get(str(f), {}).get('verdict')})
     page = {'packet_ref': ref, 'run_id': row['run_id'], 'policy_version': POLICY_VERSION, 'review_as_of_date_utc': payload.get('review_as_of_date_utc'), 'review_checks': REVIEW_CHECKS, 'items': [], 'total_facts': len(payload['items']),
             'next_cursor': None, 'has_more': False, 'next_tool': 'finalize_fact_review'}
+    if 'confirmed_identity' in payload:
+        page['confirmed_identity'] = payload['confirmed_identity']
     if payload.get('candidate_scope') is not None:
         page['nearby_existing_claims'] = payload.get('nearby_existing_claims', [])
         page['review_checks'] += (' Compare against nearby_existing_claims without changing them: '

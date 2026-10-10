@@ -3,6 +3,39 @@
 Status: final live acceptance pending; no accepted product release. The previous
 visual-model RPD denial is historical evidence, not a permanent product blocker.
 
+## a11129e original cold104 and missing semantic subject context
+
+Exact a11129e passed168 affected identity/T/admission/Stop checks94.53s. In the
+real cold104, Native SOURCE/MAP closed and Google3.8's first key received an
+unsent RPD denial; the same frozen T request was admitted on the next registered
+key and closed. Correct relation3665416 accepted80.069s, first eligible116.103s,
+API useful availability166.933s. Original cold outcome remains FAIL: natural
+useful_partial at481.395s with17 eligible assertions, outside the original
+terminal480s gate. Original timing/gates are not rewritten.
+
+Manual semantic inspection found an eligible architect assertion transferring
+an explicitly named neighboring subject in the retained source passage to the
+confirmed story subject. It is FAIL_FACT_SUBJECT_TRANSFER, not product PASS.
+The actual frozen verifier packet contained generic candidate text, own passage
+slices and nearby claims but omitted the confirmed physical identity/name/scope.
+The changed packet now freezes the existing compact_physical_identity projection
+once and exposes it on every read page. Historical packets remain unchanged;
+verifier v8 has a distinct contract hash and UNKNOWN original readback retains
+its own old verifier and packet. Source extraction and review explicitly resolve
+named sentence subjects against that confirmed physical scope. No name/address
+regex, target-ID exception or host semantic veto was added.
+
+94 affected packet/review/quote/closed-unit checks passed57.34s, including frozen
+subject context readback; Ruff passed. The next real check uses explicit narrow
+fact reconsideration through existing Mira tools on this retained actual story,
+followed by owner selection/draft and the ordinary editorial E2E. It does not
+repeat identity or turn the original cold failure into PASS. Compatible prior
+voice/image/reopen and warm POI evidence remain versioned separately.
+
+Evidence: cold-a11129e/case-104.json, semantic-review-104.json,
+unsent-key-a11129e.xml and review-subject-v22.xml under the retained task root.
+Production remainsdb0c0d0; accepted deployment is pending.
+
 ## bd92e8a cold canary and definitive unsent key admission
 
 The exact bd92e8a cold104 canary failed: no accepted identity or eligible facts,
@@ -1422,7 +1455,7 @@ Versioned observations, not one combined cold PASS. No latest mandatory case pas
 | Photo | Source | Last verdict / final ID | Full reserve N | G nominations | Expected in full reserve | Eligible proved | Wall s |
 | --- | --- | --- | ---: | ---: | --- | ---: | ---: |
 | 102 | 7623da2 | FAIL; — | 393 | — | yes | 0 | 191.414 |
-| 104 | bd92e8a | FAIL; — | 414 | — | yes | 0 | 222.116 |
+| 104 | a11129e | FAIL timing + semantic subject; osm:relation:3665416 | 414 | — | yes | 17 mechanical, semantic failure | 481.395 |
 | 105 | 83d73c8 | FAIL; — | 534 | 1 | unfixed/unknown | 0 | 181.129 |
 | 106 | 83d73c8 | FAIL; — | 573 | 0 | yes | 0 | 71.946 |
 | 107 | 83d73c8 | BLOCKED; — | 672 | 0 | unfixed/unknown | 0 | 95.832 |

@@ -305,6 +305,18 @@ async def test_resumed_review_frames_inventory_as_candidates_and_preserves_canon
     assert 'continue_story' in {tool['name'] for tool in initialized['configuration']['functions']}
     packet = await adapter.execute_tool(session, {'name': 'get_review_packet', 'args': {'run_id': run_id}})
     assert packet['total_facts'] == 3
+    assert packet['confirmed_identity']['candidate_id'] == 'confirmed-place'
+    assert packet['confirmed_identity']['candidate_name'] == 'Бранденбургские ворота (Калининград)'
+    assert 'candidates' not in packet['confirmed_identity']
+    assert 'geometry_proof' not in packet['confirmed_identity']
+    # Re-reading a frozen packet keeps its actual original subject context,
+    # rather than rebuilding model input from later presentation metadata.
+    with svc.store.tx() as db:
+        research['visual_identity']['candidate_name'] = 'Later presentation name'
+        db.execute('UPDATE stories SET research_json=? WHERE id=?', (json.dumps(research), session.resource_id))
+    restored = await adapter.execute_tool(session, {'name': 'get_review_packet',
+        'args': {'packet_ref': packet['packet_ref']}})
+    assert restored['confirmed_identity'] == packet['confirmed_identity']
     await reader.search_http.aclose()
 
 

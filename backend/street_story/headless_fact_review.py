@@ -72,8 +72,14 @@ VERIFIER_PROMPT = (LEGACY_VERIFIER_PROMPT.removesuffix('Frozen packet: ')
       'after A": that is a paraphrase. Do not accept a candidate combining independently selectable '
       'construction and namesake claims, or a current use inferred from an undated currently. '
       'Return repair_needed or insufficient when the semantic checks fail even with a valid label. '
+      'confirmed_identity identifies the physical subject of this story, including its accepted '
+      'name and scope. Resolve implicit subject words in item.text against that subject. '
+      'A source page can explicitly switch to a DIFFERENT named building. Its architects, '
+      'dates or roles do not support this subject merely because the page title or an earlier '
+      'sentence names the confirmed building. Preserve the sentence\'s actual subject; use '
+      'insufficient or repair_needed for a transferred or ambiguous attribution. '
       'Frozen packet: ')
-VERIFIER_CONTRACT_ID = 'closed-packet-json-v7-original-claim:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
+VERIFIER_CONTRACT_ID = 'closed-packet-json-v8-subject-context:' + hashlib.sha256(VERIFIER_PROMPT.encode()).hexdigest()
 
 
 class HeadlessFactReview:
