@@ -707,30 +707,45 @@ async def acquire_active_regional_text(service, story, candidates, candidate_ids
     try:
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                articles, _lookup = task.result()
+            outcomes = await asyncio.gather(*done, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                articles, _lookup = outcome
                 ready.extend(articles)
             if ready:
                 break
             for _ in done:
                 launch()
-    finally:
+    except BaseException:
+        # Stop/cancellation must not launch the unread reserve. Successful
+        # siblings already persisted their own bodies inside read().
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise
+    else:
         # Continue the received reserve without waiting to supply the first T
         # input. Each successful body is retained by read(), not lost on drain.
         async def drain():
             nonlocal pending
-            while len(pending) < 2 and launch():
-                pass
-            while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                results = await asyncio.gather(*done, return_exceptions=True)
-                if any(isinstance(result, ResearchTerminated) for result in results):
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    return
-                for _ in done:
-                    launch()
+            outcomes = []
+            try:
+                while len(pending) < 2 and launch():
+                    pass
+                while pending:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    results = await asyncio.gather(*done, return_exceptions=True)
+                    outcomes.extend(results)
+                    if any(isinstance(result, ResearchTerminated) for result in results):
+                        break
+                    for _ in done:
+                        launch()
+            finally:
+                for task in pending:
+                    task.cancel()
+                outcomes.extend(await asyncio.gather(*pending, return_exceptions=True))
+            return outcomes
         observer = getattr(getattr(getattr(service, 'providers', None), 'research', None), 'retain_search_observer', None)
         dispatched = asyncio.create_task(drain())
         if callable(observer):

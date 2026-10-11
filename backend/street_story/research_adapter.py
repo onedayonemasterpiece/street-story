@@ -413,7 +413,10 @@ class ProductResearchAdapter:
                     outcomes = done.result()
                 except asyncio.CancelledError:
                     return  # gather can carry cancellation without cancelled()=True.
-                for outcome in outcomes:
+                except Exception as exc:
+                    LOG.warning('street_story_research_search_observer error_type=%s', type(exc).__name__)
+                    return
+                for outcome in outcomes or ():
                     if isinstance(outcome, BaseException):
                         LOG.warning('street_story_research_search_observer error_type=%s', type(outcome).__name__)
         task.add_done_callback(settled)
