@@ -730,6 +730,28 @@ async def run(args):
     return report
 
 
+async def review_retained_scope(engine, job, run_id, revision, fact_ids):
+    """Review the requested claims, then only their current-run repair children."""
+    from street_story import review_packets
+    count = await engine.run(job, run_id, revision, fact_ids=fact_ids)
+    if not count:
+        return count
+    with engine.service.store.connection() as db:
+        pending = set(review_packets.pending_candidates(db, job['story_id'], run_id))
+        links = [tuple(row) for row in db.execute('SELECT r.parent_id,r.child_id FROM live_fact_repairs r '
+            'JOIN live_review_packets p ON p.packet_ref=r.packet_ref WHERE r.story_id=? AND p.run_id=?',
+            (job['story_id'], run_id))]
+    descendants = set(fact_ids)
+    while True:
+        added = {child for parent, child in links if parent in descendants} - descendants
+        if not added:
+            break
+        descendants.update(added)
+    if pending and pending <= descendants - set(fact_ids):
+        count += await engine.run(job, run_id, revision)
+    return count
+
+
 async def retained_review(args):
     """One explicitly scoped normal backend review, without photo/identity replay.
 
@@ -796,7 +818,7 @@ async def retained_review(args):
     restore = instrument_control_boundary()
     try:
         async with asyncio.timeout(75):
-            count = await HeadlessFactReview(harness).run(job, run_id, revision, fact_ids=fact_ids)
+            count = await review_retained_scope(HeadlessFactReview(harness), job, run_id, revision, fact_ids)
         if count:
             report['product_outcome'] = harness._finish(job, run_id, revision, 'explicit_review_packet_completed')
         report.update(status='REVIEW_REQUIRED' if count else 'NO_CLOSED_REVIEW', committed_packets=count,

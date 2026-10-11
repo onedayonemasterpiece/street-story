@@ -25,6 +25,26 @@ def item():
         'report_label': 'Hidden building expectation', 'address': 'Not a provider seed'}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unrelated_pending', [False, True])
+async def test_retained_review_continues_only_current_run_children_of_requested_claims(tmp_path, unrelated_pending):
+    from test_headless_review_repairs import ReplacingReview
+    from test_headless_fact_review_parallel import candidates
+    from test_headless_fact_pool import RUN
+    svc, job, product = await candidates(tmp_path, count=2 if unrelated_pending else 1)
+    with svc.store.connection() as db:
+        fid = db.execute('SELECT assertion_id FROM fact_assertions ORDER BY rowid').fetchone()[0]
+    engine = ReplacingReview(product)
+    before_calls = ReplacingReview.calls
+    count = await harness.review_retained_scope(engine, job, RUN, 0, [fid])
+    assert count == (1 if unrelated_pending else 2)
+    assert ReplacingReview.calls-before_calls == count
+    with svc.store.connection() as db:
+        assert db.execute('SELECT COUNT(*) FROM live_fact_repairs').fetchone()[0] == 1
+        eligible = db.execute("SELECT COUNT(*) FROM fact_assertions WHERE eligibility='eligible'").fetchone()[0]
+        assert eligible == (0 if unrelated_pending else 1)
+
+
 def test_real_acceptance_storage_guard_rejects_unmanaged_external_paths():
     with pytest.raises(ValueError, match='under /home/dev/artifacts'):
         harness.managed(Path('/outside-artifact-root/source.jpg'))
