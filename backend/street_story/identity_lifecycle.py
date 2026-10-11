@@ -474,7 +474,11 @@ class IdentityLifecycleMixin:
                     with self.store.connection() as db:
                         known_sources = [*candidate_reference_images(db, candidates),
                                          *candidate_article_sources(db, candidates)]
-                if known_sources and not owner_hint.strip():
+                from .identity_discovery import alternative_acquisition_due
+                saved_plan = story.get('_identity_search_plan_payload') or (
+                    (json.loads(self._identity_snapshot(story_id)[0]['research_json'] or '{}')
+                     .get('identity_article_discovery') or {}).get('search_plan') or {}).get('payload') or {}
+                if known_sources and not owner_hint.strip() and not alternative_acquisition_due(saved_plan):
                     # New photos still require a new comparison. Deliver the
                     # existing queue first; searching is not a prerequisite for
                     # addressing an already accumulated physical POI reference.

@@ -2989,6 +2989,21 @@ def next_visual_query(identity, seed, searches, planned_queries=()):
     return next((query for query in variants if normalized(query) not in completed), '')
 
 
+def alternative_acquisition_due(payload):
+    """A model-declared structural contradiction advances its addressed plan."""
+    if not isinstance(payload, dict):
+        return False
+    decision = payload.get('accepted_architectural_text') or (payload.get('rejected_architectural_text') or {}).get('decision')
+    if not isinstance(decision, dict) or decision.get('decision') == 'accepted_architectural_text':
+        return False
+    priority = payload.get('physical_research_priority') or {}
+    active = set(priority.get('active_candidate_ids') or [])
+    alternatives = {row.get('candidate_id') for row in decision.get('material_alternatives') or [] if isinstance(row, dict)}
+    return bool(active.intersection(alternatives) and payload.get('active_planned_queries') and any(
+        isinstance(row, dict) and row.get('status') == 'structural_contradiction'
+        for row in decision.get('correspondences') or []))
+
+
 async def prepare_search_plan(service, story, transcript, candidates):
     # Read persisted work before invoking any planner. A completed plan and
     # its closed/UNKNOWN query receipts survive provider outages and wakes.
@@ -3144,7 +3159,8 @@ async def recover(service, story, transcript, candidates, excluded):
                 and (story.get('latitude') is None or story.get('longitude') is None)):
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                 'observations': [payload['clarification_question']], '_references_sent': []}, candidates
-        if payload.get('selected_wikipedia_page_ids') and not history.get('planned_queries'):
+        if (payload.get('selected_wikipedia_page_ids') and not history.get('planned_queries')
+                and not alternative_acquisition_due(payload)):
             record_identity_event(service, story['id'], 'identity_ready_wikipedia_reference', {
                 'selected_page_ids': payload['selected_wikipedia_page_ids'], 'paid_search_required': False})
             return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
@@ -3167,8 +3183,16 @@ async def recover(service, story, transcript, candidates, excluded):
                         and page.get('retry_at', 0) <= service.store.now()):
                     unread.append({**source, **{key: value for key, value in (page.get('source') or {}).items()
                         if key in {'gallery_cursor', 'gallery_slide_cursor', 'static_media_delivered'}}})
-            if cached:
+            urgent_urls = {source['url'] for source in query_sources} if alternative_acquisition_due(payload) else set()
+            urgent = [source for source in unread if source['url'] in urgent_urls]
+            if cached and not urgent:
                 return cached
+            if urgent:
+                unread = urgent
+                record_identity_event(service, story['id'], 'identity_alternative_acquisition_started', {
+                    'generation': story.get('_identity_generation', 0), 'source_count': len(urgent),
+                    'closed_response_sha256': (payload.get('physical_research_priority') or {}).get('model_response_sha256'),
+                    'identity_established': False})
             from .live_visual_comparison import _article_acquisition_rank
             unread.sort(key=lambda source: (pages.get(source['url'], {}).get('attempts', 0),
                                             _article_acquisition_rank(source)))
@@ -3179,7 +3203,10 @@ async def recover(service, story, transcript, candidates, excluded):
             fetched = await article_candidates(service, story, unread, excluded,
                                                receipts=receipts, first_ready=True)
             _retain_article_discovery(service, story, query_sources, receipts=receipts, articles=fetched)
-            return fetched
+            # Old media remains durable and available to the visual worker.
+            # Its presence must not end this addressed alternative-search wave
+            # when a newly acquired page has no usable photographs.
+            return fetched if urgent else fetched or cached
 
         async def search_query(query, route=None):
             nonlocal history
@@ -3219,7 +3246,7 @@ async def recover(service, story, transcript, candidates, excluded):
         # binding or facade comparison must not blacklist their whole address.
         acquired = [*((payload.get('source_text_receipt') or {}).get('articles') or []),
                     *(history.get('acquired_text_articles') or [])]
-        if acquired:
+        if acquired and not alternative_acquisition_due(payload):
             selected = list({a['url']: {'url': a['url'], 'title': a.get('title') or '',
                 'lookup_candidate_ids': a.get('lookup_candidate_ids') or [],
                 'selection_provenance': 'already_acquired_architectural_text'} for a in acquired}.values())
@@ -3228,7 +3255,8 @@ async def recover(service, story, transcript, candidates, excluded):
                 return {'status': 'uncertain', 'candidate_id': '', 'confidence': 0,
                     'observations': ['Сравниваю изображения уже прочитанных источников по оставшимся гипотезам.'],
                     '_article_media_pending': True, '_references_sent': []}, media
-        if reference_action.get('contract') == 'closed-hypothesis-reference-action-v1':
+        if (reference_action.get('contract') == 'closed-hypothesis-reference-action-v1'
+                and not alternative_acquisition_due(payload)):
             # Use the already model-selected, acquired source before another
             # search. This is only reference acquisition; the existing visual
             # queue and common proof authority decide any physical identity.
