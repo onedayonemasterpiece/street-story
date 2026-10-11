@@ -348,7 +348,13 @@ class NativeVisionProvider:
             image_parts = direct_visual_parts(story, supplied)
             supplied = visual_context_without_image_hashes(supplied)
             contract, prompt = visual_request(schema, supplied)
-        receipt = {'binding': dict(binding), 'phase': binding.get('phase', 'created'),
+        receipt_binding = dict(binding)
+        if source_map:
+            # The immutable packet is owned once at receipt.frozen_source_map.
+            # Resume reconstructs the original binding from that packet; legacy
+            # duplicated receipts remain readable without changing their inputs.
+            receipt_binding.pop('frozen_source_map', None)
+        receipt = {'binding': receipt_binding, 'phase': binding.get('phase', 'created'),
                    'thread_id': binding.get('thread_id'), 'turn_id': binding.get('turn_id'),
                    'profile_verified': binding.get('profile_verified', False),
                    'provider': 'codex_native', 'model': MODEL, 'transport': TRANSPORT,

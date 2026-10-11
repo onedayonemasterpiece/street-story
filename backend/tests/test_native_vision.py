@@ -313,7 +313,8 @@ async def test_below_reserve_never_sends_model_turn(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('with_article_reference', [False, True])
-async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path, with_article_reference):
+@pytest.mark.parametrize('legacy_duplicate', [False, True])
+async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_without_fresh_quota(tmp_path, with_article_reference, legacy_duplicate):
     provider, client, source, story, _context, receipts, sends, _finalized = setup(tmp_path)
     map_file = io.BytesIO()
     Image.new('RGB', (67, 13), 'blue').save(map_file, format='PNG')
@@ -337,6 +338,11 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
     assert pixels == [i[2] for i in images]
     receipt = receipts[-1]
     assert receipt['phase'] == 'unknown'
+    assert 'frozen_source_map' not in receipt['binding']
+    frozen = copy.deepcopy(receipt['frozen_source_map'])
+    if legacy_duplicate:
+        # Existing receipts are read unchanged, including their duplicated packet.
+        receipt['binding']['frozen_source_map'] = copy.deepcopy(frozen)
     binding = {**receipt['binding'], **{key: receipt[key] for key in (
         'thread_id', 'turn_id', 'phase', 'profile_verified', 'image_transport', 'frozen_source_map')}}
     client.used = 99
@@ -344,6 +350,11 @@ async def test_source_map_preserves_exact_map_pixels_and_reads_original_turn_wit
     provider.timeout = 1
     readback = await provider.compare_source_map(story, {}, 'different incoming request', [], binding, {})
     assert readback['host_context'] == host
+    assert readback['receipt']['frozen_source_map'] == frozen
+    assert 'frozen_source_map' not in readback['receipt']['binding']
+    assert receipt['frozen_source_map'] == frozen
+    if legacy_duplicate:
+        assert receipt['binding']['frozen_source_map'] == frozen
     assert sum(method == 'turn/start' for method, _ in client.calls) == 1
     assert len(sends) == 1
     await provider.close()
